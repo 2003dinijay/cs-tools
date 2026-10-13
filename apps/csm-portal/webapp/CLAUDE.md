@@ -253,6 +253,26 @@ The change request create page and edit dialog share `useChangeRequestScope` (`f
 - The detail response's `category` is the enum value (or an `{id, name|label}` ref on older responses) — always read it through `changeRequestCategoryValue` / `changeRequestCategoryLabel`.
 - e2e: `tests/e2e/utils/fakeChangeRequestApi.ts` fakes the whole slice (projects, link-options with per-project contacts, create, PATCH, detail) with the backend's own validation (including the `customerGroupId` / `environmentIds` refusals), so the cascade, wire payload, 400 path and lifecycle are tested without creating records anywhere.
 
+### Change request tags: the case page's widget, dialog and hooks, not a copy
+
+`CsmChangeRequestDetailPage` shows a change request's `tags` (on
+`BeChangeRequestDetail`, the same shape as a case's) in the case page's own
+`TagsWidget` (`csm-cases/components/CaseDetailWidgets`), mounted under the
+Overview card, and adds one through the case page's `AddTagDialog` (whose
+type-ahead is `useSearchTags`, `POST /tags/search`). The writes are the case
+hooks themselves: `useAddCaseTag` / `useRemoveCaseTag` (`csm-cases/api/useCaseTags`)
+call `POST /cases/{id}/tags` / `DELETE /cases/{id}/tags/{tagId}`, which take a
+work item id, so they are given the change request's id and -- their one
+parameter added for this -- the detail query key to invalidate
+(`[CHANGE_REQUEST_DETAILS, id]`; the case detail key stays the default), so the
+chips follow a write. Do not fork the widget, the dialog or the hooks for
+another work item type: pass the id and the detail key. The widget is read-only
+without `canWrite` (no Tag button, no chip delete), and not rendered at all when
+the backend carried no `tags` array (another data source). Tags are staff
+bookkeeping -- the backend leaves them null on a customer's read -- and a change
+request's tag is never mirrored to the previous system. e2e: the fake API holds
+them (`seedTags`, `tags()`) behind the same case tag routes and `POST /tags/search`.
+
 ### The customer's part is fixed once approval is requested (Edit dialog, action bar)
 
 Who the customer is (the **Customer Project**, from which the read-only Customer Group is derived) and whether they are asked (the **Customer Approval** / **Customer Review** tick boxes) are fully editable only in the creation phase, the state **New**. The rule, a pure function of `(state, the stored tick box, whether the change has a project)` and therefore computed client-side in `features/csm-operations/utils/changeRequests.ts` exactly as entity-service decides it (the backend stays the authority and answers 400; its message still shows in the dialog's `saveError`):

@@ -561,6 +561,15 @@ type CaseRepository interface {
 	// not exist (the tag might exist but not be on this case, or not exist
 	// at all -- both are "not found" from the caller's perspective).
 	RemoveCaseTag(ctx context.Context, caseID, tagID, callerEmail string) error
+	// IsCaseLikeWorkItem reports whether workItemID names one of the five
+	// case-like work item types (caseLikeWorkItemTypes). AddCaseTag /
+	// RemoveCaseTag take any work item id -- a change request's included --
+	// and the service gates its ServiceNow tag mirror on this: only a
+	// case-like work item has a case record in the previous system to mirror
+	// a tag onto; a change request's tags stay Postgres-only. false, not an
+	// error, for an id that names no work item at all (or one row-level
+	// security hides).
+	IsCaseLikeWorkItem(ctx context.Context, workItemID string) (bool, error)
 	// SetCaseTagSNSysID best-effort persists ServiceNow's own label_entry
 	// sys_id for the (caseID, tagID) attachment on work_item_tag (migration
 	// 000088) -- called from AddCaseTag's async ServiceNow mirror success
@@ -4679,6 +4688,20 @@ func (r *caseRepo) RemoveCaseTag(ctx context.Context, caseID, tagID, _ string) e
 		return &apierror.NotFoundError{Msg: "tag not found on this case"}
 	}
 	return nil
+}
+
+// IsCaseLikeWorkItem implements CaseRepository: the same type read a case
+// write dispatches on (readCaseLikeType), which answers pgx.ErrNoRows for a
+// work item that is not case-like -- a change request, an incident -- or
+// that does not exist.
+func (r *caseRepo) IsCaseLikeWorkItem(ctx context.Context, workItemID string) (bool, error) {
+	if _, err := readCaseLikeType(ctx, r.db, "is case-like work item", workItemID, false); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("is case-like work item: %w", err)
+	}
+	return true, nil
 }
 
 // SetCaseTagSNSysID implements CaseRepository. Returns *apierror.NotFoundError
