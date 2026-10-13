@@ -1085,6 +1085,15 @@ func sameElevation(running, t Trigger) bool {
 		running.At.Equal(t.At) && NormalisePriority(running.Priority) == NormalisePriority(t.Priority)
 }
 
+// sameChain reports whether two triggers started the same ladder. A
+// replacement chain always carries a different trigger: a severity change is
+// stamped with the time it was read, and a replayed elevation is ignored
+// rather than applied (see sameElevation).
+func sameChain(a, b Trigger) bool {
+	return a.Kind == b.Kind && a.At.Equal(b.At) &&
+		NormalisePriority(a.Priority) == NormalisePriority(b.Priority)
+}
+
 func ladderName(l Ladder) string {
 	if l == LadderSRE {
 		return "SRE"
@@ -1391,9 +1400,21 @@ func (e *Engine) processDue(ctx context.Context, member string) error {
 	if err != nil {
 		return fmt.Errorf("escalation: reload ladder for %s: %w", incidentID, err)
 	}
-	if !stillRunning || fresh.Cancelled != nil || index >= len(fresh.Placed) {
-		// Acknowledged, replaced or completed while the call was in flight.
-		// The call did go out, but there is nothing left to record it on.
+	if !stillRunning {
+		// Acknowledged or completed while the call was in flight. The call
+		// did go out, but there is nothing left to record it on.
+		return e.store.RemoveWakes(ctx, member)
+	}
+	if !sameChain(fresh.Plan.Trigger, st.Plan.Trigger) {
+		// Replaced while the call was in flight (a severity change, an
+		// elevation). The replacement reuses this rung's slot and wake entry,
+		// so recording this result on it would mark its call placed or owe it
+		// a card, and retiring the wake would drop its call. Leave both to the
+		// replacement; this send has already happened.
+		return nil
+	}
+	if fresh.Cancelled != nil || index >= len(fresh.Placed) {
+		// Cancelled while the call was in flight.
 		return e.store.RemoveWakes(ctx, member)
 	}
 	switch {

@@ -523,3 +523,97 @@ func TestCardRetry_GivesUpOnTheCardAfterTheWindow(t *testing.T) {
 		t.Errorf("dialled %d times for %d rungs due; a card retry must never re-dial", caller.tries, dueRungs)
 	}
 }
+
+// replacingChat runs replace while a card is being sent, the way a severity
+// change or an elevation can land during the HTTP call.
+type replacingChat struct {
+	*fakeChat
+	replace func()
+}
+
+func (c *replacingChat) SendEscalationAlert(ctx context.Context, a notifications.EscalationAlert) error {
+	if c.replace != nil {
+		c.replace()
+		c.replace = nil
+	}
+	return c.fakeChat.SendEscalationAlert(ctx, a)
+}
+
+// replaceLadder stands in for schedule's replacement: a new chain over the
+// same rung slots, with nothing placed or owed. Its wake entries are the old
+// chain's member names, so they are left as they are.
+func replaceLadder(t *testing.T, store *memStore) LadderState {
+	t.Helper()
+	st := firstState(t, store)
+	st.Plan.Trigger.Kind = TriggerPriorityElevated
+	st.Plan.Trigger.At = st.Plan.Trigger.At.Add(time.Minute)
+	st.Placed = make([]bool, len(st.Plan.Calls))
+	st.Failed, st.CardPending = nil, nil
+	if err := store.Save(context.Background(), testIncidentID, st); err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
+
+// A card send that a replacement ladder overtakes must not record anything on
+// the replacement, nor retire the wake entry it now owns.
+func TestCardRetry_ReplacedWhileSendingLeavesTheReplacementAlone(t *testing.T) {
+	t.Run("card fails transiently", func(t *testing.T) {
+		store := newMemStore()
+		caller := &triesCaller{}
+		chat := &replacingChat{fakeChat: &fakeChat{err: errors.New("webhook down")}}
+		e := bothEngine(caller, chat, store, &fakeNotes{})
+		due := startP1(t, e)
+		chat.replace = func() { replaceLadder(t, store) }
+
+		if err := e.Tick(context.Background(), due); err != nil {
+			t.Fatalf("tick err = %v; a replaced chain's card is not retried", err)
+		}
+		st := firstState(t, store)
+		if st.Placed[0] || st.cardPending(0) {
+			t.Fatalf("replacement placed=%v cardPending=%v; want its rung untouched", st.Placed[0], st.cardPending(0))
+		}
+		if !firstScheduled(store) {
+			t.Fatal("the replacement's wake entry must stay")
+		}
+
+		// The replacement's own call goes out on the next tick.
+		chat.err = nil
+		if err := e.Tick(context.Background(), due); err != nil {
+			t.Fatal(err)
+		}
+		if caller.tries != 2 {
+			t.Errorf("dialled %d times; want the replacement's rung dialled on its own", caller.tries)
+		}
+	})
+
+	t.Run("owed card delivered", func(t *testing.T) {
+		store := newMemStore()
+		caller := &triesCaller{}
+		chat := &replacingChat{fakeChat: &fakeChat{err: errors.New("webhook down")}}
+		e := bothEngine(caller, chat, store, &fakeNotes{})
+		due := startP1(t, e)
+		if err := e.Tick(context.Background(), due); err == nil {
+			t.Fatal("the failed card must surface")
+		}
+		if !firstState(t, store).cardPending(0) {
+			t.Fatal("want the card owed")
+		}
+
+		chat.err = nil
+		chat.replace = func() { replaceLadder(t, store) }
+		if err := e.Tick(context.Background(), due); err != nil {
+			t.Fatal(err)
+		}
+		st := firstState(t, store)
+		if st.Placed[0] || st.cardPending(0) {
+			t.Fatalf("replacement placed=%v cardPending=%v; want its rung untouched", st.Placed[0], st.cardPending(0))
+		}
+		if !firstScheduled(store) {
+			t.Fatal("the old chain's delivered card must not retire the replacement's wake entry")
+		}
+		if caller.tries != 1 {
+			t.Errorf("dialled %d times; the card-only send must not dial", caller.tries)
+		}
+	})
+}
