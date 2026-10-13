@@ -23490,7 +23490,12 @@ components:
           `incident_state` is a distinct field that exists independently on
           the same incident row. Kept only for exact parity with SN's native
           incident dashboards; prefer state for general-purpose state
-          filtering.
+          filtering. The PostgreSQL data source has no separate
+          `incident_state` column, so it applies the keys to `state`
+          (1 New, 2 In Progress, 3 On Hold, 6 Resolved, 7 Closed,
+          8 Canceled) and ANDs them with any state filter; a key with no
+          state (4, 5, ...) is a 400, and so is a state filter that shares no
+          state with the keys.
 
     SearchIncidentsRequest:
       type: object

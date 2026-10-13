@@ -5977,7 +5977,10 @@ type SearchIncidentsFilters struct {
 	//     `incident_state` is a distinct field that exists independently on
 	//     the same incident row. Kept only for exact parity with SN's native
 	//     incident dashboards; prefer "state" for general-purpose state
-	//     filtering.
+	//     filtering. On the Postgres data source there is no such separate
+	//     column, so the keys (1 New, 2 In Progress, 3 On Hold, 6 Resolved,
+	//     7 Closed, 8 Canceled) are applied to `state`, ANDed with any "state"
+	//     filter; a key with no state is a 400.
 	// See service.ParseIncidentFieldFilters.
 	Filters []IncidentFieldFilter `json:"filters,omitempty"`
 }
