@@ -24,16 +24,16 @@ describe("projectContactRoleLabels", () => {
         roles: ["PORTAL_USER", "SECURITY_CONTACT"],
         accountRoles: ["customer", "customer_admin", "external"],
       }),
-    ).toEqual(["Admin", "Portal User", "Security User"]);
+    ).toEqual(["Customer Admin", "Portal User", "Security User"]);
   });
 
-  it("shows Admin from the project ADMIN role, once", () => {
+  it("names a customer admin instead of a second Admin chip", () => {
     expect(
       projectContactRoleLabels({
         roles: ["ADMIN", "PORTAL_USER"],
         accountRoles: ["customer_admin"],
       }),
-    ).toEqual(["Admin", "Portal User"]);
+    ).toEqual(["Customer Admin", "Portal User"]);
   });
 
   it("adds the portal fallback for a project admin with no portal role", () => {
@@ -50,7 +50,7 @@ describe("projectContactRoleLabels", () => {
         roles: ["BUSINESS_CONTACT"],
         accountRoles: ["partner", "partner_admin", "external"],
       }),
-    ).toEqual(["Admin", "Portal User", "Business Contact"]);
+    ).toEqual(["Partner Admin", "Portal User", "Business Contact"]);
   });
 
   it("shows a system user without Portal User or Security User", () => {

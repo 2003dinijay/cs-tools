@@ -28,6 +28,16 @@ export type ProjectContactRoleChip = {
 };
 
 const ADMIN_CHIP: ProjectContactRoleChip = { label: "Admin", Icon: Crown, chipColor: "primary" };
+const CUSTOMER_ADMIN_CHIP: ProjectContactRoleChip = {
+  label: "Customer Admin",
+  Icon: Crown,
+  chipColor: "primary",
+};
+const PARTNER_ADMIN_CHIP: ProjectContactRoleChip = {
+  label: "Partner Admin",
+  Icon: Crown,
+  chipColor: "primary",
+};
 const LEAD_CHIP: ProjectContactRoleChip = { label: "Lead", Icon: Star, chipColor: "warning" };
 const SYSTEM_CHIP: ProjectContactRoleChip = { label: "System User", Icon: Code, chipColor: "info" };
 const PORTAL_CHIP: ProjectContactRoleChip = { label: "Portal User", Icon: Monitor, chipColor: "default" };
@@ -61,9 +71,9 @@ export function projectContactRoleChipSx(chipColor: ProjectContactRoleChip["chip
  * Chip labels for one project-contact row, matching the customer portal's
  * `getRoleBadges` for the flags that search can supply.
  *
- * Admin is the project role ADMIN, and also customer_admin or partner_admin
- * on accountRoles. That account role is what shows after opening the person,
- * and it is drawn here so the contacts list identifies admins without that.
+ * Admin is the project role ADMIN. customer_admin and partner_admin on
+ * accountRoles are drawn as Customer Admin and Partner Admin, the same roles
+ * the person record holds, so the contacts list names the admin type.
  * A person who is not a system user and has neither PORTAL_USER nor
  * SECURITY_CONTACT still gets Portal User. BUSINESS_CONTACT is shown as
  * Business Contact. The customer portal omits that role; CSM keeps it.
@@ -84,13 +94,16 @@ export function projectContactRoleChips(
   const accountRoles = new Set(
     (contact.accountRoles ?? []).map((role) => role.trim().toLowerCase()).filter(Boolean),
   );
-  const isAccountAdmin = accountRoles.has("customer_admin") || accountRoles.has("partner_admin");
+  const isCustomerAdmin = accountRoles.has("customer_admin");
+  const isPartnerAdmin = accountRoles.has("partner_admin");
   // A row the API confirms has no linked user, and no project roles, is not a
   // portal user. An absent flag is an older response, so the fallback stays.
   const confirmedUnlinked = contact.customerContactPresent === false && projectRoles.length === 0;
 
   const chips: ProjectContactRoleChip[] = [];
-  if (hasProjectRole("ADMIN") || isAccountAdmin) chips.push(ADMIN_CHIP);
+  if (isCustomerAdmin) chips.push(CUSTOMER_ADMIN_CHIP);
+  if (isPartnerAdmin) chips.push(PARTNER_ADMIN_CHIP);
+  if (hasProjectRole("ADMIN") && !isCustomerAdmin && !isPartnerAdmin) chips.push(ADMIN_CHIP);
   if (hasProjectRole("LEAD_USER")) chips.push(LEAD_CHIP);
   if (contact.isCsIntegrationUser) {
     chips.push(SYSTEM_CHIP);

@@ -217,7 +217,8 @@ describe("ProjectContactsTab", () => {
       ],
     });
     renderTab();
-    expect(screen.getAllByText("Admin", { selector: ".MuiChip-label" })).toHaveLength(2);
+    expect(screen.getByText("Customer Admin", { selector: ".MuiChip-label" })).toBeInTheDocument();
+    expect(screen.getAllByText("Admin", { selector: ".MuiChip-label" })).toHaveLength(1);
     expect(screen.getAllByText("Portal User", { selector: ".MuiChip-label" })).toHaveLength(2);
     expect(screen.getByText("Security User", { selector: ".MuiChip-label" })).toBeInTheDocument();
   });
