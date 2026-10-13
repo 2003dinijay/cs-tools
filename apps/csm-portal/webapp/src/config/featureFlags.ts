@@ -40,6 +40,7 @@ import {
   CSM_NAV_ITEMS,
   type CsmNavNode,
   flattenNavNodes,
+  navNodeById,
   navNodeForPath,
 } from "@config/csmNavItems";
 import type { ComponentType } from "react";
@@ -197,6 +198,31 @@ function requirements(): Map<string, keyof PortalAccess> {
 }
 
 /**
+ * True when some node under (but not including) `node` has an active preview
+ * override. Lets a `hidden`/`wip` ancestor get promoted too when the admin
+ * has only switched on preview for one of its descendants: `listPreviewableFeatures`
+ * offers every restricted node individually, tabs included, so an admin can
+ * (and reasonably would) preview just `"operations.incidents"` without also
+ * previewing its `"operations"` section — but `visibleNavSections`/
+ * `navigableNavNodes` filter a section out of the tree before ever looking at
+ * its children, so a previewed tab under a still-hidden section would
+ * otherwise be enabled in {@link featureState} yet unreachable from anywhere
+ * in the UI. Only promotes the ancestor itself; a sibling tab with no preview
+ * of its own stays exactly as restricted as before.
+ */
+function hasPreviewedDescendant(
+  node: CsmNavNode | undefined,
+  previewOverrides: Record<string, boolean> | undefined,
+): boolean {
+  if (!node?.children?.length || !previewOverrides) return false;
+  return node.children.some(
+    (child) =>
+      previewOverrides[child.id] === true ||
+      hasPreviewedDescendant(child, previewOverrides),
+  );
+}
+
+/**
  * Effective state of a page. An id that is not in the nav tree resolves to
  * `enabled`: unknown means unrestricted, never accidentally blocked.
  *
@@ -213,6 +239,11 @@ function requirements(): Map<string, keyof PortalAccess> {
  * anyone else, and never touches the deployment-wide `states()` map itself,
  * so every other caller (every call site that doesn't pass this third
  * argument) sees exactly the same result as before this parameter existed.
+ *
+ * A node's own override promotes it directly; failing that, a previewed
+ * descendant (see {@link hasPreviewedDescendant}) promotes it too, so
+ * previewing a tab under a hidden section surfaces the section it needs to
+ * be reached through, not just the tab's own (otherwise unreachable) state.
  */
 export function featureState(
   id: string,
@@ -223,9 +254,10 @@ export function featureState(
   const need = requirements().get(id);
   const capabilityOk = !access || !need || access[need];
   if (!capabilityOk) return "hidden";
-  if ((state === "hidden" || state === "wip") && access?.isAdmin && previewOverrides?.[id]) {
-    return "enabled";
-  }
+  if (state !== "hidden" && state !== "wip") return state;
+  if (!access?.isAdmin) return state;
+  if (previewOverrides?.[id] === true) return "enabled";
+  if (hasPreviewedDescendant(navNodeById(id), previewOverrides)) return "enabled";
   return state;
 }
 

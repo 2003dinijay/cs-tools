@@ -277,6 +277,34 @@ describe("featureState preview overrides", () => {
     expect(featureState("dashboard", admin, { dashboard: false })).toBe("enabled");
   });
 
+  it("promotes a hidden section when only one of its tabs is previewed, so the tab stays reachable", () => {
+    setOverrides({ operations: "hidden" });
+    // Only the tab's own override is on — the admin never previewed the
+    // section itself — but the section still has to become reachable, or
+    // the tab (correctly "enabled" per featureState) would be unreachable:
+    // visibleNavSections/navigableNavNodes filter a hidden section out
+    // before ever looking at its children.
+    const overrides = { "operations.incidents": true };
+    expect(featureState("operations", admin, overrides)).toBe("enabled");
+    expect(featureState("operations.incidents", admin, overrides)).toBe("enabled");
+    // A sibling tab with no preview of its own stays exactly as hidden.
+    expect(featureState("operations.problems", admin, overrides)).toBe("hidden");
+
+    const sectionIds = visibleNavSections(admin, overrides).map((s) => s.id);
+    expect(sectionIds).toContain("operations");
+
+    const operations = navNodeById("operations")!;
+    const visibleTabs = visibleNavChildren(operations, admin, overrides).map(
+      (c) => c.id,
+    );
+    expect(visibleTabs).toContain("operations.incidents");
+    expect(visibleTabs).not.toContain("operations.problems");
+
+    const navigable = navigableNavNodes(admin, overrides).map((n) => n.id);
+    expect(navigable).toContain("operations.incidents");
+    expect(navigable).not.toContain("operations.problems");
+  });
+
   it("leaves every other caller (no third argument) completely unaffected", () => {
     setOverrides({ updates: "hidden", engagements: "wip" });
     expect(featureState("updates", admin)).toBe("hidden");
