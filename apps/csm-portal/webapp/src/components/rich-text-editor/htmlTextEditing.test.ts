@@ -446,6 +446,12 @@ describe("line breaks", () => {
     expect(after?.source).toBe("<p>a<br><br />b</p>");
   });
 
+  it("refuses Enter on an empty line inside preformatted text", () => {
+    const { host, map } = mapOf("<pre>a<br>b</pre>");
+    const pre = host.querySelector("pre") as HTMLElement;
+    expect(insertLineBreakAtSlot(map, pre, 2)).toBeNull();
+  });
+
   it("recognises a caret beside a <br> as a slot, and not one inside text", () => {
     const { host, map } = mapOf("<p>a<br>b</p>");
     const p = host.querySelector("p") as HTMLElement;

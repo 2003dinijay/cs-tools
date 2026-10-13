@@ -407,6 +407,7 @@ export function breakSlotAt(map: TextMap, container: Node | null, offset: number
 
 /** Enter on an empty line (a caret beside a `<br>`): another `<br />` at that spot. */
 export function insertLineBreakAtSlot(map: TextMap, container: Node | null, offset: number): LineBreakEdit | null {
+  if ((container as Element | null)?.closest?.("pre, listing")) return null;
   applyTextEdits(map);
   const slot = breakSlotAt(map, container, offset);
   if (!slot) return null;

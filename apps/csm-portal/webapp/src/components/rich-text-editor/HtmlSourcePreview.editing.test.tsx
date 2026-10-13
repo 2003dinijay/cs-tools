@@ -346,6 +346,33 @@ describe("HtmlSourcePreview — line breaks", () => {
     expect(sources).toHaveLength(0);
   });
 
+  it("leaves line breaks alone while an IME composition is in progress", () => {
+    const sources: string[] = [];
+    render(<Controlled initial="<p>one<br />two</p>" onSource={(h) => sources.push(h)} />);
+    startEditing();
+    select(textNode("one"), 3);
+    const enter = new InputEvent("beforeinput", { inputType: "insertParagraph", isComposing: true, cancelable: true, bubbles: true });
+    act(() => {
+      host().dispatchEvent(enter);
+    });
+    select(textNode("two"), 0);
+    const backspace = new InputEvent("beforeinput", { inputType: "deleteContentBackward", isComposing: true, cancelable: true, bubbles: true });
+    act(() => {
+      host().dispatchEvent(backspace);
+    });
+    expect(sources).toHaveLength(0);
+    expect(host().querySelectorAll("br")).toHaveLength(1);
+  });
+
+  it("refuses Enter on an empty line inside preformatted text", () => {
+    const sources: string[] = [];
+    render(<Controlled initial="<pre>a<br />b</pre>" onSource={(h) => sources.push(h)} />);
+    startEditing();
+    select(host().querySelector("pre") as HTMLElement, 2);
+    expect(refused("insertParagraph")).toBe(true);
+    expect(sources).toHaveLength(0);
+  });
+
   it("still refuses Backspace at the edge of a text that has no break next to it", () => {
     render(<Controlled initial="<p>one</p><p>two</p>" onSource={vi.fn()} />);
     startEditing();

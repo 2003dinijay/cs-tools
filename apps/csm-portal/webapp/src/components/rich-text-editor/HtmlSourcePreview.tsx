@@ -184,7 +184,10 @@ export default function HtmlSourcePreview({
         focusOffset: selection?.focusOffset ?? 0,
       };
 
-      if (e.inputType === "insertParagraph" || e.inputType === "insertLineBreak") {
+      // A redraw would interrupt an IME composition, so structural edits wait until it ends.
+      const structural = !e.isComposing;
+
+      if (structural && (e.inputType === "insertParagraph" || e.inputType === "insertLineBreak")) {
         // Enter: a <br /> in the source at the caret.
         e.preventDefault();
         if (!selection?.isCollapsed || !point.anchorNode) return;
@@ -194,7 +197,7 @@ export default function HtmlSourcePreview({
         if (edit) commitLineBreak(edit);
         return;
       }
-      if (e.inputType === "deleteContentBackward" || e.inputType === "deleteContentForward") {
+      if (structural && (e.inputType === "deleteContentBackward" || e.inputType === "deleteContentForward")) {
         // Backspace / Delete right beside a <br> removes that <br> from the source.
         const br = adjacentBreak(map, point, e.inputType === "deleteContentBackward" ? "backward" : "forward");
         if (br) {
