@@ -863,6 +863,15 @@ export default function CreateCasePage(): JSX.Element {
     isDeploymentFromClassification,
   ]);
 
+  // Restricted mode filters client-side, so the permitted deployment may sit on a
+  // later page. Keep paging until one shows up or the pages run out.
+  useEffect(() => {
+    if (!isPrimaryProductionOnly || projectDeployments.length > 0) return;
+    if (deploymentsQuery.hasNextPage && !deploymentsQuery.isFetchingNextPage) {
+      void deploymentsQuery.fetchNextPage();
+    }
+  }, [isPrimaryProductionOnly, projectDeployments.length, deploymentsQuery]);
+
   // Auto-fetch more deployment pages when classification suggests a deployment not yet loaded.
   useEffect(() => {
     if (
@@ -1332,7 +1341,14 @@ export default function CreateCasePage(): JSX.Element {
     isProjectLoading ||
     isDeploymentsLoading ||
     (isDeploymentClassificationPending && baseDeploymentOptions.length === 0);
+  const isAwaitingRestrictedDeployment =
+    isPrimaryProductionOnly &&
+    projectDeployments.length === 0 &&
+    (deploymentsQuery.isLoading ||
+      deploymentsQuery.isFetchingNextPage ||
+      !!deploymentsQuery.hasNextPage);
   const productFieldLoading =
+    isAwaitingRestrictedDeployment ||
     (!!selectedDeploymentId && deploymentProductsLoading) ||
     (isProductClassificationPending && sortedBaseProductOptions.length === 0);
 
