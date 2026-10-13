@@ -76,6 +76,7 @@ function detailFromBeCase(
     subject: c.subject ?? "(no subject)",
     caseType: c.type ?? undefined,
     engagementType: c.engagementType ?? undefined,
+    engagementPaymentType: c.engagementPaymentType ?? undefined,
     customer,
     accountId: account?.id ?? "",
     projectId: c.project?.id ?? "",

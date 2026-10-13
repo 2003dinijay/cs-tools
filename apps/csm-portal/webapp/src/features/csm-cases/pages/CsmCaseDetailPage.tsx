@@ -3404,6 +3404,8 @@ export default function CsmCaseDetailPage(): JSX.Element {
           caseId={c.id}
           caseNumber={c.caseNumber ?? c.id}
           caseSeverity={c.severity}
+          caseType={c.caseType}
+          engagementPaymentType={c.engagementPaymentType}
           projectId={c.projectId}
           projectName={c.projectName}
           editingCard={editTimeCard ?? undefined}

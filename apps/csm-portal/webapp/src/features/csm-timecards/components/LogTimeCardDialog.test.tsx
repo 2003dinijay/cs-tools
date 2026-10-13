@@ -446,3 +446,87 @@ describe("LogTimeCardDialog — edit mode", () => {
     expect(input).not.toHaveProperty("approver");
   });
 });
+
+describe("LogTimeCardDialog — billable switch", () => {
+  function renderDialog(
+    props: Partial<Parameters<typeof LogTimeCardDialog>[0]> = {},
+  ): void {
+    render(
+      <LogTimeCardDialog
+        caseId="case-1"
+        caseNumber="CS0000001"
+        projectId="proj-1"
+        projectName="Acme"
+        isSubmitting={false}
+        onClose={vi.fn()}
+        onSubmit={vi.fn()}
+        {...props}
+      />,
+    );
+  }
+
+  it("defaults to billable and stays editable for an S4 support case", () => {
+    renderDialog({ caseSeverity: "S4", caseType: "case" });
+
+    const toggle = screen.getByLabelText("Billable");
+    expect(toggle).toBeChecked();
+    expect(toggle).not.toBeDisabled();
+  });
+
+  it("defaults a paid engagement to non-billable but leaves the switch editable", () => {
+    renderDialog({ caseType: "engagement", engagementPaymentType: "Paid" });
+
+    const toggle = screen.getByLabelText("Non-billable");
+    expect(toggle).not.toBeChecked();
+    expect(toggle).not.toBeDisabled();
+
+    fireEvent.click(toggle);
+    expect(screen.getByLabelText("Billable")).toBeChecked();
+  });
+
+  it("treats an engagement with no payment type like a paid one", () => {
+    renderDialog({ caseType: "engagement" });
+
+    const toggle = screen.getByLabelText("Non-billable");
+    expect(toggle).not.toBeChecked();
+    expect(toggle).not.toBeDisabled();
+  });
+
+  it.each(["FOC", "foc", "Free of Charge", "FOC (Free of Charge)"])(
+    "locks an FOC engagement (%s) to non-billable",
+    (paymentType) => {
+      renderDialog({ caseType: "engagement", engagementPaymentType: paymentType });
+
+      const toggle = screen.getByLabelText("Non-billable");
+      expect(toggle).not.toBeChecked();
+      expect(toggle).toBeDisabled();
+      expect(
+        screen.getByText("Always non-billable for FOC engagements."),
+      ).toBeInTheDocument();
+    },
+  );
+
+  it("locks an FOC engagement's card to non-billable in edit mode, even if saved as billable", () => {
+    renderDialog({
+      caseType: "engagement",
+      engagementPaymentType: "FOC",
+      editingCard: { ...EDITING_CARD, billable: true },
+    });
+
+    const toggle = screen.getByLabelText("Non-billable");
+    expect(toggle).not.toBeChecked();
+    expect(toggle).toBeDisabled();
+  });
+
+  it("keeps a paid engagement card's saved billable value in edit mode", () => {
+    renderDialog({
+      caseType: "engagement",
+      engagementPaymentType: "Paid",
+      editingCard: { ...EDITING_CARD, billable: true },
+    });
+
+    const toggle = screen.getByLabelText("Billable");
+    expect(toggle).toBeChecked();
+    expect(toggle).not.toBeDisabled();
+  });
+});
