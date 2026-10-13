@@ -187,7 +187,9 @@ export default function EditorWithSourceToggle({
             " This content has styling the rich editor can't keep (such as boxes or coloured links), so it is shown as HTML source to preserve it exactly. The preview shows how it will look."}
         </Typography>
       )}
-      {sourceMode && keepStyledHtmlAsSource && <HtmlSourcePreview html={value} />}
+      {sourceMode && keepStyledHtmlAsSource && (
+        <HtmlSourcePreview html={value} onChange={disabled ? undefined : onChange} />
+      )}
 
       <Dialog open={confirmRichOpen} onClose={() => setConfirmRichOpen(false)} maxWidth="xs" fullWidth>
         <DialogTitle>Switch to the rich editor?</DialogTitle>
