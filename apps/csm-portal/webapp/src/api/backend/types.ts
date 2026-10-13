@@ -1951,7 +1951,21 @@ export interface BeProjectContact {
   email?: string;
   registrationState?: string;
   notificationsEnabled?: boolean;
+  /**
+   * Project roles this membership's groups grant: PORTAL_USER,
+   * SECURITY_CONTACT, LEAD_USER, ADMIN, BUSINESS_CONTACT.
+   */
   roles?: string[];
+  /**
+   * Account-level roles of the linked user (external, customer, partner,
+   * customer_admin, partner_admin). Separate from `roles`. The project
+   * contacts table does not draw chips from this list; Admin comes from
+   * the project role ADMIN, as on the customer portal. Empty when no user
+   * is linked.
+   */
+  accountRoles?: string[];
+  /** True when the linked user is an integration account that never signs in. */
+  isCsIntegrationUser?: boolean;
   /**
    * Whether a contact record is linked to this row at all. False is the same
    * fault an absent `id` signals, restated as an explicit boolean.
