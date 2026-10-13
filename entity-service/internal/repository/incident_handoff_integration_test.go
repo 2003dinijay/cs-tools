@@ -204,8 +204,31 @@ func TestSpecialistHandoff_SnapshotCarriesAlertNote(t *testing.T) {
 			t.Fatalf("note: %v", err)
 		}
 	}
-	if s := snapshot(alerted); s.AlertNote == nil || *s.AlertNote != first {
+	s := snapshot(alerted)
+	if s.AlertNote == nil || *s.AlertNote != first {
 		t.Errorf("AlertNote %v, want the earliest alert note %q", s.AlertNote, first)
+	}
+	// The issue's fields: the incident's priority and service, and its latest
+	// work notes without the alert notes, newest first.
+	if s.Priority == nil || *s.Priority == "" || s.ServiceName == nil || *s.ServiceName == "" || s.OpenedOn.IsZero() {
+		t.Errorf("snapshot priority %v service %v opened %v, want them set", s.Priority, s.ServiceName, s.OpenedOn)
+	}
+	if len(s.RecentWorkNotes) == 0 {
+		t.Fatal("RecentWorkNotes empty, want the incident's own notes")
+	}
+	for i, n := range s.RecentWorkNotes {
+		if strings.HasPrefix(n.Content, repository.AlertCreationNotePrefix) || strings.HasPrefix(n.Content, `{"reasonCode":`) {
+			t.Errorf("RecentWorkNotes[%d] is an alert or reason note: %q", i, n.Content)
+		}
+		if n.Author == "" || n.CreatedOn.IsZero() {
+			t.Errorf("RecentWorkNotes[%d] = %+v, want an author and a time", i, n)
+		}
+		if i > 0 && n.CreatedOn.After(s.RecentWorkNotes[i-1].CreatedOn) {
+			t.Errorf("RecentWorkNotes not newest first: %+v", s.RecentWorkNotes)
+		}
+	}
+	if len(s.RecentWorkNotes) > repository.SpecialistHandoffRecentNotes {
+		t.Errorf("%d notes, want at most %d", len(s.RecentWorkNotes), repository.SpecialistHandoffRecentNotes)
 	}
 }
 

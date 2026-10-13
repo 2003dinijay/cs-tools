@@ -323,7 +323,8 @@ type Config struct {
 	SpecialistHandoffGithubTokens string
 
 	// CSMPortalBaseURL builds the link back to a change request in comments
-	// posted to GitHub. Empty omits the link rather than rendering a broken one.
+	// posted to GitHub, and to the incident in a specialist handoff's GitHub
+	// issue. Empty omits the link rather than rendering a broken one.
 	CSMPortalBaseURL string
 	// GitHub label vocabulary overrides. Empty keeps .github/labels.yml's value.
 	GithubLabelTypeIncident       string

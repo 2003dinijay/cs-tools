@@ -394,6 +394,13 @@ type incidentService struct {
 	// handoffConfig routes specialist handoffs; nil hands off nothing
 	// (WithSpecialistHandoffConfig).
 	handoffConfig *SpecialistHandoffConfig
+	// handoffPortalBaseURL is the CSM portal's address, for the incident link
+	// in a handoff's GitHub issue; empty shows the number unlinked
+	// (WithHandoffPortalBaseURL).
+	handoffPortalBaseURL string
+	// handoffNow is the clock a handoff's GitHub issue reads; nil is
+	// time.Now. Tests set it.
+	handoffNow func() time.Time
 	// snWriteback is nil in every mode except
 	// DATA_SOURCE=postgres-servicenow-dual-write, same convention as
 	// caseService's identical field -- see NewCaseServiceWithSNWriteback's
