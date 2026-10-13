@@ -201,7 +201,50 @@ type SpecialistHandoffSnapshot struct {
 	// AssignedToID is the engineer the incident is assigned to; nil when
 	// nobody is. A handoff needs one.
 	AssignedToID *string
+	// AlertNote is the work note sre-alert-core-service creates an
+	// alert-born incident with ("<p>Incident auto-created from Alert:
+	// ALT…</p>" and the alert's fields as a table), the earliest when there
+	// are several; nil for an incident not created from an alert. That
+	// service sets no description, so this note carries what ServiceNow's
+	// alert flow put in the description.
+	AlertNote *string
+
+	// What the handoff's GitHub issue shows about the incident. Priority,
+	// Impact, Urgency and Category are their enum labels; any may be nil.
+	Priority    *string
+	Impact      *string
+	Urgency     *string
+	Category    *string
+	Environment *string
+	ServiceName *string
+	// OpenedOn is when the incident was opened (its creation time when no
+	// opened_on is recorded).
+	OpenedOn time.Time
+	// RecentWorkNotes are the incident's latest work notes, newest first, at
+	// most SpecialistHandoffRecentNotes, leaving out the alert creation note
+	// and earlier handoffs' reason notes.
+	RecentWorkNotes []SpecialistHandoffNote
 }
+
+// SpecialistHandoffNote is one work note as the handoff's GitHub issue lists
+// it. Author is the writer's name when this database knows them, else what
+// the note recorded (an email).
+type SpecialistHandoffNote struct {
+	CreatedOn time.Time
+	Author    string
+	Content   string
+}
+
+// SpecialistHandoffRecentNotes is how many work notes the snapshot carries.
+const SpecialistHandoffRecentNotes = 3
+
+// AlertCreationNotePrefix opens the work note sre-alert-core-service creates
+// an incident with (model.BuildCreationNote there).
+const AlertCreationNotePrefix = "<p>Incident auto-created from Alert:"
+
+// handoffReasonNotePrefix opens the reason note a handoff writes
+// (handoffReasonBlob in the service).
+const handoffReasonNotePrefix = `{"reasonCode":`
 
 // SpecialistHandoffPlan is what a handoff writes: the group the incident
 // moves to, the runbook task, and the work notes, in order.
@@ -743,6 +786,43 @@ func (r *incidentRepo) GetIncidentByID(ctx context.Context, id string) (domain.I
 	return v, nil
 }
 
+// recentHandoffNotes reads the incident's latest work notes for the handoff's
+// GitHub issue: newest first, without the alert creation note (the issue
+// already shows it as the description) or earlier handoffs' reason notes.
+// The author is the writer's name when a user with that email is known.
+func recentHandoffNotes(ctx context.Context, tx pgx.Tx, incidentID string) ([]SpecialistHandoffNote, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT c.created_on, COALESCE(c.content, ''),
+		       COALESCE(NULLIF(btrim(concat_ws(' ', u.first_name, u.last_name)), ''), c.created_by, '')
+		FROM comment c
+		LEFT JOIN LATERAL (
+			SELECT first_name, last_name FROM "user"
+			WHERE lower(email) = lower(c.created_by)
+			ORDER BY is_active DESC NULLS LAST LIMIT 1
+		) u ON true
+		WHERE c.work_item_id = $1 AND c.type = 'WORK_NOTE'::comment_type_enum
+		  AND NOT starts_with(COALESCE(c.content, ''), $2)
+		  AND NOT starts_with(COALESCE(c.content, ''), $3)
+		ORDER BY c.created_on DESC, c.id DESC
+		LIMIT $4`, incidentID, AlertCreationNotePrefix, handoffReasonNotePrefix, SpecialistHandoffRecentNotes)
+	if err != nil {
+		return nil, fmt.Errorf("specialist handoff: read work notes: %w", err)
+	}
+	defer rows.Close()
+	var notes []SpecialistHandoffNote
+	for rows.Next() {
+		var n SpecialistHandoffNote
+		if err := rows.Scan(&n.CreatedOn, &n.Content, &n.Author); err != nil {
+			return nil, fmt.Errorf("specialist handoff: read work notes: %w", err)
+		}
+		notes = append(notes, n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("specialist handoff: read work notes: %w", err)
+	}
+	return notes, nil
+}
+
 // ApplySpecialistHandoff implements IncidentRepository.
 //
 // WithSystemIdentity: the route is internal-only, and the new runbook task's
@@ -754,19 +834,32 @@ func (r *incidentRepo) ApplySpecialistHandoff(ctx context.Context, id, actorEmai
 		var snap SpecialistHandoffSnapshot
 		err := tx.QueryRow(ctx, `
 			SELECT wi.id::text, wi.number, wi.subject, wi.description, inc.state::text,
-			       inc.service_id::text, wi.assignment_group_id::text, g.name, wi.assigned_to_id::text
+			       inc.service_id::text, wi.assignment_group_id::text, g.name, wi.assigned_to_id::text,
+			       (SELECT c.content FROM comment c
+			         WHERE c.work_item_id = wi.id AND c.type = 'WORK_NOTE'::comment_type_enum
+			           AND starts_with(c.content, $2)
+			         ORDER BY c.created_on, c.id LIMIT 1),
+			       inc.priority::text, inc.impact::text, inc.urgency::text, inc.category::text,
+			       NULLIF(btrim(inc.environment), ''), s.name, COALESCE(inc.opened_on, wi.created_on)
 			FROM incident inc
 			JOIN work_item wi ON wi.id = inc.id
 			LEFT JOIN "group" g ON g.id = wi.assignment_group_id
+			LEFT JOIN service s ON s.id = inc.service_id
 			WHERE inc.id = $1 AND wi.type = 'INCIDENT'
-			FOR UPDATE OF inc, wi`, id).Scan(
+			FOR UPDATE OF inc, wi`, id, AlertCreationNotePrefix).Scan(
 			&snap.IncidentID, &snap.Number, &snap.Subject, &snap.Description, &snap.State,
-			&snap.ServiceID, &snap.AssignmentGroupID, &snap.AssignmentGroupName, &snap.AssignedToID)
+			&snap.ServiceID, &snap.AssignmentGroupID, &snap.AssignmentGroupName, &snap.AssignedToID,
+			&snap.AlertNote,
+			&snap.Priority, &snap.Impact, &snap.Urgency, &snap.Category,
+			&snap.Environment, &snap.ServiceName, &snap.OpenedOn)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return SpecialistHandoffWritten{}, &apierror.NotFoundError{Msg: "incident not found"}
 		}
 		if err != nil {
 			return SpecialistHandoffWritten{}, fmt.Errorf("specialist handoff: read incident: %w", err)
+		}
+		if snap.RecentWorkNotes, err = recentHandoffNotes(ctx, tx, snap.IncidentID); err != nil {
+			return SpecialistHandoffWritten{}, err
 		}
 		p, err := plan(snap)
 		if err != nil {

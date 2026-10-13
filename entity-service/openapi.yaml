@@ -24176,7 +24176,13 @@ components:
           default: true
           description: >-
             Whether to also file an internal issue for the receiving team. Set false to
-            suppress it, e.g. on a re-handoff or when one already exists.
+            suppress it, e.g. on a re-handoff or when one already exists. The issue is
+            titled "[INC…] [P1] <subject>". Its body is a table of the incident and the
+            handoff (link to the incident, priority, service, environment, category, team,
+            reason, who escalated, runbook task, times), the incident's description (for an
+            alert-born incident with none, the alert's creation work note), its latest three
+            work notes, and a footer. Labels come from the product's github.labels in
+            SPECIALIST_HANDOFF_CONFIG.
 
     HandOffIncidentToSpecialistResponse:
       type: object
