@@ -311,6 +311,10 @@ func TestBuildEscalationReply(t *testing.T) {
 	if msg.Thread == nil || msg.Thread.ThreadKey != "incident-abc" {
 		t.Errorf("thread = %+v, want the incident card's thread", msg.Thread)
 	}
+	withInstruction := buildEscalationReply(EscalationAlert{Rung: "L2", RungRole: "SaaS SRE L2 Support", Instruction: "Assign <it> to yourself."}).CardsV2[0].Card.Sections[0].Widgets[0].TextParagraph.Text
+	if !strings.Contains(withInstruction, "Assign &lt;it&gt; to yourself.") {
+		t.Errorf("reply = %q, want the escaped stop instruction", withInstruction)
+	}
 	if title := buildEscalationReply(EscalationAlert{Rung: "L1"}).CardsV2[0].Card.Header.Title; title != "Notifying L1" {
 		t.Errorf("first rung title = %q, want Notifying L1", title)
 	}

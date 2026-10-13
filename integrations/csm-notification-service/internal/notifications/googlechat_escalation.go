@@ -164,7 +164,7 @@ func (c *GoogleChatClient) SendEscalationAlert(ctx context.Context, a Escalation
 	return c.sendCardToAudience(ctx, a.Audience, buildEscalationCard(a))
 }
 
-// buildEscalationReply is a rung as a reply under the incident card: the rung, who it is, and who is being called when.
+// buildEscalationReply is a rung as a reply under the incident card: the rung, who it is, who is called when, and how to stop it.
 func buildEscalationReply(a EscalationAlert) chatCardMessage {
 	lines := []string{caseAlertLine("<b>%s</b>", a.RungRole)}
 	if a.RecipientName != "" {
@@ -173,6 +173,10 @@ func buildEscalationReply(a EscalationAlert) chatCardMessage {
 			calling += caseAlertLine(" (%s)", a.Firing)
 		}
 		lines = append(lines, calling)
+	}
+	// The instruction stays because on a chat-only ladder it is the only place the room learns how to stop the paging.
+	if a.Instruction != "" {
+		lines = append(lines, caseAlertLine(`<font color="#5F6368">%s</font>`, a.Instruction))
 	}
 	return chatCardMessage{
 		Thread: threadFor(a.ThreadKey),
