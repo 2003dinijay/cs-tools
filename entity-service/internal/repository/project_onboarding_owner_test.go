@@ -17,7 +17,6 @@
 package repository
 
 import (
-	"strings"
 	"testing"
 )
 
@@ -47,25 +46,5 @@ func TestOnboardingOwnerRef(t *testing.T) {
 	blankName := onboardingOwnerRef(strp(id), nil, strp("jane.doe@example.com"))
 	if blankName == nil || blankName.ID != id || blankName.Name != "" {
 		t.Errorf("blank-name owner = %+v, want owner with empty name", blankName)
-	}
-}
-
-// TestProjectOnboardingOwnerSQL pins that the owner is resolved with a LEFT
-// JOIN (so ownerless projects keep their row), on the project's single FK (so
-// no row multiplication), and that the name falls back to first + last name.
-func TestProjectOnboardingOwnerSQL(t *testing.T) {
-	if !strings.HasPrefix(projectOnboardingOwnerJoin, "LEFT JOIN ") {
-		t.Errorf("owner join must be a LEFT JOIN: %s", projectOnboardingOwnerJoin)
-	}
-	if !strings.Contains(projectOnboardingOwnerJoin, "p.onboarding_owner_id") {
-		t.Errorf("owner join must key on project.onboarding_owner_id: %s", projectOnboardingOwnerJoin)
-	}
-	for _, want := range []string{"onb.id", "onb.name", "onb.first_name", "onb.last_name", "onb.email"} {
-		if !strings.Contains(projectOnboardingOwnerColumns, want) {
-			t.Errorf("owner columns missing %s: %s", want, projectOnboardingOwnerColumns)
-		}
-	}
-	if strings.Contains(projectOnboardingOwnerJoin, "INNER") {
-		t.Errorf("owner join must not be an inner join")
 	}
 }

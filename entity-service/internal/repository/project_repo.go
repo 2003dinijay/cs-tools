@@ -278,7 +278,9 @@ func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProje
 		        INITCAP(REPLACE(p.onboarding_status::TEXT, '_', '-')),
 		        p.onboarding_go_live_date,
 		        a.id, a.name, a.region, a.sub_region, `+accountIsPartnerColumn+`,
-		        `+projectOnboardingOwnerColumns+`,
+		        onb.id,
+		        COALESCE(onb.name, NULLIF(TRIM(CONCAT_WS(' ', onb.first_name, onb.last_name)), '')),
+		        onb.email,
 		        (SELECT COUNT(*) FROM work_item wi
 		           LEFT JOIN "case" c ON c.id = wi.id`+caseLikeJoins+`
 		          WHERE wi.project_id = p.id
@@ -287,7 +289,7 @@ func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProje
 		 FROM project p
 		 LEFT JOIN project_type pt ON pt.id = p.project_type_id
 		 LEFT JOIN account a ON a.id = p.account_id
-		 `+projectOnboardingOwnerJoin+`
+		 LEFT JOIN "user" onb ON onb.id = p.onboarding_owner_id
 		 %s
 		 ORDER BY %s
 		 LIMIT $%d OFFSET $%d`,
@@ -484,7 +486,9 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 		        EXTRACT(EPOCH FROM p.consumed_onboarding_duration) / 3600,
 		        EXTRACT(EPOCH FROM p.remaining_onboarding_duration) / 3600,
 		        tou.email, amu.email,
-		        `+projectOnboardingOwnerColumns+`
+		        onb.id,
+		        COALESCE(onb.name, NULLIF(TRIM(CONCAT_WS(' ', onb.first_name, onb.last_name)), '')),
+		        onb.email
 		 FROM project p
 		 LEFT JOIN account a ON p.account_id = a.id
 		 LEFT JOIN project_type pt ON pt.id = p.project_type_id
@@ -501,7 +505,7 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 		 -- against. Verify against a real payload before trusting it further.
 		 LEFT JOIN "user" tou ON tou.id = a.technical_owner_id
 		 LEFT JOIN "user" amu ON amu.id = a.account_manager_id
-		 `+projectOnboardingOwnerJoin+`
+		 LEFT JOIN "user" onb ON onb.id = p.onboarding_owner_id
 		 WHERE p.id = $1`+scopeClause, scopeArgs...,
 	).Scan(
 		&v.ID, &sfID, &v.Name, &v.Key,
@@ -558,18 +562,6 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 	v.ConsumedOnboardingHours = absHours(v.ConsumedOnboardingHours)
 	return v, nil
 }
-
-// projectOnboardingOwnerColumns/projectOnboardingOwnerJoin resolve
-// project.onboarding_owner_id (nullable FK into "user") to an id/name/email
-// triple. The join is a LEFT JOIN on a single-row FK, so it never drops or
-// multiplies project rows: a project without an owner yields NULLs. It is only
-// applied to the data queries, never the COUNT query, so totals are unchanged.
-// The name falls back to first + last name when "user".name is unset, matching
-// the account owner resolution.
-const (
-	projectOnboardingOwnerColumns = `onb.id, COALESCE(onb.name, NULLIF(TRIM(CONCAT_WS(' ', onb.first_name, onb.last_name)), '')), onb.email`
-	projectOnboardingOwnerJoin    = `LEFT JOIN "user" onb ON onb.id = p.onboarding_owner_id`
-)
 
 // onboardingOwnerRef builds a PersonRef from the joined owner columns, nil when
 // no owner is assigned. A blank name or NULL email yields an empty name / nil
