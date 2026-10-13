@@ -15878,6 +15878,13 @@ components:
           type: string
           nullable: true
           description: Hyphenated Title Case, e.g. "In-Progress".
+        onboardingOwner:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/PersonRef'
+          description: >
+            The person assigned to run this project's onboarding. Null when no
+            owner is assigned.
         goLiveDate:
           type: string
           format: date-time
