@@ -70,7 +70,7 @@ func seedEngagementTypeFixture(t *testing.T, pool *pgxpool.Pool) {
 	mustExecScoped(`INSERT INTO work_item (id, created_on, updated_on, created_by, updated_by, number, wso2_id, subject, type)
 		VALUES ($1, $2, $2, 'test', 'test', 'ET-TEST-0001', 'ET-TEST-WSO2-0001', 'engagement-type integration test fixture', 'ENGAGEMENT')`,
 		etEngagementID, now)
-	mustExec(`INSERT INTO engagement (id, state, type) VALUES ($1, 'OPEN', 'MIGRATION')`, etEngagementID)
+	mustExec(`INSERT INTO engagement (id, state, type, payment_type) VALUES ($1, 'OPEN', 'MIGRATION', 'FOC')`, etEngagementID)
 
 	mustExecScoped(`INSERT INTO work_item (id, created_on, updated_on, created_by, updated_by, number, wso2_id, subject, type)
 		VALUES ($1, $2, $2, 'test', 'test', 'ET-TEST-0002', 'ET-TEST-WSO2-0002', 'engagement-type integration test fixture (case)', 'CASE')`,
@@ -102,6 +102,24 @@ func TestEngagementTypeIntegration_GetCaseByIDReturnsItLowerCased(t *testing.T) 
 	}
 }
 
+func TestEngagementTypeIntegration_GetCaseByIDReturnsPaymentTypeLowerCased(t *testing.T) {
+	pool := caseStatsPool(t)
+	seedEngagementTypeFixture(t, pool)
+	repo := repository.NewCaseRepository(repository.NewScoped(pool))
+	ctx := repository.WithSystemIdentity(context.Background())
+
+	cv, err := repo.GetCaseByID(ctx, etEngagementID, repository.SearchScope{Unrestricted: true})
+	if err != nil {
+		t.Fatalf("GetCaseByID: %v", err)
+	}
+	if cv.EngagementPaymentType == nil {
+		t.Fatal("EngagementPaymentType is nil, want \"foc\"")
+	}
+	if *cv.EngagementPaymentType != "foc" {
+		t.Errorf("EngagementPaymentType = %q, want %q", *cv.EngagementPaymentType, "foc")
+	}
+}
+
 // TestEngagementTypeIntegration_PlainCaseLeavesItNil proves the eng LEFT JOIN
 // genuinely never matches for a non-engagement case-like type, rather than
 // e.g. accidentally reading some other table's column.
@@ -117,5 +135,8 @@ func TestEngagementTypeIntegration_PlainCaseLeavesItNil(t *testing.T) {
 	}
 	if cv.EngagementType != nil {
 		t.Errorf("EngagementType = %q on a plain case, want nil", *cv.EngagementType)
+	}
+	if cv.EngagementPaymentType != nil {
+		t.Errorf("EngagementPaymentType = %q on a plain case, want nil", *cv.EngagementPaymentType)
 	}
 }

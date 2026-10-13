@@ -1682,6 +1682,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 		accountID, accountName, accountTier      *string
 		severity, issueType, workState, caseType *string
 		announcementType, engagementType         *string
+		engagementPaymentType                    *string
 		state, cause, closeNotes, resolutionCode *string
 		escalationLevel                          *string
 		isEscalated                              *bool
@@ -1711,7 +1712,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 	scopeArgs := []any{id}
 
 	err := r.db.QueryRow(ctx,
-		`SELECT wi.id, wi.number, wi.wso2_id, wi.type::TEXT, ann.announcement_type::TEXT, eng.type::TEXT,
+		`SELECT wi.id, wi.number, wi.wso2_id, wi.type::TEXT, ann.announcement_type::TEXT, eng.type::TEXT, eng.payment_type::TEXT,
 		        wi.description, c.severity::TEXT, c.issue_type::TEXT, `+caseLikeWorkStateColumn+`,
 		        `+caseLikeStateColumn+`, `+caseLikeCauseColumn+`, `+caseLikeCloseNotesColumn+`,
 		        `+caseLikeResolutionCodeColumn+`, c.current_escalation_level::TEXT, c.is_escalated,
@@ -1754,7 +1755,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 		 WHERE wi.id = $1 AND wi.type = ANY(`+caseLikeWorkItemTypes+`)
 		   AND `+announcementVisibilityLeakGuard+``, scopeArgs...,
 	).Scan(
-		&cv.ID, &cv.Number, &internalID, &caseType, &announcementType, &engagementType,
+		&cv.ID, &cv.Number, &internalID, &caseType, &announcementType, &engagementType, &engagementPaymentType,
 		&description, &severity, &issueType, &workState,
 		&state, &cause, &closeNotes,
 		&resolutionCode, &escalationLevel, &isEscalated,
@@ -1890,6 +1891,14 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 	if engagementType != nil {
 		lower := strings.ToLower(*engagementType)
 		cv.EngagementType = &lower
+	}
+	// engagement_payment_type_enum ("PAID"/"FOC") lowercased to the domain
+	// EngagementPaymentType value, same as EngagementType above -- the
+	// ServiceNow path returns the choice's display label here instead, and the
+	// CSM portal's FOC check accepts either. nil for every non-engagement type.
+	if engagementPaymentType != nil {
+		lower := strings.ToLower(*engagementPaymentType)
+		cv.EngagementPaymentType = &lower
 	}
 	// project_id/deployment_id/deployed_product_id (and deployed_product.
 	// product_id) are all nullable on work_item (migration 0021) -- a case

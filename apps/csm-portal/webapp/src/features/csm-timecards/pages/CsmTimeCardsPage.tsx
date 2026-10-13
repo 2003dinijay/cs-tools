@@ -79,6 +79,7 @@ import {
 } from "@features/csm-timecards/api/useTimeSheets";
 import { useDeleteTimeCard, useUpdateTimeCard } from "@features/csm-timecards/api/useTimeCards";
 import AsyncProjectMultiSelect from "@features/csm-cases/components/AsyncProjectMultiSelect";
+import { useGetCsmCaseDetail } from "@features/csm-cases/api/useGetCsmCaseDetail";
 import { BackendApiError } from "@api/backend/client";
 import { BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
@@ -200,6 +201,12 @@ export default function CsmTimeCardsPage(): JSX.Element {
   // context of its own, so LogTimeCardDialog's caseId/caseNumber/projectId/
   // projectName all come from the card being edited (see the render below).
   const [editingCard, setEditingCard] = useState<CsmTimeCard | null>(null);
+  // The card's own case, loaded so the edit dialog can lock an FOC
+  // engagement's billable switch (CsmTimeCard carries neither the case type
+  // nor the payment type). The dialog reads both only on mount, so it waits
+  // for this lookup; if it fails, the dialog opens without them as before and
+  // the backend's own rules still apply.
+  const editingCase = useGetCsmCaseDetail(editingCard?.caseId);
   const updateTimeCard = useUpdateTimeCard();
   // The card pending a delete confirmation, if any — mirrors
   // CsmCaseDetailPage's own attachment-delete `pendingDelete` pattern.
@@ -987,10 +994,12 @@ export default function CsmTimeCardsPage(): JSX.Element {
         />
       )}
 
-      {editingCard && (
+      {editingCard && !editingCase.isLoading && (
         <LogTimeCardDialog
           caseId={editingCard.caseId}
           caseNumber={editingCard.caseNumber}
+          caseType={editingCase.data?.caseType}
+          engagementPaymentType={editingCase.data?.engagementPaymentType}
           projectId={editingCard.projectId}
           projectName={editingCard.projectName}
           editingCard={editingCard}
