@@ -2962,22 +2962,24 @@ func TestSNCaseService_PatchCaseFields_NoGetCaseByIDOrEventPublish(t *testing.T)
 }
 
 // TestSNCaseService_PatchCaseFields_AsSystemUserOmitsUserIDToken is the
-// regression guard for the production incident on case CS0378899: an
-// external caller's case close has its resolutionCode/cause/closeNotes
-// defaulted (never supplied by the customer -- see UpdateCase's own doc
-// comment), but ServiceNow's scripted API rejected those exact default
-// values outright when the mirror PATCH forwarded the customer's own
+// regression guard for the production incident on case CS0378899:
+// ServiceNow's scripted API rejected resolutionCode/cause/closeNotes
+// outright when a mirror PATCH forwarded the acting caller's own
 // x-user-id-token ("resolutionCode, cause, and closeNotes cannot be
-// provided by this user"). asSystemUser=true must omit x-user-id-token from
-// the outgoing request entirely -- the same "no user token" shape
-// SNGithubCases already uses for its own M2M writes -- while still sending
-// every field the caller asked for (nothing is silently dropped, only the
-// acting identity changes).
+// provided by this user"). This exercises patchCaseFields itself, at the
+// level below UpdateCase's own defaulting decision (which, as of
+// 2026-10-13, no longer defaults these fields for an external caller at
+// all -- see UpdateCase's own doc comment): whatever resolution values a
+// caller does end up supplying, asSystemUser=true must omit
+// x-user-id-token from the outgoing request entirely -- the same "no user
+// token" shape SNGithubCases already uses for its own M2M writes -- while
+// still sending every field asked for (nothing is silently dropped, only
+// the acting identity changes).
 func TestSNCaseService_PatchCaseFields_AsSystemUserOmitsUserIDToken(t *testing.T) {
 	state := domain.CaseStateClosed
 	code := domain.CaseResolutionCodeSolvedByCustomer
 	cause := domain.CaseCauseUnknown
-	notes := externalCloseDefaultNotes
+	notes := "Closed by the customer."
 	resolution := &caseResolutionFields{Code: &code, Cause: &cause, CloseNotes: &notes}
 
 	var gotUserIDTokenHeader string

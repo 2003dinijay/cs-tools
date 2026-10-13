@@ -1674,13 +1674,6 @@ func (s *caseService) SearchCaseComments(ctx context.Context, req domain.SearchC
 	}, nil
 }
 
-// externalCloseDefaultNotes is the closeNotes value an external caller's
-// case close is defaulted to when they didn't (and, per the Customer
-// Portal's own close dialog, never would) supply one -- see UpdateCase's own
-// doc comment on why a default is used instead of exempting the field
-// outright.
-const externalCloseDefaultNotes = "Closed by the customer."
-
 // UpdateCase implements CaseService.
 func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest) (domain.UpdateCaseResponse, error) {
 	if err := validateUUIDs("id", []string{req.ID}); err != nil {
@@ -1983,40 +1976,58 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 	// an internal-classification question they can't answer while still
 	// keeping both stores in sync.
 	//
-	// Confirmed in production (case CS0378899) that ServiceNow's scripted
-	// API rejects even these exact default values outright when the mirror
-	// PATCH forwards the EXTERNAL caller's own x-user-id-token:
-	// "resolutionCode, cause, and closeNotes cannot be provided by this
-	// user" -- ServiceNow allows WSO2 staff to set them, but not a customer
-	// identity, regardless of what value is sent. Since the values here are
-	// never the customer's own input (they're system-generated defaults),
-	// forwarding the customer's identity for this specific mirror write was
-	// never load-bearing -- so the dispatch below asks the mirror to apply
-	// this PATCH as the ServiceNow integration's own M2M identity instead
-	// (snFieldPatcher's asSystemUser, the same "no user token" shape
-	// SNGithubCases already uses) whenever this block just defaulted these
-	// fields for an external caller. An internal caller's own resolution
-	// choice still mirrors under their own identity, unchanged.
+	// REVERSED 2026-10-13: the three lines above were the whole rationale
+	// for defaulting instead of leaving the fields nil, and that rationale
+	// is being deliberately overridden, not found wrong. Product decision:
+	// CSM must stop fabricating resolutionCode/cause/closeNotes values on a
+	// customer's own close -- "solved by customer"/"unknown"/a canned note
+	// are not things the customer said, and per a human operator's direct
+	// recollection of the prior Ballerina-entity + Ballerina-customer-portal-
+	// backend era, ServiceNow apparently never required these fields from a
+	// customer-initiated close at all, so this restores that looser
+	// behaviour rather than inventing new product behaviour. An external
+	// close with none of the three fields supplied now proceeds with all
+	// three nil, both in Postgres and in whatever reaches the async
+	// ServiceNow mirror (see the dispatch below, which already omits
+	// resolutionCode/cause/closeNotes from the mirror payload entirely
+	// whenever all three are nil -- this was already a valid prior state,
+	// e.g. an internal caller patching workState with no state change).
+	//
+	// This explicitly REVERSES the CodeRabbit-caught gap recorded just
+	// above, including the identity-based fix that followed it in
+	// production (case CS0378899: ServiceNow's scripted API rejected these
+	// exact default values outright under the external caller's own
+	// identity, "resolutionCode, cause, and closeNotes cannot be provided
+	// by this user" -- fixed by mirroring as the integration's own M2M
+	// identity whenever this block had just defaulted the fields,
+	// snFieldPatcher's asSystemUser). With defaulting removed, resolution
+	// is nil for the overwhelming majority of external closes (nothing was
+	// supplied to mirror at all), so asSystemUser now evaluates false in
+	// practice too -- it stays wired for the rarer case where an external
+	// caller explicitly supplies their own resolution fields, which still
+	// mirrors under their own identity like any other caller-supplied
+	// value, not as a system identity.
+	//
+	// Whether ServiceNow's scripted API genuinely still requires these
+	// three fields at all for a customer-identity close has NOT been
+	// independently re-verified against a live ServiceNow tenant as part of
+	// this change -- that verification is a known, explicit follow-up being
+	// done separately. If SN does still hard-require them, the async mirror
+	// write for an external close with no resolution fields will fail (same
+	// failure mode the original comment warned about), surfacing as a
+	// growing sn_writeback_failures backlog rather than a loud error here,
+	// since this path is best-effort/async by design (see the "Best-effort
+	// ServiceNow mirror write" comment on the dispatch block below).
 	if s.snWriteback != nil && req.State != nil && (*req.State == domain.CaseStateClosed || *req.State == domain.CaseStateSolutionProposed) {
 		if before == nil || before.Type == nil || *before.Type == "case" {
 			if isInternalCaller {
 				if req.ResolutionCode == nil || req.Cause == nil || req.CloseNotes == nil || strings.TrimSpace(*req.CloseNotes) == "" {
 					return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "resolutionCode, cause, and closeNotes are required when state is closed or solution_proposed"}
 				}
-			} else {
-				if req.ResolutionCode == nil {
-					code := domain.CaseResolutionCodeSolvedByCustomer
-					req.ResolutionCode = &code
-				}
-				if req.Cause == nil {
-					cause := domain.CaseCauseUnknown
-					req.Cause = &cause
-				}
-				if req.CloseNotes == nil || strings.TrimSpace(*req.CloseNotes) == "" {
-					notes := externalCloseDefaultNotes
-					req.CloseNotes = &notes
-				}
 			}
+			// External (customer) caller: no requirement and no defaulting.
+			// See this block's own doc comment above (2026-10-13) for why the
+			// prior auto-defaulting was removed.
 		}
 	}
 
@@ -2176,13 +2187,20 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 					payload["resolutionCode"], payload["cause"], payload["closeNotes"] = req.ResolutionCode, req.Cause, req.CloseNotes
 				}
 				// asSystemUser only for an EXTERNAL caller's close/
-				// solution_proposed -- isInternalCaller is the exact same
-				// resolved value the defaulting block above just used to
-				// decide whether resolutionCode/cause/closeNotes needed
-				// defaulting at all, so this is true precisely when
-				// resolution carries system-defaulted (not customer-
-				// supplied) values. An internal caller's own resolution
-				// choice still mirrors under their own identity, unchanged.
+				// solution_proposed with a non-nil resolution -- since the
+				// validation block above no longer defaults these fields
+				// for an external caller (reversed 2026-10-13), resolution
+				// is nil for the overwhelming majority of external closes
+				// and this evaluates false in practice. It stays true for
+				// the rarer case where an external caller explicitly
+				// supplies their own resolution fields: ServiceNow has been
+				// observed rejecting resolutionCode/cause/closeNotes
+				// outright under a non-staff identity regardless of who
+				// supplied the values (case CS0378899), so even a
+				// customer-supplied value still mirrors as the
+				// integration's own system identity here, not the
+				// customer's own token. An internal caller's own resolution
+				// choice always mirrors under their own identity, unchanged.
 				asSystemUser := !isInternalCaller && resolution != nil
 				s.snWriteback.Dispatch(ctx, "case", req.ID, "update",
 					payload,

@@ -5321,26 +5321,20 @@ func TestCaseService_UpdateCase_DualWriteRequiresResolutionFieldsAndMirrorsThem(
 	// requirement conservatively treats as "case" -- see UpdateCase's own
 	// comment on that fallback).
 	//
-	// This is the regression test for a CodeRabbit-caught follow-up: an
-	// external caller is not simply exempted from supplying resolution
-	// fields -- leaving them nil would make the ServiceNow mirror write fail
-	// outright (ServiceNow's own case-closure workflow requires them), so
-	// they're defaulted to real, valid values instead ("solved by
-	// customer" / "unknown cause" / a generic note) and those defaults must
-	// actually reach both the Postgres write and the mirror.
-	//
-	// It also covers the fix for a live production incident (case
-	// CS0378899): ServiceNow's scripted API rejects resolutionCode/cause/
-	// closeNotes outright when they arrive under an external caller's own
-	// identity ("resolutionCode, cause, and closeNotes cannot be provided by
-	// this user"), even though the values are these exact system-generated
-	// defaults, not anything the customer supplied. The mirror write for an
-	// external caller's close must therefore run as the integration's own
-	// system identity (asSystemUser=true, patchCaseFields's own doc
-	// comment) -- never forwarding the customer's token for this specific
-	// write -- or the mirror keeps failing and ServiceNow never converges
-	// with Postgres.
-	t.Run("external caller's missing resolution fields are defaulted, not left nil, and mirror as system identity", func(t *testing.T) {
+	// This replaces a prior regression test that asserted the opposite: an
+	// external caller's missing resolution fields used to be silently
+	// defaulted ("solved by customer" / "unknown cause" / a generic note")
+	// so the async ServiceNow mirror write wouldn't fail outright. That
+	// defaulting was deliberately removed 2026-10-13 (see UpdateCase's own
+	// updated doc comment on this block for the full reasoning and the
+	// explicit, not-yet-independently-verified SN caveat) -- a customer
+	// close with none of the three fields supplied must now leave all three
+	// nil, in both the Postgres write and whatever reaches the mirror, and
+	// since there is nothing to mirror, asSystemUser must be false too (it
+	// only fires when an external caller explicitly supplies their own
+	// resolution fields -- see patchCaseFields's own doc comment, and the
+	// production incident, case CS0378899, that introduced it).
+	t.Run("external caller's missing resolution fields are left nil, not defaulted", func(t *testing.T) {
 		var gotReq domain.UpdateCaseRequest
 		repo := &stubCaseRepo{
 			getCaseByID: func(_ context.Context, id string, _ repository.SearchScope) (domain.CaseView, error) {
@@ -5367,25 +5361,25 @@ func TestCaseService_UpdateCase_DualWriteRequiresResolutionFieldsAndMirrorsThem(
 		if _, err := svc.UpdateCase(context.Background(), domain.UpdateCaseRequest{ID: testDeploymentUUID, State: &closed}); err != nil {
 			t.Fatalf("unexpected error closing a case with no resolution fields as an external caller: %v", err)
 		}
-		if gotReq.ResolutionCode == nil || *gotReq.ResolutionCode != domain.CaseResolutionCodeSolvedByCustomer {
-			t.Errorf("ResolutionCode = %v, want %q", gotReq.ResolutionCode, domain.CaseResolutionCodeSolvedByCustomer)
+		if gotReq.ResolutionCode != nil {
+			t.Errorf("ResolutionCode = %v, want nil (no auto-defaulting)", *gotReq.ResolutionCode)
 		}
-		if gotReq.Cause == nil || *gotReq.Cause != domain.CaseCauseUnknown {
-			t.Errorf("Cause = %v, want %q", gotReq.Cause, domain.CaseCauseUnknown)
+		if gotReq.Cause != nil {
+			t.Errorf("Cause = %v, want nil (no auto-defaulting)", *gotReq.Cause)
 		}
-		if gotReq.CloseNotes == nil || *gotReq.CloseNotes != externalCloseDefaultNotes {
-			t.Errorf("CloseNotes = %v, want %q", gotReq.CloseNotes, externalCloseDefaultNotes)
+		if gotReq.CloseNotes != nil {
+			t.Errorf("CloseNotes = %v, want nil (no auto-defaulting)", *gotReq.CloseNotes)
 		}
 		select {
 		case r := <-gotMirror:
-			if r == nil || r.Code == nil || *r.Code != domain.CaseResolutionCodeSolvedByCustomer {
-				t.Errorf("mirror resolution code = %v, want %q", r, domain.CaseResolutionCodeSolvedByCustomer)
+			if r != nil {
+				t.Errorf("mirror resolution = %+v, want nil (no fields to mirror)", r)
 			}
 		case <-time.After(2 * time.Second):
 			t.Fatal("mirror.patchCaseFields was never called")
 		}
-		if asSystemUser := <-gotAsSystemUser; !asSystemUser {
-			t.Error("asSystemUser = false for an external caller's defaulted resolution fields, want true -- this is the exact shape ServiceNow rejects as \"cannot be provided by this user\"")
+		if asSystemUser := <-gotAsSystemUser; asSystemUser {
+			t.Error("asSystemUser = true for an external caller with no resolution fields to mirror, want false -- there is nothing to mirror as any identity")
 		}
 	})
 
