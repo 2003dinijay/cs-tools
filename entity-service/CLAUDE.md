@@ -231,6 +231,16 @@ Chat cards in the SR's SRE-team space.
   `sr.created` -- in every mode (`WithGithubSRNotices`, routes.go): it exists
   only in Postgres, so no ServiceNow flow ever announces it. Only a new record;
   a delivery that finds the issue's record already there announces nothing.
+  **A ServiceNow-first one** (dual-write with `GITHUB_SR_SERVICENOW_FIRST=true`,
+  `github_sn_case.go`) is created through the ServiceNow integration service's
+  `POST /github-cases` -- ServiceNow's GitHub case API, which needs only account and
+  project, run as the integration service's M2M user (no token is sent, as for an
+  alert's incident) -- and takes ServiceNow's sys_id, CS number and WSO2 Case ID like a
+  portal SR. `OnCreated` still runs (no ServiceNow flow is relied on), as
+  `OnCreatedMirrored`: the acknowledgement also goes to the case through `POST /comments`;
+  the assignment stays Postgres-only (the case API has no group). Its description is
+  ServiceNow's HTML (the workflow's FORMATTED_DESCRIPTION, ported byte for byte), kept on
+  edits; issue edits go to `PATCH /github-cases`, issue comments to `POST /comments`.
 - `sr.acknowledged`: when the SR's account SRE team is in
   `SR_ALERT_SRE_TEAM_IDS`, the SR is first assigned to that team, then gets
   ServiceNow's acknowledgement comment (word for word) and is moved to OPEN --

@@ -571,6 +571,18 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		}, cfg.UpstreamClientTimeout)
 	}
 
+	// Under dual-write, a new SR raised from a GitHub issue is created in
+	// ServiceNow first, through the integration service's /github-cases, and
+	// takes ServiceNow's CS number and WSO2 Case ID, as a portal-created one does.
+	if githubSync != nil && serviceNowIntegrationServiceClient != nil {
+		if cfg.GithubServiceNowFirst() {
+			service.WithServiceNowGithubCases(githubSync, service.NewSNGithubCases(serviceNowIntegrationServiceClient))
+			slog.Info("github: service requests from issues are created in ServiceNow first (dual-write)")
+		} else if cfg.DataSource == config.DataSourcePostgresServiceNowDualWrite {
+			slog.Info("github: service requests from issues are written to Postgres only and numbered SR-GH-<n> (GITHUB_SR_SERVICENOW_FIRST is off)")
+		}
+	}
+
 	var snAccountHandler *handler.SNAccountHandler
 	if cfg.DataSource == config.DataSourceServiceNow {
 		snAccountHandler = handler.NewSNAccountHandler(service.NewServiceNowAccountService(serviceNowIntegrationServiceClient))
