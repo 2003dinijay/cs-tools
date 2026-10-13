@@ -16,7 +16,7 @@
 
 import { Box, Skeleton, Typography, alpha, useTheme } from "@wso2/oxygen-ui";
 import { Inbox } from "@wso2/oxygen-ui-icons-react";
-import { Bar, BarChart, Cell } from "@wso2/oxygen-ui-charts-react";
+import { Bar, BarChart, Cell, XAxis } from "@wso2/oxygen-ui-charts-react";
 import { useState, type JSX, type SyntheticEvent } from "react";
 import type { BeWidgetPaletteColor } from "@api/backend/types";
 import type { PieSliceResult } from "@features/csm-dashboard/api/useWidgetPieData";
@@ -136,6 +136,17 @@ export default function DashboardBarChart({
           height={CHART_HEIGHT_PX}
           width="100%"
           legend={{ show: false }}
+          // The library's own built-in xAxis has no `interval` escape hatch
+          // (only `show`/`name` — see BarChart.types.d.ts), and its recharts
+          // default (`interval="preserveEnd"`) auto-drops whichever category
+          // labels it calculates would overlap -- reported live as the 1st
+          // and 3rd of 6 account names silently missing (name only visible
+          // on hover) once a neighboring label was long enough to crowd
+          // them. Disabling it and rendering a plain recharts `<XAxis>`
+          // child instead (composition the library itself supports — same
+          // as `Bar`/`Cell` below) with `interval={0}` forces every
+          // category's name to always render.
+          xAxis={{ show: false }}
           yAxis={{ show: false }}
           grid={{ show: false }}
           // Library default top margin (12px) is too tight once each bar has
@@ -146,6 +157,15 @@ export default function DashboardBarChart({
           // enough of a highlight on its own.
           tooltip={{ show: true, wrapperStyle: { zIndex: 1000 }, cursor: false }}
         >
+          <XAxis
+            dataKey="name"
+            interval={0}
+            stroke={theme.palette.text.secondary}
+            tick={{ fill: theme.palette.text.secondary, fontSize: 12 }}
+            tickMargin={8}
+            axisLine={{ stroke: theme.palette.text.secondary }}
+            tickLine={{ stroke: theme.palette.text.secondary }}
+          />
           <Bar
             dataKey="value"
             radius={[4, 4, 0, 0]}
