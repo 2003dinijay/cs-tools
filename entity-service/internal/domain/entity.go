@@ -3059,19 +3059,22 @@ type SearchCaseView struct {
 	// (Type). Populated for the ServiceNow data source only; null otherwise.
 	AccountDetails *AccountRef `json:"account"`
 	// BestCaseFixEta is the internal-only best-case fix-commitment date, as a
-	// date-only "YYYY-MM-DD" string. Populated for the ServiceNow data source
-	// only; null otherwise. CSM-engineer-facing only, never shared with the
-	// customer.
+	// date-only "YYYY-MM-DD" string. Populated on both data sources -- on
+	// Postgres, read from work_item.best_case_eta the same way GetCaseByID
+	// already does; null when unset. CSM-engineer-facing only, never shared
+	// with the customer.
 	BestCaseFixEta *string `json:"bestCaseFixEta"`
 	// MostLikelyFixEta is the internal-only most-likely fix-commitment date, as
-	// a date-only "YYYY-MM-DD" string. Populated for the ServiceNow data source
-	// only; null otherwise. CSM-engineer-facing only, never shared with the
-	// customer.
+	// a date-only "YYYY-MM-DD" string. Populated on both data sources -- on
+	// Postgres, read from work_item.most_likely_eta the same way GetCaseByID
+	// already does; null when unset. CSM-engineer-facing only, never shared
+	// with the customer.
 	MostLikelyFixEta *string `json:"mostLikelyFixEta"`
 	// WorstCaseFixEta is the internal-only worst-case fix-commitment date, as a
-	// date-only "YYYY-MM-DD" string. Populated for the ServiceNow data source
-	// only; null otherwise. CSM-engineer-facing only, never shared with the
-	// customer.
+	// date-only "YYYY-MM-DD" string. Populated on both data sources -- on
+	// Postgres, read from work_item.worst_case_eta the same way GetCaseByID
+	// already does; null when unset. CSM-engineer-facing only, never shared
+	// with the customer.
 	WorstCaseFixEta *string `json:"worstCaseFixEta"`
 	// EscalationLevel is the case's current escalation level -- see
 	// CaseView.EscalationLevel's doc comment.

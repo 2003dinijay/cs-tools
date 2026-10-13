@@ -3119,6 +3119,19 @@ func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesReq
 		return domain.SearchCasesResponse{}, err
 	}
 
+	// BestCaseFixEta/MostLikelyFixEta/WorstCaseFixEta are internal-only --
+	// never shared with the customer (see SearchCaseView's own doc comment
+	// on each). GetCaseByID has the same exposure for a non-internal scope
+	// today; that is an existing gap, not a reason to add a second copy of
+	// it to this newly-populated search response.
+	if !scope.Unrestricted && !scope.HasInternalAccess {
+		for i := range cases {
+			cases[i].BestCaseFixEta = nil
+			cases[i].MostLikelyFixEta = nil
+			cases[i].WorstCaseFixEta = nil
+		}
+	}
+
 	return domain.SearchCasesResponse{
 		Cases:  cases,
 		Total:  total,

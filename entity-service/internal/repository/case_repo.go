@@ -3718,6 +3718,7 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		        wi.type::TEXT, wi.subject, wi.description, c.severity::TEXT, c.issue_type::TEXT, `+caseLikeStateColumn+`,
 		        eng.type::TEXT, `+caseLikeWorkStateColumn+`, c.current_escalation_level::TEXT, wi.created_on, wi.updated_on,
 		        wi.created_by,
+		        wi.best_case_eta, wi.most_likely_eta, wi.worst_case_eta,
 		        p.id, p.name,
 		        d.id, d.name,
 		        dp.id, prod.name || COALESCE(' ' || pv.version, ''),
@@ -3758,11 +3759,13 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 			var depID, depName *string
 			var dpID, dpName *string
 			var creatorEmail string
+			var bestCaseEta, mostLikelyEta, worstCaseEta *time.Time
 			if err := rows.Scan(
 				&cv.ID, &cv.Number, &internalID,
 				&caseType, &subject, &description, &severity, &issueType, &state,
 				&engagementType, &workState, &escalationLevel, &createdAt, &updatedAt,
 				&creatorEmail,
+				&bestCaseEta, &mostLikelyEta, &worstCaseEta,
 				&projID, &projName,
 				&depID, &depName,
 				&dpID, &dpName,
@@ -3817,6 +3820,21 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 			}
 			cv.CreatedOn = createdAt.UTC().Format(time.RFC3339)
 			cv.UpdatedOn = updatedAt.UTC().Format(time.RFC3339)
+			// best_case_eta/most_likely_eta/worst_case_eta are DATE columns --
+			// formatted the same way GetCaseByID already does, so a caller
+			// reading either endpoint sees the identical "YYYY-MM-DD" shape.
+			if bestCaseEta != nil {
+				s := bestCaseEta.Format("2006-01-02")
+				cv.BestCaseFixEta = &s
+			}
+			if mostLikelyEta != nil {
+				s := mostLikelyEta.Format("2006-01-02")
+				cv.MostLikelyFixEta = &s
+			}
+			if worstCaseEta != nil {
+				s := worstCaseEta.Format("2006-01-02")
+				cv.WorstCaseFixEta = &s
+			}
 			if prodID != nil {
 				cv.Product = &domain.EntityRef{ID: *prodID, Name: stringOrEmpty(prodName)}
 			}

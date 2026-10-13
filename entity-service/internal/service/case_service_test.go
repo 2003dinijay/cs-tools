@@ -506,6 +506,63 @@ func TestCaseService_SearchCases_CountOnlyReachesRepository(t *testing.T) {
 	}
 }
 
+// TestCaseService_SearchCases_RedactsFixEtaForNonInternalScope proves a
+// customer-scoped (non-internal) caller never sees BestCaseFixEta/
+// MostLikelyFixEta/WorstCaseFixEta on a SearchCases response -- those three
+// fields are internal-only (CSM-engineer-facing, never shared with the
+// customer; see SearchCaseView's own doc comment on each), and a CodeRabbit
+// review of the SearchCases fix-ETA fix (digiops-cs#3319 / PR #2745) caught
+// that the repository populates them unconditionally regardless of scope.
+// An internal/unrestricted caller still gets them, matching GetCaseByID's
+// existing (if imperfect) behavior.
+func TestCaseService_SearchCases_RedactsFixEtaForNonInternalScope(t *testing.T) {
+	bestCaseEta := "2026-11-01"
+	mostLikelyEta := "2026-11-05"
+	worstCaseEta := "2026-11-10"
+
+	tests := []struct {
+		name       string
+		scope      AccessScope
+		wantRedact bool
+	}{
+		{name: "external customer scope redacts fix-ETA", scope: AccessScope{Unrestricted: false, HasInternalAccess: false}, wantRedact: true},
+		{name: "internal (Unrestricted) scope keeps fix-ETA", scope: AccessScope{Unrestricted: true}, wantRedact: false},
+		{name: "staff with HasInternalAccess but not Unrestricted keeps fix-ETA", scope: AccessScope{Unrestricted: false, HasInternalAccess: true}, wantRedact: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &stubCaseRepo{
+				searchCases: func(context.Context, domain.SearchCasesRequest) ([]domain.SearchCaseView, int, error) {
+					return []domain.SearchCaseView{
+						{
+							ID:               "case-1",
+							BestCaseFixEta:   &bestCaseEta,
+							MostLikelyFixEta: &mostLikelyEta,
+							WorstCaseFixEta:  &worstCaseEta,
+						},
+					}, 1, nil
+				},
+			}
+			svc := NewCaseService(repo, stubUserRepo{}, nil, stubAccess{scope: tt.scope}, nil)
+			ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+			resp, err := svc.SearchCases(ctx, domain.SearchCasesRequest{})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(resp.Cases) != 1 {
+				t.Fatalf("expected 1 case, got %d", len(resp.Cases))
+			}
+			got := resp.Cases[0]
+			gotRedacted := got.BestCaseFixEta == nil && got.MostLikelyFixEta == nil && got.WorstCaseFixEta == nil
+			if gotRedacted != tt.wantRedact {
+				t.Errorf("fix-ETA redacted = %v, want %v (BestCaseFixEta=%v MostLikelyFixEta=%v WorstCaseFixEta=%v)",
+					gotRedacted, tt.wantRedact, got.BestCaseFixEta, got.MostLikelyFixEta, got.WorstCaseFixEta)
+			}
+		})
+	}
+}
+
 // fakeSLASearchDelegate is a CaseService stand-in that only records whether
 // SearchCases was called on it -- WithSLASearchDelegate's own delegate.
 type fakeSLASearchDelegate struct {
