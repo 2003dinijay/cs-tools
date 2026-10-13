@@ -187,7 +187,14 @@ export default function SetFixEtaDialog({
   const { data: products, isLoading: productsLoading } = useSearchProducts();
 
   const hasAnyEta = !!(bestCaseFixEta || mostLikelyFixEta || worstCaseFixEta);
-  const hasProduct = productId.trim().length > 0;
+  // Derived from a real catalogue match with a real name, not just a
+  // non-empty productId -- if the selected product disappears from the
+  // fetched list (a refetch mid-dialog) or carries no name (BeProduct.name
+  // is optional), productId would otherwise still read as "set" and either
+  // the raw UUID or an empty string could leak into the customer-visible
+  // comment via a stale fallback.
+  const selectedProduct = products?.find((p) => p.id === productId);
+  const hasProduct = !!selectedProduct?.name;
   const hasPublicTicket = publicTicket.trim().length > 0;
   const trimmedPublicTicket = publicTicket.trim();
   const isPublicTicketValidUrl =
@@ -259,14 +266,16 @@ export default function SetFixEtaDialog({
 
   const handleSave = (): void => {
     if (!canSubmit) return;
-    const selectedProduct = products?.find((p) => p.id === productId);
+    // canSubmit already requires hasProduct (a real selectedProduct match)
+    // whenever shareWithCustomer is on, so selectedProduct is never
+    // undefined here -- no raw productId fallback, ever.
     onSave({
       ...(bestCaseFixEta && { bestCaseFixEta }),
       ...(mostLikelyFixEta && { mostLikelyFixEta }),
       ...(worstCaseFixEta && { worstCaseFixEta }),
       ...(shareWithCustomer && {
         addPublicComment: true,
-        product: selectedProduct?.name ?? productId,
+        product: selectedProduct?.name ?? "",
         publicTicket: trimmedPublicTicket,
       }),
     });

@@ -15,7 +15,7 @@
 // under the License.
 
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import SetFixEtaDialog from "@features/csm-cases/components/SetFixEtaDialog";
 
@@ -24,15 +24,21 @@ import SetFixEtaDialog from "@features/csm-cases/components/SetFixEtaDialog";
 // to pick from -- mocked directly rather than pulling in the real backend
 // client (which requires window.config at module load, per this app's own
 // testing convention for @api/backend/client-backed hooks).
+const DEFAULT_PRODUCTS = {
+  data: [
+    { id: "prod-apim", name: "API Manager" },
+    { id: "prod-is", name: "Identity Server" },
+  ],
+  isLoading: false,
+};
+const useSearchProductsMock = vi.fn(() => DEFAULT_PRODUCTS);
 vi.mock("@features/csm-projects/api/useSearchProducts", () => ({
-  useSearchProducts: () => ({
-    data: [
-      { id: "prod-apim", name: "API Manager" },
-      { id: "prod-is", name: "Identity Server" },
-    ],
-    isLoading: false,
-  }),
+  useSearchProducts: () => useSearchProductsMock(),
 }));
+
+afterEach(() => {
+  useSearchProductsMock.mockReturnValue(DEFAULT_PRODUCTS);
+});
 
 describe("SetFixEtaDialog — single combined save", () => {
   it("renders one Save button, disabled until at least one field is set", () => {
@@ -188,6 +194,55 @@ describe("SetFixEtaDialog — single combined save", () => {
       target: { value: "https://github.com/wso2/product-apim/issues/42" },
     });
     expect(screen.getByRole("button", { name: /^save$/i })).toBeEnabled();
+  });
+
+  // CodeRabbit catch: a product selected before a catalogue refetch removed
+  // its entry used to still read as "set" (productId alone), so Save stayed
+  // enabled and the raw product UUID fell through into the customer-visible
+  // comment instead of a real name. hasProduct is now derived from a live
+  // match in the fetched list, so a mid-session refetch that drops the
+  // selected product blocks Save instead.
+  it("blocks Save, rather than falling back to the raw product id, when the selected product disappears from a refetched catalogue", async () => {
+    const onSave = vi.fn();
+    const { rerender } = render(
+      <SetFixEtaDialog
+        currentBestCaseFixEta="2099-06-16"
+        isSaving={false}
+        onClose={() => {}}
+        onSave={onSave}
+      />,
+    );
+    fireEvent.click(
+      screen.getByRole("switch", { name: /share fix eta with customer/i }),
+    );
+    fireEvent.mouseDown(screen.getByLabelText(/^product/i));
+    fireEvent.click(await screen.findByRole("option", { name: "API Manager" }));
+    fireEvent.change(screen.getByLabelText(/public ticket/i), {
+      target: { value: "https://github.com/wso2/product-apim/issues/1" },
+    });
+    expect(screen.getByRole("button", { name: /^save$/i })).toBeEnabled();
+
+    // Simulate a refetch, in the same mounted dialog, that drops the
+    // previously-selected product ("prod-apim") from the catalogue.
+    useSearchProductsMock.mockReturnValue({
+      data: [{ id: "prod-is", name: "Identity Server" }],
+      isLoading: false,
+    });
+    rerender(
+      <SetFixEtaDialog
+        currentBestCaseFixEta="2099-06-16"
+        isSaving={false}
+        onClose={() => {}}
+        onSave={onSave}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /^save$/i })).toBeDisabled();
+    expect(
+      screen.getByText(/product is required to share with the customer/i),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    expect(onSave).not.toHaveBeenCalled();
   });
 
   it("blocks a past fix ETA date and shows an inline error", () => {
