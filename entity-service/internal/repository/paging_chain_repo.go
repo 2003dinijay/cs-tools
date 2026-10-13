@@ -506,8 +506,7 @@ func (r *pagingChainRepository) ReadinessFacts(ctx context.Context, from, to str
 		        JOIN team_schedule_absence_kind k ON k.id = ab.kind_id
 		        WHERE ab.user_id = a.user_id
 		          AND daterange(ab.starts_on, ab.ends_on, '[]') @> a.rota_date
-		          AND NOT (k.moves_to_team_key IS NOT NULL
-		                   AND lower(k.moves_to_team_key) = lower(a.team_key)))
+		          AND NOT `+movedWithinRota+`)
 		 ORDER BY a.rota_date, ro.code, z.code, 8`, from, to); err != nil {
 		return f, fmt.Errorf("query paging readiness assignments: %w", err)
 	}

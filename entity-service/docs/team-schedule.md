@@ -84,12 +84,12 @@ for TZ3) is folded into `SRE_TZ3` by 0154, turns included.
 
 **TZ3 is the SaaS night cover, one crew for every team.** Each night has one
 TZ3 L1, L2 and L3 for the whole `SRE_SAAS` rota, whichever of Apollo or Artemis
-each person is on (the turn is still written on their own team, so it shows on
-their row). The pager calls the incident's own team's holder of a tier when
-there is one and anyone on the rota otherwise, so with one holder per tier an
-Apollo and an Artemis incident at night both reach the same L1 → L2 → L3.
+each person is on. The pager calls the incident's own team's holder of a tier
+when there is one and anyone on the rota otherwise, so with one holder per tier
+an Apollo and an Artemis incident at night both reach the same L1 → L2 → L3.
 "Generate month" builds the night that way, weekends included; TZ1, TZ2 and the
-weekend TZ1+2 stay per team.
+weekend TZ1+2 stay per team. The people who work the nights for months at a time
+are moved onto the **SaaS Night cover** team (see below).
 
 **CRE windows:** 6–9am (and its on-call), regular hours LK and IND, 6–9pm,
 Americas cover, weekend rotation 06:00–21:00, and Americas weekend (and its
@@ -105,7 +105,7 @@ Regular hours are drawn **SUP** (support in normal hours).
 | Bucket | Kinds |
 |---|---|
 | `LEAVE` | Annual (AL), Lieu (LL), Maternity (ML), Paternity (PL), Sick (SL) |
-| `ALLOCATION` | Allo-INT, Allo-EXT, Brazil rotation (BR) on both rotas; RnD on SRE only; Migration (Mig) on CRE only |
+| `ALLOCATION` | Allo-INT, Allo-EXT, Brazil rotation (BR) on both rotas; RnD and SaaS Night cover (NC) on SRE only; Migration (Mig) on CRE only |
 | `EXCLUDED` | Excluded from rota |
 
 `team_schedule_absence_kind.family` is the rota a kind is offered on, and NULL
@@ -395,6 +395,59 @@ them by.
   scoped by team type and key, so the new teams never reach it. An SRE or SME
   ladder is separate work.
 
+## The SaaS Night cover (0232)
+
+The SaaS night (TZ3, 21:00–06:00 LK) is worked by a few Apollo and Artemis
+engineers who go onto it for three to six months and then come back. 0232 makes
+that a team, the way the Americas team is one for CRE:
+
+- **The team**, `saas-night-cover` ("SaaS Night cover"), typed `sre-abt`, so it
+  is on the `SRE_SAAS` rota beside Apollo and Artemis. Nobody is a member: the
+  people on it stay members of their own team.
+- **The tag**, `SRE_NIGHT_COVER` "SaaS Night cover", SRE only, which moves
+  somebody onto the team for a span (`moves_to_team_key`, worked there). It
+  has no hours of its own (`shows_as_shift_code` is NULL): being on the team
+  is the whole of it, and L1, L2 and L3 stay turns on `SRE_TZ3`, still one
+  crew for the whole rota, and only those page. A lead marks it from the
+  person's own row (**Move to SaaS Night cover**, with 3 / 6 month shortcuts
+  for the end date) and ends it with **Back to Apollo**; the roster lists the
+  person under the Night cover while the move lasts, with only their turns on
+  the days, and under their own team after it.
+
+What a move does, beyond what a Brazil rotation does (both rotas' rules are in
+the schedule repository). A move between two teams of one rota is a move: the
+person is on the Night cover for those days and nowhere else.
+
+- **What they held on their own team over the move goes** -- day turns and
+  regular hours, whoever set them -- each removal recorded in the history
+  (`clearHomeTeamOver`). The slots it frees are left empty for a lead, and
+  Case Paging readiness lists them.
+- **Their TZ3 nights go with them**: a TZ3 turn on a night the move covers is
+  filed under the Night cover, and so is any turn set for them on those days
+  later, even from their own team's row (`fileTurnsWhereTheyAre`). If the move
+  is cut short, what is left on the days it no longer covers goes back to their
+  own team. Who is paged does not change -- the TZ3 crew is the rota's -- but
+  everything of theirs is drawn, and cleared, on the one row they are on, and
+  no view lists them on two teams.
+- **It is not time away from the rota.** The pager's on-duty read and Case
+  Paging's readiness treat a move to a team of the same rota as no absence at
+  all, so a TZ3 night that starts the evening before the move and runs into
+  it still pages them.
+- **Their own team's lead keeps rostering them** (the Night cover has no lead):
+  `TeamsShareRota` lets the home lead set turns on the Night cover's row, as
+  well as end the move. Another team's lead cannot. Remove on the move, or on
+  leave marked inside it, is the home lead's too (this also fixes Remove for
+  the Brazil rotation).
+
+**Generate month** takes the month's TZ3 crew from the Night cover when nobody
+is chosen: everybody a move covers on a day of the month, working TZ3 only
+while it lasts (a day of the month it does not cover is left for a lead). Their
+nights are filed under the Night cover, and they get no regular hours on those
+days. Lieu leave earned on the Night cover cuts the move for those days, as
+leave a lead marks does, and regenerating without that lieu joins the move up
+again. The portal's Generate month dialog no longer picks TZ3 people: it lists
+who is on the Night cover that month.
+
 ## Who may read and change each family
 
 There are three rota admins, one per family: `cre_rota_admin`, `sre_rota_admin`
@@ -463,6 +516,10 @@ admins and rota markers are granted and taken back.
 
 ## Change log
 
+- **0232 SaaS Night cover.** Data only: the team `saas-night-cover` (type
+  `sre-abt`) and the tag `SRE_NIGHT_COVER` that moves somebody onto it. Nobody is moved by the migration; leads move their night
+  people from the roster, and the TZ3 nights already set inside a move go with
+  it. Re-runnable.
 - **0225 rota access.** New table `team_schedule_rota_marker` (with an index on
   `team_key`) and its audit trigger; a second audit trigger on `user_role` that
   records only the rota admin roles. Additive: nothing existing is changed or
