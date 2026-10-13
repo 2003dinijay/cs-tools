@@ -2000,13 +2000,28 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 	// identity, "resolutionCode, cause, and closeNotes cannot be provided
 	// by this user" -- fixed by mirroring as the integration's own M2M
 	// identity whenever this block had just defaulted the fields,
-	// snFieldPatcher's asSystemUser). With defaulting removed, resolution
-	// is nil for the overwhelming majority of external closes (nothing was
-	// supplied to mirror at all), so asSystemUser now evaluates false in
-	// practice too -- it stays wired for the rarer case where an external
-	// caller explicitly supplies their own resolution fields, which still
-	// mirrors under their own identity like any other caller-supplied
-	// value, not as a system identity.
+	// snFieldPatcher's asSystemUser).
+	//
+	// CodeRabbit-caught gap in THIS revision, fixed before merge: removing
+	// the defaulting did not, by itself, stop an external caller from
+	// supplying resolutionCode/cause/closeNotes EXPLICITLY -- and combined
+	// with asSystemUser, an explicitly-supplied value would now be written
+	// to Postgres and mirrored to ServiceNow under the integration's own
+	// system identity, successfully bypassing the very "this is WSO2's
+	// internal classification, not a customer's to set" rule
+	// CS0378899's own error message enforces. Before this fix, the
+	// pre-existing code path had the opposite, accidental protection: an
+	// external caller's own explicit value was previously mirrored under
+	// THEIR OWN identity (asSystemUser didn't exist yet) and ServiceNow
+	// itself would refuse it -- a protection that would have silently
+	// disappeared the moment asSystemUser started covering this case too.
+	// External callers are therefore refused outright, below, the moment
+	// they supply any of the three fields for a close/solution_proposed --
+	// never silently dropped, never defaulted, never accepted and
+	// mirrored under a system identity. This refusal runs BEFORE
+	// s.repo.UpdateCase, so a rejected request writes nothing to Postgres
+	// either -- values ServiceNow would never have accepted must not get a
+	// chance to exist in Postgres first and be "mirror pending" for ever.
 	//
 	// Whether ServiceNow's scripted API genuinely still requires these
 	// three fields at all for a customer-identity close has NOT been
@@ -2024,10 +2039,19 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 				if req.ResolutionCode == nil || req.Cause == nil || req.CloseNotes == nil || strings.TrimSpace(*req.CloseNotes) == "" {
 					return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "resolutionCode, cause, and closeNotes are required when state is closed or solution_proposed"}
 				}
+			} else if req.ResolutionCode != nil || req.Cause != nil || req.CloseNotes != nil {
+				// External (customer) caller supplying any of the three
+				// explicitly: refused, not accepted. See this block's own
+				// doc comment above for why -- this is WSO2's internal
+				// resolution taxonomy, never the customer's to set,
+				// regardless of what identity a mirror write would later
+				// run as.
+				return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "resolutionCode, cause, and closeNotes are not allowed for external callers"}
 			}
-			// External (customer) caller: no requirement and no defaulting.
-			// See this block's own doc comment above (2026-10-13) for why the
-			// prior auto-defaulting was removed.
+			// External (customer) caller supplying none of the three: no
+			// requirement and no defaulting. See this block's own doc
+			// comment above (2026-10-13) for why the prior auto-defaulting
+			// was removed.
 		}
 	}
 
@@ -2186,21 +2210,26 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 					resolution = &caseResolutionFields{Code: req.ResolutionCode, Cause: req.Cause, CloseNotes: req.CloseNotes}
 					payload["resolutionCode"], payload["cause"], payload["closeNotes"] = req.ResolutionCode, req.Cause, req.CloseNotes
 				}
-				// asSystemUser only for an EXTERNAL caller's close/
-				// solution_proposed with a non-nil resolution -- since the
-				// validation block above no longer defaults these fields
-				// for an external caller (reversed 2026-10-13), resolution
-				// is nil for the overwhelming majority of external closes
-				// and this evaluates false in practice. It stays true for
-				// the rarer case where an external caller explicitly
-				// supplies their own resolution fields: ServiceNow has been
-				// observed rejecting resolutionCode/cause/closeNotes
-				// outright under a non-staff identity regardless of who
-				// supplied the values (case CS0378899), so even a
-				// customer-supplied value still mirrors as the
-				// integration's own system identity here, not the
-				// customer's own token. An internal caller's own resolution
-				// choice always mirrors under their own identity, unchanged.
+				// asSystemUser's condition is kept exactly as it was when
+				// introduced (case CS0378899) -- !isInternalCaller &&
+				// resolution != nil -- but the validation block above now
+				// refuses any external caller who supplies a non-nil
+				// resolutionCode/cause/closeNotes outright, before this
+				// code ever runs. So in practice, by the time control
+				// reaches here, an external caller's resolution is always
+				// nil (nothing to mirror, asSystemUser evaluates false) and
+				// an internal caller's is handled by the isInternalCaller
+				// branch (asSystemUser also false: they mirror under their
+				// own identity, as always). This condition is deliberately
+				// NOT simplified to `false` or removed: it is the one
+				// remaining guard against resolution ever reaching this
+				// dispatch as non-nil for a non-internal caller through
+				// some future code path that bypasses the validation
+				// block above -- keeping it is cheap insurance against
+				// silently reintroducing the exact bypass CodeRabbit
+				// caught (mirroring a customer-supplied resolution value
+				// under a system identity that lets it slip past
+				// ServiceNow's own rejection of it).
 				asSystemUser := !isInternalCaller && resolution != nil
 				s.snWriteback.Dispatch(ctx, "case", req.ID, "update",
 					payload,

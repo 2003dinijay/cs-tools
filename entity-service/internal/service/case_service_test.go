@@ -5383,6 +5383,53 @@ func TestCaseService_UpdateCase_DualWriteRequiresResolutionFieldsAndMirrorsThem(
 		}
 	})
 
+	// This is the regression test for a CodeRabbit-caught gap in the "stop
+	// defaulting" change above: removing the auto-defaulting did not, by
+	// itself, stop an external caller from supplying resolutionCode/cause/
+	// closeNotes EXPLICITLY -- and combined with asSystemUser, an
+	// explicitly-supplied value would have been written to Postgres and
+	// mirrored to ServiceNow under the integration's own system identity,
+	// bypassing ServiceNow's own rejection of a customer setting its
+	// internal resolution taxonomy (the exact rule CS0378899's error
+	// message enforces). An external caller supplying any of the three
+	// fields must be refused outright, before the Postgres write, not
+	// accepted and silently re-identified as a system write.
+	t.Run("external caller explicitly supplying resolution fields is refused, not accepted", func(t *testing.T) {
+		var updateCaseCalled bool
+		repo := &stubCaseRepo{
+			getCaseByID: func(_ context.Context, id string, _ repository.SearchScope) (domain.CaseView, error) {
+				st := domain.CaseStateOpen
+				typ := "case"
+				return domain.CaseView{ID: id, State: &st, Type: &typ}, nil
+			},
+			updateCase: func(_ context.Context, req domain.UpdateCaseRequest) (domain.Case, *domain.CaseSeverity, error) {
+				updateCaseCalled = true
+				st := *req.State
+				return domain.Case{ID: req.ID, State: &st}, nil, nil
+			},
+		}
+		dispatcher := NewSNWritebackDispatcher(&recordingSNWritebackFailures{})
+		var mirrorCalled bool
+		mirror := &stubMirrorCaseService{patchCaseFieldsFn: func(_ context.Context, _ string, _ *domain.CaseState, _ *domain.CaseSeverity, _ *domain.CaseWorkState, _ *bool, _ *caseResolutionFields, _ bool) (domain.UpdatedCase, error) {
+			mirrorCalled = true
+			return domain.UpdatedCase{}, nil
+		}}
+		svc := NewCaseServiceWithSNWriteback(repo, stubUserRepo{}, nil, stubAccess{scope: AccessScope{Unrestricted: false}}, nil, dispatcher, mirror, nil, "")
+
+		code := domain.CaseResolutionCodeSolvedByCustomer
+		_, err := svc.UpdateCase(context.Background(), domain.UpdateCaseRequest{ID: testDeploymentUUID, State: &closed, ResolutionCode: &code})
+		var verr *apierror.ValidationError
+		if !errors.As(err, &verr) {
+			t.Fatalf("err = %v, want a *apierror.ValidationError", err)
+		}
+		if updateCaseCalled {
+			t.Error("repo.UpdateCase was called, want the request refused before any Postgres write")
+		}
+		if mirrorCalled {
+			t.Error("mirror.patchCaseFields was called, want the request refused before any ServiceNow mirror dispatch")
+		}
+	})
+
 	// TestCaseService_UpdateCase_MixedIdentityStillRequiresResolutionFields
 	// is the regression test for the other CodeRabbit-caught gap: a caller
 	// whose email ALSO has an active EXTERNAL row resolves to a non-
