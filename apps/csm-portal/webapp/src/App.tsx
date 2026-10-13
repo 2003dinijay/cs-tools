@@ -35,7 +35,8 @@ import {
   featureStateForPath,
   firstEnabledDestination,
 } from "@config/featureFlags";
-import { usePortalAccess } from "@context/current-user/usePortalAccess";
+import { useFeaturePreviewOverrides } from "@config/featurePreview";
+import { usePortalAccess, useSafeCurrentUserId } from "@context/current-user/usePortalAccess";
 import {
   POST_LOGIN_REDIRECT_KEY,
   PostLoginRedirectConsumer,
@@ -184,12 +185,17 @@ function FeatureRouteGuard(): JSX.Element {
   const { pathname } = useLocation();
   const access = usePortalAccess();
   const node = navNodeForPath(pathname);
+  // An admin's own Feature Preview toggles (browser-local, see
+  // featurePreview.ts) can promote a hidden/WIP page to enabled for them
+  // alone -- never for any other caller, and never touching the deployment
+  // config itself.
+  const { overrides } = useFeaturePreviewOverrides(useSafeCurrentUserId());
   // Per-user: a page the user's roles don't unlock (e.g. Operations for a
   // view-only role) is hidden the same way a deployment-hidden page is.
-  const state = featureStateForPath(pathname, access);
+  const state = featureStateForPath(pathname, access, overrides);
 
   if (state === "hidden") {
-    const fallback = firstEnabledDestination(access);
+    const fallback = firstEnabledDestination(access, overrides);
     const samePath = fallback !== undefined && fallback.split(/[?#]/)[0] === pathname;
     return <Navigate to={!fallback || samePath ? "/404" : fallback} replace />;
   }
