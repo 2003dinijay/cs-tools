@@ -204,6 +204,27 @@ endpoint one way or the other.
 
 Contacts search and opportunity/invoice/link reads work over M2M only if this service's client id is in entity-service's `AUTH_INTERNAL_CLIENT_IDS`; otherwise 401/403.
 
+## Catalog reads (`/products`, `/deployments`, `/deployed-products`) reshape on purpose
+
+`GET /products/search`, `GET /products/{id}/versions/search`, `GET /deployments/search`
+and `GET /deployed-products/search` (`internal/handler/catalog.go`) are a
+compatibility facade for the ServiceNow "SF WSO2 Product & Deployment API":
+same `{success, data}` envelope and field names, built from entity-service's
+`POST .../search` responses. **This is the one place besides cloud-status that
+does not pass bytes through** — entity-service stays unchanged. Consequences:
+
+- `sfIds` has no entity-service equivalent (project search can't filter by
+  Salesforce id), so the handler pages `POST /projects/search` once and caches
+  the sfId→UUID map for 5 minutes. Unknown sfIds return an empty list, never an
+  unfiltered one. Deployed products go sfIds → projects → deployments → deployed products.
+- `limit` allows up to 100 (sample contract); entity-service caps at 50, so
+  larger windows are several upstream calls.
+- Fields entity-service cannot supply are null/empty: `deployment.version`,
+  `productVersion.abbreviation`, `productVersion.product.name`, `warnings`.
+  `deployment.type.id` is ServiceNow's type key (1–6) and `label` is derived
+  from the enum — an inference, not read from ServiceNow.
+- Errors use this service's usual `{"message"}` body, not the sample's `{success:false,error}`.
+
 ## Middleware chain
 
 `SecurityHeaders → CorrelationID → Logger → Mux`
