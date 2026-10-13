@@ -432,6 +432,13 @@ export interface BeCaseView {
   /** Free-text resolution/close notes from a prior close/propose-solution. Populated for resolved/closed cases; null otherwise. */
   resolutionNotes?: string | null;
   /**
+   * Close notes from a prior close. Populated for closed cases; null
+   * otherwise. Some data sources return the close notes here and leave
+   * `resolutionNotes` null, so readers should prefer this and fall back to
+   * `resolutionNotes`.
+   */
+  closeNotes?: string | null;
+  /**
    * Service-request cases whose parent points to this case. Populated on every
    * case detail response, not just high-severity cases.
    */

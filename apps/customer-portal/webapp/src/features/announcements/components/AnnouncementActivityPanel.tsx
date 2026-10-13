@@ -36,6 +36,7 @@ import {
   convertCodeTagsToHtml,
   formatCommentDate,
   getInitials,
+  SYSTEM_AUTHOR_LABEL,
   hasDisplayableContent,
   hasSingleCodeWrapper,
   INLINE_COMMENT_HTML_PURIFY,
@@ -72,7 +73,7 @@ function commentAuthorDisplayName(comment: CaseComment): string {
   if (comment.createdByFullName?.trim()) {
     return comment.createdByFullName.trim();
   }
-  return comment.createdBy?.trim() || "Unknown";
+  return comment.createdBy?.trim() || SYSTEM_AUTHOR_LABEL;
 }
 
 function sanitizeCommentContent(content: string, isDarkMode: boolean): string {
