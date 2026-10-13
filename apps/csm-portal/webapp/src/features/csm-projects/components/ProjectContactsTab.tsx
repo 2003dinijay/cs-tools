@@ -15,6 +15,7 @@
 // under the License.
 
 import {
+  Box,
   Chip,
   Paper,
   Skeleton,
@@ -38,6 +39,10 @@ import {
   findOnboardingMembership,
   indexOnboardingMembershipsByEmail,
 } from "@features/csm-projects/utils/onboardingStatus";
+import {
+  projectContactRoleChips,
+  projectContactRoleChipSx,
+} from "@features/csm-projects/utils/projectContactRoles";
 import type { BeProjectContact } from "@api/backend/types";
 
 const COLUMN_COUNT = 5;
@@ -217,6 +222,7 @@ export default function ProjectContactsTab({
                 // this row has no linked contact record.
                 const name = c.name || c.email || "No linked contact record";
                 const access = deriveAccessStatus(c);
+                const roleChips = projectContactRoleChips(c);
                 return (
                   // Contacts have no stable identifier when unlinked (no `id`);
                   // email is the closest thing to a natural key, and index
@@ -227,17 +233,23 @@ export default function ProjectContactsTab({
                     </TableCell>
                     <TableCell sx={{ wordBreak: "break-all" }}>{c.email || "—"}</TableCell>
                     <TableCell>
-                      {c.roles && c.roles.length > 0
-                        ? c.roles.map((r) => (
+                      {roleChips.length > 0 ? (
+                        <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5 }}>
+                          {roleChips.map((chip) => (
                             <Chip
-                              key={r}
+                              key={chip.label}
                               size="small"
-                              label={r}
+                              icon={chip.Icon ? <chip.Icon size={12} /> : undefined}
+                              label={chip.label}
                               variant="outlined"
-                              sx={{ mr: 0.5, mb: 0.5 }}
+                              color={chip.chipColor}
+                              sx={projectContactRoleChipSx(chip.chipColor)}
                             />
-                          ))
-                        : "—"}
+                          ))}
+                        </Box>
+                      ) : (
+                        "—"
+                      )}
                     </TableCell>
                     <TableCell>
                       {c.registrationState ? (
