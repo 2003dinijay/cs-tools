@@ -41,14 +41,15 @@ const (
 )
 
 // hoConfigJSON is SPECIALIST_HANDOFF_CONFIG as a deployment sets it:
-// ServiceNow's routing for Choreo (three teams) and Asgardeo (one), plus a
-// one-team product with no GitHub repository.
+// ServiceNow's routing for Choreo (three teams) and Asgardeo (one, with
+// issue labels), plus a one-team product with no GitHub repository.
 const hoConfigJSON = `{"products":[
  {"name":"Choreo","serviceIds":["B9C999F8-1B86-A010-00AE-86ACDD4BCB61"],"github":{"owner":"wso2-enterprise","repo":"choreo"},
   "teams":[{"key":"choreo-special-ops","label":"Choreo Special Ops","groupId":"fe0d8868-1b0b-3010-d64e-64a2604bcb3c","smeTeam":"choreo-runtime"},
            {"key":"choreo-runtime-team","label":"Choreo Runtime Team","groupId":"80dade5d-1b70-0710-a002-c9d3604bcbd7"},
            {"key":"choreo-apim-team","label":"Choreo APIM Team","groupId":"a79a1e9d-1b70-0710-a002-c9d3604bcb20"}]},
- {"name":"Asgardeo","serviceIds":["97ed1b8b-1ba2-6c10-00ae-86acdd4bcbd3"],"github":{"owner":"wso2-enterprise","repo":"asgardeo-product","credential":"asgardeo"},
+ {"name":"Asgardeo","serviceIds":["97ed1b8b-1ba2-6c10-00ae-86acdd4bcbd3"],"github":{"owner":"wso2-enterprise","repo":"asgardeo-product","credential":"asgardeo",
+  "labels":{"byPriority":{"critical":["Priority/Highest"," Severity/Critical "]},"byEnvironment":{"Production":["Env/Production","Priority/Highest"]}}},
   "teams":[{"key":"asgardeo-special-ops","label":"Asgardeo Special Ops","groupId":"7fb4f4c6-1b4b-3810-aea4-a936604bcb90"}]},
  {"name":"Moesif","serviceIds":["d4aa1a3b-3b29-0b10-9140-4c6aa5e45a61"],
   "teams":[{"key":"moesif-special-ops","label":"Moesif Special Ops","groupId":"55555555-5555-4555-8555-555555555555"}]}]}`
@@ -120,6 +121,10 @@ func TestParseSpecialistHandoffConfig(t *testing.T) {
 		"bad group id":       wrap(product("X", hoMoesifService, "", team("a", "Moesif"))),
 		"half a github":      wrap(product("X", hoMoesifService, `,"github":{"owner":"wso2-enterprise"}`, ok)),
 		"smeTeam not a key":  wrap(product("X", hoMoesifService, "", `{"key":"a","label":"L","groupId":"`+hoMoesifGroup+`","smeTeam":"Choreo Runtime"}`)),
+		"label priority key": wrap(product("X", hoMoesifService, `,"github":{"owner":"o","repo":"r","labels":{"byPriority":{"P1":["x"]}}}`, ok)),
+		"empty label":        wrap(product("X", hoMoesifService, `,"github":{"owner":"o","repo":"r","labels":{"byPriority":{"HIGH":[" "]}}}`, ok)),
+		"label too long":     wrap(product("X", hoMoesifService, `,"github":{"owner":"o","repo":"r","labels":{"byEnvironment":{"prod":["`+strings.Repeat("l", 51)+`"]}}}`, ok)),
+		"environment twice":  wrap(product("X", hoMoesifService, `,"github":{"owner":"o","repo":"r","labels":{"byEnvironment":{"Prod":["a"],"prod":["b"]}}}`, ok)),
 	} {
 		if _, err := ParseSpecialistHandoffConfig(raw); err == nil || !strings.Contains(err.Error(), "SPECIALIST_HANDOFF_CONFIG") {
 			t.Errorf("%s: err %v, want a SPECIALIST_HANDOFF_CONFIG error", name, err)
@@ -268,13 +273,14 @@ type fakeHandoffIssues struct {
 	repo   string
 	title  string
 	body   string
+	labels []string
 	result *github.CreatedIssue
 	err    error
 }
 
-func (f *fakeHandoffIssues) CreateIssue(_ context.Context, owner, repository, title, body string, _ []string) (*github.CreatedIssue, error) {
+func (f *fakeHandoffIssues) CreateIssue(_ context.Context, owner, repository, title, body string, labels []string) (*github.CreatedIssue, error) {
 	f.calls++
-	f.owner, f.repo, f.title, f.body = owner, repository, title, body
+	f.owner, f.repo, f.title, f.body, f.labels = owner, repository, title, body, labels
 	return f.result, f.err
 }
 
@@ -326,8 +332,20 @@ func TestHandOffIncidentToSpecialist_FilesIssueAndNotes(t *testing.T) {
 	if applied == nil || applied.GroupID != hoChoreoSpecial {
 		t.Fatalf("applied plan %+v", applied)
 	}
-	if issues.calls != 1 || issues.owner != "wso2-enterprise" || issues.repo != "choreo" || issues.title != "Gateway 502s" || issues.body != "All gateways return 502." {
-		t.Errorf("CreateIssue(%s/%s, %q, %q) x%d", issues.owner, issues.repo, issues.title, issues.body, issues.calls)
+	if issues.calls != 1 || issues.owner != "wso2-enterprise" || issues.repo != "choreo" || issues.title != "[INC0099001] Gateway 502s" || len(issues.labels) != 0 {
+		t.Errorf("CreateIssue(%s/%s, %q, labels %q) x%d", issues.owner, issues.repo, issues.title, issues.labels, issues.calls)
+	}
+	for _, want := range []string{
+		"## Special Ops escalation: INC0099001\n",
+		"| **Escalated to** | Choreo Special Ops |\n",
+		"| **Reason** | Runbook is not available |\n",
+		"| **Escalated by** | jane.doe@example.com |\n",
+		"| **Runbook task** | CS-PORTAL-000123 |\n",
+		"### Description\n\nAll gateways return 502.\n",
+	} {
+		if !strings.Contains(issues.body, want) {
+			t.Errorf("issue body lacks %q:\n%s", want, issues.body)
+		}
 	}
 	want := "Escalated to Special Ops team. Escalated by jane.doe@example.com(jane.doe@example.com) Opened an internal issue. Please access the ticket using the link https://github.com/wso2-enterprise/choreo/issues/42 to add more details to the ticket if needed"
 	if len(notes) != 1 || notes[0] != want {
@@ -345,6 +363,66 @@ func TestHandOffIncidentToSpecialist_FilesIssueAndNotes(t *testing.T) {
 	}
 	if h.ReasonDescription != "Runbook is not available" || h.Incident.ID == nil {
 		t.Errorf("reason %q incident %v", h.ReasonDescription, h.Incident.ID)
+	}
+}
+
+// The issue body is the incident's description, as in ServiceNow. An
+// alert-born incident has none -- sre-alert-core-service puts the alert's
+// fields in its creation work note -- so that note is the body instead of
+// an empty one.
+func TestHandOffIncidentToSpecialist_IssueBody(t *testing.T) {
+	note := "<p>Incident auto-created from Alert: ALT000000436</p><table><tr><td>service</td><td>Choreo</td></tr></table>"
+	cases := []struct {
+		name        string
+		description *string
+		alertNote   *string
+		want        string
+	}{
+		{"description", hoStr("All gateways return 502."), nil, "All gateways return 502."},
+		{"description wins over the alert note", hoStr("All gateways return 502."), hoStr(note), "All gateways return 502."},
+		{"no description: the alert note", nil, hoStr(note), note},
+		{"blank description: the alert note", hoStr(" \n "), hoStr(note), note},
+		{"neither", nil, nil, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			snap := hoSnapshot(hoAsgardeoService, "", "IN_PROGRESS")
+			snap.Description, snap.AlertNote = c.description, c.alertNote
+			issues := &fakeHandoffIssues{result: &github.CreatedIssue{Number: 7, HTMLURL: "https://github.com/wso2-enterprise/asgardeo-product/issues/7"}}
+			req := domain.HandOffIncidentToSpecialistRequest{IncidentID: hoIncidentID, ReasonCode: domain.IncidentSpecialistHandoffReasonNoRunbook}
+			if _, err, _, _ := handoffHarness(t, snap, issues, req); err != nil {
+				t.Fatalf("handoff: %v", err)
+			}
+			want := c.want
+			if want == "" {
+				want = "_No description._"
+			}
+			if issues.calls != 1 || !strings.Contains(issues.body, "### Description\n\n"+want+"\n") {
+				t.Errorf("CreateIssue body x%d:\n%s\nwant the description %q", issues.calls, issues.body, want)
+			}
+		})
+	}
+}
+
+// The product's github.labels map the incident's priority and environment
+// to the issue's labels, each label once; the title leads with the number
+// and priority.
+func TestHandOffIncidentToSpecialist_IssueTitleAndLabels(t *testing.T) {
+	snap := hoSnapshot(hoAsgardeoService, "", "IN_PROGRESS")
+	snap.Priority, snap.Environment = hoStr("CRITICAL"), hoStr(" PRODUCTION ")
+	issues := &fakeHandoffIssues{result: &github.CreatedIssue{Number: 8, HTMLURL: "https://github.com/wso2-enterprise/asgardeo-product/issues/8"}}
+	req := domain.HandOffIncidentToSpecialistRequest{IncidentID: hoIncidentID, ReasonCode: domain.IncidentSpecialistHandoffReasonNoRunbook}
+	if _, err, _, _ := handoffHarness(t, snap, issues, req); err != nil {
+		t.Fatalf("handoff: %v", err)
+	}
+	if issues.title != "[INC0099001] [P1] Gateway 502s" {
+		t.Errorf("title %q", issues.title)
+	}
+	if want := []string{"Priority/Highest", "Severity/Critical", "Env/Production"}; strings.Join(issues.labels, "|") != strings.Join(want, "|") {
+		t.Errorf("labels %q, want %q", issues.labels, want)
+	}
+	if !strings.Contains(issues.body, "| **Escalated to** | Asgardeo Special Ops |\n") {
+		t.Errorf("a one-team product's issue names its team:\n%s", issues.body)
 	}
 }
 
