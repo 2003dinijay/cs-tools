@@ -1408,7 +1408,12 @@ service's own `CLAUDE.md`, `dispatch.subjectLine`).
   acknowledgement with its own dedicated, no-severity card instead of
   showing "Unknown" where a severity would be (that type never carries
   one). `caseService.publishCaseAcknowledged` (the plain-Postgres path) sets
-  the identical field the same way.
+  the identical field the same way. **`CaseType` is new on this payload, and
+  `csm-notification-service`'s own event decoding rejects an unknown field —
+  deploy that service's build that declares `CaseType` before deploying this
+  one**, or an overlapping rollout has every `case.acknowledged` event fail
+  validation there, retry, dead-letter, and eventually drop (see that
+  service's own `CLAUDE.md`/`events.go` for the matching note).
 
 - **`snCaseService.UpdateCase`** also publishes `case.severity_changed` via
   `publishSeverityChanged`, called only when `req.Severity` was set AND
