@@ -101,15 +101,24 @@ type caseGitHubIssueResult struct {
 
 // caseGitHubIssueContext is the subset of a case this handler needs beyond
 // what the request body itself carries, to fill the fixed info block at the
-// top of every filed issue's body. A field is left "" when the case has none
-// (e.g. no assigned team) -- buildGitHubIssueBody omits its line rather than
-// rendering it empty. OpenedBy is not a case field: it is the engineer filing
-// the issue, set by the caller from the signed-in user.
+// foot of every filed issue's body. A field is left "" when the case has none
+// (e.g. an account with no CRE team) -- buildGitHubIssueBody omits its line
+// rather than rendering it empty. OpenedBy is not a case field: it is the
+// engineer filing the issue, set by the caller from the signed-in user.
 type caseGitHubIssueContext struct {
+	// Product is the deployed product's own label, which carries the version
+	// (e.g. "IS 6.1.0"); when the case links no deployed product it is the
+	// product catalogue name.
+	Product    string
 	Number     string
 	InternalID string
-	Team       string
-	OpenedBy   string
+	// Team is the case's ABT team: its account's CRE team, the same team the
+	// case page's "CRE / SRE team" cell, the de-escalation lead check and the
+	// case-event payloads call the case's team. The case's own assignedTeam is
+	// only the fallback for an account with no CRE team: entity-service leaves
+	// it unpopulated on synced data, so it alone left the line missing.
+	Team     string
+	OpenedBy string
 }
 
 // caseGitHubIssueContextFromCase reads the same raw GetCase response
@@ -118,8 +127,14 @@ type caseGitHubIssueContext struct {
 // raised the case, not the WSO2 engineer opening the Git issue.
 func caseGitHubIssueContextFromCase(raw []byte) caseGitHubIssueContext {
 	var view struct {
-		Number       string `json:"number"`
-		InternalID   string `json:"internalId"`
+		Number          string `json:"number"`
+		InternalID      string `json:"internalId"`
+		DeployedProduct *struct {
+			DisplayName *string `json:"displayName"`
+			Product     *struct {
+				Name string `json:"name"`
+			} `json:"product"`
+		} `json:"deployedProduct"`
 		AssignedTeam *struct {
 			Name string `json:"name"`
 		} `json:"assignedTeam"`
@@ -128,17 +143,46 @@ func caseGitHubIssueContextFromCase(raw []byte) caseGitHubIssueContext {
 		return caseGitHubIssueContext{}
 	}
 	ctx := caseGitHubIssueContext{Number: view.Number, InternalID: view.InternalID}
-	if view.AssignedTeam != nil {
+	if dp := view.DeployedProduct; dp != nil {
+		if dp.DisplayName != nil {
+			ctx.Product = strings.TrimSpace(*dp.DisplayName)
+		}
+		if ctx.Product == "" && dp.Product != nil {
+			ctx.Product = strings.TrimSpace(dp.Product.Name)
+		}
+	}
+	if ctx.Team = creTeamNameFromCase(raw); ctx.Team == "" && view.AssignedTeam != nil {
 		ctx.Team = strings.TrimSpace(view.AssignedTeam.Name)
 	}
 	return ctx
 }
 
-// buildGitHubIssueBody opens with a fixed Product/Update Level/WSO2 Case Id/
-// Case Number/ABT Team/Opened By block (each line omitted when its value is
-// unknown, never rendered as "Label : " with nothing after it), then the
-// caller's own description, then the same optional Public Issue/Hotfix
-// Required lines this body has always carried.
+// creTeamNameFromCase is the case's account's CRE team name, "" when the case
+// has no account or the account no CRE team. It decodes the account on its own
+// so that an account object of an unexpected shape costs only this line, never
+// the case number or case id the caller has already read.
+func creTeamNameFromCase(raw []byte) string {
+	var view struct {
+		Account *struct {
+			CreTeam *struct {
+				Name string `json:"name"`
+			} `json:"creTeam"`
+		} `json:"account"`
+	}
+	if err := json.Unmarshal(raw, &view); err != nil || view.Account == nil || view.Account.CreTeam == nil {
+		return ""
+	}
+	return strings.TrimSpace(view.Account.CreTeam.Name)
+}
+
+// buildGitHubIssueBody is the caller's own description, then the optional
+// Public Issue/Hotfix Required lines, then a fixed Product/Update Level/WSO2
+// Case Id/Case Number/ABT Team/Opened By block as the footer (each line
+// omitted when its value is unknown, never rendered as "Label : " with
+// nothing after it). The block goes last so the issue opens with what the
+// engineer wrote, and so the Git Internals dashboard, which reads the last
+// "ABT Team"/"Opened By" line of a body as the automated footer, is not
+// overridden by a line quoted inside the description.
 func buildGitHubIssueBody(req caseGitHubIssueRequest, productLabel string, caseCtx caseGitHubIssueContext) string {
 	var info strings.Builder
 	line := func(label, value string) {
@@ -150,7 +194,14 @@ func buildGitHubIssueBody(req caseGitHubIssueRequest, productLabel string, caseC
 		}
 		info.WriteString(label + " : " + value)
 	}
-	line("Product", productLabel)
+	// The deployed product's own label carries the version; the repository
+	// mapping's label (e.g. "product/is") is a GitHub label, not a product name,
+	// and is only the last resort when the case has no product label at all.
+	product := caseCtx.Product
+	if product == "" {
+		product = productLabel
+	}
+	line("Product", product)
 	line("Update Level", req.UpdateLevel)
 	line("WSO2 Case Id", caseCtx.InternalID)
 	line("Case Number", caseCtx.Number)
@@ -158,22 +209,23 @@ func buildGitHubIssueBody(req caseGitHubIssueRequest, productLabel string, caseC
 	line("Opened By", caseCtx.OpenedBy)
 
 	var b strings.Builder
-	b.WriteString(info.String())
-	extra := func(value string) {
+	section := func(value string) {
+		if value == "" {
+			return
+		}
 		if b.Len() > 0 {
 			b.WriteString("\n\n")
 		}
 		b.WriteString(value)
 	}
-	if v := strings.TrimSpace(req.Description); v != "" {
-		extra(v)
-	}
+	section(strings.TrimSpace(req.Description))
 	if v := strings.TrimSpace(req.PublicIssueURL); v != "" {
-		extra("Public Issue : " + v)
+		section("Public Issue : " + v)
 	}
 	if req.HotFixRequired {
-		extra("Hotfix Required : Yes")
+		section("Hotfix Required : Yes")
 	}
+	section(info.String())
 	return strings.TrimSpace(b.String())
 }
 
