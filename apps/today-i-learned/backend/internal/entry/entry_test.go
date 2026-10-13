@@ -29,7 +29,7 @@ func validDraft() Draft {
 }
 
 func TestPrepareAcceptsAValidDraft(t *testing.T) {
-	c, err := Prepare(Draft{Title: "  T  ", Where: "Customer", WhereDetail: ptr("  Acme Corp "), What: "<p>Learned X.</p>"})
+	c, err := Prepare(Draft{Title: "  T  ", Where: "Customer", WhereDetail: ptr("  Acme Corp "), What: "<p>Learned X.</p>"}, DefaultWhatMaxLength)
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestPrepareAcceptsAValidDraft(t *testing.T) {
 
 func TestPrepareDropsTheDetailForInternal(t *testing.T) {
 	// Internal takes no detail, so one sent anyway isn't stored.
-	c, err := Prepare(Draft{Title: "T", Where: "Internal", WhereDetail: ptr("ignored"), What: "x"})
+	c, err := Prepare(Draft{Title: "T", Where: "Internal", WhereDetail: ptr("ignored"), What: "x"}, DefaultWhatMaxLength)
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
@@ -74,16 +74,17 @@ func TestPrepareRules(t *testing.T) {
 		{"empty editor markup", func(d *Draft) { d.What = "<p><br></p>" }, "Add what you learned."},
 		{"learning that is only a script", func(d *Draft) { d.What = "<script>alert(1)</script>" }, "Add what you learned."},
 		{"learning that is only a picture", func(d *Draft) { d.What = `<p><img src="https://example.com/x.png"></p>` }, "Add what you learned."},
-		{"learning at the limit", func(d *Draft) { d.What = "<p>" + long(WhatMaxLength) + "</p>" }, ""},
-		{"learning over the limit", func(d *Draft) { d.What = long(WhatMaxLength + 1) }, "What you learned must be 5000 characters or fewer."},
-		{"limit counts text, not markup", func(d *Draft) { d.What = "<p><strong>" + long(WhatMaxLength) + "</strong></p>" }, ""},
-		{"limit counts an entity as one character", func(d *Draft) { d.What = strings.Repeat("&amp;", WhatMaxLength) }, ""},
+		{"learning at the limit", func(d *Draft) { d.What = "<p>" + long(DefaultWhatMaxLength) + "</p>" }, ""},
+		{"learning within the margin past the limit", func(d *Draft) { d.What = long(DefaultWhatMaxLength + WhatLengthMargin) }, ""},
+		{"learning past the margin", func(d *Draft) { d.What = long(DefaultWhatMaxLength + WhatLengthMargin + 1) }, "What you learned must be 500 characters or fewer."},
+		{"limit counts text, not markup", func(d *Draft) { d.What = "<p><strong>" + long(DefaultWhatMaxLength) + "</strong></p>" }, ""},
+		{"limit counts an entity as one character", func(d *Draft) { d.What = strings.Repeat("&amp;", DefaultWhatMaxLength) }, ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			d := validDraft()
 			tc.change(&d)
-			_, err := Prepare(d)
+			_, err := Prepare(d, DefaultWhatMaxLength)
 			if tc.want == "" {
 				if err != nil {
 					t.Fatalf("Prepare: unexpected error %v", err)
@@ -114,7 +115,7 @@ func TestValidateAuthor(t *testing.T) {
 }
 
 func TestSameContent(t *testing.T) {
-	c, err := Prepare(validDraft())
+	c, err := Prepare(validDraft(), DefaultWhatMaxLength)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,5 +131,21 @@ func TestSameContent(t *testing.T) {
 	e.What = "<p>Different</p>"
 	if SameContent(e, c) {
 		t.Fatal("changed text reported as unchanged")
+	}
+}
+
+func TestPrepareUsesTheGivenLimit(t *testing.T) {
+	d := validDraft()
+	d.What = strings.Repeat("a", 800)
+	if _, err := Prepare(d, 1000); err != nil {
+		t.Fatalf("under a 1000 limit: %v", err)
+	}
+	if _, err := Prepare(d, 800-WhatLengthMargin); err != nil {
+		t.Fatalf("within the margin of a %d limit: %v", 800-WhatLengthMargin, err)
+	}
+	_, err := Prepare(d, 600)
+	var verr *ValidationError
+	if !errors.As(err, &verr) || verr.Message != "What you learned must be 600 characters or fewer." {
+		t.Fatalf("over a 600 limit: %v", err)
 	}
 }

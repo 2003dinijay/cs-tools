@@ -49,6 +49,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Entity != nil || cfg.Novera != nil || len(cfg.CORSOrigins) != 0 {
 		t.Fatalf("optional features should be off: %+v", cfg)
 	}
+	if cfg.WhatMaxLength != 500 {
+		t.Fatalf("WhatMaxLength = %d, want the default 500", cfg.WhatMaxLength)
+	}
 	if len(warnings) != 4 {
 		t.Fatalf("warnings = %q", warnings)
 	}
@@ -65,6 +68,7 @@ func TestLoadReadsEverything(t *testing.T) {
 		"AUTH_MODERATOR_GROUPS":        "til-moderators,admins",
 		"ONE_WSO2_WEBAPP_CLIENT_ID":    "webapp",
 		"ONE_WSO2_BASE_URL":            "https://one.example/",
+		"ENTRY_TEXT_MAX_LENGTH":        "800",
 		"ENTITY_SERVICE_BASE_URL":      "https://entity.example",
 		"ENTITY_SERVICE_TOKEN_URL":     "https://idp.example.com/oauth2/token",
 		"ENTITY_SERVICE_CLIENT_ID":     "til",
@@ -89,7 +93,7 @@ func TestLoadReadsEverything(t *testing.T) {
 	}
 	if !slices.Equal(cfg.CORSOrigins, []string{"https://one.example", "https://two.example"}) ||
 		!slices.Equal(cfg.Auth.ModeratorGroups, []string{"til-moderators", "admins"}) ||
-		cfg.WebappBaseURL != "https://one.example" {
+		cfg.WebappBaseURL != "https://one.example" || cfg.WhatMaxLength != 800 {
 		t.Fatalf("lists = %+v", cfg)
 	}
 	if cfg.Entity == nil || cfg.Entity.Scopes[0] != "accounts:read" || cfg.Novera == nil || cfg.Novera.NotifyURL != v["NOVERA_NOTIFY_URL"] ||
@@ -104,6 +108,7 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 		"REST_READ_TIMEOUT":       "soon",
 		"AUTH_JWKS_ENDPOINT":      "idp.example.com/jwks",
 		"ONE_WSO2_BASE_URL":       "one.example",
+		"ENTRY_TEXT_MAX_LENGTH":   "5001",
 		"ENTITY_SERVICE_BASE_URL": "https://entity.example", // the rest of its settings missing
 		"NOVERA_NOTIFY_URL":       "https://gateway.example/notify",
 	}))
@@ -117,6 +122,7 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 		"AUTH_JWKS_ENDPOINT must be an absolute http(s) URL",
 		"AUTH_ISSUER is required",
 		"ONE_WSO2_BASE_URL must be an absolute http(s) URL",
+		"ENTRY_TEXT_MAX_LENGTH must be a whole number from 1 to 5000",
 		"ENTITY_SERVICE_TOKEN_URL is required", "ENTITY_SERVICE_CLIENT_SECRET is required",
 		"NOVERA_TOKEN_URL is required", "NOVERA_CLIENT_ID is required",
 	} {

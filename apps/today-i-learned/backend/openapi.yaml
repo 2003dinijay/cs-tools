@@ -38,6 +38,19 @@ paths:
                 $ref: '#/components/schemas/UserInfo'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /settings:
+    get:
+      summary: The rules the webapp's form shows
+      operationId: getSettings
+      responses:
+        '200':
+          description: Settings that match what this service enforces.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Settings'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /customers/search:
     get:
       summary: Suggest customer names
@@ -79,18 +92,22 @@ paths:
           schema:
             type: string
             maxLength: 200
-        - name: dateFrom
+        - name: createdFrom
           in: query
-          description: Earliest creation date, inclusive, in UTC.
+          description: >-
+            Earliest creation time, inclusive. The webapp sends the start of
+            the reader's first day, so a day means their own calendar day.
           schema:
             type: string
-            format: date
-        - name: dateTo
+            format: date-time
+        - name: createdBefore
           in: query
-          description: Latest creation date, inclusive, in UTC.
+          description: >-
+            Creation time the entries must be before, exclusive. The webapp
+            sends the start of the day after the reader's last day.
           schema:
             type: string
-            format: date
+            format: date-time
         - name: mine
           in: query
           description: Only the caller's own entries.
@@ -102,7 +119,7 @@ paths:
           schema:
             type: integer
             minimum: 1
-            maximum: 100
+            maximum: 50
             default: 10
         - name: offset
           in: query
@@ -275,6 +292,15 @@ components:
         message:
           type: string
           description: Written for people; shown as it is.
+    Settings:
+      type: object
+      required: [whatMaxLength]
+      properties:
+        whatMaxLength:
+          type: integer
+          description: >-
+            The most characters of plain text a learning may have, markup not
+            counted. ENTRY_TEXT_MAX_LENGTH; 500 unless configured.
     UserInfo:
       type: object
       required: [email, displayName, canModerate]
@@ -364,7 +390,10 @@ components:
           description: Required for Customer, Partner and Other; ignored for Internal.
         what:
           type: string
-          description: The learning as HTML. At most 5000 characters of text, markup not counted.
+          description: >-
+            The learning as HTML. At most whatMaxLength characters of text
+            (see /settings), markup not counted; 20 more are accepted as a
+            margin for counting differences.
     UpdateEntryRequest:
       type: object
       additionalProperties: false
@@ -382,4 +411,7 @@ components:
           description: Required for Customer, Partner and Other; ignored for Internal.
         what:
           type: string
-          description: The learning as HTML. At most 5000 characters of text, markup not counted.
+          description: >-
+            The learning as HTML. At most whatMaxLength characters of text
+            (see /settings), markup not counted; 20 more are accepted as a
+            margin for counting differences.

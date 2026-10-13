@@ -36,9 +36,9 @@ import (
 
 const (
 	defaultPageSize = 10
-	// maxPageSize covers the feed, which today loads up to 100 entries at
-	// once and searches them in the browser.
-	maxPageSize     = 100
+	// The feed asks for 5 or 10 a page; 50 leaves room without letting one
+	// request pull the whole table.
+	maxPageSize     = 50
 	maxSearchLength = 200
 	// notifyTimeout bounds the new-entry announcement, which runs before the
 	// response so it isn't cut off when the request ends.
@@ -118,22 +118,23 @@ func parseListQuery(v url.Values) (store.Query, error) {
 		return q, fmt.Errorf("Search must be %d characters or fewer.", maxSearchLength)
 	}
 
-	for _, d := range []struct {
+	for _, b := range []struct {
 		name string
 		dst  **time.Time
-	}{{"dateFrom", &q.From}, {"dateTo", &q.To}} {
-		s := v.Get(d.name)
+	}{{"createdFrom", &q.From}, {"createdBefore", &q.Before}} {
+		s := v.Get(b.name)
 		if s == "" {
 			continue
 		}
-		t, err := time.ParseInLocation(time.DateOnly, s, time.UTC)
+		t, err := time.Parse(time.RFC3339, s)
 		if err != nil {
-			return q, fmt.Errorf("%s must be a date like 2026-10-31.", d.name)
+			return q, fmt.Errorf("%s must be a time like 2026-10-31T00:00:00Z.", b.name)
 		}
-		*d.dst = &t
+		t = t.UTC()
+		*b.dst = &t
 	}
-	if q.From != nil && q.To != nil && q.From.After(*q.To) {
-		return q, errors.New("dateFrom must not be after dateTo.")
+	if q.From != nil && q.Before != nil && !q.From.Before(*q.Before) {
+		return q, errors.New("createdFrom must be before createdBefore.")
 	}
 
 	switch v.Get("mine") {
@@ -176,7 +177,7 @@ func (h *Handler) CreateEntry(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	content, err := entry.Prepare(entry.Draft{Title: req.Title, Where: req.Where, WhereDetail: req.WhereDetail, What: req.What})
+	content, err := entry.Prepare(entry.Draft{Title: req.Title, Where: req.Where, WhereDetail: req.WhereDetail, What: req.What}, h.cfg.WhatMaxLength)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -220,7 +221,7 @@ func (h *Handler) UpdateEntry(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	content, err := entry.Prepare(entry.Draft{Title: req.Title, Where: req.Where, WhereDetail: req.WhereDetail, What: req.What})
+	content, err := entry.Prepare(entry.Draft{Title: req.Title, Where: req.Where, WhereDetail: req.WhereDetail, What: req.What}, h.cfg.WhatMaxLength)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return

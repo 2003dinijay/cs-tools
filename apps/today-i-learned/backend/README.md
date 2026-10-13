@@ -55,6 +55,7 @@ them all.
 | `AUTH_AUDIENCE` | no | Client ids a token must be issued to. |
 | `AUTH_MODERATOR_GROUPS` | no | Groups whose members may edit and delete anyone's entries. |
 | `ONE_WSO2_WEBAPP_CLIENT_ID` | no | The webapp's client id. Only a token issued to it may share or edit; unset means no one can. |
+| `ENTRY_TEXT_MAX_LENGTH` | no | The most characters of text a learning may have, markup not counted: 1–5000, default 500. The webapp's form reads it from `GET /settings` and stops there; the backend accepts 20 more, so a tiny counting difference never rejects what the form allowed. |
 | `ONE_WSO2_BASE_URL` | no | The webapp's address, for the "Read more" link in Google Chat and the TIL logo it serves at `/til-logo.png` (shown only over https). |
 | `CORS_ALLOWED_ORIGINS` | no | Browser origins allowed to call the API. |
 | `PORT`, `REST_READ_TIMEOUT`, `REST_WRITE_TIMEOUT` | no | Defaults 8077, 15s, 45s. |
@@ -70,8 +71,9 @@ written to be shown to people as they are.
 |---|---|---|
 | GET | `/health` | Liveness. No token needed. |
 | GET | `/user-info` | `{email, displayName, canModerate}` |
+| GET | `/settings` | `{whatMaxLength}`: the rules the webapp's form shows. |
 | GET | `/customers/search?q=` | `[{id, name}]`; empty when suggestions are off. |
-| GET | `/submissions` | `{items, total, limit, offset}`, newest first. Query: `q` (search), `dateFrom`/`dateTo` (`YYYY-MM-DD`, inclusive, UTC), `mine=true`, `limit` (1–100, default 10), `offset`. |
+| GET | `/submissions` | `{items, total, limit, offset}`, newest first. Query: `q` (search), `createdFrom` (inclusive) / `createdBefore` (exclusive) as RFC 3339 times, `mine=true`, `limit` (1–50, default 10), `offset`. |
 | POST | `/submissions` | `{title, who, where, what, whereDetail?}`. Webapp only. Announced in Google Chat. |
 | GET | `/submissions/{id}` | One entry. |
 | PUT | `/submissions/{id}` | `{title, where, what, whereDetail?}`. Webapp only; the author or a moderator. |

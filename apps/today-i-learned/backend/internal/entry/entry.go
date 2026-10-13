@@ -30,8 +30,17 @@ const (
 	TitleMaxLength        = 100
 	AuthorMaxLength       = 200
 	SourceDetailMaxLength = 200
-	// WhatMaxLength counts the learning's plain text, not its markup.
-	WhatMaxLength = 5000
+	// A learning's length limit counts its plain text, not its markup. It's
+	// ENTRY_TEXT_MAX_LENGTH: DefaultWhatMaxLength when that isn't set, and
+	// never more than MaxWhatMaxLength.
+	DefaultWhatMaxLength = 500
+	MaxWhatMaxLength     = 5000
+	// WhatLengthMargin is how far past the limit a learning is still
+	// accepted. The webapp's form counts the same way and stops at the limit;
+	// the margin absorbs any tiny difference left (such as an invisible
+	// character one side trims and the other doesn't), so nothing the form
+	// allowed is ever rejected here.
+	WhatLengthMargin = 20
 )
 
 // Sources are the values an entry's "where" can take, in the order the form
@@ -93,8 +102,10 @@ func ValidateAuthor(who string) (string, error) {
 	return who, nil
 }
 
-// Prepare validates a Draft and returns the Content to store.
-func Prepare(d Draft) (Content, error) {
+// Prepare validates a Draft and returns the Content to store. whatMaxLength
+// is the most characters of plain text the learning may have; past it,
+// WhatLengthMargin more are still accepted.
+func Prepare(d Draft, whatMaxLength int) (Content, error) {
 	title := strings.TrimSpace(d.Title)
 	if title == "" {
 		return Content{}, invalid("Title is required.")
@@ -127,8 +138,8 @@ func Prepare(d Draft) (Content, error) {
 	if text == "" {
 		return Content{}, invalid("Add what you learned.")
 	}
-	if utf8.RuneCountInString(text) > WhatMaxLength {
-		return Content{}, invalid("What you learned must be %d characters or fewer.", WhatMaxLength)
+	if utf8.RuneCountInString(text) > whatMaxLength+WhatLengthMargin {
+		return Content{}, invalid("What you learned must be %d characters or fewer.", whatMaxLength)
 	}
 
 	return Content{Title: title, Where: d.Where, WhereDetail: detail, HTML: html, Text: text}, nil
