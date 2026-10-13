@@ -887,14 +887,12 @@ function DashboardWidgetTile({
     // filterable selector the case list's own search can scope to — there is
     // no tile-level click-through target here (see `DashboardLineChart`'s own
     // doc comment), so this Card is plain, non-link chrome, same posture as
-    // the shape "list" branch above for the same underlying reason.
+    // the shape "list" branch above for the same underlying reason. No
+    // per-widget refresh button either — the trend's own cache already keeps
+    // today's point fresh server-side (entity-service's case-volume-trend
+    // cache), so a manual refresh here has nothing to accomplish.
     return (
-      <Card
-        ref={tileRef}
-        variant="outlined"
-        sx={{ position: "relative", p: 1.75, height: "100%", ...cardRefreshRevealSx }}
-      >
-        <Box sx={{ position: "absolute", top: 8, right: 8, zIndex: 1 }}>{refreshButton}</Box>
+      <Card ref={tileRef} variant="outlined" sx={{ position: "relative", p: 1.75, height: "100%" }}>
         <Box sx={{ pb: resolvedDescription ? 1 : 2.5 }}>{renderHeader()}</Box>
         {resolvedDescription && (
           <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
