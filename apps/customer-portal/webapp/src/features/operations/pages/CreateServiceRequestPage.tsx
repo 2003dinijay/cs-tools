@@ -257,14 +257,16 @@ export default function CreateServiceRequestPage(): JSX.Element {
   );
   const isPrimaryProductionOnly = shouldRestrictToPrimaryProductionDeployments(
     projectDetails?.type?.label,
+    projectFeatures,
   );
   const projectDeployments = useMemo(
     () =>
       filterDeploymentsForCaseCreation(
         allProjectDeployments,
         projectDetails?.type?.label,
+        projectFeatures,
       ),
-    [allProjectDeployments, projectDetails?.type?.label],
+    [allProjectDeployments, projectDetails?.type?.label, projectFeatures],
   );
   const isDeploymentsLoading = deploymentsQuery.isLoading;
 
