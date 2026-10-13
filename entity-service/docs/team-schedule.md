@@ -374,16 +374,14 @@ U2 and B-Central were added by migration 0217, data only, with the windows their
   scopes every view to one rota and offers a rota picker only where a family
   has more than one rota with teams, so CRE and SaaS-only SRE read as before.
 
-**IaaS windows start inactive.** The portal before this change reads every
-zoned SRE window as part of SaaS's day, week and roster. `0200` therefore
-seeds `SRE_IAAS_DAY` and `SRE_IAAS_NIGHT` with `is_active = FALSE`, so an older
-webapp still running during the deploy never sees them. Once the rota-aware
-webapp is live, switch them on together with giving the IaaS teams their type:
-
-```sql
-UPDATE team_schedule_shift SET is_active = TRUE, updated_on = NOW()
- WHERE code IN ('SRE_IAAS_DAY', 'SRE_IAAS_NIGHT');
-```
+**IaaS windows started inactive; `0231` switches them on.** The portal before
+this change read every zoned SRE window as part of SaaS's day, week and
+roster. `0200` therefore seeded `SRE_IAAS_DAY` and `SRE_IAAS_NIGHT` with
+`is_active = FALSE`, so an older webapp still running during the deploy never
+saw them, and left switching them on as a manual step. That step was never
+run: the catalogue serves only active windows, so an IaaS lead's roster cell
+offered leave and allocations and nothing on the Rota side. `0231` now
+switches them on, and the local seed no longer does it on its own.
 
 SME's windows ship active: the older portal knows only CRE and SRE and passes
 them by.

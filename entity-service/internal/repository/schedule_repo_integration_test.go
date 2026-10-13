@@ -377,6 +377,19 @@ func TestScheduleIntegration_CatalogueServesRotas(t *testing.T) {
 		t.Fatalf("Moesif night window = %+v, want SME, zone MOE_N, 22:00-10:00 every day, escalation", night)
 	}
 
+	// IaaS's Day and Night are served (migration 0231). Seeded inactive by
+	// 0200 and never switched on, they left an IaaS lead's roster cell with
+	// leave and nothing to roster; the catalogue serves active windows only.
+	iaas := map[string]string{}
+	for _, s := range cat.Shifts {
+		if s.ZoneCode != nil && (s.Code == "SRE_IAAS_DAY" || s.Code == "SRE_IAAS_NIGHT") && s.IsEscalation && s.Tier == nil {
+			iaas[s.Code] = *s.ZoneCode
+		}
+	}
+	if iaas["SRE_IAAS_DAY"] != "IAAS_D" || iaas["SRE_IAAS_NIGHT"] != "IAAS_N" {
+		t.Fatalf("IaaS windows served = %v, want SRE_IAAS_DAY on IAAS_D and SRE_IAAS_NIGHT on IAAS_N, tier left to the turn", iaas)
+	}
+
 	teams := map[string]domain.ScheduleTeam{}
 	for _, tm := range cat.Teams {
 		teams[tm.Key] = tm
