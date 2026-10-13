@@ -61,8 +61,9 @@ export function projectContactRoleChipSx(chipColor: ProjectContactRoleChip["chip
  * Chip labels for one project-contact row, matching the customer portal's
  * `getRoleBadges` for the flags that search can supply.
  *
- * Admin is only the project role ADMIN. Account roles such as customer_admin
- * are not chips, which is how the customer portal contact list behaves.
+ * Admin is the project role ADMIN, and also customer_admin or partner_admin
+ * on accountRoles. That account role is what shows after opening the person,
+ * and it is drawn here so the contacts list identifies admins without that.
  * A person who is not a system user and has neither PORTAL_USER nor
  * SECURITY_CONTACT still gets Portal User. BUSINESS_CONTACT is shown as
  * Business Contact. The customer portal omits that role; CSM keeps it.
@@ -77,9 +78,13 @@ export function projectContactRoleChips(
     projectRoles.some((role) => role.toUpperCase() === code);
   const isPortalUser = hasProjectRole("PORTAL_USER");
   const isSecurityContact = hasProjectRole("SECURITY_CONTACT");
+  const accountRoles = new Set(
+    (contact.accountRoles ?? []).map((role) => role.trim().toLowerCase()).filter(Boolean),
+  );
+  const isAccountAdmin = accountRoles.has("customer_admin") || accountRoles.has("partner_admin");
 
   const chips: ProjectContactRoleChip[] = [];
-  if (hasProjectRole("ADMIN")) chips.push(ADMIN_CHIP);
+  if (hasProjectRole("ADMIN") || isAccountAdmin) chips.push(ADMIN_CHIP);
   if (hasProjectRole("LEAD_USER")) chips.push(LEAD_CHIP);
   if (contact.isCsIntegrationUser) {
     chips.push(SYSTEM_CHIP);

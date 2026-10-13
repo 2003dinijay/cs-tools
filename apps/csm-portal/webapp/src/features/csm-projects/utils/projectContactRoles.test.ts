@@ -18,13 +18,13 @@ import { describe, expect, it } from "vitest";
 import { projectContactRoleLabels } from "@features/csm-projects/utils/projectContactRoles";
 
 describe("projectContactRoleLabels", () => {
-  it("does not show Admin for an account admin whose project groups are only Full Access", () => {
+  it("shows Admin for an account admin whose project groups are only Full Access", () => {
     expect(
       projectContactRoleLabels({
         roles: ["PORTAL_USER", "SECURITY_CONTACT"],
         accountRoles: ["customer", "customer_admin", "external"],
       }),
-    ).toEqual(["Portal User", "Security User"]);
+    ).toEqual(["Admin", "Portal User", "Security User"]);
   });
 
   it("shows Admin from the project ADMIN role, once", () => {
@@ -50,7 +50,7 @@ describe("projectContactRoleLabels", () => {
         roles: ["BUSINESS_CONTACT"],
         accountRoles: ["partner", "partner_admin", "external"],
       }),
-    ).toEqual(["Portal User", "Business Contact"]);
+    ).toEqual(["Admin", "Portal User", "Business Contact"]);
   });
 
   it("shows a system user without Portal User or Security User", () => {

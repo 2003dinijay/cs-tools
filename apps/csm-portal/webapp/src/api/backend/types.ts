@@ -1965,10 +1965,9 @@ export interface BeProjectContact {
   roles?: string[];
   /**
    * Account-level roles of the linked user (external, customer, partner,
-   * customer_admin, partner_admin). Separate from `roles`. The project
-   * contacts table does not draw chips from this list; Admin comes from
-   * the project role ADMIN, as on the customer portal. Empty when no user
-   * is linked.
+   * customer_admin, partner_admin). Separate from `roles`. customer_admin
+   * and partner_admin are drawn as the Admin chip on the contacts list.
+   * Empty when no user is linked.
    */
   accountRoles?: string[];
   /** True when the linked user is an integration account that never signs in. */
