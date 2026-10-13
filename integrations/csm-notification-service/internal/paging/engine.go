@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"regexp"
 	"slices"
 	"strings"
@@ -73,6 +74,11 @@ type ladderStore interface {
 // the call; short enough that a replica dying mid-call delays it by at most
 // this, and never loses it -- the wake entry is still there.
 const callClaimTTL = time.Minute
+
+// cardRetryWindow bounds how long a rung's chat card that keeps failing
+// transiently is retried after the rung was due. Past it the card is given up
+// on and logged, so a room that stays down never holds a ladder open.
+const cardRetryWindow = 15 * time.Minute
 
 // incidentNotes abstracts the entity-service client that writes the execution
 // summary back onto the incident (section 11.0).
@@ -573,6 +579,17 @@ func (e *Engine) smeTeamHasNoChat(team string) bool {
 	}
 	_, ok := e.smeTeamNotifiers[teamKeyFor(team)]
 	return !ok
+}
+
+// onlyChat is notifiers with only the chat ones kept.
+func onlyChat(notifiers []notifier) []notifier {
+	out := []notifier{}
+	for _, n := range notifiers {
+		if n.Channel() == ChannelChat {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // withoutChat is notifiers with the chat ones left out.
@@ -1079,13 +1096,14 @@ func ladderName(l Ladder) string {
 // made, and reports how many it wrote.
 //
 // The predicate is pendingMembers': not yet placed, and not permanently
-// failed. ZADD with an unchanged score is idempotent, so a member that is
-// already there costs nothing -- which is what makes this safe to run over a
-// ladder that is only partly seeded, without first asking which wakes exist.
+// failed, or still owed its card. ZADD with an unchanged score is
+// idempotent, so a member that is already there costs nothing -- which is
+// what makes this safe to run over a ladder that is only partly seeded,
+// without first asking which wakes exist.
 func (e *Engine) seedPendingWakes(ctx context.Context, incidentID string, st LadderState) (int, error) {
 	seeded := 0
-	for i, placed := range st.Placed {
-		if placed || st.failure(i) != "" || i >= len(st.Plan.Calls) {
+	for i := range st.Placed {
+		if !st.owed(i) || i >= len(st.Plan.Calls) {
 			continue
 		}
 		if err := e.store.AddWake(ctx, wakeMember(incidentID, i), st.Plan.Calls[i].At); err != nil {
@@ -1284,9 +1302,11 @@ func (e *Engine) processDue(ctx context.Context, member string) error {
 		// leftover. Dropping it is the correct outcome.
 		return e.store.RemoveWakes(ctx, member)
 	}
-	if st.Cancelled != nil || st.Placed[index] || st.failure(index) != "" {
+	if st.Cancelled != nil || !st.owed(index) {
 		return e.store.RemoveWakes(ctx, member)
 	}
+	// The call has its outcome and only its card is owed: post that alone.
+	cardOnly := st.cardPending(index)
 
 	// Two replicas tick independently (a rolling restart always has two for
 	// a moment), and both see the same due call. Only the one that claims it
@@ -1306,7 +1326,12 @@ func (e *Engine) processDue(ctx context.Context, member string) error {
 
 	call := st.Plan.Calls[index]
 	var failure string
-	if err := e.place(ctx, st.Plan, call); err != nil {
+	err, cardErr := e.place(ctx, st.Plan, call, cardOnly)
+	if cardOnly {
+		// No call went out this time; what came back is the card's.
+		err, cardErr = nil, err
+	}
+	if err != nil {
 		if !isPermanent(err) {
 			// Transient — leave the wake entry and give the claim back, so the
 			// next tick retries.
@@ -1314,7 +1339,7 @@ func (e *Engine) processDue(ctx context.Context, member string) error {
 				slog.WarnContext(ctx, "escalation: could not release a failed call's claim; it retries when the claim expires",
 					"incidentId", incidentID, "err", rerr)
 			}
-			return fmt.Errorf("escalation: place %s call for %s: %w", call.Level, incidentID, err)
+			return fmt.Errorf("escalation: place %s call for %s: %w", call.Level, incidentID, errors.Join(err, cardErr))
 		}
 		// The provider rejected the request itself; trying again with the
 		// same number and the same document cannot succeed. Record why, so
@@ -1325,6 +1350,26 @@ func (e *Engine) processDue(ctx context.Context, member string) error {
 			"level", call.Level.String(), "attempt", call.Ordinal,
 			"to", maskPhone(call.Recipient.Phone), "reason", permanentReason(err))
 		failure = permanentReason(err)
+	}
+	// The card of a rung that also rang (see placeVia). The call's outcome is
+	// what gets recorded; a rejected card is logged and dropped, and one that
+	// failed transiently is owed, and retried on its own -- until
+	// cardRetryWindow after the rung was due. A room that stays down must not
+	// hold the ladder open, and a card that late is no longer news.
+	retryCard := false
+	if cardErr != nil {
+		switch {
+		case isPermanent(cardErr):
+			slog.WarnContext(ctx, "escalation: the rung's card was rejected; not retrying it",
+				"incidentId", incidentID, "level", call.Level.String(), "attempt", call.Ordinal,
+				"reason", permanentReason(cardErr))
+		case e.now().After(call.At.Add(cardRetryWindow)):
+			slog.WarnContext(ctx, "escalation: the rung's card still failed after the retry window; giving up on it",
+				"incidentId", incidentID, "level", call.Level.String(), "attempt", call.Ordinal,
+				"window", cardRetryWindow.String(), "err", cardErr)
+		default:
+			retryCard = true
+		}
 	}
 
 	// Re-read before writing, and carry over only what this goroutine owns.
@@ -1351,15 +1396,28 @@ func (e *Engine) processDue(ctx context.Context, member string) error {
 		// The call did go out, but there is nothing left to record it on.
 		return e.store.RemoveWakes(ctx, member)
 	}
-	if failure != "" {
+	switch {
+	case cardOnly:
+		// The call's outcome was recorded on the tick that placed it.
+	case failure != "":
 		fresh.setFailure(index, failure)
-	} else {
+	default:
 		fresh.Placed[index] = true
 	}
+	fresh.setCardPending(index, retryCard)
 	st = fresh
 
 	if err := e.store.Save(ctx, incidentID, st); err != nil {
 		return fmt.Errorf("escalation: record placed call for %s: %w", incidentID, err)
+	}
+	if retryCard {
+		// The card is still owed: keep the wake entry and give the claim
+		// back, so the next tick posts it -- and only it.
+		if rerr := e.store.ReleaseCall(ctx, claim); rerr != nil {
+			slog.WarnContext(ctx, "escalation: could not release a failed card's claim; it retries when the claim expires",
+				"incidentId", incidentID, "err", rerr)
+		}
+		return fmt.Errorf("escalation: post %s card for %s: %w", call.Level, incidentID, cardErr)
 	}
 	if err := e.store.RemoveWakes(ctx, member); err != nil {
 		return fmt.Errorf("escalation: clear placed call for %s: %w", incidentID, err)
@@ -1392,24 +1450,37 @@ func (e *Engine) processDue(ctx context.Context, member string) error {
 // Every channel is attempted even if an earlier one fails, and the errors are
 // joined: a chat webhook being down must not stop the phone ringing, and a
 // phone failing must not cost the room its sight of the escalation.
-func (e *Engine) place(ctx context.Context, plan Plan, call PlannedCall) error {
+//
+// cardOnly posts the rung's card and nothing else, for a rung whose call has
+// already gone out and is owed only its card (LadderState.CardPending).
+func (e *Engine) place(ctx context.Context, plan Plan, call PlannedCall, cardOnly bool) (err, cardErr error) {
+	notifiers, channel := e.notifiersFor(plan), e.cfg.Channel
 	if plan.Trigger.Routing.Ladder == LadderSME {
 		// An SME ladder rides the SRE engine's ticker but pages over the
 		// SME's own channel and Chat space.
-		return e.placeVia(ctx, plan, call, e.smeNotifiersFor(plan.Trigger.Routing.SMETeam), e.cfg.SME.Channel)
+		notifiers, channel = e.smeNotifiersFor(plan.Trigger.Routing.SMETeam), e.cfg.SME.Channel
 	}
-	return e.placeVia(ctx, plan, call, e.notifiersFor(plan), e.cfg.Channel)
+	if cardOnly {
+		notifiers, channel = onlyChat(notifiers), ChannelChat
+	}
+	return e.placeVia(ctx, plan, call, notifiers, channel)
 }
 
 // placeVia is place over the given notifiers; the SME page has its own.
-func (e *Engine) placeVia(ctx context.Context, plan Plan, call PlannedCall, notifiers []notifier, channel Channel) error {
+//
+// A rung that rang a phone is decided by its call alone, so the card's errors
+// come back on their own as cardErr: a webhook blinking must not re-dial the
+// engineer, and a room with no space must not mark a call that went through
+// as failed. Any other rung (chat only, log, a held call) returns every
+// error in err, as it always has.
+func (e *Engine) placeVia(ctx context.Context, plan Plan, call PlannedCall, notifiers []notifier, channel Channel) (err, cardErr error) {
 	t := plan.Trigger
 	if !e.cfg.CallSendingEnabled {
 		slog.InfoContext(ctx, "escalation: sending disabled (CALL_SENDING_ENABLED=false); not notifying",
 			"incidentId", t.IncidentID, "rule", t.Routing.Rule(), "priority", t.Priority,
 			"level", call.Level.String(), "attempt", call.Ordinal,
 			"channel", string(channel), "to", maskPhone(call.Recipient.Phone))
-		return nil
+		return nil, nil
 	}
 	if len(notifiers) == 0 {
 		// Configured for a channel whose client was never constructed. Not an
@@ -1417,7 +1488,7 @@ func (e *Engine) placeVia(ctx context.Context, plan Plan, call PlannedCall, noti
 		slog.ErrorContext(ctx, "escalation: no notifier configured for this channel; nobody was contacted",
 			"incidentId", t.IncidentID, "channel", string(channel),
 			"level", call.Level.String(), "attempt", call.Ordinal)
-		return nil
+		return nil, nil
 	}
 
 	slog.InfoContext(ctx, "escalation: notifying",
@@ -1426,14 +1497,21 @@ func (e *Engine) placeVia(ctx context.Context, plan Plan, call PlannedCall, noti
 		"channel", string(channel), "to", maskPhone(call.Recipient.Phone),
 		"message", messageKind(e.cfg.UseSSML))
 
-	var errs []error
+	var errs, cardErrs []error
+	rang := false
 	for _, n := range notifiers {
 		if call.HoldCall && n.Channel() == ChannelCall {
 			continue
 		}
+		rang = rang || n.Channel() == ChannelCall
 		delivered, err := n.Deliver(ctx, plan, call)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", n.Channel(), err))
+			err = fmt.Errorf("%s: %w", n.Channel(), err)
+			if n.Channel() == ChannelChat {
+				cardErrs = append(cardErrs, err)
+			} else {
+				errs = append(errs, err)
+			}
 			continue
 		}
 		slog.InfoContext(ctx, "escalation: ALERT TRIGGERED",
@@ -1456,7 +1534,10 @@ func (e *Engine) placeVia(ctx context.Context, plan Plan, call PlannedCall, noti
 				"incidentId", t.IncidentID, "err", err)
 		}
 	}
-	return errors.Join(errs...)
+	if rang {
+		return errors.Join(errs...), errors.Join(cardErrs...)
+	}
+	return errors.Join(append(errs, cardErrs...)...), nil
 }
 
 // messageKind names which voice document a call carried, so a log line says
@@ -1519,11 +1600,12 @@ func (e *Engine) RunTicker(ctx context.Context, interval time.Duration) {
 	}
 }
 
-// pendingMembers lists the wake members for calls that have not been placed.
+// pendingMembers lists the wake members for calls that have not been placed,
+// or still owe their card.
 func pendingMembers(incidentID string, st LadderState) []string {
 	var out []string
-	for i, done := range st.Placed {
-		if !done && st.failure(i) == "" {
+	for i := range st.Placed {
+		if st.owed(i) {
 			out = append(out, wakeMember(incidentID, i))
 		}
 	}
@@ -1532,7 +1614,9 @@ func pendingMembers(incidentID string, st LadderState) []string {
 
 // isPermanent reports whether a call error is one that retrying cannot fix:
 // the provider accepted the request and rejected its content. Anything else —
-// a network failure, a 5xx, a timeout — is transient and stays scheduled.
+// a network failure, a 5xx, a 429, a timeout — is transient and stays
+// scheduled. A 429 is the provider asking to be tried again later (Google
+// Chat's webhook rate limit, or Twilio's), not a rejection of the request.
 // undeliverable is a delivery that no retry can make succeed: the
 // configuration has nowhere to send it. Permanent, so the engine records the
 // reason against the call and the ladder carries on, instead of retrying
@@ -1548,7 +1632,8 @@ func isPermanent(err error) bool {
 	}
 	var upstream *apierror.Error
 	if errors.As(err, &upstream) {
-		return upstream.StatusCode >= 400 && upstream.StatusCode < 500
+		return upstream.StatusCode >= 400 && upstream.StatusCode < 500 &&
+			upstream.StatusCode != http.StatusTooManyRequests
 	}
 	return false
 }
