@@ -183,8 +183,18 @@ func (d *SNWritebackDispatcher) runOne(job snWritebackJob) {
 		return
 	}
 
+	// Deliberately logs no error text and no payload: either can echo
+	// caller-supplied content back (ServiceNow's own rejection messages
+	// have been observed quoting field values; job.payload can carry
+	// customer-authored text like closeNotes), and this line goes to
+	// general application log aggregation, which is not the right place
+	// for that. The full error and payload are recorded in
+	// sn_writeback_failures (just below) — a dedicated, access-controlled
+	// table meant for an operator to triage, not a log stream. This line
+	// exists only so the failure is visible/alertable from logs at all,
+	// identifying just the resource and operation that failed.
 	slog.WarnContext(writeCtx, "sn writeback: best-effort ServiceNow mirror write failed",
-		"entityType", job.entityType, "entityId", job.entityID, "operation", job.operation, "error", err)
+		"entityType", job.entityType, "entityId", job.entityID, "operation", job.operation)
 
 	payload, marshalErr := json.Marshal(job.payload)
 	if marshalErr != nil {
@@ -203,8 +213,16 @@ func (d *SNWritebackDispatcher) runOne(job snWritebackJob) {
 		Payload:    payload,
 		Error:      err.Error(),
 	}); recErr != nil {
+		// Same sanitization as above: neither the original write error nor
+		// the recording error is logged, since the former can echo
+		// caller-supplied content and this is the one case where the full
+		// detail isn't persisted anywhere else either (the table insert
+		// itself just failed) -- an operator needs the entity identified
+		// here to go find it through other means (the data source itself,
+		// or a direct ServiceNow lookup), not a verbatim error string in
+		// general application logs.
 		slog.ErrorContext(writeCtx, "sn writeback: ServiceNow mirror write failed and recording the failure also failed",
-			"entityType", job.entityType, "entityId", job.entityID, "operation", job.operation, "writeErr", err, "recordErr", recErr)
+			"entityType", job.entityType, "entityId", job.entityID, "operation", job.operation)
 	}
 }
 
