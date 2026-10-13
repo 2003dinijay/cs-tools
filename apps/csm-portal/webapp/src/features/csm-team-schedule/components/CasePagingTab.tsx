@@ -102,17 +102,15 @@ export default function CasePagingTab({ onOpenRota, initialChain = "CRE" }: Prop
   const readAt = Math.max(creChain.dataUpdatedAt, sreOnScreen ? sreChain.dataUpdatedAt : 0);
   const { controls: phone, dialog } = usePagingPhoneControls(members, readAt);
 
-  /** "Add number" or "Test call" on a phone gap, where the reader may edit
-   *  that person's paging number. */
+  /** "Test call" on a phone gap for a paging-only number the reader may act
+   *  on. A missing number gets no action here: it is added on the person's
+   *  profile, which the gap's hint says. */
   const phoneActionFor = (gap: PagingReadinessGap): PhoneGapAction | null => {
-    if (!PHONE_GAPS.has(gap.code) || !gap.userId) return null;
+    if (!PHONE_GAPS.has(gap.code) || !gap.userId || gap.code === "NO_PHONE") return null;
     const m = members.find((x) => x.userId === gap.userId && x.canEditPhone === true);
-    if (!m) return null;
-    if (gap.code !== "NO_PHONE" && m.pagingPhone) {
-      const calling = phone.calling(m);
-      return { label: calling ? CALLING_LABEL : "Test call", onClick: () => phone.test(m), pending: calling };
-    }
-    return { label: "Add number", onClick: () => phone.edit(m) };
+    if (!m?.pagingPhone) return null;
+    const calling = phone.calling(m);
+    return { label: calling ? CALLING_LABEL : "Test call", onClick: () => phone.test(m), pending: calling };
   };
 
   const option = chains.find((c) => c.code === chainCode) ?? chains[0] ?? CHAINS[0];
@@ -136,7 +134,7 @@ export default function CasePagingTab({ onOpenRota, initialChain = "CRE" }: Prop
     });
 
   const picker = (
-    <div className="seg teamseg cp-chains" role="tablist" aria-label="Paging chain">
+    <div className="seg teamseg cp-chains" role="tablist" aria-label="Alert chain">
       {chains.map((c) => {
         const disabled = Boolean(c.disabledReason);
         return (
@@ -182,7 +180,7 @@ export default function CasePagingTab({ onOpenRota, initialChain = "CRE" }: Prop
     <>
       <div className="card-head">
         {picker}
-        <h2>{option.label} paging chain</h2>
+        <h2>{option.label} alert chain</h2>
       </div>
       <PagingReadinessStrip
         key={chainCode}

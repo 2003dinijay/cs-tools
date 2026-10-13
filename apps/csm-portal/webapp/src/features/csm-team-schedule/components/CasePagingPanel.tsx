@@ -51,7 +51,7 @@ import PhoneChip, { type PagingPhoneControls } from "./PhoneChip";
  * chains take theirs from the rota, so the tab shows them read-only.
  */
 
-/** The family whose paging chain this panel edits. */
+/** The family whose alert chain this panel edits. */
 export const PAGING_PANEL_FAMILY = "CRE";
 
 interface Props {
@@ -101,7 +101,7 @@ function notChanged(err: unknown): string {
     err instanceof BackendApiError && (err.status === 403 || err.status === 409) && err.message
       ? ` ${err.message.charAt(0).toUpperCase()}${err.message.slice(1)}.`
       : "";
-  return `That change to the paging chain was not saved.${reason}`;
+  return `That change to the alert chain was not saved.${reason}`;
 }
 
 function LockHint({ who }: { who: string }): JSX.Element {
@@ -150,7 +150,7 @@ export default function CasePagingPanel({
   const shownTeams = teamFilter ? chainTeams.filter((t) => t.key === teamFilter) : chainTeams;
 
   /** Whether the reader may change anything on this chain. A reader who may
-   *  not (an SME or SRE rota admin, say) is not offered "Edit paging chain"
+   *  not (an SME or SRE rota admin, say) is not offered "Edit alert chain"
    *  at all; the server still checks every edit. */
   const mayEditAny =
     !!can &&
@@ -268,7 +268,7 @@ export default function CasePagingPanel({
       <div className="card-head">
         {chainPicker}
         <h2>
-          Paging chain <span className="count">{chainTeams.length} teams</span>
+          Alert chain <span className="count">{chainTeams.length} teams</span>
         </h2>
         <div className="tools">
           {totalGaps > 0 ? <span className="rng">{totalGaps} gap{totalGaps === 1 ? "" : "s"}</span> : null}
@@ -284,7 +284,7 @@ export default function CasePagingPanel({
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
                 <path d="M4 20h4l10-10a2.8 2.8 0 0 0-4-4L4 16v4z" />
               </svg>
-              <span>{editing ? "Done editing" : "Edit paging chain"}</span>
+              <span>{editing ? "Done editing" : "Edit alert chain"}</span>
             </button>
           ) : null}
           <select
@@ -319,15 +319,15 @@ export default function CasePagingPanel({
       />
 
       {chain.isError ? (
-        <QueryErrorState message="Could not load the paging chain." error={chain.error} />
+        <QueryErrorState message="Could not load the alert chain." error={chain.error} />
       ) : chain.isLoading ? (
-        <div className="offnone">Loading the paging chain…</div>
+        <div className="offnone">Loading the alert chain…</div>
       ) : chainTeams.length === 0 ? (
-        <div className="offnone">No teams on the {family} paging chain.</div>
+        <div className="offnone">No teams on the {family} alert chain.</div>
       ) : (
         <div className="cp-mx-wrap">
           <table className="cp-mx">
-            <caption className="cp-vh">CRE paging chain by team and level</caption>
+            <caption className="cp-vh">CRE alert chain by team and level</caption>
             <thead>
               <tr>
                 <th scope="col" className="cp-corner">
@@ -349,52 +349,56 @@ export default function CasePagingPanel({
               </tr>
             </thead>
 
-            {/* L0: the responders, paged first, all together. */}
+            {/* L0: the responders, paged first, all together -- one row, its
+                cell in each column split into the 1st, 2nd and 3rd. */}
             <tbody className="band">
-              {RANKS.map((r) => (
-                <tr key={r}>
-                  <th scope="row">
-                    {levelLabel(0)}
-                    <small>
-                      {RANK_LABEL[r]}
-                      {r > 1 ? <span className="cp-opt"> · optional</span> : null}
-                    </small>
-                  </th>
-                  {columns.map((t) => {
-                    const abt = isABT(t);
-                    return (
-                      <td
-                        key={t.key}
-                        className={colClass(t)}
-                        id={r === 1 ? firstResponderCellId(t.key) : undefined}
-                        tabIndex={r === 1 ? -1 : undefined}
-                      >
-                        {personCell({
-                          label: `${t.name} ${RANK_LABEL[r]}`,
-                          cellKey: `${t.key}|r${r}`,
-                          rank: r,
-                          holder: t.members.find((m) => m.responderRank === r),
-                          options: t.members.filter(canRespond),
-                          allowed: mayResponders(t.key),
-                          onPick: (next) => {
-                            const holder = t.members.find((m) => m.responderRank === r);
-                            void apply(
-                              next
-                                ? [{ membershipId: next, responderRank: r }]
-                                : holder
-                                  ? [{ membershipId: holder.membershipId, responderRank: 0 }]
-                                  : [],
-                              `${t.key}|r${r}`,
-                            );
-                          },
-                          lockWho:
-                            r === 1 ? (abt ? "this team's lead, rota admin" : "America lead, rota admin") : undefined,
-                        })}
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
+              <tr>
+                <th scope="row">
+                  {levelLabel(0)}
+                  <small>
+                    1st, 2nd, 3rd responders
+                    <span className="cp-opt"> · 2nd and 3rd optional</span>
+                  </small>
+                </th>
+                {columns.map((t) => {
+                  const abt = isABT(t);
+                  return (
+                    <td key={t.key} className={colClass(t)} id={firstResponderCellId(t.key)} tabIndex={-1}>
+                      <ol className="cp-l0" aria-label={`${t.name} responders`}>
+                        {RANKS.map((r) => (
+                          <li key={r} className="cp-slot">
+                            <span className="cp-rank">
+                              {RANK_LABEL[r].replace(" responder", "")}
+                              {r > 1 ? <span className="cp-opt"> · optional</span> : null}
+                            </span>
+                            {personCell({
+                              label: `${t.name} ${RANK_LABEL[r]}`,
+                              cellKey: `${t.key}|r${r}`,
+                              rank: r,
+                              holder: t.members.find((m) => m.responderRank === r),
+                              options: t.members.filter(canRespond),
+                              allowed: mayResponders(t.key),
+                              onPick: (next) => {
+                                const holder = t.members.find((m) => m.responderRank === r);
+                                void apply(
+                                  next
+                                    ? [{ membershipId: next, responderRank: r }]
+                                    : holder
+                                      ? [{ membershipId: holder.membershipId, responderRank: 0 }]
+                                      : [],
+                                  `${t.key}|r${r}`,
+                                );
+                              },
+                              lockWho:
+                                r === 1 ? (abt ? "this team's lead, rota admin" : "America lead, rota admin") : undefined,
+                            })}
+                          </li>
+                        ))}
+                      </ol>
+                    </td>
+                  );
+                })}
+              </tr>
             </tbody>
 
             {/* L1: each ABT's Team lead; at night, Americas' Team leads. */}

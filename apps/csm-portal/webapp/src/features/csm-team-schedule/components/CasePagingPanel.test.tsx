@@ -86,7 +86,7 @@ beforeEach(() => {
 describe("CasePagingPanel: the CRE chain as a team-by-level matrix", () => {
   it("is a captioned table with a column per team, the ABTs in order and Americas last, marked night", () => {
     renderPanel();
-    const table = screen.getByRole("table", { name: "CRE paging chain by team and level" });
+    const table = screen.getByRole("table", { name: "CRE alert chain by team and level" });
     const headers = within(table).getAllByRole("columnheader");
     expect(headers.map((h) => h.textContent?.replace(/(Ready|\d+ gaps?).*$/, "").trim())).toEqual([
       "Level",
@@ -102,9 +102,7 @@ describe("CasePagingPanel: the CRE chain as a team-by-level matrix", () => {
     renderPanel();
     const rows = screen.getAllByRole("rowheader");
     expect(rows.map((r) => r.textContent)).toEqual([
-      "Level 0 (L0)1st responder",
-      "Level 0 (L0)2nd responder · optional",
-      "Level 0 (L0)3rd responder · optional",
+      "Level 0 (L0)1st, 2nd, 3rd responders · 2nd and 3rd optional",
       "Level 1 (L1)Team lead",
       "Level 2 (L2)Team leads pool · America lead at night",
       "Level 3 (L3)CRE head",
@@ -129,38 +127,50 @@ describe("CasePagingPanel: the CRE chain as a team-by-level matrix", () => {
     expect(within(rowOf(/^Level 4/)).getByRole("cell")).toHaveTextContent("Sol Head");
   });
 
-  it("offers no Edit paging chain to a reader who may change nothing, and still shows the chain", () => {
+  it("offers no Edit alert chain to a reader who may change nothing, and still shows the chain", () => {
     chain.data = {
       ...matrixChain(),
       canEdit: { responderTeams: [], teamLeadTeams: [], americasTeamLead: false, heads: false },
     };
     renderPanel();
-    expect(screen.queryByRole("button", { name: /Edit paging chain/ })).not.toBeInTheDocument();
-    expect(screen.getByRole("table", { name: "CRE paging chain by team and level" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Edit alert chain/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("table", { name: "CRE alert chain by team and level" })).toBeInTheDocument();
     expect(screen.getByText("Val First")).toBeInTheDocument();
   });
 
-  it("offers Edit paging chain to a reader who may change only the heads", () => {
+  it("offers Edit alert chain to a reader who may change only the heads", () => {
     chain.data = {
       ...matrixChain(),
       canEdit: { responderTeams: [], teamLeadTeams: [], americasTeamLead: false, heads: true },
     };
     renderPanel();
-    expect(screen.getByRole("button", { name: /Edit paging chain/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Edit alert chain/ })).toBeInTheDocument();
   });
 
   it("shows names, not pickers, until editing, and an empty slot in words", () => {
     renderPanel();
-    const table = screen.getByRole("table", { name: "CRE paging chain by team and level" });
+    const table = screen.getByRole("table", { name: "CRE alert chain by team and level" });
     expect(within(table).queryByRole("combobox")).not.toBeInTheDocument();
-    const first = within(rowOf(/2nd responder/)).getAllByRole("cell");
-    expect(first[0]).toHaveTextContent("— not set —");
-    expect(within(rowOf(/1st responder/)).getAllByRole("cell")[0]).toHaveTextContent("Val First");
+    const slots = within(screen.getByRole("list", { name: "Vega responders" })).getAllByRole("listitem");
+    expect(slots[0]).toHaveTextContent("1st");
+    expect(slots[0]).toHaveTextContent("Val First");
+    expect(slots[1]).toHaveTextContent("2nd · optional");
+    expect(slots[1]).toHaveTextContent("— not set —");
+  });
+
+  it("puts L0 in one row, each team's cell split into its 1st, 2nd and 3rd responder", () => {
+    renderPanel();
+    const cells = within(rowOf(/^Level 0/)).getAllByRole("cell");
+    expect(cells).toHaveLength(3);
+    for (const cell of cells) {
+      const slots = within(within(cell).getByRole("list")).getAllByRole("listitem");
+      expect(slots.map((s) => s.textContent?.slice(0, 3))).toEqual(["1st", "2nd", "3rd"]);
+    }
   });
 
   it("gives Americas its Team leads list at L1 and its America lead at L2", () => {
     renderPanel();
-    fireEvent.click(screen.getByRole("button", { name: /Edit paging chain/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Edit alert chain/ }));
     const tier2 = within(rowOf(/^Level 1/)).getAllByRole("cell");
     expect(within(tier2[0]).getByLabelText("Vega Team lead")).toBeInTheDocument();
     expect(tier2[2]).toHaveTextContent("Nia Night");
@@ -175,7 +185,7 @@ describe("CasePagingPanel: the CRE chain as a team-by-level matrix", () => {
 
   it("edits a cell where the reader may, and locks the rest saying who may", async () => {
     renderPanel();
-    fireEvent.click(screen.getByRole("button", { name: /Edit paging chain/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Edit alert chain/ }));
     expect(screen.getByLabelText("Lyra 1st responder")).toBeDisabled();
     expect(screen.getAllByText("this team's lead, rota admin").length).toBeGreaterThan(0);
 

@@ -256,7 +256,8 @@ func (r *scheduleRepository) Catalogue(ctx context.Context) (domain.ScheduleCata
 		       (SELECT d.shift_code FROM team_schedule_team_default_shift d WHERE d.team_key = t.key),
 		       `+teamFamilyExpr+`,
 		       (row_number() OVER (ORDER BY `+teamDisplayOrder+`))::int,
-		       ro.code
+		       ro.code,
+		       COALESCE(lower(t.type) LIKE '%abt', FALSE)
 		  FROM team t
 		  LEFT JOIN team_schedule_rota ro ON lower(ro.team_type) = lower(t.type) AND ro.is_active
 		 WHERE `+rosteredTeamWhere+`
@@ -268,7 +269,7 @@ func (r *scheduleRepository) Catalogue(ctx context.Context) (domain.ScheduleCata
 	for teamRows.Next() {
 		var t domain.ScheduleTeam
 		var key *string
-		if err := teamRows.Scan(&key, &t.Name, &t.DefaultShiftCode, &t.Family, &t.SortOrder, &t.RotaCode); err != nil {
+		if err := teamRows.Scan(&key, &t.Name, &t.DefaultShiftCode, &t.Family, &t.SortOrder, &t.RotaCode, &t.IsABT); err != nil {
 			return cat, fmt.Errorf("scan schedule team: %w", err)
 		}
 		t.Key = stringOrEmpty(key)
