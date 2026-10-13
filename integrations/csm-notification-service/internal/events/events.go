@@ -382,6 +382,21 @@ type CaseAcknowledgedPayload struct {
 	// decode-compatibility pair exists.
 	ProjectOnboardingStatus string `json:"projectOnboardingStatus,omitempty"`
 	IsEvaluationAccount     bool   `json:"isEvaluationAccount,omitempty"`
+	// CaseType — see CaseCreatedPayload's own doc comment (the same
+	// strings.ToUpper(req.Type) convention entity-service uses). A
+	// security_report_analysis case never carries a severity, so
+	// handleCaseAcknowledged uses this to pick the dedicated ack card that
+	// omits the severity line, instead of rendering "Unknown".
+	//
+	// This field is new, and decodeStrict rejects any field not declared on
+	// this struct -- deploy this service's build that declares it BEFORE
+	// deploying the entity-service build that starts sending it, same
+	// deployment-order requirement as every other strictly-decoded new field
+	// added to a payload here (e.g. incident.assigned's assignedOn). An
+	// overlapping rollout where entity-service ships first would have every
+	// case.acknowledged event fail this field's unknown-field check, retry,
+	// dead-letter and eventually drop.
+	CaseType string `json:"caseType,omitempty"`
 }
 
 // WorkaroundProvidedPayload is TypeWorkaroundProvided's payload — mirrors

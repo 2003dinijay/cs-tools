@@ -2711,6 +2711,7 @@ func (s *caseService) publishCaseAcknowledged(ctx context.Context, caseID, ackno
 		Product:          caseProductName(cv),
 		Team:             caseTeamName(cv),
 		AcknowledgerName: acknowledgerName,
+		CaseType:         strings.ToUpper(derefString(cv.Type)),
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "update case: encode case.acknowledged payload failed", "caseId", caseID, "error", err)

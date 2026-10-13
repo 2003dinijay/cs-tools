@@ -271,6 +271,11 @@ type CaseAcknowledgedPayload struct {
 	// Team — see CaseCreatedPayload's own doc comment.
 	Team             string `json:"team,omitempty"`
 	AcknowledgerName string `json:"acknowledgerName"`
+	// CaseType — see CaseCreatedPayload's own doc comment (the same
+	// strings.ToUpper(req.Type) convention). security_report_analysis never
+	// carries a severity, so csm-notification-service uses this to render a
+	// dedicated ack card with no severity line instead of "Unknown".
+	CaseType string `json:"caseType,omitempty"`
 }
 
 // WorkaroundProvidedPayload is the Payload shape for
