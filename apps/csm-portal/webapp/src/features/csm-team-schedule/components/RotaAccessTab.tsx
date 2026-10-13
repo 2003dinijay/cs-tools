@@ -103,9 +103,11 @@ export default function RotaAccessTab({ teams }: Props): JSX.Element {
                 {markerFamilies.map((f) => (
                   <button
                     key={f}
+                    id={`ra-fam-${f}`}
                     type="button"
                     role="tab"
                     aria-selected={family === f}
+                    aria-controls="ra-markers-panel"
                     className={family === f ? "on" : undefined}
                     onClick={() => setFamily(f)}
                   >
@@ -115,12 +117,20 @@ export default function RotaAccessTab({ teams }: Props): JSX.Element {
               </div>
             ) : null}
           </div>
-          <MarkerTable
-            teams={teams.filter((t) => t.family === family)}
-            markers={access.data.markers.filter((m) => m.family === family)}
-            busy={change.isPending}
-            onChange={apply}
-          />
+          {/* One panel for the group chosen above; with a single group there
+              are no tabs, so it is a plain region named by the heading. */}
+          <div
+            id="ra-markers-panel"
+            role={markerFamilies.length > 1 ? "tabpanel" : undefined}
+            aria-labelledby={markerFamilies.length > 1 ? `ra-fam-${family}` : undefined}
+          >
+            <MarkerTable
+              teams={teams.filter((t) => t.family === family)}
+              markers={access.data.markers.filter((m) => m.family === family)}
+              busy={change.isPending}
+              onChange={apply}
+            />
+          </div>
         </section>
       ) : null}
     </div>

@@ -12454,7 +12454,7 @@ paths:
         "204":
           description: Done (idempotent).
         "400":
-          description: Bad request (not CRE/SRE/SME or a team key, not a UUID, or refused by the entity service with its reason).
+          description: Bad request (family not CRE/SRE/SME, userId not a UUID, or refused by the entity service with its reason, e.g. the person is not active internal staff).
           content:
             application/json:
               schema:
@@ -12472,7 +12472,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
         "404":
-          description: Not found (a team not on the schedule).
+          description: Not found (the entity service has no schedule database, so its rota access routes are not registered).
           content:
             application/json:
               schema:
@@ -12505,7 +12505,7 @@ paths:
         "204":
           description: Done (idempotent).
         "400":
-          description: Bad request (not CRE/SRE/SME or a team key, not a UUID, or refused by the entity service with its reason).
+          description: Bad request (family not CRE/SRE/SME, userId not a UUID, or refused by the entity service with its reason, e.g. the person is not active internal staff).
           content:
             application/json:
               schema:
@@ -12523,7 +12523,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
         "404":
-          description: Not found (a team not on the schedule).
+          description: Not found (the entity service has no schedule database, so its rota access routes are not registered).
           content:
             application/json:
               schema:

@@ -108,12 +108,22 @@ describe("RotaAccessTab", () => {
     expect(lastChange()).toEqual({ kind: "marker", teamKey: "apollo", userId: ANA, grant: false });
   });
 
+  it("ties each group tab to the markers panel it shows", () => {
+    render(<RotaAccessTab teams={TEAMS} />);
+    const sre = screen.getByRole("tab", { name: "SRE" });
+    fireEvent.click(sre);
+    const panel = screen.getByRole("tabpanel", { name: "SRE" });
+    expect(sre).toHaveAttribute("aria-controls", panel.id);
+    expect(within(panel).getByRole("rowheader", { name: "Apollo" })).toBeInTheDocument();
+  });
+
   it("shows a rota admin only their own group's markers, and no rota admin section", () => {
     access.data = { ...access.data!, canManage: { rotaAdmins: false, markerFamilies: ["SRE"] } };
     render(<RotaAccessTab teams={TEAMS} />);
     expect(screen.queryByRole("heading", { name: "Rota admins" })).not.toBeInTheDocument();
-    // One group needs no group switch.
+    // One group needs no group switch, so no tab panel either.
     expect(screen.queryByRole("tab", { name: "CRE" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tabpanel")).not.toBeInTheDocument();
     expect(screen.getByRole("rowheader", { name: "Apollo" })).toBeInTheDocument();
     expect(screen.queryByRole("rowheader", { name: "Lyra" })).not.toBeInTheDocument();
   });
