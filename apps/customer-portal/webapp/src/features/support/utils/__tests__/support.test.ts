@@ -14,12 +14,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   collapseCodeBlockWhitespace,
   collapseCommentSourceWhitespace,
   collapseHtmlSourceWhitespace,
   compareByCreatedOnThenId,
+  computeMinScheduleDatetimeLocalForTimeZone,
   convertCodeTagsToHtml,
   dedupeAdjacentDuplicateMessages,
   deriveFilterLabels,
@@ -311,6 +312,76 @@ describe("toUtcStartOfDay", () => {
   it("formats a normal 4-digit year unchanged", () => {
     const date = new Date(2026, 0, 10);
     expect(toUtcStartOfDay(date)).toBe("2026-01-10T00:00:00Z");
+  });
+});
+
+// Regression test: a picker that doesn't know the real per-priority lead
+// time must never be MORE permissive than the strictest real rule. Reported
+// live: entity-service's severityBasedAllocationTime is currently always
+// empty (no per-severity SLA-allocation-time table exists yet), so
+// allocationMinutes is undefined for every case -- including a
+// Catastrophic/P0 case, which ServiceNow's own CallRequestUtils requires at
+// least 15 minutes' lead time for. The old "now + 1 minute" fallback let the
+// picker accept a time the backend then rejected.
+describe("computeMinScheduleDatetimeLocalForTimeZone", () => {
+  const UTC = "UTC";
+
+  it("falls back to the backend's own safe default (300 minutes) when allocationMinutes is undefined", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-11T09:00:00.000Z"));
+    try {
+      const result = computeMinScheduleDatetimeLocalForTimeZone(
+        undefined,
+        UTC,
+      );
+      // 09:00 + 300 minutes = 14:00, rounded up to the next 5-minute mark
+      // (already on one).
+      expect(result).toBe("2026-10-11T14:00");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("falls back to the same safe default for null/NaN/negative allocationMinutes", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-11T09:00:00.000Z"));
+    try {
+      const expected = "2026-10-11T14:00";
+      expect(computeMinScheduleDatetimeLocalForTimeZone(null, UTC)).toBe(
+        expected,
+      );
+      expect(computeMinScheduleDatetimeLocalForTimeZone(NaN, UTC)).toBe(
+        expected,
+      );
+      expect(computeMinScheduleDatetimeLocalForTimeZone(-5, UTC)).toBe(
+        expected,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("uses the real allocation when one is actually known", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-11T09:00:00.000Z"));
+    try {
+      // ServiceNow's own Catastrophic/P0 offset.
+      const result = computeMinScheduleDatetimeLocalForTimeZone(15, UTC);
+      expect(result).toBe("2026-10-11T09:15");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never returns a time earlier than now + 1 minute, even with a real allocation", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-11T09:00:00.000Z"));
+    try {
+      const result = computeMinScheduleDatetimeLocalForTimeZone(0, UTC);
+      expect(result >= "2026-10-11T09:01").toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

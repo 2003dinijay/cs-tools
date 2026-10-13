@@ -60,21 +60,30 @@ vi.mock("@features/settings/api/usePatchUserMe", () => ({
 // silently sending `stateKey: NaN` against the real backend (a real,
 // reported 400 "Invalid request payload." on every customer Approve/Reject).
 // Keep this mock shaped like the real response so a regression here is
-// caught again.
+// caught again. A plain vi.fn() (not a fixed object) so individual tests can
+// override severityBasedAllocationTime via mockReturnValueOnce.
+const mockUseGetProjectFilters = vi.fn((): {
+  data: {
+    callRequestStates: { id: string; label: string }[];
+    severityBasedAllocationTime?: Record<string, number>;
+  };
+  isLoading: boolean;
+  isError: boolean;
+} => ({
+  data: {
+    callRequestStates: [
+      { id: "pending_on_customer", label: "Pending on Customer" },
+      { id: "pending_on_wso2", label: "Pending on WSO2" },
+      { id: "scheduled", label: "Scheduled" },
+      { id: "customer_rejected", label: "Customer Rejected" },
+      { id: "notes_pending", label: "Notes Pending" },
+    ],
+  },
+  isLoading: false,
+  isError: false,
+}));
 vi.mock("@api/useGetProjectFilters", () => ({
-  default: () => ({
-    data: {
-      callRequestStates: [
-        { id: "pending_on_customer", label: "Pending on Customer" },
-        { id: "pending_on_wso2", label: "Pending on WSO2" },
-        { id: "scheduled", label: "Scheduled" },
-        { id: "customer_rejected", label: "Customer Rejected" },
-        { id: "notes_pending", label: "Notes Pending" },
-      ],
-    },
-    isLoading: false,
-    isError: false,
-  }),
+  default: () => mockUseGetProjectFilters(),
 }));
 
 vi.mock("@components/header/UserProfileModal", () => ({
@@ -99,6 +108,7 @@ const mockCaseId = "case-1";
 describe("CallsPanel", () => {
   beforeEach(() => {
     mockPatchMutate.mockClear();
+    mockUseGetProjectFilters.mockClear();
     vi.mocked(useGetUserDetails).mockReturnValue({
       data: { timeZone: "America/New_York" },
       refetch: vi
@@ -627,5 +637,112 @@ describe("CallsPanel", () => {
         /Describe your call request or topics you'd like to discuss/i,
       ),
     ).toBeInTheDocument();
+  });
+
+  // Regression: entity-service's severityBasedAllocationTime is currently
+  // always empty, so the picker's floor used to fall back to one flat
+  // conservative default (or, before that fix, an even shorter "now + 1
+  // minute") for every severity -- wrong for anything less urgent than
+  // Catastrophic/P0. CALL_REQUEST_LEAD_MINUTES_BY_PRIORITY_ID mirrors
+  // ServiceNow's own per-priority lead-time table so each severity gets its
+  // real minimum, confirmed here against the picker's actual rendered min.
+  it("floors the preferred time by the case's own severity (Catastrophic/P0 = 15 minutes)", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-11T09:00:00.000Z"));
+    try {
+      vi.mocked(useGetCallRequests).mockReturnValue({
+        isPending: false,
+        isError: false,
+        refetch: vi.fn(),
+        fetchNextPage: vi.fn(),
+        hasNextPage: false,
+        isFetchingNextPage: false,
+        isFetchNextPageError: false,
+        data: { pages: [{ callRequests: [] }] },
+      } as unknown as ReturnType<typeof useGetCallRequests>);
+      vi.mocked(useGetUserDetails).mockReturnValue({
+        data: { timeZone: "UTC" },
+        refetch: vi.fn().mockResolvedValue({ data: { timeZone: "UTC" } }),
+        isLoading: false,
+        isError: false,
+      } as unknown as ReturnType<typeof useGetUserDetails>);
+
+      renderWithProviders(<CallsPanel
+          projectId={mockProjectId}
+          caseId={mockCaseId}
+          caseStatusLabel="Work In Progress"
+          caseSeverityId="14"
+        />);
+
+      fireEvent.click(screen.getByRole("button", { name: /^Request Call$/ }));
+
+      const input = document.getElementById(
+        "preferred-time-0",
+      ) as HTMLInputElement;
+      // 09:00 UTC + 15 minutes (Catastrophic/P0's real ServiceNow offset,
+      // not the 300-minute flat default a lower-severity case would still
+      // fall back to) = 09:15.
+      expect(input.min).toBe("2026-10-11T09:15");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Regression: a non-finite allocation from the API (Infinity in
+  // particular -- NaN was already excluded) used to still be treated as
+  // "known" and returned as-is, skipping CALL_REQUEST_LEAD_MINUTES_BY_PRIORITY_ID
+  // entirely. computeMinScheduleDatetimeLocalForTimeZone's own guard only
+  // rejects NaN/negative/null/undefined, not Infinity, so a Catastrophic/P0
+  // case with a bad API value got an unusable, far-future floor instead of
+  // the correct 15 minutes. (A negative value alone would have been caught
+  // downstream by that same guard either way -- Infinity is the case that
+  // actually depends on CallsPanel.tsx's own check.)
+  it("falls through to the priority table when the API's own allocation is invalid (non-finite)", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-11T09:00:00.000Z"));
+    try {
+      vi.mocked(useGetCallRequests).mockReturnValue({
+        isPending: false,
+        isError: false,
+        refetch: vi.fn(),
+        fetchNextPage: vi.fn(),
+        hasNextPage: false,
+        isFetchingNextPage: false,
+        isFetchNextPageError: false,
+        data: { pages: [{ callRequests: [] }] },
+      } as unknown as ReturnType<typeof useGetCallRequests>);
+      vi.mocked(useGetUserDetails).mockReturnValue({
+        data: { timeZone: "UTC" },
+        refetch: vi.fn().mockResolvedValue({ data: { timeZone: "UTC" } }),
+        isLoading: false,
+        isError: false,
+      } as unknown as ReturnType<typeof useGetUserDetails>);
+      mockUseGetProjectFilters.mockReturnValueOnce({
+        data: {
+          callRequestStates: [],
+          severityBasedAllocationTime: { "14": Infinity },
+        },
+        isLoading: false,
+        isError: false,
+      });
+
+      renderWithProviders(<CallsPanel
+          projectId={mockProjectId}
+          caseId={mockCaseId}
+          caseStatusLabel="Work In Progress"
+          caseSeverityId="14"
+        />);
+
+      fireEvent.click(screen.getByRole("button", { name: /^Request Call$/ }));
+
+      const input = document.getElementById(
+        "preferred-time-0",
+      ) as HTMLInputElement;
+      // Must still be 09:15 (the mapped 15-minute Catastrophic/P0 value),
+      // not a floor computed from Infinity minutes.
+      expect(input.min).toBe("2026-10-11T09:15");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

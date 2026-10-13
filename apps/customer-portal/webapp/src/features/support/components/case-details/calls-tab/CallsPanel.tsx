@@ -46,6 +46,7 @@ import UserProfileModal from "@components/header/UserProfileModal";
 import ErrorBanner from "@components/error-banner/ErrorBanner";
 import SuccessBanner from "@components/success-banner/SuccessBanner";
 import {
+  CALL_REQUEST_LEAD_MINUTES_BY_PRIORITY_ID,
   CALL_REQUEST_STATE_CANCELLED,
   CALL_REQUEST_STATE_CUSTOMER_REJECTED,
   CALL_REQUEST_STATE_KEY_BY_ID,
@@ -131,27 +132,44 @@ export default function CallsPanel({
       .filter((n): n is number => n !== undefined);
   }, [projectFilters]);
 
+  // The API's own severityBasedAllocationTime is checked first (in case it
+  // is ever populated -- it is currently always an empty map, since no
+  // per-severity SLA-allocation-time table exists in Postgres yet), falling
+  // back to CALL_REQUEST_LEAD_MINUTES_BY_PRIORITY_ID, a mirror of
+  // ServiceNow's own real per-priority lead-time table. Without this
+  // fallback the picker's own floor (computeMinScheduleDatetimeLocalForTimeZone)
+  // had to use one flat conservative default for every severity, which is
+  // safe but wrong for anything less urgent than Catastrophic/P0 -- a High
+  // (P2) case only needs 60 minutes' lead time, not 300.
   const severityAllocationMinutes = useMemo(() => {
+    // A negative or non-finite value is invalid, not "use it anyway" -- it
+    // must fall through to CALL_REQUEST_LEAD_MINUTES_BY_PRIORITY_ID below,
+    // the same as a value that's missing entirely. Returning it here would
+    // skip that table and let computeMinScheduleDatetimeLocalForTimeZone's
+    // own `< 0` guard catch it instead, which only knows the generic
+    // 300-minute default -- wrong for a known severity like Catastrophic/P0
+    // (15 minutes).
+    const isValidAllocation = (v: unknown): v is number =>
+      typeof v === "number" && Number.isFinite(v) && v >= 0;
+
     const map = projectFilters?.severityBasedAllocationTime;
     const sid = String(caseSeverityId ?? "").trim();
-    if (!map || !sid) return undefined;
-    const direct = map[sid];
-    if (typeof direct === "number" && !Number.isNaN(direct)) return direct;
-    const altKey = String(Number(sid));
-    if (altKey !== sid) {
-      const alt = map[altKey];
-      if (typeof alt === "number" && !Number.isNaN(alt)) return alt;
-    }
-    for (const [key, val] of Object.entries(map)) {
-      if (
-        String(key).trim() === sid &&
-        typeof val === "number" &&
-        !Number.isNaN(val)
-      ) {
-        return val;
+    if (!sid) return undefined;
+    if (map) {
+      const direct = map[sid];
+      if (isValidAllocation(direct)) return direct;
+      const altKey = String(Number(sid));
+      if (altKey !== sid) {
+        const alt = map[altKey];
+        if (isValidAllocation(alt)) return alt;
+      }
+      for (const [key, val] of Object.entries(map)) {
+        if (String(key).trim() === sid && isValidAllocation(val)) {
+          return val;
+        }
       }
     }
-    return undefined;
+    return CALL_REQUEST_LEAD_MINUTES_BY_PRIORITY_ID[sid];
   }, [projectFilters?.severityBasedAllocationTime, caseSeverityId]);
 
   // Derive specific state keys for Approve / Reject / Cancel. The backend's

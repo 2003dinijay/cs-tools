@@ -2233,10 +2233,25 @@ function roundUpToNextFiveMinuteMarkInTimeZone(
 }
 
 /**
+ * The backend's own fallback lead time (minutes) when it has no per-priority
+ * offset to apply (ServiceNow's CallRequestUtils._DEFAULT_TIME_OFFSET). Used
+ * here as the floor's fallback too: entity-service's own
+ * severityBasedAllocationTime is currently always empty (no per-severity
+ * SLA-allocation-time table exists yet), so allocationMinutes is undefined
+ * for every case today, not just an edge case. Falling back to "now + 1
+ * minute" in that situation let the picker accept a time the backend then
+ * rejected for a Catastrophic/P0 case, which actually needs 15 minutes
+ * (CallRequestUtils._PRIORITY_TIME_OFFSETS[14]) -- the picker must never be
+ * MORE permissive than the strictest real rule when it doesn't know which
+ * rule applies, so this uses the backend's own safe upper bound instead.
+ */
+const DEFAULT_CALL_SCHEDULE_LEAD_MINUTES = 300;
+
+/**
  * Like {@link computeMinScheduleDatetimeLocal} but uses the user's IANA zone for civil date/time strings.
  * Ensures datetime-local values align with profile timezone when converting to UTC for the API.
  *
- * @param allocationMinutes - Minutes after now before first slot; null/undefined uses now+1m floor only.
+ * @param allocationMinutes - Minutes after now before first slot; null/undefined/invalid uses the backend's own safe default (DEFAULT_CALL_SCHEDULE_LEAD_MINUTES), not just now+1m.
  * @param profileTimeZone - Profile/filter zone; falls back to browser when omitted/invalid.
  */
 export function computeMinScheduleDatetimeLocalForTimeZone(
@@ -2248,15 +2263,14 @@ export function computeMinScheduleDatetimeLocalForTimeZone(
   const floorMs = Date.now() + 60 * 1000;
   const floorStr = instantToDatetimeLocalStringInZone(floorMs, tz);
 
-  if (
+  const effectiveMinutes =
     allocationMinutes == null ||
     Number.isNaN(allocationMinutes) ||
     allocationMinutes < 0
-  ) {
-    return floorStr;
-  }
+      ? DEFAULT_CALL_SCHEDULE_LEAD_MINUTES
+      : allocationMinutes;
 
-  let targetMs = Date.now() + allocationMinutes * 60 * 1000;
+  let targetMs = Date.now() + effectiveMinutes * 60 * 1000;
   targetMs = roundUpToNextFiveMinuteMarkInTimeZone(targetMs, tz);
   const severityStr = instantToDatetimeLocalStringInZone(targetMs, tz);
   return severityStr > floorStr ? severityStr : floorStr;
