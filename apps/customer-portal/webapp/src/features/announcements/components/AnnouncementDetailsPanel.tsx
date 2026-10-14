@@ -195,22 +195,20 @@ export default function AnnouncementDetailsPanel({
                 </Box>
               )}
             </Box>
-            {data.status?.label?.toLowerCase() !== "closed" && (
-              <CaseDetailsActionRow
-                projectId={projectId}
-                caseId={caseId}
-                statusLabel={data.status?.label}
-                assignedEngineer={data.assignedEngineer}
-                engineerInitials={
-                  typeof data.assignedEngineer === "object" &&
-                  data.assignedEngineer?.name
-                    ? (data.assignedEngineer.name.split(" ")[0]?.[0] ?? "")
-                    : ""
-                }
-                closedOn={data.closedOn}
-                restrictToCloseOnly={true}
-              />
-            )}
+            <CaseDetailsActionRow
+              projectId={projectId}
+              caseId={caseId}
+              statusLabel={data.status?.label}
+              assignedEngineer={data.assignedEngineer}
+              engineerInitials={
+                typeof data.assignedEngineer === "object" &&
+                data.assignedEngineer?.name
+                  ? (data.assignedEngineer.name.split(" ")[0]?.[0] ?? "")
+                  : ""
+              }
+              closedOn={data.closedOn}
+              restrictToCloseOnly={true}
+            />
           </Box>
         )}
 
