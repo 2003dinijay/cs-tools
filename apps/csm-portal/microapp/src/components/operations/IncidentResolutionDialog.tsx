@@ -54,7 +54,10 @@ export function IncidentResolutionDialog({ target, isSubmitting, onClose, onSubm
   return (
     <Dialog
       open
-      onClose={onClose}
+      // Backdrop click / Esc must not dismiss the dialog mid-request; Cancel is disabled then too.
+      onClose={() => {
+        if (!isSubmitting) onClose();
+      }}
       slots={{ paper: DialogPaper }}
       slotProps={{ paper: { sx: { bgcolor: "background.default", p: 1.5, gap: 2, m: 2 } } }}
     >

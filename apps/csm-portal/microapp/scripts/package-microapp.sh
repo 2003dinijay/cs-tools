@@ -24,7 +24,7 @@
 # out of git and can differ per environment.
 #
 # Required:  MICROAPP_CLIENT_ID      OAuth client ID with the token-exchange grant
-#            VITE_BACKEND_URL        set in the environment or in .env / .env.production
+#            VITE_BACKEND_URL        set in the environment or any .env* file Vite loads
 # Optional:  MICROAPP_DISPLAY_MODE   "fullscreen" (default) or "default"
 #            MICROAPP_ZIP_NAME       output file name (default csm-portal-microapp.zip)
 
@@ -37,8 +37,11 @@ if [ -z "${MICROAPP_CLIENT_ID:-}" ]; then
   exit 1
 fi
 
-if [ -z "${VITE_BACKEND_URL:-}" ] && ! grep -qs '^VITE_BACKEND_URL=.' .env .env.production; then
-  echo "VITE_BACKEND_URL is not set in the environment, .env or .env.production." >&2
+# Resolve the value the production build will actually use (environment first, then the .env*
+# files in Vite's own precedence order) rather than guessing from individual files.
+BACKEND_URL="$(node --input-type=module -e 'import { loadEnv } from "vite"; process.stdout.write(loadEnv("production", process.cwd(), "VITE_").VITE_BACKEND_URL ?? "")')"
+if [ -z "$BACKEND_URL" ]; then
+  echo "VITE_BACKEND_URL resolves to an empty value for the production build." >&2
   exit 1
 fi
 

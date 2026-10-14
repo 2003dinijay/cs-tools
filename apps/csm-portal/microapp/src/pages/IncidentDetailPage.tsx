@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { Suspense, useState, type ReactNode } from "react";
+import { Suspense, useRef, useState, type ReactNode } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { Button, Chip, Skeleton, Stack, Typography } from "@wso2/oxygen-ui";
 import { useQueryClient, useQueryErrorResetBoundary, useSuspenseQuery } from "@tanstack/react-query";
@@ -165,6 +165,9 @@ function IncidentActionBar({ incidentId, incident }: { incidentId: string; incid
   const queryClient = useQueryClient();
   const { data: currentUserId } = useSuspenseQuery(currentUser.id());
   const [isPending, setIsPending] = useState(false);
+  // Synchronous in-flight guard: `isPending` only disables the controls after a re-render, so two
+  // fast taps in the same tick could otherwise both send a PATCH.
+  const inFlight = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [resolutionTarget, setResolutionTarget] = useState<ResolutionTarget | null>(null);
 
@@ -174,6 +177,8 @@ function IncidentActionBar({ incidentId, incident }: { incidentId: string; incid
   const targets = INCIDENT_STATE_TRANSITIONS[state] ?? [];
 
   const runPatch = (payload: IncidentPatchPayloadDto, fallbackMessage: string): Promise<void> => {
+    if (inFlight.current) return Promise.resolve();
+    inFlight.current = true;
     setIsPending(true);
     setError(null);
     return incidents
@@ -184,7 +189,10 @@ function IncidentActionBar({ incidentId, incident }: { incidentId: string; incid
         void queryClient.invalidateQueries({ queryKey: ["incidents"] });
       })
       .catch((err) => setError(toApiError(err, fallbackMessage).message))
-      .finally(() => setIsPending(false));
+      .finally(() => {
+        inFlight.current = false;
+        setIsPending(false);
+      });
   };
 
   const handleAssign = (): void => {
