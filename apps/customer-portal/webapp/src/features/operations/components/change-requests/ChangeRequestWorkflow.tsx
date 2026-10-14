@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import type { JSX } from "react";
+import { useEffect, useRef, type JSX } from "react";
 import { Alert, alpha, Box, Button, colors, Paper, Skeleton, Stack, Typography } from "@wso2/oxygen-ui";
 import {
   Circle,
@@ -38,12 +38,17 @@ export type ChangeRequestWorkflowProps = {
   /**
    * True when the approvals could not be read: the panel says so above the
    * steps (the steps that needed them read "could not be loaded", see
-   * `APPROVALS_UNAVAILABLE`), never "No approval recorded".
+   * `APPROVALS_UNAVAILABLE`), never "No approval recorded". It stays true while
+   * they are read again: the last read failed until one succeeds.
    */
   approvalsUnavailable?: boolean;
   /** Reads the approvals again; a Retry button is offered with the notice when given. */
   onRetry?: () => void;
-  /** True while that read is in flight: the button is switched off. */
+  /**
+   * True while they are read again: the notice stays, and its button reads
+   * "Retrying…" and does nothing (aria-disabled, not disabled, so the focus a
+   * keyboard user gave it stays there).
+   */
   isRetrying?: boolean;
 };
 
@@ -127,11 +132,28 @@ export default function ChangeRequestWorkflow({
   onRetry,
   isRetrying = false,
 }: ChangeRequestWorkflowProps): JSX.Element {
+  const headingRef = useRef<HTMLHeadingElement | null>(null);
+  // Set when Retry is used. A retry that succeeds takes the notice away, and
+  // with it the button that had focus, which would drop to the document body:
+  // the panel's heading takes it then, but only when focus has nowhere else to
+  // be -- never from a control the customer has moved to since.
+  const retryUsedRef = useRef(false);
+  const showsSteps = !isLoading && !approvalsUnavailable;
+  useEffect(() => {
+    if (!showsSteps || !retryUsedRef.current) return;
+    retryUsedRef.current = false;
+    const active = document.activeElement;
+    if (active && active !== document.body && active.isConnected) return;
+    headingRef.current?.focus();
+  }, [showsSteps]);
+
   return (
     <Paper variant="outlined" data-testid="change-request-workflow">
       <Box sx={{ px: 3, pt: 3 }}>
         <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 0.5 }}>
-          <Typography variant="h6">Change Request Workflow</Typography>
+          <Typography variant="h6" ref={headingRef} tabIndex={-1} sx={{ outline: "none" }}>
+            Change Request Workflow
+          </Typography>
         </Box>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
           Track the progress of this change request through each stage
@@ -139,6 +161,9 @@ export default function ChangeRequestWorkflow({
       </Box>
 
       <Box sx={{ px: 3, pb: 3 }}>
+        {/* Mounted for as long as the last read failed, retries included: a
+            status region that stays is where a retry that fails again is
+            heard (its button reads "Retry" again). */}
         {!isLoading && approvalsUnavailable && (
           <Alert
             severity="warning"
@@ -147,7 +172,17 @@ export default function ChangeRequestWorkflow({
             sx={{ mb: 2 }}
             action={
               onRetry ? (
-                <Button color="inherit" size="small" onClick={onRetry} disabled={isRetrying}>
+                <Button
+                  color="inherit"
+                  size="small"
+                  aria-disabled={isRetrying || undefined}
+                  sx={isRetrying ? { cursor: "progress" } : undefined}
+                  onClick={() => {
+                    if (isRetrying) return;
+                    retryUsedRef.current = true;
+                    onRetry();
+                  }}
+                >
                   {isRetrying ? "Retrying…" : "Retry"}
                 </Button>
               ) : undefined

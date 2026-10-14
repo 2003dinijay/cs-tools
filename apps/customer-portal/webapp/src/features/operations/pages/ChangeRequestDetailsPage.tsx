@@ -151,20 +151,30 @@ export default function ChangeRequestDetailsPage(): JSX.Element {
     data: approvalsData,
     isPending: isApprovalsPending,
     isError: isApprovalsError,
+    errorUpdateCount: approvalsErrorCount,
     isFetching: isApprovalsFetching,
     refetch: refetchApprovals,
   } = useGetChangeRequestApprovals(changeRequestId || "");
+  // A read that failed with nothing read is known by `isError` only until it is
+  // read again: a refetch of a query with no data puts it back to pending and
+  // clears the error (TanStack Query v5), and that is not a first load. The
+  // error count survives the refetch, so the failure stands (the notice and
+  // its Retry stay, the steps stay unknown) until a read succeeds.
+  const approvalsReadFailed = isApprovalsError || approvalsErrorCount > 0;
   const approvals = useMemo<ChangeRequestApprovalsRead | undefined>(
     () =>
       approvalsData
         ? (approvalsData.approvals ?? [])
-        : isApprovalsError
+        : approvalsReadFailed
           ? APPROVALS_UNAVAILABLE
           : undefined,
-    [approvalsData, isApprovalsError],
+    [approvalsData, approvalsReadFailed],
   );
   const approvalsUnavailable = approvals === APPROVALS_UNAVAILABLE;
-  const isApprovalsLoading = isApprovalsPending && !isApprovalsError;
+  // The first read: the workflow shows placeholders, never "no record".
+  const isApprovalsLoading = isApprovalsPending && !approvalsUnavailable;
+  // A read after a failed one (Retry, or the refetch an answer makes).
+  const isApprovalsRetrying = approvalsUnavailable && isApprovalsFetching;
 
   const { workflowStages, currentStateIndex } = useMemo(
     () => buildChangeRequestWorkflowStages(changeRequest, approvals),
@@ -422,15 +432,16 @@ export default function ChangeRequestDetailsPage(): JSX.Element {
         >
           Back to Change Requests
         </Button>
-        {/* Off while the approvals load: Approved By / Approved On may come from
-            them, and a PDF made before they arrive would print as if there
-            were no approval. */}
+        {/* Off while the approvals are read (the first read, or one after a
+            failed read): Approved By / Approved On may come from them, and a
+            PDF made before they arrive would print as if there were no
+            approval, or "Not available" for values about to arrive. */}
         <Button
           variant="outlined"
           size="small"
           startIcon={<Download size={18} />}
           color="warning"
-          disabled={isApprovalsLoading}
+          disabled={isApprovalsLoading || isApprovalsRetrying}
           onClick={() => {
             try {
               generateChangeRequestDetailsPdf(changeRequest, [], approval);
@@ -977,7 +988,7 @@ export default function ChangeRequestDetailsPage(): JSX.Element {
             isLoading={isApprovalsLoading}
             approvalsUnavailable={approvalsUnavailable}
             onRetry={() => void refetchApprovals()}
-            isRetrying={isApprovalsFetching}
+            isRetrying={isApprovalsRetrying}
           />
         </Box>
       </Box>

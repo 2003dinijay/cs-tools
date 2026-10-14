@@ -190,17 +190,84 @@ describe("ChangeRequestWorkflow", () => {
       expect(onRetry).toHaveBeenCalledTimes(1);
     });
 
-    it("switches Retry off while the approvals are read again", () => {
-      render(
-        <ChangeRequestWorkflow
-          currentStateIndex={4}
-          stages={[stage("Assess", "unavailable", WORKFLOW_APPROVAL_UNAVAILABLE)]}
-          approvalsUnavailable
-          onRetry={vi.fn()}
-          isRetrying
-        />,
-      );
-      expect(screen.getByRole("button", { name: "Retrying…" })).toBeDisabled();
+    describe("while they are read again", () => {
+      const unknown = [stage("Assess", "unavailable", WORKFLOW_APPROVAL_UNAVAILABLE)];
+
+      it("keeps the notice and the button where focus is, the button reading 'Retrying…' and doing nothing", () => {
+        const onRetry = vi.fn();
+        const view = render(
+          <ChangeRequestWorkflow currentStateIndex={4} stages={unknown} approvalsUnavailable onRetry={onRetry} />,
+        );
+        screen.getByRole("button", { name: "Retry" }).focus();
+        fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+        expect(onRetry).toHaveBeenCalledTimes(1);
+
+        view.rerender(
+          <ChangeRequestWorkflow
+            currentStateIndex={4}
+            stages={unknown}
+            approvalsUnavailable
+            onRetry={onRetry}
+            isRetrying
+          />,
+        );
+        const retrying = screen.getByRole("button", { name: "Retrying…" });
+        // aria-disabled, not disabled: a disabled button drops the focus it had.
+        expect(retrying).toHaveAttribute("aria-disabled", "true");
+        expect(retrying).not.toBeDisabled();
+        expect(retrying).toHaveFocus();
+        expect(notice()).toBeInTheDocument();
+        expect(screen.queryByTestId("change-request-workflow-loading")).not.toBeInTheDocument();
+        expect(within(step("Assess")).getByText(WORKFLOW_APPROVAL_UNAVAILABLE)).toBeInTheDocument();
+        fireEvent.click(retrying);
+        expect(onRetry).toHaveBeenCalledTimes(1);
+
+        // It failed again: the same notice, the button usable again, focus still on it.
+        view.rerender(
+          <ChangeRequestWorkflow currentStateIndex={4} stages={unknown} approvalsUnavailable onRetry={onRetry} />,
+        );
+        expect(screen.getByRole("button", { name: "Retry" })).toHaveFocus();
+        expect(screen.getByRole("button", { name: "Retry" })).not.toHaveAttribute("aria-disabled");
+      });
+
+      it("moves focus to the panel heading when a retry succeeds and takes the notice (and its button) away", () => {
+        const onRetry = vi.fn();
+        const view = render(
+          <ChangeRequestWorkflow currentStateIndex={4} stages={unknown} approvalsUnavailable onRetry={onRetry} />,
+        );
+        screen.getByRole("button", { name: "Retry" }).focus();
+        fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+        view.rerender(
+          <ChangeRequestWorkflow
+            currentStateIndex={4}
+            stages={[stage("Assess", "completed")]}
+            onRetry={onRetry}
+          />,
+        );
+        expect(notice()).not.toBeInTheDocument();
+        expect(screen.getByRole("heading", { name: "Change Request Workflow" })).toHaveFocus();
+      });
+
+      it("leaves focus alone when the customer has moved it since", () => {
+        const onRetry = vi.fn();
+        const view = render(
+          <>
+            <button type="button">Elsewhere</button>
+            <ChangeRequestWorkflow currentStateIndex={4} stages={unknown} approvalsUnavailable onRetry={onRetry} />
+          </>,
+        );
+        fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+        screen.getByRole("button", { name: "Elsewhere" }).focus();
+
+        view.rerender(
+          <>
+            <button type="button">Elsewhere</button>
+            <ChangeRequestWorkflow currentStateIndex={4} stages={[stage("Assess", "completed")]} onRetry={onRetry} />
+          </>,
+        );
+        expect(screen.getByRole("button", { name: "Elsewhere" })).toHaveFocus();
+      });
     });
 
     it("says nothing of the kind after a read that found no approval: that is 'No approval recorded'", () => {

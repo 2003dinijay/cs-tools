@@ -14,7 +14,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import type { ComponentType, ReactNode } from "react";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import ChangeRequestDetailsPage from "@features/operations/pages/ChangeRequestDetailsPage";
@@ -34,10 +36,15 @@ const mocks = vi.hoisted(() => ({
   changeRequest: { value: null as Record<string, unknown> | null },
   error: { value: null as unknown },
   approvals: { value: [] as Record<string, unknown>[] },
-  /** Where the approvals read stands: read (`approvals` above), still loading, or failed with nothing read. */
-  approvalsRead: { value: "read" as "read" | "loading" | "failed" },
-  approvalsFetching: { value: false },
+  /**
+   * Where the approvals read stands: read (`approvals` above), still loading,
+   * failed with nothing read, or read again after that failure (`retrying`).
+   */
+  approvalsRead: { value: "read" as "read" | "loading" | "failed" | "retrying" },
   refetchApprovals: vi.fn(),
+  /** When set, the approvals hook is this one (a real query) instead of the fixed results above. */
+  approvalsHook: { value: null as (() => unknown) | null },
+  fetchApprovals: vi.fn(),
   /** The rows of the change request PDF, as handed to jspdf-autotable. */
   pdfRows: vi.fn(),
   mutateAsync: vi.fn(),
@@ -56,14 +63,22 @@ vi.mock("@features/operations/api/useGetChangeRequestDetails", () => ({
   }),
 }));
 
+// Each fixed result is one TanStack Query v5 reports. A refetch of a query with
+// no data (`retrying`) puts it back to pending and clears the error; only the
+// error count says it failed before.
 vi.mock("@features/operations/api/useGetChangeRequestApprovals", () => ({
-  default: () => ({
-    data: mocks.approvalsRead.value === "read" ? { approvals: mocks.approvals.value } : undefined,
-    isPending: mocks.approvalsRead.value === "loading",
-    isError: mocks.approvalsRead.value === "failed",
-    isFetching: mocks.approvalsRead.value === "loading" || mocks.approvalsFetching.value,
-    refetch: mocks.refetchApprovals,
-  }),
+  default: () => {
+    if (mocks.approvalsHook.value) return mocks.approvalsHook.value();
+    const read = mocks.approvalsRead.value;
+    return {
+      data: read === "read" ? { approvals: mocks.approvals.value } : undefined,
+      isPending: read === "loading" || read === "retrying",
+      isError: read === "failed",
+      errorUpdateCount: read === "failed" || read === "retrying" ? 1 : 0,
+      isFetching: read === "loading" || read === "retrying",
+      refetch: mocks.refetchApprovals,
+    };
+  },
 }));
 
 vi.mock("jspdf", () => ({
@@ -127,7 +142,12 @@ function makeChangeRequest(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function renderPage() {
+/** A real approvals query over `mocks.fetchApprovals` (render it inside a QueryClientProvider). */
+function useApprovalsQuery() {
+  return useQuery({ queryKey: ["change-request-approvals", "cr-1"], queryFn: () => mocks.fetchApprovals() });
+}
+
+function renderPage(options: { wrapper?: ComponentType<{ children: ReactNode }> } = {}) {
   return render(
     <MemoryRouter initialEntries={["/projects/p1/operations/change-requests/cr-1"]}>
       <Routes>
@@ -137,6 +157,7 @@ function renderPage() {
         />
       </Routes>
     </MemoryRouter>,
+    options,
   );
 }
 
@@ -156,8 +177,9 @@ describe("ChangeRequestDetailsPage", () => {
     mocks.isPending.value = false;
     mocks.approvals.value = [];
     mocks.approvalsRead.value = "read";
-    mocks.approvalsFetching.value = false;
     mocks.refetchApprovals.mockReset();
+    mocks.approvalsHook.value = null;
+    mocks.fetchApprovals.mockReset();
     mocks.pdfRows.mockReset();
   });
 
@@ -785,10 +807,65 @@ describe("ChangeRequestDetailsPage", () => {
         expect(mocks.refetchApprovals).toHaveBeenCalledTimes(1);
       });
 
-      it("switches Retry off while the approvals are read again", () => {
-        mocks.approvalsFetching.value = true;
+      it("keeps saying so while they are read again (the query is pending again), with the export off", () => {
+        mocks.approvalsRead.value = "retrying";
+        mocks.changeRequest.value = makeChangeRequest({ state: { id: "3", label: "Closed" } });
         renderPage();
-        expect(screen.getByRole("button", { name: "Retrying…" })).toBeDisabled();
+        expect(screen.getByTestId("change-request-workflow-approvals-unavailable")).toBeInTheDocument();
+        expect(screen.queryByTestId("change-request-workflow-loading")).not.toBeInTheDocument();
+        expect(screen.getAllByText(WORKFLOW_APPROVAL_UNAVAILABLE).length).toBeGreaterThan(0);
+        expect(screen.queryByText(WORKFLOW_NO_APPROVAL_RECORDED)).not.toBeInTheDocument();
+        const retrying = screen.getByRole("button", { name: "Retrying…" });
+        expect(retrying).toHaveAttribute("aria-disabled", "true");
+        fireEvent.click(retrying);
+        expect(mocks.refetchApprovals).not.toHaveBeenCalled();
+        expect(exportButton()).toBeDisabled();
+      });
+
+      // The real query, not a fixed result: what a Retry does to it is what the page must hold through.
+      it("holds the notice, its button and the focus through a real Retry, and hands focus to the workflow heading when one succeeds", async () => {
+        mocks.changeRequest.value = makeChangeRequest({ state: { id: "3", label: "Closed" } });
+        mocks.approvalsHook.value = useApprovalsQuery;
+        mocks.fetchApprovals.mockRejectedValueOnce(new Error("Service Unavailable"));
+        const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+        renderPage({
+          wrapper: ({ children }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>,
+        });
+
+        const retry = await screen.findByRole("button", { name: "Retry" });
+        let failAgain: (error: Error) => void = () => undefined;
+        mocks.fetchApprovals.mockReturnValueOnce(
+          new Promise((_resolve, reject) => {
+            failAgain = reject;
+          }),
+        );
+        retry.focus();
+        fireEvent.click(retry);
+
+        const retrying = await screen.findByRole("button", { name: "Retrying…" });
+        expect(retrying).toHaveFocus();
+        expect(screen.getByTestId("change-request-workflow-approvals-unavailable")).toBeInTheDocument();
+        expect(screen.queryByTestId("change-request-workflow-loading")).not.toBeInTheDocument();
+        expect(screen.queryByText(WORKFLOW_NO_APPROVAL_RECORDED)).not.toBeInTheDocument();
+        expect(exportButton()).toBeDisabled();
+
+        // It fails again: the same notice, the button usable again where focus is.
+        await act(async () => failAgain(new Error("Service Unavailable")));
+        expect(await screen.findByRole("button", { name: "Retry" })).toHaveFocus();
+        expect(screen.queryByText(WORKFLOW_NO_APPROVAL_RECORDED)).not.toBeInTheDocument();
+        expect(exportButton()).toBeEnabled();
+
+        // It succeeds, finding no approval: that is "No approval recorded", and focus goes to the panel heading.
+        mocks.fetchApprovals.mockResolvedValueOnce({ approvals: [] });
+        fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+        await waitFor(() =>
+          expect(screen.queryByTestId("change-request-workflow-approvals-unavailable")).not.toBeInTheDocument(),
+        );
+        expect(screen.getByRole("heading", { name: "Change Request Workflow" })).toHaveFocus();
+        expect(screen.getAllByText(WORKFLOW_NO_APPROVAL_RECORDED).length).toBeGreaterThan(0);
+        expect(screen.queryByText(WORKFLOW_APPROVAL_UNAVAILABLE)).not.toBeInTheDocument();
+        expect(exportButton()).toBeEnabled();
+        expect(mocks.fetchApprovals).toHaveBeenCalledTimes(3);
       });
 
       it("still exports, printing Approved By / Approved On as 'Not available' rather than leaving them out", () => {
