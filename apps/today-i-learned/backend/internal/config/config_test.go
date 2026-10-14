@@ -43,7 +43,7 @@ func TestLoadDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Port != "8077" || cfg.DB.Port != "3306" || cfg.ReadTimeout != 15*time.Second || cfg.WriteTimeout != 45*time.Second {
+	if cfg.Port != "9090" || cfg.DB.Port != "3306" || cfg.ReadTimeout != 15*time.Second || cfg.WriteTimeout != 45*time.Second {
 		t.Fatalf("defaults = %+v", cfg)
 	}
 	if cfg.Entity != nil || cfg.Novera != nil || len(cfg.CORSOrigins) != 0 {

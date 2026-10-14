@@ -58,7 +58,7 @@ them all.
 | `ENTRY_TEXT_MAX_LENGTH` | no | The most characters of text a learning may have, markup not counted: 1–5000, default 500. The webapp's form reads it from `GET /settings` and stops there; the backend accepts 20 more, so a tiny counting difference never rejects what the form allowed. |
 | `ONE_WSO2_BASE_URL` | no | The webapp's address, for the "Read more" link in Google Chat and the TIL logo it serves at `/til-logo.png` (shown only over https). |
 | `CORS_ALLOWED_ORIGINS` | no | Browser origins allowed to call the API. |
-| `PORT`, `REST_READ_TIMEOUT`, `REST_WRITE_TIMEOUT` | no | Defaults 8077, 15s, 45s. |
+| `PORT`, `REST_READ_TIMEOUT`, `REST_WRITE_TIMEOUT` | no | Defaults 9090, 15s, 45s. |
 | `ENTITY_SERVICE_*` | no | Customer-name suggestions from entity-service: the base URL, token URL, client id and secret together, or none. `ENTITY_SERVICE_SCOPES` is optional. |
 | `NOVERA_*` | no | Announcing new entries in Google Chat through Novera's `POST /internal/notifications`: all four or none. |
 
