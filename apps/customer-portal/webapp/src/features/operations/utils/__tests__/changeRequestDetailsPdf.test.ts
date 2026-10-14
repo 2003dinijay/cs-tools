@@ -48,7 +48,7 @@ describe("generateChangeRequestDetailsPdf", () => {
     } as ChangeRequestDetails);
 
     const pdf = captured.pdfs[0];
-    expect(pdf).toMatch(/\(Vimukthi Perera\u00A0+\) Tj/);
+    expect(pdf).toMatch(/\(Vimukthi Perera\) Tj/);
     expect(pdf.match(/\(w\) Tj/g)).toHaveLength(1);
     expect(pdf).not.toContain("\u0000");
   });
@@ -62,5 +62,20 @@ describe("generateChangeRequestDetailsPdf", () => {
     const pdf = captured.pdfs[0];
     expect(pdf).toContain("(Jane Smith) Tj");
     expect(pdf).not.toContain("(w) Tj");
+  });
+
+  it("keeps the footer date readable when the browser puts U+202F before PM", () => {
+    const spy = vi
+      .spyOn(Date.prototype, "toLocaleString")
+      .mockReturnValue(`Oct 14, 2026, 12:27${String.fromCodePoint(0x202f)}PM`);
+    try {
+      generateChangeRequestDetailsPdf({ number: "CHG0041410" } as ChangeRequestDetails);
+    } finally {
+      spy.mockRestore();
+    }
+
+    const pdf = captured.pdfs[0];
+    expect(pdf).toContain("(Oct 14, 2026, 12:27 PM) Tj");
+    expect(pdf).not.toContain("\u0000");
   });
 });

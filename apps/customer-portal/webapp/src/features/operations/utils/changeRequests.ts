@@ -38,7 +38,8 @@ import {
   resolveDisplayTimeZone,
 } from "@utils/dateTime";
 import { ApiError } from "@utils/ApiError";
-import { buildPdfTableBody, drawWso2StaffMarkers } from "@utils/pdfStaffMarker";
+import { buildPdfTableBody, wso2StaffMarkerHooks } from "@utils/pdfStaffMarker";
+import { toPdfSafeText } from "@utils/pdfText";
 
 // --- Change request stats (API → card counts) --------------------------------
 
@@ -1021,18 +1022,21 @@ export function generateChangeRequestDetailsPdf(
       },
     },
     margin: { bottom: 25 },
-    didDrawCell: drawWso2StaffMarkers(staffMarkerCells),
+    ...wso2StaffMarkerHooks(staffMarkerCells),
   });
 
-  const createdDateTime = new Date().toLocaleString("en-US", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-    timeZone: resolveDisplayTimeZone(),
-  });
+  // Some browsers put U+202F before AM/PM, which jsPDF's built-in font cannot encode.
+  const createdDateTime = toPdfSafeText(
+    new Date().toLocaleString("en-US", {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+      timeZone: resolveDisplayTimeZone(),
+    }),
+  );
   const totalPages = doc.getNumberOfPages();
 
   for (let i = 1; i <= totalPages; i++) {

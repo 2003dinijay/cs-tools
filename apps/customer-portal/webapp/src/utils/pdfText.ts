@@ -28,18 +28,24 @@ const WSO2_STAFF_MARKER = /\s*\u24E6/g;
  * @param value - Text destined for a PDF cell.
  * @returns {boolean} True when the marker is present.
  */
-export function hasWso2StaffMarker(value: string | null | undefined): boolean {
-  return !!value && value.includes("\u24E6");
+export function hasWso2StaffMarker(value: unknown): boolean {
+  return typeof value === "string" && value.includes("\u24E6");
 }
 
-/** Zero-width and directional format characters, and emoji variation selectors: drawn as nothing. */
-const INVISIBLE = /[\p{Cf}\uFE00-\uFE0F]/gu;
+/** Printable ASCII plus line breaks and tabs: nothing in it can need changing. */
+const PLAIN_TEXT = /^[\x20-\x7E\n\r\t]*$/;
+
+/** Any Unicode space (thin, ideographic, ...). */
+const UNICODE_SPACE = /^\p{Zs}$/u;
+
+/** Zero-width and directional format characters, and emoji variation selectors. */
+const INVISIBLE = /^[\p{Cf}\uFE00-\uFE0F]$/u;
+
+/** A combining accent with no precomposed form: nothing to attach to once the letter is gone. */
+const COMBINING_MARK = /^\p{M}$/u;
 
 /** Combining accents left behind once a letter is decomposed (the "´" of "ń"). */
-const COMBINING_MARK = /\p{M}/gu;
-
-/** Any Unicode space (no-break, thin, ideographic, ...); drawn as a plain space. */
-const UNICODE_SPACE = /\p{Zs}/gu;
+const COMBINING_MARKS = /\p{M}/gu;
 
 /**
  * Beyond U+00FF, the only characters jsPDF's built-in fonts can encode: the cp1252
@@ -58,8 +64,16 @@ function isEncodable(char: string): boolean {
 
 /** The encodable letters a character folds to ("ń" -> "n", "①" -> "1"), or "" when none. */
 function foldToEncodable(char: string): string {
-  const folded = char.normalize("NFKD").replace(COMBINING_MARK, "");
+  const folded = char.normalize("NFKD").replace(COMBINING_MARKS, "");
   return [...folded].every(isEncodable) ? folded : "";
+}
+
+/** What an unencodable character is drawn as. */
+function replacementFor(char: string): string {
+  if (UNICODE_SPACE.test(char)) return " ";
+  if (char === "\u2028" || char === "\u2029") return "\n";
+  if (INVISIBLE.test(char) || COMBINING_MARK.test(char)) return "";
+  return foldToEncodable(char) || "?";
 }
 
 /**
@@ -72,19 +86,21 @@ function foldToEncodable(char: string): string {
  * folded to a plain letter where one exists, or replaced with "?" so a gap is visible
  * rather than silent.
  *
+ * Text jsPDF could already draw is returned exactly as it came: only characters it cannot
+ * encode are ever touched, so output that was correct before is unchanged.
+ *
  * @param value - Text destined for a PDF cell, title or line.
  * @returns {string} The text with every character encodable by jsPDF's built-in fonts.
  */
-export function toPdfSafeText(value: string | null | undefined): string {
-  if (!value) return "";
-  const cleaned = value
-    .replace(WSO2_STAFF_MARKER, "")
-    .replace(INVISIBLE, "")
-    .replace(UNICODE_SPACE, " ");
+export function toPdfSafeText(value: unknown): string {
+  if (value == null || value === "") return "";
+  const text = typeof value === "string" ? value : String(value);
+  if (PLAIN_TEXT.test(text)) return text;
 
+  // NFC first, so "e" + a combining accent becomes the "é" jsPDF can draw.
   let safe = "";
-  for (const char of cleaned) {
-    safe += isEncodable(char) ? char : foldToEncodable(char) || "?";
+  for (const char of text.replace(WSO2_STAFF_MARKER, "").normalize("NFC")) {
+    safe += isEncodable(char) ? char : replacementFor(char);
   }
   return safe;
 }

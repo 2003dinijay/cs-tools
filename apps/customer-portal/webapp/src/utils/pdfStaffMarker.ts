@@ -21,28 +21,29 @@ import { hasWso2StaffMarker, toPdfSafeText } from "@utils/pdfText";
 /**
  * Names of WSO2 staff end in "ⓦ", which is how a customer tells an engineer from a
  * colleague. jsPDF's built-in fonts cannot draw that character, so the PDF exports keep
- * the name as plain text, reserve a slot after it, and draw a circled "w" there
- * (see {@link drawWso2StaffMarkers}).
+ * the name as plain text, reserve room after it through the cell's right padding, and
+ * draw a circled "w" there (see {@link wso2StaffMarkerHooks}).
  *
- * Four no-break spaces (each 0.278em in Helvetica): one for the gap, three for the circle.
- * They stick to the last word, so the circle can never wrap onto a line of its own.
+ * All sizes are in em, i.e. relative to the font size of the cell the name is in.
  */
-const STAFF_MARKER_SLOT = "\u00A0".repeat(4);
-
-/** Spaces of the slot taken by the circle itself (the rest is the gap before it). */
-const CIRCLE_SLOT_SPACES = 3;
-
-/** Size of the "w" relative to the surrounding text. */
+const GAP_EM = 0.28;
+const DIAMETER_EM = 0.75;
+const RADIUS_EM = DIAMETER_EM / 2;
+/** How far the circle's centre sits above the text baseline. */
+const CENTER_ABOVE_BASELINE_EM = 0.33;
+const OUTLINE_WIDTH_EM = 0.06;
+/** Size of the "w" inside the circle, relative to the surrounding text. */
 const LETTER_SIZE_FACTOR = 0.65;
-
-/** autotable's own line height factor; text lines are laid out with it (see autoTableText). */
+/** Half the x-height of Helvetica Bold, in em of the "w": centres the letter on the circle. */
+const LETTER_HALF_X_HEIGHT_EM = 0.26;
+/** autotable lays text lines out with this line height factor (see autoTableText). */
 const BASELINE_OFFSET_FACTOR = 2 - 1.15;
 
 const cellKey = (rowIndex: number, columnIndex: number): string =>
   `${rowIndex}:${columnIndex}`;
 
 export type PdfTableBody = {
-  /** Table body as autotable should lay it out: safe text, plus a slot where a marker goes. */
+  /** Table body as autotable should lay it out: every cell made safe for jsPDF's fonts. */
   body: string[][];
   /** "row:column" of the body cells that belong to WSO2 staff. */
   staffMarkerCells: ReadonlySet<string>;
@@ -50,8 +51,8 @@ export type PdfTableBody = {
 
 /**
  * Prepares table rows for a jsPDF autotable: every cell goes through
- * {@link toPdfSafeText}, and a cell that carried the WSO2 staff marker gets room for the
- * circled "w" that {@link drawWso2StaffMarkers} draws after the layout is known.
+ * {@link toPdfSafeText}, and the cells that carried the WSO2 staff marker are noted so
+ * {@link wso2StaffMarkerHooks} can make room for, and draw, the circled "w".
  *
  * @param rows - Table data rows.
  * @returns {PdfTableBody} The body to hand to autotable and the cells to mark.
@@ -61,83 +62,100 @@ export function buildPdfTableBody(rows: string[][]): PdfTableBody {
   const body = rows.map((row, rowIndex) =>
     row.map((cell, columnIndex) => {
       const text = toPdfSafeText(cell);
-      if (!hasWso2StaffMarker(cell) || !text) return text;
-      staffMarkerCells.add(cellKey(rowIndex, columnIndex));
-      return text + STAFF_MARKER_SLOT;
+      if (text && hasWso2StaffMarker(cell)) {
+        staffMarkerCells.add(cellKey(rowIndex, columnIndex));
+      }
+      return text;
     }),
   );
   return { body, staffMarkerCells };
 }
 
 /**
- * Builds the autotable `didDrawCell` hook that draws a circled "w" (the "ⓦ" of WSO2 staff
- * names) after the last line of each marked body cell.
+ * Builds the autotable hooks that give a WSO2 staff name its circled "w" (the "ⓦ" of the
+ * name): `didParseCell` widens the cell's right padding by the room the circle needs, so
+ * the layout (wrapping, column widths) accounts for it, and `didDrawCell` draws the circle
+ * after the last line of the name. Spread both into the autotable options.
  *
  * @param staffMarkerCells - Cells to mark, from {@link buildPdfTableBody}.
- * @returns {(data: CellHookData) => void} Hook for autotable's `didDrawCell` option.
+ * @returns The `didParseCell` and `didDrawCell` hooks.
  */
-export function drawWso2StaffMarkers(
-  staffMarkerCells: ReadonlySet<string>,
-): (data: CellHookData) => void {
-  return (data) => {
-    if (data.section !== "body") return;
-    if (!staffMarkerCells.has(cellKey(data.row.index, data.column.index))) return;
+export function wso2StaffMarkerHooks(staffMarkerCells: ReadonlySet<string>): {
+  didParseCell: (data: CellHookData) => void;
+  didDrawCell: (data: CellHookData) => void;
+} {
+  const isMarked = (data: CellHookData): boolean =>
+    data.section === "body" &&
+    staffMarkerCells.has(cellKey(data.row.index, data.column.index));
 
-    const doc = data.doc as jsPDF;
-    const { cell } = data;
-    const lines = cell.text;
-    if (lines.length === 0) return;
+  return {
+    didParseCell: (data) => {
+      if (!isMarked(data)) return;
+      const { cell } = data;
+      const fontSize = cell.styles.fontSize / (data.doc as jsPDF).internal.scaleFactor;
+      cell.styles.cellPadding = {
+        top: cell.padding("top"),
+        bottom: cell.padding("bottom"),
+        left: cell.padding("left"),
+        right: cell.padding("right") + (GAP_EM + DIAMETER_EM) * fontSize,
+      };
+    },
 
-    const previous = {
-      font: doc.getFont(),
-      fontSize: doc.getFontSize(),
-      lineWidth: doc.getLineWidth(),
-      drawColor: doc.getDrawColor(),
-      textColor: doc.getTextColor(),
-    };
+    didDrawCell: (data) => {
+      if (!isMarked(data)) return;
+      const doc = data.doc as jsPDF;
+      const { cell } = data;
+      const lines = cell.text;
+      if (lines.length === 0) return;
 
-    // Measure with the cell's own font so the circle follows the text it belongs to.
-    doc.setFont(cell.styles.font, cell.styles.fontStyle);
-    doc.setFontSize(cell.styles.fontSize);
+      const previous = {
+        font: doc.getFont(),
+        fontSize: doc.getFontSize(),
+        lineWidth: doc.getLineWidth(),
+        drawColor: doc.getDrawColor(),
+        textColor: doc.getTextColor(),
+      };
 
-    const fontSize = doc.getFontSize() / doc.internal.scaleFactor;
-    const lineHeight = fontSize * doc.getLineHeightFactor();
-    const spaceWidth = doc.getTextWidth("\u00A0");
+      // Measure with the cell's own font so the circle follows the text it belongs to.
+      doc.setFont(cell.styles.font, cell.styles.fontStyle);
+      doc.setFontSize(cell.styles.fontSize);
 
-    // Baseline of the last line, exactly as autotable places it (autoTableText).
-    const textPos = cell.getTextPos();
-    let firstBaseline = textPos.y + fontSize * BASELINE_OFFSET_FACTOR;
-    if (cell.styles.valign === "middle") firstBaseline -= (lines.length / 2) * lineHeight;
-    else if (cell.styles.valign === "bottom") firstBaseline -= lines.length * lineHeight;
-    const lastBaseline = firstBaseline + (lines.length - 1) * lineHeight;
+      const fontSize = doc.getFontSize() / doc.internal.scaleFactor;
+      const lineHeight = fontSize * doc.getLineHeightFactor();
 
-    // Left edge of the last line (autotable aligns by the full string, slot included).
-    const lastLine = lines[lines.length - 1];
-    const lastLineWidth = doc.getTextWidth(lastLine);
-    let lineLeft = textPos.x;
-    if (cell.styles.halign === "right") lineLeft -= lastLineWidth;
-    else if (cell.styles.halign === "center") lineLeft -= lastLineWidth / 2;
+      // Baseline of the last line, exactly as autotable places it (autoTableText).
+      const textPos = cell.getTextPos();
+      let firstBaseline = textPos.y + fontSize * BASELINE_OFFSET_FACTOR;
+      if (cell.styles.valign === "middle") firstBaseline -= (lines.length / 2) * lineHeight;
+      else if (cell.styles.valign === "bottom") firstBaseline -= lines.length * lineHeight;
+      const lastBaseline = firstBaseline + (lines.length - 1) * lineHeight;
 
-    const textWidth = doc.getTextWidth(lastLine.replace(/\u00A0+$/, ""));
-    const radius = (CIRCLE_SLOT_SPACES * spaceWidth) / 2 - fontSize * 0.04;
-    const centerX = lineLeft + textWidth + spaceWidth + (CIRCLE_SLOT_SPACES * spaceWidth) / 2;
-    const centerY = lastBaseline - fontSize * 0.33;
+      // Where the last line starts, as autotable aligns it.
+      const lastLine = lines[lines.length - 1];
+      const lastLineWidth = doc.getTextWidth(lastLine);
+      let lineLeft = textPos.x;
+      if (cell.styles.halign === "right") lineLeft -= lastLineWidth;
+      else if (cell.styles.halign === "center") lineLeft -= lastLineWidth / 2;
 
-    doc.setDrawColor(previous.textColor);
-    doc.setLineWidth(fontSize * 0.06);
-    doc.circle(centerX, centerY, radius, "S");
+      const centerX = lineLeft + lastLineWidth + (GAP_EM + RADIUS_EM) * fontSize;
+      const centerY = lastBaseline - CENTER_ABOVE_BASELINE_EM * fontSize;
 
-    // The "w": bold, sized to sit inside the circle, centred on its x-height (0.52em).
-    const letterSize = fontSize * LETTER_SIZE_FACTOR;
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(doc.getFontSize() * LETTER_SIZE_FACTOR);
-    doc.setTextColor(previous.textColor);
-    doc.text("w", centerX, centerY + letterSize * 0.26, { align: "center" });
+      doc.setDrawColor(previous.textColor);
+      doc.setLineWidth(OUTLINE_WIDTH_EM * fontSize);
+      doc.circle(centerX, centerY, RADIUS_EM * fontSize, "S");
 
-    doc.setFont(previous.font.fontName, previous.font.fontStyle);
-    doc.setFontSize(previous.fontSize);
-    doc.setLineWidth(previous.lineWidth);
-    doc.setDrawColor(previous.drawColor);
-    doc.setTextColor(previous.textColor);
+      // The "w": bold, sized to sit inside the circle, centred on its x-height.
+      const letterSize = fontSize * LETTER_SIZE_FACTOR;
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(doc.getFontSize() * LETTER_SIZE_FACTOR);
+      doc.setTextColor(previous.textColor);
+      doc.text("w", centerX, centerY + letterSize * LETTER_HALF_X_HEIGHT_EM, { align: "center" });
+
+      doc.setFont(previous.font.fontName, previous.font.fontStyle);
+      doc.setFontSize(previous.fontSize);
+      doc.setLineWidth(previous.lineWidth);
+      doc.setDrawColor(previous.drawColor);
+      doc.setTextColor(previous.textColor);
+    },
   };
 }
