@@ -602,7 +602,14 @@ func (c *postgresCustomerHealthClient) scanAccountsPage(ctx context.Context, acc
 		// (accountHasProduct/accountFlags) are dispatched to the worker
 		// pool -- the cheap in-memory region/abtTeam checks above already
 		// ran synchronously, so a page with no product/risks filter at all
-		// never starts a single goroutine.
+		// never starts a single goroutine: an account that's already fully
+		// decided (region/abtTeam-only filtering) is included directly here
+		// instead of handed to the pool just to immediately set the same
+		// bool.
+		if wantProduct == "" && len(risks) == 0 {
+			include[i] = true
+			continue
+		}
 		i, a := i, a
 		g.Go(func() error {
 			if wantProduct != "" {

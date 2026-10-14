@@ -156,11 +156,11 @@ func NewCaseHandler(entity entityCaseClient) *CaseHandler {
 // (the route-level permission it already carries, shared with every other
 // case-type view) cannot express. PermViewSecurityReportCases, not
 // PermViewSecurityCenter: the latter also gates /products/vulnerabilities and
-// stays admin/cs_engineer/comment_updater-only, while the former additionally
-// grants Viewer read access to these cases without opening Vulnerabilities to
-// them. service_request has no equivalent check at all — every PermView
-// holder can already search/fetch that type. Returns h for chaining at the
-// construction site.
+// stays admin/cs_engineer/comment_updater/security_team-only, while the
+// former additionally grants Viewer read access to these cases without
+// opening Vulnerabilities to them. service_request has no equivalent check
+// at all — every PermView holder can already search/fetch that type.
+// Returns h for chaining at the construction site.
 //
 // GetCase deliberately gets no equivalent check: CaseView.type is only
 // populated for ServiceNow cases (null on Postgres — see entity-service's own
