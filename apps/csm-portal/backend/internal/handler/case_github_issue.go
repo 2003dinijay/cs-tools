@@ -289,21 +289,28 @@ func idKey(id string) string {
 	return strings.ToLower(strings.ReplaceAll(strings.TrimSpace(id), "-", ""))
 }
 
+// issueInfoBlankValue stands in for a footer value that is not known: the word the
+// earlier Git issues carry there, so the block reads the same as theirs.
+const issueInfoBlankValue = "undefined"
+
 // buildGitHubIssueBody is the caller's own description, then the optional
-// Public Issue/Hotfix Required lines, then a fixed Product/Update Level/WSO2
-// Case Id/Case Number/ABT Team/Opened By block as the footer (each line
-// omitted when its value is unknown, never rendered as "Label : " with
-// nothing after it). The block goes last so the issue opens with what the
-// engineer wrote, and so the Git Internals dashboard, which reads the last
-// "ABT Team"/"Opened By" line of a body as the automated footer, is not
-// overridden by a line quoted inside the description.
+// Hotfix Required line, then the info block as the footer: always the same
+// seven lines (Product, Update level, WSO2 case id, Case number, Public Git
+// Issue, ABT Team, Opened by), in this order and spelling, as the issues filed
+// before the portal moved to the engineering service carry it. A value that is
+// not known is written as "undefined", never dropped, so the block keeps one shape
+// whatever the engineer filled in and whatever the case holds. The block goes
+// last so the issue opens with what the engineer wrote, and so the Git
+// Internals dashboard, which reads the last "ABT Team"/"Opened by" line of a
+// body as the automated footer, is not overridden by a line quoted inside the
+// description.
 func buildGitHubIssueBody(req caseGitHubIssueRequest, productLabel string, caseCtx caseGitHubIssueContext) string {
 	var info strings.Builder
 	line := func(label, value string) {
 		// Fields rather than TrimSpace: the block is parsed line by line downstream, so a
 		// value holding a newline must not start a line of its own.
 		if value = strings.Join(strings.Fields(value), " "); value == "" {
-			return
+			value = issueInfoBlankValue
 		}
 		if info.Len() > 0 {
 			info.WriteString("\n")
@@ -318,11 +325,12 @@ func buildGitHubIssueBody(req caseGitHubIssueRequest, productLabel string, caseC
 		product = productLabel
 	}
 	line("Product", product)
-	line("Update Level", req.UpdateLevel)
-	line("WSO2 Case Id", caseCtx.InternalID)
-	line("Case Number", caseCtx.Number)
+	line("Update level", req.UpdateLevel)
+	line("WSO2 case id", caseCtx.InternalID)
+	line("Case number", caseCtx.Number)
+	line("Public Git Issue", req.PublicIssueURL)
 	line("ABT Team", caseCtx.Team)
-	line("Opened By", caseCtx.OpenedBy)
+	line("Opened by", caseCtx.OpenedBy)
 
 	var b strings.Builder
 	section := func(value string) {
@@ -335,9 +343,6 @@ func buildGitHubIssueBody(req caseGitHubIssueRequest, productLabel string, caseC
 		b.WriteString(value)
 	}
 	section(strings.TrimSpace(req.Description))
-	if v := strings.TrimSpace(req.PublicIssueURL); v != "" {
-		section("Public Issue : " + v)
-	}
 	if req.HotFixRequired {
 		section("Hotfix Required : Yes")
 	}

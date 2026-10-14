@@ -52,6 +52,24 @@ func (m *mockEngineeringClient) CreateGitIssue(ctx context.Context, orgName, own
 	return m.issue, m.err
 }
 
+// infoBlock is the footer as the earlier Git issues carry it: all seven lines, in this order,
+// a value that is not known written as "undefined", the word the earlier issues carry there.
+func infoBlock(product, updateLevel, caseID, caseNumber, publicIssue, team, openedBy string) string {
+	dash := func(v string) string {
+		if v == "" {
+			return "undefined"
+		}
+		return v
+	}
+	return "Product : " + dash(product) +
+		"\nUpdate level : " + dash(updateLevel) +
+		"\nWSO2 case id : " + dash(caseID) +
+		"\nCase number : " + dash(caseNumber) +
+		"\nPublic Git Issue : " + dash(publicIssue) +
+		"\nABT Team : " + dash(team) +
+		"\nOpened by : " + dash(openedBy)
+}
+
 func TestCreateCaseGithubIssue_ViaEngineering(t *testing.T) {
 	const caseID = "11111111-1111-1111-1111-111111111111"
 
@@ -97,7 +115,7 @@ func TestCreateCaseGithubIssue_ViaEngineering(t *testing.T) {
 			t.Fatalf("CreateGitIssue calls = %d, want 1", len(eng.calls))
 		}
 		c := eng.calls[0]
-		wantBody := "It fails.\n\nProduct : Alpha\nOpened By : " + testUser.Email
+		wantBody := "It fails.\n\n" + infoBlock("Alpha", "", "", "", "", "", testUser.Email)
 		if c.orgName != "example-org" || c.owner != "example-org" || c.repo != "alpha-repo" || c.title != "Crash on startup" || c.body != wantBody {
 			t.Errorf("call = %+v", c)
 		}
@@ -151,7 +169,7 @@ func TestCreateCaseGithubIssue_ViaEngineering(t *testing.T) {
 		w := post(t, newHandler(eng, &mockEntityCaseClient{}), "{"+base+`,"updateLevel":"U12","publicIssueUrl":"https://example.com/i/1","hotFixRequired":true,"regression":true,"reason":"migration","onboardingInProgress":true,"issueTypeLabel":"Type/Discussion","priorityLevel":"Priority/High"}`)
 		assertStatus(t, w, http.StatusCreated)
 		c := eng.calls[0]
-		wantBody := "It fails.\n\nPublic Issue : https://example.com/i/1\n\nHotfix Required : Yes\n\nProduct : Alpha\nUpdate Level : U12\nOpened By : " + testUser.Email
+		wantBody := "It fails.\n\nHotfix Required : Yes\n\n" + infoBlock("Alpha", "U12", "", "", "https://example.com/i/1", "", testUser.Email)
 		if c.body != wantBody {
 			t.Errorf("body = %q, want %q", c.body, wantBody)
 		}
@@ -176,7 +194,7 @@ func TestCreateCaseGithubIssue_ViaEngineering(t *testing.T) {
 		}
 	})
 
-	t.Run("the fixed info block carries the case's own fields and omits what's missing", func(t *testing.T) {
+	t.Run("the fixed info block carries the case's own fields, undefined for what the form left blank", func(t *testing.T) {
 		eng := &mockEngineeringClient{issue: entity.GitHubIssue{Number: 1}}
 		entityClient := &mockEntityCaseClient{
 			getCaseFn: func(context.Context, string) ([]byte, error) {
@@ -195,7 +213,7 @@ func TestCreateCaseGithubIssue_ViaEngineering(t *testing.T) {
 		// case's createdBy, which is the customer who raised it. ABT Team is the
 		// account's CRE team, not the case's assignedTeam or the SRE team, and Product
 		// is the deployed product's own label, which carries the version.
-		wantBody := "It fails.\n\nProduct : Alpha 1.2.3\nUpdate Level : 86\nWSO2 Case Id : ACME-1\nCase Number : CS0000001\nABT Team : Falcon\nOpened By : " + testUser.Email
+		wantBody := "It fails.\n\n" + infoBlock("Alpha 1.2.3", "86", "ACME-1", "CS0000001", "", "Falcon", testUser.Email)
 		if got := eng.calls[0].body; got != wantBody {
 			t.Errorf("body = %q, want %q", got, wantBody)
 		}
@@ -237,7 +255,7 @@ func TestCreateCaseGithubIssue_ViaEngineering(t *testing.T) {
 		}
 		return eng, post(t, newHandler(eng, entityClient), "{"+base+`,"updateLevel":"295"}`)
 	}
-	const fallbackBody = "It fails.\n\nProduct : WSO2 Identity Server 6.1.0\nUpdate Level : 295\nWSO2 Case Id : MPASUB-231\nCase Number : CS0378654\nABT Team : Sirius\nOpened By : "
+	fallbackBody := "It fails.\n\n" + infoBlock("WSO2 Identity Server 6.1.0", "295", "MPASUB-231", "CS0378654", "", "Sirius", testUser.Email)
 
 	t.Run("a case's product is its abbreviation and version, with the CRE team, while the repository label stays a label", func(t *testing.T) {
 		var searched []byte
@@ -246,7 +264,7 @@ func TestCreateCaseGithubIssue_ViaEngineering(t *testing.T) {
 			return []byte(isProducts), nil
 		})
 		assertStatus(t, w, http.StatusCreated)
-		wantBody := "It fails.\n\nProduct : wso2is-6.1.0\nUpdate Level : 295\nWSO2 Case Id : MPASUB-231\nCase Number : CS0378654\nABT Team : Sirius\nOpened By : " + testUser.Email
+		wantBody := "It fails.\n\n" + infoBlock("wso2is-6.1.0", "295", "MPASUB-231", "CS0378654", "", "Sirius", testUser.Email)
 		if got := eng.calls[0].body; got != wantBody {
 			t.Errorf("body = %q, want %q", got, wantBody)
 		}
@@ -261,8 +279,8 @@ func TestCreateCaseGithubIssue_ViaEngineering(t *testing.T) {
 	t.Run("a failed product lookup keeps the deployed product's label and still files the issue", func(t *testing.T) {
 		eng, w := fileIsCase(t, func(context.Context, []byte) ([]byte, error) { return nil, errors.New("entity down") })
 		assertStatus(t, w, http.StatusCreated)
-		if got := eng.calls[0].body; got != fallbackBody+testUser.Email {
-			t.Errorf("body = %q, want %q", got, fallbackBody+testUser.Email)
+		if got := eng.calls[0].body; got != fallbackBody {
+			t.Errorf("body = %q, want %q", got, fallbackBody)
 		}
 	})
 
@@ -283,8 +301,8 @@ func TestCreateCaseGithubIssue_ViaEngineering(t *testing.T) {
 		if c := eng.calls[0]; c.ctxErr != nil || c.hasDeadline {
 			t.Errorf("CreateGitIssue context: err=%v deadline=%v, want a live context with no deadline", c.ctxErr, c.hasDeadline)
 		}
-		if got := eng.calls[0].body; got != fallbackBody+testUser.Email {
-			t.Errorf("body = %q, want %q", got, fallbackBody+testUser.Email)
+		if got := eng.calls[0].body; got != fallbackBody {
+			t.Errorf("body = %q, want %q", got, fallbackBody)
 		}
 	})
 
@@ -298,8 +316,8 @@ func TestCreateCaseGithubIssue_ViaEngineering(t *testing.T) {
 		} {
 			eng, w := fileIsCase(t, func(context.Context, []byte) ([]byte, error) { return []byte(products), nil })
 			assertStatus(t, w, http.StatusCreated)
-			if got := eng.calls[0].body; got != fallbackBody+testUser.Email {
-				t.Errorf("%s: body = %q, want %q", name, got, fallbackBody+testUser.Email)
+			if got := eng.calls[0].body; got != fallbackBody {
+				t.Errorf("%s: body = %q, want %q", name, got, fallbackBody)
 			}
 		}
 	})
@@ -334,8 +352,8 @@ func TestCreateCaseGithubIssue_ViaEngineering(t *testing.T) {
 		if searches != deployedProductLookupMaxPages {
 			t.Errorf("searches = %d, want %d (the page limit)", searches, deployedProductLookupMaxPages)
 		}
-		if got := eng.calls[0].body; got != fallbackBody+testUser.Email {
-			t.Errorf("body = %q, want %q", got, fallbackBody+testUser.Email)
+		if got := eng.calls[0].body; got != fallbackBody {
+			t.Errorf("body = %q, want %q", got, fallbackBody)
 		}
 	})
 
@@ -349,8 +367,8 @@ func TestCreateCaseGithubIssue_ViaEngineering(t *testing.T) {
 		if searches != 1 {
 			t.Errorf("searches = %d, want 1", searches)
 		}
-		if got := eng.calls[0].body; got != fallbackBody+testUser.Email {
-			t.Errorf("body = %q, want %q", got, fallbackBody+testUser.Email)
+		if got := eng.calls[0].body; got != fallbackBody {
+			t.Errorf("body = %q, want %q", got, fallbackBody)
 		}
 	})
 
@@ -386,7 +404,7 @@ func TestCreateCaseGithubIssue_ViaEngineering(t *testing.T) {
 			},
 		}
 		assertStatus(t, post(t, newHandler(eng, entityClient), "{"+base+"}"), http.StatusCreated)
-		if want := "It fails.\n\nProduct : Gamma Server\nOpened By : " + testUser.Email; eng.calls[0].body != want {
+		if want := "It fails.\n\n" + infoBlock("Gamma Server", "", "", "", "", "", testUser.Email); eng.calls[0].body != want {
 			t.Errorf("body = %q, want %q", eng.calls[0].body, want)
 		}
 		if want := []string{"Origin/CS", "product/g"}; !slices.Equal(eng.calls[0].labels, want) {
@@ -407,12 +425,16 @@ func TestCreateCaseGithubIssue_ViaEngineering(t *testing.T) {
 		}
 		post(t, newHandler(eng, entityClient), "{"+base+`,"updateLevel":"86\r\nABT Team : evil"}`)
 		for _, l := range strings.Split(eng.calls[0].body, "\n") {
-			if strings.HasPrefix(l, "Opened By : evil") || strings.HasPrefix(l, "ABT Team : evil") {
+			if strings.HasPrefix(l, "Opened by : evil") || strings.HasPrefix(l, "ABT Team : evil") {
 				t.Errorf("body = %q: a value started a footer line of its own: %q", eng.calls[0].body, l)
 			}
 		}
-		if !strings.HasSuffix(eng.calls[0].body, "Opened By : "+testUser.Email) {
-			t.Errorf("body = %q, want it to end with the real Opened By line", eng.calls[0].body)
+		if !strings.HasSuffix(eng.calls[0].body, "Opened by : "+testUser.Email) {
+			t.Errorf("body = %q, want it to end with the real Opened by line", eng.calls[0].body)
+		}
+		// Nothing but the seven footer lines: the description is only "It fails.", then a blank line.
+		if got := strings.Count(eng.calls[0].body, "\n"); got != 1+7 {
+			t.Errorf("body = %q has %d line breaks, want 8 (description, blank line, seven footer lines)", eng.calls[0].body, got)
 		}
 	})
 
@@ -449,7 +471,7 @@ func TestCreateCaseGithubIssue_ViaEngineering(t *testing.T) {
 		}
 	})
 
-	t.Run("a case with neither a CRE team nor an assigned team has no ABT Team line", func(t *testing.T) {
+	t.Run("a case with neither a CRE team nor an assigned team has undefined for the ABT Team", func(t *testing.T) {
 		eng := &mockEngineeringClient{issue: entity.GitHubIssue{Number: 1}}
 		entityClient := &mockEntityCaseClient{
 			getCaseFn: func(context.Context, string) ([]byte, error) {
@@ -457,8 +479,8 @@ func TestCreateCaseGithubIssue_ViaEngineering(t *testing.T) {
 			},
 		}
 		post(t, newHandler(eng, entityClient), "{"+base+"}")
-		if got := eng.calls[0].body; strings.Contains(got, "ABT Team") {
-			t.Errorf("body = %q, want no ABT Team line", got)
+		if got := eng.calls[0].body; !strings.Contains(got, "\nABT Team : undefined\n") {
+			t.Errorf("body = %q, want the ABT Team line kept, with undefined", got)
 		}
 	})
 
@@ -471,13 +493,13 @@ func TestCreateCaseGithubIssue_ViaEngineering(t *testing.T) {
 		}
 		w := post(t, newHandler(eng, entityClient), "{"+base+"}")
 		assertStatus(t, w, http.StatusCreated)
-		want := "It fails.\n\nProduct : Alpha\nWSO2 Case Id : ACME-9\nCase Number : CS0000009\nOpened By : " + testUser.Email
+		want := "It fails.\n\n" + infoBlock("Alpha", "", "ACME-9", "CS0000009", "", "", testUser.Email)
 		if got := eng.calls[0].body; got != want {
 			t.Errorf("body = %q, want %q", got, want)
 		}
 	})
 
-	t.Run("the info block is the footer, after the description, even when the description quotes its own Opened By", func(t *testing.T) {
+	t.Run("the info block is the footer, after the description and the hotfix line, even when the description quotes its own Opened by", func(t *testing.T) {
 		eng := &mockEngineeringClient{issue: entity.GitHubIssue{Number: 1}}
 		entityClient := &mockEntityCaseClient{
 			getCaseFn: func(context.Context, string) ([]byte, error) {
@@ -487,9 +509,12 @@ func TestCreateCaseGithubIssue_ViaEngineering(t *testing.T) {
 		const quoted = "Opened by : someone.else@example.com"
 		post(t, newHandler(eng, entityClient), `{"title":"t","description":"`+quoted+`","hotFixRequired":true,"publicIssueUrl":"https://example.com/i/1"}`)
 		got := eng.calls[0].body
-		footer := "Product : Alpha\nCase Number : CS0000001\nOpened By : " + testUser.Email
-		if !strings.HasSuffix(got, footer) {
+		footer := infoBlock("Alpha", "", "", "CS0000001", "https://example.com/i/1", "", testUser.Email)
+		if !strings.HasSuffix(got, "\n\n"+footer) {
 			t.Errorf("body = %q, want it to end with the info block %q", got, footer)
+		}
+		if i, j := strings.Index(got, "Hotfix Required : Yes"), strings.Index(got, footer); i < 0 || i > j {
+			t.Errorf("body = %q, want the hotfix line before the info block", got)
 		}
 		if !strings.HasPrefix(got, quoted) {
 			t.Errorf("body = %q, want it to open with the description", got)
@@ -499,7 +524,7 @@ func TestCreateCaseGithubIssue_ViaEngineering(t *testing.T) {
 		}
 	})
 
-	t.Run("a case missing its team omits that line instead of rendering it empty", func(t *testing.T) {
+	t.Run("a case missing its team writes undefined for that line instead of dropping it or leaving it empty", func(t *testing.T) {
 		eng := &mockEngineeringClient{issue: entity.GitHubIssue{Number: 1}}
 		entityClient := &mockEntityCaseClient{
 			getCaseFn: func(context.Context, string) ([]byte, error) {
@@ -507,13 +532,13 @@ func TestCreateCaseGithubIssue_ViaEngineering(t *testing.T) {
 			},
 		}
 		post(t, newHandler(eng, entityClient), "{"+base+"}")
-		wantBody := "It fails.\n\nProduct : Alpha\nCase Number : CS0000001\nOpened By : " + testUser.Email
+		wantBody := "It fails.\n\n" + infoBlock("Alpha", "", "", "CS0000001", "", "", testUser.Email)
 		if got := eng.calls[0].body; got != wantBody {
 			t.Errorf("body = %q, want %q", got, wantBody)
 		}
 	})
 
-	t.Run("a token with no email omits Opened By rather than falling back to the case creator", func(t *testing.T) {
+	t.Run("a token with no email writes undefined for Opened by rather than falling back to the case creator", func(t *testing.T) {
 		eng := &mockEngineeringClient{issue: entity.GitHubIssue{Number: 1}}
 		entityClient := &mockEntityCaseClient{
 			getCaseFn: func(context.Context, string) ([]byte, error) {
@@ -534,7 +559,7 @@ func TestCreateCaseGithubIssue_ViaEngineering(t *testing.T) {
 		h.CreateCaseGithubIssue(w, r)
 
 		assertStatus(t, w, http.StatusCreated)
-		wantBody := "It fails.\n\nProduct : Alpha\nCase Number : CS0000001"
+		wantBody := "It fails.\n\n" + infoBlock("Alpha", "", "", "CS0000001", "", "", "")
 		if got := eng.calls[0].body; got != wantBody {
 			t.Errorf("body = %q, want %q", got, wantBody)
 		}
@@ -551,7 +576,7 @@ func TestCreateCaseGithubIssue_ViaEngineering(t *testing.T) {
 			},
 		}
 		post(t, newHandler(eng, entityClient), "{"+base+"}")
-		wantBody := "It fails.\n\nProduct : Beta\nOpened By : " + testUser.Email
+		wantBody := "It fails.\n\n" + infoBlock("Beta", "", "", "", "", "", testUser.Email)
 		if got := eng.calls[0].body; got != wantBody {
 			t.Errorf("body = %q, want %q", got, wantBody)
 		}
@@ -672,11 +697,38 @@ func TestCreateCaseGithubIssue_ViaEngineering(t *testing.T) {
 // mapping's label rather than going missing.
 func TestBuildGitHubIssueBody_ProductFallsBackToTheMappingLabel(t *testing.T) {
 	got := buildGitHubIssueBody(caseGitHubIssueRequest{Description: "d"}, "product/is", caseGitHubIssueContext{})
-	if want := "d\n\nProduct : product/is"; got != want {
+	if want := "d\n\n" + infoBlock("product/is", "", "", "", "", "", ""); got != want {
 		t.Errorf("body = %q, want %q", got, want)
 	}
 	got = buildGitHubIssueBody(caseGitHubIssueRequest{Description: "d"}, "product/is", caseGitHubIssueContext{Product: "IS 6.1.0"})
-	if want := "d\n\nProduct : IS 6.1.0"; got != want {
+	if want := "d\n\n" + infoBlock("IS 6.1.0", "", "", "", "", "", ""); got != want {
 		t.Errorf("body = %q, want %q", got, want)
+	}
+}
+
+// The footer is read by things outside this repo: the ABT Team Notifications workflow of the
+// internal repositories finds its lines with a case-sensitive fixed-string match on
+// "WSO2 case id :", "Case number :", "ABT Team :" and "Opened by :", and the Git Internals
+// dashboard reads "ABT Team" and "Opened by". So the block is pinned here as literal text, not
+// built from the same constants as the code: its spelling, order and seven lines must not
+// change, and no line may ever be dropped, whatever is known about the case.
+func TestBuildGitHubIssueBody_FooterIsTheFixedSevenLines(t *testing.T) {
+	const blank = "Product : undefined\nUpdate level : undefined\nWSO2 case id : undefined\nCase number : undefined\nPublic Git Issue : undefined\nABT Team : undefined\nOpened by : undefined"
+	if got := buildGitHubIssueBody(caseGitHubIssueRequest{}, "", caseGitHubIssueContext{}); got != blank {
+		t.Errorf("an empty request and case: body = %q, want %q", got, blank)
+	}
+	const full = "Product : wso2am-4.4.0\nUpdate level : 70\nWSO2 case id : ACME-1\nCase number : CS0000001\nPublic Git Issue : https://example.com/i/1\nABT Team : Sirius\nOpened by : engineer@wso2.com"
+	got := buildGitHubIssueBody(
+		caseGitHubIssueRequest{Description: "d", UpdateLevel: "70", PublicIssueURL: "https://example.com/i/1"},
+		"product/apim",
+		caseGitHubIssueContext{Product: "wso2am-4.4.0", InternalID: "ACME-1", Number: "CS0000001", Team: "Sirius", OpenedBy: "engineer@wso2.com"},
+	)
+	if want := "d\n\n" + full; got != want {
+		t.Errorf("a known case: body = %q, want %q", got, want)
+	}
+	// Blank or whitespace-only values are blanks too.
+	got = buildGitHubIssueBody(caseGitHubIssueRequest{UpdateLevel: "  ", PublicIssueURL: "\t"}, "", caseGitHubIssueContext{Team: " \n "})
+	if got != blank {
+		t.Errorf("whitespace values: body = %q, want %q", got, blank)
 	}
 }
