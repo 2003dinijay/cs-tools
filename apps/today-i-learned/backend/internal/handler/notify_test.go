@@ -96,7 +96,7 @@ func TestNotifySendsAnUnsentEntry(t *testing.T) {
 	if len(api.notifier.sent) != 2 {
 		t.Fatalf("announcements = %d, want 2 (the failed one, then the resend)", len(api.notifier.sent))
 	}
-	if last := api.notifier.sent[1]; last.entry.ID != e.ID || last.entryURL != "https://one.example/knowledge-base/"+e.ID+"?view=article" {
+	if last := api.notifier.sent[1]; last.entry.ID != e.ID || last.entryURL != "https://one.example/knowledge/today-i-learned/"+e.ID+"?view=article" {
 		t.Fatalf("resent %+v", last)
 	}
 }

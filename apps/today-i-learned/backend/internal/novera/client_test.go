@@ -68,7 +68,7 @@ func TestNotifySendsTheEntry(t *testing.T) {
 		WhereDetail: ptr("Acme & <Co>"),
 		What:        "<p>Learned <strong>a lot</strong>.</p><ul><li>One</li><li>Two</li></ul>",
 	}
-	if err := newClient(srv, "https://one.example/til-logo.png").Notify(context.Background(), e, "https://one.example/knowledge-base/e1?view=article"); err != nil {
+	if err := newClient(srv, "https://one.example/til-logo.png").Notify(context.Background(), e, "https://one.example/knowledge/today-i-learned/e1?view=article"); err != nil {
 		t.Fatalf("Notify: %v", err)
 	}
 
@@ -79,7 +79,7 @@ func TestNotifySendsTheEntry(t *testing.T) {
 		"title":    `Use <b> & "quotes"`,
 		"subtitle": "Customer — Acme & <Co>",
 		"body":     "Learned a lot. • One • Two",
-		"link":     map[string]any{"url": "https://one.example/knowledge-base/e1?view=article", "label": "Read more"},
+		"link":     map[string]any{"url": "https://one.example/knowledge/today-i-learned/e1?view=article", "label": "Read more"},
 		"footer":   "Authored by Jane <Doe>",
 		"iconUrl":  "https://one.example/til-logo.png",
 	}

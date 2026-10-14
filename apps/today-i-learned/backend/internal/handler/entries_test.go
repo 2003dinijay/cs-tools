@@ -45,7 +45,7 @@ func TestCreateAnnouncesTheEntryWithAnArticleLink(t *testing.T) {
 		t.Fatalf("announcements = %d, want 1", len(api.notifier.sent))
 	}
 	got := api.notifier.sent[0]
-	if got.entry.ID != e.ID || got.entryURL != "https://one.example/knowledge-base/"+e.ID+"?view=article" {
+	if got.entry.ID != e.ID || got.entryURL != "https://one.example/knowledge/today-i-learned/"+e.ID+"?view=article" {
 		t.Fatalf("announced %+v", got)
 	}
 }

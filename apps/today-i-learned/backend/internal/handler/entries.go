@@ -388,5 +388,5 @@ func (h *Handler) articleURL(id string) string {
 	if h.cfg.WebappBaseURL == "" {
 		return ""
 	}
-	return h.cfg.WebappBaseURL + "/knowledge-base/" + url.PathEscape(id) + "?view=article"
+	return h.cfg.WebappBaseURL + "/knowledge/today-i-learned/" + url.PathEscape(id) + "?view=article"
 }
