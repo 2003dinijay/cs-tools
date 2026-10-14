@@ -21940,7 +21940,7 @@ components:
           description: Issue-type label to apply on GitHub (e.g. "Type/Patch", "Type/Incident").
         priorityLevel:
           type: string
-          description: Priority label to apply when issueTypeLabel is "Type/Incident".
+          description: GitHub priority label for a Discussion. CSM maps this to Priority/Critical(P1), Priority/High(P2), or Priority/Medium(P3) and also applies Type/Incident.
 
     CaseGithubIssueDetail:
       type: object
