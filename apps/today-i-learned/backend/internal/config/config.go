@@ -63,7 +63,7 @@ type Config struct {
 func Load(getenv func(string) string) (Config, []string, error) {
 	r := reader{getenv: getenv}
 	cfg := Config{
-		Port:         r.port("PORT", "8077"),
+		Port:         r.port("PORT", "9090"),
 		ReadTimeout:  r.duration("REST_READ_TIMEOUT", 15*time.Second),
 		WriteTimeout: r.duration("REST_WRITE_TIMEOUT", 45*time.Second),
 		CORSOrigins:  r.list("CORS_ALLOWED_ORIGINS"),

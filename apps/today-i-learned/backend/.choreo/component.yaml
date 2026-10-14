@@ -2,7 +2,7 @@
 # gateway, which checks the caller's token and passes it on as
 # x-jwt-assertion.
 #
-# The port must match PORT, which defaults to 8077. Leave PORT unset in
+# The port must match PORT, which defaults to 9090. Leave PORT unset in
 # every Choreo deployment: nothing reconciles the two, and a mismatch makes
 # every request fail with "connection refused" at the gateway.
 schemaVersion: 1.2
