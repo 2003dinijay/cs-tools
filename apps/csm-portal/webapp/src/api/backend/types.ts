@@ -2482,7 +2482,7 @@ export interface BeCreateCaseGithubIssuePayload {
   hotFixRequired?: boolean;
   /** Issue-type label to apply on GitHub (e.g. "Type/Patch", "Type/Incident"). */
   issueTypeLabel?: string;
-  /** Priority label, applied when the type is Discussion. */
+  /** Priority label for Discussion: Priority/Critical(P1), Priority/High(P2), or Priority/Medium(P3). */
   priorityLevel?: string;
   /** Project onboarding status is In-Progress. Adds Onboarding/affected. */
   onboardingInProgress?: boolean;
