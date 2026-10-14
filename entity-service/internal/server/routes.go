@@ -634,6 +634,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		activeProjectSvc = pgProjectSvc
 	}
 	projectHandler := handler.NewProjectHandler(activeProjectSvc)
+	projectConsumptionHandler := handler.NewProjectConsumptionHandler(activeProjectSvc)
 
 	projectContactRepo := repository.NewProjectContactRepository(db)
 	var activeProjectContactSvc service.ProjectContactService
@@ -1851,6 +1852,10 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 	mux.HandleFunc("GET /projects/{id}", projectHandler.GetProject)
 	mux.HandleFunc("POST /projects/search", projectHandler.SearchProjects)
+	mux.HandleFunc("GET /projects/{id}/consumption/status", projectConsumptionHandler.GetProjectConsumptionStatus)
+	mux.HandleFunc("POST /projects/{id}/consumption/status", projectConsumptionHandler.GetProjectConsumptionStatus)
+	mux.HandleFunc("PATCH /projects/{id}/consumption", projectConsumptionHandler.UpdateProjectConsumption)
+	mux.HandleFunc("POST /projects/{id}/consumption", projectConsumptionHandler.UpdateProjectConsumption)
 	mux.HandleFunc("POST /projects/{id}/contacts/search", projectMemberOnly(accessSvc, projectContactHandler.SearchProjectContacts))
 	mux.HandleFunc("GET /projects/{id}/contacts/{contactId}", projectMemberOnly(accessSvc, projectContactHandler.GetProjectContact))
 	if projectMembershipHandler != nil {
