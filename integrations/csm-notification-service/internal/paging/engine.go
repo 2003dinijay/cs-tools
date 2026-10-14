@@ -453,11 +453,7 @@ func (e *Engine) postUnanswered(ctx context.Context, st LadderState) {
 	for i, done := range st.Placed {
 		if done && i < len(st.Plan.Calls) && st.Plan.Calls[i].Recipient.Name != "" {
 			c := st.Plan.Calls[i]
-			label := c.Level.String()
-			if tier, ok := sreTier[c.Level]; ok {
-				label = tier
-			}
-			called = append(called, label+" "+c.Recipient.Name)
+			called = append(called, c.Level.Label()+" "+c.Recipient.Name)
 		}
 	}
 	portal, label := e.links.IncidentLink(t.IncidentID), "View incident"
@@ -480,7 +476,7 @@ func (e *Engine) postUnanswered(ctx context.Context, st LadderState) {
 			Instruction: t.instruction(false),
 			PortalURL:   portal,
 			PortalLabel: label,
-			ThreadKey:   "incident-escalation-" + t.IncidentID,
+			ThreadKey:   t.chatThreadKey(),
 		})
 		if err != nil {
 			slog.ErrorContext(ctx, "escalation: the closing message was not posted", "incidentId", t.IncidentID, "audience", target.room, "err", err)
