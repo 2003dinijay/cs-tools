@@ -25,6 +25,8 @@ import {
   CHANGE_REQUEST_NOT_FOUND_MESSAGE,
   CHANGE_REQUEST_SCHEDULE_CHANGED_MESSAGE,
   ChangeRequestErrorCode,
+  WORKFLOW_APPROVAL_UNAVAILABLE,
+  WORKFLOW_NO_APPROVAL_RECORDED,
 } from "@features/operations/utils/changeRequests";
 import { ApiError } from "@utils/ApiError";
 
@@ -32,6 +34,12 @@ const mocks = vi.hoisted(() => ({
   changeRequest: { value: null as Record<string, unknown> | null },
   error: { value: null as unknown },
   approvals: { value: [] as Record<string, unknown>[] },
+  /** Where the approvals read stands: read (`approvals` above), still loading, or failed with nothing read. */
+  approvalsRead: { value: "read" as "read" | "loading" | "failed" },
+  approvalsFetching: { value: false },
+  refetchApprovals: vi.fn(),
+  /** The rows of the change request PDF, as handed to jspdf-autotable. */
+  pdfRows: vi.fn(),
   mutateAsync: vi.fn(),
   showError: vi.fn(),
   showSuccess: vi.fn(),
@@ -50,10 +58,27 @@ vi.mock("@features/operations/api/useGetChangeRequestDetails", () => ({
 
 vi.mock("@features/operations/api/useGetChangeRequestApprovals", () => ({
   default: () => ({
-    data: { approvals: mocks.approvals.value },
-    isPending: false,
-    isError: false,
+    data: mocks.approvalsRead.value === "read" ? { approvals: mocks.approvals.value } : undefined,
+    isPending: mocks.approvalsRead.value === "loading",
+    isError: mocks.approvalsRead.value === "failed",
+    isFetching: mocks.approvalsRead.value === "loading" || mocks.approvalsFetching.value,
+    refetch: mocks.refetchApprovals,
   }),
+}));
+
+vi.mock("jspdf", () => ({
+  jsPDF: vi.fn().mockImplementation(function MockJsPDF(this: Record<string, unknown>) {
+    for (const method of ["setFontSize", "setFont", "text", "setDrawColor", "setLineWidth", "line", "setPage", "save"]) {
+      this[method] = vi.fn();
+    }
+    this.getNumberOfPages = vi.fn(() => 1);
+    this.getTextWidth = vi.fn(() => 40);
+    this.internal = { pageSize: { getWidth: vi.fn(() => 210), getHeight: vi.fn(() => 297) } };
+  }),
+}));
+
+vi.mock("jspdf-autotable", () => ({
+  default: (_doc: unknown, options: { body: string[][] }) => mocks.pdfRows(options.body),
 }));
 
 vi.mock("@context/error-banner/ErrorBannerContext", () => ({
@@ -129,6 +154,11 @@ describe("ChangeRequestDetailsPage", () => {
     mocks.showError.mockReset();
     mocks.showSuccess.mockReset();
     mocks.isPending.value = false;
+    mocks.approvals.value = [];
+    mocks.approvalsRead.value = "read";
+    mocks.approvalsFetching.value = false;
+    mocks.refetchApprovals.mockReset();
+    mocks.pdfRows.mockReset();
   });
 
   it("renders change request number when loaded", () => {
@@ -686,6 +716,100 @@ describe("ChangeRequestDetailsPage", () => {
       mocks.changeRequest.value = makeChangeRequest({ state: STATES.scheduled });
       renderPage();
       expect(screen.getByText("Scheduled Maintenance Window")).toBeInTheDocument();
+    });
+  });
+
+  // A failed approvals read is not a negative result: the page never prints or draws it as "no approval".
+  describe("the approvals read", () => {
+    const exportButton = () => screen.getByRole("button", { name: "Download Change Request PDF" });
+    /** The printed value of each row of the PDF the export made last. */
+    const printedRows = (): Record<string, string> =>
+      Object.fromEntries(mocks.pdfRows.mock.lastCall?.[0] as string[][]);
+
+    it("keeps Download Change Request PDF off while the approvals load, and turns it on once they are read", () => {
+      mocks.approvalsRead.value = "loading";
+      const view = renderPage();
+      expect(exportButton()).toBeDisabled();
+      fireEvent.click(exportButton());
+      expect(mocks.pdfRows).not.toHaveBeenCalled();
+
+      mocks.approvalsRead.value = "read";
+      view.rerender(
+        <MemoryRouter initialEntries={["/projects/p1/operations/change-requests/cr-1"]}>
+          <Routes>
+            <Route
+              path="/projects/:projectId/operations/change-requests/:changeRequestId"
+              element={<ChangeRequestDetailsPage />}
+            />
+          </Routes>
+        </MemoryRouter>,
+      );
+      expect(exportButton()).toBeEnabled();
+    });
+
+    it("prints Approved By / Approved On from the approvals once they are read", () => {
+      mocks.approvals.value = [
+        {
+          stage: "CAB Approval",
+          approverType: "STATIC_GROUP",
+          approverName: "",
+          status: "APPROVED",
+          approvers: [{ id: "c1", name: "Cab Member", status: "APPROVED", respondedOn: "2026-05-02T09:00:00Z" }],
+        },
+      ];
+      renderPage();
+      fireEvent.click(exportButton());
+      expect(printedRows()["Approved By"]).toBe("Cab Member");
+      expect(printedRows()["Approved On"]).toMatch(/2026/);
+    });
+
+    it("leaves the two rows out after a read that found no approval", () => {
+      renderPage();
+      fireEvent.click(exportButton());
+      expect(printedRows()).not.toHaveProperty("Approved By");
+      expect(printedRows()).not.toHaveProperty("Approved On");
+    });
+
+    describe("when the approvals could not be read", () => {
+      beforeEach(() => {
+        mocks.approvalsRead.value = "failed";
+      });
+
+      it("shows the workflow's notice with a Retry that reads them again, and never 'No approval recorded'", () => {
+        mocks.changeRequest.value = makeChangeRequest({ state: { id: "3", label: "Closed" } });
+        renderPage();
+        expect(screen.getByTestId("change-request-workflow-approvals-unavailable")).toBeInTheDocument();
+        expect(screen.queryByText(WORKFLOW_NO_APPROVAL_RECORDED)).not.toBeInTheDocument();
+        expect(screen.getAllByText(WORKFLOW_APPROVAL_UNAVAILABLE).length).toBeGreaterThan(0);
+        fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+        expect(mocks.refetchApprovals).toHaveBeenCalledTimes(1);
+      });
+
+      it("switches Retry off while the approvals are read again", () => {
+        mocks.approvalsFetching.value = true;
+        renderPage();
+        expect(screen.getByRole("button", { name: "Retrying…" })).toBeDisabled();
+      });
+
+      it("still exports, printing Approved By / Approved On as 'Not available' rather than leaving them out", () => {
+        renderPage();
+        expect(exportButton()).toBeEnabled();
+        fireEvent.click(exportButton());
+        expect(printedRows()["Approved By"]).toBe("Not available");
+        expect(printedRows()["Approved On"]).toBe("Not available");
+        expect(mocks.showError).not.toHaveBeenCalled();
+      });
+
+      it("prints the record's own values, which do not depend on the approvals", () => {
+        mocks.changeRequest.value = makeChangeRequest({
+          approvedBy: { id: "u", label: "Recorded Approver" },
+          approvedOn: "2026-05-01T09:00:00Z",
+        });
+        renderPage();
+        fireEvent.click(exportButton());
+        expect(printedRows()["Approved By"]).toBe("Recorded Approver");
+        expect(screen.getByTestId("cr-approved-by")).toHaveTextContent("Recorded Approver");
+      });
     });
   });
 

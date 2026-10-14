@@ -160,6 +160,14 @@ export type ChangeRequestApprovalsResponse = {
   approvals: ChangeRequestApproval[];
 };
 
+/**
+ * What the page has of the approvals: the stages as read (an empty list is a
+ * read that found none), or "unavailable" when the read failed and nothing was
+ * read before it. A failed read is not a negative result: what the approvals
+ * would say is unknown, so nothing is said either way.
+ */
+export type ChangeRequestApprovalsRead = ReadonlyArray<ChangeRequestApproval> | "unavailable";
+
 // Response type for change request search results.
 export type ChangeRequestSearchResponse = PaginationResponse & {
   changeRequests: ChangeRequestItem[];
@@ -277,6 +285,9 @@ export type ProposeNewTimeAvailability =
  *   record says the step happened (an approval that was never recorded, or a
  *   change migrated from the previous system without its approvals). Neutral:
  *   not a tick, not a failure.
+ * - `unavailable`: the change request has moved past the step, and only the
+ *   approvals could say whether it happened, but they could not be read. Not
+ *   known either way: neither a tick nor "no record".
  * - `pending`: not reached yet.
  * - `disabled`: cannot happen on the path the change request took (Closed on a
  *   canceled change, Customer Review after a rollback).
@@ -286,6 +297,7 @@ export type ChangeRequestWorkflowStageStatus =
   | "current"
   | "not-required"
   | "no-record"
+  | "unavailable"
   | "pending"
   | "disabled";
 
@@ -310,8 +322,13 @@ export type ChangeRequestWorkflowStage = {
 export type ChangeRequestApprovalRecord = {
   approvedBy: string | null;
   approvedOn: string | null;
-  /** Where the two values came from; "none" when both are null. */
-  source: "record" | "approvals" | "none";
+  /**
+   * Where the two values came from; "none" when both are null. "unavailable"
+   * when both are null because the record has neither and the approvals could
+   * not be read: who approved it is not known, which is not the same as no
+   * approval.
+   */
+  source: "record" | "approvals" | "none" | "unavailable";
 };
 
 // --- Change requests UI (list, calendar, filters) ---------------------------

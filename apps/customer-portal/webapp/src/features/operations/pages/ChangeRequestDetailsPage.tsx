@@ -60,6 +60,7 @@ import ProposeNewImplementationTimeModal from "@features/operations/components/c
 import ChangeRequestRejectConfirmDialog from "@features/operations/components/change-requests/ChangeRequestRejectConfirmDialog";
 import ChangeRequestDetailsLoadingSkeleton from "@features/operations/components/change-requests/ChangeRequestDetailsLoadingSkeleton";
 import {
+  APPROVALS_UNAVAILABLE,
   CHANGE_REQUEST_NOT_FOUND_MESSAGE,
   buildChangeRequestWorkflowStages,
   deriveChangeRequestApproval,
@@ -80,6 +81,7 @@ import {
 } from "@features/operations/utils/changeRequestUi";
 import {
   ChangeRequestDecisionMode,
+  type ChangeRequestApprovalsRead,
   type ProposeNewTimeAvailability,
 } from "@features/operations/types/changeRequests";
 
@@ -140,14 +142,28 @@ export default function ChangeRequestDetailsPage(): JSX.Element {
   const patchChangeRequest = usePatchChangeRequest(changeRequestId || "");
   // The approval stages are the workflow's evidence: a step before the current
   // one is shown done only when they (or the detail) say it happened. A read
-  // that fails leaves the workflow with no evidence, which it shows as such
-  // ("No approval recorded"), never as a tick; the page itself is unaffected.
+  // that fails is not a negative result: it is passed on as such
+  // (APPROVALS_UNAVAILABLE), the steps only the approvals could vouch for read
+  // "could not be loaded" (never "No approval recorded", never a tick) with a
+  // Retry, and the rest of the page is unaffected. Stages read before a later
+  // refetch failed are still a read, and are used.
   const {
     data: approvalsData,
     isPending: isApprovalsPending,
     isError: isApprovalsError,
+    isFetching: isApprovalsFetching,
+    refetch: refetchApprovals,
   } = useGetChangeRequestApprovals(changeRequestId || "");
-  const approvals = approvalsData?.approvals;
+  const approvals = useMemo<ChangeRequestApprovalsRead | undefined>(
+    () =>
+      approvalsData
+        ? (approvalsData.approvals ?? [])
+        : isApprovalsError
+          ? APPROVALS_UNAVAILABLE
+          : undefined,
+    [approvalsData, isApprovalsError],
+  );
+  const approvalsUnavailable = approvals === APPROVALS_UNAVAILABLE;
   const isApprovalsLoading = isApprovalsPending && !isApprovalsError;
 
   const { workflowStages, currentStateIndex } = useMemo(
@@ -155,7 +171,9 @@ export default function ChangeRequestDetailsPage(): JSX.Element {
     [changeRequest, approvals],
   );
   // Who approved the change and when: the record's own values, else the CAB
-  // stage's approver from the approvals, else "Not available".
+  // stage's approver from the approvals, else "Not available" (source
+  // "unavailable" when the approvals could not be read: the PDF then says
+  // "Not available" rather than leaving the rows out).
   const approval = useMemo(
     () => deriveChangeRequestApproval(changeRequest, approvals),
     [changeRequest, approvals],
@@ -404,11 +422,15 @@ export default function ChangeRequestDetailsPage(): JSX.Element {
         >
           Back to Change Requests
         </Button>
+        {/* Off while the approvals load: Approved By / Approved On may come from
+            them, and a PDF made before they arrive would print as if there
+            were no approval. */}
         <Button
           variant="outlined"
           size="small"
           startIcon={<Download size={18} />}
           color="warning"
+          disabled={isApprovalsLoading}
           onClick={() => {
             try {
               generateChangeRequestDetailsPdf(changeRequest, [], approval);
@@ -953,6 +975,9 @@ export default function ChangeRequestDetailsPage(): JSX.Element {
             stages={workflowStages}
             currentStateIndex={currentStateIndex}
             isLoading={isApprovalsLoading}
+            approvalsUnavailable={approvalsUnavailable}
+            onRetry={() => void refetchApprovals()}
+            isRetrying={isApprovalsFetching}
           />
         </Box>
       </Box>

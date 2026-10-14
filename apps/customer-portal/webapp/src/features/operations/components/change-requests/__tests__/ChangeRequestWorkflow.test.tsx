@@ -14,14 +14,17 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { render, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { fireEvent, render, screen, within } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 import ChangeRequestWorkflow from "@features/operations/components/change-requests/ChangeRequestWorkflow";
 import {
+  APPROVALS_UNAVAILABLE,
   buildChangeRequestWorkflowStages,
+  WORKFLOW_APPROVAL_UNAVAILABLE,
   WORKFLOW_NO_APPROVAL_RECORDED,
   WORKFLOW_NO_REVIEW_RECORDED,
   WORKFLOW_NOT_REQUIRED,
+  WORKFLOW_REVIEW_UNAVAILABLE,
 } from "@features/operations/utils/changeRequests";
 import type {
   ChangeRequestWorkflowStage,
@@ -145,6 +148,70 @@ describe("ChangeRequestWorkflow", () => {
       expect(within(step("Customer Approval")).getByText("Customer approval received")).toBeInTheDocument();
       expect(step("Customer Review")).toHaveAttribute("data-stage-status", "not-required");
       expect(within(step("Customer Review")).getByText(WORKFLOW_NOT_REQUIRED)).toBeInTheDocument();
+    });
+  });
+
+  // A failed read is not a negative result: the panel never says "No approval recorded" on it.
+  describe("when the approvals could not be read", () => {
+    const closed = { id: "3", label: "Closed" };
+    const notice = () => screen.queryByTestId("change-request-workflow-approvals-unavailable");
+
+    it("says so, offers a Retry, and shows the steps only the approvals could vouch for as unknown", () => {
+      const onRetry = vi.fn();
+      const { workflowStages, currentStateIndex } = buildChangeRequestWorkflowStages(
+        { state: closed, hasCustomerApproved: true, hasCustomerReviewed: false } as never,
+        APPROVALS_UNAVAILABLE,
+      );
+      render(
+        <ChangeRequestWorkflow
+          stages={workflowStages}
+          currentStateIndex={currentStateIndex}
+          approvalsUnavailable
+          onRetry={onRetry}
+        />,
+      );
+
+      expect(notice()).toHaveTextContent("The approval records could not be loaded.");
+      expect(screen.queryByText(WORKFLOW_NO_APPROVAL_RECORDED)).not.toBeInTheDocument();
+      expect(screen.queryByText(WORKFLOW_NO_REVIEW_RECORDED)).not.toBeInTheDocument();
+      for (const name of ["Assess", "Authorize"]) {
+        expect(step(name), name).toHaveAttribute("data-stage-status", "unavailable");
+        expect(
+          within(step(name)).getByRole("img", { name: `${name}: record could not be loaded` }),
+        ).toBeInTheDocument();
+        expect(within(step(name)).getByText(WORKFLOW_APPROVAL_UNAVAILABLE)).toBeInTheDocument();
+      }
+      expect(step("Customer Review")).toHaveAttribute("data-stage-status", "unavailable");
+      expect(within(step("Customer Review")).getByText(WORKFLOW_REVIEW_UNAVAILABLE)).toBeInTheDocument();
+      // What the detail itself records still counts.
+      expect(step("Customer Approval")).toHaveAttribute("data-stage-status", "completed");
+
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+      expect(onRetry).toHaveBeenCalledTimes(1);
+    });
+
+    it("switches Retry off while the approvals are read again", () => {
+      render(
+        <ChangeRequestWorkflow
+          currentStateIndex={4}
+          stages={[stage("Assess", "unavailable", WORKFLOW_APPROVAL_UNAVAILABLE)]}
+          approvalsUnavailable
+          onRetry={vi.fn()}
+          isRetrying
+        />,
+      );
+      expect(screen.getByRole("button", { name: "Retrying…" })).toBeDisabled();
+    });
+
+    it("says nothing of the kind after a read that found no approval: that is 'No approval recorded'", () => {
+      const { workflowStages, currentStateIndex } = buildChangeRequestWorkflowStages(
+        { state: closed, hasCustomerApproved: false, hasCustomerReviewed: false } as never,
+        [],
+      );
+      render(<ChangeRequestWorkflow stages={workflowStages} currentStateIndex={currentStateIndex} />);
+      expect(notice()).not.toBeInTheDocument();
+      expect(screen.queryByText(WORKFLOW_APPROVAL_UNAVAILABLE)).not.toBeInTheDocument();
+      expect(within(step("Assess")).getByText(WORKFLOW_NO_APPROVAL_RECORDED)).toBeInTheDocument();
     });
   });
 });

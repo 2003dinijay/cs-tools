@@ -32,13 +32,16 @@ import {
   isProposalAccepted,
   isProposalNotAccepted,
   isProposalPending,
+  APPROVALS_UNAVAILABLE,
   buildChangeRequestWorkflowStages,
   classifyChangeRequestApprovalStage,
   deriveChangeRequestApproval,
   hasApprovedChangeRequestStage,
+  WORKFLOW_APPROVAL_UNAVAILABLE,
   WORKFLOW_NO_APPROVAL_RECORDED,
   WORKFLOW_NO_REVIEW_RECORDED,
   WORKFLOW_NOT_REQUIRED,
+  WORKFLOW_REVIEW_UNAVAILABLE,
   mapChangeRequestStats,
   resolveCustomerDecisionMode,
   stripChangeRequestCustomTags,
@@ -577,11 +580,12 @@ const STATE = {
   canceled: { id: "4", label: "Canceled" },
 };
 const NO_OUTCOME = { hasCustomerApproved: false, hasCustomerReviewed: false };
-const stagesOf = (changeRequest: object, approvals?: object[] | null) =>
+type ApprovalsArg = object[] | null | typeof APPROVALS_UNAVAILABLE;
+const stagesOf = (changeRequest: object, approvals?: ApprovalsArg) =>
   buildChangeRequestWorkflowStages(changeRequest as never, approvals as never).workflowStages;
-const stepOf = (changeRequest: object, name: string, approvals?: object[] | null) =>
+const stepOf = (changeRequest: object, name: string, approvals?: ApprovalsArg) =>
   stagesOf(changeRequest, approvals).find((s) => s.name === name)!;
-const statusesOf = (changeRequest: object, approvals?: object[] | null) =>
+const statusesOf = (changeRequest: object, approvals?: ApprovalsArg) =>
   Object.fromEntries(stagesOf(changeRequest, approvals).map((s) => [s.name, s.status]));
 
 describe("buildChangeRequestWorkflowStages", () => {
@@ -635,7 +639,7 @@ describe("buildChangeRequestWorkflowStages", () => {
       expect(stepOf(migrated, "Customer Review", []).description).toBe(WORKFLOW_NO_REVIEW_RECORDED);
     });
 
-    it("reads approvals that could not be read, or were never sent, as no evidence", () => {
+    it("reads approvals that were never given (none passed) as no evidence", () => {
       for (const approvals of [undefined, null]) {
         expect(statusesOf(migrated, approvals)).toEqual(statusesOf(migrated, []));
         expect(statusesOf({ state: STATE.closed, ...NO_OUTCOME }, approvals)).toEqual(statusesOf(migrated, []));
@@ -786,6 +790,71 @@ describe("buildChangeRequestWorkflowStages", () => {
     });
   });
 
+  // A failed read is not a negative result: what the approvals would say is unknown, never "no record".
+  describe("approvals that could not be read", () => {
+    it("reads a passed step only the approvals could vouch for as 'unavailable', never 'no record' and never a tick", () => {
+      expect(statusesOf({ state: STATE.closed, ...NO_OUTCOME }, APPROVALS_UNAVAILABLE)).toEqual({
+        New: "completed",
+        Assess: "unavailable",
+        Authorize: "unavailable",
+        "Customer Approval": "unavailable",
+        Scheduled: "completed",
+        Implement: "completed",
+        Review: "completed",
+        "Customer Review": "unavailable",
+        Rollback: "disabled",
+        Closed: "current",
+        Canceled: "disabled",
+      });
+      expect(stepOf({ state: STATE.closed, ...NO_OUTCOME }, "Assess", APPROVALS_UNAVAILABLE)).toMatchObject({
+        completed: false,
+        description: WORKFLOW_APPROVAL_UNAVAILABLE,
+      });
+      expect(stepOf({ state: STATE.closed, ...NO_OUTCOME }, "Authorize", APPROVALS_UNAVAILABLE).description).toBe(
+        WORKFLOW_APPROVAL_UNAVAILABLE,
+      );
+      expect(stepOf({ state: STATE.closed, ...NO_OUTCOME }, "Customer Approval", APPROVALS_UNAVAILABLE).description).toBe(
+        WORKFLOW_APPROVAL_UNAVAILABLE,
+      );
+      expect(stepOf({ state: STATE.closed, ...NO_OUTCOME }, "Customer Review", APPROVALS_UNAVAILABLE).description).toBe(
+        WORKFLOW_REVIEW_UNAVAILABLE,
+      );
+      // An empty read is a different answer: it found nothing.
+      expect(stepOf({ state: STATE.closed, ...NO_OUTCOME }, "Assess", []).status).toBe("no-record");
+    });
+
+    it("still counts what the detail records, and a box that is off", () => {
+      expect(
+        statusesOf(
+          { state: STATE.closed, hasCustomerApproved: true, hasCustomerReviewed: false, customerReviewRequired: false },
+          APPROVALS_UNAVAILABLE,
+        ),
+      ).toMatchObject({
+        Assess: "unavailable",
+        Authorize: "unavailable",
+        "Customer Approval": "completed",
+        "Customer Review": "not-required",
+      });
+      for (const customerApprovalRequired of [true, undefined, null]) {
+        expect(
+          stepOf({ state: STATE.closed, ...NO_OUTCOME, customerApprovalRequired }, "Customer Approval", APPROVALS_UNAVAILABLE).status,
+          String(customerApprovalRequired),
+        ).toBe("unavailable");
+      }
+    });
+
+    it("changes nothing for the current step, the steps ahead, or a canceled change request", () => {
+      expect(statusesOf({ state: STATE.authorize, ...NO_OUTCOME }, APPROVALS_UNAVAILABLE)).toMatchObject({
+        Assess: "unavailable",
+        Authorize: "current",
+        "Customer Approval": "pending",
+        "Customer Review": "pending",
+      });
+      const canceled = stagesOf({ state: STATE.canceled, ...NO_OUTCOME }, APPROVALS_UNAVAILABLE);
+      expect(canceled.filter((s) => s.status === "unavailable" || s.completed)).toEqual([]);
+    });
+  });
+
   describe("the current step and the ones ahead", () => {
     it("marks the step the change is in current, whatever the record says of it", () => {
       for (const [state, name] of [
@@ -915,6 +984,18 @@ describe("deriveChangeRequestApproval (Approved By / Approved Date)", () => {
       source: "approvals",
     });
     expect(deriveChangeRequestApproval(undefined)).toEqual(none);
+  });
+
+  // A failed read is not a negative result: "unavailable", which the PDF prints, never "none", which it leaves out.
+  it("says 'unavailable', not 'none', when the record has neither value and the approvals could not be read", () => {
+    expect(deriveChangeRequestApproval({ approvedBy: null, approvedOn: null }, APPROVALS_UNAVAILABLE)).toEqual({
+      approvedBy: null,
+      approvedOn: null,
+      source: "unavailable",
+    });
+    expect(
+      deriveChangeRequestApproval({ approvedBy: { id: "u", label: "Recorded Approver" }, approvedOn: null }, APPROVALS_UNAVAILABLE),
+    ).toEqual({ approvedBy: "Recorded Approver", approvedOn: null, source: "record" });
   });
 
   it("never takes a peer or customer approver for the approver of record", () => {

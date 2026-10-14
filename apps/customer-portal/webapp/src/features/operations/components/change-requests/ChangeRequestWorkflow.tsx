@@ -15,11 +15,12 @@
 // under the License.
 
 import type { JSX } from "react";
-import { alpha, Box, colors, Paper, Skeleton, Stack, Typography } from "@wso2/oxygen-ui";
+import { Alert, alpha, Box, Button, colors, Paper, Skeleton, Stack, Typography } from "@wso2/oxygen-ui";
 import {
   Circle,
   CircleCheckBig,
   CircleDashed,
+  CircleHelp,
   CircleMinus,
 } from "@wso2/oxygen-ui-icons-react";
 import type {
@@ -34,6 +35,16 @@ export type ChangeRequestWorkflowProps = {
   currentStateIndex: number;
   /** True while the evidence (the approvals) is still being read: the steps are shown as placeholders, never as "no record". */
   isLoading?: boolean;
+  /**
+   * True when the approvals could not be read: the panel says so above the
+   * steps (the steps that needed them read "could not be loaded", see
+   * `APPROVALS_UNAVAILABLE`), never "No approval recorded".
+   */
+  approvalsUnavailable?: boolean;
+  /** Reads the approvals again; a Retry button is offered with the notice when given. */
+  onRetry?: () => void;
+  /** True while that read is in flight: the button is switched off. */
+  isRetrying?: boolean;
 };
 
 /** What the step's marker says to assistive technology, by status. */
@@ -42,9 +53,14 @@ const STATUS_LABELS: Record<ChangeRequestWorkflowStageStatus, string> = {
   current: "current step",
   "not-required": "not required",
   "no-record": "no record of this step",
+  unavailable: "record could not be loaded",
   pending: "not reached",
   disabled: "not applicable",
 };
+
+/** Whether the step's caption is one of the neutral ones (italic, secondary). */
+const isNeutral = (status: ChangeRequestWorkflowStageStatus): boolean =>
+  status === "no-record" || status === "not-required" || status === "unavailable";
 
 /** How many steps the placeholder shows while the evidence loads. */
 const PLACEHOLDER_STEPS = 11;
@@ -52,7 +68,7 @@ const PLACEHOLDER_STEPS = 11;
 function markerColors(status: ChangeRequestWorkflowStageStatus): {
   bgcolor: string;
   borderColor: string;
-  borderStyle: "solid" | "dashed";
+  borderStyle: "solid" | "dashed" | "dotted";
 } {
   switch (status) {
     case "completed":
@@ -63,6 +79,8 @@ function markerColors(status: ChangeRequestWorkflowStageStatus): {
       return { bgcolor: alpha(colors.grey[500], 0.08), borderColor: colors.grey[400], borderStyle: "dashed" };
     case "not-required":
       return { bgcolor: "transparent", borderColor: colors.grey[300], borderStyle: "dashed" };
+    case "unavailable":
+      return { bgcolor: alpha(colors.orange[500], 0.08), borderColor: colors.orange[300], borderStyle: "dotted" };
     case "disabled":
       return { bgcolor: alpha(colors.grey[500], 0.05), borderColor: colors.grey[200], borderStyle: "solid" };
     default:
@@ -82,6 +100,9 @@ function StageMarkerIcon({ status }: { status: ChangeRequestWorkflowStageStatus 
     case "not-required":
       // A struck ring: the step does not apply to this change request.
       return <CircleMinus size={20} color={colors.grey[500]} />;
+    case "unavailable":
+      // A question mark: the record that would say could not be read.
+      return <CircleHelp size={20} color={colors.orange[800]} />;
     default:
       return <Circle size={20} color={colors.grey[400]} fill="none" />;
   }
@@ -92,12 +113,19 @@ function StageMarkerIcon({ status }: { status: ChangeRequestWorkflowStageStatus 
  * record says of it. A tick means the record shows the step happened; a step
  * the change request passed with nothing on record is a dashed, unticked ring
  * captioned "No approval recorded", and one that does not apply to the change
- * (its requirement box is off) a struck ring captioned "Not required".
+ * (its requirement box is off) a struck ring captioned "Not required". When the
+ * approvals could not be read, a step only they could vouch for is a dotted ring
+ * with a question mark captioned "Approval record could not be loaded", and the
+ * panel says so above the steps (with a Retry): a failed read is not a negative
+ * result.
  */
 export default function ChangeRequestWorkflow({
   stages,
   currentStateIndex,
   isLoading = false,
+  approvalsUnavailable = false,
+  onRetry,
+  isRetrying = false,
 }: ChangeRequestWorkflowProps): JSX.Element {
   return (
     <Paper variant="outlined" data-testid="change-request-workflow">
@@ -111,6 +139,24 @@ export default function ChangeRequestWorkflow({
       </Box>
 
       <Box sx={{ px: 3, pb: 3 }}>
+        {!isLoading && approvalsUnavailable && (
+          <Alert
+            severity="warning"
+            role="status"
+            data-testid="change-request-workflow-approvals-unavailable"
+            sx={{ mb: 2 }}
+            action={
+              onRetry ? (
+                <Button color="inherit" size="small" onClick={onRetry} disabled={isRetrying}>
+                  {isRetrying ? "Retrying…" : "Retry"}
+                </Button>
+              ) : undefined
+            }
+          >
+            The approval records could not be loaded. The steps that depend on
+            them are shown as unknown.
+          </Alert>
+        )}
         {isLoading ? (
           <Stack spacing={2} data-testid="change-request-workflow-loading" aria-busy="true">
             {Array.from({ length: PLACEHOLDER_STEPS }, (_, index) => (
@@ -131,7 +177,7 @@ export default function ChangeRequestWorkflow({
               const captionColor =
                 stage.status === "completed" || stage.status === "current"
                   ? "text.primary"
-                  : stage.status === "no-record" || stage.status === "not-required"
+                  : isNeutral(stage.status)
                     ? "text.secondary"
                     : "text.disabled";
               return (
@@ -220,7 +266,7 @@ export default function ChangeRequestWorkflow({
                             color={captionColor}
                             sx={{
                               opacity: stage.disabled ? 0.5 : 1,
-                              fontStyle: stage.status === "no-record" || stage.status === "not-required" ? "italic" : "normal",
+                              fontStyle: isNeutral(stage.status) ? "italic" : "normal",
                             }}
                           >
                             {stage.description}

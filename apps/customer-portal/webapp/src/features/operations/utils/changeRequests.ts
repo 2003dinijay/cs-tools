@@ -25,6 +25,7 @@ import { resolveChangeRequestCanonicalState } from "@features/operations/utils/c
 import type {
   ChangeRequestApproval,
   ChangeRequestApprovalRecord,
+  ChangeRequestApprovalsRead,
   ChangeRequestApprover,
   ChangeRequestCustomerProposal,
   ChangeRequestDetails,
@@ -805,6 +806,20 @@ function describeCustomerApprovalStage(changeRequest: ChangeRequestDetails): str
 // --- Approval stages as evidence ---------------------------------------------
 
 /**
+ * The approvals could not be read (the request failed and nothing was read
+ * before it): see {@link ChangeRequestApprovalsRead}. Distinct from an empty
+ * list, which is a read that found no approval.
+ */
+export const APPROVALS_UNAVAILABLE = "unavailable" satisfies ChangeRequestApprovalsRead;
+
+/** The stages of a read, or none when the read failed. */
+function readStages(
+  approvals: ChangeRequestApprovalsRead | null | undefined,
+): ReadonlyArray<ChangeRequestApproval> | null {
+  return approvals === APPROVALS_UNAVAILABLE ? null : (approvals ?? null);
+}
+
+/**
  * The role of an approval stage in the flow, read from its label. The labels are
  * the backend's: the stages this codebase provisions ("Peer Approval", "CAB
  * Approval", "Review", "Customer Approval", "Customer Review"), the historic
@@ -892,16 +907,21 @@ export function hasApprovedChangeRequestStage(
  * otherwise the first APPROVED approver of the CAB (Authorize) stage in the
  * approvals, with the time they answered; otherwise nothing. Nothing is made up:
  * a CAB stage whose rows are withheld (a customer is not told who sits on WSO2's
- * internal stages) yields nothing, and the page says "Not available".
+ * internal stages) yields nothing, and the page says "Not available". When the
+ * record has neither value and the approvals could not be read, the source is
+ * "unavailable": not known, which the PDF says rather than leaving the rows out.
  */
 export function deriveChangeRequestApproval(
   changeRequest: Pick<ChangeRequestDetails, "approvedBy" | "approvedOn"> | null | undefined,
-  approvals?: ReadonlyArray<ChangeRequestApproval> | null,
+  approvals?: ChangeRequestApprovalsRead | null,
 ): ChangeRequestApprovalRecord {
   const recordedBy = changeRequest?.approvedBy?.label?.trim() || null;
   const recordedOn = changeRequest?.approvedOn?.trim() || null;
   if (recordedBy || recordedOn) {
     return { approvedBy: recordedBy, approvedOn: recordedOn, source: "record" };
+  }
+  if (approvals === APPROVALS_UNAVAILABLE) {
+    return { approvedBy: null, approvedOn: null, source: "unavailable" };
   }
   for (const stage of approvals ?? []) {
     if (classifyChangeRequestApprovalStage(stage.stage) !== "cab" || !isApprovedStatus(stage.status)) {
@@ -927,6 +947,9 @@ export const WORKFLOW_NO_APPROVAL_RECORDED = "No approval recorded";
 export const WORKFLOW_NO_REVIEW_RECORDED = "No review recorded";
 /** The caption of a step whose requirement box is off. */
 export const WORKFLOW_NOT_REQUIRED = "Not required";
+/** The caption of a passed step only the approvals could vouch for, when they could not be read. */
+export const WORKFLOW_APPROVAL_UNAVAILABLE = "Approval record could not be loaded";
+export const WORKFLOW_REVIEW_UNAVAILABLE = "Review record could not be loaded";
 
 function stageOf(
   name: string,
@@ -971,13 +994,20 @@ function stageOf(
  * A response with no approvals and no requirement boxes (the previous system's
  * shape) therefore shows a tick for nothing it cannot vouch for.
  *
+ * When the approvals could not be read ({@link APPROVALS_UNAVAILABLE}) a failed
+ * read is not taken for an empty one: a passed Assess / Authorize, and a passed
+ * customer step the detail does not vouch for (and whose box is not off), reads
+ * `unavailable` ("Approval record could not be loaded"), never "No approval
+ * recorded". What the detail itself records still counts.
+ *
  * @param changeRequest - The change request as returned by the details API.
- * @param approvals - Its approval stages (`GET .../approvals`); none when they
- *   could not be read, which is the same as an empty list: no evidence.
+ * @param approvals - Its approval stages (`GET .../approvals`) as read: an
+ *   empty list (or none given) is no evidence; {@link APPROVALS_UNAVAILABLE} is
+ *   a read that failed, which is no answer either way.
  */
 export function buildChangeRequestWorkflowStages(
   changeRequest?: ChangeRequestDetails | null,
-  approvals?: ReadonlyArray<ChangeRequestApproval> | null,
+  approvals?: ChangeRequestApprovalsRead | null,
 ): { workflowStages: ChangeRequestWorkflowStage[]; currentStateIndex: number } {
   if (!changeRequest) {
     return { workflowStages: [], currentStateIndex: -1 };
@@ -1000,9 +1030,13 @@ export function buildChangeRequestWorkflowStages(
   const byState = (state: ChangeRequestState): ChangeRequestWorkflowStageStatus =>
     isCurrent(state) ? "current" : isPast(state) ? "completed" : "pending";
 
+  const approvalsUnavailable = approvals === APPROVALS_UNAVAILABLE;
+  const stages = readStages(approvals);
+
   /**
    * A step that needs a record: done on evidence; past it without any, "no record"
-   * (or "not required" when its box is off, which also applies before the step);
+   * (or "not required" when its box is off, which also applies before the step),
+   * or "unavailable" when the approvals that could hold the record were not read;
    * current when there; pending before.
    */
   const byEvidence = (
@@ -1014,18 +1048,19 @@ export function buildChangeRequestWorkflowStages(
     if (isCanceled) return "pending";
     if (isPast(state) && evidence) return "completed";
     if (required === false) return "not-required";
-    return isPast(state) ? "no-record" : "pending";
+    if (!isPast(state)) return "pending";
+    return approvalsUnavailable ? "unavailable" : "no-record";
   };
 
-  const peerApproved = hasApprovedChangeRequestStage(approvals, "peer");
-  const cabApproved = hasApprovedChangeRequestStage(approvals, "cab");
+  const peerApproved = hasApprovedChangeRequestStage(stages, "peer");
+  const cabApproved = hasApprovedChangeRequestStage(stages, "cab");
   const customerApproved =
     changeRequest.hasCustomerApproved === true ||
     isProposalAccepted(changeRequest) ||
-    hasApprovedChangeRequestStage(approvals, "customer-approval");
+    hasApprovedChangeRequestStage(stages, "customer-approval");
   const customerReviewed =
     changeRequest.hasCustomerReviewed === true ||
-    hasApprovedChangeRequestStage(approvals, "customer-review");
+    hasApprovedChangeRequestStage(stages, "customer-review");
 
   const assess = byEvidence(ChangeRequestStates.ASSESS, peerApproved, undefined);
   const authorize = byEvidence(ChangeRequestStates.AUTHORIZE, cabApproved, undefined);
@@ -1047,8 +1082,15 @@ export function buildChangeRequestWorkflowStages(
     status: ChangeRequestWorkflowStageStatus,
     usual: string,
     noRecord: string = WORKFLOW_NO_APPROVAL_RECORDED,
+    unavailable: string = WORKFLOW_APPROVAL_UNAVAILABLE,
   ): string =>
-    status === "no-record" ? noRecord : status === "not-required" ? WORKFLOW_NOT_REQUIRED : usual;
+    status === "no-record"
+      ? noRecord
+      : status === "unavailable"
+        ? unavailable
+        : status === "not-required"
+          ? WORKFLOW_NOT_REQUIRED
+          : usual;
 
   return {
     currentStateIndex: currentIndex,
@@ -1074,7 +1116,12 @@ export function buildChangeRequestWorkflowStages(
       stageOf(ChangeRequestStates.REVIEW, "Internal review", byState(ChangeRequestStates.REVIEW)),
       stageOf(
         ChangeRequestStates.CUSTOMER_REVIEW,
-        captionFor(customerReview, "Customer validation", WORKFLOW_NO_REVIEW_RECORDED),
+        captionFor(
+          customerReview,
+          "Customer validation",
+          WORKFLOW_NO_REVIEW_RECORDED,
+          WORKFLOW_REVIEW_UNAVAILABLE,
+        ),
         customerReview,
       ),
       stageOf(
@@ -1124,7 +1171,9 @@ function getDateOrNA(dateStr: string | null | undefined): string {
  * @param approval - Who approved it and when, as the page prints it
  *   ({@link deriveChangeRequestApproval}); the record's own values when omitted.
  *   Printed only when there is something to print: the PDF never says who
- *   approved a change on no evidence.
+ *   approved a change on no evidence. When it is not known (source
+ *   "unavailable": the approvals could not be read) both rows say
+ *   "Not available", so the PDF does not read as if there were no approval.
  */
 export function generateChangeRequestDetailsPdf(
   changeRequest: ChangeRequestDetails,
@@ -1163,7 +1212,10 @@ export function generateChangeRequestDetailsPdf(
     ["Rollback Plan", stripHtmlOrNA(changeRequest.rollbackPlan)],
   ];
 
-  if (approval.approvedBy || approval.approvedOn) {
+  if (approval.source === "unavailable") {
+    tableData.push(["Approved By", "Not available"]);
+    tableData.push(["Approved On", "Not available"]);
+  } else if (approval.approvedBy || approval.approvedOn) {
     tableData.push(["Approved By", approval.approvedBy || "N/A"]);
     tableData.push(["Approved On", getDateOrNA(approval.approvedOn)]);
   }
