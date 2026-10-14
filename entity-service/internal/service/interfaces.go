@@ -145,6 +145,10 @@ type AccountService interface {
 	// GetAccountByID returns the account with the given UUID. A ValidationError is
 	// returned for a malformed UUID; a NotFoundError if no account matches.
 	GetAccountByID(ctx context.Context, id string) (domain.AccountDetail, error)
+	// GetAccountHealthDetail returns the per-project customer-health breakdown of
+	// the account with the given UUID. A ValidationError is returned for a
+	// malformed UUID; a NotFoundError if no account matches.
+	GetAccountHealthDetail(ctx context.Context, id string) (domain.AccountHealthDetail, error)
 	// UpdateAccountTeams sets the account's CRE and/or SRE team (Postgres data
 	// source only). A ValidationError is returned for a malformed UUID, if
 	// neither field is provided, or if a provided team ID does not reference
@@ -455,6 +459,9 @@ type SNAccountService interface {
 	SearchAccounts(ctx context.Context, req domain.SearchAccountsRequest) (domain.SearchAccountsResponse, error)
 	// GetAccountByID returns the full account detail for the given UUID.
 	GetAccountByID(ctx context.Context, id string) (domain.AccountDetail, error)
+	// GetAccountHealthDetail always fails with a ValidationError: the customer-health
+	// detail is computed from Postgres tables only.
+	GetAccountHealthDetail(ctx context.Context, id string) (domain.AccountHealthDetail, error)
 }
 
 // ProjectService defines the operations available on the project entity.

@@ -380,3 +380,11 @@ func (s *snAccountContactService) SearchAccountContacts(ctx context.Context, acc
 		Offset:   req.Pagination.Offset,
 	}, nil
 }
+
+// GetAccountHealthDetail implements SNAccountService. The customer-health detail
+// is computed from Postgres tables, so this data source rejects it with a 400
+// (as it does the health filters of the account search) rather than answering
+// from tables it does not own.
+func (s *snAccountService) GetAccountHealthDetail(_ context.Context, _ string) (domain.AccountHealthDetail, error) {
+	return domain.AccountHealthDetail{}, &apierror.ValidationError{Msg: "the account health detail is not supported when DATA_SOURCE=servicenow"}
+}

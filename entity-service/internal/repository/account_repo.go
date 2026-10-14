@@ -86,6 +86,10 @@ type AccountRepository interface {
 	// GetAccountByID returns the account with the given UUID, or a NotFoundError
 	// if no such account exists.
 	GetAccountByID(ctx context.Context, id string) (AccountRow, error)
+	// GetAccountHealthDetail returns the per-project customer-health breakdown of
+	// the account with the given UUID, or a NotFoundError if no such account
+	// exists. See account_health_detail.go for the statements it runs.
+	GetAccountHealthDetail(ctx context.Context, id string) (AccountHealthDetailRow, error)
 	// UpdateAccountTeams sets the account's CRE and/or SRE team. A nil
 	// creTeamID/sreTeamID leaves that assignment unchanged; there is no way
 	// to explicitly clear an assignment to "no team" via this method (see
