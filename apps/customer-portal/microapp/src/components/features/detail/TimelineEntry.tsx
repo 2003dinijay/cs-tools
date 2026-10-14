@@ -21,6 +21,7 @@ import {
   CircleCheck,
   CircleDashed,
   CircleDot,
+  CircleHelp,
   CircleMinus,
   Paperclip,
 } from "@wso2/oxygen-ui-icons-react";
@@ -47,10 +48,10 @@ export interface ProgressTimelineEntryProps extends TimelineEntryBaseProps {
   description: string;
   /**
    * How the step is drawn: a tick (`completed`), the current marker (`active`), a plain ring (`pending`), a dashed
-   * ring for a step passed with nothing on record (`no-record`) and a struck ring for one that does not apply
-   * (`not-required`).
+   * ring for a step passed with nothing on record (`no-record`), a struck ring for one that does not apply
+   * (`not-required`) and a ring with a question mark for one whose record could not be read (`unavailable`).
    */
-  status?: "completed" | "active" | "pending" | "no-record" | "not-required";
+  status?: "completed" | "active" | "pending" | "no-record" | "not-required" | "unavailable";
   fill?: string;
   /** The change request has moved past this step: the connector below it is highlighted. Read from `status` when absent. */
   passed?: boolean;
@@ -97,6 +98,12 @@ export function TimelineEntry({ timestamp, last = false, ...props }: TimelineEnt
           return (
             <Box color="text.disabled" aria-label={`${props.title}: not required`} role="img">
               <CircleMinus size={pxToRem(20)} />
+            </Box>
+          );
+        if (props.status === "unavailable")
+          return (
+            <Box color="warning.main" aria-label={`${props.title}: record could not be loaded`} role="img">
+              <CircleHelp size={pxToRem(20)} />
             </Box>
           );
         return (

@@ -7,13 +7,14 @@ import { changeRequests } from "@root/src/services/changes";
 import { useFilters } from "@root/src/context/filters";
 import {
   approvalEvidence,
+  approvalsRead,
   NO_EVIDENCE,
   timelineStepStates,
   type TimelineEvidence,
 } from "@root/src/utils/changeRequestProgress";
 
 interface ProgressTimelineViewProps {
-  /** What the record says of the steps that need one; nothing when the approvals could not be read. */
+  /** What the record says of the steps that need one, and whether the approvals could be read at all. */
   evidence?: TimelineEvidence;
   activeIndex: number;
 }
@@ -67,8 +68,9 @@ export function useProgressTimelineModel(data?: ChangeRequest, filters?: CasesFi
 export function ProgressTimeline({ id }: { id: string }) {
   const { data, isLoading } = useQuery(changeRequests.get(id));
   // The approval stages are the timeline's evidence: a step before the current one is drawn done only when they
-  // (or the detail) say it happened. A read that fails leaves the timeline with no evidence, which it draws as
-  // such (a dashed ring, "No approval recorded"), never as a tick.
+  // (or the detail) say it happened. A read that fails with nothing read before is not a negative result: it is
+  // passed on as such (`approvalsRead` gives APPROVALS_UNAVAILABLE, never null), and a step only the approvals could
+  // vouch for is drawn as unknown ("Approval record could not be loaded"), never "No approval recorded" or a tick.
   const {
     data: approvals,
     isLoading: isApprovalsLoading,
@@ -83,7 +85,5 @@ export function ProgressTimeline({ id }: { id: string }) {
   // A time WSO2 accepted (and the change moved on because of it) counts as the customer's approval here: the flag
   // itself stays false. The Customer Approval step is green for either, never a colour that says "not approved"
   // (see `customerApprovalStepFill`).
-  return (
-    <ProgressTimelineView evidence={approvalEvidence(data, approvals?.approvals ?? null)} activeIndex={activeIndex} />
-  );
+  return <ProgressTimelineView evidence={approvalEvidence(data, approvalsRead(approvals))} activeIndex={activeIndex} />;
 }

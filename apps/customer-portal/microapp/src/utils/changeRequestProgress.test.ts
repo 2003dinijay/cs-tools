@@ -17,15 +17,19 @@
 import { describe, expect, it } from "vitest";
 import {
   approvalEvidence,
+  approvalsRead,
+  APPROVALS_UNAVAILABLE,
   CHANGE_REQUEST_STATUS_IDS_PAST_CUSTOMER_APPROVAL,
   classifyApprovalStage,
   customerApprovalStepFill,
   hasApprovedStage,
   isProposedTimeAccepted,
   NO_EVIDENCE,
+  TIMELINE_APPROVAL_UNAVAILABLE,
   TIMELINE_NO_APPROVAL_RECORDED,
   TIMELINE_NO_REVIEW_RECORDED,
   TIMELINE_NOT_REQUIRED,
+  TIMELINE_REVIEW_UNAVAILABLE,
   timelineStepStates,
   type TimelineEvidence,
   type TimelineStepStatus,
@@ -63,7 +67,7 @@ describe("isProposedTimeAccepted", () => {
   });
 });
 
-const STATUSES: TimelineStepStatus[] = ["completed", "active", "pending", "no-record", "not-required"];
+const STATUSES: TimelineStepStatus[] = ["completed", "active", "pending", "no-record", "not-required", "unavailable"];
 
 describe("customerApprovalStepFill (the Customer Approval step of the progress timeline)", () => {
   it("is green once the approval counts as given and the step is reached", () => {
@@ -76,7 +80,7 @@ describe("customerApprovalStepFill (the Customer Approval step of the progress t
     for (const status of STATUSES) {
       expect(customerApprovalStepFill({ status, customerApproved: false }), status).toBeUndefined();
     }
-    for (const status of ["pending", "no-record", "not-required"] as const) {
+    for (const status of ["pending", "no-record", "not-required", "unavailable"] as const) {
       expect(customerApprovalStepFill({ status, customerApproved: true }), status).toBeUndefined();
     }
   });
@@ -158,11 +162,12 @@ describe("the approval stages as evidence", () => {
 
   it("reads the evidence from the detail and the approvals together", () => {
     expect(
-      approvalEvidence({ hasCustomerApproved: false, hasCustomerReviewed: false, isProposedTimeAccepted: false }, null),
+      approvalEvidence({ hasCustomerApproved: false, hasCustomerReviewed: false, isProposedTimeAccepted: false }, []),
     ).toEqual({
       ...NO_EVIDENCE,
       customerApprovalRequired: undefined,
       customerReviewRequired: undefined,
+      approvalsUnavailable: false,
     });
     expect(
       approvalEvidence(
@@ -182,12 +187,40 @@ describe("the approval stages as evidence", () => {
       cabApproved: false,
       customerApprovalRequired: true,
       customerReviewRequired: false,
+      approvalsUnavailable: false,
     });
     expect(approvalEvidence({ hasCustomerApproved: true, hasCustomerReviewed: true }, [APPROVED_CAB])).toMatchObject({
       customerApproved: true,
       customerReviewed: true,
       peerApproved: false,
       cabApproved: true,
+    });
+  });
+});
+
+// A failed read is not a negative result: it crosses into the timeline as APPROVALS_UNAVAILABLE, never as null.
+describe("approvals that could not be read", () => {
+  it("passes a failed read on as APPROVALS_UNAVAILABLE, and a read that found nothing as an empty list", () => {
+    expect(approvalsRead(undefined)).toBe(APPROVALS_UNAVAILABLE);
+    expect(approvalsRead(null)).toBe(APPROVALS_UNAVAILABLE);
+    expect(approvalsRead({ approvals: [] })).toEqual([]);
+    expect(approvalsRead({ approvals: [APPROVED_CAB] })).toEqual([APPROVED_CAB]);
+  });
+
+  it("keeps what the detail records, and marks the approvals unavailable rather than empty", () => {
+    expect(
+      approvalEvidence(
+        { hasCustomerApproved: true, hasCustomerReviewed: false, customerReviewRequired: true },
+        APPROVALS_UNAVAILABLE,
+      ),
+    ).toEqual({
+      customerApproved: true,
+      customerReviewed: false,
+      peerApproved: false,
+      cabApproved: false,
+      customerApprovalRequired: undefined,
+      customerReviewRequired: true,
+      approvalsUnavailable: true,
     });
   });
 });
@@ -264,6 +297,67 @@ describe("timelineStepStates (what the view draws, step by step)", () => {
         expect(stepOf(active, NO_EVIDENCE, title).status, `${title} in ${active}`).toBe("no-record");
       }
     }
+  });
+
+  it("draws a passed step only the approvals could vouch for as unknown when they could not be read, never 'No approval recorded'", () => {
+    const unread = approvalEvidence(
+      { hasCustomerApproved: false, hasCustomerReviewed: false },
+      approvalsRead(undefined),
+    );
+    expect(statusesOf("Closed", unread)).toEqual({
+      New: "completed",
+      Assess: "unavailable",
+      Authorize: "unavailable",
+      "Customer Approval": "unavailable",
+      Scheduled: "completed",
+      Implement: "completed",
+      Review: "completed",
+      "Customer Review": "unavailable",
+      Rollback: "pending",
+      Closed: "active",
+      Canceled: "pending",
+    });
+    for (const title of ["Assess", "Authorize", "Customer Approval"]) {
+      expect(stepOf("Closed", unread, title), title).toMatchObject({
+        description: TIMELINE_APPROVAL_UNAVAILABLE,
+        fill: undefined,
+      });
+    }
+    expect(stepOf("Closed", unread, "Customer Review").description).toBe(TIMELINE_REVIEW_UNAVAILABLE);
+    expect(
+      at("Closed", unread).filter(
+        (s) => s.description === TIMELINE_NO_APPROVAL_RECORDED || s.description === TIMELINE_NO_REVIEW_RECORDED,
+      ),
+    ).toEqual([]);
+    // A read that found nothing is a different answer: "No approval recorded".
+    const none = approvalEvidence(
+      { hasCustomerApproved: false, hasCustomerReviewed: false },
+      approvalsRead({ approvals: [] }),
+    );
+    expect(stepOf("Closed", none, "Assess")).toMatchObject({
+      status: "no-record",
+      description: TIMELINE_NO_APPROVAL_RECORDED,
+    });
+  });
+
+  it("still draws what the detail records, a box that is off, the current step and a canceled change as before when the approvals could not be read", () => {
+    const unread = approvalEvidence(
+      { hasCustomerApproved: true, hasCustomerReviewed: false, customerReviewRequired: false },
+      APPROVALS_UNAVAILABLE,
+    );
+    expect(statusesOf("Closed", unread)).toMatchObject({
+      Assess: "unavailable",
+      Authorize: "unavailable",
+      "Customer Approval": "completed",
+      "Customer Review": "not-required",
+    });
+    expect(stepOf("Closed", unread).fill).toBe("green");
+    expect(statusesOf("Authorize", unread)).toMatchObject({
+      Assess: "unavailable",
+      Authorize: "active",
+      "Customer Approval": "pending",
+    });
+    expect(at("Canceled", unread).filter((s) => s.status === "unavailable" || s.status === "completed")).toEqual([]);
   });
 
   it("draws the steps the record vouches for done", () => {

@@ -19,7 +19,7 @@
  * component so the rules can be tested on their own (`changeRequestProgress.test.ts`).
  */
 
-import type { ChangeRequestApprovalDto } from "@src/types";
+import type { ChangeRequestApprovalDto, ChangeRequestApprovalsDto } from "@src/types";
 
 /**
  * The API state ids a change request is in once it has moved on from Customer Approval (id 5): Scheduled (-2),
@@ -93,6 +93,24 @@ export function hasApprovedStage(
   );
 }
 
+/**
+ * The approvals could not be read (the request failed and nothing was read before it). Distinct from an empty list,
+ * which is a read that found no approval: a failed read is not a negative result.
+ */
+export const APPROVALS_UNAVAILABLE = "unavailable";
+
+/** What the timeline has of the approvals: the stages as read, or {@link APPROVALS_UNAVAILABLE}. */
+export type ApprovalsRead = readonly ChangeRequestApprovalDto[] | typeof APPROVALS_UNAVAILABLE;
+
+/**
+ * The approvals as the timeline takes them from the query's data: the stages read (cached ones too, when a later
+ * refetch failed), or {@link APPROVALS_UNAVAILABLE} when nothing was read. Never `null`, which would read as "no
+ * approval".
+ */
+export function approvalsRead(data: ChangeRequestApprovalsDto | null | undefined): ApprovalsRead {
+  return data ? data.approvals : APPROVALS_UNAVAILABLE;
+}
+
 /** What the record says of the steps that need one. */
 export interface TimelineEvidence {
   /** The customer's approval is on record: the flag, a proposed time WSO2 accepted, or the customer's APPROVED stage. */
@@ -106,6 +124,11 @@ export interface TimelineEvidence {
   /** The requirement boxes; absent (or null) when the backend cannot say, which is not "not required". */
   customerApprovalRequired?: boolean | null;
   customerReviewRequired?: boolean | null;
+  /**
+   * The approvals could not be read: a passed step only they could vouch for is unknown (`unavailable`), not
+   * unrecorded. The four booleans above then hold only what the detail says.
+   */
+  approvalsUnavailable?: boolean;
 }
 
 export const NO_EVIDENCE: TimelineEvidence = {
@@ -116,8 +139,9 @@ export const NO_EVIDENCE: TimelineEvidence = {
 };
 
 /**
- * The evidence a change request's detail and approval stages give. Approvals that could not be read (null) are
- * no evidence, the same as none.
+ * The evidence a change request's detail and approval stages give. An empty list is a read that found no approval
+ * (no evidence); {@link APPROVALS_UNAVAILABLE} is a read that failed, which is no answer either way
+ * (`approvalsUnavailable`), while what the detail itself records still counts.
  */
 export function approvalEvidence(
   detail: {
@@ -127,8 +151,10 @@ export function approvalEvidence(
     customerApprovalRequired?: boolean | null;
     customerReviewRequired?: boolean | null;
   },
-  approvals: readonly ChangeRequestApprovalDto[] | null | undefined,
+  read: ApprovalsRead,
 ): TimelineEvidence {
+  const approvalsUnavailable = read === APPROVALS_UNAVAILABLE;
+  const approvals = approvalsUnavailable ? null : read;
   return {
     customerApproved:
       detail.hasCustomerApproved === true ||
@@ -139,6 +165,7 @@ export function approvalEvidence(
     cabApproved: hasApprovedStage(approvals, "cab"),
     customerApprovalRequired: detail.customerApprovalRequired,
     customerReviewRequired: detail.customerReviewRequired,
+    approvalsUnavailable,
   };
 }
 
@@ -153,13 +180,17 @@ export function approvalEvidence(
  * - `no-record`: the change request passed the step and nothing on record says it happened (an approval never
  *   recorded, a change migrated from the previous system without its approvals). Neutral: no tick, no colour.
  * - `not-required`: the step does not apply to this change request (its requirement box is off).
+ * - `unavailable`: the change request passed the step, only the approvals could say whether it happened, and they
+ *   could not be read. Not known either way: neither a tick nor "no record".
  */
-export type TimelineStepStatus = "completed" | "active" | "pending" | "no-record" | "not-required";
+export type TimelineStepStatus = "completed" | "active" | "pending" | "no-record" | "not-required" | "unavailable";
 
-/** The captions of the two neutral states. */
+/** The captions of the neutral states. */
 export const TIMELINE_NO_APPROVAL_RECORDED = "No approval recorded";
 export const TIMELINE_NO_REVIEW_RECORDED = "No review recorded";
 export const TIMELINE_NOT_REQUIRED = "Not required";
+export const TIMELINE_APPROVAL_UNAVAILABLE = "Approval record could not be loaded";
+export const TIMELINE_REVIEW_UNAVAILABLE = "Review record could not be loaded";
 
 /**
  * The colour of the Customer Approval step's marker in the progress timeline, or `undefined` for the timeline's
@@ -179,7 +210,10 @@ export function customerApprovalStepFill(input: {
 export interface TimelineStepState {
   title: string;
   status: TimelineStepStatus;
-  /** A caption that replaces the step's usual one ("No approval recorded", "Not required"); none for the usual. */
+  /**
+   * A caption that replaces the step's usual one ("No approval recorded", "Not required", "Approval record could not
+   * be loaded"); none for the usual.
+   */
   description?: string;
   /** Only the Customer Approval step is coloured: see {@link customerApprovalStepFill}. */
   fill: "green" | undefined;
@@ -197,10 +231,11 @@ export interface TimelineStepState {
  * A step before the current one is done only when the record vouches for it: New once the change moved on (its
  * creation is a fact), Scheduled / Implement / Review once passed (the state is the record), Assess / Authorize
  * on an APPROVED Peer / CAB stage, Customer Approval / Customer Review on the customer's recorded answer. Passed
- * with nothing on record it reads `no-record`; a customer step whose box is off reads `not-required` (before the
- * step as well). The three closing steps (Rollback, Closed, Canceled) are only ever current or pending, and a
- * canceled change request shows nothing done: the timeline has no history of where it was canceled. After a
- * rollback, Customer Review never happens, so it stays pending.
+ * with nothing on record it reads `no-record`, or `unavailable` when the approvals could not be read (a failed read
+ * is not a negative result); a customer step whose box is off reads `not-required` (before the step as well). The
+ * three closing steps (Rollback, Closed, Canceled) are only ever current or pending, and a canceled change request
+ * shows nothing done: the timeline has no history of where it was canceled. After a rollback, Customer Review never
+ * happens, so it stays pending.
  */
 export function timelineStepStates(
   titles: readonly string[],
@@ -220,22 +255,28 @@ export function timelineStepStates(
       recorded: boolean,
       required: boolean | null | undefined,
       noRecord: string,
+      unavailable: string,
     ): { status: TimelineStepStatus; description?: string } => {
       if (canceled) return { status: "pending" };
       if (past && recorded) return { status: "completed" };
       if (required === false) return { status: "not-required", description: TIMELINE_NOT_REQUIRED };
-      return past ? { status: "no-record", description: noRecord } : { status: "pending" };
+      if (!past) return { status: "pending" };
+      return evidence.approvalsUnavailable
+        ? { status: "unavailable", description: unavailable }
+        : { status: "no-record", description: noRecord };
     };
+    const approval = [TIMELINE_NO_APPROVAL_RECORDED, TIMELINE_APPROVAL_UNAVAILABLE] as const;
+    const review = [TIMELINE_NO_REVIEW_RECORDED, TIMELINE_REVIEW_UNAVAILABLE] as const;
     switch (title) {
       case "Assess":
-        return byRecord(evidence.peerApproved, undefined, TIMELINE_NO_APPROVAL_RECORDED);
+        return byRecord(evidence.peerApproved, undefined, ...approval);
       case "Authorize":
-        return byRecord(evidence.cabApproved, undefined, TIMELINE_NO_APPROVAL_RECORDED);
+        return byRecord(evidence.cabApproved, undefined, ...approval);
       case "Customer Approval":
-        return byRecord(evidence.customerApproved, evidence.customerApprovalRequired, TIMELINE_NO_APPROVAL_RECORDED);
+        return byRecord(evidence.customerApproved, evidence.customerApprovalRequired, ...approval);
       case "Customer Review":
         if (rolledBack) return { status: "pending" };
-        return byRecord(evidence.customerReviewed, evidence.customerReviewRequired, TIMELINE_NO_REVIEW_RECORDED);
+        return byRecord(evidence.customerReviewed, evidence.customerReviewRequired, ...review);
       default:
         return { status: past ? "completed" : "pending" };
     }
