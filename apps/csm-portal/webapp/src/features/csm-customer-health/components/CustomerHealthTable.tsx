@@ -24,7 +24,7 @@ import { DownloadIcon, InfoIcon } from "@wso2/oxygen-ui-icons-react";
 import { useTheme } from "@wso2/oxygen-ui";
 import QueryErrorState from "@components/QueryErrorState";
 import { useCustomerHealthSummary } from "../api/useCustomerHealthSummary";
-import { TOOLTIP_TEXT, type AccountSummary, type RiskFilterKey } from "../api/customerHealthTypes";
+import { HEALTH_STATUS_LABELS, TOOLTIP_TEXT, type AccountSummary, type RiskFilterKey } from "../api/customerHealthTypes";
 
 type CustomerHealthTableProps = {
   accountScope: "my-accounts" | "all-accounts";
@@ -106,8 +106,8 @@ export default function CustomerHealthTable(props: CustomerHealthTableProps): Re
           Accounts Overview{" "}
           <Typography component="span" variant="body2" color="text.secondary">
             ({totalCount} accounts found
-            {props.healthStatus === "at_risk" && " · Filtered by: At Risk"}
-            {props.healthStatus === "healthy" && " · Filtered by: Healthy"})
+            {props.healthStatus && HEALTH_STATUS_LABELS[props.healthStatus] &&
+              ` · Filtered by: ${HEALTH_STATUS_LABELS[props.healthStatus]}`})
           </Typography>
         </Typography>
         <Button
