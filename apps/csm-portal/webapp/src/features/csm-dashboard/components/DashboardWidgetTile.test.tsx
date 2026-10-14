@@ -73,6 +73,10 @@ vi.mock("@wso2/oxygen-ui-charts-react", () => ({
     </div>
   ),
   Cell: () => null,
+  // DashboardBarChart renders its own always-visible angled <XAxis> as a
+  // plain child of <BarChart> (see that component's own comment) — nothing
+  // under test reads anything off it, so the mock is a no-op.
+  XAxis: () => null,
   // `data` is a BarChart-level prop (not Bar's own) in the real package —
   // clone it onto the Bar child so the mock below can read it.
   BarChart: ({

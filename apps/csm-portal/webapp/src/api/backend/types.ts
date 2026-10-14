@@ -4469,6 +4469,15 @@ export interface BeDashboardGroupByConfig {
    * `othersCount`. Defaults to `"Others"` when omitted. Meaningless when
    * `bucket` is set, same as `maxGroups`. */
   othersLabel?: string;
+  /** Drops the synthetic "everything else" bucket entirely instead of
+   * rendering it as an extra, non-navigable bar/wedge — for a widget where
+   * the long tail beyond `maxGroups` isn't meaningful on its own (e.g. "Top
+   * customers by open cases", where an "Others" column mixing together every
+   * account past the top N adds noise rather than information). Defaults to
+   * `false` (the pre-existing behavior: show it) when omitted, so every
+   * existing widget config is unaffected. Meaningless when `bucket` is set,
+   * same as `maxGroups`/`othersLabel`. */
+  hideOthers?: boolean;
 }
 
 /** One bucket of a `POST /{resourceType}/aggregate` response. */

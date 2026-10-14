@@ -223,7 +223,7 @@ export function useWidgetGroupByData(
     query: groupBy?.field ? bucketQuery(resourceType, groupBy.field, bucket.key) : {},
     value: bucket.count,
   }));
-  if (othersCount > 0) {
+  if (othersCount > 0 && !groupBy?.hideOthers) {
     slices.push({
       label: groupBy?.othersLabel ?? "Others",
       // Unlike a named bucket, "Others" has no `key` of its own — the
