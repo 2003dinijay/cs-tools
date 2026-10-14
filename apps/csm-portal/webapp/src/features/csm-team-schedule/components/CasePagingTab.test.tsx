@@ -143,7 +143,7 @@ describe("CasePagingTab", () => {
     expect(screen.getByRole("button", { name: "Open the IaaS SRE rota" })).toBeInTheDocument();
   });
 
-  it("offers an SME rota admin every chain, opening on SME", () => {
+  it("offers every chain when given none to keep to (a CSM admin), opening on the reader's own", () => {
     render(<CasePagingTab onOpenRota={vi.fn()} initialChain="SME" />);
     expect(screen.getAllByRole("tab")).toHaveLength(5);
     expect(screen.getByRole("tab", { name: "SME" })).toHaveAttribute("aria-selected", "true");
@@ -168,6 +168,32 @@ describe("CasePagingTab", () => {
     fireEvent.click(paas);
     expect(screen.getByRole("tab", { name: "CRE" })).toHaveAttribute("aria-selected", "true");
     expect(paas).toHaveAttribute("aria-selected", "false");
+  });
+
+  it("offers an SRE rota admin only the SRE chains they run, SaaS and IaaS", () => {
+    render(<CasePagingTab onOpenRota={vi.fn()} initialChain="SRE_SAAS" visibleChains={["SRE_SAAS", "SRE_IAAS"]} />);
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["SaaS SRE", "IaaS SRE"]);
+    expect(screen.getByRole("tab", { name: "SaaS SRE" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByRole("tab", { name: "CRE" })).not.toBeInTheDocument();
+  });
+
+  it("shows a reader with one chain just that chain, with no picker", () => {
+    render(<CasePagingTab onOpenRota={vi.fn()} initialChain="SRE_IAAS" visibleChains={["SRE_IAAS"]} />);
+    expect(screen.queryByRole("tab")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "IaaS SRE alert chain" })).toBeInTheDocument();
+  });
+
+  it("keeps a CRE reader to CRE's chain, whatever chain they would open on", () => {
+    render(<CasePagingTab onOpenRota={vi.fn()} initialChain="SME" visibleChains={["CRE"]} />);
+    expect(screen.queryByRole("tab")).not.toBeInTheDocument();
+    expect(screen.queryByText(/SME alert chain/)).not.toBeInTheDocument();
+    expect(screen.getByRole("table", { name: "CRE alert chain by team and level" })).toBeInTheDocument();
+  });
+
+  it("tells a PaaS lead there is no chain yet, rather than showing another team's", () => {
+    render(<CasePagingTab onOpenRota={vi.fn()} initialChain="SRE_SAAS" visibleChains={["PAAS"]} />);
+    expect(screen.getByText("PaaS SRE has no rota yet, so there is no alert chain to show.")).toBeInTheDocument();
+    expect(screen.queryByText(/SaaS SRE alert chain/)).not.toBeInTheDocument();
   });
 
   it("goes back to the editable chain from a read-only one", () => {

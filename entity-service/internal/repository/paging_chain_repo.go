@@ -286,11 +286,14 @@ func (r *pagingChainRepository) SetRole(ctx context.Context, actorEmail, members
 			}
 		}
 		// A lead or head holds no responder slot (constraint
-		// team_member_alert_tier_not_lead), so a promotion clears it.
+		// team_member_alert_tier_not_lead), so a promotion clears it. $2 is
+		// typed once, as the column's varchar: used both as the new role and
+		// in the IN list, it was otherwise deduced two ways and every role
+		// change failed (SQLSTATE 42P08).
 		return mustTouch(tx.Exec(ctx, `
 			UPDATE team_member
-			   SET role = $2,
-			       alert_tier = CASE WHEN $2 IN ('lead', 'americas_team_lead', 'cre_head', 'cs_head') THEN NULL ELSE alert_tier END,
+			   SET role = $2::varchar,
+			       alert_tier = CASE WHEN $2::varchar IN ('lead', 'americas_team_lead', 'cre_head', 'cs_head') THEN NULL ELSE alert_tier END,
 			       updated_on = now(), updated_by = $3
 			 WHERE id = $1::uuid`, membershipID, role, actorEmail))
 	})

@@ -31,16 +31,18 @@ import (
 // PagingChainService backs the Team Schedule's Case Paging tab: who is on
 // each tier of a team's paging chain, and changing them.
 //
-// Who may change what (agreed with the CRE rota owners, 2026-10-04):
+// Who may change what (agreed with the CRE rota owners, 2026-10-04; the CRE
+// and CS heads given the whole chain, 2026-10-14):
 //
 //	1st-3rd responders of a team   that team's Team lead -- or, where the team
 //	                               has an America lead, the America lead --
-//	                               and a CRE rota admin
-//	a team's Team leads            the CRE head and CS head -- or, where the
-//	                               team has an America lead, the America lead
-//	                               -- and a CRE rota admin
-//	the America lead, the CRE      a CRE rota admin or a portal admin
-//	head and the CS head
+//	                               the CRE head, the CS head, and a CRE rota
+//	                               admin
+//	a team's Team leads            where the team has an America lead, the
+//	                               America lead; the CRE head, the CS head
+//	                               and a CRE rota admin for every team
+//	the America lead, the CRE      the CRE head, the CS head, a CRE rota admin
+//	head and the CS head           or a portal admin
 //
 // The SRE side is read-only for now: the SRE paging chain takes its tiers
 // from the rota itself, so there is nothing on this tab for an SRE edit to
@@ -146,15 +148,19 @@ type teamFacts struct {
 	hasHead bool
 }
 
+// runsCRE is whether the caller runs the whole CRE chain: a CRE rota admin,
+// or the CRE head or the CS head, who sit above every CRE team and may change
+// anything on its chain -- responders, Team leads, and who holds the America
+// lead, CRE head and CS head positions.
+func (a pagingAuthority) runsCRE() bool {
+	return a.creRotaAdmin || a.head
+}
+
 func (a pagingAuthority) canSetResponders(t teamFacts) bool {
 	if t.family != familyCRE {
 		return false
 	}
-	// The CRE head and the CS head pick responders on every CRE team, as a
-	// CRE rota admin does: who answers a page is part of running CRE's rota,
-	// which they do from above the teams. Who holds a position -- Team lead,
-	// America lead, CRE or CS head -- stays with the rules below.
-	if a.creRotaAdmin || a.head {
+	if a.runsCRE() {
 		return true
 	}
 	if t.hasHead {
@@ -167,17 +173,14 @@ func (a pagingAuthority) canSetTeamLeads(t teamFacts) bool {
 	if t.family != familyCRE {
 		return false
 	}
-	if a.creRotaAdmin {
+	if a.runsCRE() {
 		return true
 	}
-	if t.hasHead {
-		return a.headOf[t.key]
-	}
-	return a.head
+	return t.hasHead && a.headOf[t.key]
 }
 
 func (a pagingAuthority) canSetHeads(family string) bool {
-	return family == familyCRE && (a.creRotaAdmin || a.portalAdmin)
+	return family == familyCRE && (a.runsCRE() || a.portalAdmin)
 }
 
 func (s *pagingChainService) GetPagingChain(ctx context.Context, family string) (domain.PagingChainResponse, error) {
@@ -310,7 +313,7 @@ func (s *pagingChainService) setResponderRank(ctx context.Context, a pagingAutho
 		return &apierror.ValidationError{Msg: "responderRank must be 1, 2 or 3, or 0 to clear"}
 	}
 	if !a.canSetResponders(team) {
-		return &apierror.ForbiddenError{Msg: "only this team's lead or a CRE rota admin can pick its responders"}
+		return &apierror.ForbiddenError{Msg: "only this team's lead, the CRE head, the CS head or a CRE rota admin can pick its responders"}
 	}
 	if rank > 0 && t.Role != memberRoleEngineer && t.Role != memberRoleSubLead {
 		return &apierror.ValidationError{Msg: "a Team lead or head cannot also be a responder"}
@@ -326,14 +329,14 @@ func (s *pagingChainService) setRole(ctx context.Context, a pagingAuthority, tea
 	case isTop(role):
 		// Making someone the America lead, CRE head or CS head.
 		if !a.canSetHeads(team.family) {
-			return &apierror.ForbiddenError{Msg: "only a CRE rota admin or a portal admin can set the America lead, CRE head and CS head"}
+			return &apierror.ForbiddenError{Msg: "only a CRE rota admin, the CRE head, the CS head or a portal admin can set the America lead, CRE head and CS head"}
 		}
 	case role == memberRoleLead || role == memberRoleEngineer:
 		// Stepping one of those three down is theirs to decide too; anything
 		// else about a team's leads is a Team lead decision.
 		if isTop(t.Role) {
 			if !a.canSetHeads(team.family) {
-				return &apierror.ForbiddenError{Msg: "only a CRE rota admin or a portal admin can change the America lead, CRE head and CS head"}
+				return &apierror.ForbiddenError{Msg: "only a CRE rota admin, the CRE head, the CS head or a portal admin can change the America lead, CRE head and CS head"}
 			}
 			break
 		}
