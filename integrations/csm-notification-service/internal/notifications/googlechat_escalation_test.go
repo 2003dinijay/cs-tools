@@ -380,3 +380,47 @@ func TestBuildEscalationHandoffCard(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildEscalationStoppedCard(t *testing.T) {
+	full := buildEscalationStoppedCard(EscalationStopped{
+		Audience: "CRE Case Paging", Chain: "CRE", IncidentRef: "CS0379024", Title: "Duplicate <users>",
+		Priority: "CRITICAL", Outcome: "Acknowledged", Detail: "Acknowledged by eng@wso2.com (assigned and a public comment).",
+		Answered: true, Paged: []string{"L1 Jane", "L2 Ravi"}, Cancelled: 5,
+		PortalURL: "https://csm.example/cases/1", PortalLabel: "View case", ThreadKey: "incident-escalation-1",
+	})
+	card := full.CardsV2[0].Card
+	if card.Header.Title != "✅ Acknowledged: CRE paging stopped" {
+		t.Errorf("title = %q", card.Header.Title)
+	}
+	if card.Header.Subtitle != "CS0379024 - Duplicate <users>" {
+		t.Errorf("subtitle = %q", card.Header.Subtitle)
+	}
+	body := card.Sections[0].Widgets[0].TextParagraph.Text
+	for _, want := range []string{"eng@wso2.com", "5 pending calls cancelled.", "Paged: L1 Jane, L2 Ravi", "Priority CRITICAL", "View case"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body has no %q: %s", want, body)
+		}
+	}
+	if full.Thread == nil || full.Thread.ThreadKey != "incident-escalation-1" {
+		t.Errorf("thread = %+v; want the ladder's own", full.Thread)
+	}
+
+	reply := buildEscalationStoppedCard(EscalationStopped{
+		Audience: "Apollo SRE Group", Chain: "SaaS SRE", IncidentRef: "INC1", Title: "Latency", Priority: "HIGH",
+		Outcome: "Severity changed to CRITICAL", Restarted: true, Cancelled: 1,
+		PortalURL: "https://csm.example/incidents/1", Reply: true, ThreadKey: "incident-1",
+	})
+	card = reply.CardsV2[0].Card
+	if card.Header.Title != "\U0001F501 Severity changed to CRITICAL: SaaS SRE paging restarts" || card.Header.Subtitle != "#INC1" {
+		t.Errorf("reply header = %q / %q", card.Header.Title, card.Header.Subtitle)
+	}
+	body = card.Sections[0].Widgets[0].TextParagraph.Text
+	if !strings.Contains(body, "1 pending call cancelled.") || strings.Contains(body, "Priority") || strings.Contains(body, "href") {
+		t.Errorf("a reply under the incident card should stay short: %s", body)
+	}
+
+	closed := buildEscalationStoppedCard(EscalationStopped{IncidentRef: "CS1", Outcome: "Case closed"})
+	if got := closed.CardsV2[0].Card.Header.Title; got != "⏹ Case closed: CRE paging stopped" {
+		t.Errorf("closed title = %q", got)
+	}
+}

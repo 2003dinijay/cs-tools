@@ -963,6 +963,12 @@ func (e *Engine) schedule(ctx context.Context, t Trigger, replace bool) error {
 		if err := e.store.Save(ctx, t.IncidentID, st); err != nil {
 			return fmt.Errorf("escalation: replace ladder for %s: %w", t.IncidentID, err)
 		}
+		// Posted only once the new chain is saved: a replay of this change
+		// finds it running at this severity and returns above, so the room is
+		// told once.
+		if hadOne && previous.Cancelled == nil {
+			e.postStopped(ctx, previous, "", &t)
+		}
 	} else {
 		if err := e.seedCaseAssignment(ctx, &st); err != nil {
 			return err
@@ -1298,6 +1304,9 @@ func (e *Engine) stopLadder(ctx context.Context, incidentID string, st LadderSta
 			"rule", st.Plan.Trigger.Routing.Rule(), "priority", st.Plan.Trigger.Priority,
 			"reachedLevel", st.ReachedLevel(), "placedCalls", st.PlacedCount(),
 			"cancelledCalls", len(pending))
+		// Inside the first stop only: a retried stop (the note or the delete
+		// failed) finds Cancelled set and does not post again.
+		e.postStopped(ctx, st, reason, nil)
 	}
 
 	e.writeNote(ctx, st.Plan, st.Placed, st.Failed, st.Cancelled, st.CancelReason)

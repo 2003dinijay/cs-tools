@@ -514,6 +514,18 @@ message per space the card went to (after `INCIDENT_CHAT_FANOUT`); otherwise one
 message to the SRE team space (through `sre.teamChats`, else `sre.chat`). Once
 per SME page (the page's dedup), best effort.
 
+**Stopped reply** (`cre.ackChat` / `sre.ackChat`, on unless set false):
+when a ladder stops, `postStopped` replies in its thread, in the rooms its
+rung cards went to (`Engine.cardRooms`, the same choice `place` makes, so an
+incident's replies sit under the incident card): "Acknowledged" with who (a
+case's assignee) and how, "Case closed", "Severity changed to S4", or --
+when a severity or priority change replaces the chain -- "Severity changed to
+X: paging restarts". It lists who was paged and how many calls were
+cancelled. Posted only from the first stop (a retried stop finds `Cancelled`
+set) and only once a rung has gone out with sending on, so a room never hears
+about a chain it did not see. A hand-off to the SMEs posts nothing here; its
+own message says it. The SRE setting covers the SME ladders. Best effort.
+
 **Stops on** (an SRE incident): `incident.assigned` (an engineer set as the
 assignee, published by entity-service) or `incident.acknowledged` (leaving NEW,
 whatever the new state -- confirmed 2026-10-07). A public comment

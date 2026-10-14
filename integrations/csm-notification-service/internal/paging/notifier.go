@@ -204,6 +204,9 @@ type chatSender interface {
 	// SendEscalationHandoff tells an SRE space its incident went to the SMEs
 	// (sre.smeHandoffChat).
 	SendEscalationHandoff(ctx context.Context, h notifications.EscalationHandoff) error
+	// SendEscalationStopped replies in a ladder's thread that it stopped
+	// (ackChat).
+	SendEscalationStopped(ctx context.Context, s notifications.EscalationStopped) error
 	// HasAudienceSpace reports whether GOOGLE_CHAT_SPACES has a room for the
 	// audience. Asked before every rung, because the client itself treats an
 	// unknown audience as a quiet success.
