@@ -96,45 +96,7 @@ func TestCheckSchemaNeedsNotifiedAt(t *testing.T) {
 		t.Fatal(err)
 	}
 	err := s.CheckSchema(ctx)
-	if err == nil || !strings.Contains(err.Error(), "no notified_at column") || !strings.Contains(err.Error(), "sql/create_til_tables.sql") {
-		t.Fatalf("CheckSchema = %v, want it to name the missing column and the script", err)
-	}
-}
-
-// Running the script again on a table from before notified_at existed adds
-// the column, counts the entries already there as announced, and is a no-op
-// from then on: an entry left unannounced later stays that way.
-func TestSchemaScriptUpgradesAnOlderTable(t *testing.T) {
-	s := openTestStore(t)
-	ctx := context.Background()
-	if _, err := s.db.ExecContext(ctx, "ALTER TABLE til_entry DROP COLUMN notified_at"); err != nil {
-		t.Fatal(err)
-	}
-	created := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
-	if _, err := s.db.ExecContext(ctx,
-		"INSERT INTO til_entry (id, title, author_name, author_email, source, content_html, content_text, created_on) "+
-			"VALUES ('00000000-0000-4000-8000-000000000001', 'Old', 'Jane', 'jane@example.com', 'Internal', '<p>x</p>', 'x', ?)", created); err != nil {
-		t.Fatal(err)
-	}
-
-	runSchemaScript(t, s)
-	if err := s.CheckSchema(ctx); err != nil {
-		t.Fatalf("after the upgrade: %v", err)
-	}
-	old, err := s.Get(ctx, "00000000-0000-4000-8000-000000000001")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if old.NotifiedAt == nil || !old.NotifiedAt.Equal(created) {
-		t.Fatalf("existing entry NotifiedAt = %v, want its creation time %v", old.NotifiedAt, created)
-	}
-
-	unsent, err := s.Create(ctx, jane, content(t, "New", "Internal", nil, "<p>y</p>"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	runSchemaScript(t, s)
-	if got, _ := s.Get(ctx, unsent.ID); got.NotifiedAt != nil {
-		t.Fatalf("running the script again marked an unannounced entry: NotifiedAt = %v", got.NotifiedAt)
+	if err == nil || !strings.Contains(err.Error(), "no notified_at column") || !strings.Contains(err.Error(), "ALTER TABLE til_entry ADD COLUMN notified_at") {
+		t.Fatalf("CheckSchema = %v, want it to name the missing column and how to add it", err)
 	}
 }

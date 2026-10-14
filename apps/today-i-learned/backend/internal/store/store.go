@@ -120,9 +120,9 @@ func openConfig(ctx context.Context, mc *mysql.Config) (*Store, error) {
 // Close releases the connection pool.
 func (s *Store) Close() error { return s.db.Close() }
 
-// CheckSchema fails when til_entry doesn't exist, or predates a column this
-// version reads, naming the script to run. The service never creates or
-// changes tables itself.
+// CheckSchema fails when til_entry doesn't exist, naming the script to run,
+// or predates a column this version reads, naming the change to make. The
+// service never creates or changes tables itself.
 func (s *Store) CheckSchema(ctx context.Context) error {
 	var tables, notifiedAt int
 	err := s.db.QueryRowContext(ctx,
@@ -136,7 +136,7 @@ func (s *Store) CheckSchema(ctx context.Context) error {
 		return errors.New("store: table til_entry does not exist; run sql/create_til_tables.sql against this database first")
 	}
 	if notifiedAt == 0 {
-		return errors.New("store: table til_entry has no notified_at column; run sql/create_til_tables.sql against this database again")
+		return errors.New("store: table til_entry has no notified_at column; add it with: ALTER TABLE til_entry ADD COLUMN notified_at DATETIME(6) NULL AFTER updated_on")
 	}
 	return nil
 }

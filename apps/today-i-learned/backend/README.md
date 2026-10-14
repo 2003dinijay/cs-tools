@@ -30,8 +30,7 @@ PORT=8077 UPSTREAM_URL=http://localhost:8078 go run .
 
 The service checks its settings and the database at startup, and stops with
 a message naming what's wrong: a missing setting, an unreachable database,
-or a missing `til_entry` table or column. Running `sql/create_til_tables.sql`
-again brings an older `til_entry` up to date.
+or a missing `til_entry` table or column.
 
 ## Test
 
