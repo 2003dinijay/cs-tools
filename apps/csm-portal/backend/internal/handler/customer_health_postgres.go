@@ -49,10 +49,9 @@ type entityCustomerHealthClient interface {
 // 180 days, 76 MIGRATION-type engagements, 349+ account-linked escalations).
 // Revisit if a product owner specifies different windows.
 const (
-	customerHealthRecentWindow     = 180 * 24 * time.Hour // "recent cases" / "no support cases" cutoff
-	customerHealthEscalationWindow = 90 * 24 * time.Hour  // "recent escalations" cutoff
-	customerHealthDelayWindow      = 60 * 24 * time.Hour  // a still-open MIGRATION engagement older than this is "delayed"
-	customerHealthAbandonedWindow  = 180 * 24 * time.Hour // a still-open MIGRATION engagement older than this is "abandoned"
+	customerHealthRecentWindow    = 180 * 24 * time.Hour // "recent cases" / "no support cases" cutoff
+	customerHealthDelayWindow     = 60 * 24 * time.Hour  // a still-open MIGRATION engagement older than this is "delayed"
+	customerHealthAbandonedWindow = 180 * 24 * time.Hour // a still-open MIGRATION engagement older than this is "abandoned"
 )
 
 // postgresCustomerHealthClient implements customerHealthSNClient entirely
@@ -86,9 +85,8 @@ var customerHealthCaseLikeTypes = []string{"case", "service_request", "engagemen
 
 // isCustomerHealthCaseLikeType reports whether t is one of
 // customerHealthCaseLikeTypes -- used to filter an already-fetched case list
-// client-side (GetCustomerHealthDetail's per-project recentCases) the same
-// way the type:in filter narrows a fresh entity-service search
-// (accountHasCasesSince).
+// client-side (GetCustomerHealthDetail's per-project recentCases), since
+// entity-service's case search only supports a type:in filter, never notIn.
 func isCustomerHealthCaseLikeType(t string) bool {
 	for _, want := range customerHealthCaseLikeTypes {
 		if t == want {
@@ -233,8 +231,8 @@ func (c *postgresCustomerHealthClient) accountCasesFull(ctx context.Context, acc
 }
 
 // searchEscalationsForCaseIDs is a thin wrapper over POST /escalations/search
-// for an explicit case-id list, shared by GetCustomerHealthDetail (one
-// account-wide call) and accountHasRecentEscalations (the summary flag).
+// for an explicit case-id list, used by GetCustomerHealthDetail (one
+// account-wide call).
 func (c *postgresCustomerHealthClient) searchEscalationsForCaseIDs(ctx context.Context, caseIDs []string) ([]entityEscalation, error) {
 	if len(caseIDs) == 0 {
 		return nil, nil
@@ -271,17 +269,6 @@ func (c *postgresCustomerHealthClient) searchEscalationsForCaseIDs(ctx context.C
 		}
 	}
 	return escalations, nil
-}
-
-// customerHealthAccountFlags is the per-account summary-level result of
-// accountFlags -- an aggregation across every one of the account's projects.
-type customerHealthAccountFlags struct {
-	goLiveStatus           servicenow.GoLiveStatus
-	hasRecentCases         bool
-	hasEolProduct          bool
-	hasAbandonedMigrations bool
-	hasMigrationDelays     bool
-	hasRecentEscalations   bool
 }
 
 // customerHealthAccountLifeCycle/customerHealthAccountRequiresProject scope
@@ -446,112 +433,6 @@ func projectGoLiveStatus(goLiveDate, activationDate *string, now time.Time) serv
 	}
 }
 
-// customerHealthDefaultGoLiveStatus is the legacy rule's own default
-// ({isRisk: false, state: 'success', status: 'Has Gone Live'}) -- what an
-// account with no projects, or whose every project has actually gone live,
-// reports.
-var customerHealthDefaultGoLiveStatus = servicenow.GoLiveStatus{Status: "Has Gone Live", IsRisk: false, State: "success"}
-
-// accountGoLiveStatus aggregates projectGoLiveStatus across every one of an
-// account's projects the same way the legacy rule does: starting from the
-// "Has Gone Live" default, a project's "failure" or "pending" result
-// overwrites the running summary (a "success" result never does), and once
-// "failure" is reached nothing evaluated afterward can change it -- the
-// legacy rule's own guard against downgrading an already-failed summary.
-func accountGoLiveStatus(projects []entityProjectView, activationDate *string, now time.Time) servicenow.GoLiveStatus {
-	status := customerHealthDefaultGoLiveStatus
-	for _, p := range projects {
-		if status.State == "failure" {
-			break
-		}
-		result := projectGoLiveStatus(p.GoLiveDate, activationDate, now)
-		if result.State == "failure" || result.State == "pending" {
-			status = result
-		}
-	}
-	return status
-}
-
-// accountFlags computes the seven summary-level flags for one account,
-// aggregating across every one of its projects (any project flagged ->
-// the account is flagged) for the project-scoped signals (go-live,
-// EOL product, migration delays/abandonment), and account-wide queries for
-// the case/escalation-based ones. activationDate is the account's own
-// ActivationDate (entity-service's AccountView.ActivationDate), needed by
-// accountGoLiveStatus -- see that function's own doc comment.
-//
-// Each of the four signal groups below (go-live+EOL, recent cases,
-// migration flags, recent escalations) is independent of the other three,
-// and an earlier version of this function ran them concurrently via
-// errgroup for exactly that reason -- reverted after it made this
-// function's own entity-service call order nondeterministic, which a
-// multi-call test fixture here (customer_health_postgres_test.go's
-// fakeEntityCustomerHealthClient.caseResponses, "consumed in call order")
-// depends on, and genuinely raced on that fake's own unsynchronized
-// counter/slice fields.
-func (c *postgresCustomerHealthClient) accountFlags(ctx context.Context, accountID string, activationDate *string) (customerHealthAccountFlags, error) {
-	projects, err := c.accountProjects(ctx, accountID)
-	if err != nil {
-		return customerHealthAccountFlags{}, err
-	}
-
-	goLiveStatus := accountGoLiveStatus(projects, activationDate, time.Now())
-
-	hasEolProduct := false
-	for _, p := range projects {
-		eol, err := c.projectHasEolProduct(ctx, p.ID)
-		if err != nil {
-			return customerHealthAccountFlags{}, err
-		}
-		if eol {
-			hasEolProduct = true
-			break
-		}
-	}
-
-	hasRecentCases, err := c.accountHasCasesSince(ctx, accountID, time.Now().Add(-customerHealthRecentWindow))
-	if err != nil {
-		return customerHealthAccountFlags{}, err
-	}
-
-	hasAbandoned, hasDelayed, err := c.accountMigrationFlags(ctx, accountID)
-	if err != nil {
-		return customerHealthAccountFlags{}, err
-	}
-
-	hasRecentEscalations, err := c.accountHasRecentEscalations(ctx, accountID)
-	if err != nil {
-		return customerHealthAccountFlags{}, err
-	}
-
-	return customerHealthAccountFlags{
-		goLiveStatus:           goLiveStatus,
-		hasRecentCases:         hasRecentCases,
-		hasEolProduct:          hasEolProduct,
-		hasAbandonedMigrations: hasAbandoned,
-		hasMigrationDelays:     hasDelayed,
-		hasRecentEscalations:   hasRecentEscalations,
-	}, nil
-}
-
-// projectHasEolProduct checks whether any deployed product under projectID's
-// own deployments is running a product version past its support_eol_date.
-//
-// Fetches with includeInactive: true -- the legacy rule this ports has no
-// active-only filter at all, and a deactivated/decommissioned deployment can
-// still carry real EOL product history that must count toward the risk flag
-// (confirmed by a live reproduction against a real staging account: the
-// deployment holding its EOL product history was inactive, so the
-// active-only default made this flag a false negative).
-func (c *postgresCustomerHealthClient) projectHasEolProduct(ctx context.Context, projectID string) (bool, error) {
-	deployments, err := c.projectDeployments(ctx, projectID, true)
-	if err != nil || len(deployments) == 0 {
-		return false, err
-	}
-	eol, _, err := c.deployedEolProducts(ctx, deploymentIDsOf(deployments))
-	return len(eol) > 0, err
-}
-
 // deploymentIDsOf extracts just the ids from a deployment list, for the
 // SearchDeployedProducts DeploymentIDs filter.
 func deploymentIDsOf(deployments []entityDeploymentView) []string {
@@ -638,110 +519,6 @@ func (c *postgresCustomerHealthClient) deployedEolProducts(ctx context.Context, 
 		}
 	}
 	return eol, all, nil
-}
-
-// accountHasCasesSince reports whether the account has any case-like work
-// item created at or after since -- restricted to customerHealthCaseLikeTypes
-// (excludes "announcement"), matching the legacy rule's own "recent cases"
-// query exactly. A previous version applied no type filter at all here, so
-// an account whose only recent work items were announcements (which the
-// legacy rule never counts) was wrongly reported as having recent cases.
-func (c *postgresCustomerHealthClient) accountHasCasesSince(ctx context.Context, accountID string, since time.Time) (bool, error) {
-	total, err := c.caseCount(ctx, accountID, "", []entityCaseFieldFilter{
-		{Field: "type", Op: "in", Values: customerHealthCaseLikeTypes},
-		{Field: "createdOn", Op: "gte", Values: []string{since.UTC().Format(time.RFC3339)}},
-	})
-	return total > 0, err
-}
-
-// accountMigrationFlags reports whether the account has a still-open
-// MIGRATION-type engagement old enough to count as "abandoned"
-// (customerHealthAbandonedWindow) or merely "delayed" (customerHealthDelayWindow).
-// The two counts are independent caseCount calls (different cutoff only) but
-// run sequentially -- see accountFlags' own doc comment for why this file
-// keeps one account's own calls in a stable order rather than fanning them
-// out concurrently too.
-func (c *postgresCustomerHealthClient) accountMigrationFlags(ctx context.Context, accountID string) (abandoned, delayed bool, err error) {
-	now := time.Now()
-	abandonedCount, err := c.caseCount(ctx, accountID, "engagement", []entityCaseFieldFilter{
-		{Field: "engagementType", Op: "in", Values: []string{"migration"}},
-		{Field: "state", Op: "notIn", Values: []string{"closed"}},
-		{Field: "createdOn", Op: "lte", Values: []string{now.Add(-customerHealthAbandonedWindow).UTC().Format(time.RFC3339)}},
-	})
-	if err != nil {
-		return false, false, err
-	}
-	delayedCount, err := c.caseCount(ctx, accountID, "engagement", []entityCaseFieldFilter{
-		{Field: "engagementType", Op: "in", Values: []string{"migration"}},
-		{Field: "state", Op: "notIn", Values: []string{"closed"}},
-		{Field: "createdOn", Op: "lte", Values: []string{now.Add(-customerHealthDelayWindow).UTC().Format(time.RFC3339)}},
-	})
-	if err != nil {
-		return false, false, err
-	}
-	return abandonedCount > 0, delayedCount > 0, nil
-}
-
-// caseCount returns the total matching count for an accountId-scoped case
-// search, optionally narrowed to one work-item type, plus any extra filters
-// -- a limit:1 request, reading only the response's own Total rather than
-// fetching the matching rows.
-func (c *postgresCustomerHealthClient) caseCount(ctx context.Context, accountID, caseType string, extra []entityCaseFieldFilter) (int, error) {
-	filters := []entityCaseFieldFilter{{Field: "accountId", Op: "in", Values: []string{accountID}}}
-	if caseType != "" {
-		filters = append(filters, entityCaseFieldFilter{Field: "type", Op: "in", Values: []string{caseType}})
-	}
-	filters = append(filters, extra...)
-
-	body, err := json.Marshal(entitySearchCasesRequest{
-		Filters:    entitySearchCasesFilters{Filters: filters},
-		Pagination: entityPagination{Limit: 1, Offset: 0},
-		CountOnly:  true,
-	})
-	if err != nil {
-		return 0, fmt.Errorf("marshal entity-service cases request: %w", err)
-	}
-	raw, err := c.entity.SearchCases(ctx, body)
-	if err != nil {
-		return 0, err
-	}
-	var resp entitySearchCasesResponse
-	if err := json.Unmarshal(raw, &resp); err != nil {
-		return 0, fmt.Errorf("unmarshal entity-service cases response: %w", err)
-	}
-	return resp.Total, nil
-}
-
-// accountHasRecentEscalations reports whether any of the account's cases has
-// an escalation created within customerHealthEscalationWindow. Reuses
-// accountCasesFull's own (wider, and now a loud failure rather than a silent
-// truncation past its backstop -- see accountCasesFull's own doc comment)
-// pagination bound rather than a separately-tuned, narrower one -- an
-// earlier version here (accountCaseIDsForHealth, 500-case cap) could miss an
-// escalation on a case beyond that cap for a real account with more than 500
-// cases (one real account checked has 1,585), silently under-reporting this
-// flag. There is no reason for this flag's own case-id lookup to be any less
-// complete than GetCustomerHealthDetail's identical one.
-func (c *postgresCustomerHealthClient) accountHasRecentEscalations(ctx context.Context, accountID string) (bool, error) {
-	cases, err := c.accountCasesFull(ctx, accountID)
-	if err != nil || len(cases) == 0 {
-		return false, err
-	}
-	caseIDs := make([]string, len(cases))
-	for i, cv := range cases {
-		caseIDs[i] = cv.ID
-	}
-	escalations, err := c.searchEscalationsForCaseIDs(ctx, caseIDs)
-	if err != nil {
-		return false, err
-	}
-	cutoff := time.Now().Add(-customerHealthEscalationWindow)
-	for _, e := range escalations {
-		if t, err := time.Parse(time.RFC3339, e.CreatedOn); err == nil && t.After(cutoff) {
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 // projectDetail builds one project's ProjectDetail row for GetCustomerHealthDetail,

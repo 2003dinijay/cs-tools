@@ -74,8 +74,7 @@ type entitySearchCasesRequest struct {
 	// caller that only ever reads Total off the response (never Cases) should
 	// set this so entity-service skips building and running the page query
 	// entirely, rather than paying for a full, sorted, RLS-checked page fetch
-	// whose one row is then discarded unread. See customer_health_postgres.go's
-	// caseCount, the one caller that sets it.
+	// whose one row is then discarded unread.
 	CountOnly bool `json:"countOnly,omitempty"`
 }
 

@@ -206,36 +206,6 @@ func TestDeployedEolProducts_FiltersPastEolDate(t *testing.T) {
 	}
 }
 
-// TestProjectHasEolProduct_RequestsIncludeInactive pins the fix for a real
-// false negative: the legacy rule's own EOL check has no active-only filter,
-// but SearchDeployments' own default does, so a deactivated deployment
-// carrying real EOL product history was silently excluded.
-// projectHasEolProduct must ask entity-service for every deployment
-// regardless of active state.
-func TestProjectHasEolProduct_RequestsIncludeInactive(t *testing.T) {
-	fake := &fakeEntityCustomerHealthClient{
-		deployments: entityDeploymentsSearchResponse{
-			Deployments: []entityDeploymentView{{ID: "dep-inactive"}},
-			Total:       1,
-		},
-	}
-	c := NewPostgresCustomerHealthClient(fake)
-
-	if _, err := c.projectHasEolProduct(context.Background(), "proj-1"); err != nil {
-		t.Fatalf("projectHasEolProduct: %v", err)
-	}
-	if len(fake.lastDeploymentsReqsRaw) != 1 {
-		t.Fatalf("got %d SearchDeployments calls, want 1", len(fake.lastDeploymentsReqsRaw))
-	}
-	var req entityDeploymentsSearchRequest
-	if err := json.Unmarshal(fake.lastDeploymentsReqsRaw[0], &req); err != nil {
-		t.Fatalf("unmarshal captured request: %v", err)
-	}
-	if !req.IncludeInactive {
-		t.Errorf("projectHasEolProduct must request includeInactive: true, got %+v", req)
-	}
-}
-
 // TestProjectDetail_DeploymentsListStaysActiveOnly pins that the EOL-check
 // fix above does not change the plain "Deployments" list shown on the
 // customer-health detail page: that list's own fetch must keep
