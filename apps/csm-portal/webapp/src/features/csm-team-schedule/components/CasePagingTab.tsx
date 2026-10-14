@@ -19,6 +19,7 @@
 import { useState, type JSX } from "react";
 import { useGetPagingChain, useGetPagingReadiness } from "../api/usePagingChain";
 import type { PagingChainCode, PagingChainMember, PagingReadinessGap, RotaFamily } from "../types";
+import type { CaseAlertChain } from "../utils/pagingChains";
 import CasePagingPanel from "./CasePagingPanel";
 import PagingReadinessStrip, { type PhoneGapAction } from "./PagingReadinessStrip";
 import { CALLING_LABEL } from "./PhoneChip";
@@ -42,7 +43,7 @@ export interface PagingRotaTarget {
 }
 
 interface ChainOption {
-  code: PagingChainCode | "PAAS";
+  code: CaseAlertChain;
   label: string;
   /** Where its people are set, for a chain that takes them from the rota. */
   rota?: { family: RotaFamily; rotaCode?: string };
@@ -66,6 +67,9 @@ interface Props {
   /** The chain the tab opens on: the reader's own (SME for an SME rota
    *  admin, their SRE sub-team's for SRE). CRE when absent. */
   initialChain?: PagingChainCode;
+  /** The chains this reader is shown -- their own (caseAlertChainsFor).
+   *  Every chain when absent, as for a CSM admin or the CRE and CS heads. */
+  visibleChains?: readonly CaseAlertChain[];
 }
 
 /**
@@ -74,8 +78,8 @@ interface Props {
  * rota has on, so for them the tab says where to set people and how ready the
  * chain is. Each chain opens with its readiness strip.
  */
-export default function CasePagingTab({ onOpenRota, initialChain = "CRE" }: Props): JSX.Element {
-  const chains = CHAINS;
+export default function CasePagingTab({ onOpenRota, initialChain = "CRE", visibleChains }: Props): JSX.Element {
+  const chains = visibleChains ? CHAINS.filter((c) => visibleChains.includes(c.code)) : CHAINS;
   const offered = (code: PagingChainCode | undefined): code is PagingChainCode =>
     !!code && chains.some((c) => c.code === code && !c.disabledReason);
   // The reader's pick, else the chain they belong to, else the first one
@@ -133,7 +137,8 @@ export default function CasePagingTab({ onOpenRota, initialChain = "CRE" }: Prop
       date: gap.date,
     });
 
-  const picker = (
+  // A reader with one chain has nothing to pick between.
+  const picker = chains.length < 2 ? null : (
     <div className="seg teamseg cp-chains" role="tablist" aria-label="Alert chain">
       {chains.map((c) => {
         const disabled = Boolean(c.disabledReason);
@@ -159,6 +164,16 @@ export default function CasePagingTab({ onOpenRota, initialChain = "CRE" }: Prop
       })}
     </div>
   );
+
+  // Nothing to show: their only chain is one with no rota yet (PaaS SRE).
+  if (!offered(chainCode)) {
+    const only = chains[0];
+    return (
+      <div className="offnone">
+        {only ? `${only.label} has no rota yet, so there is no alert chain to show.` : "There is no alert chain of yours to show."}
+      </div>
+    );
+  }
 
   if (chainCode === "CRE") {
     return (

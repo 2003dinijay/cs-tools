@@ -49,6 +49,7 @@ import UndoToast, { type UndoOffer } from "../components/UndoToast";
 import { UndoIncomplete, applyRevertRuns, awayIsRevertible, rotaRevertRuns } from "../utils/undo";
 import WeekTable from "../components/WeekTable";
 import CasePagingTab, { type PagingRotaTarget } from "../components/CasePagingTab";
+import { caseAlertChainsFor, caseAlertsOffered } from "../utils/pagingChains";
 import RotaAccessTab from "../components/RotaAccessTab";
 import { canManageRotaAccess, useRotaAccess } from "../api/useRotaAccess";
 import { useGetPagingChain } from "../api/usePagingChain";
@@ -329,6 +330,45 @@ export default function CsmTeamSchedulePage(): JSX.Element {
   const rotaAccess = useRotaAccess();
   const showAccess = canManageRotaAccess(rotaAccess.data);
 
+  /** The alert chains Case Alerts shows this reader: their own -- the chain
+   *  of each team they lead or run, and CRE's for anybody who may change part
+   *  of it -- or every chain for a CSM admin and for the CRE and CS heads (who
+   *  hold that position on a team, which CRE's chain lists). Not ready until what it is
+   *  worked out from has been read; the tab is not offered until then, so
+   *  nobody sees every chain, or a tab with none, for a moment. */
+  const ownTeamKey = user?.team?.teamKey;
+  const ownTeamFamily = user?.team?.family;
+  const readerEmail = (user?.email ?? "").trim().toLowerCase();
+  const pagingChains = useMemo(() => {
+    const settled = (q: { isSuccess: boolean; isError: boolean }) => q.isSuccess || q.isError;
+    if (!catalogue.data || !settled(leadTeams) || !settled(markerOnlyTeams) || !settled(rotaAccess) || !settled(pagingProbe)) {
+      return { ready: false as const };
+    }
+    return {
+      ready: true as const,
+      chains: caseAlertChainsFor({
+        teams: catalogue.data.teams,
+        runs: fullTeams,
+        creRights:
+          !!pagingCan &&
+          (pagingCan.responderTeams.length > 0 ||
+            pagingCan.teamLeadTeams.length > 0 ||
+            pagingCan.americasTeamLead ||
+            pagingCan.heads),
+        portalAdmin: Boolean(rotaAccess.data?.canManage.rotaAdmins),
+        head:
+          readerEmail !== "" &&
+          (pagingProbe.data?.members ?? []).some(
+            (m) => m.email.trim().toLowerCase() === readerEmail && (m.role === "cre_head" || m.role === "cs_head"),
+          ),
+        ownTeam: ownTeamKey ? { key: ownTeamKey, family: readerFamily(ownTeamFamily, []) } : undefined,
+      }),
+    };
+  }, [catalogue.data, leadTeams, markerOnlyTeams, rotaAccess, pagingProbe, fullTeams, pagingCan, ownTeamKey, ownTeamFamily, readerEmail]);
+  /** Case Alerts as offered: to whoever showPaging lets in, once their chains
+   *  are known, and only when there is one -- not a tab with nothing of theirs. */
+  const pagingOffered = caseAlertsOffered(showPaging, pagingChains.ready ? pagingChains.chains : null);
+
   /** The reader's own group, from their CSM profile: their team, or for a
    *  rota admin the group their role runs (see readerFamily). Absent for
    *  anyone who belongs to neither -- a manager -- which is why it is
@@ -357,7 +397,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
    * just something to wonder about. It is not offered.
    */
   const visibleTabs: ViewTab[] = (["mine", "today", "week", "roster", "paging", "access"] as ViewTab[]).filter(
-    (t) => !(isManager && t === "mine") && (t !== "paging" || showPaging) && (t !== "access" || showAccess),
+    (t) => !(isManager && t === "mine") && (t !== "paging" || pagingOffered) && (t !== "access" || showAccess),
   );
 
   /** The tab actually being shown. A manager's remembered My week (from
@@ -366,7 +406,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
   const view: ViewTab =
     isManager && tab === "mine"
       ? "today"
-      : (tab === "paging" && !showPaging) || (tab === "access" && !showAccess)
+      : (tab === "paging" && !pagingOffered) || (tab === "access" && !showAccess)
         ? isManager
           ? "today"
           : "mine"
@@ -1501,7 +1541,10 @@ export default function CsmTeamSchedulePage(): JSX.Element {
 
         <div className="card" id="ts-panel" role="tabpanel" aria-labelledby={`ts-tab-${view}`}>
           {view === "paging" ? (
-            <CasePagingTab onOpenRota={openRota} initialChain={myPagingChain} />
+            // Offered only once the chains are known (pagingOffered).
+            pagingChains.ready ? (
+              <CasePagingTab onOpenRota={openRota} initialChain={myPagingChain} visibleChains={pagingChains.chains} />
+            ) : null
           ) : view === "access" ? (
             <RotaAccessTab teams={catalogue.data?.teams ?? []} />
           ) : assignments.isError ? (
