@@ -101,7 +101,7 @@ type sentCaseAcknowledgedAlert struct {
 }
 
 type sentSeverityChangedAlert struct {
-	audience, oldSeverityLabel, oldSeverityColor, newSeverityLabel, newSeverityColor, caseNumber, wso2CaseID, title, team, caseLink string
+	audience, oldSeverityLabel, oldSeverityColor, newSeverityLabel, newSeverityColor, caseNumber, wso2CaseID, productName, title, team, caseLink string
 }
 
 type sentFrustrationAlert struct {
@@ -172,10 +172,10 @@ func (m *mockGoogleChatSender) SendSecurityReportAnalysisAcknowledgedAlert(ctx c
 	return m.err
 }
 
-func (m *mockGoogleChatSender) SendSeverityChangedAlert(ctx context.Context, audience, oldSeverityLabel, oldSeverityColor, newSeverityLabel, newSeverityColor, caseNumber, wso2CaseID, title, team, caseLink string) error {
+func (m *mockGoogleChatSender) SendSeverityChangedAlert(ctx context.Context, audience, oldSeverityLabel, oldSeverityColor, newSeverityLabel, newSeverityColor, caseNumber, wso2CaseID, productName, title, team, caseLink string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.severityChangedCalls = append(m.severityChangedCalls, sentSeverityChangedAlert{audience, oldSeverityLabel, oldSeverityColor, newSeverityLabel, newSeverityColor, caseNumber, wso2CaseID, title, team, caseLink})
+	m.severityChangedCalls = append(m.severityChangedCalls, sentSeverityChangedAlert{audience, oldSeverityLabel, oldSeverityColor, newSeverityLabel, newSeverityColor, caseNumber, wso2CaseID, productName, title, team, caseLink})
 	return m.err
 }
 
@@ -1544,6 +1544,9 @@ func TestDispatcher_Handle_SeverityChanged(t *testing.T) {
 	if gotChat.audience != chataudience.IncidentMonitor || gotChat.oldSeverityLabel != "Low (P4)" || gotChat.newSeverityLabel != "High (P2)" || gotChat.caseLink != "https://csm.example/cases/CASE-1" {
 		t.Errorf("unexpected SendSeverityChangedAlert args: %+v", gotChat)
 	}
+	if gotChat.productName != "api-manager" {
+		t.Errorf("SendSeverityChangedAlert productName = %q, want the payload's product %q", gotChat.productName, "api-manager")
+	}
 }
 
 // TestDispatcher_Handle_SeverityChanged_ChatByNewSeverity covers the product
@@ -2231,7 +2234,7 @@ func (s *blockingCaseAcknowledgedChatSender) SendSecurityReportAnalysisAcknowled
 	return nil
 }
 
-func (s *blockingCaseAcknowledgedChatSender) SendSeverityChangedAlert(ctx context.Context, product, oldSeverityLabel, oldSeverityColor, newSeverityLabel, newSeverityColor, caseNumber, wso2CaseID, title, team, caseLink string) error {
+func (s *blockingCaseAcknowledgedChatSender) SendSeverityChangedAlert(ctx context.Context, product, oldSeverityLabel, oldSeverityColor, newSeverityLabel, newSeverityColor, caseNumber, wso2CaseID, productName, title, team, caseLink string) error {
 	return nil
 }
 

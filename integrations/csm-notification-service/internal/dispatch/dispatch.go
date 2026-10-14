@@ -70,7 +70,7 @@ type googleChatSender interface {
 	SendSecurityReportAnalysisAlert(ctx context.Context, audience, caseNumber, wso2CaseID, productName, title, team, caseLink string) error
 	SendCaseAcknowledgedAlert(ctx context.Context, audience, severityLabel, severityColor, caseNumber, wso2CaseID, caseLink, acknowledgerName string) error
 	SendSecurityReportAnalysisAcknowledgedAlert(ctx context.Context, audience, caseNumber, wso2CaseID, caseLink, acknowledgerName string) error
-	SendSeverityChangedAlert(ctx context.Context, audience, oldSeverityLabel, oldSeverityColor, newSeverityLabel, newSeverityColor, caseNumber, wso2CaseID, title, team, caseLink string) error
+	SendSeverityChangedAlert(ctx context.Context, audience, oldSeverityLabel, oldSeverityColor, newSeverityLabel, newSeverityColor, caseNumber, wso2CaseID, productName, title, team, caseLink string) error
 	SendFrustrationAlert(ctx context.Context, audience, caseNumber, wso2CaseID, productName, reason string, frustrationLevel float64, caseLink string) error
 	// The sr.* cards route to the SR's SRE team (sreTeamName) as the
 	// audience -- see handleSRCreated.
@@ -1466,7 +1466,7 @@ func (d *Dispatcher) handleSeverityChanged(ctx context.Context, record eventbus.
 	if chatOwned {
 		caseLink := d.links.CSMLink(p.CaseID)
 		title := truncateTitle(p.CaseTitle, maxChatTitleLength)
-		if chatErr := d.googleChat.SendSeverityChangedAlert(ctx, chataudience.IncidentMonitor, oldLabel, oldColor, newLabel, newColor, caseRef, p.WSO2CaseID, title, p.Team, caseLink); chatErr != nil {
+		if chatErr := d.googleChat.SendSeverityChangedAlert(ctx, chataudience.IncidentMonitor, oldLabel, oldColor, newLabel, newColor, caseRef, p.WSO2CaseID, p.Product, title, p.Team, caseLink); chatErr != nil {
 			errs = append(errs, chatErr)
 			d.forget(chatKey)
 		}
