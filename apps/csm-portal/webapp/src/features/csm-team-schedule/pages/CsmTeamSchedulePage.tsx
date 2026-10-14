@@ -49,7 +49,7 @@ import UndoToast, { type UndoOffer } from "../components/UndoToast";
 import { UndoIncomplete, applyRevertRuns, awayIsRevertible, rotaRevertRuns } from "../utils/undo";
 import WeekTable from "../components/WeekTable";
 import CasePagingTab, { type PagingRotaTarget } from "../components/CasePagingTab";
-import { caseAlertChainsFor, caseAlertsOffered } from "../utils/pagingChains";
+import { caseAlertChainsFor, caseAlertChainsReady, caseAlertsOffered } from "../utils/pagingChains";
 import RotaAccessTab from "../components/RotaAccessTab";
 import { canManageRotaAccess, useRotaAccess } from "../api/useRotaAccess";
 import { useGetPagingChain } from "../api/usePagingChain";
@@ -335,13 +335,15 @@ export default function CsmTeamSchedulePage(): JSX.Element {
    *  of it -- or every chain for a CSM admin and for the CRE and CS heads (who
    *  hold that position on a team, which CRE's chain lists). Not ready until what it is
    *  worked out from has been read; the tab is not offered until then, so
-   *  nobody sees every chain, or a tab with none, for a moment. */
+   *  nobody sees every chain, or a tab with none, for a moment. A lead does not
+   *  wait on the reads that only add chains (see caseAlertChainsReady). */
   const ownTeamKey = user?.team?.teamKey;
   const ownTeamFamily = user?.team?.family;
   const readerEmail = (user?.email ?? "").trim().toLowerCase();
   const pagingChains = useMemo(() => {
     const settled = (q: { isSuccess: boolean; isError: boolean }) => q.isSuccess || q.isError;
-    if (!catalogue.data || !settled(leadTeams) || !settled(markerOnlyTeams) || !settled(rotaAccess) || !settled(pagingProbe)) {
+    const ownKnown = Boolean(catalogue.data) && settled(leadTeams) && settled(markerOnlyTeams);
+    if (!catalogue.data || !caseAlertChainsReady(ownKnown, settled(rotaAccess) && settled(pagingProbe), fullTeams.length > 0)) {
       return { ready: false as const };
     }
     return {

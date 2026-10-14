@@ -17,7 +17,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { caseAlertChainsFor, caseAlertsOffered, chainOfTeam } from "./pagingChains";
+import { caseAlertChainsFor, caseAlertChainsReady, caseAlertsOffered, chainOfTeam } from "./pagingChains";
 
 const TEAMS = [
   { key: "castor", family: "CRE" as const },
@@ -92,3 +92,12 @@ describe("caseAlertsOffered", () => {
   });
 });
 
+describe("caseAlertChainsReady", () => {
+  it("does not hold a lead's own chains on the reads that only add chains", () => {
+    expect(caseAlertChainsReady(true, false, true)).toBe(true); // a lead: CRE chain / rota access still loading
+    expect(caseAlertChainsReady(true, true, true)).toBe(true);
+    expect(caseAlertChainsReady(true, false, false)).toBe(false); // a head or editor with no team: wait for them
+    expect(caseAlertChainsReady(true, true, false)).toBe(true);
+    expect(caseAlertChainsReady(false, true, true)).toBe(false); // own teams not read yet
+  });
+});

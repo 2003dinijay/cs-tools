@@ -77,6 +77,19 @@ export function caseAlertChainsFor(reader: {
 }
 
 /**
+ * Whether the reader's Case Alerts chains can be worked out yet. A lead's own
+ * chains need only the teams they run (`ownKnown`: the catalogue, their lead
+ * teams and their marker-only teams, all read). The CRE chain and rota access
+ * reads (`extraKnown`) only add chains -- CRE's for a CRE paging editor, every
+ * chain for a head or a CSM admin -- so a lead (`runsAny`) does not wait on
+ * them: until they answer they add nothing. Anybody else has nothing until
+ * those reads answer, so waits on them.
+ */
+export function caseAlertChainsReady(ownKnown: boolean, extraKnown: boolean, runsAny: boolean): boolean {
+  return ownKnown && (runsAny || extraKnown);
+}
+
+/**
  * Whether Case Alerts is offered: to a reader the page would offer it to
  * (`allowed`), once their chains are known (`null` until then), and only when
  * they have one -- a lead of nothing on the rota (a change-request board the
