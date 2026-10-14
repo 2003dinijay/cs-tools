@@ -323,9 +323,34 @@ func TestAccessGuard_SecurityCenterIsForCsEngineersAdminsAndCommentUpdaters(t *t
 	}
 }
 
+// TestAccessGuard_SecurityReportCasesAlsoAllowsViewer covers
+// PermViewSecurityReportCases: the same holders as PermViewSecurityCenter,
+// plus Viewer -- but Viewer must still be denied PermViewSecurityCenter
+// itself (Vulnerabilities stays off limits), confirming the two permissions
+// were genuinely split apart rather than Viewer gaining the broader one.
+func TestAccessGuard_SecurityReportCasesAlsoAllowsViewer(t *testing.T) {
+	g := NewAccessGuard(testAccessConfig())
+	for _, role := range []string{"test-cs-engineer", "test-admin", "test-comment-updater", "test-viewer"} {
+		if status, _ := serveWithRoles(g, PermViewSecurityReportCases, []string{role}); status != http.StatusNoContent {
+			t.Errorf("%s reading security-report cases: status = %d, want 204", role, status)
+		}
+	}
+	for _, role := range []string{
+		"test-escalator", "test-attachment-downloader", "test-usage-metrics-viewer",
+		"test-timecard-approver", "test-dashboard-designer",
+	} {
+		if status, _ := serveWithRoles(g, PermViewSecurityReportCases, []string{role}); status != http.StatusForbidden {
+			t.Errorf("%s reading security-report cases: status = %d, want 403", role, status)
+		}
+	}
+	if status, _ := serveWithRoles(g, PermViewSecurityCenter, []string{"test-viewer"}); status != http.StatusForbidden {
+		t.Errorf("viewer reading Security Center (vulnerabilities): status = %d, want 403 -- granting PermViewSecurityReportCases must not also grant PermViewSecurityCenter", status)
+	}
+}
+
 func TestAccessGuard_UnconfiguredRolesAreHeldByNobody(t *testing.T) {
 	g := NewAccessGuard(AccessConfig{})
-	for _, perm := range []Permission{PermView, PermViewOperations, PermTimeCardsAndUpdates, PermEscalate, PermDownloadAttachment, PermWrite, PermAdmin, PermViewSecurityCenter, PermApproveTimeCard, PermUsePlg, PermManagePlaybooks, PermCreateWorkNote, PermCreateAnnouncement, PermUpdateDeleteComment} {
+	for _, perm := range []Permission{PermView, PermViewOperations, PermTimeCardsAndUpdates, PermEscalate, PermDownloadAttachment, PermWrite, PermAdmin, PermViewSecurityCenter, PermViewSecurityReportCases, PermApproveTimeCard, PermUsePlg, PermManagePlaybooks, PermCreateWorkNote, PermCreateAnnouncement, PermUpdateDeleteComment} {
 		if status, _ := serveWithRoles(g, perm, []string{"test-admin", "test-viewer", ""}); status != http.StatusForbidden {
 			t.Errorf("permission %d with no roles configured: status = %d, want 403", perm, status)
 		}
