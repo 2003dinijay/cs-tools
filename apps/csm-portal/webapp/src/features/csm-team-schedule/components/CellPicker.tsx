@@ -132,6 +132,17 @@ function isoPlusMonths(iso: string, n: number): string {
   return `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, "0")}-${String(end.getDate()).padStart(2, "0")}`;
 }
 
+/** The span lengths offered beside the dates: a week of leave up to a
+ *  six-month move. A week is seven days counting the first. */
+const SPAN_PRESETS: ReadonlyArray<{ label: string; days: number; months: number }> = [
+  { label: "1 week", days: 7, months: 0 },
+  { label: "2 weeks", days: 14, months: 0 },
+  { label: "1 month", days: 0, months: 1 },
+  { label: "2 months", days: 0, months: 2 },
+  { label: "3 months", days: 0, months: 3 },
+  { label: "6 months", days: 0, months: 6 },
+];
+
 /** "12 Mar" -- short enough to sit beside a chip in the picker's header. */
 function shortDate(iso: string): string {
   return new Date(`${iso}T00:00:00`).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
@@ -730,25 +741,25 @@ export default function CellPicker({
               <span className="pkr-n">
                 {span} day{span === 1 ? "" : "s"}
               </span>
-              {/* A move to another team runs for months -- the SaaS Night cover
-                  is three to six -- which is a lot of clicking in a date field. */}
-              {moves.length > 0 || windowMoves.length > 0 ? (
-                <span className="pkr-len">
-                  {[3, 6].map((n) => (
-                    <button
-                      key={n}
-                      type="button"
-                      onClick={() => {
-                        const end = isoPlusMonths(firstDay, n);
-                        if (endField.current) endField.current.value = end;
-                        setUntil(end);
-                      }}
-                    >
-                      {n} months
-                    </button>
-                  ))}
-                </span>
-              ) : null}
+              {/* Common lengths, so a week of leave or a months-long move (the
+                  SaaS Night cover is three to six) is one click rather than a lot
+                  of clicking in a date field. Each only fills "To"; nothing is
+                  marked until a tag is picked. */}
+              <span className="pkr-len">
+                {SPAN_PRESETS.map((p) => (
+                  <button
+                    key={p.label}
+                    type="button"
+                    onClick={() => {
+                      const end = p.days ? isoPlusDays(firstDay, p.days - 1) : isoPlusMonths(firstDay, p.months);
+                      if (endField.current) endField.current.value = end;
+                      setUntil(end);
+                    }}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </span>
               {/* The fields draw dates in the browser's own format (10/20/2026
                   on a US-English browser), which reads either way round; the
                   span is spelled out the way the rest of the page writes dates. */}

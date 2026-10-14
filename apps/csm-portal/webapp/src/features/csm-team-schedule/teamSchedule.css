@@ -1327,6 +1327,17 @@
 .csm-ts .chip.SAB { background: var(--sab-bg); color: var(--sab-fg); }
 .csm-ts .offcard.SAB { --cc: var(--sab-fg); }
 
+/* Half-day leave (0234), morning and evening: annual leave's red, light, so
+   a half day reads as leave but lighter than a whole one. */
+.csm-ts { --hdm-bg: #f6d4d4; --hdm-fg: #8a1c1c; --hde-bg: #f4cdbd; --hde-fg: #7a2a12; }
+:root[data-color-scheme="dark"] .csm-ts { --hdm-bg: #5a2626; --hdm-fg: #f6d0d0; --hde-bg: #5a3024; --hde-fg: #f6d6c8; }
+.csm-ts .chip.HDM { background: var(--hdm-bg); color: var(--hdm-fg); }
+.csm-ts .chip.HDE { background: var(--hde-bg); color: var(--hde-fg); }
+.csm-ts .offcard.HDM { --cc: var(--hdm-fg); }
+.csm-ts .offcard.HDE { --cc: var(--hde-fg); }
+/* The half beside a name on the Day view's Leave card. */
+.csm-ts .offp .lnm .hdflag { flex: none; margin-left: auto; height: 16px; font-size: 9.5px; }
+
 /* ── Recent changes (leads, on the roster) ────────────────────────────────
    A quiet list under the edit bar: when, who and what, newest first. Leave
    entries carry the leave colour at their edge, rota entries the accent. */
@@ -2840,6 +2851,17 @@
   scroll-padding-top: 56px;
 }
 
+/* The SRE roster grows with its list instead of scrolling inside the card.
+   A list scrolled inside the card stopped at its own end and kept the wheel
+   (overscroll contain), so the last engineers could only be reached by
+   moving the pointer off the card to scroll the page. It still scrolls
+   across, for a month wider than the window. */
+.csm-ts .rostwrap.rostflow {
+  max-height: none;
+  overflow-y: hidden;
+  overscroll-behavior: auto;
+}
+
 /* The legend, between the roster's controls and its grid. */
 .csm-ts .rlegend {
   border-bottom: 1px solid var(--line);
@@ -2908,9 +2930,10 @@
   color: var(--ink-2);
 }
 
-/* "3 months" / "6 months" beside the dates, for a move that runs for months. */
+/* "1 week" ... "6 months" beside the dates: a span in one click. */
 .csm-ts .pk-range .pkr-len {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
 }
 .csm-ts .pk-range .pkr-len button {

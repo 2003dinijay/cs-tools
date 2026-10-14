@@ -498,6 +498,11 @@ export function rotasForReader(reader: {
  *  kind of leave, Allo-INT, Allo-EXT, the Brazil rotation). EXCLUDED, off
  *  the rota entirely, is not a lead's to set from a cell, and a retired kind
  *  is served only so the days already marked with it keep their label. */
+/** The half-day leave kinds (0234): still a day off the rota, but which
+ *  half is shown -- beside the name on the Day view's Leave card, and always
+ *  in the roster's legend. */
+export const HALF_DAY_LEAVE_CODES: ReadonlySet<string> = new Set(["HALF_DAY_LEAVE_MORNING", "HALF_DAY_LEAVE_EVENING"]);
+
 export function kindsOfferedOn(
   kinds: readonly ScheduleAbsenceKind[],
   family: RotaFamily,

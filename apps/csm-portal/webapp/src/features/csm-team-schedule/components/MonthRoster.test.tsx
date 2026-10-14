@@ -25,6 +25,7 @@ import {
   EVENING,
   MONDAY,
   REGULAR,
+  REGULAR_IND,
   TZ1,
   TZ1_WE,
   TZ2,
@@ -707,6 +708,51 @@ describe("MonthRoster: somebody who has left", () => {
 });
 
 
+describe("MonthRoster: which roster scrolls inside its card", () => {
+  it("lets the SRE roster grow with its list, so only the page scrolls down", () => {
+    const { container } = renderRoster({ family: "SRE" });
+    expect(container.querySelector(".rostwrap")).toHaveClass("rostflow");
+  });
+
+  it("keeps the CRE roster scrolling inside its card", () => {
+    const { container } = renderRoster();
+    expect(container.querySelector(".rostwrap")).not.toHaveClass("rostflow");
+  });
+});
+
+describe("MonthRoster: a move that is only a team (SaaS Night cover)", () => {
+  // Today is in view, and the move starts the next day.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 8, 21));
+  });
+  afterEach(() => vi.useRealTimers());
+  const NIGHT = {
+    id: "k-nc", code: "SRE_NIGHT_COVER", shortCode: "NC", label: "Night cover", bucket: "ALLOCATION" as const,
+    colourToken: "NLK", sortOrder: 75, movesToTeamKey: "bravo", worksRotaThere: true,
+  };
+  const BRAZIL = { ...NIGHT, id: "k-br", code: "ALLO_BR", shortCode: "BR", label: "Brazil rotation", showsAsShiftCode: EVENING.code };
+  const moved = (kind: typeof NIGHT | typeof BRAZIL) =>
+    renderRoster({
+      assignments: [],
+      absences: [{ ...absence({ name: "Nia", startsOn: "2026-09-22", endsOn: "2026-09-30", kindCode: kind.code, teamKey: "bravo" }), homeTeamKey: "alpha" }],
+      absenceKinds: [ANNUAL_LEAVE, kind],
+      teamMembers: { alpha: [{ userId: "u-Nia", name: "Nia", email: "n@example.com", isLead: false, role: "engineer" }] },
+    });
+
+  it("moves them under that team as soon as it is in view, with no tag on their days", () => {
+    const { container } = moved(NIGHT);
+    const rows = [...container.querySelectorAll("tbody tr")];
+    expect(rows.map((tr) => tr.querySelector(".team")?.textContent)).toEqual(["Bravo"]);
+    expect([...container.querySelectorAll("tbody .chip")].some((c) => c.textContent === "NC")).toBe(false);
+  });
+
+  it("leaves a move with hours of its own on their team until it starts", () => {
+    const { container } = moved(BRAZIL);
+    expect([...container.querySelectorAll("tbody tr")].map((tr) => tr.querySelector(".team")?.textContent)).toEqual(["Alpha"]);
+  });
+});
+
 describe("MonthRoster: back from a move mid-month", () => {
   it("keeps one row, under the team they moved to, reading their own team's ordinary day after it", () => {
     const BRAZIL = {
@@ -738,6 +784,38 @@ describe("MonthRoster: back from a move mid-month", () => {
       teamsWithoutDefault: new Set(["bravo"]),
     });
     expect(container.querySelectorAll(".chip.dflt")).toHaveLength(0);
+  });
+
+  it("reads the India region shift for a team's engineers, and Regular hours for its lead", () => {
+    // The lead of a team on the India region shift is a Sri Lankan-team
+    // engineer on rotation, so their ordinary day stays LK.
+    const { container } = renderRoster({
+      assignments: [],
+      shifts: shiftMap(REGULAR, REGULAR_IND, EVENING),
+      teamMembers: {
+        bravo: [
+          { userId: "u-Lia", name: "Lia", email: "l@example.com", isLead: true, role: "lead" },
+          { userId: "u-Nia", name: "Nia", email: "n@example.com", isLead: false, role: "engineer" },
+        ],
+      },
+      teamDefaultShift: { bravo: REGULAR_IND.code },
+    });
+    const firstCell = (name: string) =>
+      [...container.querySelectorAll("tbody tr")]
+        .find((tr) => tr.textContent?.includes(name))
+        ?.querySelector("td")
+        ?.textContent?.trim();
+    expect(firstCell("Nia")).toBe(REGULAR_IND.shortCode);
+    expect(firstCell("Lia")).toBe(REGULAR.shortCode);
+  });
+
+  it("keeps a lead on their team's own ordinary day anywhere else", () => {
+    const { container } = renderRoster({
+      assignments: [],
+      teamMembers: { bravo: [{ userId: "u-Lia", name: "Lia", email: "l@example.com", isLead: true, role: "lead" }] },
+      teamDefaultShift: { bravo: EVENING.code },
+    });
+    expect(container.querySelector("tbody tr td")?.textContent?.trim()).toBe(EVENING.shortCode);
   });
 
   it("reads a team's own ordinary day where it has one", () => {
@@ -949,6 +1027,31 @@ describe("MonthRoster: reading the codes", () => {
     expect(within(legend).getByText(ANNUAL_LEAVE.label)).toBeInTheDocument();
     expect(within(legend).getByText(/Working day/)).toBeInTheDocument();
     expect(within(legend).queryByText(RND.label)).not.toBeInTheDocument();
+  });
+
+  it("does not explain a kind that is no longer offered, though its day still shows", () => {
+    const SICK = { ...ANNUAL_LEAVE, id: "k9", code: "SICK_LEAVE", shortCode: "SL", label: "Sick leave", retired: true };
+    const { container } = renderRoster({
+      absenceKinds: [ANNUAL_LEAVE, SICK],
+      absences: [
+        absence({ name: "Asela", startsOn: "2026-09-21", endsOn: "2026-09-21" }),
+        absence({ name: "Asela", startsOn: "2026-09-22", endsOn: "2026-09-22", kindCode: SICK.code }),
+      ],
+    });
+    const legend = container.querySelector(".rlegend") as HTMLElement;
+    expect(within(legend).getByText(ANNUAL_LEAVE.label)).toBeInTheDocument();
+    expect(within(legend).queryByText(/Sick leave/)).not.toBeInTheDocument();
+    expect([...container.querySelectorAll("tbody .chip")].some((c) => c.textContent === "SL")).toBe(true);
+  });
+
+  it("always lists the half-day leave tags, even with nobody on one in view", () => {
+    const HD_AM = { ...ANNUAL_LEAVE, id: "k-am", code: "HALF_DAY_LEAVE_MORNING", shortCode: "HD-AM", label: "Half day leave — morning", colourToken: "HDM" };
+    const HD_PM = { ...ANNUAL_LEAVE, id: "k-pm", code: "HALF_DAY_LEAVE_EVENING", shortCode: "HD-PM", label: "Half day leave — evening", colourToken: "HDE", retired: true };
+    const { container } = renderRoster({ absenceKinds: [ANNUAL_LEAVE, HD_AM, HD_PM] });
+    const legend = container.querySelector(".rlegend") as HTMLElement;
+    expect(within(legend).getByText(HD_AM.label)).toBeInTheDocument();
+    // Retired, it is no longer something to mark, so not explained either.
+    expect(within(legend).queryByText(HD_PM.label)).not.toBeInTheDocument();
   });
 
   it("lists labels only, not the grid's own marks", () => {
