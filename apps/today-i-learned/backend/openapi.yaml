@@ -108,6 +108,19 @@ paths:
           schema:
             type: string
             format: date-time
+        - name: author
+          in: query
+          description: >-
+            The author's name alone. Every word has to match the start of a
+            word in it, so "ale sam" finds "Alex Sample".
+          schema:
+            type: string
+            maxLength: 200
+        - name: source
+          in: query
+          description: Only entries from this source.
+          schema:
+            $ref: '#/components/schemas/Source'
         - name: mine
           in: query
           description: Only the caller's own entries.

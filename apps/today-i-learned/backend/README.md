@@ -73,7 +73,7 @@ written to be shown to people as they are.
 | GET | `/user-info` | `{email, displayName, canModerate}` |
 | GET | `/settings` | `{whatMaxLength, notificationsEnabled}`: the rules the webapp's form shows, and whether entries are announced. |
 | GET | `/customers/search?q=` | `[{id, name}]`; empty when suggestions are off. |
-| GET | `/submissions` | `{items, total, limit, offset}`, newest first. Query: `q` (search), `createdFrom` (inclusive) / `createdBefore` (exclusive) as RFC 3339 times, `mine=true`, `limit` (1–100, default 10), `offset`. |
+| GET | `/submissions` | `{items, total, limit, offset}`, newest first. Query: `q` (search), `createdFrom` (inclusive) / `createdBefore` (exclusive) as RFC 3339 times, `author` (the author's name: every word starts a word in it), `source` (Customer, Partner, Internal or Other), `mine=true`, `limit` (1–100, default 10), `offset`. |
 | POST | `/submissions` | `{title, who, where, what, whereDetail?}`. Webapp only. Announced in Google Chat. |
 | GET | `/submissions/{id}` | One entry. |
 | PUT | `/submissions/{id}` | `{title, where, what, whereDetail?}`. Webapp only; the author or a moderator. |

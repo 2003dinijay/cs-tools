@@ -70,8 +70,13 @@ type Query struct {
 	From, Before *time.Time
 	// AuthorEmail, when set, keeps only that person's entries.
 	AuthorEmail string
-	Limit       int
-	Offset      int
+	// Author matches the author's name alone: every term has to match the
+	// start of a word in it, so "ale sam" finds "Alex Sample".
+	Author string
+	// Source, when set, keeps only entries from that source.
+	Source string
+	Limit  int
+	Offset int
 }
 
 // Page is one page of entries and how many entries match in total.
@@ -284,6 +289,14 @@ func filters(q Query) (string, []any) {
 	if q.AuthorEmail != "" {
 		conds = append(conds, "author_email = ?")
 		args = append(args, q.AuthorEmail)
+	}
+	if q.Source != "" {
+		conds = append(conds, "source = ?")
+		args = append(args, q.Source)
+	}
+	if c, a := authorConditions(q.Author); len(c) > 0 {
+		conds = append(conds, c...)
+		args = append(args, a...)
 	}
 	if q.From != nil {
 		conds = append(conds, "created_on >= ?")

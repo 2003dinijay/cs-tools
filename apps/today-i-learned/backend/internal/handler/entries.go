@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -138,6 +139,14 @@ func parseListQuery(v url.Values) (store.Query, error) {
 	}
 	if q.From != nil && q.Before != nil && !q.From.Before(*q.Before) {
 		return q, errors.New("createdFrom must be before createdBefore.")
+	}
+
+	q.Author = strings.TrimSpace(v.Get("author"))
+	if utf8.RuneCountInString(q.Author) > entry.AuthorMaxLength {
+		return q, fmt.Errorf("author must be %d characters or fewer.", entry.AuthorMaxLength)
+	}
+	if q.Source = v.Get("source"); q.Source != "" && !slices.Contains(entry.Sources, q.Source) {
+		return q, errors.New("source must be Customer, Partner, Internal or Other.")
 	}
 
 	switch v.Get("mine") {
