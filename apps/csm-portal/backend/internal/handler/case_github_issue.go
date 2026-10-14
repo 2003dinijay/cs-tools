@@ -48,9 +48,14 @@ const (
 	patchIssueTypeLabel      = "Type/Patch"
 	patchExtraLabel          = "patch"
 	discussionIssueTypeLabel = "Type/Discussion"
+	incidentIssueTypeLabel   = "Type/Incident"
 	hotfixLabel              = "Require/Hotfix"
 	migrationLabel           = "Affected/Migration"
 	onboardingLabel          = "Onboarding/affected"
+
+	priorityCriticalLabel = "Priority/Critical(P1)"
+	priorityHighLabel     = "Priority/High(P2)"
+	priorityMediumLabel   = "Priority/Medium(P3)"
 )
 
 const (
@@ -340,10 +345,27 @@ func buildGitHubIssueBody(req caseGitHubIssueRequest, productLabel string, caseC
 	return strings.TrimSpace(b.String())
 }
 
+// githubPriorityLabel maps the dialog's severity onto the GitHub label names
+// the internals dashboards filter on. Bare Priority/Critical (etc.) is
+// rewritten to the (Pn) form; the (Pn) form is left as-is.
+func githubPriorityLabel(level string) string {
+	switch strings.TrimSpace(level) {
+	case "Priority/Critical", priorityCriticalLabel:
+		return priorityCriticalLabel
+	case "Priority/High", priorityHighLabel:
+		return priorityHighLabel
+	case "Priority/Medium", priorityMediumLabel:
+		return priorityMediumLabel
+	default:
+		return strings.TrimSpace(level)
+	}
+}
+
 // buildGitHubIssueLabels applies the sheet's rules. Origin/CS and the product
-// label always go on. Patch adds Type/Patch and patch. Discussion adds the
-// priority label. The switches add Require/Hotfix, regression, and
-// Affected/Migration. An in-progress project adds Onboarding/affected.
+// label always go on. Patch adds Type/Patch and patch. Discussion adds
+// Type/Incident and the (Pn) priority label. The switches add Require/Hotfix,
+// regression, and Affected/Migration. An in-progress project adds
+// Onboarding/affected.
 func buildGitHubIssueLabels(productLabel string, req caseGitHubIssueRequest) []string {
 	var labels []string
 	seen := make(map[string]bool)
@@ -363,7 +385,8 @@ func buildGitHubIssueLabels(productLabel string, req caseGitHubIssueRequest) []s
 		add(patchIssueTypeLabel)
 		add(patchExtraLabel)
 	case discussionIssueTypeLabel:
-		add(req.PriorityLevel)
+		add(incidentIssueTypeLabel)
+		add(githubPriorityLabel(req.PriorityLevel))
 	}
 	if req.HotFixRequired {
 		add(hotfixLabel)
