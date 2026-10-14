@@ -170,25 +170,6 @@ func TestLive_GetEscalationsByAccount(t *testing.T) {
 	}
 }
 
-// TestLive_GetCustomerHealthSummary runs postgresCustomerHealthClient.GetCustomerHealthSummary
-// against a real running entity-service.
-func TestLive_GetCustomerHealthSummary(t *testing.T) {
-	client, ok := liveTestClient(t)
-	if !ok {
-		return
-	}
-	c := NewPostgresCustomerHealthClient(client)
-	resp, err := c.GetCustomerHealthSummary(context.Background(), nil, nil, nil, nil, nil, nil, 0, 5)
-	if err != nil {
-		t.Fatalf("GetCustomerHealthSummary: %v", err)
-	}
-	raw, _ := json.MarshalIndent(resp, "", "  ")
-	t.Logf("summary (total=%d):\n%s", resp.TotalCount, raw)
-	if len(resp.Data) == 0 {
-		t.Error("expected at least one account summary row")
-	}
-}
-
 // TestLive_GetCustomerHealthDetail runs postgresCustomerHealthClient.GetCustomerHealthDetail
 // against a real running entity-service, for an account id supplied via
 // LIVE_ENTITY_SERVICE_TEST_ACCOUNT_ID.

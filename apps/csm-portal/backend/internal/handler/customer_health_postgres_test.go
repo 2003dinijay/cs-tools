@@ -32,21 +32,14 @@ import (
 // fakeEntityCustomerHealthClient is a scriptable entityCustomerHealthClient
 // for testing postgresCustomerHealthClient without a real entity-service.
 // Each method keys its canned response off the request it was sent, since a
-// single GetCustomerHealthSummary call fans out into several different
-// searches (accounts, projects, deployments, deployed products, cases,
-// escalations).
+// single detail call fans out into several different searches (projects,
+// deployments, deployed products, cases, escalations).
 //
 // mu guards every field a method call can mutate (caseCallCount, the
-// last*ReqsRaw slices) -- scanAccountsPage's own bounded concurrency
-// (customer_health_postgres.go) means several accounts' worth of calls can
-// now land on this fake at once, same as they would on the real
-// entity-service over HTTP; without this lock `go test -race` catches a
-// genuine data race on the unsynchronized counter/slice writes below. The
-// read-only fixture fields (accounts/projects/deployments/.../caseResponses)
-// are set once by each test before GetCustomerHealthSummary ever runs and
-// never written again, so they need no lock of their own.
+// last*ReqsRaw slices). The read-only fixture fields
+// (projects/deployments/.../caseResponses) are set once by each test before
+// the call under test runs and never written again, so they need no lock.
 type fakeEntityCustomerHealthClient struct {
-	accounts               entitySearchAccountsResponse
 	projects               entitySearchProjectsResponse
 	deployments            entityDeploymentsSearchResponse
 	deployedProducts       entitySearchDeployedProductsEolResponse
@@ -54,13 +47,10 @@ type fakeEntityCustomerHealthClient struct {
 	escalations            entitySearchEscalationsResponse
 	mu                     sync.Mutex
 	caseCallCount          int
-	lastAccountsReqRaw     []byte   // last request body SearchAccounts was called with
 	lastCasesReqsRaw       [][]byte // every request body SearchCases was called with, in call order
 	lastDeploymentsReqsRaw [][]byte // every request body SearchDeployments was called with, in call order
 	// account/accountNotFound back GetAccount (GET /accounts/{id}), the
-	// real by-primary-key lookup GetCustomerHealthDetail uses -- kept
-	// separate from the accounts/SearchAccounts fields above, which back the
-	// unrelated account-list search GetCustomerHealthSummary uses.
+	// real by-primary-key lookup GetCustomerHealthDetail uses.
 	account         *entityAccountView
 	accountNotFound bool
 }
@@ -70,13 +60,6 @@ func (f *fakeEntityCustomerHealthClient) GetAccount(ctx context.Context, id stri
 		return nil, &apierror.Error{StatusCode: http.StatusNotFound, Body: `{"message":"account not found"}`}
 	}
 	return json.Marshal(f.account)
-}
-
-func (f *fakeEntityCustomerHealthClient) SearchAccounts(ctx context.Context, body []byte) ([]byte, error) {
-	f.mu.Lock()
-	f.lastAccountsReqRaw = body
-	f.mu.Unlock()
-	return json.Marshal(f.accounts)
 }
 
 func (f *fakeEntityCustomerHealthClient) SearchProjects(ctx context.Context, body []byte) ([]byte, error) {
@@ -115,113 +98,6 @@ func (f *fakeEntityCustomerHealthClient) SearchEscalations(ctx context.Context, 
 
 func strPtr(s string) *string { return &s }
 
-func TestPostgresCustomerHealthClient_GetCustomerHealthSummary_NoRiskAccount(t *testing.T) {
-	fake := &fakeEntityCustomerHealthClient{
-		accounts: entitySearchAccountsResponse{
-			Accounts: []entityAccountView{{ID: "acc-1", Name: "Acme Corp"}},
-			Total:    1,
-		},
-		projects: entitySearchProjectsResponse{
-			Projects: []entityProjectView{{ID: "proj-1", Name: "Acme Platform", OnboardingStatus: strPtr("Completed")}},
-			Total:    1,
-		},
-		deployments:      entityDeploymentsSearchResponse{},
-		deployedProducts: entitySearchDeployedProductsEolResponse{},
-		caseResponses:    []entitySearchCasesResponse{{Total: 5}, {Total: 0}, {Total: 0}},
-		escalations:      entitySearchEscalationsResponse{},
-	}
-	c := NewPostgresCustomerHealthClient(fake)
-
-	resp, err := c.GetCustomerHealthSummary(context.Background(), nil, nil, nil, nil, nil, nil, 0, 10)
-	if err != nil {
-		t.Fatalf("GetCustomerHealthSummary: %v", err)
-	}
-	if resp.TotalCount != 1 || len(resp.Data) != 1 {
-		t.Fatalf("got %+v", resp)
-	}
-	acc := resp.Data[0]
-	if acc.AccountSysID != "acc-1" || acc.AccountName == nil || *acc.AccountName != "Acme Corp" {
-		t.Errorf("account identity wrong: %+v", acc)
-	}
-	if acc.HasNoGoLive.IsRisk {
-		t.Errorf("expected no go-live risk for a Completed project, got %+v", acc.HasNoGoLive)
-	}
-	if !acc.HasRecentCases || acc.NoSupportCases6mo {
-		t.Errorf("expected recent cases true / no-support false, got recent=%v noSupport=%v", acc.HasRecentCases, acc.NoSupportCases6mo)
-	}
-	if acc.HasEolProduct {
-		t.Errorf("expected no EOL product, got true")
-	}
-}
-
-// TestPostgresCustomerHealthClient_GetCustomerHealthSummary_NoGoLiveAndNoCases
-// pins projectGoLiveStatus/accountGoLiveStatus's real risk branch: an account
-// activated more than 6 months ago whose project has never recorded a
-// go-live date is the one case the legacy rule flags as an actual risk
-// ("Hasn't Gone Live in 6 months", isRisk: true) -- OnboardingStatus is
-// irrelevant to this decision (see projectGoLiveStatus's own doc comment),
-// so the fixture project carries none at all.
-func TestPostgresCustomerHealthClient_GetCustomerHealthSummary_NoGoLiveAndNoCases(t *testing.T) {
-	sevenMonthsAgo := time.Now().AddDate(0, -7, 0).Format("2006-01-02")
-	fake := &fakeEntityCustomerHealthClient{
-		accounts: entitySearchAccountsResponse{
-			Accounts: []entityAccountView{{ID: "acc-2", Name: "Beta Inc", ActivationDate: &sevenMonthsAgo}},
-			Total:    1,
-		},
-		projects: entitySearchProjectsResponse{
-			Projects: []entityProjectView{{ID: "proj-2", Name: "Beta Platform"}},
-			Total:    1,
-		},
-		caseResponses: []entitySearchCasesResponse{{Total: 0}, {Total: 0}, {Total: 0}},
-	}
-	c := NewPostgresCustomerHealthClient(fake)
-
-	resp, err := c.GetCustomerHealthSummary(context.Background(), nil, nil, nil, nil, nil, nil, 0, 10)
-	if err != nil {
-		t.Fatalf("GetCustomerHealthSummary: %v", err)
-	}
-	acc := resp.Data[0]
-	if !acc.HasNoGoLive.IsRisk || acc.HasNoGoLive.State != "failure" {
-		t.Errorf("expected a real go-live risk for an account activated 7 months ago with no go-live date, got %+v", acc.HasNoGoLive)
-	}
-	if acc.HasRecentCases || !acc.NoSupportCases6mo {
-		t.Errorf("expected no recent cases / noSupportCases6mo true, got recent=%v noSupport=%v", acc.HasRecentCases, acc.NoSupportCases6mo)
-	}
-}
-
-// TestPostgresCustomerHealthClient_GetCustomerHealthSummary_NoStartDate pins
-// the real bug this fix closes: an account with no activation date recorded
-// and a project with no go-live date is "N/A (No Start Date)" (pending, not
-// a risk) in the legacy rule -- a previous version of this code checked the
-// project's OnboardingStatus instead and silently reported such an account
-// as "Live".
-func TestPostgresCustomerHealthClient_GetCustomerHealthSummary_NoStartDate(t *testing.T) {
-	fake := &fakeEntityCustomerHealthClient{
-		accounts: entitySearchAccountsResponse{
-			Accounts: []entityAccountView{{ID: "acc-3", Name: "Gamma LLC"}},
-			Total:    1,
-		},
-		projects: entitySearchProjectsResponse{
-			Projects: []entityProjectView{{ID: "proj-3", Name: "Gamma Platform", OnboardingStatus: strPtr("Not-Applicable")}},
-			Total:    1,
-		},
-		caseResponses: []entitySearchCasesResponse{{Total: 0}, {Total: 0}, {Total: 0}},
-	}
-	c := NewPostgresCustomerHealthClient(fake)
-
-	resp, err := c.GetCustomerHealthSummary(context.Background(), nil, nil, nil, nil, nil, nil, 0, 10)
-	if err != nil {
-		t.Fatalf("GetCustomerHealthSummary: %v", err)
-	}
-	acc := resp.Data[0]
-	if acc.HasNoGoLive.IsRisk {
-		t.Errorf("an account with no activation date recorded must never be reported as an actual risk, got %+v", acc.HasNoGoLive)
-	}
-	if acc.HasNoGoLive.Status != "N/A (No Start Date)" || acc.HasNoGoLive.State != "pending" {
-		t.Errorf("got %+v, want status %q state %q", acc.HasNoGoLive, "N/A (No Start Date)", "pending")
-	}
-}
-
 // TestProjectGoLiveStatus_LegacyActivationReportsPlainHasGoneLive pins a real
 // bug found by cross-checking a live sample of real accounts (not just
 // reading the ServiceNow source): an activation date before the fixed
@@ -248,7 +124,6 @@ func TestProjectGoLiveStatus_LegacyActivationReportsPlainHasGoneLive(t *testing.
 // TestProjectGoLiveStatus_EveryBranch pins every branch of the legacy rule's
 // own go-live-status computation this ports, cross-checked against real
 // account data where available (see
-// TestPostgresCustomerHealthClient_GetCustomerHealthSummary_* above and
 // TestProjectGoLiveStatus_LegacyActivationReportsPlainHasGoneLive).
 func TestProjectGoLiveStatus_EveryBranch(t *testing.T) {
 	now := time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC)
@@ -282,309 +157,6 @@ func TestProjectGoLiveStatus_EveryBranch(t *testing.T) {
 				t.Errorf("projectGoLiveStatus(%v, %v, %v) = %+v, want %+v", tc.goLiveDate, tc.activationDate, now, got, tc.want)
 			}
 		})
-	}
-}
-
-// TestPostgresCustomerHealthClient_GetCustomerHealthSummary_ExcludesAnnouncementsFromRecentCases
-// pins the real bug this fix closes: the legacy rule's own "recent cases"
-// query explicitly excludes Announcement-type work items; a previous version
-// of accountHasCasesSince applied no type filter at all, so an account whose
-// only recent work item was an announcement was wrongly reported as having
-// recent cases.
-func TestPostgresCustomerHealthClient_GetCustomerHealthSummary_ExcludesAnnouncementsFromRecentCases(t *testing.T) {
-	fake := &fakeEntityCustomerHealthClient{
-		accounts: entitySearchAccountsResponse{
-			Accounts: []entityAccountView{{ID: "acc-4", Name: "Delta Co"}},
-			Total:    1,
-		},
-		projects:      entitySearchProjectsResponse{},
-		caseResponses: []entitySearchCasesResponse{{Total: 0}, {Total: 0}, {Total: 0}},
-	}
-	c := NewPostgresCustomerHealthClient(fake)
-
-	if _, err := c.GetCustomerHealthSummary(context.Background(), nil, nil, nil, nil, nil, nil, 0, 10); err != nil {
-		t.Fatalf("GetCustomerHealthSummary: %v", err)
-	}
-
-	var req entitySearchCasesRequest
-	if err := json.Unmarshal(fake.lastCasesReqsRaw[0], &req); err != nil {
-		t.Fatalf("unmarshal captured request: %v", err)
-	}
-	var sawTypeFilter bool
-	for _, f := range req.Filters.Filters {
-		if f.Field != "type" {
-			continue
-		}
-		sawTypeFilter = true
-		if f.Op != "in" {
-			t.Fatalf("type filter op = %q, want %q", f.Op, "in")
-		}
-		if len(f.Values) != len(customerHealthCaseLikeTypes) {
-			t.Fatalf("type filter values = %v, want %v", f.Values, customerHealthCaseLikeTypes)
-		}
-		for _, v := range f.Values {
-			if v == "announcement" {
-				t.Fatalf("recent-cases search must not include announcement, got %v", f.Values)
-			}
-		}
-	}
-	if !sawTypeFilter {
-		t.Fatalf("recent-cases search carried no type filter at all: %+v", req.Filters.Filters)
-	}
-}
-
-// TestPostgresCustomerHealthClient_RegionFilter pins a real bug: the
-// region dropdown's values ("ASIA", "NA - WEST", ...) are sub-region values
-// (account.sub_region), not the coarser account.region field ("APAC", "EU",
-// ...) -- confirmed directly against real account data, where the two
-// columns' value sets never overlap. The filter must match SubRegion.
-func TestPostgresCustomerHealthClient_RegionFilter(t *testing.T) {
-	apac, asia := "APAC", "ASIA"
-	emea, roe := "EMEA", "ROE"
-	fake := &fakeEntityCustomerHealthClient{
-		accounts: entitySearchAccountsResponse{
-			Accounts: []entityAccountView{
-				{ID: "acc-1", Name: "Asia Co", Region: &apac, SubRegion: &asia},
-				{ID: "acc-2", Name: "Europe Co", Region: &emea, SubRegion: &roe},
-			},
-			Total: 2,
-		},
-		projects:      entitySearchProjectsResponse{},
-		caseResponses: []entitySearchCasesResponse{{Total: 0}},
-	}
-	c := NewPostgresCustomerHealthClient(fake)
-
-	resp, err := c.GetCustomerHealthSummary(context.Background(), nil, nil, nil, []string{"ASIA"}, nil, nil, 0, 10)
-	if err != nil {
-		t.Fatalf("GetCustomerHealthSummary: %v", err)
-	}
-	if resp.TotalCount != 1 || len(resp.Data) != 1 || resp.Data[0].AccountSysID != "acc-1" {
-		t.Fatalf("region filter did not narrow to the sub-region-matching account: %+v", resp)
-	}
-
-	// A region filter value that only matches account.region (the coarser
-	// field) must NOT match -- pins that this isn't accidentally checking
-	// both fields.
-	resp, err = c.GetCustomerHealthSummary(context.Background(), nil, nil, nil, []string{"APAC"}, nil, nil, 0, 10)
-	if err != nil {
-		t.Fatalf("GetCustomerHealthSummary: %v", err)
-	}
-	if resp.TotalCount != 0 {
-		t.Fatalf("a region-field value must not match via SubRegion, got %+v", resp)
-	}
-}
-
-// TestPostgresCustomerHealthClient_RisksFilter pins the fix for a real bug:
-// the "risks" filter was accepted on the wire but never applied at all, so
-// selecting a risk indicator changed nothing about the result. An account
-// must match when it exhibits ANY of the requested risk flags.
-func TestPostgresCustomerHealthClient_RisksFilter(t *testing.T) {
-	sevenMonthsAgo := time.Now().AddDate(0, -7, 0).Format("2006-01-02")
-	fake := &fakeEntityCustomerHealthClient{
-		accounts: entitySearchAccountsResponse{
-			Accounts: []entityAccountView{
-				{ID: "acc-risk", Name: "At Risk Co", ActivationDate: &sevenMonthsAgo},
-				{ID: "acc-healthy", Name: "Healthy Co"},
-			},
-			Total: 2,
-		},
-		// Every account needs at least one project for hasNoGoLive to
-		// evaluate anything at all (an account with no projects defaults to
-		// "Has Gone Live", isRisk: false, regardless of activation date) --
-		// both accounts in this fixture share this one project via the
-		// fake's own "answer identically for every SearchProjects call"
-		// shape, so what actually distinguishes them is each one's own
-		// ActivationDate above.
-		projects:      entitySearchProjectsResponse{Projects: []entityProjectView{{ID: "proj-1", Name: "Project"}}, Total: 1},
-		caseResponses: []entitySearchCasesResponse{{Total: 0}},
-	}
-	c := NewPostgresCustomerHealthClient(fake)
-
-	risks := "hasNoGoLive"
-	resp, err := c.GetCustomerHealthSummary(context.Background(), nil, nil, &risks, nil, nil, nil, 0, 10)
-	if err != nil {
-		t.Fatalf("GetCustomerHealthSummary: %v", err)
-	}
-	if resp.TotalCount != 1 || len(resp.Data) != 1 || resp.Data[0].AccountSysID != "acc-risk" {
-		t.Fatalf("risks filter did not narrow to the at-risk account: %+v", resp)
-	}
-}
-
-// TestPostgresCustomerHealthClient_RisksFilter_PreservesAccountOrder pins
-// scanAccountsPage's own ordering guarantee: evaluating several accounts'
-// risk flags concurrently (customerHealthScanConcurrency, in
-// customer_health_postgres.go) must never reorder the matched accounts
-// relative to the page entity-service returned them in. scanAccountsPage
-// writes each goroutine's verdict into an index-addressed slice and only
-// reassembles the matched set by walking that slice in original order
-// afterward -- this test interleaves matching and non-matching accounts and
-// runs the search repeatedly so a regression that instead collected results
-// in goroutine-completion order (nondeterministic) would show up as a
-// flaky/incorrect ordering rather than passing by chance.
-func TestPostgresCustomerHealthClient_RisksFilter_PreservesAccountOrder(t *testing.T) {
-	sevenMonthsAgo := time.Now().AddDate(0, -7, 0).Format("2006-01-02")
-	accounts := []entityAccountView{
-		{ID: "acc-1-risk", Name: "Risk Co 1", ActivationDate: &sevenMonthsAgo},
-		{ID: "acc-2-healthy", Name: "Healthy Co 2"},
-		{ID: "acc-3-risk", Name: "Risk Co 3", ActivationDate: &sevenMonthsAgo},
-		{ID: "acc-4-healthy", Name: "Healthy Co 4"},
-		{ID: "acc-5-risk", Name: "Risk Co 5", ActivationDate: &sevenMonthsAgo},
-		{ID: "acc-6-healthy", Name: "Healthy Co 6"},
-		{ID: "acc-7-risk", Name: "Risk Co 7", ActivationDate: &sevenMonthsAgo},
-		{ID: "acc-8-healthy", Name: "Healthy Co 8"},
-	}
-	wantOrder := []string{"acc-1-risk", "acc-3-risk", "acc-5-risk", "acc-7-risk"}
-
-	risks := "hasNoGoLive"
-	for i := 0; i < 20; i++ {
-		fake := &fakeEntityCustomerHealthClient{
-			accounts:      entitySearchAccountsResponse{Accounts: accounts, Total: len(accounts)},
-			projects:      entitySearchProjectsResponse{Projects: []entityProjectView{{ID: "proj-1", Name: "Project"}}, Total: 1},
-			caseResponses: []entitySearchCasesResponse{{Total: 0}},
-		}
-		c := NewPostgresCustomerHealthClient(fake)
-
-		resp, err := c.GetCustomerHealthSummary(context.Background(), nil, nil, &risks, nil, nil, nil, 0, 10)
-		if err != nil {
-			t.Fatalf("iteration %d: GetCustomerHealthSummary: %v", i, err)
-		}
-		if resp.TotalCount != len(wantOrder) || len(resp.Data) != len(wantOrder) {
-			t.Fatalf("iteration %d: expected %d matching accounts, got %+v", i, len(wantOrder), resp)
-		}
-		for j, want := range wantOrder {
-			if resp.Data[j].AccountSysID != want {
-				t.Fatalf("iteration %d: result order = %v, want %v", i, accountSysIDs(resp.Data), wantOrder)
-			}
-		}
-	}
-}
-
-func accountSysIDs(data []servicenow.AccountSummary) []string {
-	ids := make([]string, len(data))
-	for i, d := range data {
-		ids[i] = d.AccountSysID
-	}
-	return ids
-}
-
-// TestPostgresCustomerHealthClient_ABTTeamFilter pins the fix for a real
-// bug: "abtTeam" was accepted on the wire but never applied. An account
-// matches when its CreTeam or SreTeam name equals the requested team.
-func TestPostgresCustomerHealthClient_ABTTeamFilter(t *testing.T) {
-	fake := &fakeEntityCustomerHealthClient{
-		accounts: entitySearchAccountsResponse{
-			Accounts: []entityAccountView{
-				{ID: "acc-nova", Name: "Nova Co", CreTeam: &entityRef{ID: "t1", Name: "Team Nova"}},
-				{ID: "acc-orion", Name: "Orion Co", SreTeam: &entityRef{ID: "t2", Name: "Team Orion"}},
-			},
-			Total: 2,
-		},
-		projects:      entitySearchProjectsResponse{},
-		caseResponses: []entitySearchCasesResponse{{Total: 0}},
-	}
-	c := NewPostgresCustomerHealthClient(fake)
-
-	abtTeam := "Team Nova"
-	resp, err := c.GetCustomerHealthSummary(context.Background(), nil, nil, nil, nil, nil, &abtTeam, 0, 10)
-	if err != nil {
-		t.Fatalf("GetCustomerHealthSummary: %v", err)
-	}
-	if resp.TotalCount != 1 || len(resp.Data) != 1 || resp.Data[0].AccountSysID != "acc-nova" {
-		t.Fatalf("abtTeam filter did not narrow to the matching CreTeam account: %+v", resp)
-	}
-
-	abtTeam = "Team Orion"
-	resp, err = c.GetCustomerHealthSummary(context.Background(), nil, nil, nil, nil, nil, &abtTeam, 0, 10)
-	if err != nil {
-		t.Fatalf("GetCustomerHealthSummary: %v", err)
-	}
-	if resp.TotalCount != 1 || len(resp.Data) != 1 || resp.Data[0].AccountSysID != "acc-orion" {
-		t.Fatalf("abtTeam filter did not narrow to the matching SreTeam account: %+v", resp)
-	}
-}
-
-// TestPostgresCustomerHealthClient_ProductFilter pins the fix for a real
-// bug: "product" was accepted on the wire but never applied. An account
-// matches when any deployed product under any of its projects' deployments
-// has this name.
-func TestPostgresCustomerHealthClient_ProductFilter(t *testing.T) {
-	fake := &fakeEntityCustomerHealthClient{
-		accounts: entitySearchAccountsResponse{
-			Accounts: []entityAccountView{
-				{ID: "acc-1", Name: "Has The Product"},
-				{ID: "acc-2", Name: "Does Not"},
-			},
-			Total: 2,
-		},
-		projects: entitySearchProjectsResponse{
-			Projects: []entityProjectView{{ID: "proj-1", Name: "Project"}},
-			Total:    1,
-		},
-		deployments: entityDeploymentsSearchResponse{
-			Deployments: []entityDeploymentView{{ID: "dep-1"}},
-			Total:       1,
-		},
-		deployedProducts: entitySearchDeployedProductsEolResponse{
-			DeployedProducts: []entityDeployedProductEolView{{Product: entityRef{Name: "Bijira"}}},
-			Total:            1,
-		},
-		caseResponses: []entitySearchCasesResponse{{Total: 0}},
-	}
-	c := NewPostgresCustomerHealthClient(fake)
-
-	product := "Bijira"
-	resp, err := c.GetCustomerHealthSummary(context.Background(), nil, nil, nil, nil, &product, nil, 0, 10)
-	if err != nil {
-		t.Fatalf("GetCustomerHealthSummary: %v", err)
-	}
-	// The fake's SearchProjects/SearchDeployments/SearchDeployedProducts
-	// answer identically for both accounts, so both are reported as having
-	// the product -- this test only pins that the filter is *applied* at
-	// all (an unfiltered request would return 2), not entity-service's own
-	// per-account data shape.
-	if resp.TotalCount != 2 {
-		t.Fatalf("product filter unexpectedly excluded an account with a matching deployed product: %+v", resp)
-	}
-
-	noMatch := "Nonexistent Product"
-	resp, err = c.GetCustomerHealthSummary(context.Background(), nil, nil, nil, nil, &noMatch, nil, 0, 10)
-	if err != nil {
-		t.Fatalf("GetCustomerHealthSummary: %v", err)
-	}
-	if resp.TotalCount != 0 {
-		t.Fatalf("product filter must exclude every account when nothing matches, got %+v", resp)
-	}
-}
-
-// TestPostgresCustomerHealthClient_GetCustomerHealthSummary_FiltersToRealCustomersWithAProject
-// pins the account-list scope against the confirmed, correct rule for this
-// feature: life_cycle = "Customer" and at least one project. Confirmed
-// against real staging data to reproduce the legacy endpoint's exact
-// account count, which the previous "active accounts only" filter
-// (account.deactivation_date IS NULL) came nowhere close to.
-func TestPostgresCustomerHealthClient_GetCustomerHealthSummary_FiltersToRealCustomersWithAProject(t *testing.T) {
-	fake := &fakeEntityCustomerHealthClient{
-		accounts:      entitySearchAccountsResponse{Accounts: []entityAccountView{{ID: "acc-1", Name: "Acme Corp"}}, Total: 1},
-		caseResponses: []entitySearchCasesResponse{{Total: 0}},
-	}
-	c := NewPostgresCustomerHealthClient(fake)
-
-	if _, err := c.GetCustomerHealthSummary(context.Background(), nil, nil, nil, nil, nil, nil, 0, 10); err != nil {
-		t.Fatalf("GetCustomerHealthSummary: %v", err)
-	}
-
-	var req entitySearchAccountsRequest
-	if err := json.Unmarshal(fake.lastAccountsReqRaw, &req); err != nil {
-		t.Fatalf("unmarshal captured request: %v", err)
-	}
-	if req.Filters.LifeCycle != "Customer" {
-		t.Errorf("expected filters.lifeCycle=\"Customer\", got %+v", req.Filters)
-	}
-	if !req.Filters.HasProject {
-		t.Errorf("expected filters.hasProject=true, got %+v", req.Filters)
-	}
-	if req.Filters.Active != nil {
-		t.Errorf("the correct rule has no active/inactive check at all; filters.active must stay unset, got %+v", req.Filters)
 	}
 }
 
