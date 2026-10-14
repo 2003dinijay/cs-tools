@@ -355,8 +355,10 @@ export default function CsmIssuesView({
   if (prevRowsStorageKey !== rowsStorageKey) {
     setPrevRowsStorageKey(rowsStorageKey);
     if (readRowsPerPage(searchParams.get(PER_PAGE_PARAM)) == null) {
-      const stored = loadStoredRowsPerPage(rowsStorageKey);
-      if (stored != null) setRowsPerPage(stored);
+      // No saved size for this identity means the default, not whatever the
+      // previous (often anonymous) identity had on screen. Otherwise the
+      // effect below would store that inherited size under the new key.
+      setRowsPerPage(loadStoredRowsPerPage(rowsStorageKey) ?? DEFAULT_ROWS_PER_PAGE);
     }
   }
   const [sortField, setSortField] = useState<CasesSortField>(
@@ -403,6 +405,18 @@ export default function CsmIssuesView({
   useEffect(() => {
     saveStoredRowsPerPage(rowsStorageKey, rowsPerPage);
   }, [rowsStorageKey, rowsPerPage]);
+
+  // Set during render when the loaded result no longer contains `page`.
+  // The URL write happens in an effect so it is not a navigate during
+  // render, and only for this clamp — a general pagination effect races
+  // filter updates that also call `setSearchParams`.
+  const clampedPageRef = useRef<number | null>(null);
+  useEffect(() => {
+    const clamped = clampedPageRef.current;
+    if (clamped == null) return;
+    clampedPageRef.current = null;
+    writePaginationToUrl(clamped, rowsPerPage);
+  }, [page, rowsPerPage, writePaginationToUrl]);
 
   const { canWrite, canUseSecurityCenter, canUpdateDeleteAnyComment } = usePortalAccess();
   // See visibleCaseTypes's own doc comment: must mirror PermViewSecurityCenter
@@ -660,6 +674,7 @@ export default function CsmIssuesView({
   // setState in effects); React re-renders before committing, so it's not a
   // user-visible extra paint.
   if (data !== undefined && !data.hasMore && page > lastPage) {
+    clampedPageRef.current = lastPage;
     setPage(lastPage);
   }
   const paginationCount = data === undefined || data.hasMore ? -1 : total;
@@ -759,9 +774,11 @@ export default function CsmIssuesView({
       <CasesList
         cases={cases}
         // `isFetching` stays true for a background refetch (manual Refresh,
-        // or the next page arriving). The rows already on screen stay put;
-        // only the first load, when there is nothing to show, uses the skeleton.
+        // a new filter, or the next page arriving). The rows already on
+        // screen stay put and the list draws a progress bar; only the first
+        // load, when there is nothing to show, uses the skeleton.
         isLoading={isLoading && data == null}
+        isFetching={isFetching}
         skeletonCount={rowsPerPage}
         detailBasePath={detailBasePath}
         hideSeverityColumn={isServiceRequestOnly || hideSeverityColumn}

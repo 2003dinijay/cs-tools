@@ -569,6 +569,29 @@ describe("CsmIssuesView pagination (kept across opening a case)", () => {
     expect(page).toBe(0);
     expect(pageSize).toBe(50);
   });
+
+  it("rewrites the URL when the loaded result no longer contains the current page", async () => {
+    useGetCsmCasesMock.mockReturnValue({
+      data: { cases: [], total: 5, hasMore: false },
+      isLoading: false,
+      isFetching: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+      dataUpdatedAt: 0,
+    });
+    const router = createMemoryRouter(
+      [{ path: "/cases", element: <CsmIssuesView title="Cases" /> }],
+      { initialEntries: ["/cases?page=9"] },
+    );
+    render(<RouterProvider router={router} />);
+
+    await waitFor(() => {
+      expect(router.state.location.search).not.toContain("page=");
+    });
+    const [, page] = lastQuery();
+    expect(page).toBe(0);
+  });
 });
 
 describe("CsmIssuesView filter section collapsed state (remembered between visits)", () => {

@@ -331,8 +331,12 @@ export function useGetCsmCases(
     staleTime: 30_000,
     // Opening a case (same tab or a new one) unmounts this list or just
     // blurs it. Coming back must show the same page, not kick off another
-    // search — the header Refresh button is the explicit reload. Cached
-    // pages stay visible while a later page or filter fetch is in flight.
+    // search — the header Refresh button is the explicit reload. The
+    // default cache lifetime is five minutes, which would drop that page
+    // and force a search on the next visit; keep it for the rest of the
+    // browser session instead. Cached pages stay visible while a later
+    // page or filter fetch is in flight.
+    gcTime: Infinity,
     refetchOnMount: false,
     placeholderData: keepPreviousData,
   });
