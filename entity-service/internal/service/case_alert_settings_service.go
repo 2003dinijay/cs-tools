@@ -34,7 +34,7 @@ import (
 
 // CaseAlertSettingsService is the settings section of the Team Schedule's Case
 // Alerts tab: the chat rooms, ServiceNow group routes and other ladder values
-// the paging ladders use (migration 0232), so they can be changed without a
+// the paging ladders use (migration 0233), so they can be changed without a
 // Choreo secret or the file mount. csm-notification-service reads them
 // (Runtime) only when it runs with PAGING_CONFIG_SOURCE set, and only at
 // start-up.

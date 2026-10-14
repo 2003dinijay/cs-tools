@@ -23,7 +23,7 @@ import (
 
 // CaseAlertSettings is the settings section of the Team Schedule's Case Alerts
 // tab: the chat rooms, the ServiceNow group routing and the other ladder
-// settings the paging ladders use (migration 0232), and what the caller may
+// settings the paging ladders use (migration 0233), and what the caller may
 // change.
 //
 // csm-notification-service uses these only when it runs with

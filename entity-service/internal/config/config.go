@@ -549,7 +549,7 @@ type Config struct {
 	AuthAdminRoles []string
 	// CaseAlertsSecretKey is CASE_ALERTS_SECRET_KEY: 32 bytes, base64, the
 	// AES-256-GCM key that seals the Case Alerts chat-room webhook URLs
-	// (migration 0232). One per environment, so a database copied from
+	// (migration 0233). One per environment, so a database copied from
 	// another environment cannot open its URLs. Empty turns saving a URL
 	// off; nothing else depends on it.
 	CaseAlertsSecretKey string

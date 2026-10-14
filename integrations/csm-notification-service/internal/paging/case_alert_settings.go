@@ -29,7 +29,7 @@ import (
 
 // Case Alerts settings are the chat rooms, ServiceNow group routes and other
 // ladder values an admin saves on the Team Schedule's Alert Settings tab
-// (entity-service, migration 0232). They are read only when
+// (entity-service, migration 0233). They are read only when
 // PAGING_CONFIG_SOURCE says so, once at start, and only replace what they
 // name: a room, route or value not saved there keeps the file's and env's.
 // See MergeCaseAlertSettings.

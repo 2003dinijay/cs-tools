@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// The Case Alerts settings SQL (migration 0232) against a live PostgreSQL.
+// The Case Alerts settings SQL (migration 0233) against a live PostgreSQL.
 // Skipped unless ENTITY_TEST_DATABASE_URL is set; see
 // schedule_repo_integration_test.go for how to build the database. It clears
 // every Case Alerts room, route and ladder value first, so point it at a test

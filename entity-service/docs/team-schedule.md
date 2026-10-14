@@ -506,7 +506,7 @@ admins and rota markers are granted and taken back.
   teams held only as marker, so the page offers Generate month, the tags and
   Case Paging only where the reader leads the team or runs its family.
 
-## Case Alerts settings (0232)
+## Case Alerts settings (0233)
 
 The chat rooms, the ServiceNow group routes and the rest of the paging
 ladders' settings can be kept here and changed on the Alert Settings tab, instead
@@ -582,7 +582,7 @@ the key the tab works but no URL can be saved.
 
 ## Change log
 
-- **0232 Case Alerts settings.** New tables `paging_chat_room`,
+- **0233 Case Alerts settings.** New tables `paging_chat_room`,
   `paging_chat_secret`, `paging_group_route`, `paging_ladder_value` and
   `paging_config_revision` (one row), audit triggers on the room, route and
   value tables, and a trigger that moves the revision on any change. Additive: nothing existing is changed or

@@ -29,7 +29,7 @@ import (
 )
 
 // CaseAlertSettingsRepository reads and writes the Case Alerts settings
-// (migration 0232): chat rooms, their sealed webhook URLs, the ServiceNow group
+// (migration 0233): chat rooms, their sealed webhook URLs, the ServiceNow group
 // routes, the other ladder values, and the revision row.
 //
 // Every write names the actor for the audit trigger in the same transaction
