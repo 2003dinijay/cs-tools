@@ -36,6 +36,7 @@ import { useLoader } from "@context/linear-loader/LoaderContext";
 import useGetProjectFilters from "@api/useGetProjectFilters";
 import { useSearchConversations } from "@features/support/api/useSearchConversations";
 import { getLast30DaysUtcRange } from "@features/support/utils/support";
+import { conversationViewPath } from "@features/support/utils/conversationsList";
 import { useCloseConversationFlow } from "@features/support/hooks/useCloseConversationFlow";
 import CloseChatConfirmDialog from "@features/support/components/close-chat/CloseChatConfirmDialog";
 import type {
@@ -207,19 +208,22 @@ export default function AllConversationsPage(): JSX.Element {
   const handleConversationClick = (conv: Conversation) => {
     if (!projectId) return;
 
-    navigate(`/projects/${projectId}/support/conversations/${conv.id}`, {
-      state: {
-        conversationSummary: {
-          chatId: conv.id,
-          chatNumber: conv.number,
-          title: conv.initialMessage || conv.number,
-          startedTime: conv.createdOn,
-          messages: conv.messageCount,
-          kbArticles: 0,
-          status: conv.state?.label ?? "Open",
-          createdBy: conv.createdBy ?? undefined,
-        },
-      },
+    const caseId = conv.case?.id;
+    navigate(conversationViewPath(projectId, conv.id, caseId), {
+      state: caseId
+        ? { returnTo }
+        : {
+            conversationSummary: {
+              chatId: conv.id,
+              chatNumber: conv.number,
+              title: conv.initialMessage || conv.number,
+              startedTime: conv.createdOn,
+              messages: conv.messageCount,
+              kbArticles: 0,
+              status: conv.state?.label ?? "Open",
+              createdBy: conv.createdBy ?? undefined,
+            },
+          },
     });
   };
 

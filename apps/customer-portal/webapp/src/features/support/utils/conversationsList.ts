@@ -65,3 +65,24 @@ export function resolveConversationListRowAction(
       return ConversationListRowAction.View;
   }
 }
+
+/**
+ * Path for View on a conversation. Converted chats carry a linked case;
+ * View should open that case, not the chat-history page.
+ *
+ * @param projectId - Project in the URL.
+ * @param conversationId - Conversation id used when there is no case.
+ * @param caseId - Linked case id when the chat was converted.
+ * @returns {string} In-app path.
+ */
+export function conversationViewPath(
+  projectId: string,
+  conversationId: string,
+  caseId?: string | null,
+): string {
+  const linkedCaseId = caseId?.trim();
+  if (linkedCaseId) {
+    return `/projects/${projectId}/support/cases/${linkedCaseId}`;
+  }
+  return `/projects/${projectId}/support/conversations/${conversationId}`;
+}

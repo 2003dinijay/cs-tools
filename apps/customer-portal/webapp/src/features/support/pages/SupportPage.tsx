@@ -44,6 +44,7 @@ import { isS0Case } from "@features/support/utils/support";
 import { SortOrder } from "@/types/common";
 import { resolveCasesTableDefaultStatusIds } from "@features/dashboard/utils/casesTable";
 import type { ChatHistoryItem } from "@features/support/types/conversations";
+import { conversationViewPath } from "@features/support/utils/conversationsList";
 
 /**
  * SupportPage component to display case details for a project.
@@ -136,6 +137,7 @@ export default function SupportPage(): JSX.Element {
     kbArticles: 0,
     status: c.state?.label ?? "Open",
     createdBy: c.createdBy ?? undefined,
+    caseId: c.case?.id ?? undefined,
   }));
 
   const isActuallyLoading = isAuthLoading || isLoading || (!stats && !isError);
@@ -280,12 +282,18 @@ export default function SupportPage(): JSX.Element {
                         );
                       } else {
                         navigate(
-                          `/projects/${projectId}/support/conversations/${chatId}`,
+                          conversationViewPath(
+                            projectId,
+                            chatId,
+                            summary.caseId,
+                          ),
                           {
-                            state: {
-                              conversationSummary: summary,
-                              returnTo: supportPath,
-                            },
+                            state: summary.caseId
+                              ? { returnTo: supportPath }
+                              : {
+                                  conversationSummary: summary,
+                                  returnTo: supportPath,
+                                },
                           },
                         );
                       }
