@@ -25,6 +25,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/servicenow"
 )
@@ -539,37 +541,11 @@ func (c *postgresCustomerHealthClient) filteredAccounts(ctx context.Context, q c
 		if err := json.Unmarshal(raw, &resp); err != nil {
 			return nil, 0, fmt.Errorf("unmarshal entity-service accounts response: %w", err)
 		}
-		for _, a := range resp.Accounts {
-			if len(wantRegion) > 0 && (a.SubRegion == nil || !wantRegion[*a.SubRegion]) {
-				continue
-			}
-			if wantABTTeam != "" {
-				onTeam := (a.CreTeam != nil && strings.EqualFold(a.CreTeam.Name, wantABTTeam)) ||
-					(a.SreTeam != nil && strings.EqualFold(a.SreTeam.Name, wantABTTeam))
-				if !onTeam {
-					continue
-				}
-			}
-			if wantProduct != "" {
-				hasProduct, err := c.accountHasProduct(ctx, a.ID, wantProduct)
-				if err != nil {
-					return nil, 0, err
-				}
-				if !hasProduct {
-					continue
-				}
-			}
-			if len(q.risks) > 0 {
-				flags, err := c.accountFlags(ctx, a.ID, a.ActivationDate)
-				if err != nil {
-					return nil, 0, err
-				}
-				if !customerHealthAccountMatchesAnyRisk(flags, q.risks) {
-					continue
-				}
-			}
-			matched = append(matched, a)
+		pageMatched, err := c.scanAccountsPage(ctx, resp.Accounts, wantRegion, wantABTTeam, wantProduct, q.risks)
+		if err != nil {
+			return nil, 0, err
 		}
+		matched = append(matched, pageMatched...)
 		if len(resp.Accounts) < accountScanPageLimit || (page+1)*accountScanPageLimit >= resp.Total {
 			break
 		}
@@ -581,6 +557,93 @@ func (c *postgresCustomerHealthClient) filteredAccounts(ctx context.Context, q c
 		end = start
 	}
 	return matched[start:end], total, nil
+}
+
+// customerHealthScanConcurrency bounds how many accounts of one page
+// filteredAccounts/scanAccountsPage evaluates at once when a product/risks
+// filter is active (each candidate needs its own handful of further
+// entity-service calls -- accountHasProduct/accountFlags, below). Found
+// live: combining a region/abtTeam filter with a product or risks filter
+// made the Customer Health dashboard's "more than one filter" case
+// dramatically slower than a single filter alone, because every account
+// surviving the cheap in-memory region/abtTeam check was then evaluated
+// one at a time, each costing anywhere from a handful to over a dozen
+// sequential entity-service round trips (see accountFlags' own doc
+// comment) -- a single page of up to accountScanPageLimit (50) candidates
+// could take tens of seconds done serially. A bounded worker pool per page
+// keeps this fast without opening unboundedly many concurrent connections
+// to entity-service at once (50 concurrent accounts x accountFlags' own
+// internal fan-out would be too aggressive).
+const customerHealthScanConcurrency = 8
+
+// scanAccountsPage evaluates one page of candidate accounts against the
+// region/abtTeam/product/risks filters, returning the ones that match in
+// their original order -- order must be preserved exactly as filteredAccounts
+// received it, since the caller slices the overall matched set for
+// pagination, and a concurrency-dependent ordering would make repeated
+// calls for the same filters return accounts in a different order (or, worse,
+// a different page) from one request to the next.
+func (c *postgresCustomerHealthClient) scanAccountsPage(ctx context.Context, accounts []entityAccountView, wantRegion map[string]bool, wantABTTeam, wantProduct string, risks []string) ([]entityAccountView, error) {
+	include := make([]bool, len(accounts))
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(customerHealthScanConcurrency)
+	for i, a := range accounts {
+		if len(wantRegion) > 0 && (a.SubRegion == nil || !wantRegion[*a.SubRegion]) {
+			continue
+		}
+		if wantABTTeam != "" {
+			onTeam := (a.CreTeam != nil && strings.EqualFold(a.CreTeam.Name, wantABTTeam)) ||
+				(a.SreTeam != nil && strings.EqualFold(a.SreTeam.Name, wantABTTeam))
+			if !onTeam {
+				continue
+			}
+		}
+		// Only the two expensive, entity-service-backed checks
+		// (accountHasProduct/accountFlags) are dispatched to the worker
+		// pool -- the cheap in-memory region/abtTeam checks above already
+		// ran synchronously, so a page with no product/risks filter at all
+		// never starts a single goroutine: an account that's already fully
+		// decided (region/abtTeam-only filtering) is included directly here
+		// instead of handed to the pool just to immediately set the same
+		// bool.
+		if wantProduct == "" && len(risks) == 0 {
+			include[i] = true
+			continue
+		}
+		i, a := i, a
+		g.Go(func() error {
+			if wantProduct != "" {
+				hasProduct, err := c.accountHasProduct(gctx, a.ID, wantProduct)
+				if err != nil {
+					return err
+				}
+				if !hasProduct {
+					return nil
+				}
+			}
+			if len(risks) > 0 {
+				flags, err := c.accountFlags(gctx, a.ID, a.ActivationDate)
+				if err != nil {
+					return err
+				}
+				if !customerHealthAccountMatchesAnyRisk(flags, risks) {
+					return nil
+				}
+			}
+			include[i] = true
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+	matched := make([]entityAccountView, 0, len(accounts))
+	for i, a := range accounts {
+		if include[i] {
+			matched = append(matched, a)
+		}
+	}
+	return matched, nil
 }
 
 // accountHasProduct reports whether any deployed product (active or not)
@@ -762,6 +825,21 @@ func accountGoLiveStatus(projects []entityProjectView, activationDate *string, n
 // the case/escalation-based ones. activationDate is the account's own
 // ActivationDate (entity-service's AccountView.ActivationDate), needed by
 // accountGoLiveStatus -- see that function's own doc comment.
+//
+// Each of the four signal groups below (go-live+EOL, recent cases,
+// migration flags, recent escalations) is independent of the other three,
+// and an earlier version of this function ran them concurrently via
+// errgroup for exactly that reason -- reverted after it made this
+// function's own entity-service call order nondeterministic, which a
+// multi-call test fixture here (customer_health_postgres_test.go's
+// fakeEntityCustomerHealthClient.caseResponses, "consumed in call order")
+// depends on, and genuinely raced on that fake's own unsynchronized
+// counter/slice fields. The real cross-account speedup for the Customer
+// Health dashboard's "more than one filter" slowness lives one level up,
+// in scanAccountsPage's own bounded per-account concurrency -- see that
+// function's own doc comment -- which parallelizes across DIFFERENT
+// accounts (each one's own calls still happen in this same, stable
+// internal order) rather than across one account's own calls.
 func (c *postgresCustomerHealthClient) accountFlags(ctx context.Context, accountID string, activationDate *string) (customerHealthAccountFlags, error) {
 	projects, err := c.accountProjects(ctx, accountID)
 	if err != nil {
@@ -930,6 +1008,10 @@ func (c *postgresCustomerHealthClient) accountHasCasesSince(ctx context.Context,
 // accountMigrationFlags reports whether the account has a still-open
 // MIGRATION-type engagement old enough to count as "abandoned"
 // (customerHealthAbandonedWindow) or merely "delayed" (customerHealthDelayWindow).
+// The two counts are independent caseCount calls (different cutoff only) but
+// run sequentially -- see accountFlags' own doc comment for why this file
+// keeps one account's own calls in a stable order rather than fanning them
+// out concurrently too.
 func (c *postgresCustomerHealthClient) accountMigrationFlags(ctx context.Context, accountID string) (abandoned, delayed bool, err error) {
 	now := time.Now()
 	abandonedCount, err := c.caseCount(ctx, accountID, "engagement", []entityCaseFieldFilter{

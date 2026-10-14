@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -34,6 +35,16 @@ import (
 // single GetCustomerHealthSummary call fans out into several different
 // searches (accounts, projects, deployments, deployed products, cases,
 // escalations).
+//
+// mu guards every field a method call can mutate (caseCallCount, the
+// last*ReqsRaw slices) -- scanAccountsPage's own bounded concurrency
+// (customer_health_postgres.go) means several accounts' worth of calls can
+// now land on this fake at once, same as they would on the real
+// entity-service over HTTP; without this lock `go test -race` catches a
+// genuine data race on the unsynchronized counter/slice writes below. The
+// read-only fixture fields (accounts/projects/deployments/.../caseResponses)
+// are set once by each test before GetCustomerHealthSummary ever runs and
+// never written again, so they need no lock of their own.
 type fakeEntityCustomerHealthClient struct {
 	accounts               entitySearchAccountsResponse
 	projects               entitySearchProjectsResponse
@@ -41,6 +52,7 @@ type fakeEntityCustomerHealthClient struct {
 	deployedProducts       entitySearchDeployedProductsEolResponse
 	caseResponses          []entitySearchCasesResponse // consumed in call order; last one repeats
 	escalations            entitySearchEscalationsResponse
+	mu                     sync.Mutex
 	caseCallCount          int
 	lastAccountsReqRaw     []byte   // last request body SearchAccounts was called with
 	lastCasesReqsRaw       [][]byte // every request body SearchCases was called with, in call order
@@ -61,7 +73,9 @@ func (f *fakeEntityCustomerHealthClient) GetAccount(ctx context.Context, id stri
 }
 
 func (f *fakeEntityCustomerHealthClient) SearchAccounts(ctx context.Context, body []byte) ([]byte, error) {
+	f.mu.Lock()
 	f.lastAccountsReqRaw = body
+	f.mu.Unlock()
 	return json.Marshal(f.accounts)
 }
 
@@ -70,6 +84,8 @@ func (f *fakeEntityCustomerHealthClient) SearchProjects(ctx context.Context, bod
 }
 
 func (f *fakeEntityCustomerHealthClient) SearchCases(ctx context.Context, body []byte) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.lastCasesReqsRaw = append(f.lastCasesReqsRaw, body)
 	idx := f.caseCallCount
 	if idx >= len(f.caseResponses) {
@@ -83,7 +99,9 @@ func (f *fakeEntityCustomerHealthClient) SearchCases(ctx context.Context, body [
 }
 
 func (f *fakeEntityCustomerHealthClient) SearchDeployments(ctx context.Context, body []byte) ([]byte, error) {
+	f.mu.Lock()
 	f.lastDeploymentsReqsRaw = append(f.lastDeploymentsReqsRaw, body)
+	f.mu.Unlock()
 	return json.Marshal(f.deployments)
 }
 
@@ -390,6 +408,63 @@ func TestPostgresCustomerHealthClient_RisksFilter(t *testing.T) {
 	if resp.TotalCount != 1 || len(resp.Data) != 1 || resp.Data[0].AccountSysID != "acc-risk" {
 		t.Fatalf("risks filter did not narrow to the at-risk account: %+v", resp)
 	}
+}
+
+// TestPostgresCustomerHealthClient_RisksFilter_PreservesAccountOrder pins
+// scanAccountsPage's own ordering guarantee: evaluating several accounts'
+// risk flags concurrently (customerHealthScanConcurrency, in
+// customer_health_postgres.go) must never reorder the matched accounts
+// relative to the page entity-service returned them in. scanAccountsPage
+// writes each goroutine's verdict into an index-addressed slice and only
+// reassembles the matched set by walking that slice in original order
+// afterward -- this test interleaves matching and non-matching accounts and
+// runs the search repeatedly so a regression that instead collected results
+// in goroutine-completion order (nondeterministic) would show up as a
+// flaky/incorrect ordering rather than passing by chance.
+func TestPostgresCustomerHealthClient_RisksFilter_PreservesAccountOrder(t *testing.T) {
+	sevenMonthsAgo := time.Now().AddDate(0, -7, 0).Format("2006-01-02")
+	accounts := []entityAccountView{
+		{ID: "acc-1-risk", Name: "Risk Co 1", ActivationDate: &sevenMonthsAgo},
+		{ID: "acc-2-healthy", Name: "Healthy Co 2"},
+		{ID: "acc-3-risk", Name: "Risk Co 3", ActivationDate: &sevenMonthsAgo},
+		{ID: "acc-4-healthy", Name: "Healthy Co 4"},
+		{ID: "acc-5-risk", Name: "Risk Co 5", ActivationDate: &sevenMonthsAgo},
+		{ID: "acc-6-healthy", Name: "Healthy Co 6"},
+		{ID: "acc-7-risk", Name: "Risk Co 7", ActivationDate: &sevenMonthsAgo},
+		{ID: "acc-8-healthy", Name: "Healthy Co 8"},
+	}
+	wantOrder := []string{"acc-1-risk", "acc-3-risk", "acc-5-risk", "acc-7-risk"}
+
+	risks := "hasNoGoLive"
+	for i := 0; i < 20; i++ {
+		fake := &fakeEntityCustomerHealthClient{
+			accounts:      entitySearchAccountsResponse{Accounts: accounts, Total: len(accounts)},
+			projects:      entitySearchProjectsResponse{Projects: []entityProjectView{{ID: "proj-1", Name: "Project"}}, Total: 1},
+			caseResponses: []entitySearchCasesResponse{{Total: 0}},
+		}
+		c := NewPostgresCustomerHealthClient(fake)
+
+		resp, err := c.GetCustomerHealthSummary(context.Background(), nil, nil, &risks, nil, nil, nil, 0, 10)
+		if err != nil {
+			t.Fatalf("iteration %d: GetCustomerHealthSummary: %v", i, err)
+		}
+		if resp.TotalCount != len(wantOrder) || len(resp.Data) != len(wantOrder) {
+			t.Fatalf("iteration %d: expected %d matching accounts, got %+v", i, len(wantOrder), resp)
+		}
+		for j, want := range wantOrder {
+			if resp.Data[j].AccountSysID != want {
+				t.Fatalf("iteration %d: result order = %v, want %v", i, accountSysIDs(resp.Data), wantOrder)
+			}
+		}
+	}
+}
+
+func accountSysIDs(data []servicenow.AccountSummary) []string {
+	ids := make([]string, len(data))
+	for i, d := range data {
+		ids[i] = d.AccountSysID
+	}
+	return ids
 }
 
 // TestPostgresCustomerHealthClient_ABTTeamFilter pins the fix for a real
