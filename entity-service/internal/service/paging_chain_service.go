@@ -184,7 +184,7 @@ func (a pagingAuthority) canSetHeads(family string) bool {
 }
 
 func (s *pagingChainService) GetPagingChain(ctx context.Context, family string) (domain.PagingChainResponse, error) {
-	if err := RequireInternalCaller(ctx, s.access, "the paging chain is only available to internal staff"); err != nil {
+	if err := RequireInternalCaller(ctx, s.access, "the alert chain is only available to internal staff"); err != nil {
 		return domain.PagingChainResponse{}, err
 	}
 	family = strings.ToUpper(strings.TrimSpace(family))
@@ -251,12 +251,12 @@ func (s *pagingChainService) GetPagingChain(ctx context.Context, family string) 
 }
 
 func (s *pagingChainService) UpdatePagingMember(ctx context.Context, req domain.UpdatePagingMemberRequest) (domain.PagingChainMember, error) {
-	if err := RequireInternalCaller(ctx, s.access, "the paging chain is only available to internal staff"); err != nil {
+	if err := RequireInternalCaller(ctx, s.access, "the alert chain is only available to internal staff"); err != nil {
 		return domain.PagingChainMember{}, err
 	}
 	email := auth.IdentityFromContext(ctx).UserEmail
 	if email == "" {
-		return domain.PagingChainMember{}, &apierror.ForbiddenError{Msg: "changing the paging chain needs a user token, not a service credential"}
+		return domain.PagingChainMember{}, &apierror.ForbiddenError{Msg: "changing the alert chain needs a user token, not a service credential"}
 	}
 	if err := validateUUIDs("membershipId", []string{req.MembershipID}); err != nil {
 		return domain.PagingChainMember{}, err
@@ -286,7 +286,7 @@ func (s *pagingChainService) UpdatePagingMember(ctx context.Context, req domain.
 		hasHead: target.TeamHasHead || target.Role == memberRoleAmerica,
 	}
 	if team.family != familyCRE {
-		return domain.PagingChainMember{}, &apierror.ForbiddenError{Msg: "the SRE paging chain comes from the rota and is not changed here"}
+		return domain.PagingChainMember{}, &apierror.ForbiddenError{Msg: "the SRE alert chain comes from the rota and is not changed here"}
 	}
 
 	if req.ResponderRank != nil {

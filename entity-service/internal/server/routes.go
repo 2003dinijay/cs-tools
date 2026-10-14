@@ -301,6 +301,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	var rotaAccessHandler *handler.RotaAccessHandler
 	var teamMemberHandler *handler.TeamMemberHandler
 	var pagingChainHandler *handler.PagingChainHandler
+	var caseAlertSettingsHandler *handler.CaseAlertSettingsHandler
 
 	// Customer-health risk tracking (migration 0219) has no upstream
 	// equivalent either -- it replaces a standalone MySQL database
@@ -1383,6 +1384,20 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 			service.NewPagingChainService(repository.NewPagingChainRepository(db), repository.NewPagingContactRepository(db),
 				accessSvc, handoffConfig, eventPublisher),
 		)
+		// Case Alerts settings: the chat rooms and ServiceNow group routes the
+		// paging ladders use, changed on the Alert Settings tab instead of a
+		// Choreo secret. csm-notification-service reads them only when it runs
+		// with PAGING_CONFIG_SOURCE set.
+		caseAlertSettingsHandler = handler.NewCaseAlertSettingsHandler(
+			service.NewCaseAlertSettingsService(repository.NewCaseAlertSettingsRepository(db), repository.NewPagingChainRepository(db), accessSvc,
+				service.CaseAlertSettingsConfig{
+					AdminRoles:       cfg.AuthAdminRoles,
+					SecretKey:        cfg.CaseAlertsSecretKey,
+					SecretKeyID:      cfg.CaseAlertsSecretKeyID,
+					RuntimeClientIDs: cfg.CaseAlertsRuntimeClientIDs,
+					Environment:      cfg.CaseAlertsEnvironment,
+				}),
+		)
 	}
 	// One GitHub client per credential the products name, independent of the
 	// change-request sync. A credential with no token is logged, not fatal:
@@ -1770,6 +1785,23 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("DELETE /team-schedule/paging-contacts/{userId}", pagingChainHandler.DeletePagingPhone)
 		mux.HandleFunc("POST /team-schedule/paging-contacts/{userId}/test", pagingChainHandler.RequestTestCall)
 		mux.HandleFunc("PUT /team-schedule/paging-contacts/{userId}/test-result", pagingChainHandler.RecordTestResult)
+	}
+	if caseAlertSettingsHandler != nil {
+		// Case Alerts settings: chat rooms, group routes and the other ladder
+		// values. A room's webhook URL is write-only; the runtime read, with
+		// the URLs opened, and the applied report are for
+		// csm-notification-service's client only.
+		mux.HandleFunc("GET /team-schedule/case-alerts/settings", caseAlertSettingsHandler.GetSettings)
+		mux.HandleFunc("PUT /team-schedule/case-alerts/settings/rooms", caseAlertSettingsHandler.SaveRoom)
+		mux.HandleFunc("PUT /team-schedule/case-alerts/settings/rooms/{roomId}/webhook", caseAlertSettingsHandler.SetWebhook)
+		mux.HandleFunc("DELETE /team-schedule/case-alerts/settings/rooms/{roomId}", caseAlertSettingsHandler.DeleteRoom)
+		mux.HandleFunc("POST /team-schedule/case-alerts/settings/rooms/{roomId}/test", caseAlertSettingsHandler.SendTestCard)
+		mux.HandleFunc("PUT /team-schedule/case-alerts/settings/routes", caseAlertSettingsHandler.SaveRoute)
+		mux.HandleFunc("DELETE /team-schedule/case-alerts/settings/routes/{routeId}", caseAlertSettingsHandler.DeleteRoute)
+		mux.HandleFunc("PUT /team-schedule/case-alerts/settings/values", caseAlertSettingsHandler.SaveValues)
+		mux.HandleFunc("DELETE /team-schedule/case-alerts/settings/values/{valueId}", caseAlertSettingsHandler.DeleteValue)
+		mux.HandleFunc("GET /team-schedule/case-alerts/settings/runtime", caseAlertSettingsHandler.GetRuntime)
+		mux.HandleFunc("PUT /team-schedule/case-alerts/settings/applied", caseAlertSettingsHandler.RecordApplied)
 	}
 	if scheduleHandler != nil {
 
