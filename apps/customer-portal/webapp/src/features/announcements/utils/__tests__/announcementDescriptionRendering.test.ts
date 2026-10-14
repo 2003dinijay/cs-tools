@@ -14,10 +14,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import DOMPurify from "dompurify";
 import { describe, expect, it } from "vitest";
-import { normalizeAnnouncementDescriptionHtml } from "@features/announcements/utils/announcements";
-import { INLINE_COMMENT_HTML_PURIFY } from "@features/support/utils/support";
+import {
+  normalizeAnnouncementDescriptionHtml,
+  sanitizeAnnouncementHtml,
+} from "@features/announcements/utils/announcements";
 
 /**
  * The announcement description the CSM portal stores for a bulletin: a styled
@@ -38,7 +39,7 @@ const BULLETIN_HTML = `<p>Kindly refer to the <strong>Security Advisories</stron
 
 /** What AnnouncementDetailsPanel does to the description before putting it on the page. */
 function renderedDescription(html: string): string {
-  return DOMPurify.sanitize(normalizeAnnouncementDescriptionHtml(html), INLINE_COMMENT_HTML_PURIFY);
+  return sanitizeAnnouncementHtml(normalizeAnnouncementDescriptionHtml(html));
 }
 
 describe("announcement description rendering keeps a styled bulletin intact", () => {
@@ -76,5 +77,75 @@ describe("announcement description rendering keeps a styled bulletin intact", ()
     expect(hostile).not.toMatch(/<script/i);
     expect(hostile).not.toMatch(/onclick|onerror/i);
     expect(hostile).toContain("padding");
+  });
+});
+
+describe("announcement links the author set to open in a new tab", () => {
+  const anchors = (html: string): HTMLAnchorElement[] => [
+    ...new DOMParser().parseFromString(html, "text/html").querySelectorAll("a"),
+  ];
+
+  it("keep target=_blank and always get rel=noopener noreferrer", () => {
+    const [policy] = anchors(renderedDescription(BULLETIN_HTML));
+    expect(policy.getAttribute("target")).toBe("_blank");
+    expect(policy.getAttribute("rel")).toBe("noopener noreferrer");
+  });
+
+  it("get rel even when the source had none, or a weaker one", () => {
+    const [a, b] = anchors(
+      renderedDescription(
+        '<a href="https://x.test/a" target="_blank">a</a><a href="https://x.test/b" target="_blank" rel="opener">b</a>',
+      ),
+    );
+    expect(a.getAttribute("rel")).toBe("noopener noreferrer");
+    expect(b.getAttribute("rel")).toBe("noopener noreferrer");
+  });
+
+  it("accept the keyword in any case", () => {
+    const [a] = anchors(renderedDescription('<a href="https://x.test" target="_BLANK">a</a>'));
+    expect(a.getAttribute("target")).toBe("_blank");
+    expect(a.getAttribute("rel")).toBe("noopener noreferrer");
+  });
+
+  it("leave a link without a target alone", () => {
+    const [a] = anchors(renderedDescription('<a href="https://x.test">a</a>'));
+    expect(a.hasAttribute("target")).toBe(false);
+  });
+
+  it("drop any other target (_top, _parent, a frame name)", () => {
+    const links = anchors(
+      renderedDescription(
+        '<a href="https://x.test/1" target="_top">1</a><a href="https://x.test/2" target="_parent">2</a><a href="https://x.test/3" target="somewhere">3</a>',
+      ),
+    );
+    expect(links).toHaveLength(3);
+    for (const link of links) expect(link.hasAttribute("target")).toBe(false);
+  });
+
+  it("still remove an unsafe href while keeping the visible text", () => {
+    const html = renderedDescription('<a href="javascript:alert(1)" target="_blank">click</a>');
+    expect(html).not.toContain("javascript:");
+    expect(html).toContain("click");
+  });
+
+  it("leave HTML with no link target exactly as the default sanitizer returns it", async () => {
+    const { default: DOMPurify } = await import("dompurify");
+    for (const html of [
+      "plain text & more",
+      "a < b and c > d",
+      "",
+      "<p>Hi &amp; bye</p>",
+      '<a href="https://x.test">no target</a>',
+      '<div style="padding:15px;border-radius:12px"><span>x</span></div><script>alert(1)</script>',
+      "<table><tbody><tr><td>13</td></tr></tbody></table>",
+      '<p>the word target in text, <a href="https://x.test">link</a></p>',
+    ]) {
+      expect(sanitizeAnnouncementHtml(html)).toBe(DOMPurify.sanitize(html));
+    }
+  });
+
+  it("do not change how the default sanitizer treats target elsewhere", async () => {
+    const { default: DOMPurify } = await import("dompurify");
+    expect(DOMPurify.sanitize('<a href="https://x.test" target="_blank">a</a>')).not.toContain("target=");
   });
 });

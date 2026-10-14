@@ -88,6 +88,30 @@ describe("AnnouncementDetailsPanel", () => {
     expect(table).toHaveTextContent("4.2.0");
   });
 
+  it("opens a link the author set to target=_blank in a new tab, safely", () => {
+    const { container } = render(
+      <AnnouncementDetailsPanel
+        data={{
+          title: "Advisory",
+          number: "ANN-102",
+          description:
+            '<p><a href="https://example.test/a.pdf" target="_blank" rel="noopener noreferrer">Download here</a> <a href="https://example.test/b">Other</a></p>',
+          status: { id: "1", label: "Open" },
+          createdOn: "2024-01-15T10:00:00Z",
+        } as never}
+        isLoading={false}
+        isError={false}
+        caseId="case-1"
+        projectId="proj-1"
+        onBack={() => {}}
+      />,
+    );
+    const download = container.querySelector('a[href="https://example.test/a.pdf"]');
+    expect(download?.getAttribute("target")).toBe("_blank");
+    expect(download?.getAttribute("rel")).toBe("noopener noreferrer");
+    expect(container.querySelector('a[href="https://example.test/b"]')?.hasAttribute("target")).toBe(false);
+  });
+
   it("shows a Security chip when announcementType is SECURITY", () => {
     render(
       <AnnouncementDetailsPanel

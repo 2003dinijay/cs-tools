@@ -24,9 +24,7 @@ import {
   Typography,
   useTheme,
 } from "@wso2/oxygen-ui";
-import DOMPurify from "dompurify";
 import { ArrowLeft, Calendar, FileText } from "@wso2/oxygen-ui-icons-react";
-import { INLINE_COMMENT_HTML_PURIFY } from "@features/support/utils/support";
 import type { JSX } from "react";
 import CaseDetailsActionRow from "@features/support/components/case-details/header/CaseDetailsActionRow";
 import {
@@ -46,6 +44,7 @@ import {
   formatAnnouncementDateDisplay,
   isAnnouncementDescriptionEffectivelyEmpty,
   normalizeAnnouncementDescriptionHtml,
+  sanitizeAnnouncementHtml,
 } from "@features/announcements/utils/announcements";
 import { useDarkMode } from "@utils/useDarkMode";
 
@@ -317,7 +316,7 @@ export default function AnnouncementDetailsPanel({
                   // things like an EOL product-version table. Use the same
                   // permissive (default-policy) sanitizer this feature's own
                   // AnnouncementActivityPanel already uses for comments.
-                  __html: DOMPurify.sanitize(normalizedHtml, INLINE_COMMENT_HTML_PURIFY),
+                  __html: sanitizeAnnouncementHtml(normalizedHtml),
                 }}
               />
             );
