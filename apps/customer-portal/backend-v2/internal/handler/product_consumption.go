@@ -31,9 +31,9 @@ import (
 
 // licenseProvisioningWriteDeadline extends the response write deadline for
 // GetDeploymentLicense beyond the server's global WriteTimeout (see
-// cmd/server/main.go) — ProcessLicenseDownload can make up to 5 sequential
-// upstream requests, which can plausibly exceed the global timeout under
-// normal network latency even though no single step is slow.
+// cmd/server/main.go) — ProcessLicenseDownload delegates to the upstream
+// product-consumption microservice, which performs application provisioning,
+// credential generation, and HMAC license signing.
 const licenseProvisioningWriteDeadline = 2 * time.Minute
 
 // productConsumptionClient abstracts the upstream product-consumption
