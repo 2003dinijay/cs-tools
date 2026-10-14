@@ -179,7 +179,7 @@ func buildEscalationReply(a EscalationAlert) chatCardMessage {
 		CardsV2: []chatCardWrapper{{
 			CardID: "incident-escalation-rung",
 			Card: chatCard{
-				Header:   &chatCardHeader{Title: rungVerb(a.Rung) + " " + a.Rung, Subtitle: a.IncidentRef},
+				Header:   &chatCardHeader{Title: rungVerb(a.Rung) + " " + a.Rung, Subtitle: "#" + a.IncidentRef},
 				Sections: []chatCardSection{{Widgets: []chatCardWidget{{TextParagraph: &chatTextParagraph{Text: strings.Join(lines, "<br>")}}}}},
 			},
 		}},
