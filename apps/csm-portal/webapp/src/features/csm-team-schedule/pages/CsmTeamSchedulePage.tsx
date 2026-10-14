@@ -69,6 +69,7 @@ import { resolveDisplayTimeZone } from "@utils/dateTime";
 import { TeamColourProvider } from "../utils/teamColour";
 import {
   addDays,
+  familiesRun,
   isRotationShift,
   kindsOfferedOn,
   moveKindFor,
@@ -433,8 +434,12 @@ export default function CsmTeamSchedulePage(): JSX.Element {
    *   a manager     yes, everywhere. They belong to neither group, and who is
    *                 covering -- today, across the week, across the month -- is
    *                 their question for CRE and SRE alike.
+   *   runs several  yes, everywhere: somebody who runs teams in more than one
+   *                 group (a rota admin of CRE and SRE, say) plans each of
+   *                 those rotas, so the roster has to reach them all.
    */
-  const crossesGroups = isManager || view === "today" || (view === "week" && weekFromPaging);
+  const runsSeveralGroups = familiesRun(catalogue.data?.teams ?? [], fullTeams).length > 1;
+  const crossesGroups = isManager || runsSeveralGroups || view === "today" || (view === "week" && weekFromPaging);
 
   /** The group on screen: the reader's own, unless Today (or a manager) has
    *  picked the other. CRE only as a last resort, for a manager who belongs
