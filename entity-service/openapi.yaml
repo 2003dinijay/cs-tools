@@ -23084,6 +23084,42 @@ components:
           items: { $ref: '#/components/schemas/CaseAlertLadderValue' }
         running:
           $ref: '#/components/schemas/CaseAlertRunning'
+        routeOptions:
+          $ref: '#/components/schemas/CaseAlertRouteOptions'
+    CaseAlertRouteOptions:
+      type: object
+      required: [groups, teams, rotas]
+      description: >
+        What a group route can be made of, so the tab offers lists instead of
+        free text: the CSM Portal teams a route can be for (a route matches the
+        assignment group by its name), the Team Schedule teams it can send the
+        alert to, and the active SRE rotas. Absent for somebody who may see
+        nothing.
+      properties:
+        groups:
+          type: array
+          items: { $ref: '#/components/schemas/CaseAlertTeamOption' }
+        teams:
+          type: array
+          items: { $ref: '#/components/schemas/CaseAlertTeamOption' }
+        rotas:
+          type: array
+          items: { $ref: '#/components/schemas/CaseAlertRotaOption' }
+    CaseAlertTeamOption:
+      type: object
+      required: [key, name, family]
+      description: A team by key, name and family.
+      properties:
+        key: { type: string, example: apollo }
+        name: { type: string, example: Apollo }
+        family: { type: string, enum: [CRE, SRE, SME] }
+    CaseAlertRotaOption:
+      type: object
+      required: [code, label]
+      description: An active SRE rota.
+      properties:
+        code: { type: string, example: SRE_SAAS }
+        label: { type: string, example: "SaaS · Apollo & Artemis" }
     CaseAlertLadderValue:
       type: object
       required: [id, ladder, key, value, updatedBy, updatedOn]
@@ -23102,6 +23138,7 @@ components:
         values:
           type: object
           additionalProperties: true
+          minProperties: 1
           maxProperties: 50
           example: { "teams.abts": ["atlas", "vega"], "timing.interval": "5m" }
           description: >

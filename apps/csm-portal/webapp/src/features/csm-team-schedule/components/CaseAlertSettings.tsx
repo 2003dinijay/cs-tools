@@ -1115,7 +1115,11 @@ function RouteTable({
   const add = (e: FormEvent) => {
     e.preventDefault();
     onError(null);
-    const [kind, value] = target.split(":");
+    // Split at the first colon only: what follows is the key or code whole.
+    const at = target.indexOf(":");
+    if (at < 0) return;
+    const kind = target.slice(0, at);
+    const value = target.slice(at + 1);
     saveRoute.mutate(
       {
         ladder,
