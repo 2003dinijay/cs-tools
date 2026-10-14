@@ -18,8 +18,11 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -173,16 +176,47 @@ func (r *rotaGenerateRepository) ReplaceGeneratedMonth(ctx context.Context, w Ro
 	out.Replaced = int(tag.RowsAffected())
 
 	if len(w.LieuNotes) > 0 {
-		if _, err := tx.Exec(ctx, `
+		rows, err := tx.Query(ctx, `
 			DELETE FROM team_schedule_absence ab
 			 USING team_schedule_absence_kind k
 			 WHERE k.id = ab.kind_id
 			   AND k.code = 'LIEU_LEAVE'
 			   AND ab.created_by = $3
 			   AND ab.team_key = ANY($1::text[])
-			   AND ab.note = ANY($2::text[])`,
-			w.TeamKeys, w.LieuNotes, w.Owner); err != nil {
+			   AND ab.note = ANY($2::text[])
+			RETURNING ab.user_id::text, ab.starts_on, ab.ends_on`,
+			w.TeamKeys, w.LieuNotes, w.Owner)
+		if err != nil {
 			return out, fmt.Errorf("remove generated lieu leave: %w", err)
+		}
+		type gap struct {
+			user     string
+			from, to time.Time
+		}
+		var gaps []gap
+		for rows.Next() {
+			var g gap
+			var to *time.Time
+			if err := rows.Scan(&g.user, &g.from, &to); err != nil {
+				rows.Close()
+				return out, fmt.Errorf("scan removed lieu leave: %w", err)
+			}
+			g.to = g.from
+			if to != nil {
+				g.to = *to
+			}
+			gaps = append(gaps, g)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return out, fmt.Errorf("remove generated lieu leave: %w", err)
+		}
+		// Lieu leave inside a move (the Night cover) had cut the move in two;
+		// with the lieu gone, the move is whole again.
+		for _, g := range gaps {
+			if err := mendMoveAround(ctx, tx, g.user, g.from.Format(time.DateOnly), g.to.Format(time.DateOnly), w.ActorEmail); err != nil {
+				return out, err
+			}
 		}
 	}
 
@@ -226,6 +260,14 @@ func (r *rotaGenerateRepository) ReplaceGeneratedMonth(ctx context.Context, w Ro
 		for i, l := range w.Lieu {
 			users[i], teams[i], froms[i], tos[i], notes[i] = l.UserID, l.TeamKey, l.From, l.To, l.Note
 		}
+		// Lieu leave earned on the Night cover falls inside the move that put
+		// the person there: the move steps aside for those days, as it does
+		// for leave a lead marks. Any other time away is left as it is.
+		for i := range w.Lieu {
+			if err := cutMoveFor(ctx, tx, users[i], froms[i], tos[i], w.ActorEmail); err != nil {
+				return out, err
+			}
+		}
 		// A day the person is already away is left as it is: the no-overlap
 		// exclusion turns that span into a skip, never an error.
 		tag, err := tx.Exec(ctx, `
@@ -243,6 +285,17 @@ func (r *rotaGenerateRepository) ReplaceGeneratedMonth(ctx context.Context, w Ro
 			return out, fmt.Errorf("insert generated lieu leave: %w", err)
 		}
 		out.LieuWritten = int(tag.RowsAffected())
+		for i := range w.Lieu {
+			if err := syncMoveShifts(ctx, tx, users[i], froms[i], tos[i], w.ActorEmail); err != nil {
+				return out, err
+			}
+		}
+	}
+
+	// The generator files a night under the team its person is on; this
+	// keeps that true for anything it read before a move changed.
+	if err := fileTurnsWhereTheyAre(ctx, tx, nil, w.From, w.To, w.ActorEmail); err != nil {
+		return out, err
 	}
 
 	if w.Month != "" {
@@ -342,4 +395,109 @@ func (r *rotaGenerateRepository) GeneratedRows(ctx context.Context, owner string
 		out.Absences[id] = true
 	}
 	return out, rows.Err()
+}
+
+// cutMoveFor makes room for [from, to] in a person's moves to another team
+// (the Night cover): a move straddling it is split around it, one overlapping
+// an end is shortened, and one inside it is removed -- what ApplyAbsence does
+// to a span a lead marks leave over. Only moves: leave and other allocations
+// are never cut for generated lieu leave.
+func cutMoveFor(ctx context.Context, tx pgx.Tx, userID, from, to, actorEmail string) error {
+	rows, err := tx.Query(ctx, `
+		SELECT ab.id::text, ab.starts_on < $2::date, ab.ends_on IS NULL OR ab.ends_on > $3::date, ab.ends_on
+		  FROM team_schedule_absence ab
+		  JOIN team_schedule_absence_kind k ON k.id = ab.kind_id
+		 WHERE ab.user_id = $1::uuid AND k.moves_to_team_key IS NOT NULL
+		   AND daterange(ab.starts_on, ab.ends_on, '[]') && daterange($2::date, $3::date, '[]')`,
+		userID, from, to)
+	if err != nil {
+		return fmt.Errorf("read moves under lieu leave: %w", err)
+	}
+	type hit struct {
+		id                      string
+		startsBefore, endsAfter bool
+		endsOn                  *time.Time
+	}
+	var hits []hit
+	for rows.Next() {
+		var h hit
+		if err := rows.Scan(&h.id, &h.startsBefore, &h.endsAfter, &h.endsOn); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan move under lieu leave: %w", err)
+		}
+		hits = append(hits, h)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read moves under lieu leave: %w", err)
+	}
+	for _, h := range hits {
+		var err error
+		switch {
+		case h.startsBefore:
+			_, err = tx.Exec(ctx, `UPDATE team_schedule_absence
+				SET ends_on = $2::date - 1, updated_on = now(), updated_by = $3 WHERE id = $1::uuid`,
+				h.id, from, actorEmail)
+		case h.endsAfter:
+			_, err = tx.Exec(ctx, `UPDATE team_schedule_absence
+				SET starts_on = $2::date + 1, updated_on = now(), updated_by = $3 WHERE id = $1::uuid`,
+				h.id, to, actorEmail)
+		default:
+			_, err = tx.Exec(ctx, `DELETE FROM team_schedule_absence WHERE id = $1::uuid`, h.id)
+		}
+		if err != nil {
+			return fmt.Errorf("make room in a move for lieu leave: %w", err)
+		}
+		if h.startsBefore && h.endsAfter {
+			// The part after the lieu leave, as a copy of the move.
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO team_schedule_absence
+				  (id, created_on, updated_on, created_by, updated_by, user_id, team_key,
+				   kind_id, starts_on, ends_on, note, allocated_to, home_team_key)
+				SELECT gen_random_uuid(), now(), now(), $3, $3, ab.user_id, ab.team_key,
+				       ab.kind_id, $2::date + 1, $4::date, ab.note, ab.allocated_to, ab.home_team_key
+				  FROM team_schedule_absence ab WHERE ab.id = $1::uuid`,
+				h.id, to, actorEmail, h.endsOn); err != nil {
+				return fmt.Errorf("split a move for lieu leave: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+// mendMoveAround joins the two halves of a move that [from, to] -- lieu leave
+// just removed -- had split: the same tag, team and home team, one ending the
+// day before and the other starting the day after. A move that only touches
+// one side is left as it is: nothing says it once covered the gap.
+func mendMoveAround(ctx context.Context, tx pgx.Tx, userID, from, to, actorEmail string) error {
+	var head, tail string
+	var tailEnds *time.Time
+	err := tx.QueryRow(ctx, `
+		SELECT h.id::text, t.id::text, t.ends_on
+		  FROM team_schedule_absence h
+		  JOIN team_schedule_absence t
+		    ON t.user_id = h.user_id AND t.kind_id = h.kind_id
+		   AND lower(t.team_key) = lower(h.team_key)
+		   AND t.home_team_key IS NOT DISTINCT FROM h.home_team_key
+		  JOIN team_schedule_absence_kind k ON k.id = h.kind_id
+		 WHERE h.user_id = $1::uuid AND k.moves_to_team_key IS NOT NULL
+		   AND h.ends_on = $2::date - 1 AND t.starts_on = $3::date + 1
+		 LIMIT 1`, userID, from, to).Scan(&head, &tail, &tailEnds)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("find move to mend after lieu leave: %w", err)
+	}
+	// The tail goes before the head grows over its dates: the two cannot both
+	// stand under the no-overlap exclusion.
+	if _, err := tx.Exec(ctx, `DELETE FROM team_schedule_absence WHERE id = $1::uuid`, tail); err != nil {
+		return fmt.Errorf("mend move after lieu leave: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE team_schedule_absence SET ends_on = $2, updated_on = now(), updated_by = $3 WHERE id = $1::uuid`,
+		head, tailEnds, actorEmail); err != nil {
+		return fmt.Errorf("mend move after lieu leave: %w", err)
+	}
+	return syncMoveShifts(ctx, tx, userID, from, to, actorEmail)
 }

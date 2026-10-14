@@ -120,6 +120,18 @@ function isoPlusDays(iso: string, n: number): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
+/** The last day of n calendar months from an ISO day: 1 Nov plus 3 months
+ *  runs to 31 Jan. A day the later month does not have (31 Jan plus one
+ *  month) runs to that month's end. */
+function isoPlusMonths(iso: string, n: number): string {
+  const d = new Date(`${iso}T00:00:00`);
+  const day = d.getDate();
+  const end = new Date(d.getFullYear(), d.getMonth() + n, day);
+  if (end.getDate() !== day) end.setDate(0);
+  end.setDate(end.getDate() - 1);
+  return `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, "0")}-${String(end.getDate()).padStart(2, "0")}`;
+}
+
 /** "12 Mar" -- short enough to sit beside a chip in the picker's header. */
 function shortDate(iso: string): string {
   return new Date(`${iso}T00:00:00`).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
@@ -718,6 +730,25 @@ export default function CellPicker({
               <span className="pkr-n">
                 {span} day{span === 1 ? "" : "s"}
               </span>
+              {/* A move to another team runs for months -- the SaaS Night cover
+                  is three to six -- which is a lot of clicking in a date field. */}
+              {moves.length > 0 || windowMoves.length > 0 ? (
+                <span className="pkr-len">
+                  {[3, 6].map((n) => (
+                    <button
+                      key={n}
+                      type="button"
+                      onClick={() => {
+                        const end = isoPlusMonths(firstDay, n);
+                        if (endField.current) endField.current.value = end;
+                        setUntil(end);
+                      }}
+                    >
+                      {n} months
+                    </button>
+                  ))}
+                </span>
+              ) : null}
               {/* The fields draw dates in the browser's own format (10/20/2026
                   on a US-English browser), which reads either way round; the
                   span is spelled out the way the rest of the page writes dates. */}

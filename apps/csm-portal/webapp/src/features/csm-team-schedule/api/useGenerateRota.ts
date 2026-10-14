@@ -16,13 +16,7 @@
  * under the License.
  */
 
-import {
-  useMutation,
-  useQuery,
-  useQueryClient,
-  type UseMutationResult,
-  type UseQueryResult,
-} from "@tanstack/react-query";
+import { useMutation, useQueryClient, type UseMutationResult } from "@tanstack/react-query";
 import { useBackendApi } from "@api/backend/client";
 
 /** The one rota that can be generated. */
@@ -35,9 +29,6 @@ export interface GenerateRotaPayload {
   regenerate?: boolean;
   /** YYYY-MM-DD, the first day written. */
   from?: string;
-  /** Team key -> the people chosen to work that team's TZ3 for the month.
-   *  A team left out keeps the usual nights. */
-  nightCrew?: Record<string, string[]>;
 }
 
 export interface GeneratedRotaTurn {
@@ -86,51 +77,8 @@ export function useGenerateRota(): UseMutationResult<GenerateRotaResult, Error, 
       if (result.dryRun) return;
       // The written month, and its lieu leave, are on the roster now.
       void qc.invalidateQueries({ queryKey: ["team-schedule", "assignments"] });
+      // Lieu leave inside a SaaS Night cover move cuts the move: absences too.
       void qc.invalidateQueries({ queryKey: ["team-schedule", "absences"] });
-      // And the month's TZ3 people, which the generation recorded.
-      void qc.invalidateQueries({ queryKey: NIGHT_CREW_KEY });
     },
-  });
-}
-
-/** One person chosen for a month's TZ3 night crew, under the team chosen for. */
-export interface NightCrewMember {
-  userId: string;
-  teamKey: string;
-}
-
-/** The TZ3 people each month was generated with; a month with nobody chosen
- *  has an empty crew. */
-export interface RotaNightCrew {
-  rotaCode: string;
-  months: { month: string; crew: NightCrewMember[] }[];
-}
-
-const NIGHT_CREW_KEY = ["team-schedule", "night-crew"] as const;
-
-/**
- * The TZ3 people each month fromMonth..toMonth (YYYY-MM) of the SaaS rota was
- * generated with -- who the Month roster lists under the night cover instead
- * of under their team. Recorded by a real "Generate month" run. Resolves to
- * null when the server has no such endpoint (an entity service from before
- * it answers 404): the roster then reads the night cover from the turns.
- */
-export function useRotaNightCrew(
-  fromMonth: string,
-  toMonth: string,
-  enabled = true,
-): UseQueryResult<RotaNightCrew | null, Error> {
-  const api = useBackendApi();
-  return useQuery<RotaNightCrew | null, Error>({
-    queryKey: [...NIGHT_CREW_KEY, fromMonth, toMonth],
-    // A GET that 404s resolves to null: kept as null (not "nobody chosen"),
-    // so the roster knows the server cannot say.
-    queryFn: () =>
-      api.get<RotaNightCrew>(
-        `/team-schedule/rotas/${GENERATED_ROTA}/night-crew?from=${encodeURIComponent(fromMonth)}&to=${encodeURIComponent(toMonth)}`,
-      ),
-    enabled: enabled && /^\d{4}-\d{2}$/.test(fromMonth) && /^\d{4}-\d{2}$/.test(toMonth),
-    staleTime: 60_000,
-    retry: false,
   });
 }

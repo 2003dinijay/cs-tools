@@ -29,7 +29,7 @@ import type {
   ScheduleTier,
   RotaFamily,
 } from "../types";
-import { addDays, initialsOf, isRotationShift, mondayOf, toIsoDate, zoneAbbreviation, zoneColumnOf, zoneLabelOn, type RosterSpan } from "../utils/rota";
+import { addDays, initialsOf, isRotationShift, mondayOf, toIsoDate, zoneColumnOf, zoneLabelOn, type RosterSpan } from "../utils/rota";
 import { useTeamColour, useTeamName } from "../utils/teamColourContext";
 
 export type { RosterSpan };
@@ -56,11 +56,6 @@ interface MonthRosterProps {
   absences: ScheduleAbsence[];
   shifts: Map<string, ScheduleShift>;
   absenceKinds: ScheduleAbsenceKind[];
-  /** The TZ3 people the months in view were generated with: listed under the
-   *  Night cover, with every day of theirs, instead of under their team.
-   *  Absent when the server cannot say (it is then read from the turns: whoever
-   *  works only TZ3 nights in view). */
-  nightCrew?: readonly { userId: string; teamKey: string }[];
   /** Counts presses of Today. The day alone cannot express "take me back
    *  there" once the reader has scrolled away without changing it, so the
    *  press is what the grid listens to. */
@@ -156,8 +151,6 @@ interface MonthRosterProps {
 }
 
 
-/** The night cover group's own colour: it is no one team's. */
-const NIGHT_COLOUR = "#8a63d2";
 
 interface Cell {
   code: string;
@@ -178,10 +171,6 @@ interface Cell {
   absence?: CellAbsence;
   /** Drawn, not stored: what an unmarked weekday means for the row's team. */
   isDefault?: boolean;
-  /** A tier on a window that is one crew for every team (SaaS TZ3). A TZ3
-   *  person's turns are drawn on their row in the Night cover group; anyone
-   *  else's stay on their own team's row. */
-  onNightCover?: boolean;
   /** An on-call window. Two windows can share a short code ("6-9am" and
    *  "6-9am on-call"), so the chip is drawn dashed -- the grid's mark for
    *  on-call, as on L3 -- rather than relying on a tooltip to tell them apart. */
@@ -189,6 +178,11 @@ interface Cell {
   /** A move to another team drawn as that team's hours (Americas cover on
    *  the Brazil rotation): it reads, and is explained, as those hours. */
   asHours?: boolean;
+  /** A day of a move onto a team that is worked as that team's own rota with
+   *  no hours of its own (the SaaS Night cover), on that team's row: being on
+   *  the row says it all, so it draws as an empty day -- and still opens the
+   *  move, so it can be ended or removed. */
+  quiet?: boolean;
 }
 
 /** What a weekday nobody has marked is: an ordinary working day.
@@ -225,7 +219,6 @@ export default function MonthRoster({
   absences,
   shifts,
   absenceKinds,
-  nightCrew,
   selectedIso,
   focusRequest,
   family,
@@ -440,7 +433,6 @@ export default function MonthRoster({
         isRotation,
         shiftCode: a.shiftCode,
         tier: a.tier,
-        onNightCover: Boolean(a.tier && shift?.sharedAcrossTeams),
         onCall: Boolean(shift?.isOnCall && isRotation && !a.tier),
       };
 
@@ -555,6 +547,33 @@ export default function MonthRoster({
             });
             continue;
           }
+          // A move onto a team of the same rota (the SaaS Night cover) has no
+          // hours of its own: on that team's row a day is just a day of theirs
+          // there, and a turn that day is what it shows.
+          if (
+            kind?.worksRotaThere &&
+            !kind.showsAsShiftCode &&
+            kind.movesToTeamKey?.toLowerCase() === row.teamKey.toLowerCase()
+          ) {
+            if (holdsTurn(row, iso)) continue;
+            row.days.set(iso, {
+              absenceKindCode: ab.kindCode,
+              absence: {
+                id: ab.id,
+                kindCode: ab.kindCode,
+                startsOn: ab.startsOn,
+                endsOn: ab.endsOn,
+                allocatedTo: ab.allocatedTo,
+                homeTeamKey: ab.homeTeamKey,
+              },
+              code: "",
+              token: "",
+              title: kind.label,
+              isRotation: false,
+              quiet: true,
+            });
+            continue;
+          }
           const target =
             kind?.bucket === "ALLOCATION" && holdsTurn(row, iso) ? row.allocs : row.days;
           if (kind?.bucket === "LEAVE" && iso >= ab.startsOn && !row.clash.has(iso)) {
@@ -626,93 +645,11 @@ export default function MonthRoster({
       );
   }, [absences, assignments, days, kindByCode, shifts, teams, teamKey, teamMembers]);
 
-  /** The night cover: the zones whose tiers are one crew for the whole rota
-   *  (the catalogue's sharedAcrossTeams -- SaaS TZ3), drawn as a group of its
-   *  own after the teams, the way the Americas team sits after the ABTs. A
-   *  row per person holding one of its tiers in view, in their own team's
-   *  colour; their own team's row keeps only a mark on those nights. Built
-   *  from the grid, so a team picked in the filter shows that team's part of
-   *  the crew, and the rows edit exactly as the person's own row does. */
-  const nightCover = useMemo(() => {
-    const zones = new Set<string>();
-    const zoneCols = new Set<string>();
-    let hours = "";
-    for (const sh of shifts.values()) {
-      if (sh.family !== family || !sh.sharedAcrossTeams || !sh.zoneCode) continue;
-      zones.add(zoneLabelOn(shifts, zoneColumnOf(sh.zoneCode), false));
-      zoneCols.add(zoneColumnOf(sh.zoneCode));
-      const hhmm = (m: number) => `${String(Math.floor(m / 60) % 24).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
-      hours ||= `${hhmm(sh.startMinute)}–${hhmm(sh.endMinute)} ${zoneAbbreviation(sh.authoringTimeZone)}`;
-    }
-    const crew: {
-      row: (typeof grid)[number];
-      turns: Map<string, { cell: Cell; zone: string }>;
-      /** On the night crew for every date in view: nothing in any other zone
-       *  and no other turn, the way the chosen TZ3 people are rostered. They
-       *  are listed here only, off their team's rows, until a month puts them
-       *  back on a team zone. Always true for a row in the group. */
-      offTeam: boolean;
-    }[] = [];
-    const holders = new Map<string, string[]>(); // `${iso}|${tier}` -> names
-    const chosen = nightCrew
-      ? new Set(nightCrew.map((c) => `${c.userId}|${c.teamKey.toLowerCase()}`))
-      : undefined;
-    for (const row of grid) {
-      const turns = new Map<string, { cell: Cell; zone: string }>();
-      for (const [key, cell] of row.zoned) {
-        if (!cell.onNightCover) continue;
-        const [iso, zone] = key.split("|");
-        turns.set(iso, { cell, zone });
-        const k = `${iso}|${cell.tier}`;
-        holders.set(k, [...(holders.get(k) ?? []), `${row.name} (${teamNameOf(row.teamKey)})`]);
-      }
-      // Only the TZ3 people are in the group: the ones the months in view were
-      // generated with, when the server says; else whoever works only nights
-      // in view. Anyone else holding a night keeps it on their own team's
-      // row, so nobody is listed twice.
-      const offTeam = chosen
-        ? chosen.has(`${row.userId}|${row.teamKey.toLowerCase()}`)
-        : turns.size > 0 &&
-          [...row.zoned.keys()].every((k) => zoneCols.has(k.split("|")[1])) &&
-          [...row.days.values()].every((c) => !c.isRotation);
-      if (offTeam) crew.push({ row, turns, offTeam });
-    }
-    const offTeamKeys = new Set(crew.map(({ row }) => `${row.userId}|${row.teamKey}`));
-    /** The teams whose people hold the shared nights in view: the night cover
-     *  is drawn after the last of them. */
-    const teamsOnNights = new Set([
-      ...grid.filter((row) => [...row.zoned.values()].some((c) => c.onNightCover)).map((row) => row.teamKey),
-      ...crew.map(({ row }) => row.teamKey),
-    ]);
-    return { zones: [...zones], zoneColumns: [...zoneCols], hours, crew, holders, offTeamKeys, teamsOnNights };
-  }, [shifts, family, grid, teamNameOf, nightCrew]);
-
   const q = query.trim().toLowerCase();
-  // Shown when anyone in view is on the TZ3 crew; with nobody chosen, every
-  // night is on its holder's own team row.
-  const showNight = split && nightCover.zones.length > 0 && nightCover.crew.length > 0;
-  // The night crew's own people are not on their team's rows: the Night cover
-  // group is their one row.
-  const teamGrid = showNight ? grid.filter((r) => !nightCover.offTeamKeys.has(`${r.userId}|${r.teamKey}`)) : grid;
-  const rows = q
-    ? teamGrid.filter((r) => r.name.toLowerCase().includes(q) || r.teamKey.toLowerCase().includes(q))
-    : teamGrid;
-  // The night cover sits after the teams whose people hold its nights (SaaS),
-  // and before the rest (IaaS), which keep their place at the end.
-  const lastNightTeam = showNight
-    ? rows.reduce((last, r, i) => (nightCover.teamsOnNights.has(r.teamKey) ? i : last), -1)
-    : rows.length - 1;
-  const rowsBeforeNight = rows.slice(0, lastNightTeam + 1);
-  const rowsAfterNight = rows.slice(lastNightTeam + 1);
-  const nightRows = q
-    ? nightCover.crew.filter(
-        ({ row }) => row.name.toLowerCase().includes(q) || row.teamKey.toLowerCase().includes(q) || "night cover".startsWith(q),
-      )
-    : nightCover.crew;
-  // The teams the crew is drawn from, as the rows show them -- not every team
-  // on the rota family, which can hold teams that are not on this night.
-  const crewTeams = [...new Set(nightCover.crew.map(({ row }) => row.teamKey))];
-  const nightName = `Night cover · ${nightCover.zones.join(", ")}`;
+  // The SaaS Night cover is a team like any other -- people a lead moved
+  // onto it sit under it for the move's months -- so it needs no group of its
+  // own here.
+  const rows = q ? grid.filter((r) => r.name.toLowerCase().includes(q) || r.teamKey.toLowerCase().includes(q)) : grid;
 
   const todayIso = toIsoDate(new Date());
 
@@ -812,6 +749,7 @@ export default function MonthRoster({
       if (!out.has(it.key)) out.set(it.key, it);
     };
     const fromCell = (c: Cell): void => {
+      if (c.quiet) return;
       const kind = c.absenceKindCode ? kindByCode.get(c.absenceKindCode) : undefined;
       // A move drawn as the other team's hours reads as those hours.
       if (kind && !c.asHours) {
@@ -903,9 +841,12 @@ export default function MonthRoster({
 
   /** A chip as the grid draws it: dashed when the window is on-call, and
    *  marked when it is only what an unmarked weekday means. */
-  const chipOf = (c: Cell, extra = ""): JSX.Element => (
-    <span className={`chip sm ${c.token}${c.isDefault ? " dflt" : ""}${c.onCall ? " oc" : ""}${extra}`}>{c.code}</span>
-  );
+  const chipOf = (c: Cell, extra = ""): JSX.Element =>
+    c.quiet ? (
+      <span className="none">·</span>
+    ) : (
+      <span className={`chip sm ${c.token}${c.isDefault ? " dflt" : ""}${c.onCall ? " oc" : ""}${extra}`}>{c.code}</span>
+    );
   /** Said on a day that is leave but still holds a turn. */
   const clashNote = (turns: Cell[] | undefined): string =>
     turns && turns.length > 0
@@ -1261,7 +1202,7 @@ export default function MonthRoster({
         <RotaPicker rotas={rotas} rotaCode={rotaCode} onRotaChange={onRotaChange} />
 
         <h2>
-          Roster <span className="count">{rows.length + (showNight ? nightRows.length : 0)}</span>
+          Roster <span className="count">{rows.length}</span>
         </h2>
 
         <div className="tools">
@@ -1403,129 +1344,11 @@ export default function MonthRoster({
               </tr>
             ) : null}
           </thead>
-          <tbody>
-            {teamRowsOf(rowsBeforeNight)}
-          </tbody>
-          {showNight ? (
-            // The night cover, after the teams: one crew for all of them, so
-            // a group of its own rather than a sub-column on each team's rows.
-            <tbody className="nightgrp" aria-label={`${nightName}: one crew for every team`}>
-              <tr className="nghead">
-                <th className="lab">
-                  <span className="ngt">{nightName}</span>
-                  {nightCover.hours ? <small>{nightCover.hours}</small> : null}
-                </th>
-                <td colSpan={days.reduce((n, d) => n + zonesOn(d.getDay() === 0 || d.getDay() === 6).length, 0)}>
-                  The TZ3 people, one crew for {crewTeams.length > 1 ? crewTeams.map(teamNameOf).join(" and ") : "every team"},
-                  every night: L1 is called first, then L2; L3 oversees the night. They are listed here instead of
-                  under their team.
-                  {teamKey ? ` Only ${teamNameOf(teamKey)}'s people are shown; choose All teams for the whole crew.` : ""}
-                  {nightRows.length === 0 ? " Nobody holds a night in these dates." : ""}
-                </td>
-              </tr>
-              {nightRows.map(({ row, turns, offTeam }, i) => {
-                const isMe = Boolean(me) && row.email.trim().toLowerCase() === me;
-                return (
-                  <tr
-                    key={`night|${row.userId}|${row.teamKey}`}
-                    // A TZ3 person's only row: "scroll to my row" finds them here.
-                    ref={isMe ? meRow : undefined}
-                    className={`tinted ngrow${isMe ? " me" : ""}${i % 2 === 1 ? " alt" : ""}`}
-                    style={{ "--rc": NIGHT_COLOUR } as CSSProperties}
-                    aria-current={isMe ? "true" : undefined}
-                  >
-                    <th className="lab">
-                      <span className="nm">
-                        <span className="av" style={{ background: teamColourOf(row.teamKey) }}>
-                          {initialsOf(row.name)}
-                        </span>
-                        <span className="who">{row.name}</span>
-                        {isMe ? <i className="youtag">You</i> : null}
-                        <span className="team">{teamNameOf(row.teamKey)}</span>
-                      </span>
-                    </th>
-                    {days.map((d) => {
-                      const iso = toIsoDate(d);
-                      const weekend = d.getDay() === 0 || d.getDay() === 6;
-                      const held = turns.get(iso);
-                      const marks = `${weekend ? "wknd" : ""} ${iso === todayIso ? "today" : ""} ${
-                        iso === selectedIso ? "sel" : ""
-                      } ${d.getDay() === 1 ? "wkstart" : ""}${opensMonth(d) ? " mstart" : ""}${weekMarks(iso)}`;
-                      // Off their team's rows, this is their only row: leave
-                      // and anything else about the whole day shows here too.
-                      const whole = offTeam ? (row.days.get(iso) ?? row.allocs.get(iso)) : undefined;
-                      if (whole) {
-                        const editable = canEdit(row, iso);
-                        return (
-                          <td
-                            key={iso}
-                            colSpan={zonesOn(weekend).length}
-                            className={`c zwhole ng ${marks}${editable ? " editable" : ""}`}
-                            title={`${row.name} · ${whole.title}${editable ? " — click to change" : ""}`}
-                            onClick={editable ? (e) => openCell(e, row, iso, whole) : undefined}
-                          >
-                            <span className={`chip sm ${whole.token}`}>{whole.code}</span>
-                          </td>
-                        );
-                      }
-                      const others = held ? (nightCover.holders.get(`${iso}|${held.cell.tier}`) ?? []) : [];
-                      const what = held
-                        ? others.length > 1
-                          ? `${held.cell.code} with ${others.length - 1} more (${others.join(", ")}); one is expected`
-                          : held.cell.code
-                        : "not on the night";
-                      // Split by zone like every other row, so the night
-                      // turn lands in its own zone's sub-column; the other
-                      // zones are the teams' and stay empty here.
-                      const zones = zonesOn(weekend);
-                      return zones.map((z, i) => {
-                        const night = nightCover.zoneColumns.includes(z);
-                        const mine = held && held.zone === z ? held : undefined;
-                        // This is their only row: every zone's cell of theirs shows here --
-                        // their nights' regular hours, and any day a team zone was kept.
-                        const regular = offTeam && !mine ? row.zoned.get(`${iso}|${z}`) : undefined;
-                        const editable = (night || offTeam) && canEdit(row, iso);
-                        return (
-                          <td
-                            key={`${iso}|${z}`}
-                            className={`c z ng ${i === 0 ? "zfirst" : ""}${i === zones.length - 1 ? " zlast" : ""} ${zoneMarks(
-                              marks,
-                              i,
-                              zones.length,
-                            )}${editable ? " editable" : ""}${mine && others.length > 1 ? " ngtwo" : ""}`}
-                            title={
-                              night || regular
-                                ? `${row.name} · ${z} · ${night ? what : regular?.title}${editable ? " — click to change" : ""}`
-                                : undefined
-                            }
-                            onClick={
-                              editable ? (e) => openCell(e, row, iso, mine?.cell ?? regular, zoneCodeFor?.(row.teamKey, z) ?? z) : undefined
-                            }
-                          >
-                            {mine ? (
-                              <span className={`chip sm ${mine.cell.token}`}>{mine.cell.code}</span>
-                            ) : regular ? (
-                              <span className={`chip sm ${regular.token}`}>{regular.code}</span>
-                            ) : (
-                              <span className="zempty" />
-                            )}
-                          </td>
-                        );
-                      });
-                    })}
-                  </tr>
-                );
-              })}
-            </tbody>
-          ) : null}
-          {rowsAfterNight.length > 0 ? (
-            // Teams that hold no night of the shared crew -- IaaS -- after it.
-            <tbody className="afternight">{teamRowsOf(rowsAfterNight)}</tbody>
-          ) : null}
+          <tbody>{teamRowsOf(rows)}</tbody>
         </table>
       </div>
 
-      {rows.length === 0 && (!showNight || nightRows.length === 0) ? (
+      {rows.length === 0 ? (
         <div className="offnone">
           {q ? (
             <>No engineer matches “{query}”.</>

@@ -57,6 +57,9 @@ type ScheduleRepository interface {
 	// span filed under teamKey by a kind that moves people to it, and their
 	// home team if so.
 	MovedToTeamOver(ctx context.Context, userID, teamKey, from, to string) (homeTeamKey string, ok bool, err error)
+	// TeamsShareRota reports whether two teams work the same rota: both of a
+	// type a rota is run for (Apollo and the SaaS Night cover, both SaaS).
+	TeamsShareRota(ctx context.Context, a, b string) (bool, error)
 
 	// The three writes. Each records its own activity row inside the same
 	// transaction as the change -- an activity row without its change, or a
@@ -226,6 +229,21 @@ const (
 	notManagement = `NOT EXISTS (SELECT 1 FROM team_member mgr
 		WHERE mgr.user_id = %s AND mgr.role IN ('americas_team_lead', 'cre_head', 'cs_head'))`
 	teamDisplayOrder = `(lower(t.type) LIKE '%abt') DESC, t.name`
+
+	// movedWithinRota is whether absence ab, of kind k, moved its person onto
+	// the team assignment a is filed under, or onto another team of the same
+	// rota. Either way the span is not time away for a: somebody on the
+	// Brazil rotation works the Americas team's shifts, and somebody on the
+	// SaaS Night cover is still on the SaaS rota, whichever of its teams a
+	// turn of theirs is filed under. The second matters on the edges of a
+	// span: a TZ3 night starts the day before the move does and runs into it.
+	movedWithinRota = `(k.moves_to_team_key IS NOT NULL
+		AND (lower(k.moves_to_team_key) = lower(a.team_key)
+		     OR EXISTS (SELECT 1 FROM team mt
+		                  JOIN team ta ON lower(ta.key) = lower(a.team_key)
+		                  JOIN team_schedule_rota mr ON lower(mr.team_type) = lower(mt.type) AND mr.is_active
+		                 WHERE lower(mt.key) = lower(k.moves_to_team_key)
+		                   AND lower(ta.type) = lower(mt.type))))`
 )
 
 // Catalogue returns the zones, windows and absence kinds in one read. The UI
@@ -514,11 +532,10 @@ func (r *scheduleRepository) onDutyRows(ctx context.Context, at time.Time, exist
 		        WHERE ab.user_id = a.user_id
 		          AND daterange(ab.starts_on, ab.ends_on, '[]')
 		              @> ($1::timestamptz AT TIME ZONE s.authoring_time_zone)::date
-		          -- Away from every team but the one the span moved them to:
-		          -- someone on the Brazil rotation is working the Americas
-		          -- rota, and is on duty for its shifts.
-		          AND NOT (k.moves_to_team_key IS NOT NULL
-		                   AND lower(k.moves_to_team_key) = lower(a.team_key))
+		          -- Away from every team but the one the span moved them to,
+		          -- and that team's rota: someone on the Brazil rotation is
+		          -- working the Americas rota, and is on duty for its shifts.
+		          AND NOT `+movedWithinRota+`
 		      )
 		ORDER BY a.tier NULLS LAST, s.sort_order, u.name`, at)
 	if err != nil {
@@ -747,7 +764,16 @@ func tierHolderConflict(ctx context.Context, tx pgx.Tx,
 // one. A day already holding an overlapping shift is left alone -- ON CONFLICT
 // DO NOTHING covers the no-overlap exclusion -- and shifts a lead placed by
 // hand are never touched: only source MOVE is.
+//
+// A move between two teams of one rota (the SaaS Night cover) is a move: the
+// person is on that team for those days and nowhere else. What they held on
+// their own team over the move goes (clearHomeTeamOver), and what is left of
+// theirs on those days is filed under the team they are on
+// (fileTurnsWhereTheyAre) -- so nobody is listed on two teams at once.
 func syncMoveShifts(ctx context.Context, tx pgx.Tx, userID, from, to, actorEmail string) error {
+	if err := clearHomeTeamOver(ctx, tx, userID, from, to, actorEmail); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(ctx, `
 		DELETE FROM team_schedule_assignment a
 		 WHERE a.user_id = $1::uuid
@@ -793,6 +819,129 @@ func syncMoveShifts(ctx context.Context, tx pgx.Tx, userID, from, to, actorEmail
 		userID, from, to, actorEmail); err != nil {
 		return fmt.Errorf("write move shifts: %w", err)
 	}
+	return fileTurnsWhereTheyAre(ctx, tx, &userID, from, to, actorEmail)
+}
+
+// movedWithinRotaOn is whether a span of person a.user_id covering
+// a.rota_date moves them onto a team of the same rota as team ht (the SaaS
+// Night cover for an Apollo engineer): worked there, between two teams of one
+// type that a rota is run for. Brazil rotation and Migration moves are
+// between teams of different types, or of a type with no rota, and are not.
+const movedWithinRotaOn = `EXISTS (
+	SELECT 1 FROM team_schedule_absence ab
+	  JOIN team_schedule_absence_kind k ON k.id = ab.kind_id
+	  JOIN team mt ON lower(mt.key) = lower(k.moves_to_team_key)
+	 WHERE ab.user_id = a.user_id
+	   AND k.works_rota_there
+	   AND lower(ab.team_key) = lower(k.moves_to_team_key)
+	   AND daterange(ab.starts_on, ab.ends_on, '[]') @> a.rota_date
+	   AND lower(mt.type) = lower(ht.type)
+	   AND lower(mt.key) <> lower(ht.key)
+	   AND EXISTS (SELECT 1 FROM team_schedule_rota ro WHERE lower(ro.team_type) = lower(mt.type) AND ro.is_active))`
+
+// clearHomeTeamOver removes what a person holds on their own team on days a
+// move puts them on another team of the same rota (the SaaS Night cover):
+// day turns and regular hours, whoever set them, each recorded in the history
+// as a lead's change would be. Their nights on a window the whole rota shares
+// (TZ3) are not removed -- they go with them (fileTurnsWhereTheyAre). Over
+// [from, to], for one person.
+func clearHomeTeamOver(ctx context.Context, tx pgx.Tx, userID, from, to, actorEmail string) error {
+	rows, err := tx.Query(ctx, `SELECT `+assignmentColumns+assignmentFrom+`
+		  JOIN team ht ON lower(ht.key) = lower(a.team_key)
+		 WHERE a.user_id = $1::uuid
+		   AND a.rota_date BETWEEN LEAST($2::date, $3::date) AND GREATEST($2::date, $3::date)
+		   AND NOT s.shared_across_teams
+		   AND a.source <> 'MOVE'
+		   AND `+movedWithinRotaOn, userID, from, to)
+	if err != nil {
+		return fmt.Errorf("read what a move replaces: %w", err)
+	}
+	gone, err := scanAssignments(rows)
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	if len(gone) == 0 {
+		return nil
+	}
+	note := "moved to another team for these days"
+	ids := make([]string, 0, len(gone))
+	for _, a := range gone {
+		if err := recordActivity(ctx, tx, a, "DELETED", actorEmail, nil, nil, nil, &note); err != nil {
+			return err
+		}
+		ids = append(ids, a.ID)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM team_schedule_assignment WHERE id = ANY($1::uuid[])`, ids); err != nil {
+		return fmt.Errorf("remove what a move replaces: %w", err)
+	}
+	return nil
+}
+
+// fileTurnsWhereTheyAre files a person's rows under the team they are on
+// that day: the team a span moved them to, when it is one of the same rota
+// (the SaaS Night cover), and their own team otherwise. Their TZ3 nights go
+// with them that way, and a turn set from their own team's row on a day of
+// the move lands on the Night cover's -- so the roster draws, and clears,
+// everything of theirs on the one row they are on, and no view lists them on
+// two teams. When the move is cut short, what is left on the days it no
+// longer covers comes back to their own team.
+//
+// Over [from, to], for one person, or for everybody when userID is nil (a
+// generated month). MOVE rows are never refiled: they belong to their span.
+func fileTurnsWhereTheyAre(ctx context.Context, tx pgx.Tx, userID *string, from, to, actorEmail string) error {
+	if _, err := tx.Exec(ctx, `
+		UPDATE team_schedule_assignment a
+		   SET team_key = mt.key, team_id = mt.id, updated_on = now(), updated_by = $4
+		  FROM team_schedule_absence ab, team_schedule_absence_kind k, team mt, team ht
+		 WHERE ($1::uuid IS NULL OR a.user_id = $1::uuid)
+		   AND a.rota_date BETWEEN LEAST($2::date, $3::date) AND GREATEST($2::date, $3::date)
+		   AND a.source <> 'MOVE'
+		   AND ab.user_id = a.user_id AND k.id = ab.kind_id
+		   AND k.works_rota_there AND k.moves_to_team_key IS NOT NULL
+		   AND lower(ab.team_key) = lower(k.moves_to_team_key)
+		   AND daterange(ab.starts_on, ab.ends_on, '[]') @> a.rota_date
+		   AND lower(mt.key) = lower(k.moves_to_team_key)
+		   AND lower(ht.key) = lower(a.team_key)
+		   AND lower(ht.type) = lower(mt.type)
+		   AND lower(a.team_key) <> lower(mt.key)
+		   AND EXISTS (SELECT 1 FROM team_schedule_rota ro WHERE lower(ro.team_type) = lower(mt.type) AND ro.is_active)`,
+		userID, from, to, actorEmail); err != nil {
+		return fmt.Errorf("file turns under the team moved to: %w", err)
+	}
+	// Back home: a row filed under a team people are moved to (the Night
+	// cover) that the person is no member of, with no span moving them there
+	// that day, goes to the team of the same rota they are a member of.
+	if _, err := tx.Exec(ctx, `
+		UPDATE team_schedule_assignment a
+		   SET (team_key, team_id) = (
+		         SELECT t.key, t.id
+		           FROM team_member m
+		           JOIN team t  ON t.id = m.team_id
+		           JOIN team ht ON lower(ht.key) = lower(a.team_key)
+		          WHERE m.user_id = a.user_id AND lower(t.type) = lower(ht.type)
+		          ORDER BY t.key LIMIT 1),
+		       updated_on = now(), updated_by = $4
+		  FROM team ft
+		 WHERE ($1::uuid IS NULL OR a.user_id = $1::uuid)
+		   AND a.rota_date BETWEEN LEAST($2::date, $3::date) AND GREATEST($2::date, $3::date)
+		   AND a.source <> 'MOVE'
+		   AND lower(ft.key) = lower(a.team_key)
+		   AND EXISTS (SELECT 1 FROM team_schedule_absence_kind mk
+		                WHERE lower(mk.moves_to_team_key) = lower(ft.key) AND mk.works_rota_there)
+		   AND EXISTS (SELECT 1 FROM team_schedule_rota ro WHERE lower(ro.team_type) = lower(ft.type) AND ro.is_active)
+		   AND EXISTS (SELECT 1 FROM team_member m JOIN team t ON t.id = m.team_id
+		                WHERE m.user_id = a.user_id AND lower(t.type) = lower(ft.type))
+		   AND NOT EXISTS (SELECT 1 FROM team_member m WHERE m.user_id = a.user_id AND m.team_id = ft.id)
+		   AND NOT EXISTS (
+		         SELECT 1 FROM team_schedule_absence ab
+		           JOIN team_schedule_absence_kind k ON k.id = ab.kind_id
+		          WHERE ab.user_id = a.user_id
+		            AND lower(k.moves_to_team_key) = lower(a.team_key)
+		            AND daterange(ab.starts_on, ab.ends_on, '[]') @> a.rota_date)`,
+		userID, from, to, actorEmail); err != nil {
+		return fmt.Errorf("file turns back home: %w", err)
+	}
 	return nil
 }
 
@@ -820,6 +969,20 @@ func (r *scheduleRepository) MovedToTeamOver(ctx context.Context, userID, teamKe
 		return "", false, fmt.Errorf("check moved to team: %w", err)
 	}
 	return stringOrEmpty(home), true, nil
+}
+
+// TeamsShareRota implements ScheduleRepository.
+func (r *scheduleRepository) TeamsShareRota(ctx context.Context, a, b string) (bool, error) {
+	var ok bool
+	if err := r.db.QueryRow(ctx, `
+		SELECT EXISTS (
+		  SELECT 1 FROM team ta
+		    JOIN team tb ON lower(tb.type) = lower(ta.type)
+		    JOIN team_schedule_rota ro ON lower(ro.team_type) = lower(ta.type) AND ro.is_active
+		   WHERE lower(ta.key) = lower($1) AND lower(tb.key) = lower($2))`, a, b).Scan(&ok); err != nil {
+		return false, fmt.Errorf("check teams share a rota: %w", err)
+	}
+	return ok, nil
 }
 
 // recordActivity writes one row of history. Always called on the same tx as the
@@ -1456,8 +1619,17 @@ func (r *scheduleRepository) ApplyRange(ctx context.Context, req domain.ApplySch
 		// the new window's own instants are resolved here the same way the
 		// insert below resolves them, so "overlaps" means what the no-overlap
 		// constraint will mean a moment later.
+		// The person's own rows on this team -- or on another team of the
+		// same rota (the SaaS Night cover), where a move files them: they are
+		// still this person's day to change, from either row.
 		rows, err := tx.Query(ctx, `SELECT `+assignmentColumns+assignmentFrom+`
-			WHERE a.user_id = $1::uuid AND a.rota_date = $2::date AND lower(a.team_key) = lower($3)
+			WHERE a.user_id = $1::uuid AND a.rota_date = $2::date
+			  AND (lower(a.team_key) = lower($3)
+			       OR EXISTS (
+			             SELECT 1 FROM team ft JOIN team rt ON lower(rt.type) = lower(ft.type)
+			              WHERE lower(ft.key) = lower(a.team_key) AND lower(rt.key) = lower($3)
+			                AND EXISTS (SELECT 1 FROM team_schedule_rota ro
+			                             WHERE lower(ro.team_type) = lower(ft.type) AND ro.is_active)))
 			  AND (   $4::text = 'day'
 			       OR ($4 = 'zone' AND a.zone_id = $5::uuid AND a.is_rotation)
 			       OR ($4 = 'standing' AND NOT a.is_rotation)
@@ -1530,6 +1702,11 @@ func (r *scheduleRepository) ApplyRange(ctx context.Context, req domain.ApplySch
 		out.Applied++
 	}
 
+	// A turn set from the person's own team's row on a day a move has them on
+	// the Night cover is the Night cover's.
+	if err := fileTurnsWhereTheyAre(ctx, tx, &req.UserID, from.Format("2006-01-02"), to.Format("2006-01-02"), actorEmail); err != nil {
+		return out, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return out, fmt.Errorf("commit apply range: %w", err)
 	}
@@ -1783,10 +1960,10 @@ func (r *scheduleRepository) AbsenceByID(ctx context.Context, id string) (domain
 	var starts time.Time
 	var ends *time.Time
 	err := r.db.QueryRow(ctx, `
-		SELECT a.id::text, a.user_id::text, a.team_key, k.code, a.starts_on, a.ends_on
+		SELECT a.id::text, a.user_id::text, a.team_key, k.code, a.starts_on, a.ends_on, a.home_team_key
 		  FROM team_schedule_absence a
 		  JOIN team_schedule_absence_kind k ON k.id = a.kind_id
-		 WHERE a.id = $1::uuid`, id).Scan(&a.ID, &a.Engineer.UserID, &a.TeamKey, &a.KindCode, &starts, &ends)
+		 WHERE a.id = $1::uuid`, id).Scan(&a.ID, &a.Engineer.UserID, &a.TeamKey, &a.KindCode, &starts, &ends, &a.HomeTeamKey)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return a, &apierror.NotFoundError{Msg: "no such absence"}
 	}

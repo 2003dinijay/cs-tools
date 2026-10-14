@@ -2600,48 +2600,6 @@
   .csm-ts .ra-tbl thead th:nth-child(2) { display: none; }
 }
 
-/* The night cover group (SaaS TZ3): after the teams, the way the Americas
-   team sits after the ABTs -- one crew for every team, so a group of its own.
-   A heading row says what it is; then a row per person on it, avatar in their
-   own team's colour, the row washed in the group's purple (--rc). On their
-   own team's row a night they hold is only a small moon, so it is not drawn
-   twice. Two holders on one tier -- data from before TZ3 was one crew -- is
-   outlined rather than silently shown. */
-.csm-ts .tw.roster tbody.nightgrp tr.nghead > th.lab,
-.csm-ts .tw.roster tbody.nightgrp tr.nghead > td {
-  border-top: 2px solid color-mix(in srgb, #8a63d2 55%, var(--line-2));
-  background: color-mix(in srgb, #8a63d2 12%, var(--surface));
-  vertical-align: middle;
-}
-.csm-ts .tw.roster tbody.nightgrp tr.nghead > th.lab {
-  box-shadow: inset 3px 0 0 #8a63d2, 1px 0 0 var(--line-2);
-}
-.csm-ts .tw.roster tbody.nightgrp .ngt {
-  display: block;
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--ink);
-  white-space: nowrap;
-}
-.csm-ts .tw.roster tbody.nightgrp tr.nghead small {
-  display: block;
-  font-size: 10.5px;
-  color: var(--muted);
-}
-.csm-ts .tw.roster tbody.nightgrp tr.nghead > td {
-  text-align: left;
-  padding: 6px 12px;
-  font-size: 11.5px;
-  color: var(--muted);
-  white-space: nowrap;
-}
-.csm-ts .tw.roster tbody.nightgrp td.ng {
-  text-align: center;
-}
-.csm-ts .tw.roster tbody.nightgrp td.ngtwo {
-  box-shadow: inset 0 0 0 2px var(--warn);
-}
-
 /* The team after a name on the night cover card, where one crew mixes teams. */
 .csm-ts .lnm .tag.team-t {
   height: 15px;
@@ -2948,6 +2906,26 @@
   font-size: 11.5px;
   font-weight: 600;
   color: var(--ink-2);
+}
+
+/* "3 months" / "6 months" beside the dates, for a move that runs for months. */
+.csm-ts .pk-range .pkr-len {
+  display: flex;
+  gap: 4px;
+}
+.csm-ts .pk-range .pkr-len button {
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--surface);
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  padding: 2px 7px;
+  cursor: pointer;
+}
+.csm-ts .pk-range .pkr-len button:hover {
+  border-color: var(--accent);
 }
 
 /* "Saved · Undo" after a roster edit: bottom centre, above the grid, out of

@@ -26,7 +26,7 @@ const getMock = vi.fn();
 vi.mock("@api/backend/client", () => ({ useBackendApi: () => ({ post: postMock, get: getMock }) }));
 vi.mock("@config/apiConfig", () => ({ apiConfig: { backendUrl: "https://example.test" } }));
 
-import GenerateRotaDialog, { type GenerateRotaTeam } from "./GenerateRotaDialog";
+import GenerateRotaDialog, { type GenerateRotaTeam, type NightCoverSpan } from "./GenerateRotaDialog";
 import { monthKey } from "../utils/rotaMonth";
 import type { GenerateRotaResult } from "../api/useGenerateRota";
 
@@ -48,23 +48,24 @@ function result(over: Partial<GenerateRotaResult> = {}): GenerateRotaResult {
 }
 
 const TEAMS: GenerateRotaTeam[] = [
-  {
-    key: "apollo",
-    name: "Apollo",
-    members: [
-      { userId: "u-ann", name: "Ann Perera", email: "ann@example.com" },
-      { userId: "u-ben", name: "Ben Silva", email: "ben@example.com" },
-      { userId: "u-cal", name: "Cal Fernando", email: "cal@example.com" },
-    ],
-  },
-  { key: "artemis", name: "Artemis", members: [{ userId: "u-dee", name: "Dee Mendis", email: "dee@example.com" }] },
+  { key: "apollo", name: "Apollo" },
+  { key: "artemis", name: "Artemis" },
+  { key: "saas-night-cover", name: "SaaS Night cover" },
 ];
 
-function renderDialog(onClose = vi.fn(), teams?: GenerateRotaTeam[]) {
+/** Moves onto the SaaS Night cover: Ann for three months from November, Dee
+ *  until mid-November, and Ben's, over before November starts. */
+const NIGHT_COVER: NightCoverSpan[] = [
+  { userId: "u-ann", name: "Ann Perera", homeTeam: "Apollo", startsOn: "2026-11-01", endsOn: "2027-01-31" },
+  { userId: "u-dee", name: "Dee Mendis", homeTeam: "Artemis", startsOn: "2026-10-01", endsOn: "2026-11-15" },
+  { userId: "u-ben", name: "Ben Silva", homeTeam: "Apollo", startsOn: "2026-08-01", endsOn: "2026-10-31" },
+];
+
+function renderDialog(onClose = vi.fn(), teams?: GenerateRotaTeam[], nightCover?: NightCoverSpan[]) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   render(
     <QueryClientProvider client={qc}>
-      <GenerateRotaDialog open onClose={onClose} today={TODAY} teams={teams} />
+      <GenerateRotaDialog open onClose={onClose} today={TODAY} teams={teams} nightCover={nightCover} />
     </QueryClientProvider>,
   );
   return { onClose };
@@ -81,8 +82,6 @@ describe("GenerateRotaDialog", () => {
   beforeEach(() => {
     postMock.mockReset();
     getMock.mockReset();
-    getMock.mockResolvedValue({ rotaCode: "SRE_SAAS", months: [] });
-    window.localStorage.clear();
   });
 
   it("previews next month first and writes nothing until Generate", async () => {
@@ -132,81 +131,28 @@ describe("GenerateRotaDialog", () => {
     await screen.findByText("only a lead of Apollo or Artemis may generate the SaaS rota");
   });
 
-  it("sends the TZ3 people chosen for a team with the preview and the write", async () => {
-    postMock.mockResolvedValue(result());
-    renderDialog(vi.fn(), TEAMS);
-    const apollo = screen.getByLabelText("Apollo TZ3");
-    for (const name of ["Ann Perera", "Ben Silva", "Cal Fernando"]) {
-      fireEvent.change(apollo, { target: { value: name.split(" ")[0] } });
-      fireEvent.click(await screen.findByRole("option", { name }));
-    }
-    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
-    await screen.findByText(/turns and SUP from/);
-    const crew = { apollo: ["u-ann", "u-ben", "u-cal"] };
-    expect(postMock).toHaveBeenLastCalledWith("/team-schedule/rotas/SRE_SAAS/generate", {
-      month: "2026-11",
-      dryRun: true,
-      nightCrew: crew,
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Generate" }));
-    await waitFor(() =>
-      expect(postMock).toHaveBeenLastCalledWith("/team-schedule/rotas/SRE_SAAS/generate", {
-        month: "2026-11",
-        regenerate: false,
-        nightCrew: crew,
-      }),
-    );
-  });
-
-  it("sends no TZ3 people when nobody is chosen, and remembers a choice for next time", async () => {
+  it("names the month's TZ3 crew from the SaaS Night cover, and sends no crew of its own", async () => {
     postMock.mockResolvedValueOnce(result());
-    renderDialog(vi.fn(), TEAMS);
+    renderDialog(vi.fn(), TEAMS, NIGHT_COVER);
+    // November: Ann and Dee are on it; Ben's move was over in October.
+    expect(screen.getByText("Ann Perera")).toBeInTheDocument();
+    expect(screen.getByText("Dee Mendis")).toBeInTheDocument();
+    expect(screen.queryByText("Ben Silva")).not.toBeInTheDocument();
+    expect(screen.getByText(/The people on the SaaS Night cover in November 2026/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Preview" }));
     await screen.findByText(/turns and SUP from/);
-    // Undefined, so it is left out of the JSON body.
+    // Undefined, so it is left out of the JSON body: the server reads the crew from the moves.
     expect(JSON.parse(JSON.stringify(postMock.mock.calls[0][1]))).toEqual({ month: "2026-11", dryRun: true });
-
-    fireEvent.change(screen.getByLabelText("Artemis TZ3"), { target: { value: "Dee" } });
-    fireEvent.click(await screen.findByRole("option", { name: "Dee Mendis" }));
-    // Choosing people starts the preview again.
-    expect(screen.getByRole("button", { name: "Preview" })).toBeInTheDocument();
-    expect(JSON.parse(window.localStorage.getItem("csm.teamSchedule.generate.tz3Crew") ?? "{}")).toEqual({
-      artemis: ["u-dee"],
-    });
   });
 
-  it("starts from the TZ3 people the month was generated with, not this browser's last choice", async () => {
-    window.localStorage.setItem("csm.teamSchedule.generate.tz3Crew", JSON.stringify({ apollo: ["u-cal"] }));
-    getMock.mockImplementation((path: string) =>
-      Promise.resolve(
-        path.includes("from=2026-11")
-          ? {
-              rotaCode: "SRE_SAAS",
-              months: [{ month: "2026-11", crew: [{ userId: "u-ann", teamKey: "apollo" }, { userId: "u-dee", teamKey: "artemis" }] }],
-            }
-          : { rotaCode: "SRE_SAAS", months: [] },
-      ),
-    );
-    renderDialog(vi.fn(), TEAMS);
-    expect(await screen.findByRole("button", { name: "Ann Perera" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Dee Mendis" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Cal Fernando" })).not.toBeInTheDocument();
-    expect(getMock).toHaveBeenCalledWith("/team-schedule/rotas/SRE_SAAS/night-crew?from=2026-11&to=2026-11");
+  it("warns when the Night cover is too few for L1, L2 and L3", () => {
+    renderDialog(vi.fn(), TEAMS, NIGHT_COVER);
+    expect(screen.getByText("Only 2 on the Night cover: TZ3 L3 is left empty every night.")).toBeInTheDocument();
   });
 
-  it("counts every team's TZ3 people as one crew when warning of empty tiers", async () => {
-    renderDialog(vi.fn(), TEAMS);
-    fireEvent.change(screen.getByLabelText("Apollo TZ3"), { target: { value: "Ann" } });
-    fireEvent.click(await screen.findByRole("option", { name: "Ann Perera" }));
-    expect(screen.getByText("Only 1 chosen: TZ3 L2 and L3 are left empty every night.")).toBeInTheDocument();
-
-    fireEvent.change(screen.getByLabelText("Artemis TZ3"), { target: { value: "Dee" } });
-    fireEvent.click(await screen.findByRole("option", { name: "Dee Mendis" }));
-    expect(screen.getByText("Only 2 chosen: TZ3 L3 is left empty every night.")).toBeInTheDocument();
-
-    fireEvent.change(screen.getByLabelText("Apollo TZ3"), { target: { value: "Ben" } });
-    fireEvent.click(await screen.findByRole("option", { name: "Ben Silva" }));
-    expect(screen.queryByText(/left empty every night/)).not.toBeInTheDocument();
+  it("says where nights go when nobody is on the Night cover", () => {
+    renderDialog(vi.fn(), TEAMS, []);
+    expect(screen.getByText(/Nobody is on the SaaS Night cover in November 2026/)).toBeInTheDocument();
   });
 
   it("stays open while the month is being written", async () => {

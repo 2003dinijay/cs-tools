@@ -45,6 +45,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
@@ -2432,5 +2433,155 @@ func TestScheduleIntegration_ApplyRangeLetsEachTeamHoldItsOwnTZ1Tier(t *testing.
 	var conflict *apierror.ConflictError
 	if err := applyTurn(t, repo, schedOtherID, schedOtherTeam, "SRE_IAAS_NIGHT", "L1", night, night); !errors.As(err, &conflict) {
 		t.Fatalf("a second IaaS night L1 on the same team: got %v, want a ConflictError", err)
+	}
+}
+
+// nightCoverTeam is the SaaS Night cover, which migration 0232 adds: a team
+// on the SaaS rota with no members, and the SRE_NIGHT_COVER tag that moves
+// somebody onto it.
+const nightCoverTeam = "saas-night-cover"
+
+// teamOfTurn is the team a person's turn on a shift that day is filed under,
+// or "" when they hold none.
+func teamOfTurn(t *testing.T, pool *pgxpool.Pool, userID, shiftCode, day string) string {
+	t.Helper()
+	var team string
+	err := pool.QueryRow(context.Background(), `
+		SELECT a.team_key FROM team_schedule_assignment a
+		  JOIN team_schedule_shift s ON s.id = a.shift_id
+		 WHERE a.user_id = $1::uuid AND s.code = $2 AND a.rota_date = $3::date`, userID, shiftCode, day).Scan(&team)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ""
+	}
+	if err != nil {
+		t.Fatalf("read the %s turn on %s: %v", shiftCode, day, err)
+	}
+	return team
+}
+
+// onDutyOn is whether the person holds a live, not-away turn on shiftCode at
+// the instant -- what the pager is given.
+func onDutyOn(t *testing.T, repo ScheduleRepository, userID, shiftCode string, at time.Time) bool {
+	t.Helper()
+	rows, err := repo.OnDutyAt(context.Background(), at, false)
+	if err != nil {
+		t.Fatalf("OnDutyAt: %v", err)
+	}
+	for _, a := range rows {
+		if a.Engineer.UserID == userID && a.ShiftCode == shiftCode {
+			return true
+		}
+	}
+	return false
+}
+
+// A lead moves an engineer onto the SaaS Night cover, and they are moved: the
+// move is filed under it with their own team beside it and writes no hours of
+// its own; the nights already set inside it go with them; what they held on
+// their own team over it -- a day turn, the generator's hours and a lead's --
+// goes, recorded in the history; and a turn set later from their own team's
+// row lands on the Night cover. Nothing of theirs is on two teams. A night
+// before the move starts stays their own team's. The pager still reaches them
+// on every one of those nights, the one that runs into the move's first day
+// included. Cutting the move short brings the nights after it back to their
+// own team.
+func TestScheduleIntegration_TheNightCoverMoveTakesTheNightsWithIt(t *testing.T) {
+	repo, pool := newScheduleIntegrationRepo(t)
+	ctx := context.Background()
+	if countRows(t, pool, `SELECT count(*) FROM team_schedule_absence_kind WHERE code = 'SRE_NIGHT_COVER'`) == 0 {
+		t.Fatal("no SRE_NIGHT_COVER tag; apply migration 0232")
+	}
+	mustExec(t, pool, `
+		INSERT INTO team_member (id, created_on, updated_on, created_by, updated_by, team_id, user_id, role)
+		VALUES (gen_random_uuid(), NOW(), NOW(), 'fixture', 'fixture', $1, $2, $3)`,
+		schedSreTeamID, schedOtherID, ordinaryMemberRole(t, pool))
+
+	mon, tue, wed, fri := "2030-09-23", "2030-09-24", "2030-09-25", "2030-09-27"
+	for _, turn := range []struct{ code, tier, day string }{
+		{"SRE_TZ3", "L1", mon}, {"SRE_TZ1_L1", "", tue}, {"SRE_TZ3", "L2", wed},
+	} {
+		if err := applyTurn(t, repo, schedOtherID, schedSreTeamKey, turn.code, turn.tier, turn.day, turn.day); err != nil {
+			t.Fatalf("%s %s on %s: %v", turn.code, turn.tier, turn.day, err)
+		}
+	}
+
+	// Regular hours on their own team inside the move: one the generator
+	// wrote, and one a lead set by hand.
+	thu := "2030-09-26"
+	mustExec(t, pool, `
+		INSERT INTO team_schedule_assignment
+		  (id, created_on, updated_on, created_by, updated_by, user_id, team_id, team_key, shift_id, zone_id,
+		   rota_date, starts_at, ends_at, is_on_call, source)
+		SELECT gen_random_uuid(), now(), now(), 'fixture', 'fixture', $1, t.id, t.key, s.id, s.zone_id, v.d::date,
+		       (v.d::date::timestamp + make_interval(mins => s.start_minute)) AT TIME ZONE s.authoring_time_zone,
+		       (v.d::date::timestamp + make_interval(mins => s.end_minute)) AT TIME ZONE s.authoring_time_zone,
+		       FALSE, v.src::team_schedule_source_enum
+		  FROM team t, team_schedule_shift s,
+		       (VALUES ($2::text, 'GENERATED'), ($3::text, 'MANUAL')) AS v(d, src)
+		 WHERE t.key = $4 AND s.code = 'SRE_TZ2_REGULAR'`,
+		schedOtherID, thu, fri, schedSreTeamKey)
+
+	if _, err := repo.ApplyAbsence(ctx, domain.ApplyScheduleAbsenceRequest{
+		UserID: schedOtherID, TeamKey: schedSreTeamKey, KindCode: "SRE_NIGHT_COVER",
+		From: tue, To: fri, HomeTeamKey: schedSreTeamKey,
+	}, schedLeadEmail); err != nil {
+		t.Fatalf("move onto the Night cover: %v", err)
+	}
+	// What they held on their own team over the move is gone -- whoever set it.
+	for _, c := range []struct{ code, day string }{
+		{"SRE_TZ1_L1", tue}, {"SRE_TZ2_REGULAR", thu}, {"SRE_TZ2_REGULAR", fri},
+	} {
+		if got := teamOfTurn(t, pool, schedOtherID, c.code, c.day); got != "" {
+			t.Errorf("%s on %s is still there, under %q: the move should have taken it off their own team", c.code, c.day, got)
+		}
+	}
+	if n := countRows(t, pool, `
+		SELECT count(*) FROM team_schedule_assignment_activity
+		 WHERE user_id = $1::uuid AND action = 'DELETED' AND note = 'moved to another team for these days'`,
+		schedOtherID); n != 3 {
+		t.Errorf("%d removals recorded in the history, want 3", n)
+	}
+	if n := countRows(t, pool, `
+		SELECT count(*) FROM team_schedule_absence
+		 WHERE user_id = $1::uuid AND team_key = $2 AND home_team_key = $3`,
+		schedOtherID, nightCoverTeam, schedSreTeamKey); n != 1 {
+		t.Fatalf("%d moves filed under the Night cover with their team beside it, want 1", n)
+	}
+	if n := countRows(t, pool, `
+		SELECT count(*) FROM team_schedule_assignment WHERE user_id = $1::uuid AND source = 'MOVE'`,
+		schedOtherID); n != 0 {
+		t.Fatalf("%d hours written by the move, want none: being on the Night cover is the whole of it", n)
+	}
+	// A day turn set from their own team's row on a day of the move.
+	if err := applyTurn(t, repo, schedOtherID, schedSreTeamKey, "SRE_TZ1_L1", "", thu, thu); err != nil {
+		t.Fatalf("a TZ1 L1 inside the move from their own team's row: %v", err)
+	}
+	for _, c := range []struct{ code, day, want string }{
+		{"SRE_TZ3", wed, nightCoverTeam},    // a night inside the move goes with them
+		{"SRE_TZ1_L1", thu, nightCoverTeam}, // a turn set inside it later lands there too
+		{"SRE_TZ3", mon, schedSreTeamKey},   // the night before it does not
+	} {
+		if got := teamOfTurn(t, pool, schedOtherID, c.code, c.day); got != c.want {
+			t.Errorf("%s on %s is filed under %q, want %q", c.code, c.day, got, c.want)
+		}
+	}
+
+	ist := time.FixedZone("IST", 5*3600+1800)
+	if !onDutyOn(t, repo, schedOtherID, "SRE_TZ3", time.Date(2030, 9, 24, 2, 0, 0, 0, ist)) {
+		t.Error("Monday's night, at 02:00 on the move's first day, is not on duty: the move read as time away")
+	}
+	if !onDutyOn(t, repo, schedOtherID, "SRE_TZ3", time.Date(2030, 9, 25, 23, 0, 0, 0, ist)) {
+		t.Error("Wednesday's night on the Night cover is not on duty")
+	}
+
+	// Back on their own team from Wednesday: the move is Tuesday alone.
+	if _, err := repo.ApplyAbsence(ctx, domain.ApplyScheduleAbsenceRequest{
+		UserID: schedOtherID, TeamKey: nightCoverTeam, KindCode: "",
+		From: wed, To: fri, HomeTeamKey: schedSreTeamKey,
+	}, schedLeadEmail); err != nil {
+		t.Fatalf("cut the move short: %v", err)
+	}
+	if got := teamOfTurn(t, pool, schedOtherID, "SRE_TZ3", wed); got != schedSreTeamKey {
+		t.Errorf("after the move was cut short, Wednesday's night is filed under %q, want %q", got, schedSreTeamKey)
 	}
 }
