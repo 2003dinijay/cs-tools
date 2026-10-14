@@ -24,6 +24,8 @@ import (
 	"net/http"
 	"os"
 	"testing"
+
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/entity"
 )
 
 // liveEntityClient is a minimal entityCustomerHealthClient/
@@ -89,6 +91,15 @@ func (e *liveEntityError) Error() string {
 
 func (c *liveEntityClient) GetAccount(ctx context.Context, id string) ([]byte, error) {
 	return c.get(ctx, "/accounts/"+id)
+}
+func (c *liveEntityClient) GetAccountHealthDetail(ctx context.Context, id string) (entity.CHAccountHealthDetail, error) {
+	var out entity.CHAccountHealthDetail
+	raw, err := c.get(ctx, "/accounts/"+id+"/health-detail")
+	if err != nil {
+		return out, err
+	}
+	err = json.Unmarshal(raw, &out)
+	return out, err
 }
 func (c *liveEntityClient) SearchAccounts(ctx context.Context, body []byte) ([]byte, error) {
 	return c.post(ctx, "/accounts/search", body)
@@ -167,25 +178,6 @@ func TestLive_GetEscalationsByAccount(t *testing.T) {
 	t.Logf("escalations for %s:\n%s", accountID, raw)
 	if len(escalations) == 0 {
 		t.Error("expected at least one escalation for this account")
-	}
-}
-
-// TestLive_GetCustomerHealthSummary runs postgresCustomerHealthClient.GetCustomerHealthSummary
-// against a real running entity-service.
-func TestLive_GetCustomerHealthSummary(t *testing.T) {
-	client, ok := liveTestClient(t)
-	if !ok {
-		return
-	}
-	c := NewPostgresCustomerHealthClient(client)
-	resp, err := c.GetCustomerHealthSummary(context.Background(), nil, nil, nil, nil, nil, nil, 0, 5)
-	if err != nil {
-		t.Fatalf("GetCustomerHealthSummary: %v", err)
-	}
-	raw, _ := json.MarshalIndent(resp, "", "  ")
-	t.Logf("summary (total=%d):\n%s", resp.TotalCount, raw)
-	if len(resp.Data) == 0 {
-		t.Error("expected at least one account summary row")
 	}
 }
 

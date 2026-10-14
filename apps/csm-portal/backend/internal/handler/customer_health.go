@@ -47,7 +47,6 @@ type riskClient interface {
 	GetAccountHealthStatus(ctx context.Context, accountSysID string) ([]risk.ProjectHealthStatus, error)
 	GetAccountHealthSummary(ctx context.Context, accountSysID string) (*risk.HealthSummary, error)
 	GetProjectRiskHistory(ctx context.Context, projectSysID string) ([]risk.ProjectRisk, error)
-	GetBatchHealthSummaries(ctx context.Context, accountSysIDs []string) (map[string]string, error)
 	InitProjectHealthRows(ctx context.Context, projectSysIDs []string, accountSysID string) error
 	CreateActionItem(ctx context.Context, riskID string, payload risk.CreateActionItemRequest) (*risk.RiskActionItem, error)
 	UpdateActionItemStatus(ctx context.Context, actionItemID, newStatus string, resolutionComment *string) (*risk.RiskActionItem, error)
@@ -58,18 +57,18 @@ type riskClient interface {
 	GetActionItemComments(ctx context.Context, actionItemID string) ([]risk.ActionItemComment, error)
 }
 
-// customerHealthSNClient abstracts the two ServiceNow-backed
-// customer-health lookups used by CustomerHealthHandler (the rest of this
-// domain is pure MySQL, via riskClient).
+// customerHealthSNClient abstracts the account-detail lookup used by
+// CustomerHealthHandler (the summary list goes through
+// customerHealthAccountSearchClient, the rest of this domain through
+// riskClient).
 type customerHealthSNClient interface {
-	GetCustomerHealthSummary(ctx context.Context, email, phrase, risks *string, region []string, product, abtTeam *string, offset, limit int) (*servicenow.AccountSummaryResponse, error)
 	GetCustomerHealthDetail(ctx context.Context, accountID string) (*servicenow.AccountDetail, error)
 }
 
 // customerHealthAccountSearchClient is the one entity-service call behind the
-// health-status-filtered summary: POST /accounts/search with the
-// customer-health filters and includeHealthSummary, which filters,
-// paginates and computes each row's health summary server-side.
+// summary list: POST /accounts/search with the customer-health filters and
+// includeHealthSummary, which filters, paginates and computes each row's
+// health summary server-side.
 type customerHealthAccountSearchClient interface {
 	SearchAccountsWithHealth(ctx context.Context, req entity.CHAccountSearchRequest) (entity.CHAccountSearchResponse, error)
 }
@@ -133,12 +132,11 @@ type accountSummary struct {
 
 // GetSummary handles POST /customer-health/summary.
 //
-// When payload.HealthStatus names a status, the whole request is one
-// entity-service call (POST /accounts/search): the other filters, the health
-// status filter, pagination, the total and each row's health summary are all
-// computed server-side, so the cost does not grow with the number of accounts.
-// Without a health-status filter, it fetches one page of accounts and
-// enriches it with health-status values in a second call.
+// Every request, with or without a health-status filter, is exactly one
+// entity-service call (POST /accounts/search with includeHealthSummary): the
+// email/phrase/region/risks/product/abtTeam/healthStatus filters, pagination,
+// the filtered total and each row's health summary are all computed
+// server-side, so the cost does not grow with the number of accounts.
 func (h *CustomerHealthHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireViewerAccess(w, r, h.accessGuard)
 	if !ok {
@@ -177,72 +175,40 @@ func (h *CustomerHealthHandler) GetSummary(w http.ResponseWriter, r *http.Reques
 	if payload.Limit <= 0 {
 		payload.Limit = 10
 	}
-	// maxPaginationLimit (accounts.go) bounds this the same way it bounds
-	// every other SPL-paginated route: GetCustomerHealthSummary computes all
-	// seven flags per account, each its own handful of entity-service calls
-	// (up to several per project for an account with many projects), so an
-	// uncapped positive limit let a caller force an unbounded, serial
-	// per-account fan-out with no route-level ceiling.
+	// maxPaginationLimit (accounts.go) is this backend's own bound on every
+	// SPL-paginated route; summaryViaSearch further cuts the page to
+	// entity-service's own cap (healthSummarySearchMaxLimit).
 	if payload.Limit > maxPaginationLimit {
 		payload.Limit = maxPaginationLimit
 	}
 
+	ctx := r.Context()
+	resp, err := h.summaryViaSearch(ctx, payload)
+	if err != nil {
+		slog.ErrorContext(ctx, "customer health summary failed", "userID", user.UserID, "err", err)
+		mapUpstreamErrorGeneric(w, err, "Failed to retrieve customer health summary.")
+		return
+	}
+	writeJSONValue(w, http.StatusOK, resp)
+}
+
+// summaryViaSearch implements GetSummary -- see its doc comment. It makes
+// exactly one upstream call (none for an unrecognised healthStatus).
+//
+// Account ids are entity-service's own dashed UUIDs. healthStatus is the
+// lowercase value (at_risk, healthy, to_be_reviewed); an account with no
+// recorded health rows is reported as to_be_reviewed, as the batch
+// health-summary lookup this replaces reported it.
+func (h *CustomerHealthHandler) summaryViaSearch(ctx context.Context, payload customerHealthSummaryRequest) (accountSummaryResponse, error) {
 	healthStatus := ""
 	if payload.HealthStatus != nil {
 		healthStatus = *payload.HealthStatus
 	}
-
-	ctx := r.Context()
-
-	if healthStatus != "" {
-		resp, err := h.summaryFilteredByHealthStatus(ctx, payload, healthStatus)
-		if err != nil {
-			slog.ErrorContext(ctx, "customer health summary (filtered) failed", "userID", user.UserID, "err", err)
-			mapUpstreamErrorGeneric(w, err, "Failed to retrieve customer health summary.")
-			return
-		}
-		writeJSONValue(w, http.StatusOK, resp)
-		return
-	}
-
-	snResp, err := h.sn.GetCustomerHealthSummary(ctx, payload.Email, payload.Phrase, payload.Risks, payload.Region,
-		payload.Product, payload.AbtTeam, payload.Offset, payload.Limit)
-	if err != nil {
-		slog.ErrorContext(ctx, "servicenow GetCustomerHealthSummary failed", "userID", user.UserID, "err", err)
-		mapUpstreamErrorGeneric(w, err, "Failed to retrieve customer health summary.")
-		return
-	}
-
-	accountSysIDs := make([]string, len(snResp.Data))
-	for i, acc := range snResp.Data {
-		accountSysIDs[i] = acc.AccountSysID
-	}
-	reviewStatuses, err := h.risk.GetBatchHealthSummaries(ctx, accountSysIDs)
-	if err != nil {
-		slog.ErrorContext(ctx, "risk GetBatchHealthSummaries failed", "userID", user.UserID, "err", err)
-		mapUpstreamErrorGeneric(w, err, "Failed to retrieve customer health summary.")
-		return
-	}
-
-	writeJSONValue(w, http.StatusOK, accountSummaryResponse{
-		Data:       enrichAccountSummaries(snResp.Data, reviewStatuses),
-		TotalCount: snResp.TotalCount,
-	})
-}
-
-// summaryFilteredByHealthStatus implements the health-status-filtered branch
-// of GetSummary -- see its doc comment. It makes exactly one upstream call.
-//
-// Account ids are entity-service's own dashed UUIDs, the same
-// representation the unfiltered branch returns; they are passed through
-// unchanged. healthStatus is the lowercase value the unfiltered branch's
-// risk lookup produces (at_risk, healthy, to_be_reviewed).
-func (h *CustomerHealthHandler) summaryFilteredByHealthStatus(ctx context.Context, payload customerHealthSummaryRequest, healthStatus string) (accountSummaryResponse, error) {
-	// Any value outside the three statuses matches no account. entity-service
-	// answers such a value with an error instead of an empty page, so it is
-	// answered here without a round trip.
+	// Any non-empty value outside the three statuses matches no account.
+	// entity-service answers such a value with an error instead of an empty
+	// page, so it is answered here without a round trip.
 	switch healthStatus {
-	case "at_risk", "healthy", "to_be_reviewed":
+	case "", "at_risk", "healthy", "to_be_reviewed":
 	default:
 		return accountSummaryResponse{Data: []accountSummary{}, TotalCount: 0}, nil
 	}
@@ -286,9 +252,14 @@ func (h *CustomerHealthHandler) summaryFilteredByHealthStatus(ctx context.Contex
 	for i, a := range resp.Accounts {
 		name := a.Name
 		// A row without a summary cannot happen when includeHealthSummary is
-		// set; the requested status is the only value it could carry, as
-		// every returned account matched it.
+		// set. Were it to, the requested status is the only value it could
+		// carry (every returned account matched it); with no status
+		// requested, an account with no recorded health rows reads as
+		// to_be_reviewed.
 		hs := healthStatus
+		if hs == "" {
+			hs = "to_be_reviewed"
+		}
 		row := accountSummary{AccountSysID: a.ID, AccountName: &name}
 		if s := a.HealthSummary; s != nil {
 			hs = s.HealthStatus
@@ -310,29 +281,6 @@ func (h *CustomerHealthHandler) summaryFilteredByHealthStatus(ctx context.Contex
 // /accounts/search ("limit cannot exceed 50"). maxPaginationLimit (100) is
 // this backend's own, wider bound.
 const healthSummarySearchMaxLimit = 50
-
-func enrichAccountSummaries(accounts []servicenow.AccountSummary, reviewStatuses map[string]string) []accountSummary {
-	enriched := make([]accountSummary, len(accounts))
-	for i, acc := range accounts {
-		var healthStatus *string
-		if s, ok := reviewStatuses[acc.AccountSysID]; ok {
-			healthStatus = &s
-		}
-		enriched[i] = accountSummary{
-			AccountSysID:           acc.AccountSysID,
-			AccountName:            acc.AccountName,
-			HasNoGoLive:            acc.HasNoGoLive,
-			HasRecentCases:         acc.HasRecentCases,
-			HasEolProduct:          acc.HasEolProduct,
-			HasAbandonedMigrations: acc.HasAbandonedMigrations,
-			HasMigrationDelays:     acc.HasMigrationDelays,
-			HasRecentEscalations:   acc.HasRecentEscalations,
-			NoSupportCases6mo:      acc.NoSupportCases6mo,
-			HealthStatus:           healthStatus,
-		}
-	}
-	return enriched
-}
 
 // initHealthTrackingRequest is the payload for POST
 // /customer-health/accounts/{accountSysId}/init-health-tracking.

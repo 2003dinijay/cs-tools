@@ -428,3 +428,75 @@ func (c *CustomerEntityClient) SearchAccountsWithHealth(ctx context.Context, req
 	err := c.chDo(ctx, http.MethodPost, "/accounts/search", req, &resp)
 	return resp, err
 }
+
+// CHAccountHealthDetail is GET /accounts/{id}/health-detail's response: every
+// project of the account with its risk flags and the items behind them. Ids
+// are entity-service's dashed UUIDs, and every list is always an array.
+type CHAccountHealthDetail struct {
+	AccountName      string                  `json:"accountName"`
+	CustomerProjects []CHProjectHealthDetail `json:"customerProjects"`
+}
+
+// CHProjectHealthDetail is one project of a CHAccountHealthDetail.
+type CHProjectHealthDetail struct {
+	ID                      string                      `json:"id"`
+	Name                    string                      `json:"name"`
+	HasRecentCases          bool                        `json:"hasRecentCases"`
+	DetailedRecentCases     []CHHealthCasePriorityGroup `json:"detailedRecentCases"`
+	TotalRecentCases        int                         `json:"totalRecentCases"`
+	HasAbandonedCases       bool                        `json:"hasAbandonedCases"`
+	DetailedAbandonedCases  []CHHealthCaseLink          `json:"detailedAbandonedCases"`
+	IsUsingEolProduct       bool                        `json:"isUsingEolProduct"`
+	SoftwareModel           []CHHealthEolProduct        `json:"softwareModel"`
+	Deployments             []CHHealthDeploymentRef     `json:"deployments"`
+	HasMigrationDelays      bool                        `json:"hasMigrationDelays"`
+	DetailedMigrationDelays []CHHealthCaseLink          `json:"detailedMigrationDelays"`
+	HasEscalatedCases       bool                        `json:"hasEscalatedCases"`
+	DetailedEscalatedCases  []CHHealthCaseLink          `json:"detailedEscalatedCases"`
+	GoLiveStatus            CHAccountGoLiveStatus       `json:"goLiveStatus"`
+}
+
+// CHHealthCasePriorityGroup is the recent cases of one priority.
+type CHHealthCasePriorityGroup struct {
+	Priority string             `json:"priority"`
+	Count    int                `json:"count"`
+	Cases    []CHHealthCaseInfo `json:"cases"`
+}
+
+// CHHealthCaseInfo is a minimal case reference.
+type CHHealthCaseInfo struct {
+	ID     string `json:"id"`
+	Number string `json:"number"`
+}
+
+// CHHealthCaseLink is a case, or an escalation and the case it is on; a field
+// that does not apply is empty.
+type CHHealthCaseLink struct {
+	ID               string `json:"id"`
+	Number           string `json:"number"`
+	EscalationID     string `json:"escalationId"`
+	EscalationNumber string `json:"escalationNumber"`
+}
+
+// CHHealthEolProduct is one end-of-life product version and the deployments
+// running it.
+type CHHealthEolProduct struct {
+	Name        string                  `json:"name"`
+	EolDate     string                  `json:"eolDate"`
+	Deployments []CHHealthDeploymentRef `json:"deployments"`
+}
+
+// CHHealthDeploymentRef is a minimal deployment reference.
+type CHHealthDeploymentRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// GetAccountHealthDetail calls GET /accounts/{id}/health-detail: the whole
+// per-project health breakdown of an account in one request. A missing
+// account is a 404 *apierror.Error.
+func (c *CustomerEntityClient) GetAccountHealthDetail(ctx context.Context, accountID string) (CHAccountHealthDetail, error) {
+	var resp CHAccountHealthDetail
+	err := c.chDo(ctx, http.MethodGet, "/accounts/"+url.PathEscape(accountID)+"/health-detail", nil, &resp)
+	return resp, err
+}

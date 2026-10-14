@@ -12683,6 +12683,54 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /accounts/{id}/health-detail:
+    get:
+      summary: Return the per-project customer-health breakdown of an account.
+      description: >-
+        For every project of the account (newest first): recent cases grouped by
+        priority, open migration engagements that are delayed or abandoned, deployed
+        products past their support end date, the active deployments, the escalations
+        on the project's work items, and the go-live status. Windows and rules are those
+        of the health summary on POST /accounts/search (recent cases 180 days; delayed and
+        abandoned migrations 60 and 180 days; a work item is a case unless it is an
+        announcement, except for escalations, which count on announcements too).
+        Computed in a fixed number of statements however many projects and cases the
+        account has. Internal callers only. Postgres data source only; the other data
+        source answers 400.
+      operationId: getAccountHealthDetail
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The account's health detail.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountHealthDetail'
+        "400":
+          description: Malformed account id, or the data source does not support it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: No account with this id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /accounts/health-summaries/search:
     post:
       summary: Return GetAccountHealthSummary for many accounts in one query, keyed by account id.
@@ -16122,6 +16170,178 @@ components:
           type: string
           enum: [at_risk, healthy, to_be_reviewed]
           description: at_risk if any project is, else healthy if every project row is, else to_be_reviewed (also when the account has no health rows).
+
+    AccountHealthDetail:
+      type: object
+      description: Per-project customer-health breakdown of one account.
+      required: [accountName, customerProjects]
+      properties:
+        accountName:
+          type: string
+        customerProjects:
+          type: array
+          description: Every project of the account, newest first.
+          items:
+            $ref: '#/components/schemas/ProjectHealthDetail'
+
+    ProjectHealthDetail:
+      type: object
+      description: One project's health flags and the items behind them. Every array is present, empty when nothing qualifies.
+      required:
+        - id
+        - name
+        - hasRecentCases
+        - detailedRecentCases
+        - totalRecentCases
+        - hasAbandonedCases
+        - detailedAbandonedCases
+        - isUsingEolProduct
+        - softwareModel
+        - deployments
+        - hasMigrationDelays
+        - detailedMigrationDelays
+        - hasEscalatedCases
+        - detailedEscalatedCases
+        - goLiveStatus
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        hasRecentCases:
+          type: boolean
+        detailedRecentCases:
+          type: array
+          description: >-
+            Case-like work items (never announcements) created in the last 180 days,
+            grouped by priority in the order each priority first appears, newest case first.
+          items:
+            $ref: '#/components/schemas/HealthCasePriorityGroup'
+        totalRecentCases:
+          type: integer
+        hasAbandonedCases:
+          type: boolean
+        detailedAbandonedCases:
+          type: array
+          description: Open migration engagements created at least 180 days ago, newest first.
+          items:
+            $ref: '#/components/schemas/HealthCaseLink'
+        isUsingEolProduct:
+          type: boolean
+        softwareModel:
+          type: array
+          description: >-
+            Deployed products (deactivated ones excluded) past their support end date, on
+            any deployment of the project, active or not; one entry per product version.
+          items:
+            $ref: '#/components/schemas/HealthEolProduct'
+        deployments:
+          type: array
+          description: The project's active deployments, newest first.
+          items:
+            $ref: '#/components/schemas/HealthDeploymentRef'
+        hasMigrationDelays:
+          type: boolean
+        detailedMigrationDelays:
+          type: array
+          description: Open migration engagements created at least 60 days ago, newest first (includes the abandoned ones).
+          items:
+            $ref: '#/components/schemas/HealthCaseLink'
+        hasEscalatedCases:
+          type: boolean
+        detailedEscalatedCases:
+          type: array
+          description: Every escalation on a work item of the project, newest first.
+          items:
+            $ref: '#/components/schemas/HealthCaseLink'
+        goLiveStatus:
+          $ref: '#/components/schemas/AccountGoLiveStatus'
+
+    AccountGoLiveStatus:
+      type: object
+      required: [status, isRisk, state]
+      properties:
+        status:
+          type: string
+          description: Display text, e.g. "Has Gone Live" or "Hasn't Gone Live Since 3 months".
+        isRisk:
+          type: boolean
+          description: True only when state is failure.
+        state:
+          type: string
+          enum: [success, pending, failure]
+
+    HealthCasePriorityGroup:
+      type: object
+      required: [priority, count, cases]
+      properties:
+        priority:
+          type: string
+          description: The case severity (catastrophic, critical, high, medium, low), or "Unspecified" when there is none.
+        count:
+          type: integer
+        cases:
+          type: array
+          items:
+            $ref: '#/components/schemas/HealthCaseInfo'
+
+    HealthCaseInfo:
+      type: object
+      required: [id, number]
+      properties:
+        id:
+          type: string
+          format: uuid
+        number:
+          type: string
+
+    HealthCaseLink:
+      type: object
+      description: >-
+        A case (id, number), or an escalation and the case it is on (escalationId,
+        escalationNumber, number). A field that does not apply is omitted.
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The case id.
+        number:
+          type: string
+          description: The case number.
+        escalationId:
+          type: string
+          format: uuid
+        escalationNumber:
+          type: string
+          description: Repeats the case number; an escalation has no number of its own.
+
+    HealthEolProduct:
+      type: object
+      required: [name, eolDate, deployments]
+      properties:
+        name:
+          type: string
+          description: Product name and version.
+        eolDate:
+          type: string
+          format: date-time
+          description: Support end date, midnight UTC.
+        deployments:
+          type: array
+          description: The distinct deployments running this product version.
+          items:
+            $ref: '#/components/schemas/HealthDeploymentRef'
+
+    HealthDeploymentRef:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
 
     AccountView:
       type: object

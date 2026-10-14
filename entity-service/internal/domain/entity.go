@@ -501,6 +501,88 @@ type AccountSearchHealthSummary struct {
 	HealthStatus string `json:"healthStatus"`
 }
 
+// AccountHealthDetail is the per-project customer-health breakdown of one
+// account: the same flags the account health summary reports, computed per
+// project, with the items behind each flag. Returned by
+// GET /accounts/{id}/health-detail.
+type AccountHealthDetail struct {
+	AccountName string `json:"accountName"`
+	// CustomerProjects holds every project of the account, newest first.
+	CustomerProjects []ProjectHealthDetail `json:"customerProjects"`
+}
+
+// ProjectHealthDetail is one project's row of an AccountHealthDetail. Every
+// list is a non-nil array, empty when nothing qualifies.
+type ProjectHealthDetail struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// HasRecentCases/TotalRecentCases/DetailedRecentCases: case-like work items
+	// (not announcements) created in the last 180 days, grouped by priority in
+	// the order each priority first appears, newest case first.
+	HasRecentCases      bool                      `json:"hasRecentCases"`
+	DetailedRecentCases []HealthCasePriorityGroup `json:"detailedRecentCases"`
+	TotalRecentCases    int                       `json:"totalRecentCases"`
+	// HasAbandonedCases/DetailedAbandonedCases: open migration engagements
+	// created at least 180 days ago.
+	HasAbandonedCases      bool             `json:"hasAbandonedCases"`
+	DetailedAbandonedCases []HealthCaseLink `json:"detailedAbandonedCases"`
+	// IsUsingEolProduct/SoftwareModel: deployed products past their support end
+	// date, one entry per product version.
+	IsUsingEolProduct bool                  `json:"isUsingEolProduct"`
+	SoftwareModel     []HealthEolProduct    `json:"softwareModel"`
+	Deployments       []HealthDeploymentRef `json:"deployments"`
+	// HasMigrationDelays/DetailedMigrationDelays: open migration engagements
+	// created at least 60 days ago (a superset of the abandoned ones).
+	HasMigrationDelays      bool             `json:"hasMigrationDelays"`
+	DetailedMigrationDelays []HealthCaseLink `json:"detailedMigrationDelays"`
+	// HasEscalatedCases/DetailedEscalatedCases: every escalation on a work item
+	// of the project, newest first.
+	HasEscalatedCases      bool                `json:"hasEscalatedCases"`
+	DetailedEscalatedCases []HealthCaseLink    `json:"detailedEscalatedCases"`
+	GoLiveStatus           AccountGoLiveStatus `json:"goLiveStatus"`
+}
+
+// HealthCasePriorityGroup is the recent cases of one priority.
+type HealthCasePriorityGroup struct {
+	// Priority is the case severity (catastrophic, critical, high, medium,
+	// low) or "Unspecified" when the work item has none.
+	Priority string           `json:"priority"`
+	Count    int              `json:"count"`
+	Cases    []HealthCaseInfo `json:"cases"`
+}
+
+// HealthCaseInfo is a minimal case reference.
+type HealthCaseInfo struct {
+	ID     string `json:"id"`
+	Number string `json:"number"`
+}
+
+// HealthCaseLink is a case, or an escalation and the case it is on. ID and
+// Number name the case, EscalationID and EscalationNumber the escalation; a
+// field that does not apply is omitted. EscalationNumber repeats the case
+// number: an escalation has no number of its own.
+type HealthCaseLink struct {
+	ID               string `json:"id,omitempty"`
+	Number           string `json:"number,omitempty"`
+	EscalationID     string `json:"escalationId,omitempty"`
+	EscalationNumber string `json:"escalationNumber,omitempty"`
+}
+
+// HealthEolProduct is one end-of-life product version and the deployments
+// running it. EolDate is the support end date as an RFC 3339 timestamp at
+// midnight UTC.
+type HealthEolProduct struct {
+	Name        string                `json:"name"`
+	EolDate     string                `json:"eolDate"`
+	Deployments []HealthDeploymentRef `json:"deployments"`
+}
+
+// HealthDeploymentRef is a minimal deployment reference.
+type HealthDeploymentRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 // SearchAccountsRequest is the input for an account search operation.
 type SearchAccountsRequest struct {
 	Pagination Pagination            `json:"pagination"`

@@ -76,6 +76,24 @@ func (s *accountService) GetAccountByID(ctx context.Context, id string) (domain.
 	return accountRowToDetail(row), nil
 }
 
+// GetAccountHealthDetail implements AccountService.
+func (s *accountService) GetAccountHealthDetail(ctx context.Context, id string) (domain.AccountHealthDetail, error) {
+	if err := validateUUIDs("id", []string{id}); err != nil {
+		return domain.AccountHealthDetail{}, err
+	}
+	row, err := s.repo.GetAccountHealthDetail(ctx, id)
+	if err != nil {
+		return domain.AccountHealthDetail{}, err
+	}
+	projects := make([]domain.ProjectHealthDetail, 0, len(row.Projects))
+	for _, p := range row.Projects {
+		detail := p.Detail
+		detail.GoLiveStatus = accountGoLiveStatus(p.GoLiveState, row.GoLiveMonths, row.ActivationDate)
+		projects = append(projects, detail)
+	}
+	return domain.AccountHealthDetail{AccountName: row.AccountName, CustomerProjects: projects}, nil
+}
+
 // UpdateAccountTeams implements AccountService.
 func (s *accountService) UpdateAccountTeams(ctx context.Context, req domain.UpdateAccountTeamsRequest) (domain.AccountDetail, error) {
 	if err := validateUUIDs("id", []string{req.ID}); err != nil {
