@@ -634,3 +634,22 @@ function familyOfType(type: string): RotaFamily {
   if (t.startsWith("SME")) return "SME";
   return "CRE";
 }
+
+/**
+ * The groups (CRE, SRE, SME) a reader runs teams in -- as a lead, or as a rota
+ * admin of that group -- in the catalogue's order. Somebody who runs teams in
+ * more than one group plans more than one rota, so every view offers them the
+ * group switch, as it does a manager. Keys the catalogue does not list count
+ * for nothing.
+ */
+export function familiesRun(
+  teams: readonly { key: string; family: RotaFamily }[],
+  runs: readonly string[],
+): RotaFamily[] {
+  const mine = new Set(runs.map((k) => k.toLowerCase()));
+  const out: RotaFamily[] = [];
+  for (const t of teams) {
+    if (mine.has(t.key.toLowerCase()) && !out.includes(t.family)) out.push(t.family);
+  }
+  return out;
+}

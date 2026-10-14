@@ -19,7 +19,7 @@
 import { describe, expect, it } from "vitest";
 import type { ScheduleAssignment, ScheduleShift } from "../types";
 import { MOE_DAY, MOE_NIGHT, TZ1, TZ1_L1, TZ1_WE, TZ2, TZ2_WE, TZ3, REGULAR } from "../test/fixtures";
-import { escalationGrid, kindsOfferedOn, monthPieces, moveKindFor, movesOfferedOn, narrowsToOneRota, readerFamily, rotasForReader, rosterRange, rotaZoneName, zoneColumnOf, zoneDisplayName, zoneLabelOn } from "./rota";
+import { escalationGrid, familiesRun, kindsOfferedOn, monthPieces, moveKindFor, movesOfferedOn, narrowsToOneRota, readerFamily, rotasForReader, rosterRange, rotaZoneName, zoneColumnOf, zoneDisplayName, zoneLabelOn } from "./rota";
 import {
   dayLabel,
   zoneAbbreviation,
@@ -483,5 +483,22 @@ describe("narrowsToOneRota", () => {
   it("narrows CRE only if it ever runs more than one rota", () => {
     expect(narrowsToOneRota("CRE", 1)).toBe(false);
     expect(narrowsToOneRota("CRE", 2)).toBe(true);
+  });
+});
+
+describe("familiesRun", () => {
+  const teams = [
+    { key: "atlas", family: "CRE" as const },
+    { key: "vega", family: "CRE" as const },
+    { key: "apollo", family: "SRE" as const },
+    { key: "u2", family: "SME" as const },
+  ];
+  it("gives each group the reader runs a team in, once", () => {
+    expect(familiesRun(teams, ["atlas", "vega"])).toEqual(["CRE"]);
+    expect(familiesRun(teams, ["Atlas", "apollo", "u2"])).toEqual(["CRE", "SRE", "SME"]);
+  });
+  it("ignores teams the catalogue does not list, and runs nothing for nobody", () => {
+    expect(familiesRun(teams, ["paas", "apollo"])).toEqual(["SRE"]);
+    expect(familiesRun(teams, [])).toEqual([]);
   });
 });
