@@ -202,7 +202,7 @@ pays no extra `GetUserMe` round trip. `CreateCaseEscalation` has no equivalent s
 comment), so every caller who reaches that handler is, by construction, exactly the
 audience this exists for.
 
-## Security Center access (PermViewSecurityCenter)
+## Security Center access (PermViewSecurityCenter / PermViewSecurityReportCases)
 
 Security Center (the webapp's Security reports + Vulnerabilities tabs) is restricted to `cs_engineer`
 and `admin` only — every other role, even though it holds `PermView`, is denied. This needed two
@@ -210,29 +210,46 @@ different mechanisms, because the feature isn't backed by its own exclusive rout
 
 - **`/products/vulnerabilities/search` and `/products/vulnerabilities/{id}`** are genuinely
   Security-Center-exclusive, so they're gated the ordinary way: `route(..., handler.PermViewSecurityCenter, ...)`
-  in `cmd/server/main.go`.
+  in `cmd/server/main.go`. `PermViewSecurityCenter` is held by `cs_engineer`/`admin`/`comment_updater`
+  only — `viewer` does not hold it, and reading these two routes is unaffected by the API-only change
+  below.
 - **`POST /cases/search`** is the shared, generic case-search endpoint every case-type tab uses
   (Support, Operations sub-tabs, Engagements, Security reports) — it stays registered at `PermView`,
   since narrowing that route-level permission would lock out every other tab too. Instead,
   `CaseHandler.SearchCases` inspects the request body itself: `caseSearchTargetsSecurityReports`
   (`internal/handler/cases.go`) reads the generic filter expression (`filters.filters[]`, and each
   `filters.anyOf[]` branch) for a `{field: "type", op: "in", values: [...]}` predicate naming
-  `security_report_analysis`, and if one is found, additionally requires `PermViewSecurityCenter` via
-  `CaseHandler.access` (wired with `WithAccessGuard`, the same pattern `UsersHandler` uses) —
-  a plain `PermView` caller gets 403 instead of the search running. This only catches an *explicit*
-  request for that type, the same way Security Center's own `caseTypes`-locked search
-  (`CsmIssuesView`, webapp) always sends one; a hypothetical unfiltered "every case type" search that
-  happens to also return security-report rows is a known, narrower gap, not handled here.
+  `security_report_analysis`, and if one is found, additionally requires `PermViewSecurityReportCases`
+  (not `PermViewSecurityCenter` itself) via `CaseHandler.access` (wired with `WithAccessGuard`, the
+  same pattern `UsersHandler` uses) — a caller holding neither gets 403 instead of the search running.
+  This only catches an *explicit* request for that type, the same way Security Center's own
+  `caseTypes`-locked search (`CsmIssuesView`, webapp) always sends one; a hypothetical unfiltered
+  "every case type" search that happens to also return security-report rows is a known, narrower gap,
+  not handled here.
+  - **`PermViewSecurityReportCases` is a deliberately separate, narrower permission from
+    `PermViewSecurityCenter`** — held by everyone `PermViewSecurityCenter` holds (`cs_engineer`/
+    `admin`/`comment_updater`) *plus* `viewer`, added by explicit request so `viewer` callers can
+    fetch/search `security_report_analysis` cases over the API without also gaining
+    `/products/vulnerabilities/*` access, which stays on `PermViewSecurityCenter` alone. This is an
+    **API-only** change — the webapp's own Security Center nav/tab gating (`canUseSecurityCenter` in
+    `portalAccess.ts`) is untouched, so a `viewer` still sees no Security reports/Vulnerabilities tab
+    in the UI; they can only reach this data by calling the API directly.
+  - **`service_request` cases have no equivalent gate at all, and never did.** `caseSearchTargetsSecurityReports`
+    only ever matched `security_report_analysis`; every `PermView` holder (`viewer` included) could
+    already search/fetch `service_request` cases over the API the whole time — the "only admin/cs_engineer
+    can view SR" behavior some callers observe is purely the webapp's own Operations nav gating
+    (`canUseOperations`), not a backend restriction, and is unaffected by this change.
 - **`GET /cases/{id}` has no equivalent check, deliberately.** `CaseView.type` (entity-service's own
   `openapi.yaml`) is only populated for ServiceNow cases — null on Postgres — so there is no reliable
   way for this handler to tell a security-report case apart from any other by inspecting the response
   alone, and a check that silently does nothing on one data source would be worse than no check at
   all (it would look like protection without being any). See `CaseHandler.WithAccessGuard`'s own doc
-  comment for the full reasoning. Practically: since `SearchCases` is now locked down, a non-`cs_engineer`/
-  `admin` caller can no longer *discover* a security-report case's id through the portal at all — the
-  residual gap is a caller who already has one (a pre-existing bookmark, or a guess) fetching it
-  directly by id. Closing that fully needs entity-service itself to resolve and enforce it (it has
-  reliable type data on either data source), not this BFF layer.
+  comment for the full reasoning. Practically: since `SearchCases` is now locked down, a caller holding
+  neither `PermViewSecurityCenter` nor `PermViewSecurityReportCases` can no longer *discover* a
+  security-report case's id through the portal at all — the residual gap is a caller who already has
+  one (a pre-existing bookmark, or a guess) fetching it directly by id. Closing that fully needs
+  entity-service itself to resolve and enforce it (it has reliable type data on either data source),
+  not this BFF layer.
 
 ## Redacting raw base64 inline images (`internal/handler/inline_image_redact.go`)
 

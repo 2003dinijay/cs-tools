@@ -151,11 +151,16 @@ func NewCaseHandler(entity entityCaseClient) *CaseHandler {
 }
 
 // WithAccessGuard wires the same guard that authorises every route into this
-// handler, so SearchCases can additionally require PermViewSecurityCenter for
-// a security_report_analysis-typed request — a restriction PermView alone
+// handler, so SearchCases can additionally require PermViewSecurityReportCases
+// for a security_report_analysis-typed request — a restriction PermView alone
 // (the route-level permission it already carries, shared with every other
-// case-type view) cannot express. Returns h for chaining at the construction
-// site.
+// case-type view) cannot express. PermViewSecurityReportCases, not
+// PermViewSecurityCenter: the latter also gates /products/vulnerabilities and
+// stays admin/cs_engineer/comment_updater-only, while the former additionally
+// grants Viewer read access to these cases without opening Vulnerabilities to
+// them. service_request has no equivalent check at all — every PermView
+// holder can already search/fetch that type. Returns h for chaining at the
+// construction site.
 //
 // GetCase deliberately gets no equivalent check: CaseView.type is only
 // populated for ServiceNow cases (null on Postgres — see entity-service's own
@@ -851,7 +856,7 @@ func (h *CaseHandler) SearchCases(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if caseSearchTargetsSecurityReports(body) && !(h.access != nil && h.access.Permits(PermViewSecurityCenter, user.Roles)) {
+	if caseSearchTargetsSecurityReports(body) && !(h.access != nil && h.access.Permits(PermViewSecurityReportCases, user.Roles)) {
 		writeError(w, http.StatusForbidden, ErrMsgForbidden)
 		return
 	}
