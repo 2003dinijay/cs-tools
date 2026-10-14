@@ -141,6 +141,7 @@ vi.mock("@features/support/components/support-overview-cards/ChatHistoryList", (
     <>
       <button onClick={() => onItemAction?.("chat-1", "resume")}>Resume Chat</button>
       <button onClick={() => onItemAction?.("chat-1", "view")}>View Chat</button>
+      <button onClick={() => onItemAction?.("chat-2", "view")}>View Converted Chat</button>
     </>
   ),
 }));
@@ -185,6 +186,16 @@ describe("SupportPage", () => {
             state: { label: "Open" },
             createdBy: "dev@wso2.com",
           },
+          {
+            id: "chat-2",
+            number: "CHAT-2",
+            initialMessage: "Need a case",
+            createdOn: "2026-05-01T00:00:00Z",
+            messageCount: 4,
+            state: { label: "Converted" },
+            createdBy: "dev@wso2.com",
+            case: { id: "case-99", label: "CS0000099" },
+          },
         ],
       },
       isLoading: false,
@@ -228,6 +239,15 @@ describe("SupportPage", () => {
           returnTo: "/projects/project-1/support",
         },
       },
+    );
+  });
+
+  it("navigates to the linked case when viewing a converted chat", () => {
+    render(<SupportPage />);
+    fireEvent.click(screen.getByText("View Converted Chat"));
+    expect(mockNavigate).toHaveBeenCalledWith(
+      "/projects/project-1/support/cases/case-99",
+      { state: { returnTo: "/projects/project-1/support" } },
     );
   });
 });

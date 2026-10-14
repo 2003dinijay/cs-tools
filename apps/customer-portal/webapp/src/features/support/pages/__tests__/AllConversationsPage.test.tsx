@@ -91,23 +91,42 @@ vi.mock("@features/support/components/all-conversations/AllConversationsList", (
       messageCount: number;
       state: { label: string };
       createdBy: string;
+      case?: { id: string; label: string } | null;
     }) => void;
   }) => (
-    <button
-      onClick={() =>
-        onConversationClick({
-          id: "conv-1",
-          number: "CHAT-1",
-          initialMessage: "Need help",
-          createdOn: "2026-05-01T00:00:00Z",
-          messageCount: 2,
-          state: { label: "Open" },
-          createdBy: "dev@wso2.com",
-        })
-      }
-    >
-      Open Conversation
-    </button>
+    <>
+      <button
+        onClick={() =>
+          onConversationClick({
+            id: "conv-1",
+            number: "CHAT-1",
+            initialMessage: "Need help",
+            createdOn: "2026-05-01T00:00:00Z",
+            messageCount: 2,
+            state: { label: "Open" },
+            createdBy: "dev@wso2.com",
+          })
+        }
+      >
+        Open Conversation
+      </button>
+      <button
+        onClick={() =>
+          onConversationClick({
+            id: "conv-2",
+            number: "CHAT-2",
+            initialMessage: "Need a case",
+            createdOn: "2026-05-01T00:00:00Z",
+            messageCount: 4,
+            state: { label: "Converted" },
+            createdBy: "dev@wso2.com",
+            case: { id: "case-99", label: "CS0000099" },
+          })
+        }
+      >
+        Open Converted Conversation
+      </button>
+    </>
   ),
 }));
 
@@ -209,6 +228,22 @@ describe("AllConversationsPage", () => {
           }),
         },
       },
+    );
+  });
+
+  it("navigates to the linked case when View is used on a converted chat", () => {
+    mockUseSearchConversations.mockReturnValue({
+      data: { conversations: [{ id: "conv-2" }], totalRecords: 1 },
+      isLoading: false,
+      isError: false,
+    });
+
+    render(<AllConversationsPage />);
+    fireEvent.click(screen.getByText("Open Converted Conversation"));
+
+    expect(mockNavigate).toHaveBeenCalledWith(
+      "/projects/project-1/support/cases/case-99",
+      { state: { returnTo: "/projects/project-1/support" } },
     );
   });
 });
