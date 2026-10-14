@@ -1047,6 +1047,7 @@ export type BeCaseFieldFilterField =
   | "createdOn"
   | "updatedOn"
   | "closedOn"
+  | "resolvedOn"
   | "product"
   | "projectOnboardingStatus"
   | "projectType"
@@ -1058,7 +1059,13 @@ export type BeCaseFieldFilterField =
   | "escalationLevel"
   | "escalation"
   | "number"
-  | "internalId";
+  | "internalId"
+  /** `eq` `"true"`/`"false"`: at least one SLA of the case has breached. */
+  | "slaBreached"
+  /** `eq` `"true"`/`"false"`: the case's account has an active escalation.
+   * Only the ServiceNow data source can answer it; a Postgres-backed
+   * entity-service rejects the request, so the cases list never offers it. */
+  | "accountEscalationActive";
 
 /**
  * `op` enum accepted by {@link BeCaseFieldFilter}, independent of `field` —
