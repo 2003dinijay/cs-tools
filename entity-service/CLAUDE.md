@@ -9221,8 +9221,11 @@ added `work_item_feedback`, and `pgFeedbackService`
 /cases/feedback/search` and `/aggregate` for both the `postgres` and
 `postgres-servicenow-dual-write` data sources (dual write reads Postgres, never
 the backing system). `unavailableFeedbackService` is now only the fallback for
-a data source with no feedback store. Known gap: the table stores no
-per-rating reason chips, so every `reasons_*` bucket returns an empty result.
+a data source with no feedback store. The `reasons_*` aggregate buckets
+(`reasons_very_dissatisfied`=rating 1 ... `reasons_very_satisfied`=5) count the
+ticked reasons in `work_item_feedback_reason` (migration `0128`), grouped by
+reason text over feedback of that rating (`bucketStart`=reason, `avgRating`=the
+rating, most-ticked first); the older "no reason chips are stored" gap is closed.
 `GET`/`POST /cases/{id}/feedback` (the emoji submission contract) now has a
 real Postgres implementation too — see the dedicated section below.
 
