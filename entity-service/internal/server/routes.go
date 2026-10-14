@@ -1296,12 +1296,25 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 	feedbackHandler := handler.NewFeedbackHandler(activeFeedbackSvc)
 
-	productVulnerabilityRepo := repository.NewProductVulnerabilityRepository(db)
+	// Product vulnerabilities: read queries (SearchProductVulnerabilities,
+	// GetProductVulnerability, GetVulnerabilityMeta) are served from Postgres
+	// whenever the database connection pool is available (db != nil), avoiding
+	// downstream ServiceNow integration dependency and user-level ACL issues
+	// on static metadata. SyncProductVulnerabilities delegates to the ServiceNow
+	// data source when configured. When no database pool is available (db == nil),
+	// falls back to the ServiceNow service.
 	var activeProductVulnerabilitySvc service.ProductVulnerabilityService
-	if cfg.DataSource == config.DataSourceServiceNow {
+	if db != nil {
+		productVulnerabilityRepo := repository.NewProductVulnerabilityRepository(db)
+		var snSvc service.ProductVulnerabilityService
+		if serviceNowIntegrationServiceClient != nil {
+			snSvc = service.NewServiceNowProductVulnerabilityService(serviceNowIntegrationServiceClient)
+		}
+		activeProductVulnerabilitySvc = service.NewProductVulnerabilityServiceWithSNSync(productVulnerabilityRepo, snSvc)
+	} else if serviceNowIntegrationServiceClient != nil {
 		activeProductVulnerabilitySvc = service.NewServiceNowProductVulnerabilityService(serviceNowIntegrationServiceClient)
 	} else {
-		activeProductVulnerabilitySvc = service.NewProductVulnerabilityService(productVulnerabilityRepo)
+		activeProductVulnerabilitySvc = service.NewProductVulnerabilityService(repository.NewProductVulnerabilityRepository(nil))
 	}
 	productVulnerabilityHandler := handler.NewProductVulnerabilityHandler(activeProductVulnerabilitySvc)
 
