@@ -164,6 +164,44 @@ func TestCustomerHealthHandler_GetSummary_NoFilterEnrichesFromRisk(t *testing.T)
 	}
 }
 
+// TestCustomerHealthHandler_GetSummary_IgnoresCallerSuppliedEmail verifies a
+// real gap this closes: the "My Accounts" filter sends the signed-in
+// caller's own email as the request's "email" field, with nothing on the
+// backend ever checking it actually belongs to the caller -- any caller
+// could substitute a colleague's email and see that colleague's own "my
+// accounts" results instead of their own. GetSummary must always use the
+// authenticated caller's own token email (middleware.UserInfo.Email) for
+// this field, never the value the client sent, whenever the client asks to
+// filter by one at all.
+func TestCustomerHealthHandler_GetSummary_IgnoresCallerSuppliedEmail(t *testing.T) {
+	var gotEmail *string
+	sn := &fakeSNCustomerHealthClient{
+		getCustomerHealthSummary: func(ctx context.Context, email, phrase, risks *string, region []string, product, abtTeam *string, offset, limit int) (*servicenow.AccountSummaryResponse, error) {
+			gotEmail = email
+			return &servicenow.AccountSummaryResponse{}, nil
+		},
+	}
+	rc := &fakeRiskClient{
+		getBatchHealthSummaries: func(ctx context.Context, accountSysIDs []string) (map[string]string, error) {
+			return map[string]string{}, nil
+		},
+	}
+	h := NewCustomerHealthHandler(rc, sn, viewerAccessGuard)
+
+	req := withUser(httptest.NewRequest(http.MethodPost, "/spl/customer-health/summary",
+		bytes.NewReader([]byte(`{"email":"someone-else@example.com"}`))))
+	w := httptest.NewRecorder()
+	h.GetSummary(w, req)
+
+	assertStatus(t, w, http.StatusOK)
+	if gotEmail == nil {
+		t.Fatal("expected the email filter to still be applied, got nil")
+	}
+	if *gotEmail != testUser.Email {
+		t.Errorf("email sent upstream = %q, want the caller's own token email %q (never the caller-supplied value)", *gotEmail, testUser.Email)
+	}
+}
+
 func TestCustomerHealthHandler_GetSummary_HealthStatusFilterEmptyMatchShortCircuits(t *testing.T) {
 	rc := &fakeRiskClient{
 		getAccountsByHealthStatus: func(ctx context.Context, healthStatus string) ([]string, error) {
