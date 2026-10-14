@@ -455,6 +455,17 @@ reaching whoever holds that tier on the live window, as a team-less monitoring
 alert does -- whatever its contact type. A group may not also be in
 `teams.abts`.
 
+**An incident's paging follows its card** (no configuration): when the
+incident's assignment group has an `INCIDENT_CHAT_SPACES` space (after
+`INCIDENT_CHAT_FANOUT`, through the shared `notifications.IncidentGroups` the
+dispatcher's card also uses), every rung, the closing message and the
+escalated-to-SME message are posted there as short replies in the
+"Incident Reported" card's thread (`notifications.IncidentThreadKey`), whatever
+`sre.chat`/`sre.teamChats` say (`Engine.incidentRooms`). Chat threads a reply
+under a card only through the same webhook, which is why this is the incident
+space and not the ladder's own. A customer case, or an incident whose group has
+no incident space, keeps the rules below and the full card.
+
 **Each team's own space** (`sre.teamChats`, opt-in): team key -> a `chat`
 section. A listed team's rung cards go to its own space; an incident of an
 unlisted team, or with none, uses `sre.chat`. `Engine.notifiersFor` picks by

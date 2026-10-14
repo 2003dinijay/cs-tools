@@ -2022,12 +2022,8 @@ func (d *Dispatcher) incidentAudiences(ctx context.Context, t events.Type, incid
 			"type", string(t), "incidentId", incidentID, "number", number)
 		return nil
 	}
-	targets, fanout := d.incidentChatFanout[strings.ToLower(strings.TrimSpace(team))]
-	if !fanout {
-		targets = []string{team}
-	}
 	var audiences []string
-	for _, target := range targets {
+	for _, target := range notifications.IncidentGroups(d.incidentChatFanout, team) {
 		audience := notifications.IncidentAudience(target)
 		if !d.googleChat.HasAudienceSpace(audience) {
 			slog.InfoContext(ctx, "dispatch: assignment group has no INCIDENT_CHAT_SPACES entry, no chat alert",

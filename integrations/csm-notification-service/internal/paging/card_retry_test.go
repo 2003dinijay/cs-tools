@@ -164,8 +164,8 @@ func TestCardRetry_TransientCardIsResentAloneNeverRedialling(t *testing.T) {
 	if caller.tries != 1 {
 		t.Errorf("dialled %d times; the card retry must never re-dial", caller.tries)
 	}
-	if len(chat.posted) != 1 || chat.posted[0].Rung != Level1.String() || chat.posted[0].Attempt != 1 {
-		t.Fatalf("cards posted = %d; want LEVEL_1's one card", len(chat.posted))
+	if len(chat.posted) != 1 || chat.posted[0].Rung != Level1.Label() || chat.posted[0].Attempt != 1 {
+		t.Fatalf("cards posted = %d; want L2's one card", len(chat.posted))
 	}
 	st = firstState(t, store)
 	if !st.Placed[0] || st.cardPending(0) {

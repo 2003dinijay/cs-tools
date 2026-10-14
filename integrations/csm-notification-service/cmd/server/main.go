@@ -82,6 +82,7 @@ func main() {
 		slog.Warn("GOOGLE_CHAT_AUDIENCE_SPACES is set but no longer read; it was renamed to GOOGLE_CHAT_SPACES, which is now the only Google Chat routing config")
 	}
 	incidentChatSpaces := parseIncidentChatSpaces(os.Getenv("INCIDENT_CHAT_SPACES"))
+	incidentChatFanout := parseIncidentChatFanout(os.Getenv("INCIDENT_CHAT_FANOUT"), incidentChatSpaces)
 	googleChatClient := notifications.NewGoogleChatClient(notifications.GoogleChatConfig{
 		AudienceSpaces: append(parseGoogleChatAudienceSpaces(os.Getenv("GOOGLE_CHAT_SPACES")),
 			incidentChatSpaces...),
@@ -369,7 +370,7 @@ func main() {
 		// handleCaseCreated/handleCommentAdded already fall back from (see
 		// resolveFullCaseDescription/resolveFullCommentContent).
 		WithFullContentFetcher(customerEntityClient).
-		WithIncidentChatFanout(parseIncidentChatFanout(os.Getenv("INCIDENT_CHAT_FANOUT"), incidentChatSpaces))
+		WithIncidentChatFanout(incidentChatFanout)
 
 	// Status page webhooks (outage.status_page_due on sre-events): posted here
 	// the moment entity-service publishes them, reported back to
@@ -1008,6 +1009,8 @@ func main() {
 						// The Special Ops page; only the SRE engine places
 						// it, and it is off unless the file turns it on.
 						SME: escalationCfg.SME,
+						// An incident's paging replies under its card, in the spaces INCIDENT_CHAT_SPACES and INCIDENT_CHAT_FANOUT give it.
+						IncidentChatFanout: incidentChatFanout,
 						// Which ladders a record climbs is DefaultRouting, in
 						// code -- not configurable (see paging.Config).
 					},

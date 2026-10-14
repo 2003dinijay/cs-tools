@@ -119,6 +119,8 @@ type EngineConfig struct {
 	// SME is the Special Ops page, placed by the SRE engine alone. The zero
 	// value is off.
 	SME SMEConfig
+	// IncidentChatFanout is INCIDENT_CHAT_FANOUT, so an incident's paging replies in every space its card went to.
+	IncidentChatFanout map[string][]string
 }
 
 // Engine runs the incident call-escalation ladder.
@@ -134,6 +136,8 @@ type Engine struct {
 	// notifiers is how a rung reaches people, one per selected channel. The
 	// ladder's rules know nothing about which are in play.
 	notifiers []notifier
+	// incidentChat is the shared Chat client, which holds the INCIDENT_CHAT_SPACES spaces incident cards are posted to.
+	incidentChat chatSender
 	// missingChannels names every channel cfg.Channel selected that has no
 	// client to serve it. Recorded rather than rejected: a deployment asking
 	// for both channels with only one client configured should still page
@@ -216,6 +220,10 @@ func NewEngine(policies map[string]PriorityPolicy, resolver Resolver, calls *not
 			"missingChannel", string(ch), "configuredChannel", string(cfg.Channel))
 	}
 	e.links = links
+	// Assigned only when set: a nil *GoogleChatClient in the interface field would not compare equal to nil.
+	if chat != nil {
+		e.incidentChat = chat
+	}
 	if cfg.Kind == LadderSRE {
 		e.buildTeamChats(cfg, calls, chat, links, defaultChatProduct)
 	}
@@ -347,6 +355,17 @@ func (e *Engine) sreTeamKey(team string) string {
 // notifier, so a rung rings its engineer once, and one fanoutChat, so a space
 // that fails does not repost the others.
 func (e *Engine) notifiersFor(plan Plan) []notifier {
+	if rooms := e.incidentRooms(plan.Trigger); len(rooms) > 0 && e.cfg.Channel.Uses(ChannelChat) {
+		out := withoutChat(e.notifiers)
+		var fan fanoutChat
+		for _, r := range rooms {
+			fan.chats = append(fan.chats, chatNotifier{chat: r.chat, links: e.links, audience: r.room, reply: true})
+		}
+		if len(fan.chats) == 1 {
+			return append(out, fan.chats[0])
+		}
+		return append(out, fan)
+	}
 	teams := e.chatTeams(plan)
 	switch {
 	case len(teams) == 0 || e.teamNotifiers == nil:
@@ -506,6 +525,9 @@ func (e *Engine) unansweredRooms(plan Plan) ([]chatRoom, string) {
 	if !e.cfg.Ladder.UnansweredChat {
 		return nil, ""
 	}
+	if rooms := e.incidentRooms(t); len(rooms) > 0 {
+		return rooms, t.Routing.SREChain()
+	}
 	var rooms []chatRoom
 	for _, team := range e.chatTeams(plan) {
 		if r, ok := e.teamRooms[team]; ok {
@@ -519,6 +541,22 @@ func (e *Engine) unansweredRooms(plan Plan) ([]chatRoom, string) {
 		return []chatRoom{*e.sharedRoom}, t.Routing.SREChain()
 	}
 	return nil, ""
+}
+
+// incidentRooms is the INCIDENT_CHAT_SPACES spaces an incident's card went to; a case or a group without one keeps the ladder's space.
+func (e *Engine) incidentRooms(t Trigger) []chatRoom {
+	if t.isCase() || e.incidentChat == nil {
+		return nil
+	}
+	var rooms []chatRoom
+	for _, group := range notifications.IncidentGroups(e.cfg.IncidentChatFanout, t.Team) {
+		audience := notifications.IncidentAudience(group)
+		if !e.incidentChat.HasAudienceSpace(audience) || slices.ContainsFunc(rooms, func(r chatRoom) bool { return r.room == audience }) {
+			continue
+		}
+		rooms = append(rooms, chatRoom{chat: e.incidentChat, room: audience})
+	}
+	return rooms
 }
 
 // sreRoomFor is the SRE space for a team: its own (sre.teamChats), else the
