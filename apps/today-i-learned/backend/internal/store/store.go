@@ -120,23 +120,28 @@ func openConfig(ctx context.Context, mc *mysql.Config) (*Store, error) {
 // Close releases the connection pool.
 func (s *Store) Close() error { return s.db.Close() }
 
-// CheckSchema fails when til_entry doesn't exist, naming the script to
-// run. The service never creates tables itself.
+// CheckSchema fails when til_entry doesn't exist, or predates a column this
+// version reads, naming the script to run. The service never creates or
+// changes tables itself.
 func (s *Store) CheckSchema(ctx context.Context) error {
-	var n int
+	var tables, notifiedAt int
 	err := s.db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'til_entry'",
-	).Scan(&n)
+		"SELECT (SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'til_entry'), "+
+			"(SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'til_entry' AND column_name = 'notified_at')",
+	).Scan(&tables, &notifiedAt)
 	if err != nil {
 		return fmt.Errorf("store: check schema: %w", err)
 	}
-	if n == 0 {
+	if tables == 0 {
 		return errors.New("store: table til_entry does not exist; run sql/create_til_tables.sql against this database first")
+	}
+	if notifiedAt == 0 {
+		return errors.New("store: table til_entry has no notified_at column; run sql/create_til_tables.sql against this database again")
 	}
 	return nil
 }
 
-const columns = "id, title, author_name, author_email, source, source_detail, content_html, created_on, updated_on"
+const columns = "id, title, author_name, author_email, source, source_detail, content_html, created_on, updated_on, notified_at"
 
 // Create stores a new entry and returns it.
 func (s *Store) Create(ctx context.Context, author Author, c entry.Content) (entry.Entry, error) {
@@ -212,6 +217,32 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
+// ClaimNotification marks an entry as announced now, before the announcement
+// is sent, so two senders can't both announce it. It returns the time it set,
+// and claimed false when the entry was already announced (or is gone).
+func (s *Store) ClaimNotification(ctx context.Context, id string) (at time.Time, claimed bool, err error) {
+	at = s.timestamp()
+	res, err := s.db.ExecContext(ctx, "UPDATE til_entry SET notified_at = ? WHERE id = ? AND notified_at IS NULL", at, id)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("store: claim notification: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("store: claim notification: %w", err)
+	}
+	return at, n == 1, nil
+}
+
+// ReleaseNotification undoes the claim made at at, after its announcement
+// failed, so the entry counts as not announced again. A later claim is left
+// alone.
+func (s *Store) ReleaseNotification(ctx context.Context, id string, at time.Time) error {
+	if _, err := s.db.ExecContext(ctx, "UPDATE til_entry SET notified_at = NULL WHERE id = ? AND notified_at = ?", id, at); err != nil {
+		return fmt.Errorf("store: release notification: %w", err)
+	}
+	return nil
+}
+
 // List returns a page of the entries q selects, newest first.
 func (s *Store) List(ctx context.Context, q Query) (Page, error) {
 	where, args := filters(q)
@@ -279,8 +310,8 @@ type scanner interface {
 func scanEntry(row scanner) (entry.Entry, error) {
 	var e entry.Entry
 	var detail sql.NullString
-	var updated sql.NullTime
-	if err := row.Scan(&e.ID, &e.Title, &e.Who, &e.SubmittedByEmail, &e.Where, &detail, &e.What, &e.CreatedAt, &updated); err != nil {
+	var updated, notified sql.NullTime
+	if err := row.Scan(&e.ID, &e.Title, &e.Who, &e.SubmittedByEmail, &e.Where, &detail, &e.What, &e.CreatedAt, &updated, &notified); err != nil {
 		return entry.Entry{}, err
 	}
 	if detail.Valid {
@@ -289,6 +320,10 @@ func scanEntry(row scanner) (entry.Entry, error) {
 	if updated.Valid {
 		t := updated.Time.UTC()
 		e.UpdatedAt = &t
+	}
+	if notified.Valid {
+		t := notified.Time.UTC()
+		e.NotifiedAt = &t
 	}
 	e.CreatedAt = e.CreatedAt.UTC()
 	return e, nil

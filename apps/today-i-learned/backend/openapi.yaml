@@ -146,7 +146,9 @@ paths:
       operationId: createEntry
       description: >-
         The entry is shared under the caller's verified email. Only the One
-        WSO2 webapp may call this. A new entry is announced in Google Chat.
+        WSO2 webapp may call this. A new entry is announced in Google Chat;
+        if Novera doesn't accept the announcement, the entry is still saved,
+        with notifiedAt null, for a moderator to send later.
       requestBody:
         required: true
         content:
@@ -241,6 +243,55 @@ paths:
           $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
+  /submissions/{id}/notify:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      summary: Send an entry to Google Chat
+      operationId: notifyEntry
+      description: >-
+        For an entry whose announcement failed (notifiedAt is null). Only a
+        moderator, and only from the One WSO2 webapp. An entry is sent at most
+        once: an entry already sent, or being sent by another request, gets a
+        409.
+      responses:
+        '200':
+          description: Novera accepted the announcement; the entry, with notifiedAt set.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Entry'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The entry was already sent to Google Chat.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          description: Novera didn't accept the announcement; the entry is still unsent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        '503':
+          description: Sending to Google Chat isn't configured on this service.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
 components:
   securitySchemes:
     bearerAuth:
@@ -294,13 +345,16 @@ components:
           description: Written for people; shown as it is.
     Settings:
       type: object
-      required: [whatMaxLength]
+      required: [whatMaxLength, notificationsEnabled]
       properties:
         whatMaxLength:
           type: integer
           description: >-
             The most characters of plain text a learning may have, markup not
             counted. ENTRY_TEXT_MAX_LENGTH; 500 unless configured.
+        notificationsEnabled:
+          type: boolean
+          description: Whether entries are announced in Google Chat (NOVERA_* is configured).
     UserInfo:
       type: object
       required: [email, displayName, canModerate]
@@ -325,7 +379,7 @@ components:
       enum: [Customer, Partner, Internal, Other]
     Entry:
       type: object
-      required: [id, title, who, where, whereDetail, what, submittedByEmail, createdAt, updatedAt]
+      required: [id, title, who, where, whereDetail, what, submittedByEmail, createdAt, updatedAt, notifiedAt]
       properties:
         id:
           type: string
@@ -355,6 +409,14 @@ components:
           format: date-time
           nullable: true
           description: When the entry was last edited; null if it never has been.
+        notifiedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: >-
+            When Novera accepted the entry's Google Chat announcement; null
+            if it hasn't, so a moderator can send it (POST
+            /submissions/{id}/notify).
     EntryPage:
       type: object
       required: [items, total, limit, offset]

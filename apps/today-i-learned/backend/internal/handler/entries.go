@@ -40,8 +40,8 @@ const (
 	// loading its feed in one request (limit=100) keeps working.
 	maxPageSize     = 100
 	maxSearchLength = 200
-	// notifyTimeout bounds the new-entry announcement, which runs before the
-	// response so it isn't cut off when the request ends.
+	// notifyTimeout bounds an announcement, which runs before the response so
+	// the caller learns whether Novera accepted it.
 	notifyTimeout = 25 * time.Second
 )
 
@@ -190,12 +190,94 @@ func (h *Handler) CreateEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Best effort: the entry is saved either way. If the announcement fails,
+	// the entry stays unannounced for a moderator to send again.
 	if h.cfg.Notifier != nil {
-		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), notifyTimeout)
-		h.cfg.Notifier.Notify(ctx, e, h.articleURL(e.ID))
-		cancel()
+		if at, err := h.announce(r.Context(), e); err == nil {
+			e.NotifiedAt = &at
+		}
 	}
 	writeJSON(w, http.StatusCreated, e)
+}
+
+// NotifyEntry sends an entry to Google Chat when its announcement failed.
+// Only a moderator may, from the webapp, and only while the entry hasn't been
+// sent, so no one ever gets the same card twice.
+func (h *Handler) NotifyEntry(w http.ResponseWriter, r *http.Request) {
+	user, ok := currentUser(w, r)
+	if !ok {
+		return
+	}
+	if !user.IssuedTo(h.cfg.WebappClientID) {
+		writeError(w, http.StatusForbidden, msgWebappOnly)
+		return
+	}
+	if !user.IsModerator {
+		writeError(w, http.StatusForbidden, msgCannotNotify)
+		return
+	}
+	if h.cfg.Notifier == nil {
+		writeError(w, http.StatusServiceUnavailable, msgNoNotifier)
+		return
+	}
+	e, ok := h.load(w, r)
+	if !ok {
+		return
+	}
+	if e.NotifiedAt != nil {
+		writeError(w, http.StatusConflict, msgNotified)
+		return
+	}
+	at, err := h.announce(r.Context(), e)
+	switch {
+	case errors.Is(err, errAlreadyAnnounced):
+		writeError(w, http.StatusConflict, msgNotified)
+		return
+	case errors.Is(err, errNotAccepted):
+		writeError(w, http.StatusBadGateway, msgNotifyFailed)
+		return
+	case err != nil:
+		writeError(w, http.StatusInternalServerError, msgInternal)
+		return
+	}
+	e.NotifiedAt = &at
+	writeJSON(w, http.StatusOK, e)
+}
+
+var (
+	// errAlreadyAnnounced: another request announced the entry first.
+	errAlreadyAnnounced = errors.New("entry already announced")
+	// errNotAccepted: Novera didn't accept the announcement.
+	errNotAccepted = errors.New("announcement not accepted")
+)
+
+// announce sends e to Google Chat and returns when it was marked announced.
+// The entry is claimed first, so two requests can't both send it; if Novera
+// doesn't accept the announcement, the claim is released and the entry counts
+// as not announced again. Errors are logged here.
+func (h *Handler) announce(ctx context.Context, e entry.Entry) (time.Time, error) {
+	// Detached from the request, so a client hanging up can't leave a claim
+	// behind or cut an announcement off half-way.
+	ctx = context.WithoutCancel(ctx)
+	at, claimed, err := h.cfg.Store.ClaimNotification(ctx, e.ID)
+	if err != nil {
+		slog.ErrorContext(ctx, "claim notification failed", "entryID", e.ID, "err", err)
+		return time.Time{}, err
+	}
+	if !claimed {
+		return time.Time{}, errAlreadyAnnounced
+	}
+
+	notifyCtx, cancel := context.WithTimeout(ctx, notifyTimeout)
+	err = h.cfg.Notifier.Notify(notifyCtx, e, h.articleURL(e.ID))
+	cancel()
+	if err == nil {
+		return at, nil
+	}
+	if rerr := h.cfg.Store.ReleaseNotification(ctx, e.ID, at); rerr != nil {
+		slog.ErrorContext(ctx, "release notification failed", "entryID", e.ID, "err", rerr)
+	}
+	return time.Time{}, fmt.Errorf("%w: %w", errNotAccepted, err)
 }
 
 // UpdateEntry replaces an entry's content. Only the author or a moderator

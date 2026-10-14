@@ -26,6 +26,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/wso2-open-operations/cs-tools/apps/today-i-learned/backend/internal/entity"
 	"github.com/wso2-open-operations/cs-tools/apps/today-i-learned/backend/internal/entry"
@@ -40,6 +41,10 @@ const (
 	msgWebappOnly   = "Entries can only be shared and edited from One WSO2."
 	msgCannotEdit   = "Only the author or a moderator can edit this entry."
 	msgCannotDelete = "Only the author or a moderator can delete this entry."
+	msgCannotNotify = "Only a moderator can send an entry to Google Chat."
+	msgNoNotifier   = "Sending entries to Google Chat isn't set up."
+	msgNotified     = "This entry was already sent to Google Chat."
+	msgNotifyFailed = "Couldn't send this entry to Google Chat. Try again later."
 	msgBadRequest   = "The request isn't valid."
 	msgTooLarge     = "The request is too large."
 	msgInternal     = "Something went wrong. Please try again."
@@ -53,6 +58,8 @@ type Store interface {
 	Update(ctx context.Context, id string, c entry.Content) (entry.Entry, error)
 	Delete(ctx context.Context, id string) error
 	List(ctx context.Context, q store.Query) (store.Page, error)
+	ClaimNotification(ctx context.Context, id string) (at time.Time, claimed bool, err error)
+	ReleaseNotification(ctx context.Context, id string, at time.Time) error
 }
 
 // CustomerSearcher suggests customer names.
@@ -60,9 +67,10 @@ type CustomerSearcher interface {
 	SearchCustomers(ctx context.Context, query string) ([]entity.Customer, error)
 }
 
-// Notifier announces a new entry.
+// Notifier announces an entry in Google Chat. It returns an error when the
+// announcement wasn't accepted.
 type Notifier interface {
-	Notify(ctx context.Context, e entry.Entry, entryURL string)
+	Notify(ctx context.Context, e entry.Entry, entryURL string) error
 }
 
 // Config wires a Handler.
@@ -122,7 +130,12 @@ func (h *Handler) Settings(w http.ResponseWriter, r *http.Request) {
 	if _, ok := currentUser(w, r); !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"whatMaxLength": h.cfg.WhatMaxLength})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"whatMaxLength": h.cfg.WhatMaxLength,
+		// Whether entries are announced, so the webapp flags unsent ones only
+		// when there's something to send them to.
+		"notificationsEnabled": h.cfg.Notifier != nil,
+	})
 }
 
 // SearchCustomers suggests customer names for the form's "Customer name".

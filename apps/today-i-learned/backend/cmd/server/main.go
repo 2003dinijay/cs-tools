@@ -133,5 +133,6 @@ func routes(h *handler.Handler) *http.ServeMux {
 	mux.HandleFunc("GET /submissions/{id}", h.GetEntry)
 	mux.HandleFunc("PUT /submissions/{id}", h.UpdateEntry)
 	mux.HandleFunc("DELETE /submissions/{id}", h.DeleteEntry)
+	mux.HandleFunc("POST /submissions/{id}/notify", h.NotifyEntry)
 	return mux
 }

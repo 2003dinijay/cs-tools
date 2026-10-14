@@ -68,7 +68,9 @@ func TestNotifySendsTheEntry(t *testing.T) {
 		WhereDetail: ptr("Acme & <Co>"),
 		What:        "<p>Learned <strong>a lot</strong>.</p><ul><li>One</li><li>Two</li></ul>",
 	}
-	newClient(srv, "https://one.example/til-logo.png").Notify(context.Background(), e, "https://one.example/knowledge-base/e1?view=article")
+	if err := newClient(srv, "https://one.example/til-logo.png").Notify(context.Background(), e, "https://one.example/knowledge-base/e1?view=article"); err != nil {
+		t.Fatalf("Notify: %v", err)
+	}
 
 	// Plain text throughout; Novera escapes it.
 	got := <-received
@@ -88,7 +90,9 @@ func TestNotifySendsTheEntry(t *testing.T) {
 
 func TestNotifyLeavesOutAbsentValues(t *testing.T) {
 	srv, received := newNovera(t, http.StatusOK)
-	newClient(srv, "").Notify(context.Background(), entry.Entry{ID: "e1", Title: "T", Who: "J", Where: "Internal", What: "<p>x</p>"}, "")
+	if err := newClient(srv, "").Notify(context.Background(), entry.Entry{ID: "e1", Title: "T", Who: "J", Where: "Internal", What: "<p>x</p>"}, ""); err != nil {
+		t.Fatalf("Notify: %v", err)
+	}
 	got := <-received
 	if got["subtitle"] != "Internal" {
 		t.Errorf("subtitle = %#v, want Internal", got["subtitle"])
@@ -113,12 +117,22 @@ func TestIconURL(t *testing.T) {
 	}
 }
 
-func TestNotifySwallowsFailures(t *testing.T) {
-	srv, received := newNovera(t, http.StatusInternalServerError)
-	newClient(srv, "").Notify(context.Background(), entry.Entry{ID: "e1"}, "")
-	<-received
+// Anything but Novera accepting the announcement is an error, so the entry
+// stays unannounced for a moderator to send again.
+func TestNotifyReportsFailures(t *testing.T) {
+	for _, status := range []int{http.StatusServiceUnavailable, http.StatusInternalServerError, http.StatusBadRequest} {
+		srv, received := newNovera(t, status)
+		if err := newClient(srv, "").Notify(context.Background(), entry.Entry{ID: "e1"}, ""); err == nil {
+			t.Errorf("status %d: Notify returned nil", status)
+		}
+		<-received
+	}
 
 	// Nothing listening at all.
-	New(Config{NotifyURL: "http://127.0.0.1:1/notify", TokenURL: srv.URL + "/token", ClientID: "til", ClientSecret: "s"}).
+	srv, _ := newNovera(t, http.StatusAccepted)
+	err := New(Config{NotifyURL: "http://127.0.0.1:1/notify", TokenURL: srv.URL + "/token", ClientID: "til", ClientSecret: "s"}).
 		Notify(context.Background(), entry.Entry{ID: "e2"}, "")
+	if err == nil {
+		t.Error("unreachable Novera: Notify returned nil")
+	}
 }

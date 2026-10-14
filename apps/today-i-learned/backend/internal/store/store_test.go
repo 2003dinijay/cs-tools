@@ -68,15 +68,29 @@ func openTestStore(t *testing.T) *Store {
 	if _, err := s.db.ExecContext(ctx, "DROP TABLE IF EXISTS til_entry"); err != nil {
 		t.Fatal(err)
 	}
-	for _, stmt := range schemaStatements(t) {
-		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
-			t.Fatalf("create tables: %v", err)
-		}
-	}
+	runSchemaScript(t, s)
 	if err := s.CheckSchema(ctx); err != nil {
 		t.Fatal(err)
 	}
 	return s
+}
+
+// runSchemaScript runs sql/create_til_tables.sql the way the mysql client
+// does: statement by statement on one connection, as its guarded steps keep
+// state in session variables.
+func runSchemaScript(t *testing.T, s *Store) {
+	t.Helper()
+	ctx := context.Background()
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	for _, stmt := range schemaStatements(t) {
+		if _, err := conn.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("schema script: %v\n%s", err, stmt)
+		}
+	}
 }
 
 func schemaStatements(t *testing.T) []string {

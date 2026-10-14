@@ -15,8 +15,9 @@
 -- under the License.
 
 -- Creates the tables til-backend needs. Run it once against the database
--- before starting the service; it is safe to run again. The service never
--- creates tables itself, and stops at startup if til_entry is missing.
+-- before starting the service; it is safe to run again, and running it again
+-- brings an older til_entry up to date. The service never creates or changes
+-- tables itself, and stops at startup if til_entry or a column is missing.
 --
 --   mysql -h <host> -u <user> -p <database> < sql/create_til_tables.sql
 
@@ -40,7 +41,30 @@ CREATE TABLE IF NOT EXISTS til_entry (
     -- UTC. updated_on stays NULL until the entry is first edited.
     created_on    DATETIME(6)  NOT NULL,
     updated_on    DATETIME(6)  NULL,
+    -- UTC. When Novera accepted the entry's Google Chat announcement; NULL
+    -- while it hasn't, so a moderator can send it again.
+    notified_at   DATETIME(6)  NULL,
     INDEX idx_til_entry_created (created_on DESC, id DESC),
     INDEX idx_til_entry_author_email (author_email),
     FULLTEXT INDEX idx_til_entry_search (title, content_text, author_name, source_detail)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Brings a til_entry created before notified_at existed up to date. Entries
+-- already there count as announced, since they were sent when shared. MySQL
+-- has no ADD COLUMN IF NOT EXISTS, so each step runs only when the column was
+-- missing at the start; on an up-to-date table both are no-ops.
+
+SET @til_add_notified_at = (
+    SELECT COUNT(*) = 0 FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'til_entry' AND column_name = 'notified_at'
+);
+
+SET @til_step = IF(@til_add_notified_at, 'ALTER TABLE til_entry ADD COLUMN notified_at DATETIME(6) NULL AFTER updated_on', 'DO 0');
+PREPARE til_stmt FROM @til_step;
+EXECUTE til_stmt;
+DEALLOCATE PREPARE til_stmt;
+
+SET @til_step = IF(@til_add_notified_at, 'UPDATE til_entry SET notified_at = created_on', 'DO 0');
+PREPARE til_stmt FROM @til_step;
+EXECUTE til_stmt;
+DEALLOCATE PREPARE til_stmt;
