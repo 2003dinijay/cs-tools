@@ -214,6 +214,11 @@ describe("CsmProjectDetailPage — tab state", () => {
 // had (isSplAudience), independently of canWrite -- they must never appear
 // for an ordinary cs_engineer/admin session that doesn't separately hold the
 // viewer role, and must appear for one that does, even without write access.
+//
+// Temporarily disabled on the page itself (see CsmProjectDetailPage.tsx's own
+// comment) -- the buttons are hidden unconditionally right now, so the
+// isSplAudience-gating test below is skipped rather than deleted, to make
+// re-enabling the feature (and this assertion) a one-line change.
 describe("CsmProjectDetailPage — ex-SPL report buttons", () => {
   beforeEach(() => {
     mockCanViewWorkItemsStaffView = true;
@@ -234,13 +239,21 @@ describe("CsmProjectDetailPage — ex-SPL report buttons", () => {
 
   // Rendered via component={RouterLink} (an in-app navigation, not a
   // dialog/menu trigger), so each is an <a>, accessible role "link".
-  it("shows the SLA/Time/CS report buttons for a caller holding the viewer role, even without write access", () => {
+  it.skip("shows the SLA/Time/CS report buttons for a caller holding the viewer role, even without write access", () => {
     mockIsSplAudience = true;
     mockCanWrite = false;
     renderPage();
     expect(screen.getByRole("link", { name: "SLA Report" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Time Report" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "CS Report" })).toBeInTheDocument();
+  });
+
+  it("hides the SLA/Time/CS report buttons even for a caller holding the viewer role, while temporarily disabled", () => {
+    mockIsSplAudience = true;
+    renderPage();
+    expect(screen.queryByRole("link", { name: "SLA Report" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Time Report" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "CS Report" })).not.toBeInTheDocument();
   });
 });
 
