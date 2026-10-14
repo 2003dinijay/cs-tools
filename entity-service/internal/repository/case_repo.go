@@ -2286,6 +2286,11 @@ func (r *caseRepo) SearchCaseComments(ctx context.Context, req domain.SearchCase
 		typeFilter = fmt.Sprintf(" AND cc.type = $%d::comment_type_enum", len(args))
 	}
 
+	// A customer-portal caller never sees a soft-deleted comment, in the rows
+	// or in the total (see hidesDeletedComments). An internal caller's result
+	// is unchanged.
+	typeFilter += deletedCommentFilter(ctx, "cc.")
+
 	countQuery := `SELECT COUNT(*) FROM comment cc WHERE cc.work_item_id = $1` + typeFilter
 	// Joined to "user" by email match (single user per comment, see
 	// userByEmailJoin): comment.created_by is a free-text VARCHAR (see
@@ -4912,6 +4917,11 @@ func (r *caseRepo) SearchCaseActivities(ctx context.Context, req domain.SearchCa
 	// backing data source's own attachment identity, which is also the id the
 	// sync gives its work_item_attachment row, so the two tables describe one
 	// file and it must show once. Shared by both queries so total and rows agree.
+	// A customer-portal caller never sees a soft-deleted comment in the feed or
+	// in its total (see hidesDeletedComments); internal callers are unchanged.
+	commentWorkNoteFilter += deletedCommentFilter(ctx, "")
+	commentWorkNoteDataFilter += deletedCommentFilter(ctx, "cm.")
+
 	const syncedAttachmentFilter = `
 			  AND wa.state IS DISTINCT FROM 'PENDING'
 			  AND NOT EXISTS (SELECT 1 FROM case_attachment ca WHERE ca.id = wa.id)`
