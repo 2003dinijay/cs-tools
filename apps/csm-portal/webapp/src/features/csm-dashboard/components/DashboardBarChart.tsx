@@ -16,13 +16,28 @@
 
 import { Box, Skeleton, Typography, alpha, useTheme } from "@wso2/oxygen-ui";
 import { Inbox } from "@wso2/oxygen-ui-icons-react";
-import { Bar, BarChart, Cell } from "@wso2/oxygen-ui-charts-react";
+import { Bar, BarChart, Cell, XAxis } from "@wso2/oxygen-ui-charts-react";
 import { useState, type JSX, type SyntheticEvent } from "react";
 import type { BeWidgetPaletteColor } from "@api/backend/types";
 import type { PieSliceResult } from "@features/csm-dashboard/api/useWidgetPieData";
 import { useDarkMode } from "@utils/useDarkMode";
 
-const CHART_HEIGHT_PX = 220;
+// Taller than a plain horizontal-label bar chart would need: the extra room
+// (over the library's own default margin.bottom) goes to the angled x-axis
+// labels below — see the custom <XAxis> tick rendering further down.
+const CHART_HEIGHT_PX = 248;
+
+/** Longer account/category names are truncated to this many characters (plus
+ * an ellipsis) in the always-visible angled tick label — the chart's own
+ * `tooltip` already shows the full, untruncated name on hover, so nothing is
+ * actually lost, just not all shown at once under every bar. */
+const MAX_X_AXIS_LABEL_CHARS = 14;
+
+function truncateAxisLabel(label: string): string {
+  return label.length > MAX_X_AXIS_LABEL_CHARS
+    ? `${label.slice(0, MAX_X_AXIS_LABEL_CHARS - 1)}…`
+    : label;
+}
 
 /** Used in order when a slice's own config omits `color`. */
 const DEFAULT_COLOR_ROTATION: BeWidgetPaletteColor[] = [
@@ -65,6 +80,35 @@ export default function DashboardBarChart({
     const key = slice.color ?? DEFAULT_COLOR_ROTATION[i % DEFAULT_COLOR_ROTATION.length];
     return theme.palette[key].main;
   };
+
+  const axisTickColor = isDarkMode ? theme.palette.grey[400] : theme.palette.text.secondary;
+
+  // Custom tick so the category label always renders at a fixed angle,
+  // rather than relying on the library's default horizontal tick — which
+  // recharts silently drops (no label at all, not even on hover) once
+  // several real account names don't all fit on one line at the tile's
+  // rendered width. `interval={0}` on the <XAxis> below forces every tick to
+  // call this, instead of recharts deciding some don't fit and skipping
+  // them. Signature matches recharts' own tick-renderer contract: called
+  // with that tick's `x`/`y` anchor point and `payload.value` (the category
+  // label), everything else about the axis passed through (unused here).
+  function renderAngledAxisTick(props: { x?: number; y?: number; payload?: { value?: unknown } }): JSX.Element {
+    const { x = 0, y = 0, payload } = props;
+    const label = typeof payload?.value === "string" ? payload.value : "";
+    return (
+      <text
+        x={x}
+        y={y}
+        dy={10}
+        textAnchor="end"
+        transform={`rotate(-35 ${x} ${y})`}
+        fontSize={11}
+        fill={axisTickColor}
+      >
+        {truncateAxisLabel(label)}
+      </text>
+    );
+  }
 
   if (isLoading) {
     return <Skeleton variant="rounded" height={CHART_HEIGHT_PX} />;
@@ -136,16 +180,24 @@ export default function DashboardBarChart({
           height={CHART_HEIGHT_PX}
           width="100%"
           legend={{ show: false }}
+          // The library's own <XAxis> only ever renders a plain horizontal
+          // tick, with no angle/truncation control exposed through this
+          // prop — suppressed here so the custom, always-visible angled
+          // <XAxis> below (rendered via `children`) is the only one drawn.
+          xAxis={{ show: false }}
           yAxis={{ show: false }}
           grid={{ show: false }}
           // Library default top margin (12px) is too tight once each bar has
-          // its own always-visible value label sitting above it.
-          margin={{ top: 24, right: 8, bottom: 8, left: 0 }}
+          // its own always-visible value label sitting above it; bottom is
+          // widened well past the library's own default to fit the angled
+          // category labels below.
+          margin={{ top: 24, right: 8, bottom: 48, left: 0 }}
           // cursor: false drops the library's default full-height highlight
           // box behind the hovered bar — the bar's own hover color/border is
           // enough of a highlight on its own.
           tooltip={{ show: true, wrapperStyle: { zIndex: 1000 }, cursor: false }}
         >
+          <XAxis dataKey="name" interval={0} tickLine={false} axisLine={{ stroke: axisTickColor }} tick={renderAngledAxisTick} />
           <Bar
             dataKey="value"
             radius={[4, 4, 0, 0]}
