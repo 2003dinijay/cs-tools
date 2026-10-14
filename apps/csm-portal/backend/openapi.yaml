@@ -12792,7 +12792,7 @@ paths:
               properties:
                 ladder: { type: string, enum: [CRE, SRE] }
                 teamKey: { type: string }
-                label: { type: string, maxLength: 255 }
+                label: { type: string, maxLength: 100 }
                 enabled: { type: boolean }
                 teamless: { type: boolean }
                 channel:

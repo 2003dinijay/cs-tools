@@ -166,6 +166,8 @@ func TestCaseAlertSettings_RefusesABadRequestWithoutCallingOut(t *testing.T) {
 			caseAlertRequest(http.MethodPut, "/x", `{"ladder":"SME","label":"x"}`)},
 		"room without label": {func(h *CaseAlertSettingsHandler) func(http.ResponseWriter, *http.Request) { return h.PutCaseAlertRoom },
 			caseAlertRequest(http.MethodPut, "/x", `{"ladder":"SRE","label":" "}`)},
+		"room label over 100": {func(h *CaseAlertSettingsHandler) func(http.ResponseWriter, *http.Request) { return h.PutCaseAlertRoom },
+			caseAlertRequest(http.MethodPut, "/x", `{"ladder":"SRE","label":"`+strings.Repeat("l", 101)+`"}`)},
 		"room with a bad team key": {func(h *CaseAlertSettingsHandler) func(http.ResponseWriter, *http.Request) { return h.PutCaseAlertRoom },
 			caseAlertRequest(http.MethodPut, "/x", `{"ladder":"SRE","label":"x","teamKey":"../rooms"}`)},
 		"webhook without url": {func(h *CaseAlertSettingsHandler) func(http.ResponseWriter, *http.Request) {

@@ -9309,7 +9309,7 @@ paths:
         "204":
           description: Recorded.
         "400":
-          description: Bad request — mode not off, shadow or db, a negative revision, or a summary over 16 KiB.
+          description: Bad request — mode not off, shadow or db, a negative revision, or a summary over 32 KiB.
           content:
             application/json:
               schema:
@@ -23270,7 +23270,7 @@ components:
       properties:
         revision: { type: integer, format: int64 }
         mode: { type: string, enum: [off, shadow, db] }
-        summary: { type: object, additionalProperties: true, description: "What was used, by name and source, at most 32 KB. Never a URL. Its running entry ({ladders: {CRE: {key: {value, source}}}}) is shown on the tab as what is in use." }
+        summary: { type: object, additionalProperties: true, description: "What was used, by name and source, at most 32 KiB. Never a URL. Its running entry ({ladders: {CRE: {key: {value, source}}}}) is shown on the tab as what is in use." }
     PagingTestResultRequest:
       type: object
       required: [status, testedAt]

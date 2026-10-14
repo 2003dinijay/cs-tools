@@ -265,6 +265,28 @@ describe("Team chat routing", () => {
     ).toEqual(["Artemis", "Zeus"]);
   });
 
+  it("keeps the keyboard user's place when the last team is added: focus moves to the note", () => {
+    settings.data = make({
+      rooms: [apollo, iaas, shared, room({ id: "a2", teamKey: "artemis" })],
+    });
+    const { rerender } = render(<CaseAlertSettings chain="SRE_SAAS" />);
+    screen.getByRole("button", { name: "+ Add team chat routing" }).focus();
+    // The save's refetch brings the last team back: the button goes away.
+    settings.data = make({
+      rooms: [
+        apollo,
+        iaas,
+        shared,
+        room({ id: "a2", teamKey: "artemis" }),
+        room({ id: "z", teamKey: "zeus" }),
+      ],
+    });
+    rerender(<CaseAlertSettings chain="SRE_SAAS" />);
+    expect(
+      screen.getByText(/Every SRE team already has a chat routing here/),
+    ).toHaveFocus();
+  });
+
   it("says so in the page, not in a disabled button, when every team has a routing", () => {
     settings.data = make({
       rooms: [

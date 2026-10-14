@@ -73,6 +73,8 @@ var (
 const (
 	maxCaseAlertWebhookLen = 2048
 	maxCaseAlertTextLen    = 255
+	// A room's label is entity-service's VARCHAR(100), checked there too.
+	maxCaseAlertLabelLen = 100
 	// A ladder value is one key of the paging file: entity-service knows the
 	// keys and checks each value. These only keep a request to a sane size.
 	maxCaseAlertValueKeys     = 50
@@ -113,7 +115,7 @@ func (h *CaseAlertSettingsHandler) PutCaseAlertRoom(w http.ResponseWriter, r *ht
 		Channel  *string `json:"channel"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil || !caseAlertLadderRe.MatchString(req.Ladder) ||
-		strings.TrimSpace(req.Label) == "" || len(req.Label) > maxCaseAlertTextLen ||
+		strings.TrimSpace(req.Label) == "" || len(req.Label) > maxCaseAlertLabelLen ||
 		(req.TeamKey != "" && !rotaTeamKeyRe.MatchString(req.TeamKey)) {
 		writeError(w, http.StatusBadRequest, "Send a ladder (CRE or SRE), a label, and optionally an SRE team.")
 		return

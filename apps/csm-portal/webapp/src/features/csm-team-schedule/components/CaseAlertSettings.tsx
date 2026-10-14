@@ -325,6 +325,20 @@ function TeamChatRouting({
           .map((t) => ({ value: t.key, label: t.name }))
       : []),
   ];
+  // Adding the last team removes the Add button while it holds focus (the
+  // dialog hands focus back to it). Focus then goes to the note that takes
+  // its place, so a keyboard or screen-reader user keeps their place.
+  const allAddedRef = useRef<HTMLParagraphElement>(null);
+  const hadChoices = useRef(choices.length > 0);
+  useEffect(() => {
+    const lost =
+      document.activeElement === null ||
+      document.activeElement === document.body;
+    if (hadChoices.current && choices.length === 0 && lost) {
+      allAddedRef.current?.focus();
+    }
+    hadChoices.current = choices.length > 0;
+  }, [choices.length]);
   const addBlocked =
     choices.length === 0
       ? "Every team already has a chat routing"
@@ -351,7 +365,7 @@ function TeamChatRouting({
       </div>
       {canEdit && choices.length === 0 ? (
         // Said, not hidden in a disabled button's tooltip.
-        <p className="cas-sub cas-note">
+        <p className="cas-sub cas-note" tabIndex={-1} ref={allAddedRef}>
           Every {ladder} team already has a chat routing here. To change one,
           use its Edit; to start a team again, use More &gt; Remove.
         </p>
