@@ -110,6 +110,12 @@ type LadderConfig struct {
 	// [apollo, artemis] notifies both SaaS teams. Empty, such an incident
 	// posts to chat above, as before. Its closing message follows. SRE only.
 	TeamlessChats []string `yaml:"teamlessChats"`
+	// TeamChannels is how each SRE team's alerts go out (chat, call, both,
+	// log), by team key, set on the Team Schedule's Alert Settings tab (Team
+	// routing) and never from this file. A team's channel can only narrow the
+	// ladder's channel above (narrowChannel); a team not listed uses it as it
+	// is. SRE only.
+	TeamChannels map[string]Channel `yaml:"-"`
 	// UnansweredChat posts a closing message when the ladder has called every
 	// rung and nobody acknowledged the incident, to the team's own space
 	// (teamChats), else chat. It is posted whatever channel says, so a

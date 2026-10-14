@@ -832,7 +832,7 @@ func (e *Engine) schedule(ctx context.Context, t Trigger, replace bool) error {
 			"level0Included", t.Routing.HasNotificationLevel())
 	}
 
-	plan, err := BuildPlan(ctx, t, e.policies, e.resolver, e.cfg.Channel)
+	plan, err := BuildPlan(ctx, t, e.policies, e.resolver, e.channelFor(t))
 	if err != nil {
 		return fmt.Errorf("escalation: build plan for %s: %w", t.IncidentID, err)
 	}
@@ -1475,7 +1475,9 @@ func (e *Engine) processDue(ctx context.Context, member string) error {
 // cardOnly posts the rung's card and nothing else, for a rung whose call has
 // already gone out and is owed only its card (LadderState.CardPending).
 func (e *Engine) place(ctx context.Context, plan Plan, call PlannedCall, cardOnly bool) (err, cardErr error) {
-	notifiers, channel := e.notifiersFor(plan), e.cfg.Channel
+	// The incident's own SRE team may use less than the ladder (Team routing).
+	channel := e.channelFor(plan.Trigger)
+	notifiers := withChannel(e.notifiersFor(plan), e.cfg.Channel, channel)
 	if plan.Trigger.Routing.Ladder == LadderSME {
 		// An SME ladder rides the SRE engine's ticker but pages over the
 		// SME's own channel and Chat space.
@@ -1782,6 +1784,8 @@ func reportedAt(raw string) time.Time {
 // ladder that reaches fewer people than the rules say it should is a fact
 // somebody needs on the work note, not a quiet saving.
 func (e *Engine) applySafety(ctx context.Context, plan *Plan) {
+	// The incident's channel, which its SRE team may have narrowed.
+	channel := e.channelFor(plan.Trigger)
 	s := e.cfg.Ladder.Safety
 
 	if top, capped := e.cfg.Ladder.CapLevel(); capped {
@@ -1828,10 +1832,10 @@ func (e *Engine) applySafety(ctx context.Context, plan *Plan) {
 
 	// No calls at all until the lead pool can be called: see
 	// Safety.CallWithoutVerifiedLeads. Log only -- nothing on the work note.
-	if e.cfg.Channel.Uses(ChannelCall) && !s.CallWithoutVerifiedLeads {
+	if channel.Uses(ChannelCall) && !s.CallWithoutVerifiedLeads {
 		if missing, err := e.unverifiedLeads(ctx); err != nil || missing > 0 {
 			plan.CallsHeld = true
-			if e.cfg.Channel == ChannelCall {
+			if channel == ChannelCall {
 				plan.Calls = nil
 			} else {
 				for i := range plan.Calls {
@@ -1847,7 +1851,7 @@ func (e *Engine) applySafety(ctx context.Context, plan *Plan) {
 	// reached about: see Safety.CallHeadsWithoutLowerTiers. Checked after the
 	// number allowlist, so a lower-tier number this deployment may not dial
 	// does not count as reachable. Log only -- nothing on the work note.
-	if e.cfg.Channel.Uses(ChannelCall) && !plan.CallsHeld && !s.CallHeadsWithoutLowerTiers && !lowerTiersDialable(plan.Calls) {
+	if channel.Uses(ChannelCall) && !plan.CallsHeld && !s.CallHeadsWithoutLowerTiers && !lowerTiersDialable(plan.Calls) {
 		kept := plan.Calls[:0]
 		var held int
 		for _, c := range plan.Calls {
@@ -1856,7 +1860,7 @@ func (e *Engine) applySafety(ctx context.Context, plan *Plan) {
 				continue
 			}
 			held++
-			if e.cfg.Channel == ChannelCall {
+			if channel == ChannelCall {
 				// A call-only entry is nothing but the call.
 				continue
 			}
