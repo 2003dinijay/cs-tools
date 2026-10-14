@@ -18,8 +18,32 @@ import { describe, expect, it } from "vitest";
 import { githubIssueCaseTags } from "./githubIssueCaseTags";
 
 describe("githubIssueCaseTags", () => {
-  it("always tags the case s_dip, the tag the case filters exclude on", () => {
+  it("tags the case s_dip, the tag the case filters exclude on, when the issue is not a patch", () => {
     expect(githubIssueCaseTags({ reason: "default" })).toEqual(["s_dip"]);
+    expect(githubIssueCaseTags({ reason: "default", issueTypeLabel: "Type/Discussion" })).toEqual([
+      "s_dip",
+    ]);
+  });
+
+  it("tags the case patch, and not s_dip, for a patch issue", () => {
+    expect(githubIssueCaseTags({ reason: "default", issueTypeLabel: "Type/Patch" })).toEqual([
+      "patch",
+    ]);
+    expect(githubIssueCaseTags({ reason: "default", issueTypeLabel: " Type/Patch " })).toEqual([
+      "patch",
+    ]);
+  });
+
+  it("adds the regression and migration tags to a patch after patch, in the same order", () => {
+    expect(
+      githubIssueCaseTags({ reason: "migration", regression: true, issueTypeLabel: "Type/Patch" }),
+    ).toEqual(["patch", "s_rg", "migration"]);
+  });
+
+  it("does not match a patch type by a partial or differently cased name", () => {
+    for (const issueTypeLabel of ["Type/patch", "patch", "Type/Patch-ish", ""]) {
+      expect(githubIssueCaseTags({ reason: "default", issueTypeLabel })).toEqual(["s_dip"]);
+    }
   });
 
   it("never uses the old mistyped s_dp tag", () => {

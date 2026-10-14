@@ -23,11 +23,18 @@ import type { BeCreateCaseGithubIssuePayload } from "@api/backend/types";
 // why the labels live here, in one tested place, rather than as string
 // literals inside the page.
 //
-// `s_dip` is the tag the existing case filters and dashboard widgets exclude on
-// (`tag notIn [s_dip]`), so a case filed with any other spelling is not
-// excluded from them.
+// The case filters and dashboard widgets hide a case that already has a Git
+// issue by excluding a tag (`tag notIn [patch]`, `tag notIn [s_dip]`), one per
+// kind of issue, so a case filed with any other spelling is not excluded from
+// them.
 
-/** Applied to every case a Git issue is filed from. */
+/** The issue type the dialog sends for a patch (`issueTypeLabel`). */
+export const GITHUB_PATCH_ISSUE_TYPE = "Type/Patch";
+
+/** Applied to a case a Patch Git issue is filed from. */
+export const GITHUB_PATCH_ISSUE_CASE_TAG = "patch";
+
+/** Applied to a case any other Git issue (a Discussion) is filed from. */
 export const GITHUB_ISSUE_CASE_TAG = "s_dip";
 
 /** Added when the issue is filed as a regression. */
@@ -38,9 +45,10 @@ export const GITHUB_ISSUE_MIGRATION_CASE_TAG = "migration";
 
 /** The case tags to add after a Git issue is filed with this payload. */
 export function githubIssueCaseTags(
-  payload: Pick<BeCreateCaseGithubIssuePayload, "regression" | "reason">,
+  payload: Pick<BeCreateCaseGithubIssuePayload, "regression" | "reason" | "issueTypeLabel">,
 ): string[] {
-  const tags = [GITHUB_ISSUE_CASE_TAG];
+  const isPatch = payload.issueTypeLabel?.trim() === GITHUB_PATCH_ISSUE_TYPE;
+  const tags = [isPatch ? GITHUB_PATCH_ISSUE_CASE_TAG : GITHUB_ISSUE_CASE_TAG];
   if (payload.regression) tags.push(GITHUB_ISSUE_REGRESSION_CASE_TAG);
   if (payload.reason === "migration") tags.push(GITHUB_ISSUE_MIGRATION_CASE_TAG);
   return tags;
