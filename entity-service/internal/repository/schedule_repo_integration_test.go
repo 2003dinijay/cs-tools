@@ -40,6 +40,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -377,6 +378,19 @@ func TestScheduleIntegration_CatalogueServesRotas(t *testing.T) {
 		t.Fatalf("Moesif night window = %+v, want SME, zone MOE_N, 22:00-10:00 every day, escalation", night)
 	}
 
+	// IaaS's Day and Night are served (migration 0231). Seeded inactive by
+	// 0200 and never switched on, they left an IaaS lead's roster cell with
+	// leave and nothing to roster; the catalogue serves active windows only.
+	iaas := map[string]string{}
+	for _, s := range cat.Shifts {
+		if s.ZoneCode != nil && (s.Code == "SRE_IAAS_DAY" || s.Code == "SRE_IAAS_NIGHT") && s.IsEscalation && s.Tier == nil {
+			iaas[s.Code] = *s.ZoneCode
+		}
+	}
+	if iaas["SRE_IAAS_DAY"] != "IAAS_D" || iaas["SRE_IAAS_NIGHT"] != "IAAS_N" {
+		t.Fatalf("IaaS windows served = %v, want SRE_IAAS_DAY on IAAS_D and SRE_IAAS_NIGHT on IAAS_N, tier left to the turn", iaas)
+	}
+
 	teams := map[string]domain.ScheduleTeam{}
 	for _, tm := range cat.Teams {
 		teams[tm.Key] = tm
@@ -494,6 +508,63 @@ func TestScheduleIntegration_RotaAdminReachesOneFamilyOnly(t *testing.T) {
 	}
 	if len(lead) != 0 {
 		t.Fatalf("a lead with no rota admin role was given %v", lead)
+	}
+}
+
+// A rota admin is not a lead. LeadsTeam answers about team_member alone, and
+// The CRE head and the CS head run CRE's rota from above the teams: holding
+// the position, on any team, reaches every CRE team the way the CRE rota admin
+// role does -- and no SRE team. Like the role, it counts only for internal
+// staff, and it does not make them a lead of anything.
+func TestScheduleIntegration_CREAndCSHeadsReachEveryCRETeam(t *testing.T) {
+	repo, pool := newScheduleIntegrationRepo(t)
+	ctx := context.Background()
+	mustExec(t, pool, `
+		INSERT INTO team (id, created_on, updated_on, created_by, updated_by, name, key, type)
+		VALUES (gen_random_uuid(), NOW(), NOW(), 'fixture', 'fixture', 'Sched Leadership', $1, 'cre-leadership')
+		ON CONFLICT DO NOTHING`, schedLeadershipKey)
+	t.Cleanup(func() {
+		mustExec(t, pool, `DELETE FROM user_role WHERE user_id = $1`, schedOtherID)
+		mustExec(t, pool, `DELETE FROM team_member WHERE user_id = $1`, schedOtherID)
+	})
+
+	for _, position := range []string{"cre_head", "cs_head"} {
+		t.Run(position, func(t *testing.T) {
+			mustExec(t, pool, `DELETE FROM user_role WHERE user_id = $1`, schedOtherID)
+			mustExec(t, pool, `DELETE FROM team_member WHERE user_id = $1`, schedOtherID)
+			mustExec(t, pool, `
+				INSERT INTO team_member (id, created_on, updated_on, created_by, updated_by, team_id, user_id, role)
+				SELECT gen_random_uuid(), NOW(), NOW(), 'fixture', 'fixture', t.id, $2, $3
+				  FROM team t WHERE t.key = $1`, schedLeadershipKey, schedOtherID, position)
+
+			// Not internal staff yet: the position alone grants nothing.
+			if teams, err := repo.RotaAdminTeamsFor(ctx, schedOtherEmail); err != nil || len(teams) != 0 {
+				t.Fatalf("a %s who is not internal reached %v (err %v)", position, teams, err)
+			}
+
+			mustExec(t, pool, `
+				INSERT INTO user_role (id, created_on, updated_on, created_by, updated_by, user_id, role_id)
+				SELECT gen_random_uuid(), NOW(), NOW(), 'fixture', 'fixture', $1, r.id
+				  FROM role r WHERE r.name = 'internal'`, schedOtherID)
+
+			teams, err := repo.RotaAdminTeamsFor(ctx, schedOtherEmail)
+			if err != nil {
+				t.Fatalf("RotaAdminTeamsFor: %v", err)
+			}
+			if !slices.Contains(teams, schedTeamKey) || slices.Contains(teams, schedSreTeamKey) {
+				t.Fatalf("a %s reached %v; want the CRE fixture team and no SRE team", position, teams)
+			}
+			families, err := repo.RotaAdminFamilies(ctx, schedOtherEmail)
+			if err != nil {
+				t.Fatalf("RotaAdminFamilies: %v", err)
+			}
+			if !slices.Equal(families, []string{"CRE"}) {
+				t.Fatalf("a %s administers %v, want [CRE]", position, families)
+			}
+			if lead, err := repo.LeadsTeam(ctx, schedOtherEmail, schedTeamKey); err != nil || lead {
+				t.Fatalf("a %s was reported as the team's lead (%v, err %v)", position, lead, err)
+			}
+		})
 	}
 }
 

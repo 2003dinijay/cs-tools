@@ -1139,9 +1139,11 @@ func (r *scheduleRepository) LeadTeamsFor(ctx context.Context, userEmail string)
 // internal -- a customer granted it by mistake -- is simply no rota admin.
 // The service refuses a non-internal caller before it asks this at all; this
 // holds the same line here so the answer can never be used without it.
+//
+// The CRE head and the CS head count as CRE rota admins (see headsCRE).
 func (r *scheduleRepository) RotaAdminTeamsFor(ctx context.Context, userEmail string) ([]string, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT DISTINCT t.key
+		SELECT t.key
 		  FROM "user" u
 		  JOIN user_role ur ON ur.user_id = u.id
 		  JOIN role ro      ON ro.id = ur.role_id
@@ -1151,6 +1153,13 @@ func (r *scheduleRepository) RotaAdminTeamsFor(ctx context.Context, userEmail st
 		 WHERE lower(u.email) = lower($1)
 		   AND u.user_type = 'INTERNAL'::user_type_enum
 		   AND ro.name IN ('cre_rota_admin', 'sre_rota_admin', 'sme_rota_admin')
+		UNION
+		SELECT t.key
+		  FROM "user" u
+		  JOIN team t ON `+rosteredTeamWhere+` AND `+teamFamilyExpr+` = 'CRE'
+		 WHERE lower(u.email) = lower($1)
+		   AND u.user_type = 'INTERNAL'::user_type_enum
+		   AND `+headsCRE+`
 		 ORDER BY 1`, userEmail)
 	if err != nil {
 		return nil, fmt.Errorf("query rota admin teams: %w", err)
@@ -1176,20 +1185,37 @@ func (r *scheduleRepository) RotaAdminTeamsFor(ctx context.Context, userEmail st
 	return out, rows.Err()
 }
 
+// headsCRE is whether user u holds the team position cre_head or cs_head, on
+// any team. The CRE head and the CS head run CRE's rota from above the teams,
+// so they get everything a CRE rota admin does -- every CRE team's rota, the
+// CRE tags, CRE's rota markers -- without being granted the role as well. A
+// position rather than a role: it is the ServiceNow sync that says who the
+// heads are, and holding it should be enough. CRE only; the CS head runs no
+// SRE or SME rota by being CS head.
+const headsCRE = `EXISTS (SELECT 1 FROM team_member hm
+		WHERE hm.user_id = u.id AND hm.role IN ('cre_head', 'cs_head'))`
+
 // rotaAdminFamilyOfRole is which family each rota admin role runs.
 const rotaAdminFamilyOfRole = `CASE ro.name WHEN 'sre_rota_admin' THEN 'SRE' WHEN 'sme_rota_admin' THEN 'SME' ELSE 'CRE' END`
 
 // RotaAdminFamilies implements ScheduleRepository. Only an INTERNAL holder's
-// roles count, as in RotaAdminTeamsFor.
+// roles count, as in RotaAdminTeamsFor, and the CRE and CS heads count for
+// CRE (headsCRE).
 func (r *scheduleRepository) RotaAdminFamilies(ctx context.Context, userEmail string) ([]string, error) {
 	return r.distinctStrings(ctx, `
-		SELECT DISTINCT `+rotaAdminFamilyOfRole+`
+		SELECT `+rotaAdminFamilyOfRole+`
 		  FROM "user" u
 		  JOIN user_role ur ON ur.user_id = u.id
 		  JOIN role ro      ON ro.id = ur.role_id
 		 WHERE lower(u.email) = lower($1)
 		   AND u.user_type = 'INTERNAL'::user_type_enum
-		   AND ro.name IN ('cre_rota_admin', 'sre_rota_admin', 'sme_rota_admin')`, userEmail)
+		   AND ro.name IN ('cre_rota_admin', 'sre_rota_admin', 'sme_rota_admin')
+		UNION
+		SELECT 'CRE'
+		  FROM "user" u
+		 WHERE lower(u.email) = lower($1)
+		   AND u.user_type = 'INTERNAL'::user_type_enum
+		   AND `+headsCRE, userEmail)
 }
 
 // RotaMarkerTeamsFor implements ScheduleRepository.
