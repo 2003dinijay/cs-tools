@@ -24,6 +24,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/apierror"
@@ -51,6 +52,18 @@ const (
 	migrationLabel           = "Affected/Migration"
 	onboardingLabel          = "Onboarding/affected"
 )
+
+const (
+	deployedProductLookupPageSize = 50
+	// A deployment rarely holds more than a handful of deployed products; the
+	// page bound only guards a response that never reports the end.
+	deployedProductLookupMaxPages = 4
+)
+
+// deployedProductLookupTimeout bounds the deployed-product lookup so a slow
+// entity service can delay filing a Git issue by at most this long, never block
+// it. A variable so a test can shorten it.
+var deployedProductLookupTimeout = 5 * time.Second
 
 // engineeringGitIssueClient is the engineering entity service call used to file
 // GitHub issues. When it is set on a CaseHandler, POST /cases/{id}/github-issues
@@ -101,15 +114,26 @@ type caseGitHubIssueResult struct {
 
 // caseGitHubIssueContext is the subset of a case this handler needs beyond
 // what the request body itself carries, to fill the fixed info block at the
-// top of every filed issue's body. A field is left "" when the case has none
-// (e.g. no assigned team) -- buildGitHubIssueBody omits its line rather than
-// rendering it empty. OpenedBy is not a case field: it is the engineer filing
-// the issue, set by the caller from the signed-in user.
+// foot of every filed issue's body. A field is left "" when the case has none
+// (e.g. an account with no CRE team) -- buildGitHubIssueBody omits its line
+// rather than rendering it empty. OpenedBy is not a case field: it is the
+// engineer filing the issue, set by the caller from the signed-in user.
 type caseGitHubIssueContext struct {
+	// Product is the deployed product the way the earlier Git issues wrote it,
+	// "<abbreviation>-<version>" (e.g. "wso2is-6.1.0"), when deployedProductSlug
+	// found both. Otherwise it is the deployed product's own label, which carries
+	// the version (e.g. "WSO2 Identity Server 6.1.0"), then the product catalogue
+	// name when the case links no deployed product.
+	Product    string
 	Number     string
 	InternalID string
-	Team       string
-	OpenedBy   string
+	// Team is the case's ABT team: its account's CRE team, the same team the
+	// case page's "CRE / SRE team" cell, the de-escalation lead check and the
+	// case-event payloads call the case's team. The case's own assignedTeam is
+	// only the fallback for an account with no CRE team: entity-service leaves
+	// it unpopulated on synced data, so it alone left the line missing.
+	Team     string
+	OpenedBy string
 }
 
 // caseGitHubIssueContextFromCase reads the same raw GetCase response
@@ -118,8 +142,14 @@ type caseGitHubIssueContext struct {
 // raised the case, not the WSO2 engineer opening the Git issue.
 func caseGitHubIssueContextFromCase(raw []byte) caseGitHubIssueContext {
 	var view struct {
-		Number       string `json:"number"`
-		InternalID   string `json:"internalId"`
+		Number          string `json:"number"`
+		InternalID      string `json:"internalId"`
+		DeployedProduct *struct {
+			DisplayName *string `json:"displayName"`
+			Product     *struct {
+				Name string `json:"name"`
+			} `json:"product"`
+		} `json:"deployedProduct"`
 		AssignedTeam *struct {
 			Name string `json:"name"`
 		} `json:"assignedTeam"`
@@ -128,21 +158,146 @@ func caseGitHubIssueContextFromCase(raw []byte) caseGitHubIssueContext {
 		return caseGitHubIssueContext{}
 	}
 	ctx := caseGitHubIssueContext{Number: view.Number, InternalID: view.InternalID}
-	if view.AssignedTeam != nil {
+	if dp := view.DeployedProduct; dp != nil {
+		if dp.DisplayName != nil {
+			ctx.Product = strings.TrimSpace(*dp.DisplayName)
+		}
+		if ctx.Product == "" && dp.Product != nil {
+			ctx.Product = strings.TrimSpace(dp.Product.Name)
+		}
+	}
+	if ctx.Team = creTeamNameFromCase(raw); ctx.Team == "" && view.AssignedTeam != nil {
 		ctx.Team = strings.TrimSpace(view.AssignedTeam.Name)
 	}
 	return ctx
 }
 
-// buildGitHubIssueBody opens with a fixed Product/Update Level/WSO2 Case Id/
-// Case Number/ABT Team/Opened By block (each line omitted when its value is
-// unknown, never rendered as "Label : " with nothing after it), then the
-// caller's own description, then the same optional Public Issue/Hotfix
-// Required lines this body has always carried.
+// creTeamNameFromCase is the case's account's CRE team name, "" when the case
+// has no account or the account no CRE team. It decodes the account on its own
+// so that an account object of an unexpected shape costs only this line, never
+// the case number or case id the caller has already read.
+func creTeamNameFromCase(raw []byte) string {
+	var view struct {
+		Account *struct {
+			CreTeam *struct {
+				Name string `json:"name"`
+			} `json:"creTeam"`
+		} `json:"account"`
+	}
+	if err := json.Unmarshal(raw, &view); err != nil || view.Account == nil || view.Account.CreTeam == nil {
+		return ""
+	}
+	return strings.TrimSpace(view.Account.CreTeam.Name)
+}
+
+// deployedProductSlug is the case's deployed product as "<abbreviation>-<version>"
+// (e.g. "wso2is-6.1.0"), the form the earlier Git issues carried and the one the
+// product-updates catalogue keys on. The case itself holds only the display name
+// ("WSO2 Identity Server 6.1.0"), so it reads the case's deployment's deployed
+// products and picks the one the case names. It is best effort: "" when the case
+// names no deployment or deployed product, the product is not found, either part
+// is missing, or the lookup fails or runs past deployedProductLookupTimeout, and
+// the caller then keeps the deployed product's label. It never fails the filing.
+func (h *CaseHandler) deployedProductSlug(ctx context.Context, caseRaw []byte, userID, caseID string) string {
+	var view struct {
+		Deployment *struct {
+			ID string `json:"id"`
+		} `json:"deployment"`
+		DeployedProduct *struct {
+			ID *string `json:"id"`
+		} `json:"deployedProduct"`
+	}
+	if err := json.Unmarshal(caseRaw, &view); err != nil || view.Deployment == nil || view.DeployedProduct == nil || view.DeployedProduct.ID == nil {
+		return ""
+	}
+	deploymentID := strings.TrimSpace(view.Deployment.ID)
+	wantID := idKey(*view.DeployedProduct.ID)
+	if deploymentID == "" || wantID == "" {
+		return ""
+	}
+
+	// Every way the lookup can come back empty is logged with why (ids only), so a
+	// Product that fell back to the display name can be explained afterwards.
+	fallback := func(reason string, err error) string {
+		args := []any{"reason", reason, "userID", userID, "caseID", caseID}
+		if err != nil {
+			args = append(args, "err", err)
+		}
+		slog.WarnContext(ctx, "deployed product lookup found no abbreviation and version while filing a GitHub issue; using the product label", args...)
+		return ""
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, deployedProductLookupTimeout)
+	defer cancel()
+	for page := 0; page < deployedProductLookupMaxPages; page++ {
+		body, err := json.Marshal(map[string]any{
+			"deploymentIds": []string{deploymentID},
+			"pagination":    map[string]int{"limit": deployedProductLookupPageSize, "offset": page * deployedProductLookupPageSize},
+		})
+		if err != nil {
+			return fallback("request not built", err)
+		}
+		raw, err := h.entity.SearchDeployedProducts(ctx, body)
+		if err != nil {
+			return fallback("search failed", err)
+		}
+		var resp struct {
+			DeployedProducts []struct {
+				ID      string `json:"id"`
+				Product *struct {
+					Abbreviation *string `json:"abbreviation"`
+				} `json:"product"`
+				Version *struct {
+					Name string `json:"name"`
+				} `json:"version"`
+			} `json:"deployedProducts"`
+			HasMore bool `json:"hasMore"`
+		}
+		if err := json.Unmarshal(raw, &resp); err != nil {
+			return fallback("response not understood", err)
+		}
+		for _, dp := range resp.DeployedProducts {
+			if idKey(dp.ID) != wantID {
+				continue
+			}
+			if dp.Product == nil || dp.Product.Abbreviation == nil || dp.Version == nil {
+				return fallback("deployed product has no abbreviation or version", nil)
+			}
+			abbreviation, version := strings.TrimSpace(*dp.Product.Abbreviation), strings.TrimSpace(dp.Version.Name)
+			if abbreviation == "" || version == "" {
+				return fallback("deployed product has a blank abbreviation or version", nil)
+			}
+			return abbreviation + "-" + version
+		}
+		// An empty page ends the walk even when hasMore says otherwise, the same
+		// guard the entity service's own deployed-product paging uses.
+		if !resp.HasMore || len(resp.DeployedProducts) == 0 {
+			return fallback("deployed product not listed on the deployment", nil)
+		}
+	}
+	return fallback("deployed product not found within the page limit", nil)
+}
+
+// idKey makes two spellings of one id comparable: the entity service writes the
+// same id with or without dashes depending on the data source it was read from.
+func idKey(id string) string {
+	return strings.ToLower(strings.ReplaceAll(strings.TrimSpace(id), "-", ""))
+}
+
+// buildGitHubIssueBody is the caller's own description, then the optional
+// Public Issue/Hotfix Required lines, then a fixed Product/Update Level/WSO2
+// Case Id/Case Number/ABT Team/Opened By block as the footer (each line
+// omitted when its value is unknown, never rendered as "Label : " with
+// nothing after it). The block goes last so the issue opens with what the
+// engineer wrote, and so the Git Internals dashboard, which reads the last
+// "ABT Team"/"Opened By" line of a body as the automated footer, is not
+// overridden by a line quoted inside the description.
 func buildGitHubIssueBody(req caseGitHubIssueRequest, productLabel string, caseCtx caseGitHubIssueContext) string {
 	var info strings.Builder
 	line := func(label, value string) {
-		if value = strings.TrimSpace(value); value == "" {
+		// Fields rather than TrimSpace: the block is parsed line by line downstream, so a
+		// value holding a newline must not start a line of its own.
+		if value = strings.Join(strings.Fields(value), " "); value == "" {
 			return
 		}
 		if info.Len() > 0 {
@@ -150,7 +305,14 @@ func buildGitHubIssueBody(req caseGitHubIssueRequest, productLabel string, caseC
 		}
 		info.WriteString(label + " : " + value)
 	}
-	line("Product", productLabel)
+	// The deployed product's own label carries the version; the repository
+	// mapping's label (e.g. "product/is") is a GitHub label, not a product name,
+	// and is only the last resort when the case has no product label at all.
+	product := caseCtx.Product
+	if product == "" {
+		product = productLabel
+	}
+	line("Product", product)
 	line("Update Level", req.UpdateLevel)
 	line("WSO2 Case Id", caseCtx.InternalID)
 	line("Case Number", caseCtx.Number)
@@ -158,22 +320,23 @@ func buildGitHubIssueBody(req caseGitHubIssueRequest, productLabel string, caseC
 	line("Opened By", caseCtx.OpenedBy)
 
 	var b strings.Builder
-	b.WriteString(info.String())
-	extra := func(value string) {
+	section := func(value string) {
+		if value == "" {
+			return
+		}
 		if b.Len() > 0 {
 			b.WriteString("\n\n")
 		}
 		b.WriteString(value)
 	}
-	if v := strings.TrimSpace(req.Description); v != "" {
-		extra(v)
-	}
+	section(strings.TrimSpace(req.Description))
 	if v := strings.TrimSpace(req.PublicIssueURL); v != "" {
-		extra("Public Issue : " + v)
+		section("Public Issue : " + v)
 	}
 	if req.HotFixRequired {
-		extra("Hotfix Required : Yes")
+		section("Hotfix Required : Yes")
 	}
+	section(info.String())
 	return strings.TrimSpace(b.String())
 }
 
@@ -317,6 +480,9 @@ func (h *CaseHandler) createGitHubIssueViaEngineering(w http.ResponseWriter, r *
 		productLabel = productName
 	}
 	caseCtx := caseGitHubIssueContextFromCase(caseRaw)
+	if slug := h.deployedProductSlug(r.Context(), caseRaw, user.UserID, caseID); slug != "" {
+		caseCtx.Product = slug
+	}
 	caseCtx.OpenedBy = strings.TrimSpace(user.Email)
 	issueBody := buildGitHubIssueBody(req, productLabel, caseCtx)
 	if utf8.RuneCountInString(issueBody) > maxGitHubIssueBodyChars {

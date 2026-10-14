@@ -160,6 +160,7 @@ type mockEntityCaseClient struct {
 	aggregateFeedbackFn        func(ctx context.Context, body []byte) ([]byte, error)
 	getCaseFn                  func(ctx context.Context, caseID string) ([]byte, error)
 	getProductRepoMappingFn    func(ctx context.Context, name string) ([]byte, error)
+	searchDeployedProductsFn   func(ctx context.Context, body []byte) ([]byte, error)
 	createCaseAttachmentFn     func(ctx context.Context, body []byte) ([]byte, error)
 	searchCaseAttachmentsFn    func(ctx context.Context, body []byte) ([]byte, error)
 	getCaseAttachmentContentFn func(ctx context.Context, attachmentID string) ([]byte, string, error)
@@ -312,6 +313,13 @@ func (m *mockEntityCaseClient) GetProductRepoMapping(ctx context.Context, name s
 		return m.getProductRepoMappingFn(ctx, name)
 	}
 	return []byte(`{}`), nil
+}
+
+func (m *mockEntityCaseClient) SearchDeployedProducts(ctx context.Context, body []byte) ([]byte, error) {
+	if m.searchDeployedProductsFn != nil {
+		return m.searchDeployedProductsFn(ctx, body)
+	}
+	return []byte(`{"deployedProducts":[],"hasMore":false}`), nil
 }
 
 func (m *mockEntityCaseClient) CreateCaseAttachment(ctx context.Context, body []byte) ([]byte, error) {
