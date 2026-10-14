@@ -249,6 +249,7 @@ describe("useWidgetGroupByData", () => {
         label: "Acme Corp",
         query: { filters: [{ field: "account", op: "in", values: ["acme"] }] },
         value: 10,
+        linkId: "acme",
       },
     ]);
     // total is derived from the slices actually rendered, not the response's

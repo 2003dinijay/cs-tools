@@ -440,7 +440,7 @@ func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 			PermWrite:               build(cfg.CsEngineer, cfg.Admin),
 			PermViewAllDashboards:   build(cfg.CsEngineer, cfg.Admin),
 			PermAdmin:               build(cfg.Admin),
-			PermViewSecurityCenter: build(cfg.CsEngineer, cfg.Admin, cfg.CommentUpdater, cfg.SecurityTeam),
+			PermViewSecurityCenter:  build(cfg.CsEngineer, cfg.Admin, cfg.CommentUpdater, cfg.SecurityTeam),
 			// Everyone PermViewSecurityCenter already covers, plus Viewer —
 			// see that permission's own doc comment for why this is a
 			// separate permission rather than adding cfg.Viewer to
