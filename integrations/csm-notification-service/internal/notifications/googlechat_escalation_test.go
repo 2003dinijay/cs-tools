@@ -301,7 +301,7 @@ func TestBuildEscalationReply(t *testing.T) {
 		RecipientName: "Jane Doe", Firing: "2026-10-13 15:26 IST", ThreadKey: "incident-abc",
 	})
 	card := msg.CardsV2[0].Card
-	if card.Header.Title != "Escalated to L2" || card.Header.Subtitle != "INC0100914" {
+	if card.Header.Title != "Escalated to L2" || card.Header.Subtitle != "#INC0100914" {
 		t.Errorf("header = %q / %q", card.Header.Title, card.Header.Subtitle)
 	}
 	body := card.Sections[0].Widgets[0].TextParagraph.Text

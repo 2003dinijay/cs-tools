@@ -30,6 +30,20 @@ func IncidentAudience(assignmentGroup string) string {
 	return IncidentAudiencePrefix + strings.ToLower(strings.TrimSpace(assignmentGroup))
 }
 
+// IncidentGroups is the assignment groups whose INCIDENT_CHAT_SPACES spaces get a group's incident messages: its INCIDENT_CHAT_FANOUT list, else the group itself.
+func IncidentGroups(fanout map[string][]string, group string) []string {
+	key := strings.ToLower(strings.TrimSpace(group))
+	if key == "" {
+		return nil
+	}
+	for g, targets := range fanout {
+		if strings.ToLower(strings.TrimSpace(g)) == key && len(targets) > 0 {
+			return targets
+		}
+	}
+	return []string{group}
+}
+
 // IncidentCreatedAlert is SendIncidentCreatedAlert's card content.
 type IncidentCreatedAlert struct {
 	// IncidentID keys the card's thread (IncidentThreadKey).
