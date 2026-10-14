@@ -41,8 +41,11 @@ const (
 	maxPageSize     = 100
 	maxSearchLength = 200
 	// notifyTimeout bounds an announcement, which runs before the response so
-	// the caller learns whether Novera accepted it.
-	notifyTimeout = 25 * time.Second
+	// the caller learns whether Novera accepted it. It stays under the 15 s a
+	// shutdown waits for requests in flight (cmd/server), so a redeploy never
+	// stops a send half-way and leaves the entry claimed but unsent. Novera
+	// answers at once, after checking only that it can reach Google Chat.
+	notifyTimeout = 10 * time.Second
 )
 
 var idPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)

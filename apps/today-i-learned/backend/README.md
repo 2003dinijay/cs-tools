@@ -107,3 +107,7 @@ written to be shown to people as they are.
   send it from the webapp (`POST /submissions/{id}/notify`). An entry is
   claimed before it's sent and released if Novera doesn't accept it, so no
   one gets the same card twice, even when two moderators press send at once.
+  Only if the service is killed mid-send, or the database fails as the claim
+  is released (logged as `release notification failed` with the entry's id),
+  does an unsent entry stay marked as sent. To let a moderator send it:
+  `UPDATE til_entry SET notified_at = NULL WHERE id = '<entry id>';`
