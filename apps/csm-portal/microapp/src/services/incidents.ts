@@ -26,6 +26,7 @@ import type {
   IncidentCreatePayloadDto,
   IncidentCreateResponseDto,
   IncidentDetailDto,
+  IncidentPatchPayloadDto,
   IncidentSearchPayloadDto,
   IncidentSearchResponseDto,
 } from "@src/types";
@@ -77,6 +78,10 @@ const createIncident = async (payload: IncidentCreatePayloadDto): Promise<Incide
   return data;
 };
 
+const patchIncident = async (id: string, payload: IncidentPatchPayloadDto): Promise<void> => {
+  await apiClient.patch(INCIDENT_ENDPOINT(id), payload);
+};
+
 const INCIDENT_PAGE_LIMIT = 20;
 
 export const incidents = {
@@ -108,4 +113,6 @@ export const incidents = {
     }),
 
   create: createIncident,
+
+  patch: patchIncident,
 };
