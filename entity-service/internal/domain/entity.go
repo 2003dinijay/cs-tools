@@ -1347,6 +1347,30 @@ type ProjectUpdateResult struct {
 	SuspensionProcessState          json.RawMessage `json:"suspensionProcessState"`
 }
 
+// ProjectConsumptionStatus represents the product consumption state and keys for a project.
+type ProjectConsumptionStatus struct {
+	Status             int     `json:"status"`
+	ApplicationID      *string `json:"applicationId,omitempty"`
+	Name               *string `json:"name,omitempty"`
+	Description        *string `json:"description,omitempty"`
+	ConsumerKey        *string `json:"consumerKey,omitempty"`
+	ConsumerSecret     *string `json:"consumerSecret,omitempty"`
+	PrimarySecretKey   *string `json:"primarySecretKey,omitempty"`
+	SecondarySecretKey *string `json:"secondarySecretKey,omitempty"`
+	LicenseSecrets     *string `json:"licenseSecrets,omitempty"`
+}
+
+// ProjectConsumptionUpdateRequest holds the fields updated during the subscription/licensing lifecycle.
+type ProjectConsumptionUpdateRequest struct {
+	Status             int     `json:"status"`
+	ApplicationID      *string `json:"applicationId,omitempty"`
+	ConsumerKey        *string `json:"consumerKey,omitempty"`
+	ConsumerSecret     *string `json:"consumerSecret,omitempty"`
+	PrimarySecretKey   *string `json:"primarySecretKey,omitempty"`
+	SecondarySecretKey *string `json:"secondarySecretKey,omitempty"`
+	LicenseSecrets     *string `json:"licenseSecrets,omitempty"`
+}
+
 // SearchProjectsRequest is the input for a project search operation.
 // SearchQuery is matched case-insensitively against name, key, and subscription_type.
 type SearchProjectsRequest struct {
