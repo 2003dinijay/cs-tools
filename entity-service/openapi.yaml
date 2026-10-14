@@ -16001,6 +16001,127 @@ components:
         classification:
           type: string
           description: Filter by account classification (e.g. enterprise).
+        ownerEmail:
+          type: string
+          description: >-
+            Keep accounts where this email is the technical owner, account manager or
+            renewal account manager (any of the three), case-insensitive exact match.
+            Postgres data source only.
+        lifeCycle:
+          type: string
+          description: >-
+            Exact match on the account life cycle (e.g. Customer, Partner, Prospect).
+            Postgres data source only.
+        hasProject:
+          type: boolean
+          description: When true, only accounts with at least one project. Postgres data source only.
+        risks:
+          type: array
+          items:
+            type: string
+            enum:
+              - hasNoGoLive
+              - hasGoneLive
+              - hasRecentCases
+              - noSupportCases6mo
+              - hasEolProduct
+              - hasAbandonedMigrations
+              - hasMigrationDelays
+              - hasRecentEscalations
+          description: >-
+            Customer-health risk filter, OR semantics: keep accounts exhibiting any listed
+            key. An unrecognized key matches nothing; blank entries are ignored. Applied
+            before pagination, so total counts only the matching accounts. Postgres data
+            source only; the ServiceNow data source answers 400.
+            hasNoGoLive: some project has no go-live date, the account was activated on or
+            after 2024-01-01 and at least 6 whole months (days / 30.4375) have passed.
+            hasGoneLive: every project has a go-live date or the account was activated
+            before 2024-01-01 (projects pending a go-live decision are neither).
+            hasRecentCases: a case, service request, engagement or security report analysis
+            created in the last 180 days. noSupportCases6mo: the negation of hasRecentCases.
+            hasEolProduct: a deployed product (not deactivated) on any deployment of any
+            project, deployment active or not, whose product version support end date has
+            passed. hasAbandonedMigrations / hasMigrationDelays: a migration engagement not
+            closed and created at least 180 / 60 days ago. hasRecentEscalations: an
+            escalation created in the last 90 days on one of the account's work items.
+        subRegion:
+          type: array
+          items:
+            type: string
+          description: >-
+            Keep accounts whose sub-region (not region) equals any listed value, exact
+            match. Postgres data source only.
+        product:
+          type: string
+          description: >-
+            Keep accounts with a deployed product of this name (case-insensitive) on any
+            deployment of any project, deployment active or not; a deactivated deployed
+            product does not count. Postgres data source only.
+        abtTeam:
+          type: string
+          description: >-
+            Keep accounts whose CRE or SRE team name equals this value, case-insensitive.
+            Postgres data source only.
+        healthStatus:
+          type: string
+          description: >-
+            Keep accounts whose aggregated project health status is this value. Any other
+            value matches nothing. An account with no project health rows matches none of
+            the three values. Postgres data source only.
+          enum:
+            - at_risk
+            - healthy
+            - to_be_reviewed
+        includeHealthSummary:
+          type: boolean
+          description: >-
+            When true, every returned account carries healthSummary. When false or absent
+            the response is unchanged. Postgres data source only.
+
+    AccountSearchHealthSummary:
+      type: object
+      description: >-
+        Customer-health flags and overall health status of one account. Present only when
+        the search set includeHealthSummary.
+      required:
+        - goLiveStatus
+        - hasRecentCases
+        - hasEolProduct
+        - hasAbandonedMigrations
+        - hasMigrationDelays
+        - hasRecentEscalations
+        - noSupportCases6mo
+        - healthStatus
+      properties:
+        goLiveStatus:
+          type: object
+          required: [status, isRisk, state]
+          properties:
+            status:
+              type: string
+              description: Display text, e.g. "Has Gone Live" or "Hasn't Gone Live Since 3 months".
+            isRisk:
+              type: boolean
+              description: True only when state is failure.
+            state:
+              type: string
+              enum: [success, pending, failure]
+        hasRecentCases:
+          type: boolean
+        hasEolProduct:
+          type: boolean
+        hasAbandonedMigrations:
+          type: boolean
+        hasMigrationDelays:
+          type: boolean
+        hasRecentEscalations:
+          type: boolean
+        noSupportCases6mo:
+          type: boolean
+        healthStatus:
+          type: string
+          enum: [at_risk, healthy, to_be_reviewed]
+          description: at_risk if any project is, else healthy if every project row is, else to_be_reviewed (also when the account has no health rows).
 
     AccountView:
       type: object
@@ -16077,6 +16198,10 @@ components:
           description: >-
             Whether this account has a primary partner account set. Postgres approximates
             this as having any partner in account_relationship.
+        healthSummary:
+          description: Present only when the search set filters.includeHealthSummary.
+          allOf:
+            - $ref: '#/components/schemas/AccountSearchHealthSummary'
 
     SNSupportTierRef:
       type: object

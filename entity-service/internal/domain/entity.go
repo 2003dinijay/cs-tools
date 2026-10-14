@@ -430,6 +430,75 @@ type SearchAccountsFilters struct {
 	// against the account's projects, used purely to require a match
 	// rather than to select anything from the join.
 	HasProject bool `json:"hasProject,omitempty"`
+
+	// The fields below serve the customer-health account list. All are
+	// additive and absent by default: a request that sets none of them is
+	// answered exactly as before. Postgres data source only; the ServiceNow
+	// data source rejects a request that sets any of them.
+
+	// Risks keeps accounts exhibiting ANY of the listed risk keys (OR). Keys:
+	// hasNoGoLive, hasGoneLive, hasRecentCases, noSupportCases6mo,
+	// hasEolProduct, hasAbandonedMigrations, hasMigrationDelays,
+	// hasRecentEscalations. An unrecognized key matches nothing. Blank
+	// entries are ignored; a list with only blank entries is no filter.
+	Risks []string `json:"risks,omitempty"`
+	// SubRegion keeps accounts whose account.sub_region (not region) equals
+	// any listed value, exact match.
+	SubRegion []string `json:"subRegion,omitempty"`
+	// Product keeps accounts with a deployed product of this name under any of
+	// their projects' deployments, active or deactivated deployment alike
+	// (a deactivated deployed product does not count). Case-insensitive.
+	Product string `json:"product,omitempty"`
+	// AbtTeam keeps accounts whose CRE or SRE team name equals this value,
+	// case-insensitive.
+	AbtTeam string `json:"abtTeam,omitempty"`
+	// HealthStatus keeps accounts whose aggregated project health status is
+	// this value: at_risk, healthy or to_be_reviewed. Any other value matches
+	// nothing. An account with no project health rows matches none of the
+	// three, though it is reported as to_be_reviewed when its row carries a
+	// health summary.
+	HealthStatus string `json:"healthStatus,omitempty"`
+	// IncludeHealthSummary adds a HealthSummary to every returned row.
+	IncludeHealthSummary bool `json:"includeHealthSummary,omitempty"`
+}
+
+// Account health summary risk keys accepted by SearchAccountsFilters.Risks.
+const (
+	AccountRiskNoGoLive             = "hasNoGoLive"
+	AccountRiskGoneLive             = "hasGoneLive"
+	AccountRiskRecentCases          = "hasRecentCases"
+	AccountRiskNoSupportCases6mo    = "noSupportCases6mo"
+	AccountRiskEolProduct           = "hasEolProduct"
+	AccountRiskAbandonedMigrations  = "hasAbandonedMigrations"
+	AccountRiskMigrationDelays      = "hasMigrationDelays"
+	AccountRiskRecentEscalations    = "hasRecentEscalations"
+	AccountHealthStatusAtRisk       = "at_risk"
+	AccountHealthStatusHealthy      = "healthy"
+	AccountHealthStatusToBeReviewed = "to_be_reviewed"
+)
+
+// AccountGoLiveStatus is an account's aggregated go-live state across its
+// projects. State is "success", "pending" or "failure"; IsRisk is true only
+// for "failure".
+type AccountGoLiveStatus struct {
+	Status string `json:"status"`
+	IsRisk bool   `json:"isRisk"`
+	State  string `json:"state"`
+}
+
+// AccountSearchHealthSummary carries an account's customer-health flags and overall
+// health status. Present on a search row only when the request set
+// includeHealthSummary.
+type AccountSearchHealthSummary struct {
+	GoLiveStatus           AccountGoLiveStatus `json:"goLiveStatus"`
+	HasRecentCases         bool                `json:"hasRecentCases"`
+	HasEolProduct          bool                `json:"hasEolProduct"`
+	HasAbandonedMigrations bool                `json:"hasAbandonedMigrations"`
+	HasMigrationDelays     bool                `json:"hasMigrationDelays"`
+	HasRecentEscalations   bool                `json:"hasRecentEscalations"`
+	NoSupportCases6mo      bool                `json:"noSupportCases6mo"`
+	// HealthStatus is at_risk, healthy or to_be_reviewed.
+	HealthStatus string `json:"healthStatus"`
 }
 
 // SearchAccountsRequest is the input for an account search operation.
@@ -463,7 +532,7 @@ type AccountView struct {
 	// finer region, which Region alone cannot express.
 	SubRegion *string `json:"subRegion"`
 	Country   *string `json:"country"`
-	City           *string `json:"city"`
+	City      *string `json:"city"`
 	// DriveLocation is a free-text Google Drive folder reference — present
 	// on the Postgres data source (account.drive_location).
 	DriveLocation          *string    `json:"driveLocation"`
@@ -494,6 +563,9 @@ type AccountView struct {
 	// HasPrimaryPartner is whether this account has a primary partner account set. On
 	// Postgres it approximates this as "has any partner in account_relationship".
 	HasPrimaryPartner *bool `json:"hasPrimaryPartner"`
+	// HealthSummary is set only when the search asked for it
+	// (filters.includeHealthSummary); omitted otherwise.
+	HealthSummary *AccountSearchHealthSummary `json:"healthSummary,omitempty"`
 }
 
 // SearchAccountsResponse is the paginated result of an account search, unified

@@ -105,6 +105,13 @@ func NewServiceNowAccountService(client *integrationservice.Client) SNAccountSer
 	return &snAccountService{client: client}
 }
 
+// accountSearchUsesHealthFilters reports whether any Postgres-only
+// customer-health filter or the health summary is set.
+func accountSearchUsesHealthFilters(f domain.SearchAccountsFilters) bool {
+	return len(f.Risks) > 0 || len(f.SubRegion) > 0 || f.Product != "" || f.AbtTeam != "" ||
+		f.HealthStatus != "" || f.IncludeHealthSummary
+}
+
 func (s *snAccountService) SearchAccounts(ctx context.Context, req domain.SearchAccountsRequest) (domain.SearchAccountsResponse, error) {
 	if err := normalizePagination(&req.Pagination); err != nil {
 		return domain.SearchAccountsResponse{}, err
@@ -119,6 +126,13 @@ func (s *snAccountService) SearchAccounts(ctx context.Context, req domain.Search
 		// silently dropping it here would turn a "my accounts" search into
 		// "every account", which must fail loudly instead.
 		return domain.SearchAccountsResponse{}, &apierror.ValidationError{Msg: "ownerEmail filtering is not supported when DATA_SOURCE=servicenow"}
+	}
+
+	if accountSearchUsesHealthFilters(req.Filters) {
+		// The customer-health filters and summary are computed from Postgres
+		// tables; silently dropping them would turn a filtered search into an
+		// unfiltered one, so fail loudly instead (same as ownerEmail above).
+		return domain.SearchAccountsResponse{}, &apierror.ValidationError{Msg: "risks, subRegion, product, abtTeam, healthStatus and includeHealthSummary are not supported when DATA_SOURCE=servicenow"}
 	}
 
 	token := middleware.UserIDTokenFromContext(ctx)
