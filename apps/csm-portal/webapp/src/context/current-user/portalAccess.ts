@@ -241,6 +241,12 @@ export interface PortalAccess {
    * might hold.
    */
   isAdmin: boolean;
+  /**
+   * The SLAs tab on a case's detail page. `admin`, `cs_engineer`, or the
+   * dedicated `security_team` role — every other role, `viewer` included,
+   * does not see this tab at all.
+   */
+  canViewSlaTab: boolean;
 }
 
 /**
@@ -288,6 +294,7 @@ export function getPortalAccess(roles: string[] | undefined): PortalAccess {
       canViewSettings: true,
       canViewWorkItemsStaffView: true,
       isAdmin: true,
+      canViewSlaTab: true,
     };
   }
   const held = new Set((roles ?? []).map((r) => r.toLowerCase()));
@@ -317,5 +324,6 @@ export function getPortalAccess(roles: string[] | undefined): PortalAccess {
     canViewSettings: full,
     canViewWorkItemsStaffView: full || has(PORTAL_ROLE.timecardApprover),
     isAdmin,
+    canViewSlaTab: full || has(PORTAL_ROLE.securityTeam),
   };
 }
