@@ -23,6 +23,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/risk"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/servicenow"
@@ -152,6 +153,20 @@ func (h *CustomerHealthHandler) GetSummary(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
 		return
 	}
+	// payload.Email is only ever meant to express "my accounts" -- the
+	// webapp's own "My Accounts" scope toggle sends the signed-in user's own
+	// email here, never an arbitrary one (there is no UI for picking someone
+	// else's). Trusting it as sent would let any caller pass a colleague's
+	// email and get that colleague's own "my accounts" results instead of
+	// their own -- a real gap, since nothing here re-derives it from the
+	// caller's own identity. A non-empty value is therefore only ever a
+	// signal that the caller wants their OWN accounts; the value used is
+	// always the authenticated caller's own token email, never the
+	// caller-supplied string.
+	if payload.Email != nil && strings.TrimSpace(*payload.Email) != "" {
+		callerEmail := user.Email
+		payload.Email = &callerEmail
+	}
 	if payload.Limit <= 0 {
 		payload.Limit = 10
 	}
@@ -223,14 +238,23 @@ func (h *CustomerHealthHandler) summaryFilteredByHealthStatus(ctx context.Contex
 		idSet[id] = true
 	}
 
-	const batchSize = 200
-	// maxBatches bounds the loop even if ServiceNow's response is
+	// batchSize must not exceed entity-service's own hard pagination cap
+	// (internal/service's maxLimit = 50, "limit cannot exceed 50") -- a real,
+	// 100%-reproducing bug found live: this used to be 200, so every single
+	// healthStatus-filtered request (selecting Healthy/At Risk/To Be Reviewed
+	// on the Customer Health dashboard) sent limit:200 to POST
+	// /accounts/search and entity-service rejected the whole request with a
+	// 400 "limit cannot exceed 50", surfaced here as the generic "Failed to
+	// retrieve customer health summary." -- the filter could never return a
+	// single result.
+	const batchSize = 50
+	// maxBatches bounds the loop even if entity-service's response is
 	// inconsistent (e.g. it ignores offset, or caps a page below batchSize
-	// while still reporting more remain) -- 500 batches is 100,000 accounts,
-	// far beyond any real account count, so hitting it means the upstream
-	// itself is behaving unexpectedly rather than this genuinely having
-	// that much data.
-	const maxBatches = 500
+	// while still reporting more remain) -- 2000 batches is 100,000 accounts
+	// at this batchSize, far beyond any real account count, so hitting it
+	// means the upstream itself is behaving unexpectedly rather than this
+	// genuinely having that much data.
+	const maxBatches = 2000
 	snOffset := 0
 	var allAccounts []servicenow.AccountSummary
 	for i := 0; i < maxBatches; i++ {
