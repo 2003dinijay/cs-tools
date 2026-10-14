@@ -78,18 +78,35 @@ const (
 	// cs_engineer also holds. Reserved for actions no non-admin staff
 	// role should ever reach, such as creating a new platform user.
 	PermAdmin
-	// PermViewSecurityCenter is the Security Center area: security-report
-	// cases (POST /cases/search and GET /cases/{id}, type-checked inside
-	// CaseHandler itself — see its own doc comment for why a route-level
-	// permission alone can't express this) and both /products/vulnerabilities
-	// routes. Admin, cs_engineer and comment_updater only — every other
-	// role, including plain viewer/escalator/attachment_downloader, is
-	// denied even though they hold PermView, since this is deliberately
-	// narrower than the general case/product-data access PermView otherwise
-	// grants. comment_updater holds it because that role is also used for
-	// staff who triage security reports but don't otherwise hold
-	// cs_engineer.
+	// PermViewSecurityCenter is the Security Center area: both
+	// /products/vulnerabilities routes. Admin, cs_engineer and
+	// comment_updater only — every other role, including plain
+	// viewer/escalator/attachment_downloader, is denied even though they
+	// hold PermView, since this is deliberately narrower than the general
+	// case/product-data access PermView otherwise grants. comment_updater
+	// holds it because that role is also used for staff who triage
+	// security reports but don't otherwise hold cs_engineer.
+	//
+	// Security-report-analysis CASE search (POST /cases/search,
+	// type-checked inside CaseHandler itself — see its own doc comment for
+	// why a route-level permission alone can't express this) is gated by
+	// PermViewSecurityReportCases below, NOT this one — the two were split
+	// apart deliberately so Viewer could be granted read access to
+	// security-report (and service-request) cases without also opening the
+	// Vulnerabilities tab/routes, which stay restricted to this permission
+	// alone.
 	PermViewSecurityCenter
+	// PermViewSecurityReportCases is viewing security-report-analysis cases
+	// through POST /cases/search (CaseHandler.SearchCases' own in-handler
+	// caseSearchTargetsSecurityReports check — see WithAccessGuard's doc
+	// comment). Deliberately its own permission, not PermViewSecurityCenter:
+	// Viewer needed read access to these cases (an API-only change, no
+	// webapp/nav change alongside it) without also gaining
+	// /products/vulnerabilities access, which PermViewSecurityCenter still
+	// gates alone. service_request cases have no equivalent gate at all —
+	// SearchCases/GetCase never restrict that type by role, so every
+	// PermView holder (Viewer included) can already search/fetch them.
+	PermViewSecurityReportCases
 	// PermViewerAccess is the blanket audience gate for every SupportPortalLite
 	// (Sales/Solutions-Architecture) route — replacing the old
 	// SPL_ALLOWED_GROUPS raw-Asgardeo-groups check (internal/splauth,
@@ -357,7 +374,10 @@ type portalRole struct {
 // readable. PermViewSecurityCenter is the one further exception to "every
 // role implies View covers it": plain viewer/escalator/attachment_downloader/
 // usage_metrics_viewer/timecard_approver/dashboard_designer all hold PermView
-// but not this. PermUsePlg is narrower the same way — CS engineer and admin
+// but not this — Viewer's read access to security-report case search comes
+// from the separate, narrower PermViewSecurityReportCases instead (see that
+// permission's own doc comment), not from holding PermViewSecurityCenter.
+// PermUsePlg is narrower the same way — CS engineer and admin
 // only — and PermManagePlaybooks narrower again, admin alone.
 // sales_solutions is a separate exception again: it implies
 // PermViewSharedEntity (only) rather than being implied BY it — see
@@ -415,7 +435,13 @@ func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 			PermViewAllDashboards:   build(cfg.CsEngineer, cfg.Admin),
 			PermAdmin:               build(cfg.Admin),
 			PermViewSecurityCenter:  build(cfg.CsEngineer, cfg.Admin, cfg.CommentUpdater),
-			PermApproveTimeCard:     build(cfg.TimecardApprover, cfg.Admin),
+			// Everyone PermViewSecurityCenter already covers, plus Viewer —
+			// see that permission's own doc comment for why this is a
+			// separate permission rather than adding cfg.Viewer to
+			// PermViewSecurityCenter directly (that would also open
+			// /products/vulnerabilities to Viewer, which is out of scope).
+			PermViewSecurityReportCases: build(cfg.Viewer, cfg.CsEngineer, cfg.Admin, cfg.CommentUpdater),
+			PermApproveTimeCard:         build(cfg.TimecardApprover, cfg.Admin),
 			// Viewer, unconditionally (no cs_engineer exclusion) -- see
 			// PermViewerAccess's own doc comment for why.
 			PermViewerAccess: build(cfg.Viewer),
