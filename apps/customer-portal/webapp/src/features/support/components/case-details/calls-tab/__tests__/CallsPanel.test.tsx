@@ -20,7 +20,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useGetCallRequests } from "@features/support/api/useGetCallRequests";
 import useGetUserDetails from "@features/settings/api/useGetUserDetails";
-import { CALL_REQUEST_STATE_CANCELLED } from "@features/support/constants/supportConstants";
+import {
+  CALL_REQUEST_STATE_CANCELLED,
+  CALL_REQUEST_STATE_CUSTOMER_REJECTED,
+  CALL_REQUEST_STATE_PENDING_ON_WSO2,
+} from "@features/support/constants/supportConstants";
 import CallsPanel from "@case-details-calls/CallsPanel";
 
 vi.mock("@features/support/api/useGetCallRequests");
@@ -48,20 +52,38 @@ vi.mock("@features/settings/api/usePatchUserMe", () => ({
   }),
 }));
 
+// entity-service's real GET /projects/{id}/filters returns callRequestStates
+// with its own string enum ids ("pending_on_wso2", ...), never the
+// ServiceNow-era numeric stateKey as a string -- a prior version of this mock
+// used numeric-looking ids ("1", "2", "4", ...), which let
+// CallsPanel.tsx's old `Number(found.id)` bug pass every test here while
+// silently sending `stateKey: NaN` against the real backend (a real,
+// reported 400 "Invalid request payload." on every customer Approve/Reject).
+// Keep this mock shaped like the real response so a regression here is
+// caught again. A plain vi.fn() (not a fixed object) so individual tests can
+// override severityBasedAllocationTime via mockReturnValueOnce.
+const mockUseGetProjectFilters = vi.fn((): {
+  data: {
+    callRequestStates: { id: string; label: string }[];
+    severityBasedAllocationTime?: Record<string, number>;
+  };
+  isLoading: boolean;
+  isError: boolean;
+} => ({
+  data: {
+    callRequestStates: [
+      { id: "pending_on_customer", label: "Pending on Customer" },
+      { id: "pending_on_wso2", label: "Pending on WSO2" },
+      { id: "scheduled", label: "Scheduled" },
+      { id: "customer_rejected", label: "Customer Rejected" },
+      { id: "notes_pending", label: "Notes Pending" },
+    ],
+  },
+  isLoading: false,
+  isError: false,
+}));
 vi.mock("@api/useGetProjectFilters", () => ({
-  default: () => ({
-    data: {
-      callRequestStates: [
-        { id: "1", label: "Pending" },
-        { id: "2", label: "Pending on WSO2" },
-        { id: "3", label: "Pending on Customer" },
-        { id: "4", label: "Customer Rejected" },
-        { id: "5", label: "Scheduled" },
-      ],
-    },
-    isLoading: false,
-    isError: false,
-  }),
+  default: () => mockUseGetProjectFilters(),
 }));
 
 vi.mock("@components/header/UserProfileModal", () => ({
@@ -86,6 +108,7 @@ const mockCaseId = "case-1";
 describe("CallsPanel", () => {
   beforeEach(() => {
     mockPatchMutate.mockClear();
+    mockUseGetProjectFilters.mockClear();
     vi.mocked(useGetUserDetails).mockReturnValue({
       data: { timeZone: "America/New_York" },
       refetch: vi
@@ -114,6 +137,48 @@ describe("CallsPanel", () => {
         caseStatusLabel="Work In Progress"
       />);
     expect(screen.getByTestId("calls-list-skeleton")).toBeInTheDocument();
+  });
+
+  // CodeRabbit catch: callRequestStateKeys mapped callRequestStates' string
+  // enum ids to real numbers via CALL_REQUEST_STATE_KEY_BY_ID, but never
+  // filtered out the mapped Canceled key -- so once the separate NaN-mapping
+  // bug was fixed, "canceled" resolved to a real CALL_REQUEST_STATE_CANCELLED
+  // and stayed in the list, asking the search explicitly for Canceled call
+  // requests, the opposite of "all non-Canceled states" (this file's own
+  // comment). useGetProjectFilters' own upstream Canceled removal doesn't
+  // catch this either (it compares Number(s.id), which is NaN for the string
+  // id "canceled").
+  it("excludes Canceled from the call request search's state keys, even when the project filters include it", () => {
+    mockUseGetProjectFilters.mockReturnValueOnce({
+      data: {
+        callRequestStates: [
+          { id: "pending_on_customer", label: "Pending on Customer" },
+          { id: "pending_on_wso2", label: "Pending on WSO2" },
+          { id: "canceled", label: "Canceled" },
+        ],
+      },
+      isLoading: false,
+      isError: false,
+    });
+    vi.mocked(useGetCallRequests).mockReturnValue({
+      isPending: true,
+      data: undefined,
+      isError: false,
+      refetch: vi.fn(),
+      fetchNextPage: vi.fn(),
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      isFetchNextPageError: false,
+    } as unknown as ReturnType<typeof useGetCallRequests>);
+
+    renderWithProviders(<CallsPanel
+        projectId={mockProjectId}
+        caseId={mockCaseId}
+        caseStatusLabel="Work In Progress"
+      />);
+
+    const [, , stateKeys] = vi.mocked(useGetCallRequests).mock.calls[0];
+    expect(stateKeys).not.toContain(CALL_REQUEST_STATE_CANCELLED);
   });
 
   it("should render error state", () => {
@@ -347,8 +412,10 @@ describe("CallsPanel", () => {
       expect.objectContaining({
         callRequestId: "call-2",
         reason: "Not available",
-        // stateKey derived from filter: "Customer Rejected" → id "4" → number 4
-        stateKey: 4,
+        // stateKey is the fixed numeric constant (CALL_REQUEST_STATE_CUSTOMER_REJECTED),
+        // not derived from the filter's own string id ("customer_rejected") --
+        // the filter match only confirms the project still offers this state.
+        stateKey: CALL_REQUEST_STATE_CUSTOMER_REJECTED,
       }),
       expect.any(Object),
     );
@@ -395,6 +462,70 @@ describe("CallsPanel", () => {
     expect(
       screen.getByText(/Enter preferred time for this call request/i),
     ).toBeInTheDocument();
+  });
+
+  it("submits the Approve PATCH with the fixed numeric stateKey, not NaN from the filter's string id", () => {
+    // Regression test for a real, reported bug: callRequestStates' own `id`
+    // is entity-service's string enum key ("pending_on_wso2"), and the old
+    // code derived approveStateKey via Number(found.id) -- always NaN for a
+    // string id, which is not `undefined`, so validation incorrectly passed
+    // and the PATCH was sent with `stateKey: NaN` (-> JSON null -> the Go
+    // backend's int zero value 0), failing every customer Approve with
+    // "Invalid request payload."
+    vi.mocked(useGetCallRequests).mockReturnValue({
+      isPending: false,
+      isError: false,
+      refetch: vi.fn(),
+      fetchNextPage: vi.fn(),
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      isFetchNextPageError: false,
+      data: {
+        pages: [
+          {
+            callRequests: [
+              {
+                id: "call-2",
+                case: { id: "case-1", label: "CS0438719" },
+                reason: "Customer approval needed",
+                preferredTimes: [],
+                durationMin: 30,
+                number: "CR-TEST",
+                scheduleTime: "",
+                createdOn: "2024-10-29 10:00:00",
+                updatedOn: "2024-10-29 10:00:00",
+                state: { id: "pending_on_customer", label: "Pending on Customer" },
+              },
+            ],
+          },
+        ],
+      },
+    } as unknown as ReturnType<typeof useGetCallRequests>);
+
+    renderWithProviders(<CallsPanel
+        projectId={mockProjectId}
+        caseId={mockCaseId}
+        caseStatusLabel="Work In Progress"
+      />);
+    fireEvent.click(screen.getByRole("button", { name: /Approve/i }));
+
+    const preferredTimeInput = screen.getByLabelText(/Preferred Time \*/i);
+    const future = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const localValue = `${future.getFullYear()}-${pad(future.getMonth() + 1)}-${pad(future.getDate())}T${pad(future.getHours())}:${pad(future.getMinutes())}`;
+    fireEvent.change(preferredTimeInput, { target: { value: localValue } });
+
+    fireEvent.click(screen.getAllByRole("button", { name: /^Approve$/i }).at(-1)!);
+
+    expect(mockPatchMutate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        callRequestId: "call-2",
+        stateKey: CALL_REQUEST_STATE_PENDING_ON_WSO2,
+      }),
+      expect.any(Object),
+    );
+    const [sentPayload] = mockPatchMutate.mock.calls.at(-1)!;
+    expect(Number.isNaN(sentPayload.stateKey)).toBe(false);
   });
 
   it("should show pagination like attachments and fetch next page when changing page", async () => {
@@ -548,5 +679,112 @@ describe("CallsPanel", () => {
         /Describe your call request or topics you'd like to discuss/i,
       ),
     ).toBeInTheDocument();
+  });
+
+  // Regression: entity-service's severityBasedAllocationTime is currently
+  // always empty, so the picker's floor used to fall back to one flat
+  // conservative default (or, before that fix, an even shorter "now + 1
+  // minute") for every severity -- wrong for anything less urgent than
+  // Catastrophic/P0. CALL_REQUEST_LEAD_MINUTES_BY_PRIORITY_ID mirrors
+  // ServiceNow's own per-priority lead-time table so each severity gets its
+  // real minimum, confirmed here against the picker's actual rendered min.
+  it("floors the preferred time by the case's own severity (Catastrophic/P0 = 15 minutes)", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-11T09:00:00.000Z"));
+    try {
+      vi.mocked(useGetCallRequests).mockReturnValue({
+        isPending: false,
+        isError: false,
+        refetch: vi.fn(),
+        fetchNextPage: vi.fn(),
+        hasNextPage: false,
+        isFetchingNextPage: false,
+        isFetchNextPageError: false,
+        data: { pages: [{ callRequests: [] }] },
+      } as unknown as ReturnType<typeof useGetCallRequests>);
+      vi.mocked(useGetUserDetails).mockReturnValue({
+        data: { timeZone: "UTC" },
+        refetch: vi.fn().mockResolvedValue({ data: { timeZone: "UTC" } }),
+        isLoading: false,
+        isError: false,
+      } as unknown as ReturnType<typeof useGetUserDetails>);
+
+      renderWithProviders(<CallsPanel
+          projectId={mockProjectId}
+          caseId={mockCaseId}
+          caseStatusLabel="Work In Progress"
+          caseSeverityId="14"
+        />);
+
+      fireEvent.click(screen.getByRole("button", { name: /^Request Call$/ }));
+
+      const input = document.getElementById(
+        "preferred-time-0",
+      ) as HTMLInputElement;
+      // 09:00 UTC + 15 minutes (Catastrophic/P0's real ServiceNow offset,
+      // not the 300-minute flat default a lower-severity case would still
+      // fall back to) = 09:15.
+      expect(input.min).toBe("2026-10-11T09:15");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Regression: a non-finite allocation from the API (Infinity in
+  // particular -- NaN was already excluded) used to still be treated as
+  // "known" and returned as-is, skipping CALL_REQUEST_LEAD_MINUTES_BY_PRIORITY_ID
+  // entirely. computeMinScheduleDatetimeLocalForTimeZone's own guard only
+  // rejects NaN/negative/null/undefined, not Infinity, so a Catastrophic/P0
+  // case with a bad API value got an unusable, far-future floor instead of
+  // the correct 15 minutes. (A negative value alone would have been caught
+  // downstream by that same guard either way -- Infinity is the case that
+  // actually depends on CallsPanel.tsx's own check.)
+  it("falls through to the priority table when the API's own allocation is invalid (non-finite)", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-11T09:00:00.000Z"));
+    try {
+      vi.mocked(useGetCallRequests).mockReturnValue({
+        isPending: false,
+        isError: false,
+        refetch: vi.fn(),
+        fetchNextPage: vi.fn(),
+        hasNextPage: false,
+        isFetchingNextPage: false,
+        isFetchNextPageError: false,
+        data: { pages: [{ callRequests: [] }] },
+      } as unknown as ReturnType<typeof useGetCallRequests>);
+      vi.mocked(useGetUserDetails).mockReturnValue({
+        data: { timeZone: "UTC" },
+        refetch: vi.fn().mockResolvedValue({ data: { timeZone: "UTC" } }),
+        isLoading: false,
+        isError: false,
+      } as unknown as ReturnType<typeof useGetUserDetails>);
+      mockUseGetProjectFilters.mockReturnValueOnce({
+        data: {
+          callRequestStates: [],
+          severityBasedAllocationTime: { "14": Infinity },
+        },
+        isLoading: false,
+        isError: false,
+      });
+
+      renderWithProviders(<CallsPanel
+          projectId={mockProjectId}
+          caseId={mockCaseId}
+          caseStatusLabel="Work In Progress"
+          caseSeverityId="14"
+        />);
+
+      fireEvent.click(screen.getByRole("button", { name: /^Request Call$/ }));
+
+      const input = document.getElementById(
+        "preferred-time-0",
+      ) as HTMLInputElement;
+      // Must still be 09:15 (the mapped 15-minute Catastrophic/P0 value),
+      // not a floor computed from Infinity minutes.
+      expect(input.min).toBe("2026-10-11T09:15");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
