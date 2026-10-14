@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "package": "sh scripts/package-microapp.sh",
     "lint": "eslint .",
     "preview": "vite preview",
     "prettier": "prettier --write .",
