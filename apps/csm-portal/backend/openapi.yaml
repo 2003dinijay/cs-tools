@@ -21313,7 +21313,7 @@ components:
           description: GitHub label for the issue type.
         priorityLevel:
           type: string
-          description: Priority level for the issue. Only applied for the "Type/Incident" issue type.
+          description: GitHub priority label for a Discussion. Sent as Priority/Critical(P1), Priority/High(P2), or Priority/Medium(P3). Bare Priority/Critical (etc.) is rewritten to the (Pn) form. Discussion also gets Type/Incident.
 
     CreateCaseGithubIssueResponse:
       type: object
