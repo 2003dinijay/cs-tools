@@ -38,6 +38,7 @@ import {
   resolveDisplayTimeZone,
 } from "@utils/dateTime";
 import { ApiError } from "@utils/ApiError";
+import { buildPdfTableBody, drawWso2StaffMarkers } from "@utils/pdfStaffMarker";
 
 // --- Change request stats (API → card counts) --------------------------------
 
@@ -996,9 +997,10 @@ export function generateChangeRequestDetailsPdf(
     tableData.push(["Notes & Comments", commentsText]);
   }
 
+  const { body, staffMarkerCells } = buildPdfTableBody(tableData);
   autoTable(doc, {
     startY: 28,
-    body: tableData,
+    body,
     theme: "grid",
     styles: {
       fontSize: 10,
@@ -1019,6 +1021,7 @@ export function generateChangeRequestDetailsPdf(
       },
     },
     margin: { bottom: 25 },
+    didDrawCell: drawWso2StaffMarkers(staffMarkerCells),
   });
 
   const createdDateTime = new Date().toLocaleString("en-US", {
