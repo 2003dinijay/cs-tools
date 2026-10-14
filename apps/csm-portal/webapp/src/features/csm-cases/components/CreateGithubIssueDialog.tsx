@@ -56,9 +56,9 @@ const TYPE_OPTIONS: Array<{ value: IssueTypeValue; label: string }> = [
 ];
 
 const SEVERITY_OPTIONS: Array<{ value: string; label: string }> = [
-  { value: "Priority/Critical", label: "P1 - Critical" },
-  { value: "Priority/High", label: "P2 - High" },
-  { value: "Priority/Medium", label: "P3 - Medium" },
+  { value: "Priority/Critical(P1)", label: "P1 - Critical" },
+  { value: "Priority/High(P2)", label: "P2 - High" },
+  { value: "Priority/Medium(P3)", label: "P3 - Medium" },
 ];
 
 // ---------------------------------------------------------------------------
