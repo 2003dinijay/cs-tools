@@ -7497,7 +7497,20 @@ applied** (never rejected outright) -- matching `changeRequestWhereClause`'s
 own established precedent for the identical class of gap (e.g.
 `change_request`'s own `assignmentGroupId`): `assignmentGroupId` on all
 three of Incident/Problem/IncidentTask, `configurationItemId`, and
-`productName` on Incident. `businessServiceId` on Incident IS applied,
+`productName` on Incident. **`incidentStateKeys` is not one of them**: it is
+ServiceNow's legacy `incident_state` field, which this schema has no column
+for, but ignoring it is not harmless -- a request for the New and In Progress
+incidents of a service then answers with every incident the service ever had
+(a dashboard tile read 21,628 instead of 22 that way). The keys are mapped onto
+`state` (`incidentStatesFromSNKeys`: 1 New, 2 In Progress, 3 On Hold, 6
+Resolved, 7 Closed, 8 Canceled), ANDed with any `state` filter, and a key with
+no state, or a `state` filter that shares none with the keys, is a 400 rather
+than an empty list (which would read as "no filter"). Do not add another
+accepted-but-ignored filter without asking whether a caller could be misled by
+the wider answer. `madeSla` reads `incident.is_sla_met`, which the sync fills
+with `true` for nearly every incident (no row is `false`, a few are NULL), so it
+cannot find a breach; use `slaViolated` (below) for that.
+`businessServiceId` on Incident IS applied,
 mapped to `incident.service_id` -- "business service" is ServiceNow's own
 name for what this schema calls `service`, the same identification
 `service_offering_repo.go` already makes. `assignedUserId` on
