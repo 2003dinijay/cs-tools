@@ -1248,18 +1248,6 @@ func uuidToSysID(uuid string) string {
 	return strings.ReplaceAll(uuid, "-", "")
 }
 
-// sysIDToUUID is uuidToSysID's inverse: reformats a flat 32-character
-// sys_id back into the dashed UUID shape entity-service itself uses. A
-// value that isn't exactly 32 characters (already dashed, or some other
-// shape) is returned unchanged -- the same fail-safe passthrough
-// internal/risk's own identically-named, otherwise-unrelated helper uses.
-func sysIDToUUID(sysID string) string {
-	if len(sysID) != 32 {
-		return sysID
-	}
-	return sysID[0:8] + "-" + sysID[8:12] + "-" + sysID[12:16] + "-" + sysID[16:20] + "-" + sysID[20:32]
-}
-
 // filterCases returns the subset of cases for which keep returns true --
 // the client-side replacement for what used to be a separate, re-fetched
 // entity-service query per flag per project (see GetCustomerHealthDetail's

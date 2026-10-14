@@ -352,3 +352,79 @@ func (c *CustomerEntityClient) GetActionItemComments(ctx context.Context, action
 	err := c.chDo(ctx, http.MethodGet, path, nil, &resp)
 	return resp.Comments, err
 }
+
+// CHAccountSearchPagination is the pagination block of POST /accounts/search.
+type CHAccountSearchPagination struct {
+	Limit  int `json:"limit"`
+	Offset int `json:"offset"`
+}
+
+// CHAccountSearchFilters is the subset of POST /accounts/search's filters
+// the customer-health account list uses. Every field except IncludeHealthSummary
+// is omitted from the wire when empty, so an unset filter is no filter.
+type CHAccountSearchFilters struct {
+	SearchQuery          string   `json:"searchQuery,omitempty"`
+	OwnerEmail           string   `json:"ownerEmail,omitempty"`
+	LifeCycle            string   `json:"lifeCycle,omitempty"`
+	HasProject           bool     `json:"hasProject,omitempty"`
+	Risks                []string `json:"risks,omitempty"`
+	SubRegion            []string `json:"subRegion,omitempty"`
+	Product              string   `json:"product,omitempty"`
+	AbtTeam              string   `json:"abtTeam,omitempty"`
+	HealthStatus         string   `json:"healthStatus,omitempty"`
+	IncludeHealthSummary bool     `json:"includeHealthSummary,omitempty"`
+}
+
+// CHAccountSearchRequest is POST /accounts/search's request body.
+type CHAccountSearchRequest struct {
+	Pagination CHAccountSearchPagination `json:"pagination"`
+	Filters    CHAccountSearchFilters    `json:"filters"`
+}
+
+// CHAccountGoLiveStatus is an account's aggregated go-live state.
+type CHAccountGoLiveStatus struct {
+	Status string `json:"status"`
+	IsRisk bool   `json:"isRisk"`
+	State  string `json:"state"`
+}
+
+// CHAccountSearchHealthSummary is the per-account customer-health flags and
+// overall status a search row carries when IncludeHealthSummary was set.
+// HealthStatus is lowercase: at_risk, healthy or to_be_reviewed.
+type CHAccountSearchHealthSummary struct {
+	GoLiveStatus           CHAccountGoLiveStatus `json:"goLiveStatus"`
+	HasRecentCases         bool                  `json:"hasRecentCases"`
+	HasEolProduct          bool                  `json:"hasEolProduct"`
+	HasAbandonedMigrations bool                  `json:"hasAbandonedMigrations"`
+	HasMigrationDelays     bool                  `json:"hasMigrationDelays"`
+	HasRecentEscalations   bool                  `json:"hasRecentEscalations"`
+	NoSupportCases6mo      bool                  `json:"noSupportCases6mo"`
+	HealthStatus           string                `json:"healthStatus"`
+}
+
+// CHAccountSearchRow is one account of a search response; only the fields the
+// customer-health list reads are declared.
+type CHAccountSearchRow struct {
+	ID            string                        `json:"id"`
+	Name          string                        `json:"name"`
+	HealthSummary *CHAccountSearchHealthSummary `json:"healthSummary"`
+}
+
+// CHAccountSearchResponse is POST /accounts/search's response. Total is the
+// count after every filter, not the page size.
+type CHAccountSearchResponse struct {
+	Accounts []CHAccountSearchRow `json:"accounts"`
+	Total    int                  `json:"total"`
+	Limit    int                  `json:"limit"`
+	Offset   int                  `json:"offset"`
+	HasMore  bool                 `json:"hasMore"`
+}
+
+// SearchAccountsWithHealth calls POST /accounts/search with the
+// customer-health filters, filtering, paginating and computing each row's
+// health summary server-side in one call.
+func (c *CustomerEntityClient) SearchAccountsWithHealth(ctx context.Context, req CHAccountSearchRequest) (CHAccountSearchResponse, error) {
+	var resp CHAccountSearchResponse
+	err := c.chDo(ctx, http.MethodPost, "/accounts/search", req, &resp)
+	return resp, err
+}
