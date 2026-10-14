@@ -642,6 +642,20 @@ func main() {
 	route("DELETE /team-schedule/rota-access/admins/{family}/{userId}", handler.PermAdmin, rotaAccessHandler.DeleteRotaAdmin)
 	route("PUT /team-schedule/rota-access/markers/{teamKey}/{userId}", handler.PermWrite, rotaAccessHandler.PutRotaMarker)
 	route("DELETE /team-schedule/rota-access/markers/{teamKey}/{userId}", handler.PermWrite, rotaAccessHandler.DeleteRotaMarker)
+	// Alert Settings tab settings: chat rooms, group routes and ladder values.
+	// entity-service decides who may see or change them; the runtime read with
+	// the webhook URLs opened is for csm-notification-service only and is not
+	// proxied.
+	caseAlertSettingsHandler := handler.NewCaseAlertSettingsHandler(customerEntityClient)
+	route("GET /team-schedule/case-alerts/settings", handler.PermView, caseAlertSettingsHandler.GetCaseAlertSettings)
+	route("PUT /team-schedule/case-alerts/settings/rooms", handler.PermWrite, caseAlertSettingsHandler.PutCaseAlertRoom)
+	route("PUT /team-schedule/case-alerts/settings/rooms/{roomId}/webhook", handler.PermWrite, caseAlertSettingsHandler.PutCaseAlertWebhook)
+	route("DELETE /team-schedule/case-alerts/settings/rooms/{roomId}", handler.PermWrite, caseAlertSettingsHandler.DeleteCaseAlertRoom)
+	route("POST /team-schedule/case-alerts/settings/rooms/{roomId}/test", handler.PermWrite, caseAlertSettingsHandler.TestCaseAlertRoom)
+	route("PUT /team-schedule/case-alerts/settings/routes", handler.PermWrite, caseAlertSettingsHandler.PutCaseAlertRoute)
+	route("DELETE /team-schedule/case-alerts/settings/routes/{routeId}", handler.PermWrite, caseAlertSettingsHandler.DeleteCaseAlertRoute)
+	route("PUT /team-schedule/case-alerts/settings/values", handler.PermWrite, caseAlertSettingsHandler.PutCaseAlertValues)
+	route("DELETE /team-schedule/case-alerts/settings/values/{valueId}", handler.PermWrite, caseAlertSettingsHandler.DeleteCaseAlertValue)
 	route("POST /configuration-items/search", handler.PermView, configurationItemHandler.SearchConfigurationItems)
 	route("POST /time-cards/search", handler.PermTimeCardsAndUpdates, timeCardHandler.SearchTimeCards)
 	route("POST /time-cards", handler.PermTimeCardsAndUpdates, timeCardHandler.CreateTimeCard)

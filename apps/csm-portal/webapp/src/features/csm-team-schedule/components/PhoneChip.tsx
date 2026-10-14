@@ -20,7 +20,7 @@ import type { JSX } from "react";
 import type { PagingChainMember } from "../types";
 import { ADD_TO_PROFILE_HINT, phoneChipState } from "../utils/pagingPhone";
 
-/** What a reader may do about a person's paging number; the tab owns it. */
+/** What a reader may do about a person's alert number; the tab owns it. */
 export interface PagingPhoneControls {
   edit: (member: PagingChainMember) => void;
   remove: (member: PagingChainMember) => void;
@@ -78,7 +78,7 @@ export default function PhoneChip({
               <button
                 type="button"
                 className="btn ghost sm"
-                aria-label={`Remove ${name}'s paging number`}
+                aria-label={`Remove ${name}'s alert number`}
                 onClick={() => controls.remove(member)}
               >
                 Remove
@@ -86,7 +86,7 @@ export default function PhoneChip({
               <button
                 type="button"
                 className="btn ghost sm"
-                aria-label={calling ? `${CALLING_LABEL} (${name})` : `Test call ${name}'s paging number`}
+                aria-label={calling ? `${CALLING_LABEL} (${name})` : `Test call ${name}'s alert number`}
                 aria-disabled={calling || undefined}
                 onClick={() => {
                   if (!calling) controls.test(member);

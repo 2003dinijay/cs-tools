@@ -52,6 +52,7 @@ import CasePagingTab, { type PagingRotaTarget } from "../components/CasePagingTa
 import { caseAlertChainsFor, caseAlertChainsReady, caseAlertsOffered } from "../utils/pagingChains";
 import RotaAccessTab from "../components/RotaAccessTab";
 import { canManageRotaAccess, useRotaAccess } from "../api/useRotaAccess";
+import { canViewCaseAlertSettings, useCaseAlertSettings } from "../api/useCaseAlertSettings";
 import { useGetPagingChain } from "../api/usePagingChain";
 import GenerateRotaDialog from "../components/GenerateRotaDialog";
 import { GENERATED_ROTA } from "../api/useGenerateRota";
@@ -133,7 +134,7 @@ const TITLE: Record<ViewTab, string> = {
   today: "Today",
   week: "This Week",
   roster: "Roster",
-  paging: "Case Alerts",
+  paging: "Alert Settings",
   access: "Rota access",
 };
 
@@ -317,13 +318,17 @@ export default function CsmTeamSchedulePage(): JSX.Element {
    *  same read, not a second. */
   const pagingProbe = useGetPagingChain("CRE");
   const pagingCan = pagingProbe.data?.canEdit;
+  // Also offered to whoever may see the Case Alerts settings (a CSM admin who
+  // leads nothing, say): the tab is where those settings live.
+  const alertSettings = useCaseAlertSettings();
   const showPaging =
     fullTeams.length > 0 ||
     (!!pagingCan &&
       (pagingCan.responderTeams.length > 0 ||
         pagingCan.teamLeadTeams.length > 0 ||
         pagingCan.americasTeamLead ||
-        pagingCan.heads));
+        pagingCan.heads)) ||
+    canViewCaseAlertSettings(alertSettings.data);
 
   /** Rota access is offered to whoever the server says may change some of
    *  it: a CSM admin, or a rota admin naming their own group's markers. */
@@ -398,7 +403,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
    * group, so My week can never apply to them, and a permanently dead tab is
    * just something to wonder about. It is not offered.
    */
-  const visibleTabs: ViewTab[] = (["mine", "today", "week", "roster", "paging", "access"] as ViewTab[]).filter(
+  const visibleTabs: ViewTab[] = (["mine", "today", "week", "roster", "access", "paging"] as ViewTab[]).filter(
     (t) => !(isManager && t === "mine") && (t !== "paging" || pagingOffered) && (t !== "access" || showAccess),
   );
 

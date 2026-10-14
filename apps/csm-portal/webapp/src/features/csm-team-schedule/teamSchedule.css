@@ -3005,3 +3005,93 @@
   .csm-ts .tab .tl { font-size: 12.5px; }
   .csm-ts .tab .tsub { font-size: 9.5px; }
 }
+
+/* Case Alerts settings, under each chain on the Alert Settings tab. */
+.csm-ts .cas { margin: 4px 16px 18px; padding-top: 12px; border-top: 1px solid var(--line); }
+.csm-ts .cas-head { display: flex; align-items: center; gap: 8px; }
+.csm-ts .cas h3 { margin: 0; font-size: 14px; font-weight: 600; }
+.csm-ts .cas h4 { margin: 16px 0 6px; font-size: 12px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+.csm-ts .cas-env { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; padding: 2px 8px; border-radius: 999px; background: var(--surface-2); color: var(--ink-2); border: 1px solid var(--line-2); }
+.csm-ts .cas-status { margin: 8px 0 0; padding: 7px 10px; border-radius: 8px; font-size: 12.5px; color: var(--ink-2); background: var(--surface-2); border: 1px solid var(--line); }
+.csm-ts .cas-status.warn { background: color-mix(in srgb, var(--warn) 9%, var(--surface)); border-color: color-mix(in srgb, var(--warn) 30%, var(--line)); }
+.csm-ts .cas .ra-err { margin: 10px 0 0; }
+.csm-ts .cas-sub { font-size: 12px; color: var(--muted); }
+.csm-ts .cas-empty { margin: 4px 0 8px; }
+.csm-ts .cas-chip { margin-left: 6px; font-size: 10.5px; font-weight: 600; padding: 1px 6px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--line-2); color: var(--ink-2); }
+.csm-ts .cas-off td { color: var(--muted); }
+.csm-ts .cas-check { display: flex; align-items: center; gap: 6px; margin-top: 4px; font-size: 12px; color: var(--ink-2); }
+.csm-ts .cas-hint { font-size: 12px; overflow-wrap: anywhere; }
+.csm-ts .cas-test { font-size: 12px; font-weight: 600; }
+.csm-ts .cas-test.delivered { color: var(--ok); }
+.csm-ts .cas-test.failed { color: var(--crit); }
+.csm-ts .cas-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.csm-ts td > .cas-acts { justify-content: flex-end; }
+.csm-ts .cas-url, .csm-ts .cas-add { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; margin-top: 8px; }
+.csm-ts .cas-url label, .csm-ts .cas-add label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--ink-2); }
+.csm-ts .cas-url input { width: min(420px, 100%); }
+.csm-ts .cas-url .cas-sub { flex-basis: 100%; margin: 0; }
+.csm-ts .cas input, .csm-ts .cas select { height: 28px; padding: 0 8px; border: 1px solid var(--line-2); border-radius: 6px; font: inherit; font-size: 12.5px; background: var(--surface); color: inherit; }
+.csm-ts .btn.sm.danger { color: var(--crit); border-color: color-mix(in srgb, var(--crit) 40%, var(--line-2)); }
+
+/* Ladder settings: the rest of a ladder's paging file, under the chain's rooms and routes. */
+.csm-ts .cas-ladder { margin-top: 18px; }
+.csm-ts .cas-ladder .cas-status { margin-bottom: 6px; }
+.csm-ts .cas-running { margin: 4px 0 8px; }
+.csm-ts .cas-group { margin: 14px 0 4px; font-size: 12.5px; font-weight: 600; color: var(--ink-2); }
+/* Fixed widths, so the columns line up across the groups' tables. */
+.csm-ts .cas-values { table-layout: fixed; width: 100%; }
+.csm-ts .cas-values td { overflow-wrap: anywhere; }
+.csm-ts .cas-values .cas-col-setting { width: 40%; }
+.csm-ts .cas-values .cas-col-actions { width: 90px; }
+.csm-ts .cas-val { overflow-wrap: anywhere; }
+.csm-ts .cas-chip.cas-src-file { background: color-mix(in srgb, var(--warn) 9%, var(--surface)); }
+.csm-ts .cas-chip.cas-src-saved { background: color-mix(in srgb, var(--ok) 10%, var(--surface)); }
+.csm-ts .cas-edit { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; margin-top: 8px; }
+.csm-ts .cas-edit label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--ink-2); }
+.csm-ts .cas-edit label.cas-check { flex-direction: row; }
+.csm-ts .cas-edit input:not([type="checkbox"]) { width: min(320px, 100%); }
+.csm-ts .cas-edit input[type="number"] { width: 90px; }
+
+/* The switch above a chain: who gets alerts, or its settings. */
+.csm-ts .cas-view { margin-left: 4px; }
+/* The settings header: one status line, then who may change them and what is left to set up. */
+.csm-ts .cas-viewonly { margin: 6px 0 0; }
+.csm-ts .cas-setup { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.csm-ts .cas-warn { margin: 0 0 6px; color: var(--warn); }
+/* A row's More menu: a short list under its button. */
+.csm-ts .cas-more { position: relative; display: inline-block; }
+.csm-ts .cas-menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 20; min-width: 140px; margin: 0; padding: 4px; list-style: none; background: var(--surface-solid, var(--surface)); border: 1px solid var(--line-2); border-radius: 8px; box-shadow: var(--shadow); }
+.csm-ts .cas-menu button { display: block; width: 100%; padding: 6px 10px; border: 0; border-radius: 6px; background: transparent; text-align: left; font-size: 12.5px; }
+.csm-ts .cas-menu button:hover, .csm-ts .cas-menu button:focus-visible { background: var(--surface-2); }
+/* Ladder groups fold; the summary says how many are saved here. */
+.csm-ts .cas-det { margin-top: 10px; }
+.csm-ts .cas-det > summary { cursor: pointer; margin: 4px 0; font-size: 12.5px; font-weight: 600; color: var(--ink-2); }
+.csm-ts .cas-saved { margin-top: 3px; }
+/* The edit dialog: the editor stacked, full width. */
+/* Opaque, like every other layer laid over the page: --surface is the
+   portal's see-through paper, so the table behind would show through. */
+.csm-ts .cas-dlg { background: var(--surface-solid, var(--surface)); }
+.csm-ts .cas-dlg .cas-edit { flex-direction: column; align-items: stretch; margin-top: 0; }
+.csm-ts .cas-dlg .cas-edit input:not([type="checkbox"]), .csm-ts .cas-dlg .cas-edit select { width: 100%; }
+.csm-ts .cas-dlg .cas-edit label.cas-check { flex-direction: row; }
+.csm-ts .cas-dlg-file { margin-top: 4px; }
+
+/* Team chat routing: its heading and Add on one line. */
+.csm-ts .cas-h4row { display: flex; align-items: center; gap: 10px; margin: 16px 0 6px; }
+.csm-ts .cas-h4row h4 { margin: 0; }
+/* The confirmation after a save: one line, replaced by the next. */
+.csm-ts .cas-status.ok { background: color-mix(in srgb, var(--ok) 9%, var(--surface)); border-color: color-mix(in srgb, var(--ok) 30%, var(--line)); display: flex; align-items: center; gap: 8px; }
+.csm-ts .cas-status.ok > span { flex: 1; }
+.csm-ts .cas-x { border: 0; background: transparent; font-size: 16px; line-height: 1; padding: 0 4px; color: var(--muted); }
+.csm-ts .cas-x:hover { color: var(--ink); }
+/* Sections that start closed: a one-line summary with a ▸/▾ marker. */
+.csm-ts .cas-sec { margin-top: 10px; }
+.csm-ts .cas-sec > .cas-det > summary { list-style: none; display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-radius: 6px; }
+.csm-ts .cas-sec > .cas-det > summary::-webkit-details-marker { display: none; }
+.csm-ts .cas-sec > .cas-det > summary:hover { background: var(--surface-2); }
+.csm-ts .cas-sec > .cas-det > summary:focus-visible { outline: none; box-shadow: var(--focus); }
+.csm-ts .cas-mark { width: 12px; color: var(--muted); }
+.csm-ts .cas-sec .cas-sec { margin-left: 14px; }
+
+/* A note said in the page rather than in a disabled button's tooltip. */
+.csm-ts .cas-note { margin: 4px 0 8px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); }

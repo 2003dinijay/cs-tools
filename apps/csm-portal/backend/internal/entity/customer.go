@@ -1200,6 +1200,54 @@ func (c *CustomerEntityClient) DeleteRotaMarker(ctx context.Context, teamKey, us
 	return c.do(ctx, http.MethodDelete, "/team-schedule/rota-access/markers/"+url.PathEscape(teamKey)+"/"+url.PathEscape(userID), nil)
 }
 
+// GetCaseAlertSettings calls GET /team-schedule/case-alerts/settings: the
+// chat rooms, group routes and ladder values the paging ladders use, what the
+// alert service last reported running, and what the caller may change.
+func (c *CustomerEntityClient) GetCaseAlertSettings(ctx context.Context) ([]byte, error) {
+	return c.do(ctx, http.MethodGet, "/team-schedule/case-alerts/settings", nil)
+}
+
+// PutCaseAlertRoom calls PUT /team-schedule/case-alerts/settings/rooms.
+func (c *CustomerEntityClient) PutCaseAlertRoom(ctx context.Context, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPut, "/team-schedule/case-alerts/settings/rooms", body)
+}
+
+// PutCaseAlertWebhook calls PUT /team-schedule/case-alerts/settings/rooms/{roomId}/webhook.
+// body carries the webhook URL; entity-service seals it and never returns it.
+func (c *CustomerEntityClient) PutCaseAlertWebhook(ctx context.Context, roomID string, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPut, "/team-schedule/case-alerts/settings/rooms/"+url.PathEscape(roomID)+"/webhook", body)
+}
+
+// DeleteCaseAlertRoom calls DELETE /team-schedule/case-alerts/settings/rooms/{roomId}.
+func (c *CustomerEntityClient) DeleteCaseAlertRoom(ctx context.Context, roomID string) ([]byte, error) {
+	return c.do(ctx, http.MethodDelete, "/team-schedule/case-alerts/settings/rooms/"+url.PathEscape(roomID), nil)
+}
+
+// TestCaseAlertRoom calls POST /team-schedule/case-alerts/settings/rooms/{roomId}/test.
+func (c *CustomerEntityClient) TestCaseAlertRoom(ctx context.Context, roomID string) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, "/team-schedule/case-alerts/settings/rooms/"+url.PathEscape(roomID)+"/test", nil)
+}
+
+// PutCaseAlertRoute calls PUT /team-schedule/case-alerts/settings/routes.
+func (c *CustomerEntityClient) PutCaseAlertRoute(ctx context.Context, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPut, "/team-schedule/case-alerts/settings/routes", body)
+}
+
+// DeleteCaseAlertRoute calls DELETE /team-schedule/case-alerts/settings/routes/{routeId}.
+func (c *CustomerEntityClient) DeleteCaseAlertRoute(ctx context.Context, routeID string) ([]byte, error) {
+	return c.do(ctx, http.MethodDelete, "/team-schedule/case-alerts/settings/routes/"+url.PathEscape(routeID), nil)
+}
+
+// PutCaseAlertValues calls PUT /team-schedule/case-alerts/settings/values.
+func (c *CustomerEntityClient) PutCaseAlertValues(ctx context.Context, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPut, "/team-schedule/case-alerts/settings/values", body)
+}
+
+// DeleteCaseAlertValue calls DELETE /team-schedule/case-alerts/settings/values/{valueId}.
+func (c *CustomerEntityClient) DeleteCaseAlertValue(ctx context.Context, valueID string) ([]byte, error) {
+	return c.do(ctx, http.MethodDelete, "/team-schedule/case-alerts/settings/values/"+url.PathEscape(valueID), nil)
+}
+
 // GetMyLeadTeams calls GET /team-schedule/my-lead-teams on the entity service.
 func (c *CustomerEntityClient) GetMyLeadTeams(ctx context.Context) ([]byte, error) {
 	return c.do(ctx, http.MethodGet, "/team-schedule/my-lead-teams", nil)
