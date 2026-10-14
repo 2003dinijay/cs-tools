@@ -2725,6 +2725,56 @@ describe("CsmCaseDetailPage — case tags added once a Git issue is filed", () =
     expect(showErrorMock).not.toHaveBeenCalled();
   });
 
+  it("tags the case patch, not s_dip, for a patch Git issue", async () => {
+    const { options } = submitGithubIssue({
+      reason: "default",
+      issueTypeLabel: "Type/Patch",
+      title: "t",
+      description: "d",
+    });
+
+    await act(async () => {
+      options.onSuccess(issueCreated);
+      await Promise.resolve();
+    });
+
+    expect(addedTags()).toEqual(["patch"]);
+    expect(showErrorMock).not.toHaveBeenCalled();
+  });
+
+  it("tags the case s_dip, not patch, for a discussion Git issue", async () => {
+    const { options } = submitGithubIssue({
+      reason: "default",
+      issueTypeLabel: "Type/Discussion",
+      title: "t",
+      description: "d",
+    });
+
+    await act(async () => {
+      options.onSuccess(issueCreated);
+      await Promise.resolve();
+    });
+
+    expect(addedTags()).toEqual(["s_dip"]);
+  });
+
+  it("adds s_rg and migration after patch for a patch regression filed as a migration issue", async () => {
+    const { options } = submitGithubIssue({
+      reason: "migration",
+      regression: true,
+      issueTypeLabel: "Type/Patch",
+      title: "t",
+      description: "d",
+    });
+
+    await act(async () => {
+      options.onSuccess(issueCreated);
+      await Promise.resolve();
+    });
+
+    expect(addedTags()).toEqual(["patch", "s_rg", "migration"]);
+  });
+
   it("also adds s_rg for a regression and migration for a migration issue, after s_dip", async () => {
     const { options } = submitGithubIssue({
       reason: "migration",
