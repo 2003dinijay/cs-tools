@@ -1508,6 +1508,22 @@ func parseIncidentChatFanout(raw string, spaces []notifications.GoogleChatAudien
 		slog.Error("failed to parse INCIDENT_CHAT_FANOUT; every group's incident cards go to its own space", "err", err)
 		return nil
 	}
+	// A group spelled twice (differing only in case or spaces) has no single list, so it keeps its own space rather than one picked by map order.
+	spellings := map[string][]string{}
+	for group := range fanout {
+		key := strings.ToLower(strings.TrimSpace(group))
+		spellings[key] = append(spellings[key], group)
+	}
+	for key, names := range spellings {
+		if len(names) < 2 {
+			continue
+		}
+		slog.Error("INCIDENT_CHAT_FANOUT lists one assignment group more than once, differing only in case or spaces; that group keeps its own space",
+			"assignmentGroup", key)
+		for _, name := range names {
+			delete(fanout, name)
+		}
+	}
 	known := map[string]bool{}
 	for _, sp := range spaces {
 		known[sp.Audience] = true

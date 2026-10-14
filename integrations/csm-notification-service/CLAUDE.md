@@ -498,17 +498,21 @@ team, so it is never handed to SME.
 
 **Closing message** (`sre.unansweredChat`, opt-in): when every rung has been
 called and nobody acknowledged, `postUnanswered` posts "Unanswered: <chain>
-paging ended" with who each rung reached, to the team's own space, else
-`sre.chat` -- whatever `sre.channel` is, so a call-only ladder still tells the
-room. Best effort (logged, never retried). An SME ladder has its own,
+paging ended" with who each rung reached. For an incident whose group has an
+`INCIDENT_CHAT_SPACES` space it replies under the "Incident Reported" card, once
+per space the card went to (`Engine.incidentRooms`); otherwise it goes to the
+team's own space, else `sre.chat` -- whatever `sre.channel` is, so a call-only
+ladder still tells the room. Best effort (logged, never retried). An SME ladder has its own,
 `sme.unansweredChat`: the SME team's own space (`sme.teamChats`), else
 `sme.chat` when `sme.teamChats` is empty, else nothing.
 
 **Escalated-to-SME message** (`sre.smeHandoffChat`, opt-in): when a SaaS SRE
-incident's escalation starts an SME page, `postSMEHandoff` posts one message
-to the incident's SRE team space (the group it left, through `sre.teamChats`,
-else `sre.chat`): who escalated it, SRE paging stopped, and whether the SMEs
-are being paged. Once per SME page (the page's dedup), best effort.
+incident's escalation starts an SME page, `postSMEHandoff` posts who escalated
+it, SRE paging stopped, and whether the SMEs are being paged. When the group it
+left has an `INCIDENT_CHAT_SPACES` space it replies under the incident card, one
+message per space the card went to (after `INCIDENT_CHAT_FANOUT`); otherwise one
+message to the SRE team space (through `sre.teamChats`, else `sre.chat`). Once
+per SME page (the page's dedup), best effort.
 
 **Stops on** (an SRE incident): `incident.assigned` (an engineer set as the
 assignee, published by entity-service) or `incident.acknowledged` (leaving NEW,
