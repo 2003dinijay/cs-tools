@@ -62,6 +62,11 @@ export function sanitizeAnnouncementHtml(html: string): string {
   // announcement gets exactly the sanitiser call it always did.
   if (!LINK_WITH_TARGET.test(html)) return DOMPurify.sanitize(html);
   const fragment = DOMPurify.sanitize(html, { ADD_ATTR: ["target"], RETURN_DOM_FRAGMENT: true });
+  // ADD_ATTR allows `target` on every element; only a link may keep one (a form
+  // or image map with a target would submit or navigate into another context).
+  for (const el of Array.from(fragment.querySelectorAll("[target]"))) {
+    if (el.tagName !== "A") el.removeAttribute("target");
+  }
   for (const link of Array.from(fragment.querySelectorAll("a"))) {
     if (link.getAttribute("target")?.toLowerCase() === "_blank") {
       link.setAttribute("target", "_blank");

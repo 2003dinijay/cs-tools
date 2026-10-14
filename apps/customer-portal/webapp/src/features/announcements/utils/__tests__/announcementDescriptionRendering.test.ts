@@ -122,6 +122,18 @@ describe("announcement links the author set to open in a new tab", () => {
     for (const link of links) expect(link.hasAttribute("target")).toBe(false);
   });
 
+  it("keep a target on links only, not on forms or image maps", () => {
+    const doc = new DOMParser().parseFromString(
+      renderedDescription(
+        '<a href="https://x.test" target="_blank">a</a><form action="https://x.test" target="_blank"><input name="q"></form>' +
+          '<map name="m"><area href="https://x.test" target="_blank" shape="rect" coords="0,0,1,1"></map>',
+      ),
+      "text/html",
+    );
+    expect(doc.querySelector("a")?.getAttribute("target")).toBe("_blank");
+    expect(doc.querySelectorAll("[target]")).toHaveLength(1);
+  });
+
   it("still remove an unsafe href while keeping the visible text", () => {
     const html = renderedDescription('<a href="javascript:alert(1)" target="_blank">click</a>');
     expect(html).not.toContain("javascript:");

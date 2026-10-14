@@ -291,6 +291,16 @@ describe("sanitizeAnnouncementHtml", () => {
     for (const link of links) expect(link.hasAttribute("target")).toBe(false);
   });
 
+  it("keeps a target on links only, not on forms or image maps", () => {
+    const out = sanitizeAnnouncementHtml(
+      '<a href="https://x.test" target="_blank">a</a><form action="https://x.test" target="_blank"><input name="q"></form>' +
+        '<map name="m"><area href="https://x.test" target="_blank" shape="rect" coords="0,0,1,1"></map>',
+    );
+    const doc = new DOMParser().parseFromString(out, "text/html");
+    expect(doc.querySelector("a")?.getAttribute("target")).toBe("_blank");
+    expect(doc.querySelectorAll("[target]")).toHaveLength(1);
+  });
+
   it("still removes scripts, event handlers and javascript: links", () => {
     const out = sanitizeAnnouncementHtml(
       '<a href="javascript:alert(1)" target="_blank" onclick="alert(2)">x</a><script>alert(3)</script>',
