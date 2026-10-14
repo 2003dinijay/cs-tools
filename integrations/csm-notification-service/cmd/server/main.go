@@ -780,6 +780,15 @@ func main() {
 		// env-derived value, so an existing deployment behaves exactly as it
 		// did -- see loadEscalationConfig.
 		escalationCfg, cfgErr := loadEscalationConfig(escalationChannel)
+		if cfgErr == nil {
+			// The chat rooms, group routes and ladder values saved on the Team
+			// Schedule's Alert Settings tab, only when PAGING_CONFIG_SOURCE asks
+			// for them.
+			// Unset, entity-service is not asked and nothing here changes.
+			if mode := caseAlertSettingsMode(os.Getenv("PAGING_CONFIG_SOURCE")); mode != caseAlertSourceOff {
+				escalationCfg = applyCaseAlertSettings(ctx, mode, escalationCfg, caseAlertSettingsEntity(), os.Setenv, caseAlertStartFor(redisClient))
+			}
+		}
 		creCfg, creRunning := escalationCfg.For(paging.LadderKeyCRE)
 		sreCfg, sreRunning := escalationCfg.For(paging.LadderKeySRE)
 		escalationRunning := creRunning || sreRunning

@@ -506,6 +506,66 @@ admins and rota markers are granted and taken back.
   teams held only as marker, so the page offers Generate month, the tags and
   Case Paging only where the reader leads the team or runs its family.
 
+## Case Alerts settings (0233)
+
+The chat rooms, the ServiceNow group routes and the rest of the paging
+ladders' settings can be kept here and changed on the Alert Settings tab, instead
+of a Choreo secret and csm-notification-service's YAML file mount. Only what
+decides whether paging runs and what it may cost -- the switches, the channel,
+the safety caps, `phones.source`, test calls and the SME page -- stays in the
+file (`scripts/csm-compose/paging-alert.minimal.yaml` is that small file). **Nothing changes until
+csm-notification-service runs with `PAGING_CONFIG_SOURCE` set**: until then the
+file and env vars are all it reads, and the tab says the settings are saved but
+not in use.
+
+- **Rooms** (`paging_chat_room`), shown as *Team routing*: the CRE and SRE
+  shared rooms, and an SRE team's own row (Apollo, Artemis, IaaS). A team row
+  may be marked *teamless* (it also gets the cards of an incident with no SRE
+  team), and may set how that team's alerts go out: chat, call, both or log.
+  A team never does more than its ladder -- the ladder's channel stays in the
+  alert service's file and is the ceiling -- and a row can hold a channel
+  without a URL of its own.
+- **Webhook URLs** (`paging_chat_secret`) are write-only. entity-service seals
+  them with AES-256-GCM under `CASE_ALERTS_SECRET_KEY`, one key per environment,
+  so a database copied from another environment cannot open them. People see a
+  hint (space id and the token's last characters); the URL never reaches a
+  browser, a log or the audit history -- that table has no audit trigger.
+- **Routes** (`paging_group_route`): a ServiceNow group to a team, or (SRE) a
+  default group to a rota such as `SRE_SAAS`.
+- **Ladder values** (`paging_ladder_value`): one row per other key of the file's
+  `cre:` or `sre:` section -- the teams (`teams.abts`, `teams.americas`, ...),
+  the heads (name and email; the phone comes from their profile), which
+  incidents start a ladder (`trigger.*`), how it climbs (`alertDuty.*`,
+  `onLeave`, ...) and the SRE clock (`timing.*`), as JSON in the file's shape.
+  Each key has its limits (for example `timing.interval` 1m to 30m), checked on
+  save; a set of values is saved together or not at all. The list is
+  `caseAlertValueSpecs` in `internal/service/case_alert_ladder_values.go`, and
+  csm-notification-service's `caseAlertKeys` must match it.
+- **What is in use:** in shadow or db mode the alert service reports each
+  ladder value it runs with and whether it came from the file or from here. The
+  tab shows it next to what is saved, and *Copy what's in use* saves the file's
+  values here in one go -- the first step of moving to the small file. What
+  only the file sets (on/off, channel, safety caps, where numbers come from) is
+  reported too and shown read-only; allowed numbers as a count only.
+- **Who:** a CSM admin (`AUTH_ADMIN_ROLES`) or portal admin changes both
+  ladders; the CRE or SRE rota admin their own ladder; the CRE and CS heads can
+  look. Team leads and everyone else see the tab as before.
+- **Test card:** entity-service posts a short card to the saved URL and records
+  delivered or failed; one per room every two minutes. entity-service needs to
+  reach `chat.googleapis.com` for this.
+- **csm-notification-service** reads `GET /team-schedule/case-alerts/settings/runtime`
+  (its client must be in `CASE_ALERTS_RUNTIME_CLIENT_IDS`; a person's token is
+  refused) at start-up only, and reports what it loaded on `PUT .../applied`.
+  `paging_config_revision` tells "saved" from "running".
+- **Audited:** room, route and ladder value changes go to `team_schedule_audit`
+  with the caller as actor.
+
+Settings on entity-service: `CASE_ALERTS_SECRET_KEY` (base64 of 32 random bytes,
+e.g. `openssl rand -base64 32`; a Choreo secret), `CASE_ALERTS_SECRET_KEY_ID`
+(default `1`), `CASE_ALERTS_RUNTIME_CLIENT_IDS` (csm-notification-service's
+client id) and `CASE_ALERTS_ENVIRONMENT` (a label such as `staging`). Without
+the key the tab works but no URL can be saved.
+
 ## 5. Known gaps
 
 - **Why 0152–0156.** 0141–0150 are claimed by the open RLS work in #2094, and
@@ -522,6 +582,12 @@ admins and rota markers are granted and taken back.
 
 ## Change log
 
+- **0233 Case Alerts settings.** New tables `paging_chat_room`,
+  `paging_chat_secret`, `paging_group_route`, `paging_ladder_value` and
+  `paging_config_revision` (one row), audit triggers on the room, route and
+  value tables, and a trigger that moves the revision on any change. Additive: nothing existing is changed or
+  removed, and csm-notification-service ignores them until
+  `PAGING_CONFIG_SOURCE` is set.
 - **0232 SaaS Night cover.** Data only: the team `saas-night-cover` (type
   `sre-abt`) and the tag `SRE_NIGHT_COVER` that moves somebody onto it. Nobody is moved by the migration; leads move their night
   people from the roster, and the TZ3 nights already set inside a move go with

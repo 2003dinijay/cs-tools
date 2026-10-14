@@ -69,7 +69,7 @@ export default function RotaAccessTab({ teams }: Props): JSX.Element {
       <p className="ra-intro">
         A team&apos;s lead always marks their own team. Here you can let others do it too. A{" "}
         <b>Rota admin</b> marks every team in one group. A <b>Rota marker</b> marks one team&apos;s rotations,
-        leave and allocations, but can&apos;t generate the month, change the tags or the paging chain.
+        leave and allocations, but can&apos;t generate the month, change the tags or the alert chain.
       </p>
       {error ? (
         <div className="ra-err" role="alert">

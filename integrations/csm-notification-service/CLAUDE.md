@@ -301,6 +301,50 @@ ticker, with Redis as its only durable state — the same `REDIS_URL`/
   `NUMBER_NOT_ALLOWED`, `CALL_CAP_REACHED`) for each, so a ladder reaching
   fewer people than the rules say lands on the work note rather than being a
   quiet saving.
+- **`case_alert_settings.go`, `case_alert_values.go` + `cmd/server/case_alert_settings.go`
+  — settings saved on the Team Schedule.** `PAGING_CONFIG_SOURCE` (an env var, not a
+  file key: the file is decoded strictly, so a new key would turn paging off on
+  older builds) is `off` by default and then entity-service is never asked.
+  `shadow` reads `GET /team-schedule/case-alerts/settings/runtime` once at start,
+  logs what `MergeCaseAlertSettings` would change, and runs on the file; `db`
+  runs on the merge. The merge only replaces what was saved -- a ladder's shared
+  room, an SRE team's room (and its teamless flag), an alias or a default group
+  -- and puts each saved URL in a `CASE_ALERTS_ROOM_*` variable so the engine
+  reads it like any webhook (`Chat.WebhookURLEnv`) and nothing in it changes.
+  The result must pass `Config.validate`; entity-service down, a refused merge
+  or a failed setenv all keep the file, never `DefaultConfig`. Group names are
+  matched case-insensitively, as the resolver does. The equivalence test
+  (`SavedLikeTheFileChangesNothing`) pins that settings saved to match the file
+  page exactly as the file does.
+  **Ladder values** (`case_alert_values.go`) are the rest of `cre:`/`sre:`:
+  one key each (`teams.abts`, `heads.cre`, `trigger.priorities`,
+  `timing.interval`, ...), in the file's shape, applied before rooms and routes
+  by a setter per key in `caseAlertKeys` (which must match entity-service's
+  `caseAlertValueSpecs`; `TestCaseAlertKeysMatchTheTab` lists them). An unknown
+  key or one for the other ladder is skipped and logged; a value in the wrong
+  shape refuses the merge. `enabled`, `channel`, `safety`, `phones`,
+  `testCall`, `sme` and `rules` are not keys: they stay in the file.
+  The applied report carries `running` (`RunningCaseAlertValues`): every
+  ladder value the process runs with and whether it came from the file or the
+  tab -- in shadow the file's, so the tab can copy them. Heads go with a name
+  and email, never a phone. It also carries `fileOnly`: what only the file
+  sets (on/off, channel, safety caps, phones.source), shown read-only on the
+  tab; allowed numbers are counted, never listed. `SmallFilePlusSavedIsTheFullFile` pins that
+  `paging-alert.minimal.yaml` plus everything copied from the full file pages
+  exactly as the full file.
+  **Team channels** (`team_channel.go`): a saved SRE team row may carry a
+  channel; it becomes `LadderConfig.TeamChannels` (`yaml:"-"`, never from the
+  file). `channelFor` reads the incident's own SRE team (through aliases) and
+  `narrowChannel` keeps only what both the team and the ladder's file channel
+  allow -- a team can drop calls, drop chat or go to log, never add a channel.
+  It is used where the plan is built, in `applySafety` and in `place`
+  (`withChannel` filters the notifiers). An incident with no SRE team of its
+  own uses the ladder's channel.
+  A **db start** retries entity-service for `PAGING_CONFIG_WAIT` (default 2m;
+  network errors, 5xx and 429 only), then falls back to the last settings a db
+  start loaded, kept in Redis under `incident:escalation:case-alerts:last-loaded`
+  without webhook URLs (so rooms come from the file), and only then to the
+  file. A fallback start does not report.
 - **`notifier.go` - which channel a rung reaches people on.** The ladder's
   timing, routing and cancellation are channel-agnostic; only the last hop
   differs. `INCIDENT_ESCALATION_CHANNEL` picks `call` (the specification's

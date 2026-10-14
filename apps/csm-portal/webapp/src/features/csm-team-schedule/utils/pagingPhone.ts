@@ -67,14 +67,14 @@ export function phoneChipState(m: PagingChainMember): PhoneChipState {
     switch (p.lastTestStatus) {
       case "completed": {
         const on = fmtShortDate(p.lastTestAt);
-        return { label: `Paging number ✓ tested${on ? ` ${on}` : ""}`, tone: "ok", masked };
+        return { label: `Alert number ✓ tested${on ? ` ${on}` : ""}`, tone: "ok", masked };
       }
       case "no-answer":
       case "busy":
       case "failed":
-        return { label: `Paging number · test failed (${p.lastTestStatus})`, tone: "err", masked };
+        return { label: `Alert number · test failed (${p.lastTestStatus})`, tone: "err", masked };
       default:
-        return { label: "Paging number · not tested", tone: "warn", masked };
+        return { label: "Alert number · not tested", tone: "warn", masked };
     }
   }
   if (m.hasProfilePhone === false) {
