@@ -176,6 +176,7 @@ import {
 } from "@features/csm-timecards/api/useTimeCards";
 import type { CsmTimeCard } from "@features/csm-timecards/types/timeCards";
 import { caseIdLabel } from "@features/csm-cases/utils/caseIdentity";
+import { githubIssueCaseTags } from "@features/csm-cases/utils/githubIssueCaseTags";
 import { useReportCaseTabDraft } from "@features/case-tabs/hooks/useReportCaseTabDraft";
 import { useReportCaseTabMeta } from "@features/case-tabs/hooks/useReportCaseTabMeta";
 import { useCaseRouteOverride } from "@context/case-tabs/CaseRouteOverrideContext";
@@ -3523,9 +3524,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
                   // done reading the confirmation.
                   setActiveTab("activities");
                   setGithubIssueResult(res);
-                  const tagLabels = ["s_dp"];
-                  if (payload.regression) tagLabels.push("s_rg");
-                  if (payload.reason === "migration") tagLabels.push("migration");
+                  const tagLabels = githubIssueCaseTags(payload);
                   // Each mutateAsync promise is handled on its own. Per-call
                   // callbacks on mutate are replaced by the next call.
                   void Promise.all(
