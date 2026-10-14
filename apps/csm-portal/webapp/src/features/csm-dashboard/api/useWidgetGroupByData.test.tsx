@@ -225,6 +225,38 @@ describe("useWidgetGroupByData", () => {
     expect(result.current.total).toBe(7);
   });
 
+  it("appends no synthetic bucket when hideOthers is set, even with a non-zero othersCount", async () => {
+    postMock.mockResolvedValue({
+      groups: [{ key: "acme", label: "Acme Corp", count: 10 }],
+      othersCount: 4,
+      totalRecords: 14,
+    });
+
+    const { result } = renderHook(
+      () =>
+        useWidgetGroupByData("widget-1", "case", {}, {
+          field: "account",
+          maxGroups: 1,
+          hideOthers: true,
+        }),
+      { wrapper },
+    );
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    expect(result.current.slices).toEqual([
+      {
+        label: "Acme Corp",
+        query: { filters: [{ field: "account", op: "in", values: ["acme"] }] },
+        value: 10,
+      },
+    ]);
+    // total is derived from the slices actually rendered, not the response's
+    // own totalRecords -- hiding Others must also drop it from the widget's
+    // own displayed total, not just from the chart.
+    expect(result.current.total).toBe(10);
+  });
+
   it("appends no synthetic bucket when othersCount is 0", async () => {
     postMock.mockResolvedValue({
       groups: [{ key: "critical", label: "Critical", count: 3 }],

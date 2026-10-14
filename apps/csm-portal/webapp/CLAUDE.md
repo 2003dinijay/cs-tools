@@ -495,3 +495,38 @@ Four of the five shapes do the same thing — issue that `resourceType`'s own `P
 ### Current-user placeholder
 
 The backend resolves a `"__current_user__"` filter placeholder into the caller's real platform user id **before** it reaches the frontend (see the backend's `ResolveFilters`/`ResolveSliceFilters`) — the frontend never sees or handles that placeholder for a widget's own data-fetching. Separately, the "View more" preview page's own **URL** masks the current user's id to a `@me` sentinel (`widgetPreviewUrl.ts`'s `buildWidgetPreviewHref`/`resolveCurrentUserSentinels`) purely so a bookmarked/shared link doesn't carry a bare internal user id — that's a frontend-only, URL-display concern, unrelated to the backend's own placeholder resolution.
+
+### `groupBy`-based bar/pie widgets (`useWidgetGroupByData`) and `DashboardBarChart`'s axis labels
+
+A `shape: "bar"`/`"pie"` widget configured with `groupBy.field` (e.g. "Top customers by open cases",
+grouped on `account`) resolves its per-bucket totals via a single server-side `POST
+{resourceType}/aggregate` call (`useWidgetGroupByData`), not the per-slice `useWidgetPieData` path —
+see that hook's own doc comment for the full mechanism (one call, `maxGroups` caps the named buckets,
+everything past the cap rolls into a response `othersCount`).
+
+- **`groupBy.hideOthers`** (`BeDashboardGroupByConfig`, additive, defaults to `false`): drops the
+  synthetic "Others" bucket entirely instead of rendering it as an extra, non-navigable bar/wedge —
+  for a widget where the long tail beyond `maxGroups` isn't itself meaningful (an "Others" column
+  mixing together every account past the top N adds noise, not information). `useWidgetGroupByData`'s
+  own `total` is derived from the slices it actually returns, so hiding Others also drops it from the
+  widget's displayed total, not just from the chart. A widget's own JSON config sets this directly —
+  there's no frontend toggle for it.
+- **`DashboardBarChart`'s x-axis category labels (account/bucket names) always render at a fixed
+  angle, not the library's default horizontal tick.** Found live: recharts' own default `<XAxis>` tick
+  silently drops a label it decides doesn't fit at the tile's rendered width — with several real,
+  reasonably long account names on one "Top customers" bar chart, this meant *no* label rendered under
+  *any* bar, not even on hover (the chart's own `tooltip` still showed the name, but only on hover,
+  which was the actual reported complaint). Fixed by suppressing the library wrapper's own `<XAxis>`
+  (`xAxis={{ show: false }}` on `<BarChart>`) and rendering a custom one as a plain child instead,
+  with `interval={0}` (forces every tick to render, instead of recharts deciding some don't fit) and a
+  custom `tick` render function (`renderAngledAxisTick`) that rotates the label -35° and truncates it
+  past `MAX_X_AXIS_LABEL_CHARS` (14) — the chart's own hover tooltip still shows the untruncated name,
+  so nothing is actually lost, just not all shown under every bar at once. This is shared by every
+  `shape: "bar"` widget (`DashboardBarChart` has no per-widget config), not just "Top customers" —
+  there's no mechanism to special-case one widget's axis rendering today.
+- **Test-mocking note**: `DashboardWidgetTile.test.tsx`'s `vi.mock("@wso2/oxygen-ui-charts-react", ...)`
+  must export a (no-op) `XAxis` alongside its existing `Pie`/`Bar`/`PieChart`/`BarChart`/`Cell` stand-ins
+  now that `DashboardBarChart` renders one — omitting it fails every test that renders a `shape: "bar"`
+  widget with an uncaught "`XAxis` export is not defined on the mock" error, not a normal assertion
+  failure, so it's easy to miss if a future edit to this component imports a new named export from that
+  package without checking this mock first.

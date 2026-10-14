@@ -226,7 +226,7 @@ export function useWidgetGroupByData(
     // `PieSliceResult.linkId`'s own doc comment.
     linkId: bucket.key,
   }));
-  if (othersCount > 0) {
+  if (othersCount > 0 && !groupBy?.hideOthers) {
     slices.push({
       label: groupBy?.othersLabel ?? "Others",
       // Unlike a named bucket, "Others" has no `key` of its own — the
