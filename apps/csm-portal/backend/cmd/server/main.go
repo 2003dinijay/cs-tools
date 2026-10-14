@@ -284,7 +284,7 @@ func main() {
 		lookups:        handler.NewLookupsHandler(postgresLookups, accessGuard),
 		usageMetrics:   handler.NewUsageMetricsHandler(postgresUsageMetrics, accessGuard),
 		files:          handler.NewFilesHandler(driveClient, accessGuard),
-		customerHealth: handler.NewCustomerHealthHandler(riskClient, handler.NewPostgresCustomerHealthClient(customerEntityClient), accessGuard),
+		customerHealth: handler.NewCustomerHealthHandler(riskClient, handler.NewPostgresCustomerHealthClient(customerEntityClient), customerEntityClient, accessGuard),
 		userInfo:       handler.NewUserInfoHandler(customerEntityClient, accessGuard),
 		userScan:       handler.NewSplUserScanHandler(salesEntityClient, customerEntityClient, accessGuard),
 		accountEsc:     handler.NewViewerAccountHandler(handler.NewPostgresViewerAccountClient(customerEntityClient, snClient), accessGuard),
