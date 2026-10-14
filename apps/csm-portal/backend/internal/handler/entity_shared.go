@@ -116,13 +116,6 @@ type entityProjectView struct {
 	// (project.onboarding_status) -- nil when onboarding isn't tracked for
 	// this project.
 	OnboardingStatus *string `json:"onboardingStatus"`
-	// GoLiveDate mirrors entity-service's own ProjectView.GoLiveDate
-	// (project.onboarding_go_live_date, RFC3339 -- entity-service marshals
-	// *time.Time, not a plain date string like AccountView.ActivationDate).
-	// This is the field the customer-health go-live computation actually
-	// checks -- OnboardingStatus above is a different, unrelated signal and
-	// must not be used for this.
-	GoLiveDate *string `json:"goLiveDate"`
 }
 
 type entitySearchProjectsRequest struct {
@@ -153,71 +146,6 @@ type entityProjectDetailsView struct {
 	ClosureState        *string                 `json:"closureState"`
 	TotalQueryHours     *float64                `json:"totalQueryHours"`
 	RemainingQueryHours *float64                `json:"remainingQueryHours"`
-}
-
-// entitySearchDeployedProductsEolRequest mirrors entityDeployedProductsSearchRequest
-// (usage_metrics_postgres.go) -- a separate, narrower request type isn't
-// needed; this file only ever needs DeploymentIDs/Pagination, both already on
-// that shared shape. Kept here as a type alias-by-field-match is not possible
-// in Go, so the two request builders stay independent but wire-identical.
-type entitySearchDeployedProductsEolRequest struct {
-	Pagination    entityPagination `json:"pagination"`
-	DeploymentIDs []string         `json:"deploymentIds"`
-}
-
-// entityDeployedProductVersionEolRef is a narrower view of entity-service's
-// DeployedProductVersionRef than usage_metrics_postgres.go's own
-// entityDeployedProductView.Version (*entityRef, id/name only) -- this one
-// specifically needs SupportEoLDate, which that file's shape doesn't carry.
-// ID is the product_version row's own stable identity: two distinct
-// product_version rows can share the same version string under a different
-// deployment profile (and can also share an EOL date), confirmed against
-// real data for this exact feature -- grouping the EOL software list by
-// name/EOL date instead of this id merges those two rows into one entry.
-type entityDeployedProductVersionEolRef struct {
-	ID             string  `json:"id"`
-	Name           string  `json:"name"`
-	SupportEoLDate *string `json:"supportEoLDate"`
-}
-
-type entityDeployedProductEolView struct {
-	Product entityRef `json:"product"`
-	// Deployment mirrors entity-service's own DeployedProductView.Deployment
-	// -- it was missing from this narrower, EOL-specific copy of that wire
-	// shape entirely, so entity-service's own real "deployment" field was
-	// silently dropped on every unmarshal and the customer-health detail
-	// view's own per-software-model Deployments list was always empty. See
-	// customer_health_postgres.go's own projectDetail, which groups rows by
-	// product/EOL date and uses this field to list which deployments run it.
-	Deployment entityRef                           `json:"deployment"`
-	Version    *entityDeployedProductVersionEolRef `json:"version"`
-}
-
-type entitySearchDeployedProductsEolResponse struct {
-	DeployedProducts []entityDeployedProductEolView `json:"deployedProducts"`
-	Total            int                            `json:"total"`
-}
-
-type entityAccountView struct {
-	ID     string  `json:"id"`
-	Name   string  `json:"name"`
-	Region *string `json:"region"`
-	// SubRegion mirrors entity-service's own AccountView.SubRegion
-	// (account.sub_region) -- a finer-grained geography than Region (e.g.
-	// "ASIA"/"NA - WEST" under Region "APAC"/"NA"). This, not Region, is
-	// what the customer-health region filter's dropdown values actually
-	// match against.
-	SubRegion *string `json:"subRegion"`
-	// CreTeam/SreTeam mirror entity-service's own AccountView.CreTeam/SreTeam
-	// (account.cre_team_id/sre_team_id, resolved to a named group reference)
-	// -- what the customer-health "ABT team" filter matches an account's
-	// team assignment against.
-	CreTeam *entityRef `json:"creTeam"`
-	SreTeam *entityRef `json:"sreTeam"`
-	// ActivationDate mirrors entity-service's own AccountView.ActivationDate
-	// (account.activation_date, plain "YYYY-MM-DD" -- not RFC3339) -- needed
-	// by the customer-health go-live computation (see customer_health_postgres.go).
-	ActivationDate *string `json:"activationDate"`
 }
 
 // caseStateToDisplay translates entity-service's domain.CaseState wire

@@ -24,6 +24,8 @@ import (
 	"net/http"
 	"os"
 	"testing"
+
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/entity"
 )
 
 // liveEntityClient is a minimal entityCustomerHealthClient/
@@ -89,6 +91,15 @@ func (e *liveEntityError) Error() string {
 
 func (c *liveEntityClient) GetAccount(ctx context.Context, id string) ([]byte, error) {
 	return c.get(ctx, "/accounts/"+id)
+}
+func (c *liveEntityClient) GetAccountHealthDetail(ctx context.Context, id string) (entity.CHAccountHealthDetail, error) {
+	var out entity.CHAccountHealthDetail
+	raw, err := c.get(ctx, "/accounts/"+id+"/health-detail")
+	if err != nil {
+		return out, err
+	}
+	err = json.Unmarshal(raw, &out)
+	return out, err
 }
 func (c *liveEntityClient) SearchAccounts(ctx context.Context, body []byte) ([]byte, error) {
 	return c.post(ctx, "/accounts/search", body)
