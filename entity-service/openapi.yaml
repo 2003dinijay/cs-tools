@@ -4156,6 +4156,46 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /projects/{id}/secret-key:
+    get:
+      summary: Retrieve the primary secret key for HMAC signature verification.
+      operationId: getProjectSecretKey
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Project key or UUID.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Secret key response.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  secretKey:
+                    type: string
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /products/search:
     post:
       summary: Search products by name.
@@ -12302,6 +12342,207 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "503":
           description: Case time cards are only supported for the ServiceNow data source.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /instances/meta:
+    post:
+      summary: Upsert deployment node metadata.
+      operationId: upsertInstanceMeta
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - nodeId
+              properties:
+                nodeId:
+                  type: string
+                projectKey:
+                  type: string
+                deploymentNumber:
+                  type: string
+                product:
+                  type: string
+                version:
+                  type: string
+      responses:
+        "200":
+          description: Node upserted successfully.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /instances/info:
+    post:
+      summary: Insert deployment host information snapshot.
+      operationId: insertInstanceInfo
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - nodeId
+              properties:
+                nodeId:
+                  type: string
+                jdkVersion:
+                  type: string
+                coreCount:
+                  type: integer
+                deploymentInfo:
+                  type: object
+                hash:
+                  type: string
+                createdTime:
+                  type: string
+      responses:
+        "200":
+          description: Deployment information recorded.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /instances/usage-stats:
+    post:
+      summary: Ingest live hourly and daily usage statistics.
+      operationId: insertInstanceUsageStats
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - nodeId
+                - countType
+              properties:
+                nodeId:
+                  type: string
+                countType:
+                  type: string
+                count:
+                  type: integer
+                createdTime:
+                  type: string
+      responses:
+        "200":
+          description: Usage recorded successfully.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /instances/daily-usages/batch:
+    post:
+      summary: Batch ingest daily usage entries from offline imports.
+      operationId: importDailyUsagesBatch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - nodeId
+                - usages
+              properties:
+                nodeId:
+                  type: string
+                projectKey:
+                  type: string
+                deploymentNumber:
+                  type: string
+                product:
+                  type: string
+                version:
+                  type: string
+                userEmail:
+                  type: string
+                usages:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      date:
+                        type: string
+                      type:
+                        type: string
+                      value:
+                        type: integer
+      responses:
+        "200":
+          description: Batch imported successfully.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  importedCount:
+                    type: integer
+                  status:
+                    type: string
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
           content:
             application/json:
               schema:

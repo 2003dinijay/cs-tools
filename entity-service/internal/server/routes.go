@@ -1565,6 +1565,13 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 	instanceHandler := handler.NewInstanceHandler(activeInstanceSvc)
 
+	var instanceIngestionHandler *handler.InstanceIngestionHandler
+	if db != nil {
+		instanceIngestionRepo := repository.NewInstanceIngestionRepository(repository.NewScoped(db))
+		instanceIngestionSvc := service.NewInstanceIngestionService(instanceIngestionRepo)
+		instanceIngestionHandler = handler.NewInstanceIngestionHandler(instanceIngestionSvc)
+	}
+
 	itServiceRepo := repository.NewITServiceRepository(db)
 	var activeITServiceSvc service.ITServiceService
 	if cfg.DataSource == config.DataSourceServiceNow {
@@ -2193,6 +2200,13 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	mux.HandleFunc("POST /instances/usages/search", instanceHandler.SearchInstanceUsage)
 	mux.HandleFunc("POST /instances/metrics/stats/search", instanceHandler.SearchInstanceMetricsStats)
 	mux.HandleFunc("POST /instances/usages/stats/search", instanceHandler.SearchInstanceUsageStats)
+	if instanceIngestionHandler != nil {
+		mux.HandleFunc("POST /instances/meta", instanceIngestionHandler.UpsertInstanceMeta)
+		mux.HandleFunc("POST /instances/info", instanceIngestionHandler.InsertInstanceInfo)
+		mux.HandleFunc("POST /instances/usage-stats", instanceIngestionHandler.InsertUsageStats)
+		mux.HandleFunc("POST /instances/daily-usages/batch", instanceIngestionHandler.ImportDailyUsagesBatch)
+		mux.HandleFunc("GET /projects/{id}/secret-key", instanceIngestionHandler.GetProjectSecretKey)
+	}
 
 	// Token validation always runs -- there is no config flag to disable it.
 	// The JWKS must load right here at startup: a wrong URL panics now instead
