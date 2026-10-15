@@ -1023,6 +1023,21 @@ func main() {
 					smePager = escalationEngine
 				}
 
+				// The rung email (cre.email): one email per rung, L1 to L4.
+				// It follows the service's email switches, not
+				// CALL_SENDING_ENABLED, so silencing the phones leaves it on
+				// and a debug run redirects it like every other email.
+				if l.kind == paging.LadderCRE && l.cfg.Email.Enabled {
+					escalationEngine.WithRungEmail(emailClient, paging.RungEmailSending{
+						Enabled:         emailSendingEnabled,
+						DebugMode:       emailDebugMode,
+						DebugRecipients: emailDebugRecipients,
+					})
+					slog.Info("case paging: rung emails are on for the CRE ladder",
+						"teamLists", len(l.cfg.Email.TeamLists), "emailSendingEnabled", emailSendingEnabled,
+						"emailDebugMode", emailDebugMode)
+				}
+
 				escalationCount := envInt("INCIDENT_ESCALATION_CONSUMER_COUNT", 1)
 				escalationConsumers = append(escalationConsumers,
 					startConsumers(ctx, l.name, eventBusCfg, l.group, escalationCount, escalationEngine.Handle, escalationToDeadLetter)...)
