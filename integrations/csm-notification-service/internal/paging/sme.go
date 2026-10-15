@@ -220,6 +220,10 @@ func (e *Engine) handleSpecialOps(ctx context.Context, pr specialOpsPress) error
 func (e *Engine) postSMEHandoff(ctx context.Context, pr specialOpsPress, team string, started bool) {
 	// The incident card's spaces first, without sre.smeHandoffChat, so the message replies under it; else the SRE space when that is on.
 	targets := e.incidentRooms(Trigger{IncidentID: pr.IncidentID, Team: pr.PreviousGroup})
+	if len(targets) > 0 && e.cfg.SME.Channel == ChannelLog {
+		// A log (dry run) SME ladder pages nobody, so the incident space is not told it does.
+		return
+	}
 	if len(targets) == 0 {
 		if !e.cfg.Ladder.SMEHandoffChat {
 			return

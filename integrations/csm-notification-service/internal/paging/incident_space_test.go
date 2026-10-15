@@ -150,13 +150,37 @@ func TestIncidentSpaceOnly_ClosingAndHandoffReplies(t *testing.T) {
 }
 
 // A log ladder is a dry run, so it posts nothing even with an incident space.
-func TestIncidentSpaceOnly_LogLadderPostsNoRung(t *testing.T) {
+func TestIncidentSpaceOnly_LogLadderPostsNothing(t *testing.T) {
 	chat := &fakeChat{}
 	e := incidentSpaceOnlyEngine(chat)
 	e.cfg.Channel = ChannelLog
-	deliverFirstRung(t, e, Trigger{IncidentID: "inc-1", Record: RecordIncident, Team: "MS/PC SRE Group", At: time.Now()})
+	trigger := Trigger{IncidentID: "inc-1", Record: RecordIncident, Team: "MS/PC SRE Group", At: time.Now()}
+	deliverFirstRung(t, e, trigger)
 	if len(chat.posted) != 0 {
-		t.Fatalf("posted %+v; want nothing from a log ladder", chat.posted)
+		t.Errorf("posted %+v; want no rung from a log ladder", chat.posted)
+	}
+	if rooms, _ := e.unansweredRooms(Plan{Trigger: trigger}); len(rooms) != 0 {
+		t.Errorf("closing message rooms = %+v; want none from a log ladder", rooms)
+	}
+}
+
+// A team narrowed to log is a dry run too, so its incident gets no closing reply.
+func TestIncidentSpaceOnly_TeamLogPostsNoClosingReply(t *testing.T) {
+	e := incidentSpaceOnlyEngine(&fakeChat{})
+	e.cfg.Ladder.TeamChannels = map[string]Channel{"ms/pc sre group": ChannelLog}
+	if rooms, _ := e.unansweredRooms(Plan{Trigger: Trigger{IncidentID: "inc-1", Record: RecordIncident, Team: "MS/PC SRE Group"}}); len(rooms) != 0 {
+		t.Errorf("closing message rooms = %+v; want none for a team set to log", rooms)
+	}
+}
+
+// A log SME ladder pages nobody, so the incident space gets no handoff reply.
+func TestIncidentSpaceOnly_LogSMELadderPostsNoHandoff(t *testing.T) {
+	chat := &fakeChat{}
+	e := incidentSpaceOnlyEngine(chat)
+	e.cfg.SME.Channel = ChannelLog
+	e.postSMEHandoff(context.Background(), specialOpsPress{IncidentID: "inc-1", Number: "INC1", PreviousGroup: "MS/PC SRE Group"}, "choreo-runtime", true)
+	if len(chat.handoffs) != 0 {
+		t.Errorf("handoffs = %+v; want none from a log SME ladder", chat.handoffs)
 	}
 }
 

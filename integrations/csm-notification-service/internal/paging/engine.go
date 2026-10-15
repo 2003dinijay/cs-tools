@@ -526,8 +526,11 @@ func (e *Engine) unansweredRooms(plan Plan) ([]chatRoom, string) {
 		}
 		return nil, ""
 	}
-	// An incident space gets the closing reply without sre.unansweredChat.
+	// An incident space gets the closing reply without sre.unansweredChat, unless the ladder is a log (dry run) one.
 	if rooms := e.incidentRooms(t); len(rooms) > 0 {
+		if e.channelFor(t) == ChannelLog {
+			return nil, ""
+		}
 		return rooms, t.Routing.SREChain()
 	}
 	if !e.cfg.Ladder.UnansweredChat {
