@@ -201,6 +201,18 @@ type CommentAddedPayload struct {
 	// at all, which csm-notification-service's own slaEngine needs to tell
 	// apart from a real negative.
 	IsSupportEngineerResponse bool `json:"isSupportEngineerResponse"`
+	// CaseType/EngagementType let csm-notification-service route a
+	// frustration-detection Chat alert to the Migration audience instead of
+	// the usual team/Incident Monitor routing, when the comment landed on a
+	// migration engagement -- the one case this routes by engagement type
+	// rather than by team. CaseType mirrors CaseCreatedPayload.CaseType's own
+	// convention (strings.ToUpper(derefString(cv.Type)), e.g. "ENGAGEMENT");
+	// EngagementType is cv.EngagementType's own lowercase value (e.g.
+	// "migration"), unlike CaseType -- kept as-is since it already matches
+	// domain.EngagementTypeMigration's own spelling. Both empty for every
+	// non-engagement case-like type.
+	CaseType       string `json:"caseType,omitempty"`
+	EngagementType string `json:"engagementType,omitempty"`
 }
 
 // KBArticlePublishedPayload is the Payload shape for

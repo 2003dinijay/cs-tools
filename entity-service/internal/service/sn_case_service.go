@@ -1537,6 +1537,8 @@ func publishCommentAddedEvent(ctx context.Context, publisher EventPublisherServi
 		IsEvaluationAccount:       isEvaluationAccount,
 		ProjectOnboardingStatus:   onboardingStatus,
 		IsSupportEngineerResponse: isSupportEngineerResponse,
+		CaseType:                  strings.ToUpper(derefString(cv.Type)),
+		EngagementType:            derefString(cv.EngagementType),
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "create comment: encode case.comment_added payload failed", "caseId", req.CaseID, "error", err)

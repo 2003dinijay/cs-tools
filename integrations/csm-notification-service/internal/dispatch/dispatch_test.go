@@ -31,6 +31,7 @@ import (
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/chataudience"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/escalation"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/eventbus"
+	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/events"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/notifications"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/recipientlinks"
 )
@@ -1124,6 +1125,59 @@ func TestDispatcher_Handle_CommentAdded_FrustrationDetected_SendsChatAlert(t *te
 	}
 	if got.reason != "Repeated unanswered follow-ups" || got.frustrationLevel != 0.91 {
 		t.Errorf("unexpected SendFrustrationAlert args: %+v", got)
+	}
+}
+
+// TestDispatcher_Handle_CommentAdded_FrustrationDetected_MigrationEngagementRoutesToMigrationAudience
+// verifies isMigrationEngagementComment's own routing override: a frustration
+// alert on a migration engagement (caseType "ENGAGEMENT", engagementType
+// "migration") goes to chataudience.Migration alone, even though the payload
+// carries a real Team that would otherwise resolve via chataudience.Resolve.
+func TestDispatcher_Handle_CommentAdded_FrustrationDetected_MigrationEngagementRoutesToMigrationAudience(t *testing.T) {
+	chat := &mockGoogleChatSender{}
+	links := &mockLinkResolver{isCustomer: true}
+	detector := &mockEscalationDetector{result: escalation.Result{
+		IsFrustrated: true, FrustratedLevel: 0.91, Reason: "Repeated unanswered follow-ups", ShouldAlert: true,
+	}}
+	d := NewDispatcher(&mockEmailSender{}, chat, &mockCallSender{}, links, true, false, nil, true, "", nil).
+		WithFrustrationDetection(detector)
+
+	record := eventbus.Record{Value: []byte(`{"type":"case.comment_added","entityId":"CASE-1","payload":{"name":"Commenter","projectId":"PROJ-1","caseId":"CASE-1","caseNumber":"CS0001","caseTitle":"Migration stalled","caseComment":"this is unacceptable, still no update","commentId":"C-1","recipients":["test-recipient@example.com"],"authorEmail":"customer@acme.com","product":"WSO2 API Manager","team":"Castor","caseType":"ENGAGEMENT","engagementType":"migration"}}`)}
+
+	if err := d.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if len(chat.frustrationCalls) != 1 {
+		t.Fatalf("expected 1 frustration Chat alert, got %d", len(chat.frustrationCalls))
+	}
+	if got := chat.frustrationCalls[0].audience; got != chataudience.Migration {
+		t.Errorf("audience = %q, want %q (migration engagement overrides team routing)", got, chataudience.Migration)
+	}
+}
+
+// TestIsMigrationEngagementComment pins the match rule: case type
+// "engagement" (case/whitespace-insensitive) and engagement type "migration"
+// (same), every other combination false.
+func TestIsMigrationEngagementComment(t *testing.T) {
+	testCases := []struct {
+		name           string
+		caseType       string
+		engagementType string
+		want           bool
+	}{
+		{"exact match", "ENGAGEMENT", "migration", true},
+		{"case/whitespace insensitive", "  engagement ", " Migration ", true},
+		{"wrong case type", "CASE", "migration", false},
+		{"wrong engagement type", "ENGAGEMENT", "consultancy", false},
+		{"both empty", "", "", false},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := events.CommentAddedPayload{CaseType: tc.caseType, EngagementType: tc.engagementType}
+			if got := isMigrationEngagementComment(p); got != tc.want {
+				t.Errorf("isMigrationEngagementComment(%q, %q) = %v, want %v", tc.caseType, tc.engagementType, got, tc.want)
+			}
+		})
 	}
 }
 
