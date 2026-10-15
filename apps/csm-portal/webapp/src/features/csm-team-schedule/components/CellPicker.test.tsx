@@ -738,9 +738,38 @@ describe("CellPicker: moving somebody to another team", () => {
     expect(onMarkAway).toHaveBeenCalledWith("MIGRATION", "2026-09-23", "2026-09-23");
   });
 
-  it("offers no month shortcuts where there is no move to make", () => {
+  it("sets a span of leave in one click, counting the first day", () => {
+    const { onMarkAway } = renderPicker();
+    const until = screen.getByLabelText("Mark until");
+    fireEvent.click(screen.getByRole("button", { name: "1 week" }));
+    expect(until).toHaveValue("2026-09-29");
+    fireEvent.click(screen.getByRole("button", { name: "2 weeks" }));
+    expect(until).toHaveValue("2026-10-06");
+    fireEvent.click(screen.getByRole("button", { name: "2 months" }));
+    expect(until).toHaveValue("2026-11-22");
+    fireEvent.click(screen.getByRole("button", { name: "1 month" }));
+    expect(until).toHaveValue("2026-10-22");
+    // A length only fills "To": nothing is marked until a tag is picked.
+    expect(onMarkAway).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: /Annual leave/ }));
+    expect(onMarkAway).toHaveBeenCalledWith("ANNUAL_LEAVE", "2026-09-23", "2026-10-22", undefined);
+  });
+
+  it("runs a month from a day the later month lacks to that month's end", () => {
     renderPicker();
-    expect(screen.queryByRole("button", { name: "3 months" })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Mark from"), { target: { value: "2027-01-31" } });
+    const until = screen.getByLabelText("Mark until");
+    fireEvent.click(screen.getByRole("button", { name: "1 month" }));
+    expect(until).toHaveValue("2027-02-28");
+    fireEvent.click(screen.getByRole("button", { name: "3 months" }));
+    expect(until).toHaveValue("2027-04-30");
+    fireEvent.change(screen.getByLabelText("Mark from"), { target: { value: "2028-01-31" } });
+    fireEvent.click(screen.getByRole("button", { name: "1 month" }));
+    expect(until).toHaveValue("2028-02-29");
+    // A day the later month has still runs to the day before it.
+    fireEvent.change(screen.getByLabelText("Mark from"), { target: { value: "2027-01-15" } });
+    fireEvent.click(screen.getByRole("button", { name: "1 month" }));
+    expect(until).toHaveValue("2027-02-14");
   });
 
   it("keeps Americas cover as standing hours for somebody already on Americas", () => {

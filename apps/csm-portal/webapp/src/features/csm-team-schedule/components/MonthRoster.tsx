@@ -29,7 +29,8 @@ import type {
   ScheduleTier,
   RotaFamily,
 } from "../types";
-import { addDays, initialsOf, isRotationShift, mondayOf, toIsoDate, zoneColumnOf, zoneLabelOn, type RosterSpan } from "../utils/rota";
+import { addDays, HALF_DAY_LEAVE_CODES, initialsOf, isRotationShift, mondayOf, toIsoDate, zoneColumnOf, zoneLabelOn, type RosterSpan } from "../utils/rota";
+import { ordinaryDayCode, REGULAR_HOURS_CODE } from "../utils/standingDay";
 import { useTeamColour, useTeamName } from "../utils/teamColourContext";
 
 export type { RosterSpan };
@@ -373,11 +374,20 @@ export default function MonthRoster({
     const firstIso = toIsoDate(days[0]);
     const nowIso = toIsoDate(new Date());
     const refIso = nowIso >= firstIso && nowIso <= toIsoDate(days[days.length - 1]) ? nowIso : firstIso;
+    const lastIso = toIsoDate(days[days.length - 1]);
     const movedTo = new Map<string, { target: string; home: string; active: boolean }>();
     for (const ab of absences) {
       const kind = kindByCode.get(ab.kindCode);
       if (!kind?.movesToTeamKey || !ab.homeTeamKey) continue;
-      const active = ab.startsOn <= refIso && (!ab.endsOn || ab.endsOn >= refIso);
+      // A move with no hours of its own (SaaS Night cover: being on the team
+      // is the whole of it) seats them under that team whenever it is in
+      // view, not only once it has started -- otherwise a move starting
+      // tomorrow left them on their own team, the move drawn there as a row
+      // of NC chips, which is the one thing it should never read as.
+      const teamOnly = kind.worksRotaThere && !kind.showsAsShiftCode;
+      const active = teamOnly
+        ? ab.startsOn <= lastIso && (!ab.endsOn || ab.endsOn >= firstIso)
+        : ab.startsOn <= refIso && (!ab.endsOn || ab.endsOn >= refIso);
       if (active || !movedTo.has(ab.engineer.userId)) {
         movedTo.set(ab.engineer.userId, { target: ab.teamKey, home: ab.homeTeamKey, active });
       }
@@ -694,25 +704,34 @@ export default function MonthRoster({
    *  Americas cover on the Americas team, Regular hours elsewhere -- and only
    *  for somebody on that team, so a leaver's month stops at their last day.
    *  On a row a span moved someone to, the days outside the span are their
-   *  own team's ordinary day. */
+   *  own team's ordinary day. The lead of a team on the India region shift
+   *  keeps Regular hours (ordinaryDayCode). */
   const defaultFor = useMemo(() => {
-    const cellFor = (team: string): Cell | undefined => {
+    const cellFor = (team: string, isLead: boolean): Cell | undefined => {
       if (teamsWithoutDefault?.has(team) || teamsWithoutDefault?.has(team.toLowerCase())) return undefined;
-      const code = teamDefaultShift?.[team] ?? teamDefaultShift?.[team.toLowerCase()];
-      const sh = code ? shifts.get(code) : undefined;
+      const own = teamDefaultShift?.[team] ?? teamDefaultShift?.[team.toLowerCase()];
+      const code = own ? ordinaryDayCode(own, isLead) : undefined;
+      const sh = code && code !== REGULAR_HOURS_CODE ? shifts.get(code) : undefined;
       return sh
         ? { code: sh.shortCode, token: sh.colourToken, title: `Working day (${sh.shortCode})`, isRotation: false, isDefault: true }
         : WORKING_DAY;
     };
     return (
-      row: { teamKey: string; isMember: boolean; movedDays: ReadonlySet<string>; homeTeam?: string; homeMember: boolean },
+      row: {
+        teamKey: string;
+        isMember: boolean;
+        isLead: boolean;
+        movedDays: ReadonlySet<string>;
+        homeTeam?: string;
+        homeMember: boolean;
+      },
       iso: string,
     ): Cell | undefined => {
       if (row.movedDays.size > 0) {
-        if (row.movedDays.has(iso)) return cellFor(row.teamKey);
-        return row.homeTeam && row.homeMember ? cellFor(row.homeTeam) : undefined;
+        if (row.movedDays.has(iso)) return cellFor(row.teamKey, row.isLead);
+        return row.homeTeam && row.homeMember ? cellFor(row.homeTeam, row.isLead) : undefined;
       }
-      return row.isMember ? cellFor(row.teamKey) : undefined;
+      return row.isMember ? cellFor(row.teamKey, row.isLead) : undefined;
     };
   }, [teamDefaultShift, teamsWithoutDefault, shifts]);
 
@@ -753,12 +772,16 @@ export default function MonthRoster({
       const kind = c.absenceKindCode ? kindByCode.get(c.absenceKindCode) : undefined;
       // A move drawn as the other team's hours reads as those hours.
       if (kind && !c.asHours) {
+        // A retired kind (Sick leave, the customer allocations) is not
+        // explained: the legend lists what can be marked, and the old days
+        // still carrying one keep its name in their own tooltip.
+        if (kind.retired) return;
         put({
           key: `k|${kind.code}`,
           group: kind.bucket === "LEAVE" ? "Leave" : "Allocations",
           code: kind.shortCode,
           token: kind.colourToken,
-          label: kind.retired ? `${kind.label} (no longer offered)` : kind.label,
+          label: kind.label,
         });
         return;
       }
@@ -790,6 +813,16 @@ export default function MonthRoster({
           fromCell(dflt);
           break;
         }
+      }
+    }
+    // The half days are listed whether or not anybody is on one in view:
+    // they are new, and a lead looking for how to mark one finds them here.
+    // Always morning then evening, whichever one the grid met first.
+    for (const code of HALF_DAY_LEAVE_CODES) {
+      const kind = kindByCode.get(code);
+      if (kind && !kind.retired) {
+        out.delete(`k|${kind.code}`);
+        put({ key: `k|${kind.code}`, group: "Leave", code: kind.shortCode, token: kind.colourToken, label: kind.label });
       }
     }
     return [...out.values()];
@@ -1283,8 +1316,14 @@ export default function MonthRoster({
 
       {/* The card's one scroller. Both axes live here, which is what lets the
           date row and the engineer column stay pinned to the grid they label
-          instead of to the page. */}
-      <div className="twwrap rostwrap" ref={wrapRef} onScroll={() => (touched.current = true)}>
+          instead of to the page. SRE's is the exception (rostflow): its list
+          is not scrolled inside the card, only across it, so the page alone
+          scrolls down to the last engineer. */}
+      <div
+        className={`twwrap rostwrap${family === "SRE" ? " rostflow" : ""}`}
+        ref={wrapRef}
+        onScroll={() => (touched.current = true)}
+      >
         <table className={`tw roster${split ? " split" : ""}`} onKeyDown={editing ? onGridKey : undefined}>
           <thead>
             <tr>
