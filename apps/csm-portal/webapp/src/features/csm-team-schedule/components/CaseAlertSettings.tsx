@@ -183,7 +183,7 @@ export default function CaseAlertSettings({
         {savedWhat ? (
           <p className="cas-status ok cas-done">
             <span>
-              ✓ Saved: {savedWhat}. {whenUsed(s)}
+              ✓ Saved: {savedWhat}. {whenUsed()}
             </span>
             <button
               type="button"
@@ -293,10 +293,8 @@ function RoutesAndValues({
 }
 
 /** When the alert service starts using a saved change. */
-function whenUsed(s: Settings): string {
-  return s.revision.appliedMode === "db"
-    ? "The alert service uses it after its next restart."
-    : "The alert service uses it after its next restart.";
+function whenUsed(): string {
+  return "The alert service uses it after its next restart.";
 }
 
 /** A team's name for people: the shared space, else the Team Schedule's

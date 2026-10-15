@@ -521,7 +521,8 @@ file (`scripts/csm-compose/paging-alert.minimal.yaml` is that small file).
 `PAGING_CONFIG_SOURCE` unset csm-notification-service uses those rooms (and
 only those; never a CRE room) at its next start; `db` also uses routes and
 ladder values saved before, `off` none of it. No setting is needed on either
-service.
+service. A saved SME room is used even when the file lists no SME rooms
+(`sme.teamChats`); every SME team without one keeps `sme.chat`.
 
 - **Rooms** (`paging_chat_room`), shown as *Team routing*: the CRE and SRE
   shared rooms, an SRE team's own row (Apollo, Artemis, IaaS) and, since 0237,

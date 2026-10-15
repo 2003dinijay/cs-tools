@@ -307,8 +307,9 @@ ticker, with Redis as its only durable state — the same `REDIS_URL`/
   older builds) is `rooms` when unset: the SRE and SME teams' saved rooms only
   (`teamRoomsOnly` drops CRE rooms, shared rooms, channels, routes and values),
   asked once with no retry, the file when nothing is saved or entity-service is
-  down. A saved SME room replaces that team's `sme.teamChats` entry, and is
-  skipped when the file has no `sme.teamChats`. `off` never asks entity-service.
+  down. A saved SME room replaces or adds that team's `sme.teamChats` entry; an
+  SME team with no room of its own uses `sme.chat` (`smeNotifiersFor`), never no
+  card. `off` never asks entity-service.
   `shadow` reads `GET /team-schedule/case-alerts/settings/runtime` once at start,
   logs what `MergeCaseAlertSettings` would change, and runs on the file; `db`
   runs on the merge. The merge only replaces what was saved -- a ladder's shared
@@ -508,7 +509,7 @@ per space the card went to (`Engine.incidentRooms`); otherwise it goes to the
 team's own space, else `sre.chat` -- whatever `sre.channel` is, so a call-only
 ladder still tells the room. Best effort (logged, never retried). An SME ladder has its own,
 `sme.unansweredChat`: the SME team's own space (`sme.teamChats`), else
-`sme.chat` when `sme.teamChats` is empty, else nothing.
+`sme.chat`.
 
 **Escalated-to-SME message** (`sre.smeHandoffChat`, opt-in): when a SaaS SRE
 incident's escalation starts an SME page, `postSMEHandoff` posts who escalated
@@ -593,9 +594,8 @@ file's `sme.enabled`:
   their own (the committed example does this; `team_chat_spaces_test.go`
   uncomments it and checks each team gets its own space). Unset, every team's
   cards go to `sme.chat`, as before. Set, a listed team's cards go to its own space and
-  a team not listed gets no card -- its calls still go out when `sme.channel`
-  includes calls; with `channel: chat` it reaches nobody and the work note says
-  `NO_CHAT_SPACE`. `Engine.smeNotifiersFor` picks by `Routing.SMETeam`. At the start a work note says who
+  a team not listed uses `sme.chat`, never no card (a room saved on the Alert
+  Settings tab counts as listed). `Engine.smeNotifiersFor` picks by `Routing.SMETeam`. At the start a work note says who
   L1 is, or why nobody can be paged (`NO_RECIPIENTS`, `NO_NUMBER`,
   `NUMBER_NOT_ALLOWED`, `NO_CHANNEL`); a rung with nobody is logged ("SME rung
   cannot be called") and skipped; the usual execution summary is written when

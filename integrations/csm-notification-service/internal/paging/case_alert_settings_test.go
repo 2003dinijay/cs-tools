@@ -288,7 +288,7 @@ func TestMergeCaseAlertSettings_SMETeamRooms(t *testing.T) {
 		t.Error("an SRE or CRE room changed when only SME rooms were saved")
 	}
 	joined := strings.Join(changes, "\n")
-	for _, want := range []string{`sme.teamChats.asgardeo: "Asgardeo SME" via GOOGLE_CHAT_SPACES`, "sme.teamChats.moesif: none (no card)"} {
+	for _, want := range []string{`sme.teamChats.asgardeo: "Asgardeo SME" via GOOGLE_CHAT_SPACES`, "sme.teamChats.moesif: none (used sme.chat)"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("changes do not mention %q:\n%s", want, joined)
 		}
@@ -298,21 +298,17 @@ func TestMergeCaseAlertSettings_SMETeamRooms(t *testing.T) {
 	}
 }
 
-// With no SME team rooms in the file every SME card goes to sme.chat; one
-// saved team room would leave every other SME team with no card, so it is
-// skipped and the file's SME rooms stand.
-func TestMergeCaseAlertSettings_SMERoomNeedsTheFilesTeamRooms(t *testing.T) {
+// With no SME team rooms in the file, a saved one is used for its team; every
+// other SME team keeps sme.chat (the engine's fallback).
+func TestMergeCaseAlertSettings_SMERoomWithoutTheFilesTeamRooms(t *testing.T) {
 	cfg := loadConfigText(t, prodShapedConfig)
-	merged, env, changes, err := MergeCaseAlertSettings(cfg, CaseAlertSettings{Rooms: []CaseAlertRoom{
+	merged, env, _, err := MergeCaseAlertSettings(cfg, CaseAlertSettings{Rooms: []CaseAlertRoom{
 		{Ladder: "SME", TeamKey: "asgardeo", Label: "Asgardeo SME", WebhookURL: "https://chat.googleapis.com/v1/spaces/ASG/messages?key=k&token=t"},
 	}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(merged.SME.TeamChats) != 0 || len(env) != 0 {
-		t.Errorf("SME rooms = %v, env = %v; want the file's (none)", merged.SME.TeamChats, env)
-	}
-	if !strings.Contains(strings.Join(changes, "\n"), "skipped the SME room for team \"asgardeo\"") {
-		t.Errorf("changes = %v", changes)
+	if a := merged.SME.TeamChats["asgardeo"]; a.Audience != "Asgardeo SME" || env[a.WebhookURLEnv] == "" || len(merged.SME.TeamChats) != 1 {
+		t.Fatalf("SME rooms = %v, env = %v", merged.SME.TeamChats, env)
 	}
 }
