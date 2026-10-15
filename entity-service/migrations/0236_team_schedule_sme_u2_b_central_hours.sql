@@ -27,13 +27,15 @@
 --   * four new windows with the new hours, in the same zones, with the same
 --     labels, short codes and colours, so the roster and the picker read as
 --     before;
---   * from a clean cutover -- the day after the one it runs on (LK date) --
---     every U2 / B-Central turn moves to the new window of its zone, with its
+--   * from a clean cutover -- the day it runs on (LK date), so the new hours
+--     are what the roster and the day view show that same day -- every
+--     U2 / B-Central turn moves to the new window of its zone, with its
 --     starts_at / ends_at resolved again from the new hours (the instants
 --     Case Paging reads). Turns before the cutover keep the hours they were
---     worked; the one night that crosses it (22:00, to 10:00 on the cutover
---     day) is shortened to end at 06:00, when the cutover day's new day turn
---     starts, so the cover runs on with no gap and no overlap. Moving turn by
+--     worked; the one night that crosses it (the previous night's 22:00, to
+--     10:00 on the cutover day) is shortened to end at 06:00, when the cutover
+--     day's new day turn starts, so the cover runs on with no gap and no
+--     overlap. Moving turn by
 --     turn instead cannot work: the same engineers hold day and night, so one
 --     turn kept on the old hours collides with the next, all the way down;
 --   * a moved turn that would still overlap another turn of the same engineer
@@ -85,7 +87,7 @@ SELECT a.id, a.user_id, n.id AS new_shift_id,
     ('SME_BCN_NIGHT', 'SME_BCN_NIGHT_18_06')
   ) AS v(old_code, new_code) ON v.old_code = o.code
   JOIN team_schedule_shift n ON n.code = v.new_code
- WHERE a.rota_date >= (now() AT TIME ZONE 'Asia/Colombo')::date + 1;
+ WHERE a.rota_date >= (now() AT TIME ZONE 'Asia/Colombo')::date;
 
 -- The night that crosses the cutover ends when the new day begins.
 UPDATE team_schedule_assignment a
@@ -94,7 +96,7 @@ UPDATE team_schedule_assignment a
   FROM team_schedule_shift o, team_schedule_shift d
  WHERE o.id = a.shift_id
    AND (o.code, d.code) IN (('SME_U2_NIGHT', 'SME_U2_DAY_06_18'), ('SME_BCN_NIGHT', 'SME_BCN_DAY_06_18'))
-   AND a.rota_date = (now() AT TIME ZONE 'Asia/Colombo')::date
+   AND a.rota_date = (now() AT TIME ZONE 'Asia/Colombo')::date - 1
    AND a.ends_at > ((a.rota_date + 1)::timestamp + make_interval(mins => d.start_minute)) AT TIME ZONE d.authoring_time_zone;
 
 -- A move that would overlap a turn of the same engineer staying where it is
