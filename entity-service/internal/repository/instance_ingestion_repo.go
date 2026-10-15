@@ -48,8 +48,16 @@ func NewInstanceIngestionRepository(db *Scoped) InstanceIngestionRepository {
 	return &instanceIngestionRepo{db: db}
 }
 
+func ensureCallerIdentity(ctx context.Context) context.Context {
+	if _, ok := CallerIdentityFromContext(ctx); !ok {
+		return WithSystemIdentity(ctx)
+	}
+	return ctx
+}
+
 // ResolveProductVersionID maps a product name/code and version string to a product_version.id UUID.
 func (r *instanceIngestionRepo) ResolveProductVersionID(ctx context.Context, productName, version string) (*string, error) {
+	ctx = ensureCallerIdentity(ctx)
 	trimmedProduct := strings.TrimSpace(productName)
 	trimmedVersion := strings.TrimSpace(version)
 	if trimmedProduct == "" || trimmedVersion == "" {
@@ -77,6 +85,7 @@ func (r *instanceIngestionRepo) ResolveProductVersionID(ctx context.Context, pro
 
 // UpsertDeploymentNode registers or updates a node in deployment_node.
 func (r *instanceIngestionRepo) UpsertDeploymentNode(ctx context.Context, req domain.InstanceMetaRequest) (string, error) {
+	ctx = ensureCallerIdentity(ctx)
 	if strings.TrimSpace(req.NodeID) == "" {
 		return "", &apierror.ValidationError{Msg: "nodeId is required"}
 	}
@@ -117,6 +126,7 @@ func (r *instanceIngestionRepo) UpsertDeploymentNode(ctx context.Context, req do
 
 // InsertDeploymentInformation records host and JDK metadata snapshot.
 func (r *instanceIngestionRepo) InsertDeploymentInformation(ctx context.Context, req domain.InstanceInfoRequest) (string, error) {
+	ctx = ensureCallerIdentity(ctx)
 	if strings.TrimSpace(req.NodeID) == "" {
 		return "", &apierror.ValidationError{Msg: "nodeId is required"}
 	}
@@ -164,6 +174,7 @@ func (r *instanceIngestionRepo) InsertDeploymentInformation(ctx context.Context,
 
 // InsertUsageStats records hourly usage and rolls up into daily_usage_summary.
 func (r *instanceIngestionRepo) InsertUsageStats(ctx context.Context, req domain.InstanceUsageIngestRequest) error {
+	ctx = ensureCallerIdentity(ctx)
 	if strings.TrimSpace(req.NodeID) == "" {
 		return &apierror.ValidationError{Msg: "nodeId is required"}
 	}
@@ -233,6 +244,7 @@ func (r *instanceIngestionRepo) InsertUsageStats(ctx context.Context, req domain
 
 // ImportDailyUsagesBatch batch-inserts daily records into daily_usage_summary.
 func (r *instanceIngestionRepo) ImportDailyUsagesBatch(ctx context.Context, req domain.DailyUsageBatchRequest) (int, error) {
+	ctx = ensureCallerIdentity(ctx)
 	if strings.TrimSpace(req.NodeID) == "" {
 		return 0, &apierror.ValidationError{Msg: "nodeId is required"}
 	}
@@ -288,6 +300,7 @@ func (r *instanceIngestionRepo) ImportDailyUsagesBatch(ctx context.Context, req 
 
 // GetProjectSecretKey retrieves product_consumption_primary_secret_key from project table.
 func (r *instanceIngestionRepo) GetProjectSecretKey(ctx context.Context, projectKey string) (string, error) {
+	ctx = ensureCallerIdentity(ctx)
 	trimmed := strings.TrimSpace(projectKey)
 	if trimmed == "" {
 		return "", &apierror.ValidationError{Msg: "project key is required"}
