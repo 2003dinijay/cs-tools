@@ -111,10 +111,17 @@ function statusLine(s: Settings): { tone: "info" | "warn"; text: string } {
         tone: "warn",
         text: `Saved, not in use yet. The alert service is comparing these with its own settings, but still uses its own${asOf}.`,
       };
+    case "off":
+      // Reported "off": the saved settings were read but refused by the
+      // file's own checks, so the alert service runs on its file.
+      return {
+        tone: "warn",
+        text: `Saved, not in use: at its last start the alert service could not use these and runs on its own file${asOf}.`,
+      };
     default:
       return {
         tone: "warn",
-        text: "The alert service uses the chat spaces saved here from its next restart.",
+        text: "The alert service uses the settings saved here from its next restart.",
       };
   }
 }
@@ -409,9 +416,15 @@ function Redirects({
 
 /** When the alert service starts using a saved change. */
 function whenUsed(s: Settings): string {
-  return s.revision.appliedMode === "db"
-    ? "The alert service uses it after its next restart."
-    : "The alert service uses it after its next restart.";
+  // In step with statusLine: what the alert service does with a saved change.
+  switch (s.revision.appliedMode) {
+    case "shadow":
+      return "The alert service only compares it with its file (shadow mode); it uses it once PAGING_CONFIG_SOURCE is db or unset.";
+    case "off":
+      return "The alert service could not use the saved settings at its last start; it uses them after a restart that accepts them.";
+    default:
+      return "The alert service uses it after its next restart.";
+  }
 }
 
 /** A team's name for people: the shared space, else the Team Schedule's

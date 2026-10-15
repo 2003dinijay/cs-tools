@@ -60,7 +60,7 @@ const HINT = "spaces/AAAAtest01 · …wxyz";
 const HOOK =
   "https://chat.googleapis.com/v1/spaces/AAAAtest01/messages?key=k&token=t";
 const NOT_DB =
-  "The alert service uses it after its next restart.";
+  "The alert service only compares it with its file (shadow mode); it uses it once PAGING_CONFIG_SOURCE is db or unset.";
 const DB = "The alert service uses it after its next restart.";
 
 function room(over: Partial<CaseAlertChatRoom>): CaseAlertChatRoom {
@@ -383,7 +383,8 @@ describe("Team chat routing: changes wait for Submit", () => {
       channel: "",
     });
     expect(setWebhook.mutateAsync).toHaveBeenCalledWith({ roomId: "new-room", url: HOOK });
-    expect(screen.getByText(/^✓ Saved/)).toHaveTextContent(`✓ Saved 1 change. ${NOT_DB}`);
+    // Not reported yet: it is used from the next restart.
+    expect(screen.getByText(/^✓ Saved/)).toHaveTextContent(`✓ Saved 1 change. ${DB}`);
   });
 
   it("changes a team that has a space when picked again: its URL kept unless a new one is typed", async () => {
@@ -492,6 +493,16 @@ describe("Team chat routing: changes wait for Submit", () => {
     expect(screen.getByText(/^✓ Saved/)).toHaveTextContent(`✓ Saved 1 change. ${DB}`);
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
     expect(screen.queryByText(/^✓ Saved/)).not.toBeInTheDocument();
+  });
+
+  it("words the saved line for shadow mode: compared, not used yet", async () => {
+    settings.data = make({ revision: { saved: 5, applied: 4, appliedMode: "shadow" } });
+    render(<CaseAlertSettings chain="SRE_SAAS" />);
+    fireEvent.click(within(chatRow("Apollo")).getByRole("button", { name: "More" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Turn off" }));
+    fireEvent.click(within(chatRow("Apollo")).getByRole("button", { name: "Turn off" }));
+    await submit();
+    expect(screen.getByText(/^✓ Saved/)).toHaveTextContent(`✓ Saved 1 change. ${NOT_DB}`);
   });
 
   it("adds an SME team's space with ladder SME and no SRE box", async () => {

@@ -23488,7 +23488,10 @@ components:
             only), alertDuty.tiers, alertDuty.perTeam,
             acknowledgement.requireBoth. SRE: teams.defaultRota,
             timing.initialWait (0s to 30m), timing.interval (1m to 30m),
-            timing.includeL4, unansweredChat, smeHandoffChat.
+            timing.includeL4, unansweredChat, smeHandoffChat. SME:
+            timing.initialWait (0s to 30m), timing.interval (1m to 30m),
+            onLeave, unansweredChat, teams (Special Ops team key to SME team
+            key).
     CaseAlertValuesResponse:
       type: object
       required: [values]
