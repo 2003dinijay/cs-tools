@@ -203,9 +203,19 @@ schedules assume `TZ=UTC` like every other here.
   writes a greeting, one line about the window (date and hours in IST), a Name | Rotation table
   (weekend: Name | Day | Rotation), the swap instruction with the Team Schedule link written out,
   and a sign-off. Rotation names come from config (`CODE=Name`). Names are escaped.
-- **A retry can repeat emails.** The handler keeps no record of what it sent; a failed send fails
-  the run after the other windows were tried, and the engine re-runs the whole period, re-sending
-  the windows that had succeeded. A duplicate reminder was judged a smaller harm than a missed one.
+- **A retry announces what its scheduled run would have.** The engine retries a failed run every
+  tick until the next period, which for `rota_weekend_notice` is days later. So the rota days are
+  counted from the run's period key (`Config.Anchor`, from `schedule.PeriodKey`), not the clock:
+  Thursday's run retried after midnight still announces Friday, not Monday, and Friday's weekend
+  notice retried on Saturday announces this weekend, not the next. "Tomorrow" / "today" in the text
+  are from the clock, as the reader sees them.
+- **A window that has started is not sent** (a late retry); it is logged.
+- **The run fails only when no email went out.** The handler keeps no record of what it sent, so
+  a retry re-sends every window. When some windows went out and some failed, the run succeeds and
+  the handler itself emails the task's alert audience (its `SUB_CRON_RECIPIENTS` and
+  `ALERT_RECIPIENTS`, as the engine would) a "PARTLY FAILED" alert listing each failed window and
+  its people, to be told by hand. When nothing went out, the run fails and is retried as usual,
+  which repeats nothing.
 - **Nobody to email is a success**: an empty rota, or a shift whose people have no address (logged).
 - **`ROTA_REMINDER_REDIRECT_TO`** sends every reminder to a test inbox instead, naming the intended
   recipients in its first line. Use it in any environment that holds the real rota but must not mail

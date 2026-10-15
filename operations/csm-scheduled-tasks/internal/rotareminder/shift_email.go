@@ -65,6 +65,10 @@ func buildEmail(cfg Config, w *window, rostered []teamschedule.Assignment, whole
 	date := w.day.Format("Monday, 2 January 2006") // "Tuesday, 13 October 2026"
 
 	notice := fmt.Sprintf("This is an advance notice that you are rostered for the %s on %s, %s.", inSentence, date, when)
+	if w.day.Equal(today) {
+		// Only a retry that went out on the window's own day, before it began.
+		notice = fmt.Sprintf("This is a reminder that you are rostered for the %s today, %s, %s.", inSentence, date, when)
+	}
 	if w.day.Equal(today.AddDate(0, 0, 1)) {
 		notice = fmt.Sprintf("This is a reminder that you are rostered for the %s tomorrow, %s, %s.", inSentence, date, when)
 	}

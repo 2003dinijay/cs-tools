@@ -50,6 +50,7 @@ import (
 	// dates in an email independent of the image.
 	_ "time/tzdata"
 
+	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/notify"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/teamschedule"
 )
 
@@ -90,24 +91,45 @@ type Config struct {
 	Zone *time.Location
 	// Now returns the current time; injected so tests are deterministic.
 	Now func() time.Time
+	// Anchor returns the scheduled firing time of the run being made (its
+	// ledger period key). The rota days are counted from it, not from Now: a
+	// failed run is retried every tick until its next period, so a retry of
+	// Thursday's run on Friday must still announce Friday, and one of
+	// Friday's weekend notice on Saturday this weekend, not the next. Nil
+	// means Now.
+	Anchor func() time.Time
+	// Task names the task in a partial-failure alert.
+	Task string
+	// AlertTo and AlertCc get the alert when some windows' emails failed and
+	// others went out (the engine's failure audience: the task's own
+	// recipients and ALERT_RECIPIENTS). Such a run succeeds rather than fail,
+	// so that its retry does not email again everybody who was already told.
+	AlertTo, AlertCc []string
 }
 
 // WeekdayReminder returns the handler that emails the next working day's
 // weekday windows.
 func WeekdayReminder(rota RotaReader, email EmailSender, cfg Config) func(ctx context.Context) error {
 	return func(ctx context.Context) error {
-		today := dayOf(cfg.Now(), cfg.Zone)
-		return announce(ctx, rota, email, cfg, today, []time.Time{NextWorkingDay(today)})
+		day := dayOf(cfg.anchor(), cfg.Zone)
+		return announce(ctx, rota, email, cfg, []time.Time{NextWorkingDay(day)})
 	}
 }
 
 // WeekendNotice returns the handler that emails the coming weekend's windows.
 func WeekendNotice(rota RotaReader, email EmailSender, cfg Config) func(ctx context.Context) error {
 	return func(ctx context.Context) error {
-		today := dayOf(cfg.Now(), cfg.Zone)
-		sat, sun := ComingWeekend(today)
-		return announce(ctx, rota, email, cfg, today, []time.Time{sat, sun})
+		sat, sun := ComingWeekend(dayOf(cfg.anchor(), cfg.Zone))
+		return announce(ctx, rota, email, cfg, []time.Time{sat, sun})
 	}
+}
+
+// anchor is the moment the run's rota days are counted from (Config.Anchor).
+func (cfg Config) anchor() time.Time {
+	if cfg.Anchor != nil {
+		return cfg.Anchor()
+	}
+	return cfg.Now()
 }
 
 // NextWorkingDay is the first Monday-to-Friday day after today: tomorrow from
@@ -149,8 +171,11 @@ type window struct {
 	people []teamschedule.Assignment
 }
 
-// announce reads the rota for days and sends one email per window.
-func announce(ctx context.Context, rota RotaReader, sender EmailSender, cfg Config, today time.Time, days []time.Time) error {
+// announce reads the rota for days and sends one email per window that has
+// not started yet. The run fails, and so is retried, only when no email went
+// out: a retry then tells nobody twice. When some went out and some failed,
+// the failed windows are reported to the alert audience and the run succeeds.
+func announce(ctx context.Context, rota RotaReader, sender EmailSender, cfg Config, days []time.Time) error {
 	if !cfg.EmailsEnabled {
 		return nil
 	}
@@ -177,10 +202,22 @@ func announce(ctx context.Context, rota RotaReader, sender EmailSender, cfg Conf
 
 	// A weekend email lists the whole weekend, a weekday email its own window.
 	wholeRota := len(days) > 1
+	// "Tomorrow" and "today" in an email are the day it is read, not the
+	// anchor's: a retry can go out the day after its scheduled run.
+	now := cfg.Now()
+	today := dayOf(now, cfg.Zone)
 
 	var errs []error
+	var failed []*window
 	sent := 0
 	for _, w := range windows {
+		if !w.start().After(now) {
+			// A retry that runs late: telling people about a shift they are
+			// already on (or that is over) helps nobody.
+			slog.WarnContext(ctx, "rota reminder: this window has already started; not sent",
+				"window", w.base, "day", w.date)
+			continue
+		}
 		email, ok := buildEmail(cfg, w, rostered, wholeRota, today)
 		if !ok {
 			slog.WarnContext(ctx, "rota reminder: nobody on this window has an email address; nothing sent",
@@ -193,16 +230,59 @@ func announce(ctx context.Context, rota RotaReader, sender EmailSender, cfg Conf
 		}
 		if err := sender.SendEmail(ctx, sendTo, sendCc, email.subject, email.body); err != nil {
 			errs = append(errs, fmt.Errorf("%s on %s: %w", w.base, w.date, err))
+			failed = append(failed, w)
 			continue
 		}
 		sent++
 	}
 	slog.InfoContext(ctx, "rota reminder run complete",
 		"days", from+".."+to, "rostered", len(rostered), "windows", len(windows), "sent", sent)
-	if len(errs) > 0 {
-		return fmt.Errorf("rotareminder: %d of %d emails failed: %w", len(errs), len(windows), errors.Join(errs...))
+	if len(errs) == 0 {
+		return nil
 	}
+	err = fmt.Errorf("rotareminder: %d of %d emails failed: %w", len(errs), len(windows), errors.Join(errs...))
+	if sent == 0 {
+		return err
+	}
+	slog.ErrorContext(ctx, "rota reminder: some emails failed; not retried, so the rest are not sent twice", "err", err)
+	alertPartialFailure(ctx, sender, cfg, failed, errs)
 	return nil
+}
+
+// start is when the earliest person on the window starts.
+func (w *window) start() time.Time {
+	s := w.people[0].StartsAt
+	for _, a := range w.people[1:] {
+		if a.StartsAt.Before(s) {
+			s = a.StartsAt
+		}
+	}
+	return s
+}
+
+// alertPartialFailure tells the alert audience which windows' emails failed
+// in a run that otherwise went out, and whom they were for, so that a lead
+// can tell those people by hand. A run like that succeeds and is not retried,
+// so this is the only alert about it.
+func alertPartialFailure(ctx context.Context, sender EmailSender, cfg Config, failed []*window, errs []error) {
+	if len(cfg.AlertTo) == 0 {
+		return
+	}
+	data := notify.RotaReminderFailureData{Task: cfg.Task}
+	for i, w := range failed {
+		var names []string
+		for _, a := range w.people {
+			names = append(names, a.Engineer.Name)
+		}
+		data.Rows = append(data.Rows, []string{
+			windowTitle(cfg, w.base), w.day.Format("Monday, 2 January 2006"), strings.Join(names, ", "), errs[i].Error(),
+		})
+	}
+	// Plain ASCII, as the engine's own alert subject.
+	subject := fmt.Sprintf("[csm-scheduled-tasks] PARTLY FAILED: %s - %d rota reminder(s) not sent", cfg.Task, len(failed))
+	if err := sender.SendEmail(ctx, cfg.AlertTo, cfg.AlertCc, subject, notify.RenderRotaReminderFailure(data)); err != nil {
+		slog.ErrorContext(ctx, "rota reminder: failed to send the partial-failure alert", "err", err)
+	}
 }
 
 // selectRostered keeps the assignments on an announced rotation and day, in

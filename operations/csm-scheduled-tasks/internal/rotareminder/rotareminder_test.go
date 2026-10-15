@@ -399,20 +399,106 @@ func TestSomebodyWithNoAddressIsListedButNotEmailed(t *testing.T) {
 	}
 }
 
-// One failed send does not stop the others, and fails the run so the engine
-// retries and alerts.
-func TestAFailedSendFailsTheRunAfterTryingTheRest(t *testing.T) {
+// One failed send does not stop the others. As the others went out, the run
+// succeeds (a retry would email them all again) and the alert audience is told
+// which window failed and whom it was for.
+func TestAPartlyFailedRunSucceedsAndAlerts(t *testing.T) {
 	rota := &fakeRota{assignments: []teamschedule.Assignment{
 		assignment("Ann", "ann@example.com", "vega", "CRE_MORNING", "2026-10-13", "2026-10-13 06:00", "2026-10-13 09:00"),
 		assignment("Dee", "dee@example.com", "nova", "CRE_EVENING", "2026-10-13", "2026-10-13 18:00", "2026-10-13 21:00"),
 	}}
 	mail := &fakeEmail{failOn: "Morning"}
-	err := WeekdayReminder(rota, mail, config("2026-10-12 15:00", weekdayRotations))(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "1 of 2") || !strings.Contains(err.Error(), "CRE_MORNING on 2026-10-13") {
-		t.Fatalf("err = %v, want one of two failed, naming the Morning window", err)
+	cfg := config("2026-10-12 15:00", weekdayRotations)
+	cfg.Task, cfg.AlertTo, cfg.AlertCc = "rota_weekday_reminder", []string{"ops@example.com"}, []string{"lead@example.com"}
+	if err := WeekdayReminder(rota, mail, cfg)(context.Background()); err != nil {
+		t.Fatalf("err = %v, want success: the Evening email went out", err)
 	}
-	if len(mail.sent) != 1 || !strings.Contains(mail.sent[0].subject, "Evening") {
-		t.Fatalf("sent = %+v, want the Evening email still sent", mail.sent)
+	if len(mail.sent) != 2 || !strings.Contains(mail.sent[0].subject, "Evening") {
+		t.Fatalf("sent = %+v, want the Evening email, then the alert", mail.sent)
+	}
+	alert := mail.sent[1]
+	if strings.Join(alert.to, ",") != "ops@example.com" || strings.Join(alert.cc, ",") != "lead@example.com" ||
+		alert.subject != "[csm-scheduled-tasks] PARTLY FAILED: rota_weekday_reminder - 1 rota reminder(s) not sent" {
+		t.Fatalf("alert = %+v", alert)
+	}
+	for _, s := range []string{"<td>Morning Rotation</td><td>Tuesday, 13 October 2026</td><td>Ann</td>", "mail service down", "not retried"} {
+		if !strings.Contains(alert.body, s) {
+			t.Errorf("alert body lacks %q\n%s", s, alert.body)
+		}
+	}
+}
+
+// When nothing went out the run fails, so the engine retries and alerts: a
+// retry then tells nobody twice.
+func TestAFullyFailedRunFails(t *testing.T) {
+	rota := &fakeRota{assignments: []teamschedule.Assignment{
+		assignment("Ann", "ann@example.com", "vega", "CRE_MORNING", "2026-10-13", "2026-10-13 06:00", "2026-10-13 09:00"),
+	}}
+	mail := &fakeEmail{failOn: "Rota"}
+	cfg := config("2026-10-12 15:00", weekdayRotations)
+	cfg.AlertTo = []string{"ops@example.com"}
+	err := WeekdayReminder(rota, mail, cfg)(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "1 of 1") || !strings.Contains(err.Error(), "CRE_MORNING on 2026-10-13") {
+		t.Fatalf("err = %v, want the run failed, naming the Morning window", err)
+	}
+	if len(mail.sent) != 0 {
+		t.Fatalf("sent = %+v, want nothing: the engine's own alert covers a failed run", mail.sent)
+	}
+}
+
+// A retry counts its days from the run it retries (Anchor), not from the
+// clock. Thursday's run, retried after midnight, still announces Friday, and
+// says "today" for a window that has not begun.
+func TestAWeekdayRetryAfterMidnightKeepsItsDay(t *testing.T) {
+	rota := &fakeRota{assignments: []teamschedule.Assignment{
+		assignment("Dee", "dee@example.com", "nova", "CRE_EVENING", "2026-10-16", "2026-10-16 18:00", "2026-10-16 21:00"),
+	}}
+	mail := &fakeEmail{}
+	cfg := config("2026-10-16 01:00", weekdayRotations)
+	cfg.Anchor = func() time.Time { return at("2026-10-15 15:00") }
+	if err := WeekdayReminder(rota, mail, cfg)(context.Background()); err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if rota.from != "2026-10-16" || rota.to != "2026-10-16" {
+		t.Fatalf("read %s..%s, want Friday 2026-10-16, the day Thursday's run announces", rota.from, rota.to)
+	}
+	if len(mail.sent) != 1 || !strings.Contains(mail.sent[0].body, "rostered for the Evening rotation today, Friday, 16 October 2026") {
+		t.Fatalf("sent = %+v, want one email saying today", mail.sent)
+	}
+}
+
+// Friday's weekend notice, retried on Saturday, announces this weekend, not
+// the next; Saturday's LK window has begun and is left out, Sunday's goes.
+func TestAWeekendRetryOnSaturdayKeepsThisWeekend(t *testing.T) {
+	rota := &fakeRota{assignments: []teamschedule.Assignment{
+		assignment("Ann", "ann@example.com", "vega", "CRE_WEEKEND", "2026-10-17", "2026-10-17 09:00", "2026-10-17 21:00"),
+		assignment("Ben", "ben@example.com", "nova", "CRE_WEEKEND", "2026-10-18", "2026-10-18 09:00", "2026-10-18 21:00"),
+	}}
+	mail := &fakeEmail{}
+	cfg := config("2026-10-17 10:00", weekendRotations)
+	cfg.Anchor = func() time.Time { return at("2026-10-16 15:00") }
+	if err := WeekendNotice(rota, mail, cfg)(context.Background()); err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if rota.from != "2026-10-17" || rota.to != "2026-10-18" {
+		t.Fatalf("read %s..%s, want this weekend, 2026-10-17..18", rota.from, rota.to)
+	}
+	if len(mail.sent) != 1 || strings.Join(mail.sent[0].to, ",") != "ben@example.com" ||
+		!strings.Contains(mail.sent[0].body, "rostered for the LK Weekend rotation tomorrow, Sunday, 18 October 2026") {
+		t.Fatalf("sent = %+v, want only Sunday's email, to Ben, saying tomorrow", mail.sent)
+	}
+}
+
+// A window that has started is never announced, even when nobody else is.
+func TestAStartedWindowIsNotSent(t *testing.T) {
+	rota := &fakeRota{assignments: []teamschedule.Assignment{
+		assignment("Ann", "ann@example.com", "vega", "CRE_MORNING", "2026-10-16", "2026-10-16 06:00", "2026-10-16 09:00"),
+	}}
+	mail := &fakeEmail{}
+	cfg := config("2026-10-16 06:00", weekdayRotations)
+	cfg.Anchor = func() time.Time { return at("2026-10-15 15:00") }
+	if err := WeekdayReminder(rota, mail, cfg)(context.Background()); err != nil || len(mail.sent) != 0 {
+		t.Fatalf("err = %v, sent = %+v, want a quiet success", err, mail.sent)
 	}
 }
 

@@ -49,6 +49,7 @@ import (
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/opencases"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/registry"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/rotareminder"
+	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/schedule"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/stalecases"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/teamschedule"
 )
@@ -443,7 +444,12 @@ func main() {
 	if rotaRemindersEnabled {
 		family := envString("ROTA_REMINDER_FAMILY", "CRE")
 		copyTaskRecipients := envBool("ROTA_REMINDER_COPY_TASK_RECIPIENTS", false)
-		rotaConfig := func(rotations map[string]string, to, cc []string) rotareminder.Config {
+		// Each task's config carries its schedule's period (the run's rota
+		// days are counted from it, so a retry announces what the scheduled
+		// run would have) and the engine's failure audience for it (a run in
+		// which only some emails failed reports them itself; see
+		// rotareminder.Config.AlertTo).
+		rotaConfig := func(task, sched string, rotations map[string]string, to, cc []string) rotareminder.Config {
 			var copied []string
 			if copyTaskRecipients {
 				copied = append(append(copied, to...), cc...)
@@ -457,26 +463,34 @@ func main() {
 				EmailsEnabled: alertsEnabled,
 				Zone:          rotaZone,
 				Now:           time.Now,
+				Anchor:        periodStart(sched),
+				Task:          task,
+				AlertTo:       append(append([]string{}, to...), alertRecipients...),
+				AlertCc:       cc,
 			}
 		}
 		weekdayRotations := parseRotations("ROTA_REMINDER_WEEKDAY_SHIFTS",
 			envString("ROTA_REMINDER_WEEKDAY_SHIFTS", "CRE_MORNING=Morning,CRE_MORNING_OC=On-call,CRE_EVENING=Evening"))
 		weekendRotations := parseRotations("ROTA_REMINDER_WEEKEND_SHIFTS",
 			envString("ROTA_REMINDER_WEEKEND_SHIFTS", "CRE_WEEKEND=LK Weekend,CRE_WEEKEND_NIGHT=America Weekend,CRE_WEEKEND_NIGHT_OC=On-call"))
+		rotaWeekdaySchedule := scheduleFor(scheduleOverrides, rotaWeekdayTaskName, "30 9 * * 1-5")
+		rotaWeekendSchedule := scheduleFor(scheduleOverrides, rotaWeekendTaskName, "30 9 * * 1,5")
 		tasks = append(tasks,
 			registry.Task{
 				Name:     rotaWeekdayTaskName,
-				Schedule: scheduleFor(scheduleOverrides, rotaWeekdayTaskName, "30 9 * * 1-5"),
-				Handler:  rotareminder.WeekdayReminder(teamScheduleClient, emailClient, rotaConfig(weekdayRotations, rotaWeekdayTo, rotaWeekdayCc)),
-				To:       rotaWeekdayTo,
-				Cc:       rotaWeekdayCc,
+				Schedule: rotaWeekdaySchedule,
+				Handler: rotareminder.WeekdayReminder(teamScheduleClient, emailClient,
+					rotaConfig(rotaWeekdayTaskName, rotaWeekdaySchedule, weekdayRotations, rotaWeekdayTo, rotaWeekdayCc)),
+				To: rotaWeekdayTo,
+				Cc: rotaWeekdayCc,
 			},
 			registry.Task{
 				Name:     rotaWeekendTaskName,
-				Schedule: scheduleFor(scheduleOverrides, rotaWeekendTaskName, "30 9 * * 1,5"),
-				Handler:  rotareminder.WeekendNotice(teamScheduleClient, emailClient, rotaConfig(weekendRotations, rotaWeekendTo, rotaWeekendCc)),
-				To:       rotaWeekendTo,
-				Cc:       rotaWeekendCc,
+				Schedule: rotaWeekendSchedule,
+				Handler: rotareminder.WeekendNotice(teamScheduleClient, emailClient,
+					rotaConfig(rotaWeekendTaskName, rotaWeekendSchedule, weekendRotations, rotaWeekendTo, rotaWeekendCc)),
+				To: rotaWeekendTo,
+				Cc: rotaWeekendCc,
 			},
 		)
 	}
@@ -624,6 +638,20 @@ func parseSubCronRecipients(raw string) map[string]subCronRecipients {
 func recipientsFor(overrides map[string]subCronRecipients, taskName string) (to, cc []string) {
 	r := overrides[taskName]
 	return r.To, r.Cc
+}
+
+// periodStart returns the scheduled firing time a run of expr made now belongs
+// to: the period key the engine claims it under (schedule.PeriodKey), and so
+// the same for every retry of that run. The schedule is checked at startup, so
+// the error is not expected; now is the fallback all the same.
+func periodStart(expr string) func() time.Time {
+	return func() time.Time {
+		now := time.Now()
+		if p, err := schedule.PeriodKey(expr, now); err == nil {
+			return p
+		}
+		return now
+	}
 }
 
 // parseRotations reads a rota reminder's shift list, "CODE=Name,CODE=Name": the
