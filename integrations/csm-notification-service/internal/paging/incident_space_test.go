@@ -102,8 +102,8 @@ func TestIncidentRung_WithoutAnIncidentSpaceKeepsTheLaddersSpace(t *testing.T) {
 func TestIncidentUnanswered_GoesToTheIncidentCardsSpace(t *testing.T) {
 	e := incidentSpaceEngine(&fakeChat{})
 	rooms, _ := e.unansweredRooms(Plan{Trigger: Trigger{IncidentID: "inc-1", Record: RecordIncident, Team: "MS/PC SRE Group"}})
-	if len(rooms) != 1 || rooms[0].room != notifications.IncidentAudience("MS/PC SRE Group") {
-		t.Fatalf("closing message rooms = %+v; want the incident card's space", rooms)
+	if len(rooms) != 1 || rooms[0].room != notifications.IncidentAudience("MS/PC SRE Group") || !rooms[0].reply {
+		t.Fatalf("closing message rooms = %+v; want a reply in the incident card's space", rooms)
 	}
 }
 
@@ -112,7 +112,7 @@ func TestSMEHandoff_GoesToTheIncidentCardsSpace(t *testing.T) {
 	chat := &fakeChat{}
 	e := incidentSpaceEngine(chat)
 	e.postSMEHandoff(context.Background(), specialOpsPress{IncidentID: "inc-1", Number: "INC1", PreviousGroup: "MS/PC SRE Group"}, "choreo-runtime", true)
-	if len(chat.handoffs) != 1 || chat.handoffs[0].Audience != notifications.IncidentAudience("MS/PC SRE Group") {
-		t.Fatalf("handoffs = %+v; want one in the incident card's space", chat.handoffs)
+	if len(chat.handoffs) != 1 || chat.handoffs[0].Audience != notifications.IncidentAudience("MS/PC SRE Group") || !chat.handoffs[0].Reply {
+		t.Fatalf("handoffs = %+v; want one reply in the incident card's space", chat.handoffs)
 	}
 }

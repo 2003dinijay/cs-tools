@@ -249,6 +249,8 @@ func NewEngine(policies map[string]PriorityPolicy, resolver Resolver, calls *not
 type chatRoom struct {
 	chat chatSender
 	room string
+	// reply is an INCIDENT_CHAT_SPACES space, where messages are short replies under the incident card.
+	reply bool
 }
 
 // buildTeamChats wires the SRE ladder's per-team spaces (teamChats) and the
@@ -359,7 +361,7 @@ func (e *Engine) notifiersFor(plan Plan) []notifier {
 		out := withoutChat(e.notifiers)
 		var fan fanoutChat
 		for _, r := range rooms {
-			fan.chats = append(fan.chats, chatNotifier{chat: r.chat, links: e.links, audience: r.room, reply: true})
+			fan.chats = append(fan.chats, chatNotifier{chat: r.chat, links: e.links, audience: r.room, reply: r.reply})
 		}
 		if len(fan.chats) == 1 {
 			return append(out, fan.chats[0])
@@ -496,6 +498,7 @@ func (e *Engine) postUnanswered(ctx context.Context, st LadderState) {
 			PortalURL:   portal,
 			PortalLabel: label,
 			ThreadKey:   t.chatThreadKey(),
+			Reply:       target.reply,
 		})
 		if err != nil {
 			slog.ErrorContext(ctx, "escalation: the closing message was not posted", "incidentId", t.IncidentID, "audience", target.room, "err", err)
@@ -554,7 +557,7 @@ func (e *Engine) incidentRooms(t Trigger) []chatRoom {
 		if !e.incidentChat.HasAudienceSpace(audience) || slices.ContainsFunc(rooms, func(r chatRoom) bool { return r.room == audience }) {
 			continue
 		}
-		rooms = append(rooms, chatRoom{chat: e.incidentChat, room: audience})
+		rooms = append(rooms, chatRoom{chat: e.incidentChat, room: audience, reply: true})
 	}
 	return rooms
 }

@@ -254,6 +254,7 @@ func (e *Engine) postSMEHandoffTo(ctx context.Context, target chatRoom, pr speci
 		PortalURL:   e.links.IncidentLink(pr.IncidentID),
 		PortalLabel: "View incident",
 		ThreadKey:   notifications.IncidentThreadKey(pr.IncidentID),
+		Reply:       target.reply,
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "escalation: the SME handoff message was not posted", "incidentId", pr.IncidentID, "audience", target.room, "err", err)

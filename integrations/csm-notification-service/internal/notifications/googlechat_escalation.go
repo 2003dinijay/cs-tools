@@ -174,16 +174,7 @@ func buildEscalationReply(a EscalationAlert) chatCardMessage {
 		}
 		lines = append(lines, calling)
 	}
-	return chatCardMessage{
-		Thread: threadFor(a.ThreadKey),
-		CardsV2: []chatCardWrapper{{
-			CardID: "incident-escalation-rung",
-			Card: chatCard{
-				Header:   &chatCardHeader{Title: rungVerb(a.Rung) + " " + a.Rung, Subtitle: "#" + a.IncidentRef},
-				Sections: []chatCardSection{{Widgets: []chatCardWidget{{TextParagraph: &chatTextParagraph{Text: strings.Join(lines, "<br>")}}}}},
-			},
-		}},
-	}
+	return escalationReply("incident-escalation-rung", rungVerb(a.Rung)+" "+a.Rung, a.IncidentRef, a.ThreadKey, lines)
 }
 
 // buildEscalationCard assembles the card, split from the send so its exact
@@ -353,6 +344,8 @@ type EscalationUnanswered struct {
 	// ThreadKey puts the message in the ladder's own thread, under its rung
 	// cards when the ladder posted any.
 	ThreadKey string
+	// Reply posts it as a short reply under the incident card, like the rung replies.
+	Reply bool
 }
 
 // SendEscalationUnanswered posts the closing message of an unanswered ladder.
@@ -363,7 +356,38 @@ func (c *GoogleChatClient) SendEscalationUnanswered(ctx context.Context, u Escal
 	if strings.TrimSpace(u.Audience) == "" {
 		return fmt.Errorf("notifications: audience is required")
 	}
+	if u.Reply {
+		return c.sendCardToAudience(ctx, u.Audience, buildEscalationUnansweredReply(u))
+	}
 	return c.sendCardToAudience(ctx, u.Audience, buildEscalationUnansweredCard(u))
+}
+
+// buildEscalationUnansweredReply is the closing message as a reply under the incident card: who was called, and that the calls are over.
+func buildEscalationUnansweredReply(u EscalationUnanswered) chatCardMessage {
+	chain := strings.TrimSpace(u.Chain)
+	if chain == "" {
+		chain = "SRE"
+	}
+	lines := []string{caseAlertLine("<b>Nobody acknowledged this incident</b>")}
+	if len(u.Called) > 0 {
+		lines = append(lines, caseAlertLine("Called %s", strings.Join(u.Called, ", ")))
+	}
+	lines = append(lines, caseAlertLine("No further calls will be made."))
+	return escalationReply("incident-escalation-unanswered", "Unanswered: "+chain+" paging ended", u.IncidentRef, u.ThreadKey, lines)
+}
+
+// escalationReply is the compact card every ladder message uses under the incident card.
+func escalationReply(cardID, title, incidentRef, threadKey string, lines []string) chatCardMessage {
+	return chatCardMessage{
+		Thread: threadFor(threadKey),
+		CardsV2: []chatCardWrapper{{
+			CardID: cardID,
+			Card: chatCard{
+				Header:   &chatCardHeader{Title: title, Subtitle: "#" + incidentRef},
+				Sections: []chatCardSection{{Widgets: []chatCardWidget{{TextParagraph: &chatTextParagraph{Text: strings.Join(lines, "<br>")}}}}},
+			},
+		}},
+	}
 }
 
 // buildEscalationUnansweredCard assembles the closing card, split from the
@@ -443,6 +467,8 @@ type EscalationHandoff struct {
 	PortalLabel string
 	// ThreadKey puts the message in the incident's ladder thread.
 	ThreadKey string
+	// Reply posts it as a short reply under the incident card, like the rung replies.
+	Reply bool
 }
 
 // SendEscalationHandoff posts the escalated-to-SME message.
@@ -453,7 +479,29 @@ func (c *GoogleChatClient) SendEscalationHandoff(ctx context.Context, h Escalati
 	if strings.TrimSpace(h.Audience) == "" {
 		return fmt.Errorf("notifications: audience is required")
 	}
+	if h.Reply {
+		return c.sendCardToAudience(ctx, h.Audience, buildEscalationHandoffReply(h))
+	}
 	return c.sendCardToAudience(ctx, h.Audience, buildEscalationHandoffCard(h))
+}
+
+// buildEscalationHandoffReply is the escalated-to-SME message as a reply under the incident card.
+func buildEscalationHandoffReply(h EscalationHandoff) chatCardMessage {
+	team := strings.TrimSpace(h.SMETeam)
+	if team == "" {
+		team = "the specialist team"
+	}
+	var lines []string
+	if h.By != "" {
+		lines = append(lines, caseAlertLine("<b>Escalated by %s</b>", h.By))
+	}
+	lines = append(lines, caseAlertLine("SRE paging stopped."))
+	if h.Paging {
+		lines = append(lines, caseAlertLine("Paging the on-duty %s SMEs: L1, then L2 and L3, until someone is assigned.", team))
+	} else {
+		lines = append(lines, caseAlertLine(`<font color="#B3261E">No %s SME could be paged; see the incident's work notes.</font>`, team))
+	}
+	return escalationReply("incident-escalation-handoff", "Escalated to "+team+" SMEs", h.IncidentRef, h.ThreadKey, lines)
 }
 
 // buildEscalationHandoffCard assembles the escalated-to-SME card.

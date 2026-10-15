@@ -316,6 +316,40 @@ func TestBuildEscalationReply(t *testing.T) {
 	}
 }
 
+func TestBuildEscalationUnansweredReply(t *testing.T) {
+	msg := buildEscalationUnansweredReply(EscalationUnanswered{
+		Chain: "SaaS SRE", IncidentRef: "INC0100950", Called: []string{"L1 Jane Doe", "L2 John Roe"}, ThreadKey: "incident-abc",
+	})
+	card := msg.CardsV2[0].Card
+	if card.Header.Title != "Unanswered: SaaS SRE paging ended" || card.Header.Subtitle != "#INC0100950" {
+		t.Errorf("header = %q / %q", card.Header.Title, card.Header.Subtitle)
+	}
+	body := card.Sections[0].Widgets[0].TextParagraph.Text
+	if body != "<b>Nobody acknowledged this incident</b><br>Called L1 Jane Doe, L2 John Roe<br>No further calls will be made." {
+		t.Errorf("body = %q", body)
+	}
+	if msg.Thread == nil || msg.Thread.ThreadKey != "incident-abc" {
+		t.Errorf("thread = %+v, want the incident card's thread", msg.Thread)
+	}
+}
+
+func TestBuildEscalationHandoffReply(t *testing.T) {
+	card := buildEscalationHandoffReply(EscalationHandoff{
+		SMETeam: "Choreo Runtime", By: "lead@wso2.com", Paging: true, IncidentRef: "INC0100950",
+	}).CardsV2[0].Card
+	if card.Header.Title != "Escalated to Choreo Runtime SMEs" || card.Header.Subtitle != "#INC0100950" {
+		t.Errorf("header = %q / %q", card.Header.Title, card.Header.Subtitle)
+	}
+	body := card.Sections[0].Widgets[0].TextParagraph.Text
+	want := "<b>Escalated by lead@wso2.com</b><br>SRE paging stopped.<br>Paging the on-duty Choreo Runtime SMEs: L1, then L2 and L3, until someone is assigned."
+	if body != want {
+		t.Errorf("body = %q, want %q", body, want)
+	}
+	if body := buildEscalationHandoffReply(EscalationHandoff{SMETeam: "Choreo Runtime", IncidentRef: "INC1"}).CardsV2[0].Card.Sections[0].Widgets[0].TextParagraph.Text; !strings.Contains(body, "No Choreo Runtime SME could be paged") {
+		t.Errorf("unpaged body = %q", body)
+	}
+}
+
 // Every one of them is absent on some rung or some deployment: a configured
 // roster resolves no rota window, and only the first rung has an on-call
 // name. A card must not carry an empty label for any of them.
