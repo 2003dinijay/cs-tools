@@ -48,6 +48,13 @@ BEGIN;
 SET LOCAL lock_timeout = '5s';
 SET LOCAL team_schedule.allow_shift_rewrite = 'on';
 
+-- No turn may be written while this runs: a write resolves its instants from
+-- the windows' committed hours, so a turn added after the snapshot below would
+-- keep the old hours for good. Reads go on; writes wait for the commit (and a
+-- writer already mid-transaction makes this fail on the lock timeout, safe to
+-- re-run).
+LOCK TABLE team_schedule_assignment IN SHARE ROW EXCLUSIVE MODE;
+
 -- ── The windows ───────────────────────────────────────────────────────────
 UPDATE team_schedule_shift s
    SET start_minute = v.start_minute, end_minute = v.end_minute,
