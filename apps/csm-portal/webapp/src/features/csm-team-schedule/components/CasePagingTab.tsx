@@ -31,9 +31,10 @@ import type {
   PagingChainMember,
   PagingReadinessGap,
   RotaFamily,
+  ScheduleTeam,
 } from "../types";
-import { CHAIN_LADDER } from "../utils/caseAlertLadderKeys";
 import CaseAlertSettings from "./CaseAlertSettings";
+import { chainHasSettings } from "../utils/caseAlertChainSettings";
 import type { CaseAlertChain } from "../utils/pagingChains";
 import PagingReadinessStrip, {
   type PhoneGapAction,
@@ -120,6 +121,8 @@ interface Props {
   /** The chains this reader is shown -- their own (caseAlertChainsFor).
    *  Every chain when absent, as for a CSM admin or the CRE and CS heads. */
   visibleChains?: readonly CaseAlertChain[];
+  /** The Team Schedule's teams, for the SME chain's chat spaces. */
+  teams?: readonly Pick<ScheduleTeam, "key" | "name" | "family">[];
 }
 
 /** Whether the reader may change both ladders' settings: what a CSM admin
@@ -143,6 +146,7 @@ export default function CasePagingTab({
   onOpenRota,
   initialChain = "SRE_SAAS",
   visibleChains,
+  teams,
 }: Props): JSX.Element {
   const alertSettings = useCaseAlertSettings();
   // The reader's own chains (caseAlertChainsFor).
@@ -174,7 +178,7 @@ export default function CasePagingTab({
   const readiness = useGetPagingReadiness(PAGING_READINESS_DAYS);
   const hasSettings =
     canViewCaseAlertSettings(alertSettings.data) &&
-    CHAIN_LADDER[chainCode] !== undefined;
+    chainHasSettings(chainCode);
   const [view, setView] = useState<ChainView>(readView);
   const chooseView = (next: ChainView) => {
     setView(next);
@@ -305,7 +309,8 @@ export default function CasePagingTab({
           {picker}
           {viewSwitch}
         </div>
-        <CaseAlertSettings chain={chainCode} />
+        {/* Keyed by chain: a "Saved" line belongs to the chain it was saved on. */}
+        <CaseAlertSettings key={chainCode} chain={chainCode} teams={teams} />
         {dialog}
       </>
     );

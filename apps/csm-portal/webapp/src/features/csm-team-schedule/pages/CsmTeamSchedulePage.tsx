@@ -1569,7 +1569,12 @@ export default function CsmTeamSchedulePage(): JSX.Element {
           {view === "paging" ? (
             // Offered only once the chains are known (pagingOffered).
             pagingChains.ready ? (
-              <CasePagingTab onOpenRota={openRota} initialChain={myPagingChain} visibleChains={pagingChains.chains} />
+              <CasePagingTab
+                onOpenRota={openRota}
+                initialChain={myPagingChain}
+                visibleChains={pagingChains.chains}
+                teams={catalogue.data?.teams ?? []}
+              />
             ) : null
           ) : view === "access" ? (
             <RotaAccessTab teams={catalogue.data?.teams ?? []} />

@@ -66,8 +66,11 @@ func NewCaseAlertSettingsHandler(entity entityCaseAlertSettingsClient) *CaseAler
 var caseAlertRoomChannels = map[string]bool{"": true, "log": true, "chat": true, "call": true, "both": true}
 
 var (
-	caseAlertLadderRe   = regexp.MustCompile(`(?i)^(cre|sre)$`)
-	caseAlertValueKeyRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9.]*$`)
+	caseAlertLadderRe = regexp.MustCompile(`(?i)^(cre|sre)$`)
+	// caseAlertRoomLadderRe is the ladders with chat rooms: SME's teams have
+	// rooms too (0237), but no routes or ladder values.
+	caseAlertRoomLadderRe = regexp.MustCompile(`(?i)^(cre|sre|sme)$`)
+	caseAlertValueKeyRe   = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9.]*$`)
 )
 
 const (
@@ -114,10 +117,10 @@ func (h *CaseAlertSettingsHandler) PutCaseAlertRoom(w http.ResponseWriter, r *ht
 		Teamless *bool   `json:"teamless"`
 		Channel  *string `json:"channel"`
 	}
-	if err := json.Unmarshal(body, &req); err != nil || !caseAlertLadderRe.MatchString(req.Ladder) ||
+	if err := json.Unmarshal(body, &req); err != nil || !caseAlertRoomLadderRe.MatchString(req.Ladder) ||
 		strings.TrimSpace(req.Label) == "" || len(req.Label) > maxCaseAlertLabelLen ||
 		(req.TeamKey != "" && !rotaTeamKeyRe.MatchString(req.TeamKey)) {
-		writeError(w, http.StatusBadRequest, "Send a ladder (CRE or SRE), a label, and optionally an SRE team.")
+		writeError(w, http.StatusBadRequest, "Send a ladder (CRE, SRE or SME), a label, and optionally an SRE or SME team.")
 		return
 	}
 	// A team's own channel: "" goes back to the ladder's. The shared room

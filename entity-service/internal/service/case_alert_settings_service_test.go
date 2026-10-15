@@ -77,7 +77,7 @@ func newFakeCaseAlertRepo() *fakeCaseAlertRepo {
 		routes: map[string]repository.CaseAlertRouteRow{
 			routeSRE: {ID: routeSRE, Ladder: "SRE", GroupName: "apollo sre group", TeamKey: "apollo", Enabled: true},
 		},
-		teams:  map[string]string{"apollo": "SRE", "artemis": "SRE", "iaas": "SRE", "vega": "CRE", "atlas": "CRE", "americas": "CRE"},
+		teams:  map[string]string{"apollo": "SRE", "artemis": "SRE", "iaas": "SRE", "vega": "CRE", "atlas": "CRE", "americas": "CRE", "asgardeo": "SME", "u2": "SME"},
 		rotas:  map[string]string{"SRE_SAAS": "SRE", "CRE_ABT": "CRE"},
 		types:  map[string]bool{"cre-abt": true, "sre-abt": true, "sre-iaas": true},
 		shifts: map[string]bool{"CRE_WEEKEND_NIGHT": true},
@@ -219,6 +219,7 @@ func caseAlertPeople() *stubPagingRepo {
 	return &stubPagingRepo{callers: map[string]repository.PagingCaller{
 		"sre.rota@wso2.com": {GlobalRoles: []string{"sre_rota_admin"}},
 		"cre.rota@wso2.com": {GlobalRoles: []string{"cre_rota_admin"}},
+		"sme.rota@wso2.com": {GlobalRoles: []string{"sme_rota_admin"}},
 		"portal@wso2.com":   {GlobalRoles: []string{"admin"}},
 		"crehead@wso2.com":  {Memberships: []repository.PagingCallerMembership{{TeamKey: "cre-leadership", Role: "cre_head"}}},
 		"lead@wso2.com":     {Memberships: []repository.PagingCallerMembership{{TeamKey: "apollo", Role: "lead"}}},
@@ -258,16 +259,18 @@ func TestCaseAlertSettingsRights(t *testing.T) {
 		name    string
 		ctx     context.Context
 		view    bool
-		ladders []string
+		rooms   []string // ladders whose rooms they may change
+		ladders []string // ladders whose routes they may change
 	}{
-		{"CSM admin by token role", asPerson("someone@wso2.com", "cs_admin"), true, []string{"CRE", "SRE"}},
-		{"portal admin", asPerson("portal@wso2.com"), true, []string{"CRE", "SRE"}},
-		{"SRE rota admin", asPerson("sre.rota@wso2.com"), true, []string{"SRE"}},
-		{"CRE rota admin", asPerson("cre.rota@wso2.com"), true, []string{"CRE"}},
-		{"CRE head sees, changes nothing", asPerson("crehead@wso2.com"), true, []string{}},
-		{"team lead sees nothing", asPerson("lead@wso2.com"), false, []string{}},
-		{"engineer sees nothing", asPerson("eng@wso2.com"), false, []string{}},
-		{"admin role matched exactly", asPerson("eng@wso2.com", "CS_ADMIN"), false, []string{}},
+		{"CSM admin by token role", asPerson("someone@wso2.com", "cs_admin"), true, []string{"CRE", "SRE", "SME"}, []string{"CRE", "SRE"}},
+		{"portal admin", asPerson("portal@wso2.com"), true, []string{"CRE", "SRE", "SME"}, []string{"CRE", "SRE"}},
+		{"SRE rota admin", asPerson("sre.rota@wso2.com"), true, []string{"SRE"}, []string{"SRE"}},
+		{"CRE rota admin", asPerson("cre.rota@wso2.com"), true, []string{"CRE"}, []string{"CRE"}},
+		{"SME rota admin: SME rooms only", asPerson("sme.rota@wso2.com"), true, []string{"SME"}, []string{}},
+		{"CRE head sees, changes nothing", asPerson("crehead@wso2.com"), true, []string{}, []string{}},
+		{"team lead sees nothing", asPerson("lead@wso2.com"), false, []string{}, []string{}},
+		{"engineer sees nothing", asPerson("eng@wso2.com"), false, []string{}, []string{}},
+		{"admin role matched exactly", asPerson("eng@wso2.com", "CS_ADMIN"), false, []string{}, []string{}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -277,8 +280,8 @@ func TestCaseAlertSettingsRights(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got.CanManage.View != c.view || !reflect.DeepEqual(got.CanManage.RoomLadders, c.ladders) || !reflect.DeepEqual(got.CanManage.RouteLadders, c.ladders) {
-				t.Fatalf("rights = %+v, want view %v ladders %v", got.CanManage, c.view, c.ladders)
+			if got.CanManage.View != c.view || !reflect.DeepEqual(got.CanManage.RoomLadders, c.rooms) || !reflect.DeepEqual(got.CanManage.RouteLadders, c.ladders) {
+				t.Fatalf("rights = %+v, want view %v rooms %v routes %v", got.CanManage, c.view, c.rooms, c.ladders)
 			}
 			if !c.view && (repo.listed || len(got.Rooms) != 0 || got.Environment != "") {
 				t.Fatalf("somebody who may not see the settings was shown them: %+v", got)
@@ -297,7 +300,7 @@ func TestCaseAlertSettingsRefuseAServiceCredential(t *testing.T) {
 }
 
 func TestCaseAlertSaveRoom(t *testing.T) {
-	yes := true
+	yes, chat := true, "chat"
 	cases := []struct {
 		name string
 		ctx  context.Context
@@ -314,7 +317,16 @@ func TestCaseAlertSaveRoom(t *testing.T) {
 		{"an unknown team", asPerson("someone@wso2.com", "cs_admin"), domain.SaveCaseAlertRoomRequest{Ladder: "SRE", TeamKey: "nope", Label: "x"}, "invalid"},
 		{"teamless shared room", asPerson("someone@wso2.com", "cs_admin"), domain.SaveCaseAlertRoomRequest{Ladder: "SRE", Label: "x", Teamless: &yes}, "invalid"},
 		{"no label", asPerson("someone@wso2.com", "cs_admin"), domain.SaveCaseAlertRoomRequest{Ladder: "SRE", Label: "  "}, "invalid"},
-		{"a third ladder", asPerson("someone@wso2.com", "cs_admin"), domain.SaveCaseAlertRoomRequest{Ladder: "SME", Label: "x"}, "invalid"},
+		{"SME rota admin, Asgardeo room", asPerson("sme.rota@wso2.com"), domain.SaveCaseAlertRoomRequest{Ladder: "sme", TeamKey: "Asgardeo", Label: "Asgardeo SME"}, ""},
+		{"CSM admin, U2 room", asPerson("someone@wso2.com", "cs_admin"), domain.SaveCaseAlertRoomRequest{Ladder: "SME", TeamKey: "u2", Label: "U2 SME"}, ""},
+		{"SME rota admin, SRE room", asPerson("sme.rota@wso2.com"), domain.SaveCaseAlertRoomRequest{Ladder: "SRE", TeamKey: "apollo", Label: "Apollo"}, "forbidden"},
+		{"SRE rota admin, SME room", asPerson("sre.rota@wso2.com"), domain.SaveCaseAlertRoomRequest{Ladder: "SME", TeamKey: "asgardeo", Label: "Asgardeo"}, "forbidden"},
+		{"an SME shared room", asPerson("someone@wso2.com", "cs_admin"), domain.SaveCaseAlertRoomRequest{Ladder: "SME", Label: "SME"}, "invalid"},
+		{"an SRE team in an SME room", asPerson("someone@wso2.com", "cs_admin"), domain.SaveCaseAlertRoomRequest{Ladder: "SME", TeamKey: "apollo", Label: "x"}, "invalid"},
+		{"an SME team in an SRE room", asPerson("someone@wso2.com", "cs_admin"), domain.SaveCaseAlertRoomRequest{Ladder: "SRE", TeamKey: "asgardeo", Label: "x"}, "invalid"},
+		{"an SME room, teamless", asPerson("someone@wso2.com", "cs_admin"), domain.SaveCaseAlertRoomRequest{Ladder: "SME", TeamKey: "asgardeo", Label: "x", Teamless: &yes}, "invalid"},
+		{"an SME room with a channel", asPerson("someone@wso2.com", "cs_admin"), domain.SaveCaseAlertRoomRequest{Ladder: "SME", TeamKey: "asgardeo", Label: "x", Channel: &chat}, "invalid"},
+		{"a fourth ladder", asPerson("someone@wso2.com", "cs_admin"), domain.SaveCaseAlertRoomRequest{Ladder: "PAAS", Label: "x"}, "invalid"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -333,7 +345,7 @@ func TestCaseAlertSaveRoom(t *testing.T) {
 				if repo.saved == nil || repo.actor != auth.IdentityFromContext(c.ctx).UserEmail {
 					t.Fatalf("saved %+v by %q", repo.saved, repo.actor)
 				}
-				if repo.saved.Ladder != "SRE" || strings.TrimSpace(repo.saved.Label) != repo.saved.Label || !repo.saved.Enabled {
+				if (repo.saved.Ladder != "SRE" && repo.saved.Ladder != "SME") || strings.TrimSpace(repo.saved.Label) != repo.saved.Label || !repo.saved.Enabled {
 					t.Fatalf("saved %+v", repo.saved)
 				}
 			}
@@ -546,6 +558,7 @@ func TestCaseAlertSaveRoute(t *testing.T) {
 		{"a name no CSM Portal team has", asPerson("sre.rota@wso2.com"), domain.SaveCaseAlertRouteRequest{Ladder: "SRE", GroupName: "ms/pc sre group", RotaCode: "SRE_SAAS"}, "invalid"},
 		{"a CRE team on the SRE ladder", asPerson("sre.rota@wso2.com"), domain.SaveCaseAlertRouteRequest{Ladder: "SRE", GroupName: "Vega", TeamKey: "apollo"}, "invalid"},
 		{"an SME team on the CRE ladder", asPerson("cre.rota@wso2.com"), domain.SaveCaseAlertRouteRequest{Ladder: "CRE", GroupName: "Asgardeo", TeamKey: "vega"}, "invalid"},
+		{"SME has no routes here", asPerson("sme.rota@wso2.com"), domain.SaveCaseAlertRouteRequest{Ladder: "SME", GroupName: "Asgardeo", TeamKey: "asgardeo"}, "invalid"},
 		{"CRE rota admin on SRE", asPerson("cre.rota@wso2.com"), domain.SaveCaseAlertRouteRequest{Ladder: "SRE", GroupName: "Apollo", TeamKey: "apollo"}, "forbidden"},
 		{"team and rota", asPerson("sre.rota@wso2.com"), domain.SaveCaseAlertRouteRequest{Ladder: "SRE", GroupName: "Apollo", TeamKey: "apollo", RotaCode: "SRE_SAAS"}, "invalid"},
 		{"neither", asPerson("sre.rota@wso2.com"), domain.SaveCaseAlertRouteRequest{Ladder: "SRE", GroupName: "Apollo"}, "invalid"},

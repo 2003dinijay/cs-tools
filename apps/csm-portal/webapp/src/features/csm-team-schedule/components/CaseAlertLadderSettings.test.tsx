@@ -352,22 +352,17 @@ describe("CaseAlertLadderSettings", () => {
     expect(within(dialog).queryByRole("button", { name: "Use the file's value" })).not.toBeInTheDocument();
   });
 
-  it("shows one SRE ladder on both SRE chains, with a note", () => {
-    for (const chain of ["SRE_SAAS", "SRE_IAAS"] as const) {
+  it("shows only the chat spaces on the SRE and SME chains: no ladder settings, file values or redirects", () => {
+    for (const chain of ["SRE_SAAS", "SRE_IAAS", "SME"] as const) {
       const { unmount } = render(<CaseAlertSettings chain={chain} />);
-      expect(screen.getByText("One SRE ladder: these apply to both the SaaS and IaaS chains.")).toBeInTheDocument();
-      // Saved and in use alike: one value, no "Saved:" line.
-      expect(within(row("Time between steps")).getByText("5m")).toBeInTheDocument();
-      expect(within(row("Time between steps")).queryByText(/^Saved:/)).not.toBeInTheDocument();
-      expect(screen.getByRole("region", { name: "Chat messages" })).toBeInTheDocument();
-      expect(screen.queryByText("Head of CRE")).not.toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Team chat routing" })).toBeInTheDocument();
+      expect(screen.queryByText(/One SRE ladder/)).not.toBeInTheDocument();
+      expect(screen.queryByText("Time between steps")).not.toBeInTheDocument();
+      expect(screen.queryByRole("region", { name: "Set in the alert service's file" })).not.toBeInTheDocument();
+      expect(screen.queryByText(/Send an incident's alerts to another SRE team/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/still comes? from the alert service's file/)).not.toBeInTheDocument();
       unmount();
     }
-  });
-
-  it("shows nothing on the SME chain", () => {
-    const { container } = render(<CaseAlertSettings chain="SME" />);
-    expect(container).toBeEmptyDOMElement();
   });
 
   it("shows the CRE settings only the file can set, read-only", () => {
@@ -388,21 +383,6 @@ describe("CaseAlertLadderSettings", () => {
     expect(group.textContent).not.toMatch(/\+\d/);
   });
 
-  it("shows the SRE settings only the file can set, without the heads", () => {
-    render(<CaseAlertSettings chain="SRE_IAAS" />);
-    const group = screen.getByRole("region", { name: "Set in the alert service's file" });
-    const value = (label: string) => fileValue(group, label);
-    expect(value("Alerts on")).toBe("No");
-    expect(value("Channel")).toBe("Log only (no calls or chat)");
-    expect(value("Max calls per ladder")).toBe("no cap");
-    expect(value("Highest step")).toBe("no cap");
-    expect(value("Allowed numbers")).toBe("any number");
-    expect(value("Call before every lead has a number")).toBe("Yes");
-    expect(value("Phone numbers from")).toBe("only numbers in the file");
-    expect(within(group).queryByText(/Call the heads/)).not.toBeInTheDocument();
-    expect(within(group).queryByRole("button")).not.toBeInTheDocument();
-  });
-
   it("says the file-only settings are not reported yet", () => {
     const notYet = /Not reported yet: the alert service reports these when it runs in shadow or db mode\./;
     settings.data = make({ running: undefined });
@@ -419,10 +399,10 @@ describe("CaseAlertLadderSettings", () => {
   it("still shows a saved key it doesn't know, never a link in it, and can go back to the file's", () => {
     settings.data = make({
       values: [
-        { id: ABTS_ID, ladder: "SRE", key: "teams.someday", value: HOOK, updatedBy: "a@b", updatedOn: AT },
+        { id: ABTS_ID, ladder: "CRE", key: "teams.someday", value: HOOK, updatedBy: "a@b", updatedOn: AT },
       ],
     });
-    render(<CaseAlertSettings chain="SRE_SAAS" />);
+    render(<CaseAlertSettings chain="CRE" />);
     const { dialog } = openEdit("teams.someday");
     expect(within(dialog).getByText("Saved here: a link (not shown)")).toBeInTheDocument();
     expect(within(dialog).queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
@@ -471,12 +451,12 @@ describe("CaseAlertLadderSettings", () => {
     window.localStorage.clear();
     settings.data = make({
       routes: [
-        { id: "r1", ladder: "SRE", groupName: "Asgardeo", teamKey: "apollo", enabled: true, updatedBy: "x", updatedOn: AT },
-        { id: "r2", ladder: "SRE", groupName: "Bijira", teamKey: "artemis", enabled: true, updatedBy: "x", updatedOn: AT },
+        { id: "r1", ladder: "CRE", groupName: "Phoenix", teamKey: "atlas", enabled: true, updatedBy: "x", updatedOn: AT },
+        { id: "r2", ladder: "CRE", groupName: "Sirius", teamKey: "castor", enabled: true, updatedBy: "x", updatedOn: AT },
       ],
     });
-    render(<CaseAlertSettings chain="SRE_SAAS" />);
-    expect(screen.getByText("Send an incident's alerts to another SRE team · 2 redirects")).toBeInTheDocument();
+    render(<CaseAlertSettings chain="CRE" />);
+    expect(screen.getByText("Send a case's alerts to another CRE team · 2 redirects")).toBeInTheDocument();
   });
 
   it("opens a section from its summary and remembers it", () => {

@@ -463,15 +463,23 @@ describe("CasePagingTab", () => {
     expect(window.localStorage.getItem(VIEW_KEY)).toBe("chain");
   });
 
-  it("shows no switch on SME, which has no settings here", () => {
+  it("switches SME to its teams' chat spaces, and back", () => {
     alertSettings.data = settingsFor(true);
     window.localStorage.setItem(VIEW_KEY, "settings");
-    render(<CasePagingTab onOpenRota={vi.fn()} initialChain="SME" />);
-    // An admin opens on the first chain; their own pick of SME has no switch.
+    render(
+      <CasePagingTab
+        onOpenRota={vi.fn()}
+        initialChain="SME"
+        teams={[{ key: "asgardeo", name: "Asgardeo", family: "SME" }]}
+      />,
+    );
+    // An admin opens on the first chain; their own pick of SME has a switch.
     fireEvent.click(screen.getByRole("tab", { name: "SME" }));
+    expect(screen.getByRole("group", { name: "Show" })).toBeInTheDocument();
     expect(
-      screen.queryByRole("group", { name: "Show" }),
-    ).not.toBeInTheDocument();
+      screen.getByRole("heading", { name: "SME settings" }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Who gets alerts" }));
     expect(
       screen.getByRole("button", { name: "Open the SME rota" }),
     ).toBeInTheDocument();

@@ -23541,8 +23541,8 @@ components:
         view: { type: boolean }
         roomLadders:
           type: array
-          description: The ladders whose rooms and values the caller may change.
-          items: { type: string, enum: [CRE, SRE] }
+          description: The ladders whose rooms the caller may change, and (CRE, SRE) whose values. SME has team rooms only.
+          items: { type: string, enum: [CRE, SRE, SME] }
         routeLadders:
           type: array
           items: { type: string, enum: [CRE, SRE] }
@@ -23560,8 +23560,8 @@ components:
       required: [id, ladder, label, enabled, teamless, hasWebhook, updatedBy, updatedOn]
       properties:
         id: { type: string, format: uuid }
-        ladder: { type: string, enum: [CRE, SRE] }
-        teamKey: { type: string, description: "The SRE team whose room it is; absent for the ladder's shared room." }
+        ladder: { type: string, enum: [CRE, SRE, SME] }
+        teamKey: { type: string, description: "The SRE or SME team whose room it is; absent for the ladder's shared room (CRE, SRE). An SME room is always a team's." }
         label: { type: string }
         enabled: { type: boolean }
         teamless: { type: boolean, description: "Also gets the cards of an incident with no SRE team of its own." }
@@ -23590,12 +23590,12 @@ components:
       type: object
       required: [ladder, label]
       properties:
-        ladder: { type: string, enum: [CRE, SRE] }
-        teamKey: { type: string, description: "An SRE team of the Team Schedule; omit for the ladder's shared room." }
+        ladder: { type: string, enum: [CRE, SRE, SME] }
+        teamKey: { type: string, description: "An SRE or SME team of the Team Schedule (required for SME); omit for the ladder's shared room." }
         label: { type: string, maxLength: 100 }
         enabled: { type: boolean, default: true }
-        teamless: { type: boolean, default: false }
-        channel: { type: string, enum: ["", log, chat, call, both], description: "A team room only: chat, call, both or log; an empty string goes back to the ladder's. Refused on a ladder's shared room." }
+        teamless: { type: boolean, default: false, description: "SRE team rooms only." }
+        channel: { type: string, enum: ["", log, chat, call, both], description: "An SRE team room only: chat, call, both or log; an empty string goes back to the ladder's. Refused on a ladder's shared room and on an SME room." }
     SetCaseAlertWebhookRequest:
       type: object
       required: [url]
@@ -23640,7 +23640,7 @@ components:
       type: object
       required: [ladder, label, teamless, webhookUrl]
       properties:
-        ladder: { type: string, enum: [CRE, SRE] }
+        ladder: { type: string, enum: [CRE, SRE, SME] }
         teamKey: { type: string }
         label: { type: string }
         teamless: { type: boolean }
