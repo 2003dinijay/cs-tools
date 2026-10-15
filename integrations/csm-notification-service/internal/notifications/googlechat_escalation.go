@@ -506,3 +506,109 @@ func buildEscalationHandoffCard(h EscalationHandoff) chatCardMessage {
 		}},
 	}
 }
+
+// EscalationStopped is the reply a ladder posts in its thread when it stops:
+// somebody acknowledged it, the case closed, or a severity or priority change
+// replaced it with a new chain. Without it the rung cards are the last thing
+// the room sees, and nobody can tell a chain that was answered from one still
+// climbing.
+type EscalationStopped struct {
+	// Audience is the GOOGLE_CHAT_SPACES key the reply is posted to.
+	Audience string
+	// Chain names the chain that stopped, e.g. "CRE" or "SaaS SRE".
+	Chain string
+	// IncidentRef, Title and Priority describe the record.
+	IncidentRef string
+	Title       string
+	Priority    string
+	// Outcome is what happened, as the header says it: "Acknowledged",
+	// "Case closed", "Severity changed to S2".
+	Outcome string
+	// Detail is one sentence on it, e.g. who acknowledged and how.
+	Detail string
+	// Answered marks an acknowledgement; Restarted a new chain replacing this
+	// one. Each changes the header's mark and wording.
+	Answered  bool
+	Restarted bool
+	// Paged is who each rung reached, in order, e.g. "L1 Jane Doe".
+	Paged []string
+	// Cancelled is how many calls were still to come and will not be made.
+	Cancelled int
+	// PortalURL opens the record; PortalLabel is its text.
+	PortalURL   string
+	PortalLabel string
+	// ThreadKey puts the reply under the ladder's rung cards.
+	ThreadKey string
+	// Reply renders it short, under an incident card that already carries
+	// the record's details, as the rung replies are.
+	Reply bool
+}
+
+// SendEscalationStopped posts a stopped ladder's reply.
+func (c *GoogleChatClient) SendEscalationStopped(ctx context.Context, s EscalationStopped) error {
+	if s.IncidentRef == "" {
+		return fmt.Errorf("notifications: incidentRef is required")
+	}
+	if strings.TrimSpace(s.Audience) == "" {
+		return fmt.Errorf("notifications: audience is required")
+	}
+	return c.sendCardToAudience(ctx, s.Audience, buildEscalationStoppedCard(s))
+}
+
+// buildEscalationStoppedCard assembles the stopped reply.
+func buildEscalationStoppedCard(s EscalationStopped) chatCardMessage {
+	chain := strings.TrimSpace(s.Chain)
+	if chain == "" {
+		chain = "CRE"
+	}
+	var title string
+	switch {
+	case s.Restarted:
+		title = fmt.Sprintf("\U0001F501 %s: %s paging restarts", s.Outcome, chain) // repeat arrows
+	case s.Answered:
+		title = fmt.Sprintf("✅ %s: %s paging stopped", s.Outcome, chain) // check mark
+	default:
+		title = fmt.Sprintf("⏹ %s: %s paging stopped", s.Outcome, chain) // stop button
+	}
+	subtitle := "#" + s.IncidentRef
+	if !s.Reply && s.Title != "" {
+		subtitle = s.IncidentRef + " - " + s.Title
+	}
+
+	var lines []string
+	if s.Detail != "" {
+		lines = append(lines, caseAlertLine("%s", s.Detail))
+	}
+	switch {
+	case s.Cancelled == 1:
+		lines = append(lines, caseAlertLine("1 pending call cancelled."))
+	case s.Cancelled > 1:
+		lines = append(lines, caseAlertLine("%s pending calls cancelled.", fmt.Sprint(s.Cancelled)))
+	}
+	if len(s.Paged) > 0 {
+		lines = append(lines, caseAlertLine("Paged: %s", strings.Join(s.Paged, ", ")))
+	}
+	if !s.Reply {
+		if s.Priority != "" {
+			lines = append(lines, caseAlertLine(`<font color="#5F6368">Priority %s</font>`, s.Priority))
+		}
+		if s.PortalURL != "" {
+			label := strings.TrimSpace(s.PortalLabel)
+			if label == "" {
+				label = "View incident"
+			}
+			lines = append(lines, fmt.Sprintf(`<a href="%s">%s</a>`, s.PortalURL, html.EscapeString(label)))
+		}
+	}
+
+	return chatCardMessage{
+		Thread: threadFor(s.ThreadKey),
+		CardsV2: []chatCardWrapper{{
+			CardID: "incident-escalation-stopped",
+			Card: chatCard{
+				Header:   &chatCardHeader{Title: title, Subtitle: subtitle},
+				Sections: []chatCardSection{{Widgets: []chatCardWidget{{TextParagraph: &chatTextParagraph{Text: strings.Join(lines, "<br>")}}}}},
+			},
+		}},
+	}
+}
