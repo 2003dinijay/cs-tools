@@ -179,17 +179,16 @@ func (r *reader) url(key string, required bool) string {
 	return v
 }
 
-// boolean reads true or false; unset is false.
+// boolean reads true or false, and nothing else; unset is false.
 func (r *reader) boolean(key string) bool {
-	v := r.optional(key)
-	if v == "" {
+	switch v := r.optional(key); v {
+	case "", "false":
 		return false
+	case "true":
+		return true
 	}
-	b, err := strconv.ParseBool(v)
-	if err != nil {
-		r.problems = append(r.problems, key+" must be true or false")
-	}
-	return b
+	r.problems = append(r.problems, key+" must be true or false")
+	return false
 }
 
 func (r *reader) port(key, fallback string) string {

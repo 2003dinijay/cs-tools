@@ -107,7 +107,7 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 	_, _, err := Load(env(map[string]string{
 		"PORT":                    "http",
 		"REST_READ_TIMEOUT":       "soon",
-		"DB_TLS":                  "required",
+		"DB_TLS":                  "1", // strconv.ParseBool would take it
 		"AUTH_JWKS_ENDPOINT":      "idp.example.com/jwks",
 		"ONE_WSO2_BASE_URL":       "one.example",
 		"ENTRY_TEXT_MAX_LENGTH":   "5001",
