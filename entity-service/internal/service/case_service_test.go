@@ -5822,17 +5822,26 @@ func TestCaseService_UpdateCase_WatchList_RemovalAndEmptyListStillWork(t *testin
 	}
 }
 
-func TestCaseService_UpdateCase_WatchList_LockedStakeholderDoesNotExemptSubmittedID(t *testing.T) {
-	// A Locked entry is a synthesized account stakeholder, not a persisted
-	// row, so submitting the same id still goes through validation.
+func TestCaseService_UpdateCase_WatchList_LockedStakeholderResubmittedIsNotRevalidated(t *testing.T) {
+	// A Locked entry is a synthesized account stakeholder the portal echoes
+	// back in every submitted list; it must not be re-validated (it can be
+	// staff who are not typed INTERNAL), while a genuinely new id still is.
 	f := newWatchListSkipExistingFixture([]domain.WatchListUser{{ID: wlExistingExternalID, Locked: true}})
-	err := f.update(t, []string{wlExistingExternalID})
+	if err := f.update(t, []string{wlExistingExternalID}); err != nil {
+		t.Fatalf("resubmitting a locked stakeholder must succeed, got %v", err)
+	}
+	if !f.written {
+		t.Error("SetCaseWatchList was not called")
+	}
+	for _, id := range f.checked {
+		if strings.EqualFold(id, wlExistingExternalID) {
+			t.Error("membership was validated for a locked stakeholder")
+		}
+	}
+	err := f.update(t, []string{wlExistingExternalID, wlNewExternalID})
 	var ve *apierror.ValidationError
 	if !asValidationError(err, &ve) {
-		t.Fatalf("expected a ValidationError, got %v", err)
-	}
-	if f.written {
-		t.Error("SetCaseWatchList was called despite a rejected watcher")
+		t.Fatalf("a new non-contact alongside a locked stakeholder must still be rejected, got %v", err)
 	}
 }
 
