@@ -144,6 +144,9 @@ func Auth(cfg AuthConfig, keyFunc jwt.Keyfunc) func(http.Handler) http.Handler {
 			}
 			token := r.Header.Get(jwtAssertionHeader)
 			if token == "" {
+				// Behind the gateway, a request only arrives without one when
+				// the gateway isn't passing the caller's security context on.
+				slog.WarnContext(r.Context(), "auth: no token in "+jwtAssertionHeader)
 				writeError(w, http.StatusUnauthorized, msgUnauthorized)
 				return
 			}
