@@ -122,13 +122,14 @@ function isoPlusDays(iso: string, n: number): string {
 
 /** The last day of n calendar months from an ISO day: 1 Nov plus 3 months
  *  runs to 31 Jan. A day the later month does not have (31 Jan plus one
- *  month) runs to that month's end. */
+ *  month) runs to that month's end, 28 Feb -- not the day before it, as the
+ *  span ends where the missing day would have been. */
 function isoPlusMonths(iso: string, n: number): string {
   const d = new Date(`${iso}T00:00:00`);
   const day = d.getDate();
   const end = new Date(d.getFullYear(), d.getMonth() + n, day);
   if (end.getDate() !== day) end.setDate(0);
-  end.setDate(end.getDate() - 1);
+  else end.setDate(end.getDate() - 1);
   return `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, "0")}-${String(end.getDate()).padStart(2, "0")}`;
 }
 
