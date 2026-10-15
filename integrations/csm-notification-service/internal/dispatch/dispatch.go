@@ -1074,6 +1074,12 @@ func (d *Dispatcher) handleCommentAdded(ctx context.Context, record eventbus.Rec
 // weekend overlays. A failure on one resolved audience doesn't stop the
 // others (errors.Join, same as sendBreachAlert), each logged individually.
 //
+// One exception: isMigrationEngagementComment (case type "engagement",
+// engagement type "migration") routes to chataudience.Migration instead of
+// calling chataudience.Resolve at all — a migration engagement's frustration
+// alert always goes to the Migration audience alone, never the case's own
+// team/Incident Monitor, by explicit product direction.
+//
 // Deliberately best-effort and entirely independent of handleCommentAdded's
 // own email-sending return value: a failure here (entity-service's role
 // lookup, the detector call itself, or the Chat post) is logged and
@@ -1099,6 +1105,14 @@ func (d *Dispatcher) handleCommentAdded(ctx context.Context, record eventbus.Rec
 // key) — matching the exact repeated-Chat-alert-on-retry-and-DLQ-hand-off
 // incident this file's own history already documents for the email/other
 // Chat channels.
+// isMigrationEngagementComment reports whether p landed on a migration
+// engagement -- case type "engagement", engagement type "migration" --
+// case/whitespace-insensitive, same convention as severityLabelAndColor.
+func isMigrationEngagementComment(p events.CommentAddedPayload) bool {
+	return strings.EqualFold(strings.TrimSpace(p.CaseType), "ENGAGEMENT") &&
+		strings.EqualFold(strings.TrimSpace(p.EngagementType), "migration")
+}
+
 func (d *Dispatcher) checkFrustration(ctx context.Context, record eventbus.Record, p events.CommentAddedPayload) {
 	if d.frustrationDetector == nil || p.IsInternalNote || p.AuthorEmail == "" || p.CaseComment == "" {
 		return
@@ -1141,7 +1155,17 @@ func (d *Dispatcher) checkFrustration(ctx context.Context, record eventbus.Recor
 	}
 
 	caseLink := d.links.CSMLink(p.CaseID)
-	audiences := chataudience.Resolve(p.Team, p.IsEvaluationAccount, p.ProjectOnboardingStatus, time.Now(), d.googleChat.HasAudienceSpace)
+	var audiences []string
+	if isMigrationEngagementComment(p) {
+		// A migration engagement's frustration alert goes to the Migration
+		// audience instead of the usual team/Incident Monitor routing --
+		// the one case this routes by engagement type rather than by team,
+		// so it replaces chataudience.Resolve's decision entirely rather
+		// than adding to it.
+		audiences = []string{chataudience.Migration}
+	} else {
+		audiences = chataudience.Resolve(p.Team, p.IsEvaluationAccount, p.ProjectOnboardingStatus, time.Now(), d.googleChat.HasAudienceSpace)
+	}
 	for _, audience := range audiences {
 		if err := d.googleChat.SendFrustrationAlert(ctx, audience, p.CaseNumber, p.WSO2CaseID, p.Product, result.Reason, result.FrustratedLevel, caseLink); err != nil {
 			slog.ErrorContext(ctx, "dispatch: frustration detection, send chat alert failed", "caseID", p.CaseID, "audience", audience, "err", err)
