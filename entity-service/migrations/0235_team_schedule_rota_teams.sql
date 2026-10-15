@@ -16,7 +16,7 @@
 
 -- The team rows of the seven SME rotations migration 0200 created: Asgardeo,
 -- Choreo Runtime, Bijira, Devant, WSO2 Cloud · Agent platform, WSO2 Cloud ·
--- Core and Moesif.
+-- Core and Moesif; and IaaS's, for SRE's IaaS rota (SRE_IAAS, type sre-iaas).
 --
 -- 0200 added their rotas, zones and windows but no team: a team's rota is read
 -- from its type, and teams were expected to arrive from the ServiceNow sync.
@@ -28,12 +28,15 @@
 -- this way; this does the same for the other seven, with the keys, names and
 -- types the local stack has always used (scripts/csm-compose/
 -- seed-team-schedule-rotas.sql), so a key that works locally works everywhere.
+-- IaaS's team (key iaas) is on production already but not on a database that
+-- did not get it from there, such as staging: its IaaS rota then lists no team
+-- and its windows (0231) have nobody to roster. Where it exists this is a no-op.
 --
 -- Data only: no table, column, type or constraint is created or changed.
 -- Re-runnable: a team is added only when no team has its key (compared without
 -- case). A key already held by a team of another type is left alone (never
 -- re-typed: that team may be in use) and named in a NOTICE, so whoever runs
--- this sees which SME rota is still without its team. One transaction with a
+-- this sees which rota is still without its team. One transaction with a
 -- short lock timeout, as the other schedule migrations.
 BEGIN;
 SET LOCAL lock_timeout = '5s';
@@ -47,7 +50,8 @@ FROM (VALUES
     ('Devant',                      'devant',         'sme-devant'),
     ('WSO2 Cloud · Agent platform', 'cloud-agent',    'sme-cloud-agent'),
     ('WSO2 Cloud · Core',           'cloud-core',     'sme-cloud-core'),
-    ('Moesif',                      'moesif',         'sme-moesif')
+    ('Moesif',                      'moesif',         'sme-moesif'),
+    ('IaaS',                        'iaas',           'sre-iaas')
 ) AS v(name, key, type)
 WHERE NOT EXISTS (SELECT 1 FROM team t WHERE lower(t.key) = v.key);
 
@@ -65,11 +69,12 @@ BEGIN
             ('devant',         'sme-devant'),
             ('cloud-agent',    'sme-cloud-agent'),
             ('cloud-core',     'sme-cloud-core'),
-            ('moesif',         'sme-moesif')
+            ('moesif',         'sme-moesif'),
+            ('iaas',           'sre-iaas')
         ) AS v(key, type) ON lower(t.key) = v.key
         WHERE t.type IS DISTINCT FROM v.type
     LOOP
-        RAISE NOTICE 'team % already exists with type %, not %: that SME rota has no team until this is resolved by hand',
+        RAISE NOTICE 'team % already exists with type %, not %: that rota has no team until this is resolved by hand',
             clash.key, clash.type, clash.wanted;
     END LOOP;
 END
