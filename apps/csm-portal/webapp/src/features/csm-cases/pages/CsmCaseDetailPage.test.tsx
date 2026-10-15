@@ -440,6 +440,12 @@ vi.mock("@features/csm-cases/components/CaseActionBar", () => ({
       <button type="button" onClick={() => onAction({ secondary: "raise_git_issue" })}>
         stub open raise git issue
       </button>
+      <button
+        type="button"
+        onClick={() => onAction("assign_to_me", "work_in_progress")}
+      >
+        stub assign to me
+      </button>
       <button type="button" onClick={() => onAction("request_info", "awaiting_info")}>
         stub request info
       </button>
@@ -2202,6 +2208,98 @@ describe("CsmCaseDetailPage — Linked change requests widget only shows on serv
     expect(
       screen.getByTestId("linked-change-requests-widget-probe"),
     ).toBeInTheDocument();
+  });
+});
+
+// "Assign to me" on a stale view: another engineer already moved the case to
+// Work in progress. The assignment PATCH would land even though the follow-up
+// state move is rejected, so the page must re-read the case and refuse before
+// sending any write.
+describe("CsmCaseDetailPage — Assign to me guards against a stale view", () => {
+  beforeEach(() => {
+    patchCaseMutateMock.mockClear();
+    showErrorMock.mockClear();
+  });
+
+  function mockStaleView(fresh: unknown): ReturnType<typeof vi.fn> {
+    const refetch = vi.fn().mockResolvedValue(fresh);
+    useGetCsmCaseDetailMock.mockImplementation((id: string | undefined) => ({
+      ...(defaultCaseDetailImpl(id) as object),
+      refetch,
+    }));
+    return refetch;
+  }
+
+  it("sends no PATCH and names the engineer when the fresh case is already in progress with someone else", async () => {
+    const refetch = mockStaleView({
+      isError: false,
+      data: {
+        ...buildCase("case-1", { state: "work_in_progress" }),
+        assignee: "John Smith",
+        assigneeName: "John Smith",
+        assigneeIsMe: false,
+      },
+    });
+    renderPage();
+
+    fireEvent.click(screen.getByRole("button", { name: /stub assign to me/i }));
+
+    await waitFor(() =>
+      expect(showErrorMock).toHaveBeenCalledWith(
+        "This case is already in progress with John Smith. Refresh to see the latest state.",
+      ),
+    );
+    expect(refetch).toHaveBeenCalled();
+    expect(patchCaseMutateMock).not.toHaveBeenCalled();
+  });
+
+  it("falls back to 'another engineer' when the assignee has no name", async () => {
+    mockStaleView({
+      isError: false,
+      data: buildCase("case-1", { state: "work_in_progress" }),
+    });
+    renderPage();
+
+    fireEvent.click(screen.getByRole("button", { name: /stub assign to me/i }));
+
+    await waitFor(() =>
+      expect(showErrorMock).toHaveBeenCalledWith(
+        "This case is already in progress with another engineer. Refresh to see the latest state.",
+      ),
+    );
+    expect(patchCaseMutateMock).not.toHaveBeenCalled();
+  });
+
+  it("sends no PATCH when the fresh read fails, rather than writing blind", async () => {
+    mockStaleView({
+      isError: true,
+      data: buildCase("case-1", { state: "open" }),
+    });
+    renderPage();
+
+    fireEvent.click(screen.getByRole("button", { name: /stub assign to me/i }));
+
+    await waitFor(() =>
+      expect(showErrorMock).toHaveBeenCalledWith(
+        "Couldn't check the latest state of this case. Please try again.",
+      ),
+    );
+    expect(patchCaseMutateMock).not.toHaveBeenCalled();
+  });
+
+  it("still assigns the case when the fresh read shows it is not in progress", async () => {
+    mockStaleView({ isError: false, data: buildCase("case-1", { state: "open" }) });
+    renderPage();
+
+    fireEvent.click(screen.getByRole("button", { name: /stub assign to me/i }));
+
+    await waitFor(() =>
+      expect(patchCaseMutateMock).toHaveBeenCalledWith(
+        { assigneeEmail: "jane.doe@example.com" },
+        expect.anything(),
+      ),
+    );
+    expect(showErrorMock).not.toHaveBeenCalled();
   });
 });
 
