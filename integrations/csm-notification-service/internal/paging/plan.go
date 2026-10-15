@@ -66,6 +66,14 @@ const (
 // isCase reports whether the ladder pages about a customer case.
 func (t Trigger) isCase() bool { return t.Record == RecordCase }
 
+// chatThreadKey puts an incident's paging messages under its "Incident Reported" card; a case has no such card.
+func (t Trigger) chatThreadKey() string {
+	if t.isCase() {
+		return "incident-escalation-" + t.IncidentID
+	}
+	return notifications.IncidentThreadKey(t.IncidentID)
+}
+
 // recordKind is the routing input for the record: an empty Record is an
 // incident.
 func (t Trigger) recordKind() string {
@@ -289,7 +297,7 @@ func (p Plan) NextRungAfter(call PlannedCall) (rung, in string) {
 		if c.Level <= call.Level {
 			continue
 		}
-		return c.Level.String(), shortDuration(c.At.Sub(call.At))
+		return c.Level.Label(), shortDuration(c.At.Sub(call.At))
 	}
 	return "", ""
 }

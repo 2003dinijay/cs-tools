@@ -31,6 +31,7 @@ import (
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/chataudience"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/escalation"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/eventbus"
+	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/events"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/notifications"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/recipientlinks"
 )
@@ -101,7 +102,7 @@ type sentCaseAcknowledgedAlert struct {
 }
 
 type sentSeverityChangedAlert struct {
-	audience, oldSeverityLabel, oldSeverityColor, newSeverityLabel, newSeverityColor, caseNumber, wso2CaseID, title, team, caseLink string
+	audience, oldSeverityLabel, oldSeverityColor, newSeverityLabel, newSeverityColor, caseNumber, wso2CaseID, productName, title, team, caseLink string
 }
 
 type sentFrustrationAlert struct {
@@ -113,15 +114,16 @@ type sentFrustrationAlert struct {
 type mockGoogleChatSender struct {
 	err error
 	// mu guards calls — see mockEmailSender.mu's doc comment.
-	mu                          sync.Mutex
-	caseCreatedCalls            []sentCaseCreatedAlert
-	caseAcknowledgedCalls       []sentCaseAcknowledgedAlert
-	severityChangedCalls        []sentSeverityChangedAlert
-	securityReportAnalysisCalls []sentSecurityReportAnalysisAlert
-	frustrationCalls            []sentFrustrationAlert
-	srCalls                     []sentSRAlert
-	incidentCreatedCalls        []sentIncidentCreatedAlert
-	incidentAssignedCalls       []sentIncidentAssignedAlert
+	mu                                      sync.Mutex
+	caseCreatedCalls                        []sentCaseCreatedAlert
+	caseAcknowledgedCalls                   []sentCaseAcknowledgedAlert
+	severityChangedCalls                    []sentSeverityChangedAlert
+	securityReportAnalysisCalls             []sentSecurityReportAnalysisAlert
+	securityReportAnalysisAcknowledgedCalls []sentCaseAcknowledgedAlert
+	frustrationCalls                        []sentFrustrationAlert
+	srCalls                                 []sentSRAlert
+	incidentCreatedCalls                    []sentIncidentCreatedAlert
+	incidentAssignedCalls                   []sentIncidentAssignedAlert
 	// srBlock, when non-nil, holds every SR send open until it is closed,
 	// so a test can have a second Handle call arrive mid-send; srStarted
 	// counts SR sends that have begun.
@@ -161,10 +163,20 @@ func (m *mockGoogleChatSender) SendCaseAcknowledgedAlert(ctx context.Context, au
 	return m.err
 }
 
-func (m *mockGoogleChatSender) SendSeverityChangedAlert(ctx context.Context, audience, oldSeverityLabel, oldSeverityColor, newSeverityLabel, newSeverityColor, caseNumber, wso2CaseID, title, team, caseLink string) error {
+func (m *mockGoogleChatSender) SendSecurityReportAnalysisAcknowledgedAlert(ctx context.Context, audience, caseNumber, wso2CaseID, caseLink, acknowledgerName string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.severityChangedCalls = append(m.severityChangedCalls, sentSeverityChangedAlert{audience, oldSeverityLabel, oldSeverityColor, newSeverityLabel, newSeverityColor, caseNumber, wso2CaseID, title, team, caseLink})
+	// No severity fields on this card — recorded under the same
+	// sentCaseAcknowledgedAlert shape with both left blank, so existing
+	// assertions distinguishing the two calls can check severityLabel == "".
+	m.securityReportAnalysisAcknowledgedCalls = append(m.securityReportAnalysisAcknowledgedCalls, sentCaseAcknowledgedAlert{audience, "", "", caseNumber, wso2CaseID, caseLink, acknowledgerName})
+	return m.err
+}
+
+func (m *mockGoogleChatSender) SendSeverityChangedAlert(ctx context.Context, audience, oldSeverityLabel, oldSeverityColor, newSeverityLabel, newSeverityColor, caseNumber, wso2CaseID, productName, title, team, caseLink string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.severityChangedCalls = append(m.severityChangedCalls, sentSeverityChangedAlert{audience, oldSeverityLabel, oldSeverityColor, newSeverityLabel, newSeverityColor, caseNumber, wso2CaseID, productName, title, team, caseLink})
 	return m.err
 }
 
@@ -479,12 +491,16 @@ func TestDispatcher_Handle_CaseCreated_NotTruncated_NeverFetches(t *testing.T) {
 }
 
 // TestDispatcher_Handle_CaseCreated_NonCaseTypesSkipChatButStillEmail verifies
-// handleCaseCreated's CaseType gate: every non-"CASE" type (engagement,
-// service_request, security_report_analysis, announcement) sends no Google
-// Chat alert at all — explicit product direction, those types notify their
-// audience by email only — while the email reaction is unaffected.
+// handleCaseCreated's CaseType gate: every non-"CASE" type that gets no Chat
+// alert at all (engagement, service_request, announcement) sends neither
+// SendCaseCreatedAlert nor SendSecurityReportAnalysisAlert — explicit
+// product direction, those types notify their audience by email only —
+// while the email reaction is unaffected. security_report_analysis is
+// deliberately NOT in this list any more — it does get a Chat alert now,
+// just a dedicated one; see
+// TestDispatcher_Handle_CaseCreated_SecurityReportAnalysisGetsDedicatedChatCard.
 func TestDispatcher_Handle_CaseCreated_NonCaseTypesSkipChatButStillEmail(t *testing.T) {
-	for _, caseType := range []string{"ENGAGEMENT", "SERVICE_REQUEST", "SECURITY_REPORT_ANALYSIS", "ANNOUNCEMENT"} {
+	for _, caseType := range []string{"ENGAGEMENT", "SERVICE_REQUEST", "ANNOUNCEMENT"} {
 		t.Run(caseType, func(t *testing.T) {
 			email := &mockEmailSender{}
 			chat := &mockGoogleChatSender{}
@@ -506,6 +522,39 @@ func TestDispatcher_Handle_CaseCreated_NonCaseTypesSkipChatButStillEmail(t *test
 				t.Errorf("expected the email reaction to still fire for a %s case, got %d call(s)", caseType, len(email.calls))
 			}
 		})
+	}
+}
+
+// TestDispatcher_Handle_CaseCreated_SecurityReportAnalysisGetsDedicatedChatCard
+// verifies a security_report_analysis case.created now posts a Chat alert —
+// previously excluded alongside engagement/service_request/announcement —
+// through the dedicated SendSecurityReportAnalysisAlert card (no severity
+// line), never the plain SendCaseCreatedAlert one, alongside its usual email
+// reaction.
+func TestDispatcher_Handle_CaseCreated_SecurityReportAnalysisGetsDedicatedChatCard(t *testing.T) {
+	email := &mockEmailSender{}
+	chat := &mockGoogleChatSender{}
+	d := newTestDispatcher(email, chat, &mockCallSender{})
+
+	record := eventbus.Record{Value: []byte(`{"type":"case.created","entityId":"CASE-1","payload":{"reporterName":"Reporter","projectName":"Proj","projectId":"PROJ-1","caseId":"CASE-1","caseNumber":"CS0001001","wso2CaseId":"WSO2-1000","caseTitle":"Something broke","caseType":"SECURITY_REPORT_ANALYSIS","priority":"","product":"api-manager","team":"Team Nova","createdAt":"2026-01-01","description":"desc","recipients":["test-recipient@example.com"]}}`)}
+
+	if err := d.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+
+	if len(chat.caseCreatedCalls) != 0 {
+		t.Errorf("expected SendCaseCreatedAlert NOT to be called for a security_report_analysis case, got %d call(s)", len(chat.caseCreatedCalls))
+	}
+	if len(chat.securityReportAnalysisCalls) != 1 {
+		t.Fatalf("expected 1 SendSecurityReportAnalysisAlert call, got %d", len(chat.securityReportAnalysisCalls))
+	}
+	got := chat.securityReportAnalysisCalls[0]
+	if got.audience != chataudience.IncidentMonitor || got.caseNumber != "CS0001001" || got.wso2CaseID != "WSO2-1000" ||
+		got.productName != "api-manager" || got.team != "Team Nova" {
+		t.Errorf("unexpected SendSecurityReportAnalysisAlert args: %+v", got)
+	}
+	if len(email.calls) != 1 {
+		t.Errorf("expected the email reaction to still fire, got %d call(s)", len(email.calls))
 	}
 }
 
@@ -1079,6 +1128,59 @@ func TestDispatcher_Handle_CommentAdded_FrustrationDetected_SendsChatAlert(t *te
 	}
 }
 
+// TestDispatcher_Handle_CommentAdded_FrustrationDetected_MigrationEngagementRoutesToMigrationAudience
+// verifies isMigrationEngagementComment's own routing override: a frustration
+// alert on a migration engagement (caseType "ENGAGEMENT", engagementType
+// "migration") goes to chataudience.Migration alone, even though the payload
+// carries a real Team that would otherwise resolve via chataudience.Resolve.
+func TestDispatcher_Handle_CommentAdded_FrustrationDetected_MigrationEngagementRoutesToMigrationAudience(t *testing.T) {
+	chat := &mockGoogleChatSender{}
+	links := &mockLinkResolver{isCustomer: true}
+	detector := &mockEscalationDetector{result: escalation.Result{
+		IsFrustrated: true, FrustratedLevel: 0.91, Reason: "Repeated unanswered follow-ups", ShouldAlert: true,
+	}}
+	d := NewDispatcher(&mockEmailSender{}, chat, &mockCallSender{}, links, true, false, nil, true, "", nil).
+		WithFrustrationDetection(detector)
+
+	record := eventbus.Record{Value: []byte(`{"type":"case.comment_added","entityId":"CASE-1","payload":{"name":"Commenter","projectId":"PROJ-1","caseId":"CASE-1","caseNumber":"CS0001","caseTitle":"Migration stalled","caseComment":"this is unacceptable, still no update","commentId":"C-1","recipients":["test-recipient@example.com"],"authorEmail":"customer@acme.com","product":"WSO2 API Manager","team":"Castor","caseType":"ENGAGEMENT","engagementType":"migration"}}`)}
+
+	if err := d.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if len(chat.frustrationCalls) != 1 {
+		t.Fatalf("expected 1 frustration Chat alert, got %d", len(chat.frustrationCalls))
+	}
+	if got := chat.frustrationCalls[0].audience; got != chataudience.Migration {
+		t.Errorf("audience = %q, want %q (migration engagement overrides team routing)", got, chataudience.Migration)
+	}
+}
+
+// TestIsMigrationEngagementComment pins the match rule: case type
+// "engagement" (case/whitespace-insensitive) and engagement type "migration"
+// (same), every other combination false.
+func TestIsMigrationEngagementComment(t *testing.T) {
+	testCases := []struct {
+		name           string
+		caseType       string
+		engagementType string
+		want           bool
+	}{
+		{"exact match", "ENGAGEMENT", "migration", true},
+		{"case/whitespace insensitive", "  engagement ", " Migration ", true},
+		{"wrong case type", "CASE", "migration", false},
+		{"wrong engagement type", "ENGAGEMENT", "consultancy", false},
+		{"both empty", "", "", false},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := events.CommentAddedPayload{CaseType: tc.caseType, EngagementType: tc.engagementType}
+			if got := isMigrationEngagementComment(p); got != tc.want {
+				t.Errorf("isMigrationEngagementComment(%q, %q) = %v, want %v", tc.caseType, tc.engagementType, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestDispatcher_Handle_CommentAdded_FrustrationDetection_SkipConditions
 // verifies checkFrustration's own early-return gates: no detector
 // configured, an internal note, a non-customer author, and a detector result
@@ -1394,6 +1496,32 @@ func TestDispatcher_Handle_CaseAcknowledged_BlankSeverityRendersUnknownNotEmpty(
 	}
 }
 
+// TestDispatcher_Handle_CaseAcknowledged_SecurityReportAnalysisOmitsSeverity
+// verifies a security_report_analysis ack event posts the dedicated
+// SendSecurityReportAnalysisAcknowledgedAlert card — which has no severity
+// line at all — instead of SendCaseAcknowledgedAlert's own "Unknown"
+// fallback for a type that never carries a severity.
+func TestDispatcher_Handle_CaseAcknowledged_SecurityReportAnalysisOmitsSeverity(t *testing.T) {
+	chat := &mockGoogleChatSender{}
+	d := newTestDispatcher(&mockEmailSender{}, chat, &mockCallSender{})
+
+	record := eventbus.Record{Value: []byte(`{"type":"case.acknowledged","entityId":"CASE-1","payload":{"caseId":"CASE-1","caseNumber":"CS0001001","wso2CaseId":"WSO2-1000","caseType":"SECURITY_REPORT_ANALYSIS","acknowledgerName":"Jane Doe"}}`)}
+
+	if err := d.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if len(chat.caseAcknowledgedCalls) != 0 {
+		t.Errorf("expected SendCaseAcknowledgedAlert NOT to be called for a security_report_analysis case, got %d call(s)", len(chat.caseAcknowledgedCalls))
+	}
+	if len(chat.securityReportAnalysisAcknowledgedCalls) != 1 {
+		t.Fatalf("expected 1 SendSecurityReportAnalysisAcknowledgedAlert call, got %d", len(chat.securityReportAnalysisAcknowledgedCalls))
+	}
+	got := chat.securityReportAnalysisAcknowledgedCalls[0]
+	if got.audience != chataudience.IncidentMonitor || got.caseNumber != "CS0001001" || got.wso2CaseID != "WSO2-1000" || got.acknowledgerName != "Jane Doe" {
+		t.Errorf("unexpected SendSecurityReportAnalysisAcknowledgedAlert args: %+v", got)
+	}
+}
+
 // TestDispatcher_Handle_CaseAcknowledged_ForgetsAfterFullSuccess mirrors
 // TestDispatcher_Handle_CaseCreated_ForgetsAfterFullSuccess: once
 // case.acknowledged's one and only reaction (the Chat alert) succeeds, its
@@ -1469,6 +1597,9 @@ func TestDispatcher_Handle_SeverityChanged(t *testing.T) {
 	gotChat := chat.severityChangedCalls[0]
 	if gotChat.audience != chataudience.IncidentMonitor || gotChat.oldSeverityLabel != "Low (P4)" || gotChat.newSeverityLabel != "High (P2)" || gotChat.caseLink != "https://csm.example/cases/CASE-1" {
 		t.Errorf("unexpected SendSeverityChangedAlert args: %+v", gotChat)
+	}
+	if gotChat.productName != "api-manager" {
+		t.Errorf("SendSeverityChangedAlert productName = %q, want the payload's product %q", gotChat.productName, "api-manager")
 	}
 }
 
@@ -2153,7 +2284,11 @@ func (s *blockingCaseAcknowledgedChatSender) SendCaseAcknowledgedAlert(ctx conte
 	return nil
 }
 
-func (s *blockingCaseAcknowledgedChatSender) SendSeverityChangedAlert(ctx context.Context, product, oldSeverityLabel, oldSeverityColor, newSeverityLabel, newSeverityColor, caseNumber, wso2CaseID, title, team, caseLink string) error {
+func (s *blockingCaseAcknowledgedChatSender) SendSecurityReportAnalysisAcknowledgedAlert(ctx context.Context, product, caseNumber, wso2CaseID, caseLink, acknowledgerName string) error {
+	return nil
+}
+
+func (s *blockingCaseAcknowledgedChatSender) SendSeverityChangedAlert(ctx context.Context, product, oldSeverityLabel, oldSeverityColor, newSeverityLabel, newSeverityColor, caseNumber, wso2CaseID, productName, title, team, caseLink string) error {
 	return nil
 }
 

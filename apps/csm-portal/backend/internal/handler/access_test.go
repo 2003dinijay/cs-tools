@@ -41,6 +41,7 @@ func testAccessConfig() AccessConfig {
 		WorknoteCreator:      []string{"test-worknote-creator"},
 		AnnouncementCreator:  []string{"test-announcement-creator"},
 		CommentUpdater:       []string{"test-comment-updater"},
+		SecurityTeam:         []string{"test-security-team"},
 	}
 }
 
@@ -83,6 +84,7 @@ func TestAccessGuard_PermissionMatrix(t *testing.T) {
 		{"timecard approver can view, use time cards and updates, and approve", []string{"test-timecard-approver"}, []Permission{PermView, PermTimeCardsAndUpdates, PermApproveTimeCard}},
 		{"dashboard designer can view only", []string{"test-dashboard-designer"}, []Permission{PermView}},
 		{"sales solutions role alone grants none of these -- it holds PermViewSharedEntity/PermViewerAccess instead, tested separately", []string{"test-sales-solutions"}, nil},
+		{"security team can view, view operations, and view security center -- but no write/escalate/approve permission of any kind", []string{"test-security-team"}, []Permission{PermView, PermViewOperations, PermViewSecurityCenter}},
 		{"roles combine", []string{"test-viewer", "test-escalator", "test-attachment-downloader"}, []Permission{PermView, PermEscalate, PermDownloadAttachment}},
 		{"unrelated roles grant nothing", []string{"wso2-everyone", "admin", "agent", "customer"}, nil},
 		{"no roles", nil, nil},
@@ -120,6 +122,7 @@ func TestAccessGuard_PermViewSharedEntityScope(t *testing.T) {
 		for _, roles := range [][]string{
 			{"test-viewer"}, {"test-escalator"}, {"test-attachment-downloader"}, {"test-cs-engineer"},
 			{"test-admin"}, {"test-usage-metrics-viewer"}, {"test-timecard-approver"}, {"test-dashboard-designer"},
+			{"test-security-team"},
 		} {
 			if status, _ := serveWithRoles(g, PermViewSharedEntity, roles); status != http.StatusNoContent {
 				t.Errorf("roles %v: status = %d, want 204 (PermView implies PermViewSharedEntity)", roles, status)
@@ -218,8 +221,8 @@ func TestAccessGuard_RolesFor(t *testing.T) {
 			"test-viewer", "test-escalator", "test-attachment-downloader",
 			"test-cs-engineer", "test-usage-metrics-viewer", "test-timecard-approver",
 			"test-dashboard-designer", "test-admin", "test-sales-solutions", "test-worknote-creator", "test-announcement-creator",
-			"test-comment-updater",
-		}, []string{"viewer", "escalator", "attachment_downloader", "cs_engineer", "usage_metrics_viewer", "timecard_approver", "dashboard_designer", "admin", "sales_solutions", "worknote_creator", "announcement_creator", "comment_updater"}},
+			"test-comment-updater", "test-security-team",
+		}, []string{"viewer", "escalator", "attachment_downloader", "cs_engineer", "usage_metrics_viewer", "timecard_approver", "dashboard_designer", "admin", "sales_solutions", "worknote_creator", "announcement_creator", "comment_updater", "security_team"}},
 		{"announcement creator is reported like any other portal role", []string{"test-cs-engineer", "test-announcement-creator"}, []string{"cs_engineer", "announcement_creator"}},
 		{"comment updater is reported like any other portal role", []string{"test-cs-engineer", "test-comment-updater"}, []string{"cs_engineer", "comment_updater"}},
 		{"unrelated roles are ignored", []string{"wso2-everyone", "agent"}, []string{}},
@@ -248,7 +251,7 @@ func TestAccessGuard_RolesForUsesConfiguredNames(t *testing.T) {
 	}
 }
 
-func TestAccessGuard_OperationsAreForCsEngineersAndAdmins(t *testing.T) {
+func TestAccessGuard_OperationsAreForCsEngineersAdminsAndSecurityTeam(t *testing.T) {
 	g := NewAccessGuard(testAccessConfig())
 	for _, role := range []string{
 		"test-viewer", "test-escalator",
@@ -262,7 +265,7 @@ func TestAccessGuard_OperationsAreForCsEngineersAndAdmins(t *testing.T) {
 			t.Errorf("%s reading cases and customers: status = %d, want 204", role, status)
 		}
 	}
-	for _, role := range []string{"test-cs-engineer", "test-admin"} {
+	for _, role := range []string{"test-cs-engineer", "test-admin", "test-security-team"} {
 		if status, _ := serveWithRoles(g, PermViewOperations, []string{role}); status != http.StatusNoContent {
 			t.Errorf("%s reading operations: status = %d, want 204", role, status)
 		}
@@ -295,12 +298,12 @@ func TestAccessGuard_ViewAllDashboardsIsForCsEngineersAndAdmins(t *testing.T) {
 	}
 }
 
-// TestAccessGuard_SecurityCenterIsForCsEngineersAdminsAndCommentUpdaters
+// TestAccessGuard_SecurityCenterIsForCsEngineersAdminsCommentUpdatersAndSecurityTeam
 // covers PermViewSecurityCenter, which — unlike PermView — plain viewer/
 // escalator/attachment_downloader/usage_metrics_viewer/timecard_approver/
 // dashboard_designer do NOT hold, even though every one of them holds
 // PermView itself.
-func TestAccessGuard_SecurityCenterIsForCsEngineersAdminsAndCommentUpdaters(t *testing.T) {
+func TestAccessGuard_SecurityCenterIsForCsEngineersAdminsCommentUpdatersAndSecurityTeam(t *testing.T) {
 	g := NewAccessGuard(testAccessConfig())
 	for _, role := range []string{
 		"test-viewer", "test-escalator",
@@ -314,16 +317,41 @@ func TestAccessGuard_SecurityCenterIsForCsEngineersAdminsAndCommentUpdaters(t *t
 			t.Errorf("%s reading cases and customers: status = %d, want 204", role, status)
 		}
 	}
-	for _, role := range []string{"test-cs-engineer", "test-admin", "test-comment-updater"} {
+	for _, role := range []string{"test-cs-engineer", "test-admin", "test-comment-updater", "test-security-team"} {
 		if status, _ := serveWithRoles(g, PermViewSecurityCenter, []string{role}); status != http.StatusNoContent {
 			t.Errorf("%s reading Security Center: status = %d, want 204", role, status)
 		}
 	}
 }
 
+// TestAccessGuard_SecurityReportCasesAlsoAllowsViewer covers
+// PermViewSecurityReportCases: the same holders as PermViewSecurityCenter,
+// plus Viewer -- but Viewer must still be denied PermViewSecurityCenter
+// itself (Vulnerabilities stays off limits), confirming the two permissions
+// were genuinely split apart rather than Viewer gaining the broader one.
+func TestAccessGuard_SecurityReportCasesAlsoAllowsViewer(t *testing.T) {
+	g := NewAccessGuard(testAccessConfig())
+	for _, role := range []string{"test-cs-engineer", "test-admin", "test-comment-updater", "test-viewer"} {
+		if status, _ := serveWithRoles(g, PermViewSecurityReportCases, []string{role}); status != http.StatusNoContent {
+			t.Errorf("%s reading security-report cases: status = %d, want 204", role, status)
+		}
+	}
+	for _, role := range []string{
+		"test-escalator", "test-attachment-downloader", "test-usage-metrics-viewer",
+		"test-timecard-approver", "test-dashboard-designer",
+	} {
+		if status, _ := serveWithRoles(g, PermViewSecurityReportCases, []string{role}); status != http.StatusForbidden {
+			t.Errorf("%s reading security-report cases: status = %d, want 403", role, status)
+		}
+	}
+	if status, _ := serveWithRoles(g, PermViewSecurityCenter, []string{"test-viewer"}); status != http.StatusForbidden {
+		t.Errorf("viewer reading Security Center (vulnerabilities): status = %d, want 403 -- granting PermViewSecurityReportCases must not also grant PermViewSecurityCenter", status)
+	}
+}
+
 func TestAccessGuard_UnconfiguredRolesAreHeldByNobody(t *testing.T) {
 	g := NewAccessGuard(AccessConfig{})
-	for _, perm := range []Permission{PermView, PermViewOperations, PermTimeCardsAndUpdates, PermEscalate, PermDownloadAttachment, PermWrite, PermAdmin, PermViewSecurityCenter, PermApproveTimeCard, PermUsePlg, PermManagePlaybooks, PermCreateWorkNote, PermCreateAnnouncement, PermUpdateDeleteComment} {
+	for _, perm := range []Permission{PermView, PermViewOperations, PermTimeCardsAndUpdates, PermEscalate, PermDownloadAttachment, PermWrite, PermAdmin, PermViewSecurityCenter, PermViewSecurityReportCases, PermApproveTimeCard, PermUsePlg, PermManagePlaybooks, PermCreateWorkNote, PermCreateAnnouncement, PermUpdateDeleteComment} {
 		if status, _ := serveWithRoles(g, perm, []string{"test-admin", "test-viewer", ""}); status != http.StatusForbidden {
 			t.Errorf("permission %d with no roles configured: status = %d, want 403", perm, status)
 		}

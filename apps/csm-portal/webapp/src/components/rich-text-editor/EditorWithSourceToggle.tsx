@@ -29,6 +29,7 @@ import {
 import { Code } from "@wso2/oxygen-ui-icons-react";
 import { useCallback, useState, type JSX } from "react";
 import Editor from "@components/rich-text-editor/Editor";
+import HtmlSourcePreview from "@components/rich-text-editor/HtmlSourcePreview";
 import { htmlNeedsSourceEditing } from "@components/rich-text-editor/richHtmlFidelity";
 import type { ToolbarVariant } from "@components/rich-text-editor/ToolBar";
 
@@ -183,8 +184,11 @@ export default function EditorWithSourceToggle({
         <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
           Output is sent as-is. Use this to fix paste-formatting or insert tables.
           {needsSource && userSourceChoice === null &&
-            " This content has styling the rich editor can't keep (such as boxes or coloured links), so it is shown as HTML source to preserve it exactly."}
+            " This content has styling the rich editor can't keep (such as boxes or coloured links), so it is shown as HTML source to preserve it exactly. The preview shows how it will look."}
         </Typography>
+      )}
+      {sourceMode && keepStyledHtmlAsSource && (
+        <HtmlSourcePreview html={value} onChange={disabled ? undefined : onChange} />
       )}
 
       <Dialog open={confirmRichOpen} onClose={() => setConfirmRichOpen(false)} maxWidth="xs" fullWidth>
@@ -193,7 +197,7 @@ export default function EditorWithSourceToggle({
           <Typography variant="body2" color="text.secondary">
             This content uses styling the rich editor can't keep, such as boxes, coloured links
             and nested layout. Switching will simplify it and the original styling will be lost.
-            Staying in HTML source keeps it exactly as written.
+            Staying in HTML source keeps it exactly as written, and the preview below the source box shows how it will look.
           </Typography>
         </DialogContent>
         <DialogActions>

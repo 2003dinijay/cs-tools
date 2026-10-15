@@ -30,7 +30,7 @@ PORT=8077 UPSTREAM_URL=http://localhost:8078 go run .
 
 The service checks its settings and the database at startup, and stops with
 a message naming what's wrong: a missing setting, an unreachable database,
-or a missing `til_entry` table.
+or a missing `til_entry` table or column.
 
 ## Test
 
@@ -51,13 +51,15 @@ them all.
 | Setting | Required | |
 |---|---|---|
 | `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` | yes (port defaults to 3306) | The MySQL database. |
+| `DB_TLS` | no | For a database that requires secure transport. `true` encrypts the connection and checks the server's certificate, which must come from a CA the system trusts and name `DB_HOST`. `skip-verify` encrypts it without checking the certificate: use it only when the certificate can't be verified. Default `false`. |
 | `AUTH_JWKS_ENDPOINT`, `AUTH_ISSUER` | yes | Where the token's signing keys are published, and its issuer. |
 | `AUTH_AUDIENCE` | no | Client ids a token must be issued to. |
 | `AUTH_MODERATOR_GROUPS` | no | Groups whose members may edit and delete anyone's entries. |
 | `ONE_WSO2_WEBAPP_CLIENT_ID` | no | The webapp's client id. Only a token issued to it may share or edit; unset means no one can. |
+| `ENTRY_TEXT_MAX_LENGTH` | no | The most characters of text a learning may have, markup not counted: 1–5000, default 500. The webapp's form reads it from `GET /settings` and stops there; the backend accepts 20 more, so a tiny counting difference never rejects what the form allowed. |
 | `ONE_WSO2_BASE_URL` | no | The webapp's address, for the "Read more" link in Google Chat and the TIL logo it serves at `/til-logo.png` (shown only over https). |
 | `CORS_ALLOWED_ORIGINS` | no | Browser origins allowed to call the API. |
-| `PORT`, `REST_READ_TIMEOUT`, `REST_WRITE_TIMEOUT` | no | Defaults 8077, 15s, 45s. |
+| `PORT`, `REST_READ_TIMEOUT`, `REST_WRITE_TIMEOUT` | no | Defaults 9090, 15s, 45s. |
 | `ENTITY_SERVICE_*` | no | Customer-name suggestions from entity-service: the base URL, token URL, client id and secret together, or none. `ENTITY_SERVICE_SCOPES` is optional. |
 | `NOVERA_*` | no | Announcing new entries in Google Chat through Novera's `POST /internal/notifications`: all four or none. |
 
@@ -70,12 +72,14 @@ written to be shown to people as they are.
 |---|---|---|
 | GET | `/health` | Liveness. No token needed. |
 | GET | `/user-info` | `{email, displayName, canModerate}` |
+| GET | `/settings` | `{whatMaxLength, notificationsEnabled}`: the rules the webapp's form shows, and whether entries are announced. |
 | GET | `/customers/search?q=` | `[{id, name}]`; empty when suggestions are off. |
-| GET | `/submissions` | `{items, total, limit, offset}`, newest first. Query: `q` (search), `dateFrom`/`dateTo` (`YYYY-MM-DD`, inclusive, UTC), `mine=true`, `limit` (1–100, default 10), `offset`. |
+| GET | `/submissions` | `{items, total, limit, offset}`, newest first. Query: `q` (search), `createdFrom` (inclusive) / `createdBefore` (exclusive) as RFC 3339 times, `author` (the author's name: every word starts a word in it), `source` (Customer, Partner, Internal or Other), `mine=true`, `limit` (1–100, default 10), `offset`. |
 | POST | `/submissions` | `{title, who, where, what, whereDetail?}`. Webapp only. Announced in Google Chat. |
 | GET | `/submissions/{id}` | One entry. |
 | PUT | `/submissions/{id}` | `{title, where, what, whereDetail?}`. Webapp only; the author or a moderator. |
 | DELETE | `/submissions/{id}` | The author or a moderator. |
+| POST | `/submissions/{id}/notify` | Sends an entry whose announcement failed. Webapp only; moderators only; once (409 after). |
 
 ## How it works
 
@@ -99,5 +103,12 @@ written to be shown to people as they are.
   (under three characters, or common words such as "the") are matched as
   text.
 - **Announcements.** A new entry is sent to Novera, which posts it to every
-  employee who has a chat open with it. This is best effort: a failure is
-  logged and never fails the request.
+  employee who has a chat open with it. A failure never fails the request:
+  it's logged, and the entry's `notifiedAt` stays null. A moderator can then
+  send it from the webapp (`POST /submissions/{id}/notify`). An entry is
+  claimed before it's sent and released if Novera doesn't accept it, so no
+  one gets the same card twice, even when two moderators press send at once.
+  Only if the service is killed mid-send, or the database fails as the claim
+  is released (logged as `release notification failed` with the entry's id),
+  does an unsent entry stay marked as sent. To let a moderator send it:
+  `UPDATE til_entry SET notified_at = NULL WHERE id = '<entry id>';`

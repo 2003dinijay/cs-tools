@@ -176,6 +176,7 @@ import {
 } from "@features/csm-timecards/api/useTimeCards";
 import type { CsmTimeCard } from "@features/csm-timecards/types/timeCards";
 import { caseIdLabel } from "@features/csm-cases/utils/caseIdentity";
+import { githubIssueCaseTags } from "@features/csm-cases/utils/githubIssueCaseTags";
 import { useReportCaseTabDraft } from "@features/case-tabs/hooks/useReportCaseTabDraft";
 import { useReportCaseTabMeta } from "@features/case-tabs/hooks/useReportCaseTabMeta";
 import { useCaseRouteOverride } from "@context/case-tabs/CaseRouteOverrideContext";
@@ -430,6 +431,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
     canAddWorkNotes,
     canUseOperations,
     canUseTimeCardsAndUpdates,
+    canViewSlaTab,
   } = usePortalAccess();
   // A worknote_creator without full write may still add an internal work
   // note -- and nothing else on this page. The composer is locked to
@@ -641,9 +643,10 @@ export default function CsmCaseDetailPage(): JSX.Element {
   // the tab-label counts below; each widget still runs its own scoped query
   // when its tab mounts, deduped against this one by react-query's cache.
   // Skipped for announcements (undefined caseId disables the query) since
-  // neither tab is shown there.
+  // neither tab is shown there, and for a caller without canViewSlaTab, since
+  // the tab itself is hidden for them.
   const { data: slaList } = useGetCsmCaseSlas(
-    isAnnouncement ? undefined : caseId,
+    isAnnouncement || !canViewSlaTab ? undefined : caseId,
   );
   const {
     data: callRequests,
@@ -936,11 +939,12 @@ export default function CsmCaseDetailPage(): JSX.Element {
           activeTab === "time" ||
           activeTab === "call-requests" ||
           activeTab === "tasks")) ||
-      (activeTab === "time" && !canUseTimeCardsAndUpdates)
+      (activeTab === "time" && !canUseTimeCardsAndUpdates) ||
+      (activeTab === "sla" && !canViewSlaTab)
     ) {
       setActiveTab("activities");
     }
-  }, [isAnnouncement, activeTab, setActiveTab, canUseTimeCardsAndUpdates]);
+  }, [isAnnouncement, activeTab, setActiveTab, canUseTimeCardsAndUpdates, canViewSlaTab]);
 
   // Twitter-style permalinks: when the URL has a fragment matching an entry id,
   // jump to the Activities tab and hand off to `scrollToFragmentWithRetry`,
@@ -2657,6 +2661,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
             (t) =>
               !t.hidden &&
               (t.id !== "time" || canUseTimeCardsAndUpdates) &&
+              (t.id !== "sla" || canViewSlaTab) &&
               (!isAnnouncement ||
                 (t.id !== "related" &&
                   t.id !== "watchers" &&
@@ -3160,8 +3165,9 @@ export default function CsmCaseDetailPage(): JSX.Element {
         </Box>
       )}
 
-      {activeTab === "sla" &&
-        caseId && <CaseSlaTable caseId={caseId} />}
+      {activeTab === "sla" && canViewSlaTab && caseId && (
+        <CaseSlaTable caseId={caseId} />
+      )}
 
       {activeTab === "attachments" && (
         <Box sx={{ display: "grid", gap: 2, gridTemplateColumns: "1fr" }}>
@@ -3523,9 +3529,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
                   // done reading the confirmation.
                   setActiveTab("activities");
                   setGithubIssueResult(res);
-                  const tagLabels = ["s_dp"];
-                  if (payload.regression) tagLabels.push("s_rg");
-                  if (payload.reason === "migration") tagLabels.push("migration");
+                  const tagLabels = githubIssueCaseTags(payload);
                   // Each mutateAsync promise is handled on its own. Per-call
                   // callbacks on mutate are replaced by the next call.
                   void Promise.all(

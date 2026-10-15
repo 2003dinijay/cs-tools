@@ -31,7 +31,8 @@ import { useSearchParams } from "react-router";
 import { useAsgardeo } from "@asgardeo/react";
 
 import { featureStateForPath, navigableNavNodes } from "@config/featureFlags";
-import { usePortalAccess } from "@context/current-user/usePortalAccess";
+import { useFeaturePreviewOverrides } from "@config/featurePreview";
+import { usePortalAccess, useSafeCurrentUserId } from "@context/current-user/usePortalAccess";
 import { useDebouncedValue } from "@hooks/useDebouncedValue";
 import {
   useRecentViews,
@@ -136,6 +137,11 @@ const isMac =
 
 export default function QuickNav(): JSX.Element | null {
   const access = usePortalAccess();
+  // An admin's own Feature Preview toggles (browser-local, see
+  // featurePreview.ts) can promote a hidden/WIP destination into this
+  // palette for them alone -- never for any other caller, and never
+  // touching the deployment-wide config itself.
+  const { overrides: previewOverrides } = useFeaturePreviewOverrides(useSafeCurrentUserId());
   const { isSignedIn } = useAsgardeo();
   const navigate = useNavTransition();
   const recents = useRecentViews();
@@ -534,7 +540,7 @@ export default function QuickNav(): JSX.Element | null {
     // (or never) unlock, e.g. an incident opened before they lost Operations
     // access; drop it rather than offer a link that redirects away.
     const reachable = (e: RecentView): boolean =>
-      featureStateForPath(e.href.split(/[?#]/)[0], access) !== "hidden";
+      featureStateForPath(e.href.split(/[?#]/)[0], access, previewOverrides) !== "hidden";
 
     const pinned: Result[] = recents
       .filter((e) => e.pinned)
@@ -572,7 +578,7 @@ export default function QuickNav(): JSX.Element | null {
     // offered too (matching on either the tab or its section name), so
     // "incidents" jumps straight into the tab rather than to Operations.
     const pages: Result[] = q
-      ? navigableNavNodes(access)
+      ? navigableNavNodes(access, previewOverrides)
           .filter((i) => match(i.label, i.sublabel))
           .map((i) => ({
             key: `page-${i.id}`,
@@ -604,6 +610,7 @@ export default function QuickNav(): JSX.Element | null {
     problemSearch.data,
     conversationSearch.data,
     access,
+    previewOverrides,
   ]);
 
   // Clamp at render so a stale index from shrinking results never points past

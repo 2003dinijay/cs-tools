@@ -26,7 +26,6 @@ import {
   alpha,
   useTheme,
 } from "@wso2/oxygen-ui";
-import DOMPurify from "dompurify";
 import { useMemo, type JSX } from "react";
 import useGetCaseCommentsInfinite from "@features/support/api/useGetCaseCommentsInfinite";
 import type { CaseComment } from "@features/support/types/cases";
@@ -36,9 +35,9 @@ import {
   convertCodeTagsToHtml,
   formatCommentDate,
   getInitials,
+  SYSTEM_AUTHOR_LABEL,
   hasDisplayableContent,
   hasSingleCodeWrapper,
-  INLINE_COMMENT_HTML_PURIFY,
   parseApiLocalDateTimeMs,
   plainTextCommentToHtml,
   stripAllCodeBlocks,
@@ -54,7 +53,10 @@ import {
   ANNOUNCEMENT_COMMENTS_LOADING_LABEL,
   ANNOUNCEMENT_COMMENTS_LOAD_MORE_LABEL,
 } from "@features/announcements/constants/announcementsConstants";
-import { isDescriptionEchoedInComment } from "@features/announcements/utils/announcements";
+import {
+  isDescriptionEchoedInComment,
+  sanitizeAnnouncementHtml,
+} from "@features/announcements/utils/announcements";
 
 type AnnouncementActivityPanelProps = {
   projectId: string;
@@ -72,7 +74,7 @@ function commentAuthorDisplayName(comment: CaseComment): string {
   if (comment.createdByFullName?.trim()) {
     return comment.createdByFullName.trim();
   }
-  return comment.createdBy?.trim() || "Unknown";
+  return comment.createdBy?.trim() || SYSTEM_AUTHOR_LABEL;
 }
 
 function sanitizeCommentContent(content: string, isDarkMode: boolean): string {
@@ -91,7 +93,7 @@ function sanitizeCommentContent(content: string, isDarkMode: boolean): string {
   const darkModeHtml = isDarkMode
     ? stripLightModeInlineStyles(withoutLabel)
     : withoutLabel;
-  return DOMPurify.sanitize(darkModeHtml, INLINE_COMMENT_HTML_PURIFY);
+  return sanitizeAnnouncementHtml(darkModeHtml);
 }
 
 /**

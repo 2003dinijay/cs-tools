@@ -146,6 +146,26 @@ export const CALL_REQUEST_STATE_PENDING_ON_WSO2 = 2;
 /** API stateKey value for cancelling a call request (PATCH). */
 export const CALL_REQUEST_STATE_CANCELLED = 6;
 
+/**
+ * Every call-request stateKey (PATCH / search filter), by entity-service's own
+ * string enum id (GET /projects/{id}/filters' callRequestStates[].id) -- the
+ * fixed ServiceNow-era numeric scheme, mirroring backend-v2's own
+ * callRequestStateKeyToEnum (internal/dto/call_request_enum_mapping.go) in
+ * reverse. The string id is never itself numeric (Number(id) is always NaN),
+ * so any code deriving a stateKey from callRequestStates must go through this
+ * map (or the single-purpose constants above), never Number(id) directly.
+ */
+export const CALL_REQUEST_STATE_KEY_BY_ID: Readonly<Record<string, number>> = {
+  pending_on_customer: 1,
+  pending_on_wso2: CALL_REQUEST_STATE_PENDING_ON_WSO2,
+  scheduled: 3,
+  customer_rejected: CALL_REQUEST_STATE_CUSTOMER_REJECTED,
+  wso2_rejected: 5,
+  canceled: CALL_REQUEST_STATE_CANCELLED,
+  notes_pending: 7,
+  concluded: 8,
+};
+
 // Case severity types matching API labels.
 export const CaseSeverity = {
   CATASTROPHIC: "Catastrophic (P0)",
@@ -168,6 +188,32 @@ export const CaseSeverityLevel = {
 
 export type CaseSeverityLevel =
   (typeof CaseSeverityLevel)[keyof typeof CaseSeverityLevel];
+
+/**
+ * ServiceNow's own CallRequestUtils._PRIORITY_TIME_OFFSETS, mirrored here:
+ * the minimum lead time (minutes) a call request's preferred time must sit
+ * ahead of now, by case priority. Keyed by the same numeric priority id
+ * GET /projects/{id}/filters' severity choice list uses (confirmed against
+ * entity-service's own severityEnumToChoice: S0=14, S1=10, S2=11, S3=12,
+ * S4=13 -- the numbering is P0(14) -> P1(10) -> P2(11) -> P3(12) -> P4(13),
+ * not a simple sequence), not a severity label string.
+ *
+ * entity-service's own severityBasedAllocationTime (the field this was
+ * meant to come from) is currently always an empty map -- no per-severity
+ * SLA-allocation-time table exists in Postgres yet -- so this is the one
+ * place this matrix is defined today. If severityBasedAllocationTime is
+ * ever populated, prefer it over this table (see CallsPanel.tsx's own
+ * severityAllocationMinutes, which checks the API value first).
+ */
+export const CALL_REQUEST_LEAD_MINUTES_BY_PRIORITY_ID: Readonly<
+  Record<string, number>
+> = {
+  "14": 15, // Catastrophic (P0)
+  "10": 30, // Critical (P1)
+  "11": 60, // High (P2)
+  "12": 90, // Medium (P3)
+  "13": 120, // Low (P4)
+};
 
 // Case type values for case creation and stats filters.
 export const CaseType = {

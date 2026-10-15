@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -36,13 +37,16 @@ import (
 
 const (
 	defaultPageSize = 10
-	// maxPageSize covers the feed, which today loads up to 100 entries at
-	// once and searches them in the browser.
+	// The feed asks for 5 or 10 a page. 100 stays allowed so a webapp still
+	// loading its feed in one request (limit=100) keeps working.
 	maxPageSize     = 100
 	maxSearchLength = 200
-	// notifyTimeout bounds the new-entry announcement, which runs before the
-	// response so it isn't cut off when the request ends.
-	notifyTimeout = 25 * time.Second
+	// notifyTimeout bounds an announcement, which runs before the response so
+	// the caller learns whether Novera accepted it. It stays under the 15 s a
+	// shutdown waits for requests in flight (cmd/server), so a redeploy never
+	// stops a send half-way and leaves the entry claimed but unsent. Novera
+	// answers at once, after checking only that it can reach Google Chat.
+	notifyTimeout = 10 * time.Second
 )
 
 var idPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
@@ -118,22 +122,31 @@ func parseListQuery(v url.Values) (store.Query, error) {
 		return q, fmt.Errorf("Search must be %d characters or fewer.", maxSearchLength)
 	}
 
-	for _, d := range []struct {
+	for _, b := range []struct {
 		name string
 		dst  **time.Time
-	}{{"dateFrom", &q.From}, {"dateTo", &q.To}} {
-		s := v.Get(d.name)
+	}{{"createdFrom", &q.From}, {"createdBefore", &q.Before}} {
+		s := v.Get(b.name)
 		if s == "" {
 			continue
 		}
-		t, err := time.ParseInLocation(time.DateOnly, s, time.UTC)
+		t, err := time.Parse(time.RFC3339, s)
 		if err != nil {
-			return q, fmt.Errorf("%s must be a date like 2026-10-31.", d.name)
+			return q, fmt.Errorf("%s must be a time like 2026-10-31T00:00:00Z.", b.name)
 		}
-		*d.dst = &t
+		t = t.UTC()
+		*b.dst = &t
 	}
-	if q.From != nil && q.To != nil && q.From.After(*q.To) {
-		return q, errors.New("dateFrom must not be after dateTo.")
+	if q.From != nil && q.Before != nil && !q.From.Before(*q.Before) {
+		return q, errors.New("createdFrom must be before createdBefore.")
+	}
+
+	q.Author = strings.TrimSpace(v.Get("author"))
+	if utf8.RuneCountInString(q.Author) > entry.AuthorMaxLength {
+		return q, fmt.Errorf("author must be %d characters or fewer.", entry.AuthorMaxLength)
+	}
+	if q.Source = v.Get("source"); q.Source != "" && !slices.Contains(entry.Sources, q.Source) {
+		return q, errors.New("source must be Customer, Partner, Internal or Other.")
 	}
 
 	switch v.Get("mine") {
@@ -176,7 +189,7 @@ func (h *Handler) CreateEntry(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	content, err := entry.Prepare(entry.Draft{Title: req.Title, Where: req.Where, WhereDetail: req.WhereDetail, What: req.What})
+	content, err := entry.Prepare(entry.Draft{Title: req.Title, Where: req.Where, WhereDetail: req.WhereDetail, What: req.What}, h.cfg.WhatMaxLength)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -189,12 +202,94 @@ func (h *Handler) CreateEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Best effort: the entry is saved either way. If the announcement fails,
+	// the entry stays unannounced for a moderator to send again.
 	if h.cfg.Notifier != nil {
-		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), notifyTimeout)
-		h.cfg.Notifier.Notify(ctx, e, h.articleURL(e.ID))
-		cancel()
+		if at, err := h.announce(r.Context(), e); err == nil {
+			e.NotifiedAt = &at
+		}
 	}
 	writeJSON(w, http.StatusCreated, e)
+}
+
+// NotifyEntry sends an entry to Google Chat when its announcement failed.
+// Only a moderator may, from the webapp, and only while the entry hasn't been
+// sent, so no one ever gets the same card twice.
+func (h *Handler) NotifyEntry(w http.ResponseWriter, r *http.Request) {
+	user, ok := currentUser(w, r)
+	if !ok {
+		return
+	}
+	if !user.IssuedTo(h.cfg.WebappClientID) {
+		writeError(w, http.StatusForbidden, msgWebappOnly)
+		return
+	}
+	if !user.IsModerator {
+		writeError(w, http.StatusForbidden, msgCannotNotify)
+		return
+	}
+	if h.cfg.Notifier == nil {
+		writeError(w, http.StatusServiceUnavailable, msgNoNotifier)
+		return
+	}
+	e, ok := h.load(w, r)
+	if !ok {
+		return
+	}
+	if e.NotifiedAt != nil {
+		writeError(w, http.StatusConflict, msgNotified)
+		return
+	}
+	at, err := h.announce(r.Context(), e)
+	switch {
+	case errors.Is(err, errAlreadyAnnounced):
+		writeError(w, http.StatusConflict, msgNotified)
+		return
+	case errors.Is(err, errNotAccepted):
+		writeError(w, http.StatusBadGateway, msgNotifyFailed)
+		return
+	case err != nil:
+		writeError(w, http.StatusInternalServerError, msgInternal)
+		return
+	}
+	e.NotifiedAt = &at
+	writeJSON(w, http.StatusOK, e)
+}
+
+var (
+	// errAlreadyAnnounced: another request announced the entry first.
+	errAlreadyAnnounced = errors.New("entry already announced")
+	// errNotAccepted: Novera didn't accept the announcement.
+	errNotAccepted = errors.New("announcement not accepted")
+)
+
+// announce sends e to Google Chat and returns when it was marked announced.
+// The entry is claimed first, so two requests can't both send it; if Novera
+// doesn't accept the announcement, the claim is released and the entry counts
+// as not announced again. Errors are logged here.
+func (h *Handler) announce(ctx context.Context, e entry.Entry) (time.Time, error) {
+	// Detached from the request, so a client hanging up can't leave a claim
+	// behind or cut an announcement off half-way.
+	ctx = context.WithoutCancel(ctx)
+	at, claimed, err := h.cfg.Store.ClaimNotification(ctx, e.ID)
+	if err != nil {
+		slog.ErrorContext(ctx, "claim notification failed", "entryID", e.ID, "err", err)
+		return time.Time{}, err
+	}
+	if !claimed {
+		return time.Time{}, errAlreadyAnnounced
+	}
+
+	notifyCtx, cancel := context.WithTimeout(ctx, notifyTimeout)
+	err = h.cfg.Notifier.Notify(notifyCtx, e, h.articleURL(e.ID))
+	cancel()
+	if err == nil {
+		return at, nil
+	}
+	if rerr := h.cfg.Store.ReleaseNotification(ctx, e.ID, at); rerr != nil {
+		slog.ErrorContext(ctx, "release notification failed", "entryID", e.ID, "err", rerr)
+	}
+	return time.Time{}, fmt.Errorf("%w: %w", errNotAccepted, err)
 }
 
 // UpdateEntry replaces an entry's content. Only the author or a moderator
@@ -220,7 +315,7 @@ func (h *Handler) UpdateEntry(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	content, err := entry.Prepare(entry.Draft{Title: req.Title, Where: req.Where, WhereDetail: req.WhereDetail, What: req.What})
+	content, err := entry.Prepare(entry.Draft{Title: req.Title, Where: req.Where, WhereDetail: req.WhereDetail, What: req.What}, h.cfg.WhatMaxLength)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -305,5 +400,5 @@ func (h *Handler) articleURL(id string) string {
 	if h.cfg.WebappBaseURL == "" {
 		return ""
 	}
-	return h.cfg.WebappBaseURL + "/knowledge-base/" + url.PathEscape(id) + "?view=article"
+	return h.cfg.WebappBaseURL + "/knowledge/today-i-learned/" + url.PathEscape(id) + "?view=article"
 }

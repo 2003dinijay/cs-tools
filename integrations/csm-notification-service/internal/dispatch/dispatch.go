@@ -69,7 +69,8 @@ type googleChatSender interface {
 	SendCaseCreatedAlert(ctx context.Context, audience, severityLabel, severityColor, caseNumber, wso2CaseID, productName, title, team, caseLink string) error
 	SendSecurityReportAnalysisAlert(ctx context.Context, audience, caseNumber, wso2CaseID, productName, title, team, caseLink string) error
 	SendCaseAcknowledgedAlert(ctx context.Context, audience, severityLabel, severityColor, caseNumber, wso2CaseID, caseLink, acknowledgerName string) error
-	SendSeverityChangedAlert(ctx context.Context, audience, oldSeverityLabel, oldSeverityColor, newSeverityLabel, newSeverityColor, caseNumber, wso2CaseID, title, team, caseLink string) error
+	SendSecurityReportAnalysisAcknowledgedAlert(ctx context.Context, audience, caseNumber, wso2CaseID, caseLink, acknowledgerName string) error
+	SendSeverityChangedAlert(ctx context.Context, audience, oldSeverityLabel, oldSeverityColor, newSeverityLabel, newSeverityColor, caseNumber, wso2CaseID, productName, title, team, caseLink string) error
 	SendFrustrationAlert(ctx context.Context, audience, caseNumber, wso2CaseID, productName, reason string, frustrationLevel float64, caseLink string) error
 	// The sr.* cards route to the SR's SRE team (sreTeamName) as the
 	// audience -- see handleSRCreated.
@@ -895,22 +896,25 @@ func (d *Dispatcher) handleCaseCreated(ctx context.Context, record eventbus.Reco
 		}
 	}
 
-	// Chat is deliberately skipped for entity-service's four non-"case"
-	// types (engagement, service_request, security_report_analysis,
-	// announcement) — explicit product direction: those types notify their
-	// audience by email only. An exclude-list rather than an include-list
-	// on purpose: CaseType is a freeform display string in general (only
+	// Chat is deliberately skipped for entity-service's three remaining
+	// non-"case" types (engagement, service_request, announcement) —
+	// explicit product direction: those types notify their audience by
+	// email only. An exclude-list rather than an include-list on purpose:
+	// CaseType is a freeform display string in general (only
 	// entity-service's own real payloads use this exact UPPER_SNAKE
 	// vocabulary), so anything else — including "CASE" itself, an empty
 	// value, or an unrecognized one — stays chat-eligible, matching this
 	// file's own established "don't suppress on an unrecognized value"
 	// convention (see e.g. the unmatched-product Chat-space fallback).
+	// security_report_analysis is its own case below: it does get a Chat
+	// alert, just a dedicated card with no severity line (that type never
+	// carries one) rather than SendCaseCreatedAlert's.
 	//
 	// Also skipped for a LOW/S4-severity "case" — explicit product
 	// direction: S4 is WSO2's own best-efforts support tier and doesn't
 	// warrant a Chat alert the way S0-S3 do. Only affects "case" in
-	// practice (the other four types never carry a severity at all, so
-	// p.Priority is always "" for them, never "LOW").
+	// practice (the other three excluded types never carry a severity at
+	// all, so p.Priority is always "" for them, never "LOW").
 	//
 	// chatKey is simply never claimed when skipped; forgetting an unclaimed
 	// key below is a harmless no-op (see Dispatcher.forget), so nothing
@@ -920,7 +924,21 @@ func (d *Dispatcher) handleCaseCreated(ctx context.Context, record eventbus.Reco
 	// unconfigured audience is a no-op inside SendCaseCreatedAlert itself,
 	// not distinguishable here from a genuine send, so there's no "empty
 	// product, skip" branch left the way there used to be.
-	if !isNonCaseCaseType(p.CaseType) && !isLowSeverity(p.Priority) {
+	switch {
+	case isLowSeverity(p.Priority):
+		// No chat — see the doc comment above.
+	case isSecurityReportAnalysisCaseType(p.CaseType):
+		chatOwned := d.claim(chatKey)
+		if chatOwned {
+			caseLink := d.links.CSMLink(p.CaseID)
+			title := truncateTitle(p.CaseTitle, maxChatTitleLength)
+			chatErr := d.googleChat.SendSecurityReportAnalysisAlert(ctx, chataudience.IncidentMonitor, displayCaseRef(p.CaseNumber, p.CaseID), p.WSO2CaseID, p.Product, title, p.Team, caseLink)
+			if chatErr != nil {
+				errs = append(errs, chatErr)
+				d.forget(chatKey)
+			}
+		}
+	case !isNonCaseCaseType(p.CaseType):
 		chatOwned := d.claim(chatKey)
 		if chatOwned {
 			caseLink := d.links.CSMLink(p.CaseID)
@@ -1056,6 +1074,12 @@ func (d *Dispatcher) handleCommentAdded(ctx context.Context, record eventbus.Rec
 // weekend overlays. A failure on one resolved audience doesn't stop the
 // others (errors.Join, same as sendBreachAlert), each logged individually.
 //
+// One exception: isMigrationEngagementComment (case type "engagement",
+// engagement type "migration") routes to chataudience.Migration instead of
+// calling chataudience.Resolve at all — a migration engagement's frustration
+// alert always goes to the Migration audience alone, never the case's own
+// team/Incident Monitor, by explicit product direction.
+//
 // Deliberately best-effort and entirely independent of handleCommentAdded's
 // own email-sending return value: a failure here (entity-service's role
 // lookup, the detector call itself, or the Chat post) is logged and
@@ -1081,6 +1105,14 @@ func (d *Dispatcher) handleCommentAdded(ctx context.Context, record eventbus.Rec
 // key) — matching the exact repeated-Chat-alert-on-retry-and-DLQ-hand-off
 // incident this file's own history already documents for the email/other
 // Chat channels.
+// isMigrationEngagementComment reports whether p landed on a migration
+// engagement -- case type "engagement", engagement type "migration" --
+// case/whitespace-insensitive, same convention as severityLabelAndColor.
+func isMigrationEngagementComment(p events.CommentAddedPayload) bool {
+	return strings.EqualFold(strings.TrimSpace(p.CaseType), "ENGAGEMENT") &&
+		strings.EqualFold(strings.TrimSpace(p.EngagementType), "migration")
+}
+
 func (d *Dispatcher) checkFrustration(ctx context.Context, record eventbus.Record, p events.CommentAddedPayload) {
 	if d.frustrationDetector == nil || p.IsInternalNote || p.AuthorEmail == "" || p.CaseComment == "" {
 		return
@@ -1123,7 +1155,17 @@ func (d *Dispatcher) checkFrustration(ctx context.Context, record eventbus.Recor
 	}
 
 	caseLink := d.links.CSMLink(p.CaseID)
-	audiences := chataudience.Resolve(p.Team, p.IsEvaluationAccount, p.ProjectOnboardingStatus, time.Now(), d.googleChat.HasAudienceSpace)
+	var audiences []string
+	if isMigrationEngagementComment(p) {
+		// A migration engagement's frustration alert goes to the Migration
+		// audience instead of the usual team/Incident Monitor routing --
+		// the one case this routes by engagement type rather than by team,
+		// so it replaces chataudience.Resolve's decision entirely rather
+		// than adding to it.
+		audiences = []string{chataudience.Migration}
+	} else {
+		audiences = chataudience.Resolve(p.Team, p.IsEvaluationAccount, p.ProjectOnboardingStatus, time.Now(), d.googleChat.HasAudienceSpace)
+	}
 	for _, audience := range audiences {
 		if err := d.googleChat.SendFrustrationAlert(ctx, audience, p.CaseNumber, p.WSO2CaseID, p.Product, result.Reason, result.FrustratedLevel, caseLink); err != nil {
 			slog.ErrorContext(ctx, "dispatch: frustration detection, send chat alert failed", "caseID", p.CaseID, "audience", audience, "err", err)
@@ -1314,9 +1356,16 @@ func (d *Dispatcher) handleCaseAcknowledged(ctx context.Context, record eventbus
 	chatOwned := d.claim(chatKey)
 	var chatErr error
 	if chatOwned {
-		severityLabel, severityColor := severityLabelAndColor(p.Severity)
 		caseLink := d.links.CSMLink(p.CaseID)
-		chatErr = d.googleChat.SendCaseAcknowledgedAlert(ctx, chataudience.IncidentMonitor, severityLabel, severityColor, displayCaseRef(p.CaseNumber, p.CaseID), p.WSO2CaseID, caseLink, p.AcknowledgerName)
+		if isSecurityReportAnalysisCaseType(p.CaseType) {
+			// No severity line — see SendSecurityReportAnalysisAcknowledgedAlert's
+			// own doc comment for why this type gets its own card instead of
+			// severityLabelAndColor's "Unknown" fallback below.
+			chatErr = d.googleChat.SendSecurityReportAnalysisAcknowledgedAlert(ctx, chataudience.IncidentMonitor, displayCaseRef(p.CaseNumber, p.CaseID), p.WSO2CaseID, caseLink, p.AcknowledgerName)
+		} else {
+			severityLabel, severityColor := severityLabelAndColor(p.Severity)
+			chatErr = d.googleChat.SendCaseAcknowledgedAlert(ctx, chataudience.IncidentMonitor, severityLabel, severityColor, displayCaseRef(p.CaseNumber, p.CaseID), p.WSO2CaseID, caseLink, p.AcknowledgerName)
+		}
 		if chatErr != nil {
 			d.forget(chatKey)
 			chatOwned = false
@@ -1441,7 +1490,7 @@ func (d *Dispatcher) handleSeverityChanged(ctx context.Context, record eventbus.
 	if chatOwned {
 		caseLink := d.links.CSMLink(p.CaseID)
 		title := truncateTitle(p.CaseTitle, maxChatTitleLength)
-		if chatErr := d.googleChat.SendSeverityChangedAlert(ctx, chataudience.IncidentMonitor, oldLabel, oldColor, newLabel, newColor, caseRef, p.WSO2CaseID, title, p.Team, caseLink); chatErr != nil {
+		if chatErr := d.googleChat.SendSeverityChangedAlert(ctx, chataudience.IncidentMonitor, oldLabel, oldColor, newLabel, newColor, caseRef, p.WSO2CaseID, p.Product, title, p.Team, caseLink); chatErr != nil {
 			errs = append(errs, chatErr)
 			d.forget(chatKey)
 		}
@@ -1529,22 +1578,35 @@ var severityDisplay = map[string]struct{ label, color string }{
 }
 
 // nonCaseCaseTypes are entity-service's own case.created CaseType values
-// (strings.ToUpper(req.Type)) for the four types that never carry a
-// severity — engagement/service_request/security_report_analysis/
-// announcement, see that service's own CLAUDE.md — for which
-// handleCaseCreated skips the Google Chat alert and notifies by email only.
+// (strings.ToUpper(req.Type)) for the three types that never carry a
+// severity and are never offered a dedicated Chat card either —
+// engagement/service_request/announcement, see that service's own
+// CLAUDE.md — for which handleCaseCreated skips the Google Chat alert and
+// notifies by email only. security_report_analysis also never carries a
+// severity but is NOT in this list — see isSecurityReportAnalysisCaseType
+// below, which handleCaseCreated/handleCaseAcknowledged check first.
 var nonCaseCaseTypes = map[string]bool{
-	"ENGAGEMENT":               true,
-	"SERVICE_REQUEST":          true,
-	"SECURITY_REPORT_ANALYSIS": true,
-	"ANNOUNCEMENT":             true,
+	"ENGAGEMENT":      true,
+	"SERVICE_REQUEST": true,
+	"ANNOUNCEMENT":    true,
 }
 
-// isNonCaseCaseType reports whether caseType is one of the four types Chat
-// is skipped for. See handleCaseCreated's own call site comment for why
-// this is an exclude-list, not an include-list.
+// isNonCaseCaseType reports whether caseType is one of the three types Chat
+// is skipped entirely for. See handleCaseCreated's own call site comment
+// for why this is an exclude-list, not an include-list.
 func isNonCaseCaseType(caseType string) bool {
 	return nonCaseCaseTypes[caseType]
+}
+
+// isSecurityReportAnalysisCaseType reports whether caseType is
+// entity-service's "SECURITY_REPORT_ANALYSIS" CaseType value. Checked
+// before isNonCaseCaseType by both handleCaseCreated and
+// handleCaseAcknowledged: this type does get a Chat alert, just through a
+// dedicated card with no severity line (SendSecurityReportAnalysisAlert/
+// SendSecurityReportAnalysisAcknowledgedAlert) instead of the "case" cards,
+// since severity is never set for it.
+func isSecurityReportAnalysisCaseType(caseType string) bool {
+	return caseType == "SECURITY_REPORT_ANALYSIS"
 }
 
 // isLowSeverity reports whether severity is entity-service's LOW/S4 value
@@ -1984,12 +2046,8 @@ func (d *Dispatcher) incidentAudiences(ctx context.Context, t events.Type, incid
 			"type", string(t), "incidentId", incidentID, "number", number)
 		return nil
 	}
-	targets, fanout := d.incidentChatFanout[strings.ToLower(strings.TrimSpace(team))]
-	if !fanout {
-		targets = []string{team}
-	}
 	var audiences []string
-	for _, target := range targets {
+	for _, target := range notifications.IncidentGroups(d.incidentChatFanout, team) {
 		audience := notifications.IncidentAudience(target)
 		if !d.googleChat.HasAudienceSpace(audience) {
 			slog.InfoContext(ctx, "dispatch: assignment group has no INCIDENT_CHAT_SPACES entry, no chat alert",

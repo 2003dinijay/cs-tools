@@ -47,7 +47,7 @@ type EscalationAlert struct {
 	// card was dropped. The escalation ladder sets it from its own
 	// configuration (paging-alert.yaml chat.audience).
 	Audience string
-	// Rung is the level being contacted, e.g. "LEVEL_2".
+	// Rung is the level being contacted, e.g. "L2".
 	Rung string
 	// RungRole names who that rung is, e.g. "ABT team leads".
 	RungRole string
@@ -82,7 +82,7 @@ type EscalationAlert struct {
 	// Empty means the ladder has only just started.
 	Elapsed string
 	// NextRung and NextIn say where this goes if nobody picks it up, e.g.
-	// "LEVEL_3" and "7m". Both empty on the final rung, which has nowhere
+	// "L3" and "7m". Both empty on the final rung, which has nowhere
 	// left to climb.
 	//
 	// These exist because a space flattens time. Cards arrive minutes apart
@@ -97,6 +97,8 @@ type EscalationAlert struct {
 	// conversation, so the space shows an escalation unfolding in one place
 	// instead of scattering it through everything else being posted.
 	ThreadKey string
+	// Reply renders the rung as a short reply under the incident's "Incident Reported" card, which already carries the incident's details.
+	Reply bool
 	// VoiceScript is what the call would say, word for word.
 	//
 	// The card carries it because the call often cannot be placed: a
@@ -156,7 +158,32 @@ func (c *GoogleChatClient) SendEscalationAlert(ctx context.Context, a Escalation
 	if strings.TrimSpace(a.Audience) == "" {
 		return fmt.Errorf("notifications: audience is required")
 	}
+	if a.Reply {
+		return c.sendCardToAudience(ctx, a.Audience, buildEscalationReply(a))
+	}
 	return c.sendCardToAudience(ctx, a.Audience, buildEscalationCard(a))
+}
+
+// buildEscalationReply is a rung as a reply under the incident card: the rung, who it is, and who is being called when.
+func buildEscalationReply(a EscalationAlert) chatCardMessage {
+	lines := []string{caseAlertLine("<b>%s</b>", a.RungRole)}
+	if a.RecipientName != "" {
+		calling := caseAlertLine("Calling %s", a.RecipientName)
+		if a.Firing != "" {
+			calling += caseAlertLine(" (%s)", a.Firing)
+		}
+		lines = append(lines, calling)
+	}
+	return chatCardMessage{
+		Thread: threadFor(a.ThreadKey),
+		CardsV2: []chatCardWrapper{{
+			CardID: "incident-escalation-rung",
+			Card: chatCard{
+				Header:   &chatCardHeader{Title: rungVerb(a.Rung) + " " + a.Rung, Subtitle: "#" + a.IncidentRef},
+				Sections: []chatCardSection{{Widgets: []chatCardWidget{{TextParagraph: &chatTextParagraph{Text: strings.Join(lines, "<br>")}}}}},
+			},
+		}},
+	}
 }
 
 // buildEscalationCard assembles the card, split from the send so its exact
@@ -174,6 +201,9 @@ func buildEscalationCard(a EscalationAlert) chatCardMessage {
 	if a.RecipientName != "" {
 		body.WriteString("<br>")
 		body.WriteString(caseAlertLine("Calling %s", a.RecipientName))
+		if a.Firing != "" {
+			body.WriteString(caseAlertLine(" (%s)", a.Firing))
+		}
 	}
 	body.WriteString("<br>")
 	body.WriteString(caseAlertLine(`<font color="#5F6368">Priority %s</font>`, a.Priority))
@@ -195,13 +225,13 @@ func buildEscalationCard(a EscalationAlert) chatCardMessage {
 		body.WriteString("<br>")
 		body.WriteString(`<font color="#B3261E">This is the final rung. Nothing escalates past it.</font>`)
 	}
-	if a.ReportedAt != "" || a.Firing != "" || a.OnCall != "" {
+	if a.ReportedAt != "" || (a.Firing != "" && a.RecipientName == "") || a.OnCall != "" {
 		body.WriteString("<br>")
 	}
 	if a.ReportedAt != "" {
 		body.WriteString(caseAlertLine(`<br><font color="#5F6368">Reported %s</font>`, a.ReportedAt))
 	}
-	if a.Firing != "" {
+	if a.Firing != "" && a.RecipientName == "" {
 		body.WriteString(caseAlertLine(`<br><font color="#5F6368">This rung %s</font>`, a.Firing))
 	}
 	if a.OnCall != "" {
@@ -271,19 +301,19 @@ func threadFor(key string) *chatThread {
 	return &chatThread{ThreadKey: key}
 }
 
-// rungVerb keeps the header honest about what LEVEL_0 is.
+// rungVerb keeps the header honest about what L1 (LEVEL_0) is.
 //
 // Section 3.0 calls it the notification level and says in as many words that
 // it is "represented as the initial escalation level (but not an actual
 // escalation level)" - it exists to tell the rotation an incident has arrived,
-// before any escalation has happened. A card announcing "escalated to LEVEL_0"
+// before any escalation has happened. A card announcing "Escalated to L1"
 // contradicts the document it implements, and tells a reader the incident has
 // already been through a rung it has not.
 func rungVerb(rung string) string {
-	if rung == "LEVEL_0" {
-		return "notifying"
+	if rung == "L1" {
+		return "Notifying"
 	}
-	return "escalated to"
+	return "Escalated to"
 }
 
 // escalationSeverityMark gives the header a glyph that reads at a glance in a
@@ -472,6 +502,112 @@ func buildEscalationHandoffCard(h EscalationHandoff) chatCardMessage {
 				Sections: []chatCardSection{{
 					Widgets: []chatCardWidget{{TextParagraph: &chatTextParagraph{Text: body.String()}}},
 				}},
+			},
+		}},
+	}
+}
+
+// EscalationStopped is the reply a ladder posts in its thread when it stops:
+// somebody acknowledged it, the case closed, or a severity or priority change
+// replaced it with a new chain. Without it the rung cards are the last thing
+// the room sees, and nobody can tell a chain that was answered from one still
+// climbing.
+type EscalationStopped struct {
+	// Audience is the GOOGLE_CHAT_SPACES key the reply is posted to.
+	Audience string
+	// Chain names the chain that stopped, e.g. "CRE" or "SaaS SRE".
+	Chain string
+	// IncidentRef, Title and Priority describe the record.
+	IncidentRef string
+	Title       string
+	Priority    string
+	// Outcome is what happened, as the header says it: "Acknowledged",
+	// "Case closed", "Severity changed to S2".
+	Outcome string
+	// Detail is one sentence on it, e.g. who acknowledged and how.
+	Detail string
+	// Answered marks an acknowledgement; Restarted a new chain replacing this
+	// one. Each changes the header's mark and wording.
+	Answered  bool
+	Restarted bool
+	// Paged is who each rung reached, in order, e.g. "L1 Jane Doe".
+	Paged []string
+	// Cancelled is how many calls were still to come and will not be made.
+	Cancelled int
+	// PortalURL opens the record; PortalLabel is its text.
+	PortalURL   string
+	PortalLabel string
+	// ThreadKey puts the reply under the ladder's rung cards.
+	ThreadKey string
+	// Reply renders it short, under an incident card that already carries
+	// the record's details, as the rung replies are.
+	Reply bool
+}
+
+// SendEscalationStopped posts a stopped ladder's reply.
+func (c *GoogleChatClient) SendEscalationStopped(ctx context.Context, s EscalationStopped) error {
+	if s.IncidentRef == "" {
+		return fmt.Errorf("notifications: incidentRef is required")
+	}
+	if strings.TrimSpace(s.Audience) == "" {
+		return fmt.Errorf("notifications: audience is required")
+	}
+	return c.sendCardToAudience(ctx, s.Audience, buildEscalationStoppedCard(s))
+}
+
+// buildEscalationStoppedCard assembles the stopped reply.
+func buildEscalationStoppedCard(s EscalationStopped) chatCardMessage {
+	chain := strings.TrimSpace(s.Chain)
+	if chain == "" {
+		chain = "CRE"
+	}
+	var title string
+	switch {
+	case s.Restarted:
+		title = fmt.Sprintf("\U0001F501 %s: %s paging restarts", s.Outcome, chain) // repeat arrows
+	case s.Answered:
+		title = fmt.Sprintf("✅ %s: %s paging stopped", s.Outcome, chain) // check mark
+	default:
+		title = fmt.Sprintf("⏹ %s: %s paging stopped", s.Outcome, chain) // stop button
+	}
+	subtitle := "#" + s.IncidentRef
+	if !s.Reply && s.Title != "" {
+		subtitle = s.IncidentRef + " - " + s.Title
+	}
+
+	var lines []string
+	if s.Detail != "" {
+		lines = append(lines, caseAlertLine("%s", s.Detail))
+	}
+	switch {
+	case s.Cancelled == 1:
+		lines = append(lines, caseAlertLine("1 pending call cancelled."))
+	case s.Cancelled > 1:
+		lines = append(lines, caseAlertLine("%s pending calls cancelled.", fmt.Sprint(s.Cancelled)))
+	}
+	if len(s.Paged) > 0 {
+		lines = append(lines, caseAlertLine("Paged: %s", strings.Join(s.Paged, ", ")))
+	}
+	if !s.Reply {
+		if s.Priority != "" {
+			lines = append(lines, caseAlertLine(`<font color="#5F6368">Priority %s</font>`, s.Priority))
+		}
+		if s.PortalURL != "" {
+			label := strings.TrimSpace(s.PortalLabel)
+			if label == "" {
+				label = "View incident"
+			}
+			lines = append(lines, fmt.Sprintf(`<a href="%s">%s</a>`, s.PortalURL, html.EscapeString(label)))
+		}
+	}
+
+	return chatCardMessage{
+		Thread: threadFor(s.ThreadKey),
+		CardsV2: []chatCardWrapper{{
+			CardID: "incident-escalation-stopped",
+			Card: chatCard{
+				Header:   &chatCardHeader{Title: title, Subtitle: subtitle},
+				Sections: []chatCardSection{{Widgets: []chatCardWidget{{TextParagraph: &chatTextParagraph{Text: strings.Join(lines, "<br>")}}}}},
 			},
 		}},
 	}

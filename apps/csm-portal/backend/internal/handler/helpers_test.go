@@ -155,10 +155,12 @@ type mockEntityCaseClient struct {
 	searchCaseActivitiesFn     func(ctx context.Context, caseID string, body []byte) ([]byte, error)
 	searchCasesFn              func(ctx context.Context, body []byte) ([]byte, error)
 	aggregateCasesFn           func(ctx context.Context, body []byte) ([]byte, error)
+	volumeTrendFn              func(ctx context.Context, body []byte) ([]byte, error)
 	searchFeedbackFn           func(ctx context.Context, body []byte) ([]byte, error)
 	aggregateFeedbackFn        func(ctx context.Context, body []byte) ([]byte, error)
 	getCaseFn                  func(ctx context.Context, caseID string) ([]byte, error)
 	getProductRepoMappingFn    func(ctx context.Context, name string) ([]byte, error)
+	searchDeployedProductsFn   func(ctx context.Context, body []byte) ([]byte, error)
 	createCaseAttachmentFn     func(ctx context.Context, body []byte) ([]byte, error)
 	searchCaseAttachmentsFn    func(ctx context.Context, body []byte) ([]byte, error)
 	getCaseAttachmentContentFn func(ctx context.Context, attachmentID string) ([]byte, string, error)
@@ -278,6 +280,13 @@ func (m *mockEntityCaseClient) AggregateCases(ctx context.Context, body []byte) 
 	return []byte(`{"groups":[],"othersCount":0,"totalRecords":0}`), nil
 }
 
+func (m *mockEntityCaseClient) VolumeTrend(ctx context.Context, body []byte) ([]byte, error) {
+	if m.volumeTrendFn != nil {
+		return m.volumeTrendFn(ctx, body)
+	}
+	return []byte(`{"days":30,"series":[]}`), nil
+}
+
 func (m *mockEntityCaseClient) SearchFeedback(ctx context.Context, body []byte) ([]byte, error) {
 	if m.searchFeedbackFn != nil {
 		return m.searchFeedbackFn(ctx, body)
@@ -304,6 +313,13 @@ func (m *mockEntityCaseClient) GetProductRepoMapping(ctx context.Context, name s
 		return m.getProductRepoMappingFn(ctx, name)
 	}
 	return []byte(`{}`), nil
+}
+
+func (m *mockEntityCaseClient) SearchDeployedProducts(ctx context.Context, body []byte) ([]byte, error) {
+	if m.searchDeployedProductsFn != nil {
+		return m.searchDeployedProductsFn(ctx, body)
+	}
+	return []byte(`{"deployedProducts":[],"hasMore":false}`), nil
 }
 
 func (m *mockEntityCaseClient) CreateCaseAttachment(ctx context.Context, body []byte) ([]byte, error) {

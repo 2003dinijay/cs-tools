@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
@@ -79,6 +80,16 @@ type SpecialistHandoffIssueClients map[string]HandoffIssueCreator
 func WithHandoffIssueCreators(svc IncidentService, clients SpecialistHandoffIssueClients) IncidentService {
 	if pg, ok := svc.(*incidentService); ok {
 		pg.handoffIssues = clients
+	}
+	return svc
+}
+
+// WithHandoffPortalBaseURL gives a Postgres-backed IncidentService the CSM
+// portal's address (CSM_PORTAL_BASE_URL), so a handoff's GitHub issue links
+// back to the incident. Empty leaves the number unlinked.
+func WithHandoffPortalBaseURL(svc IncidentService, baseURL string) IncidentService {
+	if pg, ok := svc.(*incidentService); ok {
+		pg.handoffPortalBaseURL = strings.TrimSpace(baseURL)
 	}
 	return svc
 }
@@ -200,19 +211,19 @@ func handoffEscalatedNote(actorLabel string, issue *domain.IncidentSpecialistHan
 }
 
 // handoffActor is who performs the handoff: their email from the caller's
-// token, and the "Name(email)" label the notes carry -- the user's name when
-// this database knows them, the email otherwise, as IncidentHandoffUtils'
-// _actorLabel does.
-func (s *incidentService) handoffActor(ctx context.Context) (email, label string, err error) {
+// token, their name -- the user's name when this database knows them, the
+// email otherwise -- and the "Name(email)" label the notes carry, as
+// IncidentHandoffUtils' _actorLabel does.
+func (s *incidentService) handoffActor(ctx context.Context) (email, name, label string, err error) {
 	token := middleware.UserIDTokenFromContext(ctx)
 	if token == "" {
-		return "", "", &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}
+		return "", "", "", &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}
 	}
 	email, err = emailFromJWT(token)
 	if err != nil {
-		return "", "", &apierror.ValidationError{Msg: "x-user-id-token: " + err.Error()}
+		return "", "", "", &apierror.ValidationError{Msg: "x-user-id-token: " + err.Error()}
 	}
-	name := email
+	name = email
 	if s.userRepo != nil {
 		if u, uerr := s.userRepo.GetUserByEmail(ctx, email); uerr == nil {
 			if n := strings.TrimSpace(u.FirstName + " " + u.LastName); n != "" {
@@ -220,7 +231,7 @@ func (s *incidentService) handoffActor(ctx context.Context) (email, label string
 			}
 		}
 	}
-	return email, name + "(" + email + ")", nil
+	return email, name, name + "(" + email + ")", nil
 }
 
 // HandOffIncidentToSpecialist implements IncidentService for Postgres.
@@ -242,7 +253,7 @@ func (s *incidentService) HandOffIncidentToSpecialist(ctx context.Context, req d
 			return domain.HandOffIncidentToSpecialistResponse{}, &apierror.ValidationError{Msg: "invalid escalationTeam: " + string(*req.EscalationTeam)}
 		}
 	}
-	email, label, err := s.handoffActor(ctx)
+	email, name, label, err := s.handoffActor(ctx)
 	if err != nil {
 		return domain.HandOffIncidentToSpecialistResponse{}, err
 	}
@@ -271,7 +282,19 @@ func (s *incidentService) HandOffIncidentToSpecialist(ctx context.Context, req d
 	}
 
 	if req.CreateGithubIssue == nil || *req.CreateGithubIssue {
-		result.GithubIssue, result.GithubIssueError = s.fileHandoffIssue(ctx, product, written.Before)
+		now := time.Now
+		if s.handoffNow != nil {
+			now = s.handoffNow
+		}
+		result.GithubIssue, result.GithubIssueError = s.fileHandoffIssue(ctx, product, handoffIssueInput{
+			Incident:      written.Before,
+			TeamLabel:     handoffTeamLabel(product, req.EscalationTeam),
+			Reason:        handoffReasons[req.ReasonCode].description,
+			ActorName:     name,
+			TaskNumber:    written.TaskNumber,
+			EscalatedOn:   now(),
+			PortalBaseURL: s.handoffPortalBaseURL,
+		})
 	}
 	if _, err := s.repo.CreateIncidentComment(ctx, req.IncidentID, domain.CommentTypeWorkNote, handoffEscalatedNote(label, result.GithubIssue), email); err != nil {
 		// The handoff itself is committed; only this note is missing.
@@ -292,12 +315,44 @@ func (s *incidentService) HandOffIncidentToSpecialist(ctx context.Context, req d
 	}, nil
 }
 
+// handoffIssueBody is the internal GitHub issue's body. ServiceNow's is the
+// incident's description, which its alert flow filled with the alert's
+// fields. sre-alert-core-service leaves the description empty and puts those
+// fields in its creation work note instead, so an incident with no
+// description takes that note -- otherwise every escalated alert files an
+// empty issue.
+func handoffIssueBody(inc repository.SpecialistHandoffSnapshot) string {
+	if d := derefString(inc.Description); strings.TrimSpace(d) != "" {
+		return d
+	}
+	return derefString(inc.AlertNote)
+}
+
+// handoffTeamLabel is the label of the team the handoff went to: the one the
+// request named, or the product's only team.
+func handoffTeamLabel(product *SpecialistHandoffProduct, key *domain.IncidentSpecialistHandoffEscalationTeam) string {
+	if product == nil {
+		return ""
+	}
+	if key != nil {
+		if t := product.team(string(*key)); t != nil {
+			return t.Label
+		}
+	}
+	if len(product.Teams) == 1 {
+		return product.Teams[0].Label
+	}
+	return ""
+}
+
 // fileHandoffIssue opens the internal GitHub issue in the product's
-// repository, with the token its credential names, titled and bodied with
-// the incident's subject and description. It never fails the handoff: a
+// repository, with the token its credential names: titled and bodied by
+// buildHandoffIssueTitle / buildHandoffIssueBody, and labelled as the
+// product's github.labels map the incident. It never fails the handoff: a
 // product with no repository, a credential with no token, or a GitHub error
 // comes back as the error text.
-func (s *incidentService) fileHandoffIssue(ctx context.Context, product *SpecialistHandoffProduct, inc repository.SpecialistHandoffSnapshot) (*domain.IncidentSpecialistHandoffGithubIssue, *string) {
+func (s *incidentService) fileHandoffIssue(ctx context.Context, product *SpecialistHandoffProduct, in handoffIssueInput) (*domain.IncidentSpecialistHandoffGithubIssue, *string) {
+	inc := in.Incident
 	if product == nil || product.Github == nil {
 		msg := "No GitHub repository is configured for this product's specialist handoffs"
 		return nil, &msg
@@ -308,7 +363,8 @@ func (s *incidentService) fileHandoffIssue(ctx context.Context, product *Special
 		msg := "GitHub issue creation is not configured on this deployment"
 		return nil, &msg
 	}
-	created, err := client.CreateIssue(ctx, owner, repo, inc.Subject, derefString(inc.Description), nil)
+	labels := product.Github.Labels.labelsFor(inc.Priority, inc.Environment)
+	created, err := client.CreateIssue(ctx, owner, repo, buildHandoffIssueTitle(inc), buildHandoffIssueBody(in), labels)
 	if err != nil {
 		slog.WarnContext(ctx, "specialist handoff: GitHub issue not created", "incidentId", inc.IncidentID, "error", err)
 		// IncidentHandoffUtils' wording: the status GitHub answered with, or

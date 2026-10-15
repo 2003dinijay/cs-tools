@@ -221,10 +221,22 @@ func (e *Engine) postSMEHandoff(ctx context.Context, pr specialOpsPress, team st
 	if !e.cfg.Ladder.SMEHandoffChat {
 		return
 	}
-	target, ok := e.sreRoomFor(pr.PreviousGroup)
-	if !ok {
-		return
+	// The incident card's spaces first, so the message replies under it; else the SRE space as before.
+	targets := e.incidentRooms(Trigger{IncidentID: pr.IncidentID, Team: pr.PreviousGroup})
+	if len(targets) == 0 {
+		target, ok := e.sreRoomFor(pr.PreviousGroup)
+		if !ok {
+			return
+		}
+		targets = []chatRoom{target}
 	}
+	for _, target := range targets {
+		e.postSMEHandoffTo(ctx, target, pr, team, started)
+	}
+}
+
+// postSMEHandoffTo posts the SME handoff message to one space.
+func (e *Engine) postSMEHandoffTo(ctx context.Context, target chatRoom, pr specialOpsPress, team string, started bool) {
 	if !target.chat.HasAudienceSpace(target.room) {
 		slog.WarnContext(ctx, "escalation: no Google Chat space for the SME handoff message", "incidentId", pr.IncidentID, "audience", target.room)
 		return
@@ -241,7 +253,7 @@ func (e *Engine) postSMEHandoff(ctx context.Context, pr specialOpsPress, team st
 		Priority:    pr.Priority,
 		PortalURL:   e.links.IncidentLink(pr.IncidentID),
 		PortalLabel: "View incident",
-		ThreadKey:   "incident-escalation-" + pr.IncidentID,
+		ThreadKey:   notifications.IncidentThreadKey(pr.IncidentID),
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "escalation: the SME handoff message was not posted", "incidentId", pr.IncidentID, "audience", target.room, "err", err)

@@ -1822,6 +1822,30 @@ export function isNoveraOrBotSender(
   return ty === "bot" || by === "novera" || by === "agent" || by === "";
 }
 
+/** Author label shown for a case comment/activity that has no author. */
+export const SYSTEM_AUTHOR_LABEL = "System";
+
+/**
+ * Display-only: gives a case comment with no author the "System" label so it
+ * never renders blank/"Unknown" or gets treated as a real user. Bot/Novera rows
+ * (see {@link isNoveraOrBotSender}) keep their own labelling and are untouched.
+ *
+ * @param comment - Comment or activity entry from the API.
+ * @returns {T} The same entry, or a copy with `createdBy` set to "System".
+ */
+export function withSystemAuthor<
+  T extends {
+    createdBy?: string | null;
+    createdByFullName?: string | null;
+    type?: string | null;
+  },
+>(comment: T): T {
+  if (comment.createdBy?.trim() || comment.createdByFullName?.trim()) {
+    return comment;
+  }
+  if ((comment.type ?? "").trim().toLowerCase() === "bot") return comment;
+  return { ...comment, createdBy: SYSTEM_AUTHOR_LABEL };
+}
 
 /** Shape accepted by {@link compareByCreatedOnThenId}. */
 export type CreatedOnSortable = {
@@ -2233,10 +2257,25 @@ function roundUpToNextFiveMinuteMarkInTimeZone(
 }
 
 /**
+ * The backend's own fallback lead time (minutes) when it has no per-priority
+ * offset to apply (ServiceNow's CallRequestUtils._DEFAULT_TIME_OFFSET). Used
+ * here as the floor's fallback too: entity-service's own
+ * severityBasedAllocationTime is currently always empty (no per-severity
+ * SLA-allocation-time table exists yet), so allocationMinutes is undefined
+ * for every case today, not just an edge case. Falling back to "now + 1
+ * minute" in that situation let the picker accept a time the backend then
+ * rejected for a Catastrophic/P0 case, which actually needs 15 minutes
+ * (CallRequestUtils._PRIORITY_TIME_OFFSETS[14]) -- the picker must never be
+ * MORE permissive than the strictest real rule when it doesn't know which
+ * rule applies, so this uses the backend's own safe upper bound instead.
+ */
+const DEFAULT_CALL_SCHEDULE_LEAD_MINUTES = 300;
+
+/**
  * Like {@link computeMinScheduleDatetimeLocal} but uses the user's IANA zone for civil date/time strings.
  * Ensures datetime-local values align with profile timezone when converting to UTC for the API.
  *
- * @param allocationMinutes - Minutes after now before first slot; null/undefined uses now+1m floor only.
+ * @param allocationMinutes - Minutes after now before first slot; null/undefined/invalid uses the backend's own safe default (DEFAULT_CALL_SCHEDULE_LEAD_MINUTES), not just now+1m.
  * @param profileTimeZone - Profile/filter zone; falls back to browser when omitted/invalid.
  */
 export function computeMinScheduleDatetimeLocalForTimeZone(
@@ -2248,15 +2287,14 @@ export function computeMinScheduleDatetimeLocalForTimeZone(
   const floorMs = Date.now() + 60 * 1000;
   const floorStr = instantToDatetimeLocalStringInZone(floorMs, tz);
 
-  if (
+  const effectiveMinutes =
     allocationMinutes == null ||
     Number.isNaN(allocationMinutes) ||
     allocationMinutes < 0
-  ) {
-    return floorStr;
-  }
+      ? DEFAULT_CALL_SCHEDULE_LEAD_MINUTES
+      : allocationMinutes;
 
-  let targetMs = Date.now() + allocationMinutes * 60 * 1000;
+  let targetMs = Date.now() + effectiveMinutes * 60 * 1000;
   targetMs = roundUpToNextFiveMinuteMarkInTimeZone(targetMs, tz);
   const severityStr = instantToDatetimeLocalStringInZone(targetMs, tz);
   return severityStr > floorStr ? severityStr : floorStr;

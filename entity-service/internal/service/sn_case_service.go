@@ -1537,6 +1537,8 @@ func publishCommentAddedEvent(ctx context.Context, publisher EventPublisherServi
 		IsEvaluationAccount:       isEvaluationAccount,
 		ProjectOnboardingStatus:   onboardingStatus,
 		IsSupportEngineerResponse: isSupportEngineerResponse,
+		CaseType:                  strings.ToUpper(derefString(cv.Type)),
+		EngagementType:            derefString(cv.EngagementType),
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "create comment: encode case.comment_added payload failed", "caseId", req.CaseID, "error", err)
@@ -2071,6 +2073,7 @@ func (s *snCaseService) publishCaseAcknowledged(ctx context.Context, caseID, ack
 		Product:          product,
 		Team:             caseTeamName(cv),
 		AcknowledgerName: acknowledgerName,
+		CaseType:         strings.ToUpper(derefString(cv.Type)),
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "sn update case: encode case.acknowledged payload failed", "caseId", caseID, "error", err)
@@ -2129,6 +2132,23 @@ func (s *snCaseService) GetCaseEtaSharedOn(ctx context.Context, caseID string) (
 		return nil, nil
 	}
 	return s.pgFallback.GetCaseEtaSharedOn(ctx, caseID)
+}
+
+// CaseVolumeTrend implements CaseService. Unlike the pgFallback delegations
+// above, a missing day-bucketed total here has no safe "empty" fallback that
+// wouldn't mislead a dashboard chart into showing a flat zero trend -- so a
+// pure ServiceNow deployment with no Postgres pool (pgFallback nil) gets a
+// ServiceUnavailableError instead, the same posture
+// unavailableFeedbackService takes for the structurally identical
+// case-feedback trend. Day-bucketed case counts have no ServiceNow endpoint
+// to compute them from at all (see CaseRepository.CaseVolumeTrend, which
+// depends on Postgres-native date_trunc SQL), so under
+// DATA_SOURCE=postgres-servicenow-dual-write this simply delegates whole.
+func (s *snCaseService) CaseVolumeTrend(ctx context.Context, req domain.CaseVolumeTrendRequest) (domain.CaseVolumeTrendResponse, error) {
+	if s.pgFallback == nil {
+		return domain.CaseVolumeTrendResponse{}, &apierror.ServiceUnavailableError{Msg: "case volume trend is only supported for the Postgres data source"}
+	}
+	return s.pgFallback.CaseVolumeTrend(ctx, req)
 }
 
 func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.CaseView, error) {
@@ -3738,7 +3758,7 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 // traffic. At most one of state/severity/workState/markFixIssued is expected
 // non-nil at a time -- this method does not enforce that itself, the caller
 // already has.
-func (s *snCaseService) patchCaseFields(ctx context.Context, caseID string, state *domain.CaseState, severity *domain.CaseSeverity, workState *domain.CaseWorkState, markFixIssued *bool, resolution *caseResolutionFields) (domain.UpdatedCase, error) {
+func (s *snCaseService) patchCaseFields(ctx context.Context, caseID string, state *domain.CaseState, severity *domain.CaseSeverity, workState *domain.CaseWorkState, markFixIssued *bool, resolution *caseResolutionFields, asSystemUser bool) (domain.UpdatedCase, error) {
 	payload := snUpdateCasePayload{}
 	if resolution != nil {
 		if resolution.Code != nil {
@@ -3792,7 +3812,19 @@ func (s *snCaseService) patchCaseFields(ctx context.Context, caseID string, stat
 		payload.MarkFixIssued = markFixIssued
 	}
 
+	// asSystemUser forwards no x-user-id-token at all, rather than this
+	// request's own, when the caller (UpdateCase) has determined ServiceNow
+	// must see this write as the integration's own M2M ServiceNow user, not
+	// as the acting caller -- see snFieldPatcher's own doc comment for why
+	// (ServiceNow has been observed to reject resolutionCode/cause/closeNotes
+	// outright when set under a customer's own identity, "cannot be
+	// provided by this user", even though the values are system-generated
+	// defaults the customer never supplied). This is the exact "no user
+	// token" shape SNGithubCases already relies on for its own M2M writes.
 	token := middleware.UserIDTokenFromContext(ctx)
+	if asSystemUser {
+		token = ""
+	}
 	raw, err := s.client.Patch(ctx, "/cases/"+uuidToSysid(caseID), token, payload)
 	if err != nil {
 		return domain.UpdatedCase{}, err

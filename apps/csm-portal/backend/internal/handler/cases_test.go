@@ -1050,7 +1050,7 @@ func TestSearchCases(t *testing.T) {
 		}
 	})
 
-	t.Run("security report search: denied without PermViewSecurityCenter (no guard wired)", func(t *testing.T) {
+	t.Run("security report search: denied without PermViewSecurityReportCases (no guard wired)", func(t *testing.T) {
 		called := false
 		client := &mockEntityCaseClient{
 			searchCasesFn: func(context.Context, []byte) ([]byte, error) {
@@ -1069,16 +1069,35 @@ func TestSearchCases(t *testing.T) {
 		}
 	})
 
-	t.Run("security report search: denied for a role that isn't cs_engineer/admin", func(t *testing.T) {
+	t.Run("security report search: denied for a role that isn't cs_engineer/admin/comment_updater/viewer", func(t *testing.T) {
 		h := NewCaseHandler(&mockEntityCaseClient{
 			searchCasesFn: func(context.Context, []byte) ([]byte, error) { return []byte(`{}`), nil },
 		}).WithAccessGuard(NewAccessGuard(testAccessConfig()))
 		r := httptest.NewRequest(http.MethodPost, "/cases/search",
 			strings.NewReader(`{"filters":{"filters":[{"field":"type","op":"in","values":["security_report_analysis"]}]}}`))
-		r = r.WithContext(middleware.WithUserInfo(r.Context(), &middleware.UserInfo{Email: "viewer@example.com", UserID: "u1", Roles: []string{"test-viewer"}}))
+		r = r.WithContext(middleware.WithUserInfo(r.Context(), &middleware.UserInfo{Email: "escalator@example.com", UserID: "u1", Roles: []string{"test-escalator"}}))
 		w := httptest.NewRecorder()
 		h.SearchCases(w, r)
 		assertStatus(t, w, http.StatusForbidden)
+	})
+
+	t.Run("security report search: allowed for viewer", func(t *testing.T) {
+		var capturedBody []byte
+		h := NewCaseHandler(&mockEntityCaseClient{
+			searchCasesFn: func(_ context.Context, body []byte) ([]byte, error) {
+				capturedBody = body
+				return []byte(`{"cases":[],"total":0}`), nil
+			},
+		}).WithAccessGuard(NewAccessGuard(testAccessConfig()))
+		const reqBody = `{"filters":{"filters":[{"field":"type","op":"in","values":["security_report_analysis"]}]}}`
+		r := httptest.NewRequest(http.MethodPost, "/cases/search", strings.NewReader(reqBody))
+		r = r.WithContext(middleware.WithUserInfo(r.Context(), &middleware.UserInfo{Email: "viewer@example.com", UserID: "u1", Roles: []string{"test-viewer"}}))
+		w := httptest.NewRecorder()
+		h.SearchCases(w, r)
+		assertStatus(t, w, http.StatusOK)
+		if string(capturedBody) != reqBody {
+			t.Errorf("upstream received %q, want %q", capturedBody, reqBody)
+		}
 	})
 
 	t.Run("security report search: allowed for cs_engineer", func(t *testing.T) {
@@ -1118,7 +1137,7 @@ func TestSearchCases(t *testing.T) {
 		}).WithAccessGuard(NewAccessGuard(testAccessConfig()))
 		r := httptest.NewRequest(http.MethodPost, "/cases/search",
 			strings.NewReader(`{"filters":{"anyOf":[{"filters":[{"field":"type","op":"in","values":["security_report_analysis"]}]}]}}`))
-		r = r.WithContext(middleware.WithUserInfo(r.Context(), &middleware.UserInfo{Email: "viewer@example.com", UserID: "u1", Roles: []string{"test-viewer"}}))
+		r = r.WithContext(middleware.WithUserInfo(r.Context(), &middleware.UserInfo{Email: "escalator@example.com", UserID: "u1", Roles: []string{"test-escalator"}}))
 		w := httptest.NewRecorder()
 		h.SearchCases(w, r)
 		assertStatus(t, w, http.StatusForbidden)
@@ -4254,6 +4273,83 @@ func TestAggregateCases(t *testing.T) {
 				r := withUser(httptest.NewRequest(http.MethodPost, "/cases/aggregate", strings.NewReader(`{}`)))
 				w := httptest.NewRecorder()
 				h.AggregateCases(w, r)
+				assertStatus(t, w, tc.wantCode)
+				assertErrorMessage(t, w, tc.wantMsg)
+				assertContentType(t, w, "application/json")
+			})
+		}
+	})
+}
+
+func TestVolumeTrend(t *testing.T) {
+	t.Run("requires authenticated user", func(t *testing.T) {
+		h := NewCaseHandler(&mockEntityCaseClient{})
+		r := httptest.NewRequest(http.MethodPost, "/cases/volume-trend", strings.NewReader(`{}`))
+		w := httptest.NewRecorder()
+		h.VolumeTrend(w, r)
+		assertStatus(t, w, http.StatusUnauthorized)
+		assertErrorMessage(t, w, ErrMsgUnauthorized)
+		assertContentType(t, w, "application/json")
+	})
+
+	t.Run("rejects body exceeding 1 MiB", func(t *testing.T) {
+		h := NewCaseHandler(&mockEntityCaseClient{})
+		r := withUser(httptest.NewRequest(http.MethodPost, "/cases/volume-trend", strings.NewReader(strings.Repeat("x", maxRequestBodyBytes+1))))
+		w := httptest.NewRecorder()
+		h.VolumeTrend(w, r)
+		assertStatus(t, w, http.StatusRequestEntityTooLarge)
+		assertErrorMessage(t, w, ErrMsgTooLarge)
+		assertContentType(t, w, "application/json")
+	})
+
+	t.Run("rejects invalid JSON body", func(t *testing.T) {
+		h := NewCaseHandler(&mockEntityCaseClient{})
+		r := withUser(httptest.NewRequest(http.MethodPost, "/cases/volume-trend", strings.NewReader(`not-json`)))
+		w := httptest.NewRecorder()
+		h.VolumeTrend(w, r)
+		assertStatus(t, w, http.StatusBadRequest)
+		assertErrorMessage(t, w, ErrMsgBadRequest)
+		assertContentType(t, w, "application/json")
+	})
+
+	t.Run("forwards body to upstream and returns 200 with response", func(t *testing.T) {
+		const reqPayload = `{"filters":{},"days":30}`
+		var capturedBody []byte
+		client := &mockEntityCaseClient{
+			volumeTrendFn: func(_ context.Context, body []byte) ([]byte, error) {
+				capturedBody = body
+				return []byte(`{"days":30,"series":[{"label":"Opened","points":[{"date":"2026-10-13","count":3}]},{"label":"Closed","points":[{"date":"2026-10-13","count":1}]}]}`), nil
+			},
+		}
+		h := NewCaseHandler(client)
+		r := withUser(httptest.NewRequest(http.MethodPost, "/cases/volume-trend", strings.NewReader(reqPayload)))
+		w := httptest.NewRecorder()
+		h.VolumeTrend(w, r)
+
+		assertStatus(t, w, http.StatusOK)
+		assertContentType(t, w, "application/json")
+		if string(capturedBody) != reqPayload {
+			t.Errorf("upstream received body %q, want %q", capturedBody, reqPayload)
+		}
+		resp := decodeJSON[map[string]any](t, w)
+		if resp["days"] != float64(30) {
+			t.Errorf("days = %v, want 30", resp["days"])
+		}
+	})
+
+	t.Run("upstream errors are mapped correctly", func(t *testing.T) {
+		for _, tc := range upstreamErrorsGeneric("Failed to load case volume trend.") {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				client := &mockEntityCaseClient{
+					volumeTrendFn: func(_ context.Context, _ []byte) ([]byte, error) {
+						return nil, tc.err
+					},
+				}
+				h := NewCaseHandler(client)
+				r := withUser(httptest.NewRequest(http.MethodPost, "/cases/volume-trend", strings.NewReader(`{}`)))
+				w := httptest.NewRecorder()
+				h.VolumeTrend(w, r)
 				assertStatus(t, w, tc.wantCode)
 				assertErrorMessage(t, w, tc.wantMsg)
 				assertContentType(t, w, "application/json")

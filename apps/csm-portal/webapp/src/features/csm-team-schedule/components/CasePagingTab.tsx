@@ -17,15 +17,60 @@
  */
 
 import { useState, type JSX } from "react";
-import { useGetPagingChain, useGetPagingReadiness } from "../api/usePagingChain";
-import type { PagingChainCode, PagingChainMember, PagingReadinessGap, RotaFamily } from "../types";
+import {
+  canViewCaseAlertSettings,
+  useCaseAlertSettings,
+} from "../api/useCaseAlertSettings";
+import {
+  useGetPagingChain,
+  useGetPagingReadiness,
+} from "../api/usePagingChain";
+import type {
+  CaseAlertSettings as AlertSettingsData,
+  PagingChainCode,
+  PagingChainMember,
+  PagingChainPermissions,
+  PagingReadinessGap,
+  RotaFamily,
+} from "../types";
+import { CHAIN_LADDER } from "../utils/caseAlertLadderKeys";
+import CaseAlertSettings from "./CaseAlertSettings";
+import type { CaseAlertChain } from "../utils/pagingChains";
 import CasePagingPanel from "./CasePagingPanel";
-import PagingReadinessStrip, { type PhoneGapAction } from "./PagingReadinessStrip";
+import PagingReadinessStrip, {
+  type PhoneGapAction,
+} from "./PagingReadinessStrip";
 import { CALLING_LABEL } from "./PhoneChip";
 import { usePagingPhoneControls } from "./usePagingPhoneControls";
 
 /** The readiness gaps that are about one person's number. */
 const PHONE_GAPS = new Set(["NO_PHONE", "PHONE_UNTESTED", "PHONE_TEST_FAILED"]);
+
+/** What a chain shows: who gets its alerts, or its settings. */
+type ChainView = "chain" | "settings";
+
+/** Where the last choice is kept, for this browser. */
+const VIEW_KEY = "csm-ts.alert-settings.view";
+
+/** The last choice, else who gets alerts. Storage can be blocked or throw
+ *  (private windows, strict settings): then it is just the default. */
+function readView(): ChainView {
+  try {
+    return window.localStorage.getItem(VIEW_KEY) === "settings"
+      ? "settings"
+      : "chain";
+  } catch {
+    return "chain";
+  }
+}
+
+function writeView(view: ChainView): void {
+  try {
+    window.localStorage.setItem(VIEW_KEY, view);
+  } catch {
+    // Not kept: the choice still holds until the page is left.
+  }
+}
 
 /** How far ahead the readiness strip looks. */
 export const PAGING_READINESS_DAYS = 7;
@@ -42,7 +87,7 @@ export interface PagingRotaTarget {
 }
 
 interface ChainOption {
-  code: PagingChainCode | "PAAS";
+  code: CaseAlertChain;
   label: string;
   /** Where its people are set, for a chain that takes them from the rota. */
   rota?: { family: RotaFamily; rotaCode?: string };
@@ -54,8 +99,16 @@ interface ChainOption {
  *  it is a chain people expect -- but cannot be picked. */
 const CHAINS: readonly ChainOption[] = [
   { code: "CRE", label: "CRE" },
-  { code: "SRE_SAAS", label: "SaaS SRE", rota: { family: "SRE", rotaCode: "SRE_SAAS" } },
-  { code: "SRE_IAAS", label: "IaaS SRE", rota: { family: "SRE", rotaCode: "SRE_IAAS" } },
+  {
+    code: "SRE_SAAS",
+    label: "SaaS SRE",
+    rota: { family: "SRE", rotaCode: "SRE_SAAS" },
+  },
+  {
+    code: "SRE_IAAS",
+    label: "IaaS SRE",
+    rota: { family: "SRE", rotaCode: "SRE_IAAS" },
+  },
   { code: "PAAS", label: "PaaS SRE", disabledReason: "No PaaS rota yet" },
   { code: "SME", label: "SME", rota: { family: "SME" } },
 ];
@@ -66,6 +119,35 @@ interface Props {
   /** The chain the tab opens on: the reader's own (SME for an SME rota
    *  admin, their SRE sub-team's for SRE). CRE when absent. */
   initialChain?: PagingChainCode;
+  /** The chains this reader is shown -- their own (caseAlertChainsFor).
+   *  Every chain when absent, as for a CSM admin or the CRE and CS heads. */
+  visibleChains?: readonly CaseAlertChain[];
+}
+
+/** Whether the reader may change both ladders' settings: what a CSM admin
+ *  or portal admin gets, a role not tied to any one team. */
+function managesBothLadders(settings?: AlertSettingsData): boolean {
+  const ladders = settings?.canManage.roomLadders ?? [];
+  return ladders.includes("CRE") && ladders.includes("SRE");
+}
+
+/** Whether the CRE chain is left out of the picker: for somebody who may
+ *  change only the SRE ladder's settings -- an SRE rota admin -- and holds no
+ *  CRE role of their own (responder, team lead, Americas lead or head). A CSM
+ *  or portal admin may change both ladders and keeps it. */
+function hidesCREChain(
+  settings?: AlertSettingsData,
+  can?: PagingChainPermissions,
+): boolean {
+  const ladders = settings?.canManage.roomLadders ?? [];
+  if (!ladders.includes("SRE") || ladders.includes("CRE")) return false;
+  return (
+    !can ||
+    (can.responderTeams.length === 0 &&
+      can.teamLeadTeams.length === 0 &&
+      !can.americasTeamLead &&
+      !can.heads)
+  );
 }
 
 /**
@@ -73,48 +155,97 @@ interface Props {
  * is set here, in the editable panel; the SRE and SME chains page whoever the
  * rota has on, so for them the tab says where to set people and how ready the
  * chain is. Each chain opens with its readiness strip.
+ *
+ * For the people who may see a chain's alert settings, a switch above it
+ * flips between who gets the alerts and the settings (CaseAlertSettings); the
+ * last choice is kept for this browser. Everyone else, and the SME chain,
+ * which has no settings here, sees the chain alone.
  */
-export default function CasePagingTab({ onOpenRota, initialChain = "CRE" }: Props): JSX.Element {
-  const chains = CHAINS;
-  const offered = (code: PagingChainCode | undefined): code is PagingChainCode =>
+export default function CasePagingTab({
+  onOpenRota,
+  initialChain = "CRE",
+  visibleChains,
+}: Props): JSX.Element {
+  const alertSettings = useCaseAlertSettings();
+  // The same read as the panel's and the page's probe: no extra request.
+  const creChain = useGetPagingChain("CRE");
+  // The reader's own chains (caseAlertChainsFor), less CRE's for somebody
+  // who may change only the SRE ladder's settings.
+  const own = visibleChains
+    ? CHAINS.filter((c) => visibleChains.includes(c.code))
+    : CHAINS;
+  const chains = hidesCREChain(alertSettings.data, creChain.data?.canEdit)
+    ? own.filter((c) => c.code !== "CRE")
+    : own;
+  const offered = (
+    code: PagingChainCode | undefined,
+  ): code is PagingChainCode =>
     !!code && chains.some((c) => c.code === code && !c.disabledReason);
   // The reader's pick, else the chain they belong to, else the first one
   // offered. Derived rather than seeded into state, so a profile that settles
   // after the first frame still opens the right chain.
-  const [chainChoice, setChainCode] = useState<PagingChainCode | undefined>(undefined);
-  const firstOffered = chains.find((c) => !c.disabledReason)?.code as PagingChainCode | undefined;
+  const [chainChoice, setChainCode] = useState<PagingChainCode | undefined>(
+    undefined,
+  );
+  const firstOffered = chains.find((c) => !c.disabledReason)?.code as
+    PagingChainCode | undefined;
+  // A CSM or portal admin, who may change both ladders, belongs to no one
+  // chain: they open on the first, whatever their own team's family is.
+  const ownChain = managesBothLadders(alertSettings.data)
+    ? firstOffered
+    : initialChain;
   const chainCode: PagingChainCode = offered(chainChoice)
     ? chainChoice
-    : offered(initialChain)
-      ? initialChain
+    : offered(ownChain)
+      ? ownChain
       : (firstOffered ?? initialChain);
   const readiness = useGetPagingReadiness(PAGING_READINESS_DAYS);
+  const hasSettings =
+    canViewCaseAlertSettings(alertSettings.data) &&
+    CHAIN_LADDER[chainCode] !== undefined;
+  const [view, setView] = useState<ChainView>(readView);
+  const chooseView = (next: ChainView) => {
+    setView(next);
+    writeView(next);
+  };
   // The people a phone gap can be acted on for: the CRE chain (the same read
   // as the panel's), and SRE's while an SRE chain is on screen. SME's people
   // are not served as a chain, so its phone gaps keep the profile hint.
   const sreOnScreen = chainCode === "SRE_SAAS" || chainCode === "SRE_IAAS";
-  const creChain = useGetPagingChain("CRE");
   const sreChain = useGetPagingChain("SRE", sreOnScreen);
   const members: PagingChainMember[] = [
     ...(creChain.data?.members ?? []),
     ...(sreOnScreen ? (sreChain.data?.members ?? []) : []),
   ];
-  const readAt = Math.max(creChain.dataUpdatedAt, sreOnScreen ? sreChain.dataUpdatedAt : 0);
+  const readAt = Math.max(
+    creChain.dataUpdatedAt,
+    sreOnScreen ? sreChain.dataUpdatedAt : 0,
+  );
   const { controls: phone, dialog } = usePagingPhoneControls(members, readAt);
 
   /** "Test call" on a phone gap for a paging-only number the reader may act
    *  on. A missing number gets no action here: it is added on the person's
    *  profile, which the gap's hint says. */
   const phoneActionFor = (gap: PagingReadinessGap): PhoneGapAction | null => {
-    if (!PHONE_GAPS.has(gap.code) || !gap.userId || gap.code === "NO_PHONE") return null;
-    const m = members.find((x) => x.userId === gap.userId && x.canEditPhone === true);
+    if (!PHONE_GAPS.has(gap.code) || !gap.userId || gap.code === "NO_PHONE")
+      return null;
+    const m = members.find(
+      (x) => x.userId === gap.userId && x.canEditPhone === true,
+    );
     if (!m?.pagingPhone) return null;
     const calling = phone.calling(m);
-    return { label: calling ? CALLING_LABEL : "Test call", onClick: () => phone.test(m), pending: calling };
+    return {
+      label: calling ? CALLING_LABEL : "Test call",
+      onClick: () => phone.test(m),
+      pending: calling,
+    };
   };
 
-  const option = chains.find((c) => c.code === chainCode) ?? chains[0] ?? CHAINS[0];
-  const chainReadiness = readiness.data?.chains.find((c) => c.chain === chainCode);
+  const option =
+    chains.find((c) => c.code === chainCode) ?? chains[0] ?? CHAINS[0];
+  const chainReadiness = readiness.data?.chains.find(
+    (c) => c.chain === chainCode,
+  );
   const stripRead = {
     chain: chainReadiness,
     days: PAGING_READINESS_DAYS,
@@ -133,8 +264,13 @@ export default function CasePagingTab({ onOpenRota, initialChain = "CRE" }: Prop
       date: gap.date,
     });
 
-  const picker = (
-    <div className="seg teamseg cp-chains" role="tablist" aria-label="Alert chain">
+  // A reader with one chain has nothing to pick between.
+  const picker = chains.length < 2 ? null : (
+    <div
+      className="seg teamseg cp-chains"
+      role="tablist"
+      aria-label="Alert chain"
+    >
       {chains.map((c) => {
         const disabled = Boolean(c.disabledReason);
         return (
@@ -148,7 +284,10 @@ export default function CasePagingTab({ onOpenRota, initialChain = "CRE" }: Prop
             // be picked is the point.
             aria-disabled={disabled || undefined}
             title={c.disabledReason}
-            className={`${chainCode === c.code ? "on" : ""}${disabled ? " off" : ""}`.trim() || undefined}
+            className={
+              `${chainCode === c.code ? "on" : ""}${disabled ? " off" : ""}`.trim() ||
+              undefined
+            }
             onClick={() => {
               if (!disabled) setChainCode(c.code as PagingChainCode);
             }}
@@ -160,11 +299,60 @@ export default function CasePagingTab({ onOpenRota, initialChain = "CRE" }: Prop
     </div>
   );
 
+  // Nothing to show: their only chain is one with no rota yet (PaaS SRE).
+  if (!offered(chainCode)) {
+    const only = chains[0];
+    return (
+      <div className="offnone">
+        {only ? `${only.label} has no rota yet, so there is no alert chain to show.` : "There is no alert chain of yours to show."}
+      </div>
+    );
+  }
+
+  const viewSwitch = hasSettings ? (
+    <div className="seg cas-view" role="group" aria-label="Show">
+      {(
+        [
+          ["chain", "Who gets alerts"],
+          ["settings", "Settings"],
+        ] as const
+      ).map(([v, label]) => (
+        <button
+          key={v}
+          type="button"
+          aria-pressed={view === v}
+          className={view === v ? "on" : undefined}
+          onClick={() => chooseView(v)}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  ) : null;
+
+  if (hasSettings && view === "settings") {
+    return (
+      <>
+        <div className="card-head">
+          {picker}
+          {viewSwitch}
+        </div>
+        <CaseAlertSettings chain={chainCode} />
+        {dialog}
+      </>
+    );
+  }
+
   if (chainCode === "CRE") {
     return (
       <>
         <CasePagingPanel
-          chainPicker={picker}
+          chainPicker={
+            <>
+              {picker}
+              {viewSwitch}
+            </>
+          }
           readiness={stripRead}
           onOpenRota={openGap}
           phone={phone}
@@ -180,6 +368,7 @@ export default function CasePagingTab({ onOpenRota, initialChain = "CRE" }: Prop
     <>
       <div className="card-head">
         {picker}
+        {viewSwitch}
         <h2>{option.label} alert chain</h2>
       </div>
       <PagingReadinessStrip
@@ -190,12 +379,15 @@ export default function CasePagingTab({ onOpenRota, initialChain = "CRE" }: Prop
         phoneActionFor={phoneActionFor}
       />
       <p className="cp-from">
-        People come from the {option.label} rota; set them in the Team Schedule views.{" "}
+        People come from the {option.label} rota; set them in the Team Schedule
+        views.{" "}
         {rota ? (
           <button
             type="button"
             className="btn sm"
-            onClick={() => onOpenRota({ family: rota.family, rotaCode: rota.rotaCode })}
+            onClick={() =>
+              onOpenRota({ family: rota.family, rotaCode: rota.rotaCode })
+            }
           >
             Open the {option.label} rota
           </button>

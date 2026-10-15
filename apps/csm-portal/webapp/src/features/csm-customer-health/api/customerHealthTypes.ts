@@ -99,6 +99,15 @@ export type RiskFilterKey =
 
 export type HealthStatusType = "to_be_reviewed" | "healthy" | "at_risk";
 
+// Shared between the health-status filter dropdown (CustomerHealthFilters)
+// and the table's own "Filtered by: X" summary text (CustomerHealthTable),
+// so the dropdown's wording and that summary can never drift apart.
+export const HEALTH_STATUS_LABELS: Record<string, string> = {
+  at_risk: "At Risk",
+  healthy: "Healthy",
+  to_be_reviewed: "To Be Reviewed",
+};
+
 export interface RiskActionItem {
   id: number;
   riskId: number;

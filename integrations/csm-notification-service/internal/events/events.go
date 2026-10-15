@@ -325,6 +325,15 @@ type CommentAddedPayload struct {
 	// with no lookup here at all. See entity-service's own
 	// CommentAddedPayload.IsSupportEngineerResponse doc comment.
 	IsSupportEngineerResponse bool `json:"isSupportEngineerResponse,omitempty"`
+	// CaseType/EngagementType let dispatch.checkFrustration route a
+	// frustration-detection Chat alert to the Migration audience instead of
+	// the usual team/Incident Monitor routing, when the comment landed on a
+	// migration engagement. CaseType is entity-service's uppercase
+	// strings.ToUpper(cv.Type) (e.g. "ENGAGEMENT"); EngagementType is
+	// entity-service's own lowercase value (e.g. "migration"). Both empty
+	// for every non-engagement case-like type.
+	CaseType       string `json:"caseType,omitempty"`
+	EngagementType string `json:"engagementType,omitempty"`
 }
 
 // StatusChangedPayload is TypeStatusChanged's payload. See
@@ -382,6 +391,21 @@ type CaseAcknowledgedPayload struct {
 	// decode-compatibility pair exists.
 	ProjectOnboardingStatus string `json:"projectOnboardingStatus,omitempty"`
 	IsEvaluationAccount     bool   `json:"isEvaluationAccount,omitempty"`
+	// CaseType — see CaseCreatedPayload's own doc comment (the same
+	// strings.ToUpper(req.Type) convention entity-service uses). A
+	// security_report_analysis case never carries a severity, so
+	// handleCaseAcknowledged uses this to pick the dedicated ack card that
+	// omits the severity line, instead of rendering "Unknown".
+	//
+	// This field is new, and decodeStrict rejects any field not declared on
+	// this struct -- deploy this service's build that declares it BEFORE
+	// deploying the entity-service build that starts sending it, same
+	// deployment-order requirement as every other strictly-decoded new field
+	// added to a payload here (e.g. incident.assigned's assignedOn). An
+	// overlapping rollout where entity-service ships first would have every
+	// case.acknowledged event fail this field's unknown-field check, retry,
+	// dead-letter and eventually drop.
+	CaseType string `json:"caseType,omitempty"`
 }
 
 // WorkaroundProvidedPayload is TypeWorkaroundProvided's payload — mirrors

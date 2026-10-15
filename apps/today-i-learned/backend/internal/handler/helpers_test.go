@@ -45,14 +45,15 @@ var (
 	janeViaOtherApp = &middleware.User{Subject: "u-jane", Email: "jane@example.com", DisplayName: "Jane Doe", ClientIDs: []string{"another-app"}}
 )
 
-// fakeStore keeps entries in memory. beforeUpdate, when set, runs just before
-// an update is applied.
+// fakeStore keeps entries in memory. beforeUpdate and beforeClaim, when set,
+// run just before an update or a notification claim is applied.
 type fakeStore struct {
 	mu           sync.Mutex
 	entries      map[string]entry.Entry
 	order        []string
 	seq          int
 	beforeUpdate func(id string)
+	beforeClaim  func(id string)
 	lastQuery    store.Query
 	fail         error
 }
@@ -129,20 +130,53 @@ func (s *fakeStore) List(_ context.Context, q store.Query) (store.Page, error) {
 	return store.Page{Items: items, Total: total}, nil
 }
 
+func (s *fakeStore) ClaimNotification(_ context.Context, id string) (time.Time, bool, error) {
+	if s.beforeClaim != nil {
+		s.beforeClaim(id)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.fail != nil {
+		return time.Time{}, false, s.fail
+	}
+	e, ok := s.entries[id]
+	if !ok || e.NotifiedAt != nil {
+		return time.Time{}, false, nil
+	}
+	at := time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC)
+	e.NotifiedAt = &at
+	s.entries[id] = e
+	return at, true, nil
+}
+
+func (s *fakeStore) ReleaseNotification(_ context.Context, id string, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if e, ok := s.entries[id]; ok && e.NotifiedAt != nil && e.NotifiedAt.Equal(at) {
+		e.NotifiedAt = nil
+		s.entries[id] = e
+	}
+	return nil
+}
+
 type notice struct {
 	entry    entry.Entry
 	entryURL string
 }
 
+// fakeNotifier records what it's asked to announce. fail, when set, is
+// returned as Novera not accepting the announcement.
 type fakeNotifier struct {
 	mu   sync.Mutex
 	sent []notice
+	fail error
 }
 
-func (n *fakeNotifier) Notify(_ context.Context, e entry.Entry, entryURL string) {
+func (n *fakeNotifier) Notify(_ context.Context, e entry.Entry, entryURL string) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.sent = append(n.sent, notice{e, entryURL})
+	return n.fail
 }
 
 type fakeCustomers struct {
@@ -171,12 +205,14 @@ func newTestAPI(t *testing.T, change ...func(*Config)) *testAPI {
 	h := New(cfg)
 	api.mux = http.NewServeMux()
 	api.mux.HandleFunc("GET /user-info", h.UserInfo)
+	api.mux.HandleFunc("GET /settings", h.Settings)
 	api.mux.HandleFunc("GET /customers/search", h.SearchCustomers)
 	api.mux.HandleFunc("GET /submissions", h.ListEntries)
 	api.mux.HandleFunc("POST /submissions", h.CreateEntry)
 	api.mux.HandleFunc("GET /submissions/{id}", h.GetEntry)
 	api.mux.HandleFunc("PUT /submissions/{id}", h.UpdateEntry)
 	api.mux.HandleFunc("DELETE /submissions/{id}", h.DeleteEntry)
+	api.mux.HandleFunc("POST /submissions/{id}/notify", h.NotifyEntry)
 	return api
 }
 

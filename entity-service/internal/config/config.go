@@ -296,6 +296,15 @@ type Config struct {
 	// ServiceNow's integration reads. A repository without it falls back to
 	// account_github_repo.
 	GithubRepoConfigPath string
+	// GithubSRServiceNowFirst is GITHUB_SR_SERVICENOW_FIRST. "true" under
+	// DATA_SOURCE=postgres-servicenow-dual-write creates a service request
+	// raised from an issue in ServiceNow first, through the ServiceNow
+	// integration service's /github-cases, so it takes ServiceNow's CS number
+	// and WSO2 Case ID as a portal-created one does. Off by default: turn it on
+	// once the integration service serving /github-cases is deployed, or every
+	// new issue fails to create. Off, an issue's SR is written to Postgres only
+	// and numbered SR-GH-<n>. See GithubServiceNowFirst.
+	GithubSRServiceNowFirst bool
 	// GithubOutboundInterval is how often to drain the outbound queue when the
 	// last pass came back short. A backlog drains at full speed regardless.
 	GithubOutboundInterval time.Duration
@@ -323,7 +332,8 @@ type Config struct {
 	SpecialistHandoffGithubTokens string
 
 	// CSMPortalBaseURL builds the link back to a change request in comments
-	// posted to GitHub. Empty omits the link rather than rendering a broken one.
+	// posted to GitHub, and to the incident in a specialist handoff's GitHub
+	// issue. Empty omits the link rather than rendering a broken one.
 	CSMPortalBaseURL string
 	// GitHub label vocabulary overrides. Empty keeps .github/labels.yml's value.
 	GithubLabelTypeIncident       string
@@ -529,6 +539,32 @@ type Config struct {
 	AuthJWKSURL            string
 	AuthUserTokenAudiences []string
 	AuthClockSkew          time.Duration
+	// AuthAdminRoles is AUTH_ADMIN_ROLES, comma-separated: the same variable,
+	// with the same value, as csm-portal-backend's -- the token roles that make
+	// a caller a CSM Portal admin. Read here for the Team Schedule only: a CSM
+	// Portal admin is its admin on the Rota access tab, who grants and takes
+	// back rota admin and rota marker, and may change every Case Alerts
+	// setting. Matched exactly, as the portal does. Empty means nobody is (the
+	// portal's own rule for an unset role).
+	AuthAdminRoles []string
+	// CaseAlertsSecretKey is CASE_ALERTS_SECRET_KEY: 32 bytes, base64, the
+	// AES-256-GCM key that seals the Case Alerts chat-room webhook URLs
+	// (migration 0233). One per environment, so a database copied from
+	// another environment cannot open its URLs. Empty turns saving a URL
+	// off; nothing else depends on it.
+	CaseAlertsSecretKey string
+	// CaseAlertsSecretKeyID is CASE_ALERTS_SECRET_KEY_ID, stored beside each
+	// sealed URL ("1" when unset). A URL sealed under another id is treated as
+	// not set.
+	CaseAlertsSecretKeyID string
+	// CaseAlertsRuntimeClientIDs is CASE_ALERTS_RUNTIME_CLIENT_IDS: the
+	// service client ids (csm-notification-service's) allowed to read the
+	// Case Alerts settings with the webhook URLs opened. Empty means none is.
+	CaseAlertsRuntimeClientIDs []string
+	// CaseAlertsEnvironment is CASE_ALERTS_ENVIRONMENT, a label the Case
+	// Alerts tab shows (e.g. "staging", "production") so an admin knows which
+	// environment's rooms they are changing. Optional.
+	CaseAlertsEnvironment string
 	// M2MClientIDsRaw is the M2M_CLIENT_IDS value, a comma-separated list of
 	// Asgardeo application client ids for pure machine-to-machine callers --
 	// no human in the loop at all (the GitHub webhook delivery/service-
@@ -723,6 +759,7 @@ func Load() *Config {
 		GithubRepoTokens:                         os.Getenv("GITHUB_REPO_TOKENS"),
 		GithubIntegrationLogin:                   os.Getenv("GITHUB_INTEGRATION_LOGIN"),
 		GithubRepoConfigPath:                     strings.TrimSpace(os.Getenv("GITHUB_REPO_CONFIG_PATH")),
+		GithubSRServiceNowFirst:                  strings.EqualFold(strings.TrimSpace(os.Getenv("GITHUB_SR_SERVICENOW_FIRST")), "true"),
 		GithubOutboundInterval:                   envDuration("GITHUB_OUTBOUND_INTERVAL", 15*time.Second),
 		CSMPortalBaseURL:                         os.Getenv("CSM_PORTAL_BASE_URL"),
 		SpecialistHandoffConfig:                  os.Getenv("SPECIALIST_HANDOFF_CONFIG"),
@@ -751,6 +788,11 @@ func Load() *Config {
 		AuthJWKSURL:                                   os.Getenv("AUTH_JWKS_URL"),
 		AuthUserTokenAudiences:                        splitComma(os.Getenv("AUTH_USER_TOKEN_AUDIENCES")),
 		AuthClockSkew:                                 envDuration("AUTH_CLOCK_SKEW", 30*time.Second),
+		AuthAdminRoles:                                splitComma(os.Getenv("AUTH_ADMIN_ROLES")),
+		CaseAlertsSecretKey:                           strings.TrimSpace(os.Getenv("CASE_ALERTS_SECRET_KEY")),
+		CaseAlertsSecretKeyID:                         getEnvOrDefault("CASE_ALERTS_SECRET_KEY_ID", "1"),
+		CaseAlertsRuntimeClientIDs:                    splitComma(os.Getenv("CASE_ALERTS_RUNTIME_CLIENT_IDS")),
+		CaseAlertsEnvironment:                         strings.TrimSpace(os.Getenv("CASE_ALERTS_ENVIRONMENT")),
 		M2MClientIDsRaw:                               os.Getenv("M2M_CLIENT_IDS"),
 		CSMPortalBackendClientID:                      os.Getenv("CSM_PORTAL_BACKEND_CLIENT_ID"),
 		CSMPortalUserDomain:                           strings.TrimPrefix(os.Getenv("CSM_PORTAL_USER_DOMAIN"), "@"),
@@ -1296,6 +1338,13 @@ func (c *Config) HasGithubIntegration() bool {
 	return c.GithubIntegrationEnabled &&
 		(c.GithubToken != "" || c.hasRepoTokens()) &&
 		c.GithubIntegrationLogin != ""
+}
+
+// GithubServiceNowFirst reports whether a service request raised from an
+// issue is created in ServiceNow first: under dual-write, with
+// GITHUB_SR_SERVICENOW_FIRST=true.
+func (c *Config) GithubServiceNowFirst() bool {
+	return c.DataSource == DataSourcePostgresServiceNowDualWrite && c.GithubSRServiceNowFirst
 }
 
 // hasRepoTokens reports whether GITHUB_REPO_TOKENS names at least one token.

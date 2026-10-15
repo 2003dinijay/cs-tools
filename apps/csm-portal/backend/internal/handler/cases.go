@@ -82,12 +82,17 @@ type entityCaseClient interface {
 	SearchCaseActivities(ctx context.Context, caseID string, body []byte) ([]byte, error)
 	SearchCases(ctx context.Context, body []byte) ([]byte, error)
 	AggregateCases(ctx context.Context, body []byte) ([]byte, error)
+	VolumeTrend(ctx context.Context, body []byte) ([]byte, error)
 	SearchFeedback(ctx context.Context, body []byte) ([]byte, error)
 	AggregateFeedback(ctx context.Context, body []byte) ([]byte, error)
 	GetCase(ctx context.Context, caseID string) ([]byte, error)
 	// GetProductRepoMapping calls GET /products/github-repo?name= on the
 	// entity service. The response is the GitHub repository for that product.
 	GetProductRepoMapping(ctx context.Context, name string) ([]byte, error)
+	// SearchDeployedProducts calls POST /deployed-products/search on the entity
+	// service. Filing a Git issue reads one deployment's deployed products for the
+	// product's abbreviation and version.
+	SearchDeployedProducts(ctx context.Context, body []byte) ([]byte, error)
 	CreateCaseAttachment(ctx context.Context, body []byte) ([]byte, error)
 	SearchCaseAttachments(ctx context.Context, body []byte) ([]byte, error)
 	GetCaseAttachmentContent(ctx context.Context, attachmentID string) ([]byte, string, error)
@@ -146,11 +151,16 @@ func NewCaseHandler(entity entityCaseClient) *CaseHandler {
 }
 
 // WithAccessGuard wires the same guard that authorises every route into this
-// handler, so SearchCases can additionally require PermViewSecurityCenter for
-// a security_report_analysis-typed request — a restriction PermView alone
+// handler, so SearchCases can additionally require PermViewSecurityReportCases
+// for a security_report_analysis-typed request — a restriction PermView alone
 // (the route-level permission it already carries, shared with every other
-// case-type view) cannot express. Returns h for chaining at the construction
-// site.
+// case-type view) cannot express. PermViewSecurityReportCases, not
+// PermViewSecurityCenter: the latter also gates /products/vulnerabilities and
+// stays admin/cs_engineer/comment_updater/security_team-only, while the
+// former additionally grants Viewer read access to these cases without
+// opening Vulnerabilities to them. service_request has no equivalent check
+// at all — every PermView holder can already search/fetch that type.
+// Returns h for chaining at the construction site.
 //
 // GetCase deliberately gets no equivalent check: CaseView.type is only
 // populated for ServiceNow cases (null on Postgres — see entity-service's own
@@ -846,7 +856,7 @@ func (h *CaseHandler) SearchCases(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if caseSearchTargetsSecurityReports(body) && !(h.access != nil && h.access.Permits(PermViewSecurityCenter, user.Roles)) {
+	if caseSearchTargetsSecurityReports(body) && !(h.access != nil && h.access.Permits(PermViewSecurityReportCases, user.Roles)) {
 		writeError(w, http.StatusForbidden, ErrMsgForbidden)
 		return
 	}
@@ -897,6 +907,44 @@ func (h *CaseHandler) AggregateCases(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity AggregateCases failed", "userID", user.UserID, "err", err)
 		mapUpstreamErrorGeneric(w, err, "Failed to aggregate cases.")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+// VolumeTrend handles POST /cases/volume-trend.
+// Day-bucketed case-volume trend (opened vs. closed, one point per day over
+// a trailing window), for the Case Summary dashboard's trend chart. Window
+// size and value validation are upstream by the entity service; this layer
+// only forwards the request and passes the response through as-is.
+func (h *CaseHandler) VolumeTrend(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserInfoFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		if _, ok := err.(*http.MaxBytesError); ok {
+			writeError(w, http.StatusRequestEntityTooLarge, ErrMsgTooLarge)
+			return
+		}
+		writeError(w, http.StatusBadRequest, errMsgReadBody)
+		return
+	}
+
+	if !json.Valid(body) {
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+
+	result, err := h.entity.VolumeTrend(r.Context(), body)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity VolumeTrend failed", "userID", user.UserID, "err", err)
+		mapUpstreamErrorGeneric(w, err, "Failed to load case volume trend.")
 		return
 	}
 

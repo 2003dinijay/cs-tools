@@ -543,6 +543,21 @@ key set is pinned by `TestMapChangeRequestDetails_ExposesOnlyTheCustomerFields`,
 to be added there on purpose. The PATCH response is unchanged (id / updatedOn / updatedBy); the webapp re-reads
 the detail after an answer.
 
+**`customerApprovalRequired` / `customerReviewRequired` on the change-request detail.** The two requirement
+boxes (does the change need the customer's approval before it is scheduled / the customer's review before it is
+closed), decoded from entity-service's detail as `*bool` (`entity.ChangeRequest`) and passed on **only with a
+read entity-service computed for a customer on the PostgreSQL data source**, which is the read that carries
+`customerCanAnswer` (`dto.MapChangeRequestDetails`). They are the REQUIREMENT, never the outcome
+(`hasCustomerApproved` / `hasCustomerReviewed`), and the webapp's workflow reads them for one thing: a customer
+step the change passed with no approval on record says "Not required" when its box is false, "No approval
+recorded" when it is true or unknown. Absent means *unknown*, never "not required": on the previous system's data
+source entity-service does not compute the boxes and sends them as `false`, so a plain pass-through would call a
+change "not required" on no evidence
+(`TestMapChangeRequestDetails_PassesTheRequirementBoxesOnlyWithACustomerRead`,
+`TestGetChangeRequest_CarriesTheRequirementBoxesOnlyWithACustomerRead`). The webapp reads the approvals
+(`GET /change-requests/{id}/approvals`, unchanged: internal stages as label + status only) for the rest of its
+evidence; see the customer webapp's README, "Change request workflow: evidence, not position".
+
 **Which change requests a customer sees is entity-service's decision, never this API's.** A customer sees a
 change request once it was *designated* to them (it reached Customer Approval and/or Customer Review and they
 were one of the contacts asked), in every later state (Scheduled,

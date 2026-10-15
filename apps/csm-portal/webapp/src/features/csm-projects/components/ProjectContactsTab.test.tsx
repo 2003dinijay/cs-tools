@@ -197,6 +197,32 @@ describe("ProjectContactsTab", () => {
     expect(screen.getByText(/No contacts found for this project/i)).toBeInTheDocument();
   });
 
+  it("shows Admin only when this project's roles include ADMIN", () => {
+    postMock.mockResolvedValue({ users: [] });
+    mockQueryResult({
+      data: [
+        {
+          ...LINKED_CONTACT,
+          name: "Account Admin",
+          roles: ["PORTAL_USER", "SECURITY_CONTACT"],
+          accountRoles: ["customer", "customer_admin", "external"],
+        },
+        {
+          ...LINKED_CONTACT,
+          id: "00000000-0000-0000-0000-000000000001",
+          name: "Project Admin",
+          email: "project.admin@example.com",
+          roles: ["ADMIN"],
+        },
+      ],
+    });
+    renderTab();
+    expect(screen.queryByText("Customer Admin", { selector: ".MuiChip-label" })).not.toBeInTheDocument();
+    expect(screen.getAllByText("Admin", { selector: ".MuiChip-label" })).toHaveLength(1);
+    expect(screen.getAllByText("Portal User", { selector: ".MuiChip-label" })).toHaveLength(2);
+    expect(screen.getByText("Security User", { selector: ".MuiChip-label" })).toBeInTheDocument();
+  });
+
   it("renders a linked contact as a clickable profile link", () => {
     postMock.mockResolvedValue({ users: [] });
     mockQueryResult({ data: [LINKED_CONTACT] });
@@ -204,7 +230,7 @@ describe("ProjectContactsTab", () => {
     const link = screen.getByRole("link", { name: "Jane Doe" });
     expect(link).toHaveAttribute("href", `/people/${LINKED_CONTACT.id}`);
     expect(screen.getByText("registered")).toBeInTheDocument();
-    expect(screen.getByText("viewer", { selector: ".MuiChip-label" })).toBeInTheDocument();
+    expect(screen.getByText("Portal User", { selector: ".MuiChip-label" })).toBeInTheDocument();
   });
 
   it("renders an orphaned contact (no id) without a link, flagged, and without crashing", () => {

@@ -30,9 +30,23 @@ func IncidentAudience(assignmentGroup string) string {
 	return IncidentAudiencePrefix + strings.ToLower(strings.TrimSpace(assignmentGroup))
 }
 
+// IncidentGroups is the assignment groups whose INCIDENT_CHAT_SPACES spaces get a group's incident messages: its INCIDENT_CHAT_FANOUT list, else the group itself.
+func IncidentGroups(fanout map[string][]string, group string) []string {
+	key := strings.ToLower(strings.TrimSpace(group))
+	if key == "" {
+		return nil
+	}
+	for g, targets := range fanout {
+		if strings.ToLower(strings.TrimSpace(g)) == key && len(targets) > 0 {
+			return targets
+		}
+	}
+	return []string{group}
+}
+
 // IncidentCreatedAlert is SendIncidentCreatedAlert's card content.
 type IncidentCreatedAlert struct {
-	// IncidentID keys the card's thread (incidentThreadKey).
+	// IncidentID keys the card's thread (IncidentThreadKey).
 	IncidentID       string
 	Number           string
 	Team             string
@@ -47,7 +61,7 @@ type IncidentCreatedAlert struct {
 
 // IncidentAssignedAlert is SendIncidentAssignedAlert's card content.
 type IncidentAssignedAlert struct {
-	// IncidentID keys the card's thread (incidentThreadKey).
+	// IncidentID keys the card's thread (IncidentThreadKey).
 	IncidentID   string
 	Number       string
 	AssigneeName string
@@ -116,7 +130,7 @@ func (c *GoogleChatClient) SendIncidentCreatedAlert(ctx context.Context, audienc
 			Header:   &chatCardHeader{Title: title, Subtitle: subtitle},
 			Sections: sections,
 		}}},
-		Thread: &chatThread{ThreadKey: incidentThreadKey(a.IncidentID)},
+		Thread: &chatThread{ThreadKey: IncidentThreadKey(a.IncidentID)},
 	}
 	return c.sendCardToAudience(ctx, audience, msg)
 }
@@ -139,7 +153,7 @@ func (c *GoogleChatClient) SendIncidentAssignedAlert(ctx context.Context, audien
 			Header:   &chatCardHeader{Title: "Incident Acknowledged.", Subtitle: incidentRef(a.Number, a.IncidentID)},
 			Sections: []chatCardSection{{Widgets: []chatCardWidget{{TextParagraph: &chatTextParagraph{Text: strings.Join(lines, "<br>")}}}}},
 		}}},
-		Thread: &chatThread{ThreadKey: incidentThreadKey(a.IncidentID)},
+		Thread: &chatThread{ThreadKey: IncidentThreadKey(a.IncidentID)},
 	}
 	return c.sendCardToAudience(ctx, audience, msg)
 }
@@ -152,8 +166,8 @@ func incidentRef(number, incidentID string) string {
 	return incidentID
 }
 
-// incidentThreadKey keeps an incident's created card and its replies in one Chat thread.
-func incidentThreadKey(incidentID string) string {
+// IncidentThreadKey keeps an incident's created card and its replies, the paging rungs included, in one Chat thread.
+func IncidentThreadKey(incidentID string) string {
 	return "incident-" + incidentID
 }
 

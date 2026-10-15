@@ -151,7 +151,10 @@ export default function CsmProjectDetailPage(): JSX.Element {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavTransition();
   const location = useLocation();
-  const { canWrite, isSplAudience, canViewWorkItemsStaffView } = usePortalAccess();
+  // isSplAudience is unused while the SLA/Time/CS report buttons below are
+  // temporarily disabled — restore it to the destructure above when
+  // re-enabling them.
+  const { canWrite, canViewWorkItemsStaffView } = usePortalAccess();
   // Prefer wherever the caller came from (e.g. a case's Overview panel) over
   // the hardcoded projects list, so Back returns to that page instead of
   // skipping past it — same convention as CsmCaseDetailPage's own back path.
@@ -251,8 +254,12 @@ export default function CsmProjectDetailPage(): JSX.Element {
               limited to the same audience they always had (a caller holding
               the viewer role, regardless of what else they hold). See
               isSplAudience's own doc comment. Outlined, not contained: the
-              single contained CTA on this page is Create, below. */}
-          {isSplAudience && (
+              single contained CTA on this page is Create, below.
+
+              Temporarily disabled: removed from view for the moment.
+              Re-enable by uncommenting this block and restoring
+              isSplAudience to the usePortalAccess() destructure above. */}
+          {/* {isSplAudience && (
             <>
               <Button
                 variant="outlined"
@@ -282,7 +289,7 @@ export default function CsmProjectDetailPage(): JSX.Element {
                 CS Report
               </Button>
             </>
-          )}
+          )} */}
           {/* File any issue type already scoped to this project — every create
               form below locks the project field, so it can't be filed against
               the wrong one. */}

@@ -333,7 +333,7 @@ func TestResolveSRE_PhoneBookFillsNumbers(t *testing.T) {
 }
 
 func TestSRE_RolesAndInstruction(t *testing.T) {
-	if got := Level1.RoleIn(LadderSRE); got != "L2 support" {
+	if got := Level1.RoleIn(LadderSRE); got != "L2 Support" {
 		t.Errorf("RoleIn = %q", got)
 	}
 	if got := Level1.RoleIn(LadderCRE); got != Level1.Role() {
@@ -396,7 +396,7 @@ func TestEngine_SRELadderStopsWhenAssigned(t *testing.T) {
 	if !found || st.Plan.Trigger.Routing.Ladder != LadderSRE || len(st.Plan.Calls) != 3 {
 		t.Fatalf("found=%v ladder=%q calls=%d; want an SRE ladder of 3", found, st.Plan.Trigger.Routing.Ladder, len(st.Plan.Calls))
 	}
-	for i, want := range []string{"L1 support", "L2 support"} {
+	for i, want := range []string{"L1 Support", "L2 Support"} {
 		if err := e.Tick(ctx, testClock.Add(time.Duration(i)*5*time.Minute)); err != nil {
 			t.Fatal(err)
 		}
@@ -903,7 +903,7 @@ func resolverTeamsFor(cfg Config) TeamKeys {
 }
 
 // The log channel names each rung the way its own ladder does: an SRE rung is
-// "L2 support", not the CRE ladder's name for LEVEL_1.
+// "L2 Support", not the CRE ladder's name for LEVEL_1.
 func TestLogNotifier_NamesTheRungByItsLadder(t *testing.T) {
 	var buf strings.Builder
 	prev := slog.Default()
@@ -914,8 +914,8 @@ func TestLogNotifier_NamesTheRungByItsLadder(t *testing.T) {
 	if _, err := (logNotifier{}).Deliver(context.Background(), plan, PlannedCall{Level: Level1}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(buf.String(), `role="L2 support"`) {
-		t.Fatalf("log line = %s; want role=\"L2 support\"", buf.String())
+	if !strings.Contains(buf.String(), `role="L2 Support"`) {
+		t.Fatalf("log line = %s; want role=\"L2 Support\"", buf.String())
 	}
 }
 

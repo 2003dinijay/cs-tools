@@ -32,7 +32,7 @@ function controls(over: Partial<PagingPhoneControls> = {}): PagingPhoneControls 
 describe("PhoneChip", () => {
   it("says the state in words and shows only the masked number", () => {
     render(<PhoneChip member={pagingMember({ membershipId: "a", hasProfilePhone: false, pagingPhone: { ...paging, lastTestStatus: "busy" } })} />);
-    expect(screen.getByText(/Paging number · test failed \(busy\)/)).toBeInTheDocument();
+    expect(screen.getByText(/Alert number · test failed \(busy\)/)).toBeInTheDocument();
     expect(screen.getByText(/\+94•••••123/)).toBeInTheDocument();
     expect(screen.queryByText(/\+94771234123/)).not.toBeInTheDocument();
   });
@@ -62,8 +62,8 @@ describe("PhoneChip", () => {
     const { rerender } = render(<PhoneChip member={m} controls={c} />);
     expect(screen.queryByRole("button", { name: /Change/ })).not.toBeInTheDocument();
     expect(screen.queryByText(ADD_TO_PROFILE_HINT)).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Remove Jane Doe's paging number" }));
-    fireEvent.click(screen.getByRole("button", { name: "Test call Jane Doe's paging number" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove Jane Doe's alert number" }));
+    fireEvent.click(screen.getByRole("button", { name: "Test call Jane Doe's alert number" }));
     expect(c.remove).toHaveBeenCalledWith(m);
     expect(c.test).toHaveBeenCalledTimes(1);
 

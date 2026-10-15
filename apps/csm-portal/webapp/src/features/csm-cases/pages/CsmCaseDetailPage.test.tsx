@@ -335,16 +335,24 @@ vi.mock("@features/csm-cases/api/useGetCsmCaseSlas", () => ({
 vi.mock("@features/csm-cases/api/useCreateCaseTask", () => ({
   useCreateCaseTask: () => ({ mutate: vi.fn(), isPending: false }),
 }));
+// The Git-issue success handler adds each tag with `mutateAsync`, so the stub
+// exposes one shared mock the tests below can inspect.
+const addTagMutateAsyncMock = vi.fn();
 vi.mock("@features/csm-cases/api/useCaseTags", () => ({
-  useAddCaseTag: () => ({ mutate: vi.fn(), isPending: false }),
+  useAddCaseTag: () => ({
+    mutate: vi.fn(),
+    mutateAsync: addTagMutateAsyncMock,
+    isPending: false,
+  }),
   useRemoveCaseTag: () => ({
     mutate: vi.fn(),
     isPending: false,
     variables: undefined,
   }),
 }));
+const postGithubIssueMutateMock = vi.fn();
 vi.mock("@features/csm-cases/api/useCsmCaseGithubIssue", () => ({
-  usePostCaseGithubIssue: () => ({ mutate: vi.fn(), isPending: false }),
+  usePostCaseGithubIssue: () => ({ mutate: postGithubIssueMutateMock, isPending: false }),
 }));
 vi.mock("@features/csm-cases/api/useGetCsmCaseEscalations", () => ({
   useGetCsmCaseEscalations: () => ({
@@ -428,6 +436,9 @@ vi.mock("@features/csm-cases/components/CaseActionBar", () => ({
       </button>
       <button type="button" onClick={() => onAction({ secondary: "set_fix_eta" })}>
         stub open set fix eta
+      </button>
+      <button type="button" onClick={() => onAction({ secondary: "raise_git_issue" })}>
+        stub open raise git issue
       </button>
       <button type="button" onClick={() => onAction("request_info", "awaiting_info")}>
         stub request info
@@ -581,8 +592,17 @@ vi.mock("@features/csm-cases/components/LinkedChangeRequestsWidget", () => ({
     <div data-testid="linked-change-requests-widget-probe" />
   ),
 }));
+// Captures the props the page hands the dialog so a test can submit it the way
+// the real dialog does (the dialog's own behaviour is covered in
+// CreateGithubIssueDialog.test.tsx).
+let githubDialogProps: { onSubmit: (payload: Record<string, unknown>) => void } | undefined;
 vi.mock("@features/csm-cases/components/CreateGithubIssueDialog", () => ({
-  CreateGithubIssueDialog: () => null,
+  CreateGithubIssueDialog: (props: {
+    onSubmit: (payload: Record<string, unknown>) => void;
+  }) => {
+    githubDialogProps = props;
+    return <div data-testid="create-github-issue-dialog-probe" />;
+  },
 }));
 // Probe, not `null`: several tests below assert on the comments the page
 // hands this feed (including the synthetic description entry — see
@@ -2629,5 +2649,184 @@ describe("CsmCaseDetailPage — fix-ETA stale-callback guard", () => {
       { internal: boolean },
     ];
     expect(commentInput.internal).toBe(false);
+  });
+});
+
+// Filing a Git issue from the case tags the case afterwards. The page used to
+// build that list inline with a mistyped first tag, and no test ever drove the
+// success handler, so these go through the real page: open the dialog the way
+// the action menu does, submit it, and resolve the Git issue request.
+describe("CsmCaseDetailPage — case tags added once a Git issue is filed", () => {
+  type GithubIssueCallOptions = {
+    onSuccess: (res: unknown) => void;
+    onError: (err: unknown) => void;
+  };
+
+  beforeEach(() => {
+    postGithubIssueMutateMock.mockReset();
+    addTagMutateAsyncMock.mockReset();
+    addTagMutateAsyncMock.mockResolvedValue(undefined);
+    showErrorMock.mockClear();
+    githubDialogProps = undefined;
+  });
+
+  /** Opens the dialog, submits `payload`, and returns what the page sent to the Git issue request. */
+  function submitGithubIssue(payload: Record<string, unknown>): {
+    variables: Record<string, unknown>;
+    options: GithubIssueCallOptions;
+  } {
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /stub open raise git issue/i }));
+    expect(screen.getByTestId("create-github-issue-dialog-probe")).toBeInTheDocument();
+    act(() => {
+      githubDialogProps?.onSubmit(payload);
+    });
+    expect(postGithubIssueMutateMock).toHaveBeenCalledTimes(1);
+    const [variables, options] = postGithubIssueMutateMock.mock.calls[0] as [
+      Record<string, unknown>,
+      GithubIssueCallOptions,
+    ];
+    return { variables, options };
+  }
+
+  const issueCreated = {
+    message: "created",
+    issue: { url: "https://github.com/example/example/issues/1", number: 1, repo: "example" },
+  };
+
+  const addedTags = (): unknown[] => addTagMutateAsyncMock.mock.calls.map(([label]) => label);
+
+  it("sends the submitted payload for this case, and adds no tag until the issue exists", () => {
+    const { variables } = submitGithubIssue({
+      reason: "default",
+      title: "A title",
+      description: "A description",
+    });
+
+    expect(variables).toEqual({
+      caseId: expect.any(String),
+      reason: "default",
+      title: "A title",
+      description: "A description",
+    });
+    expect(addTagMutateAsyncMock).not.toHaveBeenCalled();
+  });
+
+  it("tags the case s_dip, and nothing else, for a plain Git issue", async () => {
+    const { options } = submitGithubIssue({ reason: "default", title: "t", description: "d" });
+
+    await act(async () => {
+      options.onSuccess(issueCreated);
+      await Promise.resolve();
+    });
+
+    expect(addedTags()).toEqual(["s_dip"]);
+    expect(addedTags()).not.toContain("s_dp");
+    expect(showErrorMock).not.toHaveBeenCalled();
+  });
+
+  it("tags the case patch, not s_dip, for a patch Git issue", async () => {
+    const { options } = submitGithubIssue({
+      reason: "default",
+      issueTypeLabel: "Type/Patch",
+      title: "t",
+      description: "d",
+    });
+
+    await act(async () => {
+      options.onSuccess(issueCreated);
+      await Promise.resolve();
+    });
+
+    expect(addedTags()).toEqual(["patch"]);
+    expect(showErrorMock).not.toHaveBeenCalled();
+  });
+
+  it("tags the case s_dip, not patch, for a discussion Git issue", async () => {
+    const { options } = submitGithubIssue({
+      reason: "default",
+      issueTypeLabel: "Type/Discussion",
+      title: "t",
+      description: "d",
+    });
+
+    await act(async () => {
+      options.onSuccess(issueCreated);
+      await Promise.resolve();
+    });
+
+    expect(addedTags()).toEqual(["s_dip"]);
+  });
+
+  it("adds s_rg and migration after patch for a patch regression filed as a migration issue", async () => {
+    const { options } = submitGithubIssue({
+      reason: "migration",
+      regression: true,
+      issueTypeLabel: "Type/Patch",
+      title: "t",
+      description: "d",
+    });
+
+    await act(async () => {
+      options.onSuccess(issueCreated);
+      await Promise.resolve();
+    });
+
+    expect(addedTags()).toEqual(["patch", "s_rg", "migration"]);
+  });
+
+  it("also adds s_rg for a regression and migration for a migration issue, after s_dip", async () => {
+    const { options } = submitGithubIssue({
+      reason: "migration",
+      regression: true,
+      title: "t",
+      description: "d",
+    });
+
+    await act(async () => {
+      options.onSuccess(issueCreated);
+      await Promise.resolve();
+    });
+
+    expect(addedTags()).toEqual(["s_dip", "s_rg", "migration"]);
+  });
+
+  it("adds no tag when the Git issue could not be created", async () => {
+    for (const err of [new Error("upstream down"), new BackendApiError(422, "Product is not routable")]) {
+      postGithubIssueMutateMock.mockReset();
+      const { options } = submitGithubIssue({ reason: "default", title: "t", description: "d" });
+
+      await act(async () => {
+        options.onError(err);
+        await Promise.resolve();
+      });
+
+      expect(addTagMutateAsyncMock).not.toHaveBeenCalled();
+      cleanup();
+    }
+  });
+
+  it("keeps adding the other tags, and names the one that failed, when one tag cannot be added", async () => {
+    addTagMutateAsyncMock.mockImplementation(async (label: string) => {
+      if (label === "s_rg") throw new Error("tag service unavailable");
+    });
+    const { options } = submitGithubIssue({
+      reason: "migration",
+      regression: true,
+      title: "t",
+      description: "d",
+    });
+
+    await act(async () => {
+      options.onSuccess(issueCreated);
+      await Promise.resolve();
+    });
+
+    expect(addedTags()).toEqual(["s_dip", "s_rg", "migration"]);
+    expect(showErrorMock).toHaveBeenCalledTimes(1);
+    expect(showErrorMock).toHaveBeenCalledWith(
+      'The GitHub issue was created, but the case tag "s_rg" could not be added.',
+      expect.any(Error),
+    );
   });
 });

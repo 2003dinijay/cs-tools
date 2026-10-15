@@ -17,7 +17,7 @@
 import { useState, useEffect, type ReactNode } from "react";
 import {
   Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Typography, Box,
-  List, ListItem, ListItemText, Collapse, IconButton, Card, CardContent,
+  List, ListItem, ListItemIcon, ListItemText, Collapse, IconButton, Card, CardContent,
   Accordion, AccordionSummary, AccordionDetails, Chip, Skeleton,
 } from "@wso2/oxygen-ui";
 import { TriangleAlertIcon, ChevronDownIcon, ChevronUpIcon, CircleCheckIcon, CircleXIcon } from "@wso2/oxygen-ui-icons-react";
@@ -70,6 +70,33 @@ function forcePointerRehover() {
     }),
   );
 }
+
+/**
+ * `item.eolDate` arrives as a full ISO instant (`2026-03-25T00:00:00Z`,
+ * always midnight — EOL is tracked to the day, never the hour) that, shown
+ * verbatim inside a chip, was the single biggest contributor to the
+ * expanded-row width overflow this file otherwise fixes with
+ * {@link PROJECT_COLUMN_WIDTH}: the chip alone is wider than the whole
+ * column. A plain calendar date carries exactly the same information in a
+ * fraction of the width. Falls back to the raw string on anything that
+ * doesn't parse, rather than hiding a genuinely malformed date.
+ */
+function formatEolDate(raw: string): string {
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return raw;
+  return date.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
+
+// A project column's fixed width — applied to both the header cell and every
+// body cell in that column (RiskCell's own TableCell below), so the column
+// never grows past it. Without a matching cap on the body cells, expanding a
+// row with wide detail content (an EOL product's name next to its long
+// "EOL: <timestamp>" chip, with nothing else bounding their combined width)
+// reported live as stretching the whole column -- and so the whole table --
+// well past this width, shoving every other column sideways just because one
+// row happened to be open. Detail content now wraps inside this width
+// instead.
+const PROJECT_COLUMN_WIDTH = 250;
 
 interface RiskCellProps {
   project: ProjectDetail;
@@ -148,7 +175,7 @@ function RiskCell({ project, indicator, detailData, renderDetailItem }: RiskCell
   }
 
   return (
-    <TableCell>
+    <TableCell sx={{ minWidth: PROJECT_COLUMN_WIDTH, maxWidth: PROJECT_COLUMN_WIDTH }}>
       <Box display="flex" alignItems="center">
         {statusIcon}
         <Typography variant="body2" sx={{ ml: 1 }}>{statusText}</Typography>
@@ -329,7 +356,7 @@ export default function CustomerHealthDetailTable({ accountId, onAccountNameLoad
                       Risk Indicator
                     </TableCell>
                     {accountData.customerProjects.map((project) => (
-                      <TableCell key={project.sysId} sx={{ fontWeight: "bold", minWidth: 250 }}>{project.name}</TableCell>
+                      <TableCell key={project.sysId} sx={{ fontWeight: "bold", minWidth: PROJECT_COLUMN_WIDTH, maxWidth: PROJECT_COLUMN_WIDTH }}>{project.name}</TableCell>
                     ))}
                   </TableRow>
                 </TableHead>
@@ -359,9 +386,7 @@ export default function CustomerHealthDetailTable({ accountId, onAccountNameLoad
                         indicator="hasAbandonedCases"
                         detailData={project.detailedAbandonedCases}
                         renderDetailItem={(item: CaseLink, index) => (
-                          <ListItem key={index} dense sx={{ pl: 4 }}>
-                            <ListItemText primary={item.number} />
-                          </ListItem>
+                          <CaseNumberListItem key={index} label={item.number} />
                         )}
                       />
                     ))}
@@ -378,21 +403,32 @@ export default function CustomerHealthDetailTable({ accountId, onAccountNameLoad
                           <Box
                             key={index}
                             sx={{
-                              mx: 4, mb: 1, p: 1.5,
+                              mx: 2, mb: 1, p: 1,
                               border: 1, borderColor: "divider", borderLeft: 3, borderLeftColor: "error.main",
                               borderRadius: 1, backgroundColor: "action.hover",
+                              maxWidth: "100%", overflow: "hidden",
                             }}
                           >
-                            <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 1 }}>
-                              <Typography variant="body2" fontWeight={600}>{item.name}</Typography>
-                              <Chip size="small" variant="outlined" color="error" label={`EOL: ${item.eolDate}`} />
+                            <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5 }}>
+                              <Typography variant="body2" fontWeight={600} sx={{ wordBreak: "break-word" }}>
+                                {item.name}
+                              </Typography>
+                              <Chip
+                                size="small"
+                                variant="outlined"
+                                color="error"
+                                label={`EOL: ${formatEolDate(item.eolDate)}`}
+                                sx={{ alignSelf: "flex-start", maxWidth: "100%" }}
+                              />
                             </Box>
                             {item.deployments && item.deployments.length > 0 && (
-                              <Box sx={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 0.75, mt: 1 }}>
+                              <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5, mt: 1 }}>
                                 <Typography variant="caption" color="text.secondary">Deployments:</Typography>
-                                {item.deployments.map((dep) => (
-                                  <Chip key={dep.sysId} size="small" variant="outlined" label={dep.name} />
-                                ))}
+                                <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.75 }}>
+                                  {item.deployments.map((dep) => (
+                                    <Chip key={dep.sysId} size="small" variant="outlined" label={dep.name} />
+                                  ))}
+                                </Box>
                               </Box>
                             )}
                           </Box>
@@ -409,9 +445,7 @@ export default function CustomerHealthDetailTable({ accountId, onAccountNameLoad
                         indicator="hasMigrationDelays"
                         detailData={project.detailedMigrationDelays}
                         renderDetailItem={(item: CaseLink, index) => (
-                          <ListItem key={index} dense sx={{ pl: 4 }}>
-                            <ListItemText primary={item.number} />
-                          </ListItem>
+                          <CaseNumberListItem key={index} label={item.number} />
                         )}
                       />
                     ))}
@@ -425,9 +459,7 @@ export default function CustomerHealthDetailTable({ accountId, onAccountNameLoad
                         indicator="hasEscalatedCases"
                         detailData={project.detailedEscalatedCases}
                         renderDetailItem={(item: CaseLink, index) => (
-                          <ListItem key={index} dense sx={{ pl: 4 }}>
-                            <ListItemText primary={item.escalationNumber} />
-                          </ListItem>
+                          <CaseNumberListItem key={index} label={item.escalationNumber} />
                         )}
                       />
                     ))}
@@ -467,5 +499,25 @@ function StatusIndicator({ isRisk }: { isRisk: boolean }) {
     <Box sx={{ color: isRisk ? "error.main" : "success.main", display: "inline-flex" }}>
       {isRisk ? <CircleXIcon size={22} /> : <CircleCheckIcon size={22} />}
     </Box>
+  );
+}
+
+/**
+ * One case/escalation number in an expanded risk indicator's detail list,
+ * marked with a plain bullet dot instead of a bare, unmarked line of text --
+ * reported live as hard to read once a row lists more than one case, with
+ * nothing visually separating one entry from the next.
+ */
+function CaseNumberListItem({ label }: { label?: string }) {
+  return (
+    <ListItem dense disableGutters sx={{ pl: 4 }}>
+      <ListItemIcon sx={{ minWidth: 20, justifyContent: "center" }}>
+        <Box
+          data-testid="risk-detail-bullet"
+          sx={{ width: 6, height: 6, borderRadius: "50%", backgroundColor: "text.disabled" }}
+        />
+      </ListItemIcon>
+      <ListItemText primary={label} />
+    </ListItem>
   );
 }
