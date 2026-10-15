@@ -491,14 +491,11 @@ func buildEscalationHandoffReply(h EscalationHandoff) chatCardMessage {
 	if team == "" {
 		team = "the specialist team"
 	}
-	var lines []string
+	lines := []string{caseAlertLine("<b>SRE paging stopped</b>")}
 	if h.By != "" {
-		lines = append(lines, caseAlertLine("<b>Escalated by %s</b>", h.By))
+		lines = []string{caseAlertLine("<b>Escalated by %s</b>", h.By)}
 	}
-	lines = append(lines, caseAlertLine("SRE paging stopped."))
-	if h.Paging {
-		lines = append(lines, caseAlertLine("Paging the on-duty %s SMEs: L1, then L2 and L3, until someone is assigned.", team))
-	} else {
+	if !h.Paging {
 		lines = append(lines, caseAlertLine(`<font color="#B3261E">No %s SME could be paged; see the incident's work notes.</font>`, team))
 	}
 	return escalationReply("incident-escalation-handoff", "Escalated to "+team+" SMEs", h.IncidentRef, h.ThreadKey, lines)

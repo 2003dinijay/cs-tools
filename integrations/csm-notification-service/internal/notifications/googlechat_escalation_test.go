@@ -341,7 +341,7 @@ func TestBuildEscalationHandoffReply(t *testing.T) {
 		t.Errorf("header = %q / %q", card.Header.Title, card.Header.Subtitle)
 	}
 	body := card.Sections[0].Widgets[0].TextParagraph.Text
-	want := "<b>Escalated by lead@wso2.com</b><br>SRE paging stopped.<br>Paging the on-duty Choreo Runtime SMEs: L1, then L2 and L3, until someone is assigned."
+	want := "<b>Escalated by lead@wso2.com</b>"
 	if body != want {
 		t.Errorf("body = %q, want %q", body, want)
 	}
