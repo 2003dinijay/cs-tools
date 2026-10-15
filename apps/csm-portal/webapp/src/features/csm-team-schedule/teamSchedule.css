@@ -3055,6 +3055,9 @@
 .csm-ts .cas-url .cas-sub { flex-basis: 100%; margin: 0; }
 .csm-ts .cas input, .csm-ts .cas select { height: 28px; padding: 0 8px; border: 1px solid var(--line-2); border-radius: 6px; font: inherit; font-size: 12.5px; background: var(--surface); color: inherit; }
 .csm-ts .btn.sm.danger { color: var(--crit); border-color: color-mix(in srgb, var(--crit) 40%, var(--line-2)); }
+/* A disabled button looks it: the primary fill otherwise reads as clickable. */
+.csm-ts .btn:disabled, .csm-ts .btn[aria-disabled="true"] { opacity: .5; cursor: not-allowed; }
+.csm-ts .btn.sm.primary:disabled:hover { background: var(--accent); }
 
 /* Ladder settings: the rest of a ladder's paging file, under the chain's rooms and routes. */
 .csm-ts .cas-ladder { margin-top: 18px; }
@@ -3077,6 +3080,22 @@
 
 /* The switch above a chain: who gets alerts, or its settings. */
 .csm-ts .cas-view { margin-left: 4px; }
+/* Alert Settings: the family tabs (CRE | SRE) on top, and under them the
+   underlined sub-tabs (Who gets alerts | Settings). */
+.csm-ts .cp-tabs { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; margin-bottom: 12px; padding: 12px 14px 0; }
+.csm-ts .cp-subtabs { display: flex; gap: 18px; width: 100%; border-bottom: 1px solid var(--line); }
+.csm-ts .cp-subtabs button { padding: 6px 2px; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; background: transparent; color: var(--muted); font-size: 13px; font-weight: 600; cursor: pointer; }
+.csm-ts .cp-subtabs button.on { color: var(--accent-ink); border-bottom-color: var(--accent); }
+.csm-ts .cp-subtabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.csm-ts .cp-chain { padding: 0 14px 4px; }
+.csm-ts .cp-chain + .cp-chain { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+.csm-ts .cp-chain > h2 { margin: 0 0 6px; font-size: 14px; }
+/* The family's changes not saved yet, and its Submit: kept in view. */
+.csm-ts .cas-submit { position: sticky; bottom: 0; z-index: 5; margin-top: 16px; padding: 10px 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; background: var(--surface-solid, var(--surface)); border: 1px solid var(--line-2); border-radius: 10px; box-shadow: var(--shadow); }
+.csm-ts .cas-submit > p { margin: 0; }
+.csm-ts .cas-pending { flex: 1 1 100%; margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 2px; font-size: 12.5px; }
+.csm-ts .cas-pending li { display: flex; align-items: center; gap: 6px; }
+.csm-ts .cas-submit-acts { margin-left: auto; display: flex; gap: 8px; }
 /* The settings header: one status line, then who may change them and what is left to set up. */
 .csm-ts .cas-viewonly { margin: 6px 0 0; }
 .csm-ts .cas-setup { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }

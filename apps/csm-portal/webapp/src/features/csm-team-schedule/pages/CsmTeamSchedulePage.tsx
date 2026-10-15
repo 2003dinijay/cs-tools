@@ -1576,6 +1576,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
                 initialChain={myPagingChain}
                 visibleChains={pagingChains.chains}
                 teams={catalogue.data?.teams ?? []}
+                moveTargetKeys={(catalogue.data?.absenceKinds ?? []).flatMap((k) => (k.movesToTeamKey ? [k.movesToTeamKey] : []))}
               />
             ) : null
           ) : view === "access" ? (

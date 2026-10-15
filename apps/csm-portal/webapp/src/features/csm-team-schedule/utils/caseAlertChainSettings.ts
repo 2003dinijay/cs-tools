@@ -17,6 +17,7 @@
  */
 
 import type { CaseAlertRoomLadder, PagingChainCode } from "../types";
+import type { SettingsFamily } from "./caseAlertDrafts";
 
 export interface ChainSettings {
   /** The chain as the picker names it. */
@@ -51,4 +52,26 @@ export function chainHasSettings(chain: PagingChainCode): boolean {
 export function mayManageChain(chain: PagingChainCode, roomLadders: readonly string[] | undefined): boolean {
   const cfg = CHAIN_SETTINGS[chain];
   return !!cfg && (roomLadders ?? []).includes(cfg.ladder);
+}
+
+/** The ladders each family's tab holds: CRE's, and SRE's with SME's (the SRE
+ *  tab lists SaaS, IaaS and SME teams together). */
+export const FAMILY_LADDERS: Record<SettingsFamily, CaseAlertRoomLadder[]> = {
+  CRE: ["CRE"],
+  SRE: ["SRE", "SME"],
+};
+
+/** The family a ladder's settings are on. */
+export function familyOfLadder(ladder: CaseAlertRoomLadder): SettingsFamily {
+  return ladder === "CRE" ? "CRE" : "SRE";
+}
+
+/** The family a chain's settings are on. */
+export function familyOfChain(chain: PagingChainCode): SettingsFamily {
+  return chain === "CRE" ? "CRE" : "SRE";
+}
+
+/** Whether the reader may see and change any of a family's settings. */
+export function mayManageFamily(family: SettingsFamily, roomLadders: readonly string[] | undefined): boolean {
+  return FAMILY_LADDERS[family].some((l) => (roomLadders ?? []).includes(l));
 }

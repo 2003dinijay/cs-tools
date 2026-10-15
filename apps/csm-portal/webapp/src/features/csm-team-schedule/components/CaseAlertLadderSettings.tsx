@@ -17,7 +17,8 @@
  */
 
 import { useId, useRef, useState, type FormEvent, type JSX, type RefObject } from "react";
-import { useDeleteCaseAlertValue, useSaveCaseAlertValues } from "../api/useCaseAlertSettings";
+import { familyOfLadder } from "../utils/caseAlertChainSettings";
+import { useCaseAlertDrafts } from "../utils/caseAlertDrafts";
 import type {
   CaseAlertFileOnly,
   CaseAlertRoomLadder,
@@ -177,7 +178,8 @@ function FileOnlyGroup({
   ladder: CaseAlertRoomLadder;
   fileOnly?: CaseAlertFileOnly;
 }): JSX.Element {
-  const title = "Set in the alert service's file";
+  // Named by ladder: the SRE tab shows SRE's and SME's.
+  const title = `${ladder}: set in the alert service's file`;
   return (
     <CaseAlertSection id={`${ladder}.file`} label={title} summary={`${title} · read-only`}>
       <p className="cas-sub">
@@ -345,17 +347,16 @@ function ValueDialog({
   onClose,
   onSaved,
 }: ValueDialogProps): JSX.Element {
-  const save = useSaveCaseAlertValues();
-  const remove = useDeleteCaseAlertValue();
+  const drafts = useCaseAlertDrafts();
+  const family = familyOfLadder(ladder);
   const ids = useId();
   const titleId = `${ids}-title`;
   const helpId = `${ids}-help`;
   const [draft, setDraft] = useState<LadderDraft>(() => draftFor(spec, start));
   const [error, setError] = useState<string | null>(null);
   const [confirmFile, setConfirmFile] = useState(false);
-  const busy = save.isPending || remove.isPending;
+  const busy = drafts.submitting === family;
   const hint = unknown ? null : limitHint(spec);
-  const fail = (e: Error) => setError(e.message || "That change did not save.");
 
   // min and max are hints: the server checks every limit and its message
   // names the key, so the browser doesn't stop the send.
@@ -368,28 +369,19 @@ function ValueDialog({
       setError(parsed.error);
       return;
     }
-    save.mutate(
-      { ladder, values: { [spec.key]: parsed.value } },
-      {
-        onError: fail,
-        onSuccess: () => {
-          onSaved(spec.label);
-          onClose();
-        },
-      },
-    );
+    const what = `${ladder} ${spec.label}`;
+    drafts.add({ family, what, kind: "values", input: { ladder, values: { [spec.key]: parsed.value } } });
+    onSaved(what);
+    onClose();
   };
 
   const goBackToFile = () => {
     if (!saved || busy) return;
     setError(null);
-    remove.mutate(saved.id, {
-      onError: fail,
-      onSuccess: () => {
-        onSaved(`${spec.label} uses the file's value again`);
-        onClose();
-      },
-    });
+    const what = `${ladder} ${spec.label} uses the file's value again`;
+    drafts.add({ family, what, kind: "deleteValue", valueId: saved.id });
+    onSaved(what);
+    onClose();
   };
 
   return (
@@ -440,7 +432,7 @@ function ValueDialog({
           </button>
           {unknown ? null : (
             <button type="submit" className="btn sm primary" aria-disabled={busy || undefined}>
-              {save.isPending ? "Saving…" : "Save"}
+              Add to changes
             </button>
           )}
         </div>
