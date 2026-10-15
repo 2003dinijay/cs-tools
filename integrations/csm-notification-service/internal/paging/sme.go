@@ -218,12 +218,16 @@ func (e *Engine) handleSpecialOps(ctx context.Context, pr specialOpsPress) error
 // failure is logged, never retried -- the SME page matters, this message
 // does not hold it up.
 func (e *Engine) postSMEHandoff(ctx context.Context, pr specialOpsPress, team string, started bool) {
-	if !e.cfg.Ladder.SMEHandoffChat {
+	// The incident card's spaces first, without sre.smeHandoffChat, so the message replies under it; else the SRE space when that is on.
+	targets := e.incidentRooms(Trigger{IncidentID: pr.IncidentID, Team: pr.PreviousGroup})
+	if len(targets) > 0 && e.cfg.SME.Channel == ChannelLog {
+		// A log (dry run) SME ladder pages nobody, so the incident space is not told it does.
 		return
 	}
-	// The incident card's spaces first, so the message replies under it; else the SRE space as before.
-	targets := e.incidentRooms(Trigger{IncidentID: pr.IncidentID, Team: pr.PreviousGroup})
 	if len(targets) == 0 {
+		if !e.cfg.Ladder.SMEHandoffChat {
+			return
+		}
 		target, ok := e.sreRoomFor(pr.PreviousGroup)
 		if !ok {
 			return
@@ -254,6 +258,7 @@ func (e *Engine) postSMEHandoffTo(ctx context.Context, target chatRoom, pr speci
 		PortalURL:   e.links.IncidentLink(pr.IncidentID),
 		PortalLabel: "View incident",
 		ThreadKey:   notifications.IncidentThreadKey(pr.IncidentID),
+		Reply:       target.reply,
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "escalation: the SME handoff message was not posted", "incidentId", pr.IncidentID, "audience", target.room, "err", err)
