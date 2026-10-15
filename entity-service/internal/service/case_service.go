@@ -2421,13 +2421,15 @@ func (s *caseService) isActiveProjectWatcher(ctx context.Context, projectID, use
 // newlyAddedWatcherIDs returns the entries of submitted that are not already
 // persisted watchers on the case (current is the case's present watch list),
 // comparing ids case-insensitively and preserving submitted's order. Locked
-// entries are skipped when building the existing set: they are account
-// stakeholders synthesized on read, not persisted watcher rows, so they do
-// not make a submitted id exempt from validation.
+// entries count as existing too: they are the account's stakeholders,
+// synthesized onto every read, and the portal echoes them back in the full
+// list it submits on every Follow/Unfollow/Add. They are not something the
+// caller is adding, and a stakeholder who is staff but not typed INTERNAL
+// would otherwise block every edit.
 func newlyAddedWatcherIDs(current []domain.WatchListUser, submitted []string) []string {
 	existing := make(map[string]struct{}, len(current))
 	for _, w := range current {
-		if w.Locked || w.ID == "" {
+		if w.ID == "" {
 			continue
 		}
 		existing[strings.ToLower(w.ID)] = struct{}{}
