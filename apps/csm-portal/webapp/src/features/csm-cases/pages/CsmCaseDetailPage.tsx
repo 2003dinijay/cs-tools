@@ -212,6 +212,7 @@ import type {
   CreateRelatedCaseNavState,
   CreateServiceRequestFromCaseNavState,
   CsmCaseComment,
+  CsmCaseDetail,
 } from "@features/csm-cases/types/csmCases";
 import type { CaseState } from "@features/csm-dashboard/types/abtDashboard";
 import { useNavTransition } from "@hooks/useNavTransition";
@@ -1277,19 +1278,51 @@ export default function CsmCaseDetailPage(): JSX.Element {
             showError("Could not assign the case to you: no signed-in email found.");
             return;
           }
-          patchCase.mutate(
-            { assigneeEmail: currentUserEmail },
-            {
-              onSuccess: () =>
-                void startWork(
-                  LIFECYCLE_TOAST.assign_to_me,
-                  LIFECYCLE_SEVERITY.assign_to_me,
-                  showSuccess,
-                ),
-              onError: (err) =>
-                showError("Could not assign the case to you.", err),
-            },
-          );
+          // The button was rendered from a view that may be stale: another
+          // engineer can have started work on this case since it loaded. The
+          // assignment PATCH below would still land (the backend only rejects
+          // the follow-up work_in_progress -> work_in_progress state move),
+          // silently handing the case to a second engineer. So read the case
+          // fresh and bail out BEFORE any write if it's already in progress.
+          void (async () => {
+            let fresh: CsmCaseDetail | null | undefined;
+            try {
+              const result = await refetchCaseDetail();
+              // A failed refetch resolves with the previous (stale) data, so
+              // treat it like a failed read: never write blind.
+              fresh = result?.isError ? undefined : result?.data;
+            } catch {
+              fresh = undefined;
+            }
+            if (!fresh) {
+              showError(
+                "Couldn't check the latest state of this case. Please try again.",
+              );
+              return;
+            }
+            if (fresh.state === "work_in_progress") {
+              const holder = fresh.assigneeIsMe
+                ? "you"
+                : fresh.assigneeName || "another engineer";
+              showError(
+                `This case is already in progress with ${holder}. Refresh to see the latest state.`,
+              );
+              return;
+            }
+            patchCase.mutate(
+              { assigneeEmail: currentUserEmail },
+              {
+                onSuccess: () =>
+                  void startWork(
+                    LIFECYCLE_TOAST.assign_to_me,
+                    LIFECYCLE_SEVERITY.assign_to_me,
+                    showSuccess,
+                  ),
+                onError: (err) =>
+                  showError("Could not assign the case to you.", err),
+              },
+            );
+          })();
           return;
         }
 
@@ -1575,6 +1608,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
       startWork,
       resolveOngoingConflict,
       proceedLifecycleTransition,
+      refetchCaseDetail,
       currentUserEmail,
       navigate,
     ],
