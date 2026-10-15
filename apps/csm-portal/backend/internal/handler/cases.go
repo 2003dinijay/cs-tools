@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -433,6 +434,14 @@ func (h *CaseHandler) CreateCase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Only a support case carries a watch list on create; the entity service
+	// decides who may be added. Other create types are forwarded untouched.
+	body, err = normalizeCaseCreateWatchList(body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+
 	result, err := h.entity.CreateCase(r.Context(), body)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity CreateCase failed", "userID", user.UserID, "err", err)
@@ -747,6 +756,53 @@ type caseFieldFilterFragment struct {
 // entity-service's own exact-lowercase match on purpose: a guard may deny
 // too much, never too little.
 const announcementCaseType = "announcement"
+
+// maxCaseCreateWatchList caps how many watchers one create request may name.
+const maxCaseCreateWatchList = 500
+
+// normalizeCaseCreateWatchList validates and trims the optional watchList of a
+// POST /cases body whose type is "case". It must be an array of at most
+// maxCaseCreateWatchList non-empty strings; each entry is trimmed. An omitted,
+// null or empty list leaves the body byte-for-byte unchanged, as does any other
+// create type. Whether each entry is an eligible watcher (and that entries are
+// all emails or all user ids) is the entity service's decision, not repeated here.
+func normalizeCaseCreateWatchList(body []byte) ([]byte, error) {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body, nil // not an object: left to the entity service to reject
+	}
+	var typ string
+	if raw, ok := m["type"]; !ok || json.Unmarshal(raw, &typ) != nil || strings.TrimSpace(typ) != "case" {
+		return body, nil
+	}
+	raw, ok := m["watchList"]
+	if !ok || string(bytes.TrimSpace(raw)) == "null" {
+		return body, nil
+	}
+	var list []string
+	if err := json.Unmarshal(raw, &list); err != nil {
+		return nil, err
+	}
+	if len(list) == 0 {
+		return body, nil
+	}
+	if len(list) > maxCaseCreateWatchList {
+		return nil, fmt.Errorf("watchList has %d entries, max %d", len(list), maxCaseCreateWatchList)
+	}
+	for i, w := range list {
+		w = strings.TrimSpace(w)
+		if w == "" {
+			return nil, errors.New("watchList entry is empty")
+		}
+		list[i] = w
+	}
+	trimmed, err := json.Marshal(list)
+	if err != nil {
+		return nil, err
+	}
+	m["watchList"] = trimmed
+	return json.Marshal(m)
+}
 
 // caseCreateTargetsAnnouncement reports whether a POST /cases body asks for a
 // work item of type announcement. It reads the top-level keys as a token
