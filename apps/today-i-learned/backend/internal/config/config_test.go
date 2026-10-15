@@ -21,6 +21,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wso2-open-operations/cs-tools/apps/today-i-learned/backend/internal/store"
 )
 
 func env(values map[string]string) func(string) string {
@@ -43,7 +45,7 @@ func TestLoadDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Port != "9090" || cfg.DB.Port != "3306" || cfg.DB.TLS || cfg.ReadTimeout != 15*time.Second || cfg.WriteTimeout != 45*time.Second {
+	if cfg.Port != "9090" || cfg.DB.Port != "3306" || cfg.DB.TLS != store.TLSOff || cfg.ReadTimeout != 15*time.Second || cfg.WriteTimeout != 45*time.Second {
 		t.Fatalf("defaults = %+v", cfg)
 	}
 	if cfg.Entity != nil || cfg.Novera != nil || len(cfg.CORSOrigins) != 0 {
@@ -89,7 +91,7 @@ func TestLoadReadsEverything(t *testing.T) {
 	if len(warnings) != 0 {
 		t.Fatalf("warnings = %q", warnings)
 	}
-	if cfg.Port != "9000" || !cfg.DB.TLS || cfg.ReadTimeout != 5*time.Second || cfg.WriteTimeout != time.Minute {
+	if cfg.Port != "9000" || cfg.DB.TLS != store.TLSVerify || cfg.ReadTimeout != 5*time.Second || cfg.WriteTimeout != time.Minute {
 		t.Fatalf("server = %+v", cfg)
 	}
 	if !slices.Equal(cfg.CORSOrigins, []string{"https://one.example", "https://two.example"}) ||
@@ -103,11 +105,29 @@ func TestLoadReadsEverything(t *testing.T) {
 	}
 }
 
+func TestLoadDBTLS(t *testing.T) {
+	for value, want := range map[string]store.TLSMode{"false": store.TLSOff, "true": store.TLSVerify, "skip-verify": store.TLSSkipVerify} {
+		v := minimal()
+		v["DB_TLS"] = value
+		cfg, warnings, err := Load(env(v))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.DB.TLS != want {
+			t.Errorf("DB_TLS=%s: TLS = %v, want %v", value, cfg.DB.TLS, want)
+		}
+		warned := slices.ContainsFunc(warnings, func(w string) bool { return strings.HasPrefix(w, "DB_TLS is skip-verify") })
+		if warned != (want == store.TLSSkipVerify) {
+			t.Errorf("DB_TLS=%s: warnings = %q", value, warnings)
+		}
+	}
+}
+
 func TestLoadReportsEveryProblem(t *testing.T) {
 	_, _, err := Load(env(map[string]string{
 		"PORT":                    "http",
 		"REST_READ_TIMEOUT":       "soon",
-		"DB_TLS":                  "1", // strconv.ParseBool would take it
+		"DB_TLS":                  "1",
 		"AUTH_JWKS_ENDPOINT":      "idp.example.com/jwks",
 		"ONE_WSO2_BASE_URL":       "one.example",
 		"ENTRY_TEXT_MAX_LENGTH":   "5001",
@@ -121,7 +141,7 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 		"PORT must be a port number",
 		"REST_READ_TIMEOUT must be a positive duration",
 		"DB_HOST is required", "DB_USER is required", "DB_PASSWORD is required", "DB_NAME is required",
-		"DB_TLS must be true or false",
+		"DB_TLS must be true, false or skip-verify",
 		"AUTH_JWKS_ENDPOINT must be an absolute http(s) URL",
 		"AUTH_ISSUER is required",
 		"ONE_WSO2_BASE_URL must be an absolute http(s) URL",

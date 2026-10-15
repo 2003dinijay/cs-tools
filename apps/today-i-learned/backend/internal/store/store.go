@@ -43,11 +43,24 @@ type Config struct {
 	User     string
 	Password string
 	Name     string
-	// TLS encrypts the connection, for a server that requires secure
-	// transport. The server's certificate must come from a CA the system
-	// trusts and name Host.
-	TLS bool
+	TLS      TLSMode
 }
+
+// TLSMode is how the connection to the database is secured, for a server
+// that requires secure transport.
+type TLSMode int
+
+const (
+	// TLSOff connects in plain text.
+	TLSOff TLSMode = iota
+	// TLSVerify encrypts the connection and checks the server's
+	// certificate: it must come from a CA the system trusts and name Host.
+	TLSVerify
+	// TLSSkipVerify encrypts the connection without checking the server's
+	// certificate, for a server whose certificate the system can't verify.
+	// It doesn't guard against an impostor posing as the server.
+	TLSSkipVerify
+)
 
 // Store reads and writes entries.
 type Store struct {
@@ -97,8 +110,11 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 	mc.Net = "tcp"
 	mc.Addr = net.JoinHostPort(cfg.Host, cfg.Port)
 	mc.DBName = cfg.Name
-	if cfg.TLS {
+	switch cfg.TLS {
+	case TLSVerify:
 		mc.TLSConfig = "true"
+	case TLSSkipVerify:
+		mc.TLSConfig = "skip-verify"
 	}
 	return openConfig(ctx, mc)
 }

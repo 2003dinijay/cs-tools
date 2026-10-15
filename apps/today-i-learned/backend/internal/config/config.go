@@ -73,7 +73,7 @@ func Load(getenv func(string) string) (Config, []string, error) {
 			User:     r.required("DB_USER"),
 			Password: r.required("DB_PASSWORD"),
 			Name:     r.required("DB_NAME"),
-			TLS:      r.boolean("DB_TLS"),
+			TLS:      r.dbTLS("DB_TLS"),
 		},
 		JWKSEndpoint: r.url("AUTH_JWKS_ENDPOINT", true),
 		Auth: middleware.AuthConfig{
@@ -107,6 +107,9 @@ func Load(getenv func(string) string) (Config, []string, error) {
 	}
 
 	var warnings []string
+	if cfg.DB.TLS == store.TLSSkipVerify {
+		warnings = append(warnings, "DB_TLS is skip-verify: the database connection is encrypted, but its certificate is not checked")
+	}
 	if cfg.WebappClientID == "" {
 		warnings = append(warnings, "ONE_WSO2_WEBAPP_CLIENT_ID is not set: no one can share or edit entries")
 	}
@@ -179,16 +182,18 @@ func (r *reader) url(key string, required bool) string {
 	return v
 }
 
-// boolean reads true or false, and nothing else; unset is false.
-func (r *reader) boolean(key string) bool {
-	switch v := r.optional(key); v {
+// dbTLS reads false (or unset), true or skip-verify, and nothing else.
+func (r *reader) dbTLS(key string) store.TLSMode {
+	switch r.optional(key) {
 	case "", "false":
-		return false
+		return store.TLSOff
 	case "true":
-		return true
+		return store.TLSVerify
+	case "skip-verify":
+		return store.TLSSkipVerify
 	}
-	r.problems = append(r.problems, key+" must be true or false")
-	return false
+	r.problems = append(r.problems, key+" must be true, false or skip-verify")
+	return store.TLSOff
 }
 
 func (r *reader) port(key, fallback string) string {
