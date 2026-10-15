@@ -73,6 +73,7 @@ func Load(getenv func(string) string) (Config, []string, error) {
 			User:     r.required("DB_USER"),
 			Password: r.required("DB_PASSWORD"),
 			Name:     r.required("DB_NAME"),
+			TLS:      r.boolean("DB_TLS"),
 		},
 		JWKSEndpoint: r.url("AUTH_JWKS_ENDPOINT", true),
 		Auth: middleware.AuthConfig{
@@ -176,6 +177,19 @@ func (r *reader) url(key string, required bool) string {
 		r.problems = append(r.problems, key+" must be an absolute http(s) URL")
 	}
 	return v
+}
+
+// boolean reads true or false; unset is false.
+func (r *reader) boolean(key string) bool {
+	v := r.optional(key)
+	if v == "" {
+		return false
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		r.problems = append(r.problems, key+" must be true or false")
+	}
+	return b
 }
 
 func (r *reader) port(key, fallback string) string {

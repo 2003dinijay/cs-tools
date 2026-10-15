@@ -43,6 +43,10 @@ type Config struct {
 	User     string
 	Password string
 	Name     string
+	// TLS encrypts the connection, for a server that requires secure
+	// transport. The server's certificate must come from a CA the system
+	// trusts and name Host.
+	TLS bool
 }
 
 // Store reads and writes entries.
@@ -93,6 +97,9 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 	mc.Net = "tcp"
 	mc.Addr = net.JoinHostPort(cfg.Host, cfg.Port)
 	mc.DBName = cfg.Name
+	if cfg.TLS {
+		mc.TLSConfig = "true"
+	}
 	return openConfig(ctx, mc)
 }
 

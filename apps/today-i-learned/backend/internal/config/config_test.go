@@ -43,7 +43,7 @@ func TestLoadDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Port != "9090" || cfg.DB.Port != "3306" || cfg.ReadTimeout != 15*time.Second || cfg.WriteTimeout != 45*time.Second {
+	if cfg.Port != "9090" || cfg.DB.Port != "3306" || cfg.DB.TLS || cfg.ReadTimeout != 15*time.Second || cfg.WriteTimeout != 45*time.Second {
 		t.Fatalf("defaults = %+v", cfg)
 	}
 	if cfg.Entity != nil || cfg.Novera != nil || len(cfg.CORSOrigins) != 0 {
@@ -61,6 +61,7 @@ func TestLoadReadsEverything(t *testing.T) {
 	v := minimal()
 	for k, val := range map[string]string{
 		"PORT":                         "9000",
+		"DB_TLS":                       "true",
 		"REST_READ_TIMEOUT":            "5s",
 		"REST_WRITE_TIMEOUT":           "1m",
 		"CORS_ALLOWED_ORIGINS":         "https://one.example, https://two.example ,",
@@ -88,7 +89,7 @@ func TestLoadReadsEverything(t *testing.T) {
 	if len(warnings) != 0 {
 		t.Fatalf("warnings = %q", warnings)
 	}
-	if cfg.Port != "9000" || cfg.ReadTimeout != 5*time.Second || cfg.WriteTimeout != time.Minute {
+	if cfg.Port != "9000" || !cfg.DB.TLS || cfg.ReadTimeout != 5*time.Second || cfg.WriteTimeout != time.Minute {
 		t.Fatalf("server = %+v", cfg)
 	}
 	if !slices.Equal(cfg.CORSOrigins, []string{"https://one.example", "https://two.example"}) ||
@@ -106,6 +107,7 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 	_, _, err := Load(env(map[string]string{
 		"PORT":                    "http",
 		"REST_READ_TIMEOUT":       "soon",
+		"DB_TLS":                  "required",
 		"AUTH_JWKS_ENDPOINT":      "idp.example.com/jwks",
 		"ONE_WSO2_BASE_URL":       "one.example",
 		"ENTRY_TEXT_MAX_LENGTH":   "5001",
@@ -119,6 +121,7 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 		"PORT must be a port number",
 		"REST_READ_TIMEOUT must be a positive duration",
 		"DB_HOST is required", "DB_USER is required", "DB_PASSWORD is required", "DB_NAME is required",
+		"DB_TLS must be true or false",
 		"AUTH_JWKS_ENDPOINT must be an absolute http(s) URL",
 		"AUTH_ISSUER is required",
 		"ONE_WSO2_BASE_URL must be an absolute http(s) URL",
