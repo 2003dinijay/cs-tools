@@ -51,7 +51,7 @@ ON CONFLICT (id) DO NOTHING;
 -- Account + project + deployment.
 INSERT INTO account (id, created_on, updated_on, created_by, updated_by, name, number, sf_id, customer_success_manager_id, country, city, drive_location, life_cycle) VALUES
   ('00000000-0000-0000-0000-000000000301', now(), now(), 'seed', 'seed', 'Example Corp', 'ACC-0001', 'SF-0001', '00000000-0000-0000-0000-000000000001', 'United States', 'Mountain View', 'https://drive.example.com/example-corp', 'Customer')
-ON CONFLICT (id) DO NOTHING;
+ON CONFLICT (id) DO UPDATE SET life_cycle = COALESCE(account.life_cycle, EXCLUDED.life_cycle);
 
 -- Customer portal entitlements of the local project type. The customer portal shows its
 -- Operations menu (Service requests, Change requests) only when the project's type grants
@@ -319,7 +319,7 @@ ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO account (id, created_on, updated_on, created_by, updated_by, name, number, sf_id, customer_success_manager_id, country, city, drive_location, life_cycle) VALUES
   ('00000000-0000-0000-0000-000000000302', now(), now(), 'seed', 'seed', 'Other Corp', 'ACC-0002', 'SF-0002', '00000000-0000-0000-0000-000000000001', 'United Kingdom', 'London', 'https://drive.example.com/other-corp', 'Customer')
-ON CONFLICT (id) DO NOTHING;
+ON CONFLICT (id) DO UPDATE SET life_cycle = COALESCE(account.life_cycle, EXCLUDED.life_cycle);
 
 INSERT INTO project (id, created_on, updated_on, created_by, updated_by, key, sf_id, name, account_id, is_active, project_type_id) VALUES
   ('00000000-0000-0000-0000-000000000402', now(), now(), 'seed', 'seed', 'OTHERCORP-PROJ-1', 'SF-PROJ-0002', 'Other Corp Production', '00000000-0000-0000-0000-000000000302', true, '00000000-0000-0000-0000-0000000000a3')
