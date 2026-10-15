@@ -354,12 +354,15 @@ PaaS SRE is N/A there, so it has no rota until it has a schedule.
 
 U2 and B-Central were added by migration 0217, data only, with the windows their rota sheet gives. Unlike the other SME rotations it also inserts their two team rows (keys `u2`, `b-central`), only when no team has that key, so every environment gets them from one script.
 
+Migration 0235 does the same for the other seven SME rotations' teams (keys `asgardeo`, `choreo-runtime`, `bijira`, `devant`, `cloud-agent`, `cloud-core`, `moesif`, with the names and types the local seed uses). They never arrive from the ServiceNow sync, so without them a deployed SME rota has nobody to roster and an escalation to Special Ops pages nobody (the SME page finds no team for SPECIALIST_HANDOFF_CONFIG's `smeTeam`). It also adds IaaS's team (key `iaas`, type `sre-iaas`, as production has it), which a database that did not get it from production lacks, leaving the IaaS rota with no team. A key already held by a team of another type is left alone and named in a NOTICE.
+
 **How it hangs together:**
 - **Teams join a rota by type.** A team is on the rota whose `team_type` matches
   `team.type`, read the same way the family always has been
-  (`sme…` → SME, `sre…` → SRE). No column is added to `team`, so the ServiceNow
-  sync stays the only writer of team rows: to put a team on a rota, give it the
-  rota's type. On a local stack, `scripts/csm-compose/seed-team-schedule-rotas.sql`
+  (`sme…` → SME, `sre…` → SRE). No column is added to `team`: to put a team on a
+  rota, give it the rota's type. The ServiceNow sync writes the team rows it
+  knows; the SME rotations' teams, which it does not, come from migrations
+  0217 and 0235 (which also adds IaaS's, where it is missing). On a local stack, `scripts/csm-compose/seed-team-schedule-rotas.sql`
   adds one team per new rota.
 - **Zones belong to rotas.** `team_schedule_zone.rota_id` (nullable) ties each
   zone to its rota. TZ1–TZ3 are backfilled to `SRE_SAAS`; a zone without a rota
