@@ -517,11 +517,13 @@ of a Choreo secret and csm-notification-service's YAML file mount. Only what
 decides whether paging runs and what it may cost -- the switches, the channel,
 the safety caps, `phones.source`, test calls and the SME page -- stays in the
 file (`scripts/csm-compose/paging-alert.minimal.yaml` is that small file).
-**Since 0237 the tab sets one thing: the SRE and SME teams' chat rooms.** With
-`PAGING_CONFIG_SOURCE` unset csm-notification-service uses those rooms (and
-only those; never a CRE room) at its next start; `db` also uses routes and
-ladder values saved before, `off` none of it. No setting is needed on either
-service.
+**Each family's settings are its own** (0237, 0238): CRE's chat room,
+redirects and ladder values; SRE's team rooms, redirects and ladder values;
+SME's team rooms and ladder values (timing, teams, on leave, closing message).
+With `PAGING_CONFIG_SOURCE` unset csm-notification-service uses everything
+saved, over the file's, at its next start; what is not saved keeps the file's,
+so nothing changes until somebody saves. `off` uses none of it. No setting is
+needed on either service.
 
 - **Rooms** (`paging_chat_room`), shown as *Team routing*: the CRE and SRE
   shared rooms, an SRE team's own row (Apollo, Artemis, IaaS) and, since 0237,
@@ -555,9 +557,11 @@ service.
   values here in one go -- the first step of moving to the small file. What
   only the file sets (on/off, channel, safety caps, where numbers come from) is
   reported too and shown read-only; allowed numbers as a count only.
-- **Who:** a CSM admin (`AUTH_ADMIN_ROLES`) or portal admin changes both
-  ladders; the CRE or SRE rota admin their own ladder; the CRE and CS heads can
-  look. Team leads and everyone else see the tab as before.
+- **Who:** seeing a family's settings and changing them go together, and
+  another family's are never sent. CRE: the CRE rota admin and the CRE and CS
+  heads. SRE (SaaS and IaaS): the SRE rota admin. SME: the SME rota admin. A CSM
+  admin (`AUTH_ADMIN_ROLES`) or portal admin, or anybody with all three rota
+  admin roles: all three. Team leads see who gets alerts, not the settings.
 - **Test card:** entity-service posts a short card to the saved URL and records
   delivered or failed; one per room every two minutes. entity-service needs to
   reach `chat.googleapis.com` for this.
@@ -590,6 +594,8 @@ before 0237).
 
 ## Change log
 
+- **0238 Case Alerts: SME ladder values.** `paging_ladder_value` takes ladder
+  `SME`. Additive and re-runnable; no row changes.
 - **0237 Case Alerts: SME team rooms, plain URLs.** `paging_chat_room` takes
   ladder `SME` (team rooms only); `paging_chat_secret` gains `webhook_url`, and
   its sealed columns become optional. Additive and re-runnable; no row changes.

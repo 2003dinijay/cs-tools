@@ -16,7 +16,7 @@
  * under the License.
  */
 
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import type {
@@ -105,6 +105,16 @@ function make(over: Partial<Settings> = {}): Settings {
   };
 }
 
+/** What the alert service reported, with the SRE ladder on channel. */
+function running(channel: string): Settings["running"] {
+  return {
+    reportedAt: "2026-10-13T10:00:00Z",
+    mode: "shadow",
+    ladders: {},
+    fileOnly: { SRE: { channel } },
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   // The redirect sections start closed; these tests work inside them, so
@@ -125,7 +135,10 @@ describe("CaseAlertSettings", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it("shows the SME teams' chat spaces on the SME chain", () => {
+  it("shows the SME teams' chat spaces and SME ladder settings, no redirects", () => {
+    settings.data = make({
+      canManage: { view: true, roomLadders: ["SRE", "SME"], routeLadders: ["SRE"] },
+    });
     render(<CaseAlertSettings chain="SME" />);
     expect(
       screen.getByRole("heading", { name: "SME settings" }),
@@ -133,8 +146,25 @@ describe("CaseAlertSettings", () => {
     expect(
       screen.getByRole("heading", { name: "Team chat routing" }),
     ).toBeInTheDocument();
+    expect(screen.getByText(/SME ladder settings/)).toBeInTheDocument();
+    expect(screen.queryByText(/redirect/i)).not.toBeInTheDocument();
     // An SRE room is not an SME one.
     expect(screen.queryByText("Apollo SRE")).not.toBeInTheDocument();
+  });
+
+  it("shows nothing of a family whose settings the reader may not change", () => {
+    for (const [chain, ladders] of [
+      ["SME", ["SRE"]],
+      ["CRE", ["SRE", "SME"]],
+      ["SRE_IAAS", ["CRE"]],
+    ] as const) {
+      settings.data = make({
+        canManage: { view: true, roomLadders: [...ladders], routeLadders: [] },
+      });
+      const { container, unmount } = render(<CaseAlertSettings chain={chain} />);
+      expect(container).toBeEmptyDOMElement();
+      unmount();
+    }
   });
 
   it("says when saved changes wait for a restart, and when they are in use", () => {
@@ -162,20 +192,172 @@ describe("CaseAlertSettings", () => {
     ).toBeInTheDocument();
   });
 
-  it("shows no redirects on the SRE chains, saved or not: only the chat spaces", () => {
-    for (const chain of ["SRE_SAAS", "SRE_IAAS"] as const) {
-      const { unmount } = render(<CaseAlertSettings chain={chain} />);
-      expect(
-        screen.queryByText("Send an incident's alerts to another SRE team"),
-      ).not.toBeInTheDocument();
-      expect(
-        screen.queryByLabelText("When an incident is assigned to"),
-      ).not.toBeInTheDocument();
-      expect(
-        screen.queryByText("Every team on the SaaS SRE rota"),
-      ).not.toBeInTheDocument();
-      unmount();
-    }
+  it("confirms a redirect once it is added, and once it is removed", () => {
+    saveRoute.mutate.mockImplementationOnce(
+      (_v: unknown, opts: { onSuccess?: () => void }) => opts.onSuccess?.(),
+    );
+    deleteRoute.mutate.mockImplementationOnce(
+      (_v: unknown, opts: { onSuccess?: () => void }) => opts.onSuccess?.(),
+    );
+    render(<CaseAlertSettings chain="SRE_SAAS" />);
+    fireEvent.change(screen.getByLabelText("When an incident is assigned to"), {
+      target: { value: "Asgardeo" },
+    });
+    fireEvent.change(screen.getByLabelText("send its alerts to"), {
+      target: { value: "team:apollo" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    expect(screen.getByText(/^✓ Saved:/)).toHaveTextContent(
+      "✓ Saved: redirect from Asgardeo to Apollo. The alert service uses it after its next restart.",
+    );
+    const redirect = screen
+      .getByText("Every team on the SaaS SRE rota")
+      .closest("tr") as HTMLElement;
+    fireEvent.click(within(redirect).getByRole("button", { name: "Remove" }));
+    fireEvent.click(within(redirect).getByRole("button", { name: "Remove" }));
+    expect(screen.getByText(/^✓ Saved:/)).toHaveTextContent(
+      "✓ Saved: redirect from default sre group removed.",
+    );
+  });
+
+  it("sends an SME team's incidents to a whole rota, picked from lists", () => {
+    render(<CaseAlertSettings chain="SRE_SAAS" />);
+    expect(
+      screen.getByText("Every team on the SaaS SRE rota"),
+    ).toBeInTheDocument();
+    const from = screen.getByLabelText("When an incident is assigned to");
+    // SRE and SME teams for the SRE ladder; never a CRE team.
+    expect(
+      within(from).getByRole("option", { name: "Apollo" }),
+    ).toBeInTheDocument();
+    expect(
+      within(from).getByRole("option", { name: "Asgardeo" }),
+    ).toBeInTheDocument();
+    expect(
+      within(from).queryByRole("option", { name: "Vega" }),
+    ).not.toBeInTheDocument();
+    fireEvent.change(from, { target: { value: "Asgardeo" } });
+    fireEvent.change(screen.getByLabelText("send its alerts to"), {
+      target: { value: "rota:SRE_SAAS" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    expect(saveRoute.mutate).toHaveBeenCalledWith(
+      { ladder: "SRE", groupName: "Asgardeo", rotaCode: "SRE_SAAS" },
+      expect.anything(),
+    );
+  });
+
+  it("offers the ladder's own teams, then whole rotas, as where alerts go", () => {
+    render(<CaseAlertSettings chain="SRE_SAAS" />);
+    const to = screen.getByLabelText("send its alerts to");
+    expect(
+      within(to).getByRole("option", { name: "Apollo" }),
+    ).toBeInTheDocument();
+    expect(
+      within(to).getByRole("option", { name: "Every team on SaaS SRE" }),
+    ).toBeInTheDocument();
+    expect(
+      within(to).queryByRole("option", { name: "Vega" }),
+    ).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("When an incident is assigned to"), {
+      target: { value: "Asgardeo" },
+    });
+    fireEvent.change(to, { target: { value: "team:apollo" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    expect(saveRoute.mutate).toHaveBeenCalledWith(
+      { ladder: "SRE", groupName: "Asgardeo", teamKey: "apollo" },
+      expect.anything(),
+    );
+  });
+
+  it("says where a redirected incident's alerts end up: the team's space and channel", () => {
+    settings.data = make({
+      running: running("both"),
+      routes: [
+        {
+          id: "77777777-7777-4777-8777-777777777777",
+          ladder: "SRE",
+          groupName: "asgardeo",
+          teamKey: "apollo",
+          enabled: true,
+          updatedBy: "x",
+          updatedOn: "2026-10-13T10:00:00Z",
+        },
+      ],
+    });
+    render(<CaseAlertSettings chain="SRE_SAAS" />);
+    const redirect = screen
+      .getByRole("cell", { name: "Asgardeo" })
+      .closest("tr") as HTMLElement;
+    expect(within(redirect).getByText("Apollo")).toBeInTheDocument();
+    expect(
+      within(redirect).getByText("Calls and chat · in the Apollo SRE space"),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps a redirect from a team whose name is not its key: the alert service needs it", () => {
+    settings.data = make({
+      routes: [
+        {
+          id: "77777777-7777-4777-8777-777777777777",
+          ladder: "SRE",
+          groupName: "apollo sre group",
+          teamKey: "apollo",
+          enabled: true,
+          updatedBy: "x",
+          updatedOn: "2026-10-13T10:00:00Z",
+        },
+      ],
+    });
+    render(<CaseAlertSettings chain="SRE_SAAS" />);
+    expect(
+      screen.queryByText(
+        "Same team, not needed: it is alerted as itself anyway",
+      ),
+    ).not.toBeInTheDocument();
+  });
+
+  it("marks a redirect from a team to itself as not needed", () => {
+    settings.data = make({
+      routes: [
+        {
+          id: "77777777-7777-4777-8777-777777777777",
+          ladder: "SRE",
+          groupName: "apollo",
+          teamKey: "apollo",
+          enabled: true,
+          updatedBy: "x",
+          updatedOn: "2026-10-13T10:00:00Z",
+        },
+      ],
+    });
+    render(<CaseAlertSettings chain="SRE_SAAS" />);
+    expect(
+      screen.getByText("Same team, not needed: it is alerted as itself anyway"),
+    ).toBeInTheDocument();
+  });
+
+  it("names only the channel for a team that gets no chat cards", () => {
+    settings.data = make({
+      running: running("both"),
+      rooms: [{ ...apolloRoom, channel: "call" }],
+      routes: [
+        {
+          id: "77777777-7777-4777-8777-777777777777",
+          ladder: "SRE",
+          groupName: "asgardeo",
+          teamKey: "apollo",
+          enabled: true,
+          updatedBy: "x",
+          updatedOn: "2026-10-13T10:00:00Z",
+        },
+      ],
+    });
+    render(<CaseAlertSettings chain="SRE_SAAS" />);
+    const redirect = screen
+      .getByRole("cell", { name: "Asgardeo" })
+      .closest("tr") as HTMLElement;
+    expect(within(redirect).getByText("Calls only")).toBeInTheDocument();
   });
 
   it("offers CRE teams only on the CRE chain, and no rotas", () => {
@@ -197,19 +379,26 @@ describe("CaseAlertSettings", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("names the parts: Team chat routing alone for SRE, and where a case's alerts go for CRE", () => {
+  it("names the parts: Team chat routing, and where an incident's or a case's alerts go", () => {
     const { unmount } = render(<CaseAlertSettings chain="SRE_SAAS" />);
     expect(
       screen.getByRole("heading", { name: "Team chat routing" }),
     ).toBeInTheDocument();
     expect(
-      screen.queryByRole("region", {
+      screen.getByRole("region", {
         name: "Send an incident's alerts to another SRE team",
       }),
-    ).not.toBeInTheDocument();
+    ).toBeInTheDocument();
+    // How a team is alerted stays in the file: no column for it.
     expect(
       screen.queryByRole("columnheader", { name: "Alerts by" }),
     ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("columnheader", { name: "Assigned to in CSM Portal" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("columnheader", { name: "Alerts go to" }),
+    ).toBeInTheDocument();
     unmount();
     settings.data = make({
       canManage: { view: true, roomLadders: ["CRE"], routeLadders: ["CRE"] },
@@ -229,21 +418,4 @@ describe("CaseAlertSettings", () => {
     expect(screen.queryByText("Other teams")).not.toBeInTheDocument();
   });
 
-  it("tells somebody who may only view who can change the settings", () => {
-    settings.data = make({
-      canManage: { view: true, roomLadders: [], routeLadders: [] },
-    });
-    render(<CaseAlertSettings chain="SRE_IAAS" />);
-    expect(
-      screen.getByRole("heading", { name: "IaaS SRE settings" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        "You can view these. CSM admins and the SRE rota admin can change them.",
-      ),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "More" }),
-    ).not.toBeInTheDocument();
-  });
 });

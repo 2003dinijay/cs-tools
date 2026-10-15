@@ -144,7 +144,7 @@ export function useDeleteCaseAlertRoute(): UseMutationResult<unknown, Error, str
 }
 
 export interface SaveValuesInput {
-  ladder: CaseAlertLadder;
+  ladder: CaseAlertRoomLadder;
   /** Key to value, in the file's shape for that key. All are saved together,
    *  or none. */
   values: Record<string, unknown>;

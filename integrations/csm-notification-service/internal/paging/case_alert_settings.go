@@ -116,9 +116,7 @@ var nonEnvChar = regexp.MustCompile(`[^A-Za-z0-9_]`)
 //     teamChats entry; its URL goes in its own variable. Its teamless flag puts
 //     the team in or out of sre.teamlessChats.
 //   - A saved SME room replaces that SME team's sme.teamChats entry, or adds
-//     one. Only when the file lists SME teams' rooms at all: with none, every
-//     SME card goes to sme.chat, and one team's room would leave the others
-//     with no card, so it is skipped.
+//     one; an SME team with no room of its own still uses sme.chat.
 //   - A saved route sets teams.aliases (to a team) or adds the group to
 //     sre.teams.defaultGroups (to sre.teams.defaultRota); a route to any other
 //     rota is skipped, since a ladder has one default rota.
@@ -188,15 +186,14 @@ func MergeCaseAlertSettings(cfg Config, s CaseAlertSettings) (Config, map[string
 				changes = append(changes, "sre.teamlessChats: - "+team)
 			}
 		case ladder == "SME" && team != "":
-			if len(cfg.SME.TeamChats) == 0 {
-				changes = append(changes, fmt.Sprintf("skipped the SME room for team %q: the file has no sme.teamChats, so every SME card goes to sme.chat", team))
-				continue
+			if out.SME.TeamChats == nil {
+				out.SME.TeamChats = map[string]Chat{}
 			}
 			key := teamChatKey(out.SME.TeamChats, team)
 			if was, ok := cfg.SME.TeamChats[key]; ok {
 				changes = append(changes, chatChange("sme.teamChats."+team, was, room))
 			} else {
-				changes = append(changes, fmt.Sprintf("sme.teamChats.%s: none (no card) -> saved room %q", team, room.Audience))
+				changes = append(changes, fmt.Sprintf("sme.teamChats.%s: none (used sme.chat) -> saved room %q", team, room.Audience))
 			}
 			out.SME.TeamChats[key] = room
 		default:

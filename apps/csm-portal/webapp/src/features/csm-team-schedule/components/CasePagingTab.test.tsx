@@ -94,7 +94,7 @@ function settingsFor(view: boolean): CaseAlertSettings {
   return {
     canManage: {
       view,
-      roomLadders: view ? ["CRE", "SRE"] : [],
+      roomLadders: view ? ["SRE", "SME"] : [],
       routeLadders: view ? ["CRE", "SRE"] : [],
     },
     environment: "staging",
@@ -162,13 +162,10 @@ beforeEach(() => {
 });
 
 describe("CasePagingTab", () => {
-  it("never offers CRE: its alerts keep their own flow", () => {
+  it("offers CRE only to those who may change its settings", () => {
     alertSettings.data = settingsFor(true);
     render(<CasePagingTab onOpenRota={vi.fn()} initialChain="CRE" />);
     expect(screen.queryByRole("tab", { name: "CRE" })).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("table", { name: "CRE alert chain by team and level" }),
-    ).not.toBeInTheDocument();
     expect(
       screen.queryByRole("heading", { name: "CRE settings" }),
     ).not.toBeInTheDocument();
@@ -178,6 +175,25 @@ describe("CasePagingTab", () => {
       "true",
     );
   });
+
+  it("shows CRE's settings alone to a CRE rota admin: no switch, no chain", () => {
+    alertSettings.data = {
+      ...settingsFor(true),
+      canManage: { view: true, roomLadders: ["CRE"], routeLadders: ["CRE"] },
+    };
+    render(<CasePagingTab onOpenRota={vi.fn()} initialChain="CRE" visibleChains={[]} />);
+    expect(screen.queryByRole("tab")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "CRE settings" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("group", { name: "Show" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("table", { name: "CRE alert chain by team and level" }),
+    ).not.toBeInTheDocument();
+  });
+
 
   it("opens on SaaS SRE: read-only, its own readiness, and a way to the rota", () => {
     const onOpenRota = vi.fn();
@@ -278,9 +294,19 @@ describe("CasePagingTab", () => {
   });
 
   it("opens a CSM or portal admin on the first chain, whatever their own team's chain", () => {
-    alertSettings.data = settingsFor(true);
+    alertSettings.data = {
+      ...settingsFor(true),
+      canManage: { view: true, roomLadders: ["CRE", "SRE", "SME"], routeLadders: ["CRE", "SRE"] },
+    };
     render(<CasePagingTab onOpenRota={vi.fn()} initialChain="SME" />);
-    expect(screen.getByRole("tab", { name: "SaaS SRE" })).toHaveAttribute(
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
+      "CRE",
+      "SaaS SRE",
+      "IaaS SRE",
+      "PaaS SRE",
+      "SME",
+    ]);
+    expect(screen.getByRole("tab", { name: "CRE" })).toHaveAttribute(
       "aria-selected",
       "true",
     );

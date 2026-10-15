@@ -144,7 +144,7 @@ const GROUPS = ["Who gets alerts", "When a ladder starts", "How it climbs", "Hea
 /** Every section open, as for a person who opened them all before: most of
  *  these tests work inside them. */
 function openEverything(): void {
-  const ids = ["CRE", "SRE"].flatMap((l) => [
+  const ids = ["CRE", "SRE", "SME"].flatMap((l) => [
     `${l}.ladder`,
     `${l}.file`,
     ...GROUPS.map((g) => `${l}.ladder.${g}`),
@@ -203,15 +203,12 @@ describe("CaseAlertLadderSettings", () => {
     expect(screen.queryByRole("button", { name: "Save them here" })).not.toBeInTheDocument();
   });
 
-  it("is read-only, and says who can change it, for somebody who may only look", () => {
-    settings.data = make({ canManage: { view: true, roomLadders: [], routeLadders: [] } });
-    render(<CaseAlertSettings chain="CRE" />);
-    expect(
-      screen.getByText("You can view these. CSM admins and the CRE rota admin can change them."),
-    ).toBeInTheDocument();
-    expect(within(row("ABT teams")).getByText(/^Saved: atlas, castor/)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Edit|Save them here/ })).not.toBeInTheDocument();
+  it("shows nothing to somebody who may not change CRE's settings", () => {
+    settings.data = make({ canManage: { view: true, roomLadders: ["SRE"], routeLadders: ["SRE"] } });
+    const { container } = render(<CaseAlertSettings chain="CRE" />);
+    expect(container).toBeEmptyDOMElement();
   });
+
 
   it("offers the setup step: the file's values not saved yet, in one request, after asking", () => {
     render(<CaseAlertSettings chain="CRE" />);
@@ -352,18 +349,31 @@ describe("CaseAlertLadderSettings", () => {
     expect(within(dialog).queryByRole("button", { name: "Use the file's value" })).not.toBeInTheDocument();
   });
 
-  it("shows only the chat spaces on the SRE and SME chains: no ladder settings, file values or redirects", () => {
-    for (const chain of ["SRE_SAAS", "SRE_IAAS", "SME"] as const) {
+  it("shows one SRE ladder on both SRE chains, with a note", () => {
+    for (const chain of ["SRE_SAAS", "SRE_IAAS"] as const) {
       const { unmount } = render(<CaseAlertSettings chain={chain} />);
-      expect(screen.getByRole("heading", { name: "Team chat routing" })).toBeInTheDocument();
-      expect(screen.queryByText(/One SRE ladder/)).not.toBeInTheDocument();
-      expect(screen.queryByText("Time between steps")).not.toBeInTheDocument();
-      expect(screen.queryByRole("region", { name: "Set in the alert service's file" })).not.toBeInTheDocument();
-      expect(screen.queryByText(/Send an incident's alerts to another SRE team/)).not.toBeInTheDocument();
-      expect(screen.queryByText(/still comes? from the alert service's file/)).not.toBeInTheDocument();
+      expect(screen.getByText("One SRE ladder: these apply to both the SaaS and IaaS chains.")).toBeInTheDocument();
+      // Saved and in use alike: one value, no "Saved:" line.
+      expect(within(row("Time between steps")).getByText("5m")).toBeInTheDocument();
+      expect(within(row("Time between steps")).queryByText(/^Saved:/)).not.toBeInTheDocument();
+      expect(screen.getByRole("region", { name: "Chat messages" })).toBeInTheDocument();
+      expect(screen.queryByText("Head of CRE")).not.toBeInTheDocument();
       unmount();
     }
   });
+  it("shows SME's own ladder settings: timing, teams, on leave, no heads", () => {
+    settings.data = make({
+      canManage: { view: true, roomLadders: ["SME"], routeLadders: [] },
+    });
+    render(<CaseAlertSettings chain="SME" />);
+    expect(screen.getByText(/SME ladder settings/)).toBeInTheDocument();
+    for (const label of ["Time between steps", "Special Ops teams", "People on leave", "Say when nobody answered"]) {
+      expect(row(label)).toBeInTheDocument();
+    }
+    expect(screen.queryByText("Head of CRE")).not.toBeInTheDocument();
+    expect(screen.queryByText("Call L4")).not.toBeInTheDocument();
+  });
+
 
   it("shows the CRE settings only the file can set, read-only", () => {
     render(<CaseAlertSettings chain="CRE" />);
@@ -381,6 +391,20 @@ describe("CaseAlertLadderSettings", () => {
     expect(within(group).queryByRole("button")).not.toBeInTheDocument();
     // A count, never the numbers themselves.
     expect(group.textContent).not.toMatch(/\+\d/);
+  });
+  it("shows the SRE settings only the file can set, without the heads", () => {
+    render(<CaseAlertSettings chain="SRE_IAAS" />);
+    const group = screen.getByRole("region", { name: "Set in the alert service's file" });
+    const value = (label: string) => fileValue(group, label);
+    expect(value("Alerts on")).toBe("No");
+    expect(value("Channel")).toBe("Log only (no calls or chat)");
+    expect(value("Max calls per ladder")).toBe("no cap");
+    expect(value("Highest step")).toBe("no cap");
+    expect(value("Allowed numbers")).toBe("any number");
+    expect(value("Call before every lead has a number")).toBe("Yes");
+    expect(value("Phone numbers from")).toBe("only numbers in the file");
+    expect(within(group).queryByText(/Call the heads/)).not.toBeInTheDocument();
+    expect(within(group).queryByRole("button")).not.toBeInTheDocument();
   });
 
   it("says the file-only settings are not reported yet", () => {

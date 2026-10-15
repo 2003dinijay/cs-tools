@@ -168,7 +168,7 @@ describe("Team chat routing", () => {
     ).toBeInTheDocument();
     expect(
       screen.getByText(
-        "Which Google Chat space each team's alerts go to. Everything else stays in the alert service's file.",
+        "Which Google Chat space each team's alerts go to.",
       ),
     ).toBeInTheDocument();
     // How a team is alerted stays the file's: no column for it.
@@ -590,17 +590,12 @@ describe("Team chat routing", () => {
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   });
 
-  it("is read-only for somebody who may only look", () => {
+  it("shows nothing of a family whose settings the reader may not change", () => {
     settings.data = make({
-      canManage: { view: true, roomLadders: [], routeLadders: [] },
+      canManage: { view: true, roomLadders: ["CRE"], routeLadders: ["CRE"] },
     });
-    render(<CaseAlertSettings chain="SRE_SAAS" />);
-    expect(
-      screen.queryByRole("button", {
-        name: /Add team chat routing|Edit|Test|More/,
-      }),
-    ).not.toBeInTheDocument();
-    expect(within(chatRow("Apollo")).getByText(HINT)).toBeInTheDocument();
+    const { container } = render(<CaseAlertSettings chain="SRE_SAAS" />);
+    expect(container).toBeEmptyDOMElement();
   });
 
   it("says when URLs can't be saved on this server, and can't add one", () => {
@@ -655,7 +650,10 @@ describe("SME team chat spaces", () => {
   });
 
   it("lists the SME rooms only, by the team's name, with no shared space", () => {
-    settings.data = make({ rooms: [apollo, iaas, asgardeo] });
+    settings.data = make({
+      rooms: [apollo, iaas, asgardeo],
+      canManage: { view: true, roomLadders: ["SRE", "SME"], routeLadders: ["SRE"] },
+    });
     render(<CaseAlertSettings chain="SME" teams={SME_TEAMS} />);
     expect(
       screen.getByRole("heading", { name: "SME settings" }),
@@ -667,9 +665,9 @@ describe("SME team chat spaces", () => {
       ["Asgardeo"],
     );
     expect(within(chatRow("Asgardeo")).getByText(HINT)).toBeInTheDocument();
-    // Nothing else: no redirects, no ladder settings.
+    // SME has no redirects, but has ladder settings of its own.
     expect(screen.queryByText(/redirect/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/ladder settings/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/SME ladder settings/)).toBeInTheDocument();
   });
 
   it("adds an SME team's space: its SME teams only, the URL alone", async () => {
@@ -704,17 +702,12 @@ describe("SME team chat spaces", () => {
     });
   });
 
-  it("is read-only for somebody who may change only the SRE spaces", () => {
+  it("shows nothing of SME to somebody who may change only the SRE settings", () => {
     settings.data = make({
       rooms: [asgardeo],
       canManage: { view: true, roomLadders: ["SRE"], routeLadders: ["SRE"] },
     });
-    render(<CaseAlertSettings chain="SME" teams={SME_TEAMS} />);
-    expect(
-      screen.queryByRole("button", { name: /Add team chat routing|Edit/ }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.getByText(/CSM admins and the SME rota admin can change them/),
-    ).toBeInTheDocument();
+    const { container } = render(<CaseAlertSettings chain="SME" teams={SME_TEAMS} />);
+    expect(container).toBeEmptyDOMElement();
   });
 });

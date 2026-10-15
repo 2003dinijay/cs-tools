@@ -304,11 +304,12 @@ ticker, with Redis as its only durable state — the same `REDIS_URL`/
 - **`case_alert_settings.go`, `case_alert_values.go` + `cmd/server/case_alert_settings.go`
   — settings saved on the Team Schedule.** `PAGING_CONFIG_SOURCE` (an env var, not a
   file key: the file is decoded strictly, so a new key would turn paging off on
-  older builds) is `rooms` when unset: the SRE and SME teams' saved rooms only
-  (`teamRoomsOnly` drops CRE rooms, shared rooms, channels, routes and values),
-  asked once with no retry, the file when nothing is saved or entity-service is
-  down. A saved SME room replaces that team's `sme.teamChats` entry, and is
-  skipped when the file has no `sme.teamChats`. `off` never asks entity-service.
+  older builds) is `db` when unset: everything saved, for CRE, SRE and SME
+  (rooms, routes, ladder values; SME values via `smeCaseAlertKeys`), each key
+  in place of the file's; nothing saved is the file. A saved SME room replaces
+  or adds that team's `sme.teamChats` entry; an SME team with no room of its own
+  uses `sme.chat` (`smeNotifiersFor`), never no card. `off` never asks
+  entity-service.
   `shadow` reads `GET /team-schedule/case-alerts/settings/runtime` once at start,
   logs what `MergeCaseAlertSettings` would change, and runs on the file; `db`
   runs on the merge. The merge only replaces what was saved -- a ladder's shared

@@ -20,7 +20,7 @@ import { useId, useRef, useState, type FormEvent, type JSX, type RefObject } fro
 import { useDeleteCaseAlertValue, useSaveCaseAlertValues } from "../api/useCaseAlertSettings";
 import type {
   CaseAlertFileOnly,
-  CaseAlertLadder,
+  CaseAlertRoomLadder,
   CaseAlertLadderValue,
   CaseAlertRunningValue,
   CaseAlertSettings as Settings,
@@ -57,7 +57,7 @@ function runningLine(s: Settings): string {
 }
 
 interface Props {
-  ladder: CaseAlertLadder;
+  ladder: CaseAlertRoomLadder;
   settings: Settings;
   /** Says what was saved, for the settings' confirmation line. */
   onSaved: (what: string) => void;
@@ -174,7 +174,7 @@ function FileOnlyGroup({
   ladder,
   fileOnly,
 }: {
-  ladder: CaseAlertLadder;
+  ladder: CaseAlertRoomLadder;
   fileOnly?: CaseAlertFileOnly;
 }): JSX.Element {
   const title = "Set in the alert service's file";
@@ -241,7 +241,7 @@ function ValueTable({ canEdit, children }: { canEdit: boolean; children: JSX.Ele
 }
 
 interface ValueRowProps {
-  ladder: CaseAlertLadder;
+  ladder: CaseAlertRoomLadder;
   spec: LadderKeySpec;
   saved?: CaseAlertLadderValue;
   running?: CaseAlertRunningValue;
@@ -320,7 +320,7 @@ function ValueRow({
 }
 
 interface ValueDialogProps {
-  ladder: CaseAlertLadder;
+  ladder: CaseAlertRoomLadder;
   spec: LadderKeySpec;
   saved?: CaseAlertLadderValue;
   /** What the editor starts from: the saved value, else the one in use. */

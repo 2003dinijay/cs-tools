@@ -13137,7 +13137,7 @@ paths:
               type: object
               required: [ladder, values]
               properties:
-                ladder: { type: string, enum: [CRE, SRE] }
+                ladder: { type: string, enum: [CRE, SRE, SME] }
                 values:
                   type: object
                   minProperties: 1

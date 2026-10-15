@@ -348,7 +348,8 @@ export default function CsmTeamSchedulePage(): JSX.Element {
   const pagingChains = useMemo(() => {
     const settled = (q: { isSuccess: boolean; isError: boolean }) => q.isSuccess || q.isError;
     const ownKnown = Boolean(catalogue.data) && settled(leadTeams) && settled(markerOnlyTeams);
-    if (!catalogue.data || !caseAlertChainsReady(ownKnown, settled(rotaAccess) && settled(pagingProbe), fullTeams.length > 0)) {
+    const extraKnown = settled(rotaAccess) && settled(pagingProbe) && settled(alertSettings);
+    if (!catalogue.data || !caseAlertChainsReady(ownKnown, extraKnown, fullTeams.length > 0)) {
       return { ready: false as const };
     }
     return {
@@ -363,9 +364,10 @@ export default function CsmTeamSchedulePage(): JSX.Element {
             (m) => m.email.trim().toLowerCase() === readerEmail && (m.role === "cre_head" || m.role === "cs_head"),
           ),
         ownTeam: ownTeamKey ? { key: ownTeamKey, family: readerFamily(ownTeamFamily, []) } : undefined,
+        settingsLadders: alertSettings.data?.canManage.roomLadders,
       }),
     };
-  }, [catalogue.data, leadTeams, markerOnlyTeams, rotaAccess, pagingProbe, fullTeams, ownTeamKey, ownTeamFamily, readerEmail]);
+  }, [catalogue.data, leadTeams, markerOnlyTeams, rotaAccess, pagingProbe, alertSettings, fullTeams, ownTeamKey, ownTeamFamily, readerEmail]);
   /** Case Alerts as offered: to whoever showPaging lets in, once their chains
    *  are known, and only when there is one -- not a tab with nothing of theirs. */
   const pagingOffered = caseAlertsOffered(showPaging, pagingChains.ready ? pagingChains.chains : null);

@@ -28,7 +28,10 @@ const TEAMS = [
   { key: "paas", family: "SRE" as const },
   { key: "asgardeo", family: "SME" as const, rotaCode: "SME_ASGARDEO" },
 ];
-const reader = (runs: string[], over: Partial<{ portalAdmin: boolean; head: boolean }> = {}) =>
+const reader = (
+  runs: string[],
+  over: Partial<{ portalAdmin: boolean; head: boolean; settingsLadders: string[] }> = {},
+) =>
   caseAlertChainsFor({ teams: TEAMS, runs, portalAdmin: false, ...over });
 
 describe("chainOfTeam", () => {
@@ -70,6 +73,16 @@ describe("caseAlertChainsFor", () => {
     expect(
       caseAlertChainsFor({ teams, runs: ["paas"], portalAdmin: false, ownTeam: { key: "paas", family: "SRE" } }),
     ).toEqual(["PAAS"]);
+  });
+
+  it("gives each family's chains to whoever may change its alert settings, CRE's only so", () => {
+    // A CRE rota admin: CRE's chain, though running CRE teams gives none.
+    expect(reader(["castor", "americas"], { settingsLadders: ["CRE"] })).toEqual(["CRE"]);
+    expect(caseAlertsOffered(true, reader([], { settingsLadders: ["CRE"] }))).toBe(true);
+    // Somebody with all three rota admin roles.
+    expect(reader([], { settingsLadders: ["CRE", "SRE", "SME"] })).toEqual(["CRE", "SRE_SAAS", "SRE_IAAS", "SME"]);
+    // An SRE rota admin who also leads a CRE team still gets no CRE chain.
+    expect(reader(["castor", "apollo"], { settingsLadders: ["SRE"] })).toEqual(["SRE_SAAS", "SRE_IAAS"]);
   });
 
   it("gives a CSM admin every chain", () => {

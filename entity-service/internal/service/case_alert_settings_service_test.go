@@ -22,6 +22,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -220,6 +221,8 @@ func caseAlertPeople() *stubPagingRepo {
 		"sre.rota@wso2.com": {GlobalRoles: []string{"sre_rota_admin"}},
 		"cre.rota@wso2.com": {GlobalRoles: []string{"cre_rota_admin"}},
 		"sme.rota@wso2.com": {GlobalRoles: []string{"sme_rota_admin"}},
+		"all.rota@wso2.com": {GlobalRoles: []string{"cre_rota_admin", "sre_rota_admin", "sme_rota_admin"}},
+		"cshead@wso2.com":   {Memberships: []repository.PagingCallerMembership{{TeamKey: "cre-leadership", Role: "cs_head"}}},
 		"portal@wso2.com":   {GlobalRoles: []string{"admin"}},
 		"crehead@wso2.com":  {Memberships: []repository.PagingCallerMembership{{TeamKey: "cre-leadership", Role: "cre_head"}}},
 		"lead@wso2.com":     {Memberships: []repository.PagingCallerMembership{{TeamKey: "apollo", Role: "lead"}}},
@@ -259,18 +262,21 @@ func TestCaseAlertSettingsRights(t *testing.T) {
 		name    string
 		ctx     context.Context
 		view    bool
-		rooms   []string // ladders whose rooms they may change
-		ladders []string // ladders whose routes they may change
+		rooms   []string // ladders whose rooms and values they may see and change
+		ladders []string // ladders whose routes they may see and change
+		shown   int      // rooms they are sent, of the three (CRE, SRE, Apollo)
 	}{
-		{"CSM admin by token role", asPerson("someone@wso2.com", "cs_admin"), true, []string{"CRE", "SRE", "SME"}, []string{"CRE", "SRE"}},
-		{"portal admin", asPerson("portal@wso2.com"), true, []string{"CRE", "SRE", "SME"}, []string{"CRE", "SRE"}},
-		{"SRE rota admin", asPerson("sre.rota@wso2.com"), true, []string{"SRE"}, []string{"SRE"}},
-		{"CRE rota admin", asPerson("cre.rota@wso2.com"), true, []string{"CRE"}, []string{"CRE"}},
-		{"SME rota admin: SME rooms only", asPerson("sme.rota@wso2.com"), true, []string{"SME"}, []string{}},
-		{"CRE head sees, changes nothing", asPerson("crehead@wso2.com"), true, []string{}, []string{}},
-		{"team lead sees nothing", asPerson("lead@wso2.com"), false, []string{}, []string{}},
-		{"engineer sees nothing", asPerson("eng@wso2.com"), false, []string{}, []string{}},
-		{"admin role matched exactly", asPerson("eng@wso2.com", "CS_ADMIN"), false, []string{}, []string{}},
+		{"CSM admin by token role", asPerson("someone@wso2.com", "cs_admin"), true, []string{"CRE", "SRE", "SME"}, []string{"CRE", "SRE"}, 3},
+		{"portal admin", asPerson("portal@wso2.com"), true, []string{"CRE", "SRE", "SME"}, []string{"CRE", "SRE"}, 3},
+		{"all three rota admin roles", asPerson("all.rota@wso2.com"), true, []string{"CRE", "SRE", "SME"}, []string{"CRE", "SRE"}, 3},
+		{"SRE rota admin: SRE's only", asPerson("sre.rota@wso2.com"), true, []string{"SRE"}, []string{"SRE"}, 2},
+		{"CRE rota admin: CRE's only", asPerson("cre.rota@wso2.com"), true, []string{"CRE"}, []string{"CRE"}, 1},
+		{"SME rota admin: SME's only", asPerson("sme.rota@wso2.com"), true, []string{"SME"}, []string{}, 0},
+		{"CRE head: CRE's, in full", asPerson("crehead@wso2.com"), true, []string{"CRE"}, []string{"CRE"}, 1},
+		{"CS head: CRE's, in full", asPerson("cshead@wso2.com"), true, []string{"CRE"}, []string{"CRE"}, 1},
+		{"team lead sees nothing", asPerson("lead@wso2.com"), false, []string{}, []string{}, 0},
+		{"engineer sees nothing", asPerson("eng@wso2.com"), false, []string{}, []string{}, 0},
+		{"admin role matched exactly", asPerson("eng@wso2.com", "CS_ADMIN"), false, []string{}, []string{}, 0},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -286,8 +292,14 @@ func TestCaseAlertSettingsRights(t *testing.T) {
 			if !c.view && (repo.listed || len(got.Rooms) != 0 || got.Environment != "") {
 				t.Fatalf("somebody who may not see the settings was shown them: %+v", got)
 			}
-			if c.view && (len(got.Rooms) != 3 || got.Environment != "staging" || !got.WebhooksEnabled || got.Revision.Saved != 3) {
+			if c.view && (len(got.Rooms) != c.shown || got.Environment != "staging" || !got.WebhooksEnabled || got.Revision.Saved != 3) {
 				t.Fatalf("settings = %+v", got)
+			}
+			// Another family's rooms are never sent.
+			for _, r := range got.Rooms {
+				if !slices.Contains(c.rooms, r.Ladder) {
+					t.Fatalf("a %s room was sent to %s", r.Ladder, c.name)
+				}
 			}
 		})
 	}
@@ -310,7 +322,8 @@ func TestCaseAlertSaveRoom(t *testing.T) {
 		{"SRE rota admin, SRE shared room", asPerson("sre.rota@wso2.com"), domain.SaveCaseAlertRoomRequest{Ladder: "sre", Label: " SRE Case Paging "}, ""},
 		{"SRE rota admin, Artemis room, teamless", asPerson("sre.rota@wso2.com"), domain.SaveCaseAlertRoomRequest{Ladder: "SRE", TeamKey: "Artemis", Label: "Artemis SRE", Teamless: &yes}, ""},
 		{"SRE rota admin, CRE room", asPerson("sre.rota@wso2.com"), domain.SaveCaseAlertRoomRequest{Ladder: "CRE", Label: "CRE"}, "forbidden"},
-		{"CRE head changes nothing", asPerson("crehead@wso2.com"), domain.SaveCaseAlertRoomRequest{Ladder: "CRE", Label: "CRE"}, "forbidden"},
+		{"CRE head changes CRE", asPerson("crehead@wso2.com"), domain.SaveCaseAlertRoomRequest{Ladder: "CRE", Label: "CRE"}, ""},
+		{"CRE head changes nothing of SRE", asPerson("crehead@wso2.com"), domain.SaveCaseAlertRoomRequest{Ladder: "SRE", Label: "SRE"}, "forbidden"},
 		{"team lead changes nothing", asPerson("lead@wso2.com"), domain.SaveCaseAlertRoomRequest{Ladder: "SRE", Label: "SRE"}, "forbidden"},
 		{"a CRE team room", asPerson("someone@wso2.com", "cs_admin"), domain.SaveCaseAlertRoomRequest{Ladder: "CRE", TeamKey: "vega", Label: "Vega"}, "invalid"},
 		{"a CRE team in an SRE room", asPerson("someone@wso2.com", "cs_admin"), domain.SaveCaseAlertRoomRequest{Ladder: "SRE", TeamKey: "vega", Label: "Vega"}, "invalid"},
@@ -345,7 +358,7 @@ func TestCaseAlertSaveRoom(t *testing.T) {
 				if repo.saved == nil || repo.actor != auth.IdentityFromContext(c.ctx).UserEmail {
 					t.Fatalf("saved %+v by %q", repo.saved, repo.actor)
 				}
-				if (repo.saved.Ladder != "SRE" && repo.saved.Ladder != "SME") || strings.TrimSpace(repo.saved.Label) != repo.saved.Label || !repo.saved.Enabled {
+				if repo.saved.Ladder == "" || strings.TrimSpace(repo.saved.Label) != repo.saved.Label || !repo.saved.Enabled {
 					t.Fatalf("saved %+v", repo.saved)
 				}
 			}

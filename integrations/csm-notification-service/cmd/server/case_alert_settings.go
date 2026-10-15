@@ -37,21 +37,17 @@ import (
 // group routes and ladder values saved on the Team Schedule's Alert Settings tab
 // are used.
 //
-//	rooms (unset)   only the SRE and SME teams' chat rooms are used, each in
-//	                place of that team's room in the file; CRE's rooms, routes,
-//	                ladder values and channels are not (the file's stand).
-//	                Asked once at start; when entity-service cannot be read,
-//	                or nothing is saved, the file is used as it is.
+//	db (or unset)   they replace what they name, for every ladder -- CRE, SRE
+//	                and SME; everything else is the file's. Nothing saved is
+//	                the file as it is.
 //	off             the file and env vars only, exactly as before. entity-service
 //	                is not asked.
 //	shadow          they are read and compared with the file's, and every
 //	                difference is logged, but the file's are used.
-//	db              they replace what they name; everything else is the file's.
 //
 // An env var rather than a file key on purpose: the file is decoded strictly,
 // and a new key would turn paging off on any build that does not know it.
 const (
-	caseAlertSourceRooms  = "rooms"
 	caseAlertSourceOff    = "off"
 	caseAlertSourceShadow = "shadow"
 	caseAlertSourceDB     = "db"
@@ -86,35 +82,18 @@ const (
 	caseAlertReadTimeout = 15 * time.Second
 )
 
-// caseAlertSettingsMode reads PAGING_CONFIG_SOURCE: unset is rooms. Anything
-// it does not know is off, logged, so a typo can never change what is paged.
+// caseAlertSettingsMode reads PAGING_CONFIG_SOURCE: unset is db. Anything it
+// does not know is off, logged, so a typo can never change what is paged.
 func caseAlertSettingsMode(raw string) string {
 	switch m := strings.ToLower(strings.TrimSpace(raw)); m {
 	case "":
-		return caseAlertSourceRooms
-	case caseAlertSourceRooms, caseAlertSourceOff, caseAlertSourceShadow, caseAlertSourceDB:
+		return caseAlertSourceDB
+	case caseAlertSourceOff, caseAlertSourceShadow, caseAlertSourceDB:
 		return m
 	default:
-		slog.Error("PAGING_CONFIG_SOURCE is not rooms, off, shadow or db; the file and env vars are used", "value", raw)
+		slog.Error("PAGING_CONFIG_SOURCE is not db, off or shadow; the file and env vars are used", "value", raw)
 		return caseAlertSourceOff
 	}
-}
-
-// teamRoomsOnly is what rooms mode uses of the saved settings: the SRE and
-// SME teams' rooms, each with its URL and (SRE) whether it also gets
-// incidents with no SRE team. Never a CRE room, a shared room, a channel, a
-// route or a ladder value.
-func teamRoomsOnly(saved paging.CaseAlertSettings) paging.CaseAlertSettings {
-	out := paging.CaseAlertSettings{Revision: saved.Revision}
-	for _, r := range saved.Rooms {
-		l := strings.ToUpper(strings.TrimSpace(r.Ladder))
-		if (l != "SRE" && l != "SME") || strings.TrimSpace(r.TeamKey) == "" || strings.TrimSpace(r.WebhookURL) == "" {
-			continue
-		}
-		r.Channel = ""
-		out.Rooms = append(out.Rooms, r)
-	}
-	return out
 }
 
 // caseAlertWait reads PAGING_CONFIG_WAIT: how long a db start keeps trying
@@ -150,21 +129,12 @@ func applyCaseAlertSettings(ctx context.Context, mode string, cfg paging.Config,
 		slog.Warn("PAGING_CONFIG_SOURCE needs CUSTOMER_ENTITY_BASE_URL; the file and env vars are used", "mode", mode)
 		return cfg
 	}
-	rooms := mode == caseAlertSourceRooms
 	wait := time.Duration(0)
 	if mode == caseAlertSourceDB {
 		wait = start.wait
 	}
 	saved, err := readCaseAlertSettings(ctx, entity, wait, start.sleep)
 	fromSnapshot := false
-	if err == nil && rooms {
-		saved = teamRoomsOnly(saved)
-		if len(saved.Rooms) == 0 {
-			// Nothing saved to use: the file, as before, and nothing to report.
-			slog.Info("case alerts: no SRE or SME team chat room saved; the file's rooms are used", "revision", saved.Revision)
-			return cfg
-		}
-	}
 	if err != nil {
 		if mode == caseAlertSourceDB && start.snapshots != nil {
 			if snap, at, ok := loadCaseAlertSnapshot(ctx, start.snapshots); ok {
@@ -229,7 +199,7 @@ func applyCaseAlertSettings(ctx context.Context, mode string, cfg paging.Config,
 	slog.Info("case alerts: using the saved settings over the file's", "revision", saved.Revision,
 		"rooms", names, "values", len(saved.Values), "changes", len(changes), "fromLastLoaded", fromSnapshot)
 	report(caseAlertSourceDB, merged, paging.SavedCaseAlertKeys(saved))
-	if !fromSnapshot && !rooms && start.snapshots != nil {
+	if !fromSnapshot && start.snapshots != nil {
 		saveCaseAlertSnapshot(ctx, start.snapshots, saved)
 	}
 	return merged

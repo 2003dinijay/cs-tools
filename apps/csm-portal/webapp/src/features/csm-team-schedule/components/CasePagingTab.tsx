@@ -17,10 +17,7 @@
  */
 
 import { useState, type JSX } from "react";
-import {
-  canViewCaseAlertSettings,
-  useCaseAlertSettings,
-} from "../api/useCaseAlertSettings";
+import { useCaseAlertSettings } from "../api/useCaseAlertSettings";
 import {
   useGetPagingChain,
   useGetPagingReadiness,
@@ -34,7 +31,7 @@ import type {
   ScheduleTeam,
 } from "../types";
 import CaseAlertSettings from "./CaseAlertSettings";
-import { chainHasSettings } from "../utils/caseAlertChainSettings";
+import { mayManageChain } from "../utils/caseAlertChainSettings";
 import type { CaseAlertChain } from "../utils/pagingChains";
 import PagingReadinessStrip, {
   type PhoneGapAction,
@@ -93,11 +90,13 @@ interface ChainOption {
   disabledReason?: string;
 }
 
-/** The chains, in the order the picker offers them: the three SRE sub-teams
- *  together, then SME. PaaS SRE has no rota yet, so it is shown -- it is a
- *  chain people expect -- but cannot be picked. CRE is not offered: its
- *  alerts keep their own flow, unchanged, and nothing about them is set here. */
+/** The chains, in the order the picker offers them: CRE, the three SRE
+ *  sub-teams together, then SME. PaaS SRE has no rota yet, so it is shown --
+ *  it is a chain people expect -- but cannot be picked. CRE is offered only to
+ *  those who may see its settings, and shows them alone: who CRE pages is set
+ *  on the rota, not here. */
 const CHAINS: readonly ChainOption[] = [
+  { code: "CRE", label: "CRE" },
   {
     code: "SRE_SAAS",
     label: "SaaS SRE",
@@ -149,10 +148,16 @@ export default function CasePagingTab({
   teams,
 }: Props): JSX.Element {
   const alertSettings = useCaseAlertSettings();
-  // The reader's own chains (caseAlertChainsFor).
-  const chains = visibleChains
-    ? CHAINS.filter((c) => visibleChains.includes(c.code))
-    : CHAINS;
+  const roomLadders = alertSettings.data?.canManage.roomLadders;
+  const manages = (code: CaseAlertChain) =>
+    code !== "PAAS" && mayManageChain(code, roomLadders);
+  // The reader's own chains (caseAlertChainsFor), and every chain whose
+  // settings they may see; CRE only for those.
+  const chains = CHAINS.filter((c) =>
+    c.code === "CRE"
+      ? manages("CRE")
+      : !visibleChains || visibleChains.includes(c.code) || manages(c.code),
+  );
   const offered = (
     code: PagingChainCode | undefined,
   ): code is PagingChainCode =>
@@ -176,9 +181,7 @@ export default function CasePagingTab({
       ? ownChain
       : (firstOffered ?? initialChain);
   const readiness = useGetPagingReadiness(PAGING_READINESS_DAYS);
-  const hasSettings =
-    canViewCaseAlertSettings(alertSettings.data) &&
-    chainHasSettings(chainCode);
+  const hasSettings = manages(chainCode);
   const [view, setView] = useState<ChainView>(readView);
   const chooseView = (next: ChainView) => {
     setView(next);
@@ -281,7 +284,7 @@ export default function CasePagingTab({
     );
   }
 
-  const viewSwitch = hasSettings ? (
+  const viewSwitch = hasSettings && chainCode !== "CRE" ? (
     <div className="seg cas-view" role="group" aria-label="Show">
       {(
         [
@@ -302,7 +305,9 @@ export default function CasePagingTab({
     </div>
   ) : null;
 
-  if (hasSettings && view === "settings") {
+  // CRE has its settings alone; the other chains switch between who gets
+  // alerts and the settings.
+  if (hasSettings && (view === "settings" || chainCode === "CRE")) {
     return (
       <>
         <div className="card-head">

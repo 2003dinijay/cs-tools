@@ -148,7 +148,10 @@ export default function CaseAlertSettings({
   if (!cfg || !s || !s.canManage.view) return null;
 
   const ladder = cfg.ladder;
+  // A family's settings are seen and changed by the same people; the server
+  // sends nobody another family's.
   const canRooms = s.canManage.roomLadders.includes(ladder);
+  if (!canRooms) return null;
   const roomOptions: CaseAlertRouteOptions | undefined =
     ladder === "SME"
       ? {
@@ -196,13 +199,7 @@ export default function CaseAlertSettings({
           </p>
         ) : null}
       </div>
-      {!canRooms ? (
-        <p className="cas-sub cas-viewonly">
-          You can view these. CSM admins and the {ladder} rota admin can change
-          them.
-        </p>
-      ) : null}
-      {canRooms && !cfg.roomsOnly && ladder !== "SME" ? (
+      {cfg.values ? (
         <SetupStep
           settings={s}
           ladder={ladder}
@@ -222,14 +219,14 @@ export default function CaseAlertSettings({
         options={roomOptions}
         ladderChannel={ladderChannel}
         canEdit={canRooms}
-        roomsOnly={Boolean(cfg.roomsOnly)}
+        roomsOnly
         webhooksEnabled={s.webhooksEnabled}
         onError={setError}
         onSaved={onSaved}
       />
 
-      {cfg.roomsOnly || ladder === "SME" ? null : (
-        <RoutesAndValues
+      {cfg.routes && ladder !== "SME" ? (
+        <Redirects
           ladder={ladder}
           settings={s}
           rooms={rooms}
@@ -237,12 +234,15 @@ export default function CaseAlertSettings({
           onError={setError}
           onSaved={onSaved}
         />
-      )}
+      ) : null}
+      {cfg.values ? (
+        <CaseAlertLadderSettings ladder={ladder} settings={s} onSaved={onSaved} />
+      ) : null}
     </section>
   );
 }
 
-interface RoutesAndValuesProps {
+interface RedirectsProps {
   ladder: CaseAlertLadder;
   settings: Settings;
   rooms: CaseAlertChatRoom[];
@@ -251,16 +251,16 @@ interface RoutesAndValuesProps {
   onSaved: (what: string) => void;
 }
 
-/** A ladder's redirects and the rest of its paging file (CRE only: the SRE
- *  and SME chains show their chat spaces alone). */
-function RoutesAndValues({
+/** A ladder's redirects: which team a CSM Portal team's cases (CRE) or
+ *  incidents (SRE) go to. */
+function Redirects({
   ladder,
   settings: s,
   rooms,
   ladderChannel,
   onError,
   onSaved,
-}: RoutesAndValuesProps): JSX.Element {
+}: RedirectsProps): JSX.Element {
   const canRoutes = s.canManage.routeLadders.includes(ladder);
   const routes = s.routes.filter((r) => r.ladder === ladder);
   return (
@@ -286,8 +286,6 @@ function RoutesAndValues({
           onSaved={onSaved}
         />
       </CaseAlertSection>
-
-      <CaseAlertLadderSettings ladder={ladder} settings={s} onSaved={onSaved} />
     </>
   );
 }
@@ -417,7 +415,7 @@ function TeamChatRouting({
       ) : null}
       <p className="cas-sub">
         {roomsOnly
-          ? "Which Google Chat space each team's alerts go to. Everything else stays in the alert service's file."
+          ? "Which Google Chat space each team's alerts go to."
           : "Which Google Chat space each team's alerts go to, and whether the team gets chat cards, calls or both."}
         {!roomsOnly && ladderWords
           ? ` This ladder sends alerts by ${ladderWords.toLowerCase()} (set in the alert service's file). A team can do less, never more.`
@@ -901,7 +899,7 @@ function RoomDialog({
 
 interface SetupStepProps {
   settings: Settings;
-  ladder: CaseAlertLadder;
+  ladder: CaseAlertRoomLadder;
   onError: (msg: string | null) => void;
   onSaved: (what: string) => void;
 }
