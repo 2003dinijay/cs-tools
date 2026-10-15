@@ -95,14 +95,13 @@ BEGIN
         EXIT WHEN n = 0;
     END LOOP;
     FOR r IN
-        SELECT u.email, a.rota_date, s.code
+        SELECT a.id, a.user_id, a.rota_date, s.code
           FROM _sme_clash c
           JOIN team_schedule_assignment a ON a.id = c.id
           JOIN team_schedule_shift s ON s.id = a.shift_id
-          JOIN "user" u ON u.id = a.user_id
          ORDER BY a.rota_date, s.code
     LOOP
-        RAISE NOTICE '0236: % on % (%) keeps its old instants: the new hours overlap another of their turns', r.email, r.rota_date, r.code;
+        RAISE NOTICE '0236: assignment % (user %) on % (%) keeps its old instants: the new hours overlap another of their turns', r.id, r.user_id, r.rota_date, r.code;
     END LOOP;
 END
 $$;
