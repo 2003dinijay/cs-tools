@@ -57,7 +57,7 @@ func TestSanitizeLinks(t *testing.T) {
 			t.Fatalf("Sanitize kept %q: %q", href, got)
 		}
 	}
-	for _, href := range []string{"mailto:a@example.com", "tel:+94112345678", "/knowledge-base"} {
+	for _, href := range []string{"mailto:a@example.com", "tel:+94112345678", "/knowledge/today-i-learned"} {
 		if got := Sanitize(`<a href="` + href + `">ok</a>`); !strings.Contains(got, href) {
 			t.Fatalf("Sanitize dropped %q: %q", href, got)
 		}

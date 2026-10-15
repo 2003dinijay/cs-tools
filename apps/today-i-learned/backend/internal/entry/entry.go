@@ -58,6 +58,9 @@ type Entry struct {
 	SubmittedByEmail string     `json:"submittedByEmail"`
 	CreatedAt        time.Time  `json:"createdAt"`
 	UpdatedAt        *time.Time `json:"updatedAt"`
+	// NotifiedAt is when Novera accepted the entry's Google Chat
+	// announcement; nil while it hasn't.
+	NotifiedAt *time.Time `json:"notifiedAt"`
 }
 
 // Draft is an entry's editable content as a client sent it.

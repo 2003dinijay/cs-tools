@@ -45,7 +45,7 @@ func TestCreateAnnouncesTheEntryWithAnArticleLink(t *testing.T) {
 		t.Fatalf("announcements = %d, want 1", len(api.notifier.sent))
 	}
 	got := api.notifier.sent[0]
-	if got.entry.ID != e.ID || got.entryURL != "https://one.example/knowledge-base/"+e.ID+"?view=article" {
+	if got.entry.ID != e.ID || got.entryURL != "https://one.example/knowledge/today-i-learned/"+e.ID+"?view=article" {
 		t.Fatalf("announced %+v", got)
 	}
 }
@@ -271,6 +271,11 @@ func TestList(t *testing.T) {
 		t.Fatalf("query = %+v", q)
 	}
 
+	api.do(t, jane, http.MethodGet, "/submissions?author=+Ale+Sam+&source=Customer", "")
+	if q := api.store.lastQuery; q.Author != "Ale Sam" || q.Source != "Customer" {
+		t.Fatalf("author and source: query = %+v", q)
+	}
+
 	w = api.do(t, jane, http.MethodGet, "/submissions?offset=50", "")
 	if page := decodeJSON[listResponse](t, w); page.Items == nil || len(page.Items) != 0 {
 		t.Fatalf("past the end: %s", w.Body)
@@ -289,7 +294,10 @@ func TestListRejectsBadQueries(t *testing.T) {
 		"createdFrom=2026-10-31T00:00:00Z&createdBefore=2026-10-01T00:00:00Z": "createdFrom must be before createdBefore.",
 		"createdFrom=2026-10-01T00:00:00Z&createdBefore=2026-10-01T00:00:00Z": "createdFrom must be before createdBefore.",
 		"mine=yes": "mine must be true or false.",
-		"q=" + strings.Repeat("a", maxSearchLength+1): "Search must be 200 characters or fewer.",
+		"q=" + strings.Repeat("a", maxSearchLength+1):            "Search must be 200 characters or fewer.",
+		"author=" + strings.Repeat("a", entry.AuthorMaxLength+1): "author must be 200 characters or fewer.",
+		"source=customer": "source must be Customer, Partner, Internal or Other.",
+		"source=Vendor":   "source must be Customer, Partner, Internal or Other.",
 	} {
 		assertError(t, api.do(t, jane, http.MethodGet, "/submissions?"+query, ""), http.StatusBadRequest, want)
 	}

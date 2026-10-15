@@ -30,7 +30,7 @@ PORT=8077 UPSTREAM_URL=http://localhost:8078 go run .
 
 The service checks its settings and the database at startup, and stops with
 a message naming what's wrong: a missing setting, an unreachable database,
-or a missing `til_entry` table.
+or a missing `til_entry` table or column.
 
 ## Test
 
@@ -71,13 +71,14 @@ written to be shown to people as they are.
 |---|---|---|
 | GET | `/health` | Liveness. No token needed. |
 | GET | `/user-info` | `{email, displayName, canModerate}` |
-| GET | `/settings` | `{whatMaxLength}`: the rules the webapp's form shows. |
+| GET | `/settings` | `{whatMaxLength, notificationsEnabled}`: the rules the webapp's form shows, and whether entries are announced. |
 | GET | `/customers/search?q=` | `[{id, name}]`; empty when suggestions are off. |
-| GET | `/submissions` | `{items, total, limit, offset}`, newest first. Query: `q` (search), `createdFrom` (inclusive) / `createdBefore` (exclusive) as RFC 3339 times, `mine=true`, `limit` (1–100, default 10), `offset`. |
+| GET | `/submissions` | `{items, total, limit, offset}`, newest first. Query: `q` (search), `createdFrom` (inclusive) / `createdBefore` (exclusive) as RFC 3339 times, `author` (the author's name: every word starts a word in it), `source` (Customer, Partner, Internal or Other), `mine=true`, `limit` (1–100, default 10), `offset`. |
 | POST | `/submissions` | `{title, who, where, what, whereDetail?}`. Webapp only. Announced in Google Chat. |
 | GET | `/submissions/{id}` | One entry. |
 | PUT | `/submissions/{id}` | `{title, where, what, whereDetail?}`. Webapp only; the author or a moderator. |
 | DELETE | `/submissions/{id}` | The author or a moderator. |
+| POST | `/submissions/{id}/notify` | Sends an entry whose announcement failed. Webapp only; moderators only; once (409 after). |
 
 ## How it works
 
@@ -101,5 +102,12 @@ written to be shown to people as they are.
   (under three characters, or common words such as "the") are matched as
   text.
 - **Announcements.** A new entry is sent to Novera, which posts it to every
-  employee who has a chat open with it. This is best effort: a failure is
-  logged and never fails the request.
+  employee who has a chat open with it. A failure never fails the request:
+  it's logged, and the entry's `notifiedAt` stays null. A moderator can then
+  send it from the webapp (`POST /submissions/{id}/notify`). An entry is
+  claimed before it's sent and released if Novera doesn't accept it, so no
+  one gets the same card twice, even when two moderators press send at once.
+  Only if the service is killed mid-send, or the database fails as the claim
+  is released (logged as `release notification failed` with the entry's id),
+  does an unsent entry stay marked as sent. To let a moderator send it:
+  `UPDATE til_entry SET notified_at = NULL WHERE id = '<entry id>';`
