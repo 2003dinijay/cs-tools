@@ -423,7 +423,7 @@ backend/
 
 ### Users
 
-- `GET /users/me` — Get current user profile (`id`, `email`, `firstName`, `lastName`, `timeZone` from entity service; `roles` are the portal roles granted by the caller's token; `phoneNumber` from SCIM)
+- `GET /users/me` — Get current user profile (`id`, `firstName`, `lastName`, `timeZone` from entity service; `email`/`roles` are always sourced from the caller's token, `roles` being the portal roles it grants; `phoneNumber` from SCIM). A caller with no entity service user row gets `403`, unless their token already grants a portal role — then it's `200`, answered entirely from the token (`id`/`timeZone`/`team` null)
 - `PATCH /users/me` — Update current user profile (`phoneNumber` via SCIM, `timeZone` via entity service)
 - `POST /users/search` — Search users; optional `filters` (`searchQuery`, `roles`, `userNames`, `emails`, `active`) and `sortBy` (`field`, `order`); response shape depends on data source (`User` for postgres, `SNUser` for ServiceNow)
 - `GET /users/{id}` — Get one user's full profile (both data sources); adds `teams` (derived from `groups`) and, for external contacts only, `externalAccount` (`exists`/`locked`, from SCIM's "external" org search). For a wso2.com-email target (regardless of its recorded `userType`), also adds `csmPlatformRoles` — the same portal-role vocabulary `GET /users/me` reports (`viewer`/`escalator`/.../`admin`), sourced from that user's own SCIM role assignment (filtered to this portal's `app-csm-*` roles) — alongside, not replacing, the response's own `roles` field (entity-service's own role vocabulary, a genuinely different thing). All enrichments (teams, externalAccount, csmPlatformRoles) are best-effort — absent/unchanged rather than failing the request if their lookup fails

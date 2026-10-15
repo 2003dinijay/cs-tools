@@ -133,18 +133,20 @@ func NewUsersHandler(scim scimClient, entity entityUserClient, dir *directory.Di
 
 // userMeResponse is the GET /users/me response shape.
 type userMeResponse struct {
-	ID        *string `json:"id,omitempty"`
+	// ID, TimeZone and Team come from the entity service; they are null (not
+	// omitted) when the caller holds portal roles but has no user row there.
+	ID        *string `json:"id"`
 	Email     string  `json:"email"`
 	FirstName *string `json:"firstName,omitempty"`
 	LastName  *string `json:"lastName,omitempty"`
-	TimeZone  *string `json:"timeZone,omitempty"`
+	TimeZone  *string `json:"timeZone"`
 	// Roles is which portal roles (viewer, cs_engineer, admin, ...) the
 	// caller's token roles grant: several are possible. It is not the entity
 	// service's role data, which this response no longer carries. Always
 	// present, [] when they hold none.
 	Roles       []string          `json:"roles"`
 	PhoneNumber *string           `json:"phoneNumber,omitempty"`
-	Team        *userTeamResponse `json:"team,omitempty"`
+	Team        *userTeamResponse `json:"team"`
 	// SftpgoAttachmentStorageEnabled mirrors the backend's
 	// SFTPGO_ATTACHMENT_STORAGE_ENABLED runtime flag. Always present (never
 	// omitted) so the frontend can distinguish "flag is off" from "field not
@@ -234,13 +236,24 @@ func (h *UsersHandler) GetMe(w http.ResponseWriter, r *http.Request) {
 		var apiErr *apierror.Error
 		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
 			slog.ErrorContext(r.Context(), "entity GetUserMe: user not found", "userID", user.UserID)
-			writeError(w, http.StatusForbidden, ErrMsgForbidden)
+			if len(resp.Roles) == 0 {
+				writeError(w, http.StatusForbidden, ErrMsgForbidden)
+				return
+			}
+			// The caller holds portal roles via the token but has no user row:
+			// answer from the token. Entity-sourced fields (id, timeZone,
+			// team) stay null.
+			if user.FirstName != "" {
+				resp.FirstName = &user.FirstName
+			}
+			if user.LastName != "" {
+				resp.LastName = &user.LastName
+			}
+			h.fillPhoneNumber(r.Context(), user, &resp)
+			writeJSONValue(w, http.StatusOK, resp)
 			return
 		}
 		slog.ErrorContext(r.Context(), "entity GetUserMe failed", "userID", user.UserID, "err", err)
-		// A caller cannot distinguish "no roles/team" from "upstream identity
-		// resolution failed" if this falls through to a 200 with zeroed
-		// fields, so the failure must surface as an error response.
 		mapUpstreamErrorGeneric(w, err, "Failed to fetch the current user.")
 		return
 	}
@@ -256,16 +269,20 @@ func (h *UsersHandler) GetMe(w http.ResponseWriter, r *http.Request) {
 		resp.Team = h.teamForGroups(entityResp.Groups)
 	}
 
-	scimInfo, err := h.scim.SearchUser(r.Context(), user.Email)
+	h.fillPhoneNumber(r.Context(), user, &resp)
+	writeJSONValue(w, http.StatusOK, resp)
+}
+
+// fillPhoneNumber sets resp.PhoneNumber from SCIM, best-effort.
+func (h *UsersHandler) fillPhoneNumber(ctx context.Context, user *middleware.UserInfo, resp *userMeResponse) {
+	scimInfo, err := h.scim.SearchUser(ctx, user.Email)
 	if err != nil {
-		slog.ErrorContext(r.Context(), "scim SearchUser failed", "userID", user.UserID, "err", err)
+		slog.ErrorContext(ctx, "scim SearchUser failed", "userID", user.UserID, "err", err)
 	} else if scimInfo == nil {
-		slog.WarnContext(r.Context(), "no SCIM user found", "userID", user.UserID)
+		slog.WarnContext(ctx, "no SCIM user found", "userID", user.UserID)
 	} else {
 		resp.PhoneNumber = scimInfo.PhoneNumber
 	}
-
-	writeJSONValue(w, http.StatusOK, resp)
 }
 
 // PatchMe handles PATCH /users/me.
