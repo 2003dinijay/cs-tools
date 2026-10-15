@@ -159,9 +159,9 @@ func (c *GoogleChatClient) SendEscalationAlert(ctx context.Context, a Escalation
 		return fmt.Errorf("notifications: audience is required")
 	}
 	if a.Reply {
-		return c.sendCardToAudience(ctx, a.Audience, buildEscalationReply(a))
+		return c.sendCardToAudience(ctx, a.Audience, a.IncidentRef, "", buildEscalationReply(a))
 	}
-	return c.sendCardToAudience(ctx, a.Audience, buildEscalationCard(a))
+	return c.sendCardToAudience(ctx, a.Audience, a.IncidentRef, "", buildEscalationCard(a))
 }
 
 // buildEscalationReply is a rung as a reply under the incident card: the rung, who it is, and who is being called when.
@@ -357,9 +357,9 @@ func (c *GoogleChatClient) SendEscalationUnanswered(ctx context.Context, u Escal
 		return fmt.Errorf("notifications: audience is required")
 	}
 	if u.Reply {
-		return c.sendCardToAudience(ctx, u.Audience, buildEscalationUnansweredReply(u))
+		return c.sendCardToAudience(ctx, u.Audience, u.IncidentRef, "", buildEscalationUnansweredReply(u))
 	}
-	return c.sendCardToAudience(ctx, u.Audience, buildEscalationUnansweredCard(u))
+	return c.sendCardToAudience(ctx, u.Audience, u.IncidentRef, "", buildEscalationUnansweredCard(u))
 }
 
 // buildEscalationUnansweredReply is the closing message as a reply under the incident card: who was called, and that the calls are over.
@@ -476,9 +476,9 @@ func (c *GoogleChatClient) SendEscalationHandoff(ctx context.Context, h Escalati
 		return fmt.Errorf("notifications: audience is required")
 	}
 	if h.Reply {
-		return c.sendCardToAudience(ctx, h.Audience, buildEscalationHandoffReply(h))
+		return c.sendCardToAudience(ctx, h.Audience, h.IncidentRef, "", buildEscalationHandoffReply(h))
 	}
-	return c.sendCardToAudience(ctx, h.Audience, buildEscalationHandoffCard(h))
+	return c.sendCardToAudience(ctx, h.Audience, h.IncidentRef, "", buildEscalationHandoffCard(h))
 }
 
 // buildEscalationHandoffReply is the escalated-to-SME message as a reply under the incident card.
@@ -593,7 +593,7 @@ func (c *GoogleChatClient) SendEscalationStopped(ctx context.Context, s Escalati
 	if strings.TrimSpace(s.Audience) == "" {
 		return fmt.Errorf("notifications: audience is required")
 	}
-	return c.sendCardToAudience(ctx, s.Audience, buildEscalationStoppedCard(s))
+	return c.sendCardToAudience(ctx, s.Audience, s.IncidentRef, "", buildEscalationStoppedCard(s))
 }
 
 // buildEscalationStoppedCard assembles the stopped reply.
