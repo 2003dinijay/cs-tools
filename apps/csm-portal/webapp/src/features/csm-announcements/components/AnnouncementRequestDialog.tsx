@@ -47,7 +47,7 @@ import {
   resolveDisplayTimeZone,
   zonedInputToUtcIso,
 } from "@utils/dateTime";
-import { sanitizeRichTextHtml } from "@utils/sanitizeHtml";
+import { sanitizeAnnouncementHtml } from "@utils/sanitizeHtml";
 import {
   DRY_RUN_TAG_LABEL,
   useAnnouncementDryRun,
@@ -592,7 +592,7 @@ export default function AnnouncementRequestDialog({
                 </Box>
                 <Box
                   sx={{ fontSize: "0.875rem", lineHeight: 1.5, wordBreak: "break-word" }}
-                  dangerouslySetInnerHTML={{ __html: sanitizeRichTextHtml(request.description) }}
+                  dangerouslySetInnerHTML={{ __html: sanitizeAnnouncementHtml(request.description) }}
                 />
               </>
             )}
@@ -1082,7 +1082,7 @@ export default function AnnouncementRequestDialog({
                         </Typography>
                         <Box
                           sx={{ fontSize: "0.875rem", lineHeight: 1.5, wordBreak: "break-word", mt: 0.5 }}
-                          dangerouslySetInnerHTML={{ __html: sanitizeRichTextHtml(u.content) }}
+                          dangerouslySetInnerHTML={{ __html: sanitizeAnnouncementHtml(u.content) }}
                         />
                       </Box>
                     ))}
