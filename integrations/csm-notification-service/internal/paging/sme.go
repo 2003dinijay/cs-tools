@@ -218,12 +218,12 @@ func (e *Engine) handleSpecialOps(ctx context.Context, pr specialOpsPress) error
 // failure is logged, never retried -- the SME page matters, this message
 // does not hold it up.
 func (e *Engine) postSMEHandoff(ctx context.Context, pr specialOpsPress, team string, started bool) {
-	if !e.cfg.Ladder.SMEHandoffChat {
-		return
-	}
-	// The incident card's spaces first, so the message replies under it; else the SRE space as before.
+	// The incident card's spaces first, without sre.smeHandoffChat, so the message replies under it; else the SRE space when that is on.
 	targets := e.incidentRooms(Trigger{IncidentID: pr.IncidentID, Team: pr.PreviousGroup})
 	if len(targets) == 0 {
+		if !e.cfg.Ladder.SMEHandoffChat {
+			return
+		}
 		target, ok := e.sreRoomFor(pr.PreviousGroup)
 		if !ok {
 			return

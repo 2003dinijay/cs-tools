@@ -357,7 +357,8 @@ func (e *Engine) sreTeamKey(team string) string {
 // notifier, so a rung rings its engineer once, and one fanoutChat, so a space
 // that fails does not repost the others.
 func (e *Engine) notifiersFor(plan Plan) []notifier {
-	if rooms := e.incidentRooms(plan.Trigger); len(rooms) > 0 && e.cfg.Channel.Uses(ChannelChat) {
+	// INCIDENT_CHAT_SPACES alone turns the replies on, whatever channel says; only a log (dry run) ladder posts nothing.
+	if rooms := e.incidentRooms(plan.Trigger); len(rooms) > 0 && e.cfg.Channel != ChannelLog {
 		out := withoutChat(e.notifiers)
 		var fan fanoutChat
 		for _, r := range rooms {
@@ -525,11 +526,12 @@ func (e *Engine) unansweredRooms(plan Plan) ([]chatRoom, string) {
 		}
 		return nil, ""
 	}
-	if !e.cfg.Ladder.UnansweredChat {
-		return nil, ""
-	}
+	// An incident space gets the closing reply without sre.unansweredChat.
 	if rooms := e.incidentRooms(t); len(rooms) > 0 {
 		return rooms, t.Routing.SREChain()
+	}
+	if !e.cfg.Ladder.UnansweredChat {
+		return nil, ""
 	}
 	var rooms []chatRoom
 	for _, team := range e.chatTeams(plan) {

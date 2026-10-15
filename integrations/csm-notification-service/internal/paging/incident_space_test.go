@@ -116,3 +116,60 @@ func TestSMEHandoff_GoesToTheIncidentCardsSpace(t *testing.T) {
 		t.Fatalf("handoffs = %+v; want one reply in the incident card's space", chat.handoffs)
 	}
 }
+
+// incidentSpaceOnlyEngine is incidentSpaceEngine with every chat setting off and a call-only ladder: INCIDENT_CHAT_SPACES alone.
+func incidentSpaceOnlyEngine(chat *fakeChat) *Engine {
+	e := incidentSpaceEngine(chat)
+	e.cfg.Channel = ChannelCall
+	e.cfg.Ladder = LadderConfig{}
+	e.notifiers = nil
+	e.sharedRoom = nil
+	return e
+}
+
+// A call-only ladder with no chat settings still replies under the incident card.
+func TestIncidentSpaceOnly_RungReplies(t *testing.T) {
+	chat := &fakeChat{}
+	deliverFirstRung(t, incidentSpaceOnlyEngine(chat), Trigger{IncidentID: "inc-1", Record: RecordIncident, Team: "MS/PC SRE Group", At: time.Now()})
+	if len(chat.posted) != 1 || chat.posted[0].Audience != notifications.IncidentAudience("MS/PC SRE Group") || !chat.posted[0].Reply {
+		t.Fatalf("posted %+v; want one reply in the incident card's space", chat.posted)
+	}
+}
+
+// sre.unansweredChat and sre.smeHandoffChat off do not hold back the incident space's replies.
+func TestIncidentSpaceOnly_ClosingAndHandoffReplies(t *testing.T) {
+	chat := &fakeChat{}
+	e := incidentSpaceOnlyEngine(chat)
+	if rooms, _ := e.unansweredRooms(Plan{Trigger: Trigger{IncidentID: "inc-1", Record: RecordIncident, Team: "MS/PC SRE Group"}}); len(rooms) != 1 || !rooms[0].reply {
+		t.Errorf("closing message rooms = %+v; want the incident card's space", rooms)
+	}
+	e.postSMEHandoff(context.Background(), specialOpsPress{IncidentID: "inc-1", Number: "INC1", PreviousGroup: "MS/PC SRE Group"}, "choreo-runtime", true)
+	if len(chat.handoffs) != 1 || !chat.handoffs[0].Reply {
+		t.Errorf("handoffs = %+v; want one reply in the incident card's space", chat.handoffs)
+	}
+}
+
+// A log ladder is a dry run, so it posts nothing even with an incident space.
+func TestIncidentSpaceOnly_LogLadderPostsNoRung(t *testing.T) {
+	chat := &fakeChat{}
+	e := incidentSpaceOnlyEngine(chat)
+	e.cfg.Channel = ChannelLog
+	deliverFirstRung(t, e, Trigger{IncidentID: "inc-1", Record: RecordIncident, Team: "MS/PC SRE Group", At: time.Now()})
+	if len(chat.posted) != 0 {
+		t.Fatalf("posted %+v; want nothing from a log ladder", chat.posted)
+	}
+}
+
+// Without an incident space the old switches still decide: off means no closing or handoff message.
+func TestNoIncidentSpace_SwitchesStillApply(t *testing.T) {
+	chat := &fakeChat{noRoom: map[string]bool{notifications.IncidentAudience("Unmapped Group"): true}}
+	e := incidentSpaceOnlyEngine(chat)
+	e.sharedRoom = &chatRoom{chat: chat, room: "SRE Case Paging"}
+	if rooms, _ := e.unansweredRooms(Plan{Trigger: Trigger{IncidentID: "inc-2", Record: RecordIncident, Team: "Unmapped Group"}}); len(rooms) != 0 {
+		t.Errorf("closing message rooms = %+v; want none with sre.unansweredChat off", rooms)
+	}
+	e.postSMEHandoff(context.Background(), specialOpsPress{IncidentID: "inc-2", Number: "INC2", PreviousGroup: "Unmapped Group"}, "choreo-runtime", true)
+	if len(chat.handoffs) != 0 {
+		t.Errorf("handoffs = %+v; want none with sre.smeHandoffChat off", chat.handoffs)
+	}
+}
