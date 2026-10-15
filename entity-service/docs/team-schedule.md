@@ -349,10 +349,12 @@ PaaS SRE is N/A there, so it has no rota until it has a schedule.
 | `SME_CLOUD_AGENT` | SME | `sme-cloud-agent` | `WCA_D` 06:00–18:00 · `WCA_N` 18:00–06:00 | weekly | 5 min |
 | `SME_CLOUD_CORE` | SME | `sme-cloud-core` | `WCC_D` / `WCC_N`, as Agent platform | weekly | 5 min |
 | `SME_MOESIF` | SME | `sme-moesif` | `MOE_D` 10:00–22:00 · `MOE_N` 22:00–10:00 | weekly | 30 min |
-| `SME_U2` | SME | `sme-u2` | `U2_D` / `U2_N`, as Moesif | weekly | 5 min |
-| `SME_B_CENTRAL` | SME | `sme-b-central` | `BCN_D` / `BCN_N`, as Moesif | weekly | 5 min |
+| `SME_U2` | SME | `sme-u2` | `U2_D` 06:00–18:00 · `U2_N` 18:00–06:00 (0236) | weekly | 5 min |
+| `SME_B_CENTRAL` | SME | `sme-b-central` | `BCN_D` / `BCN_N`, as U2 | weekly | 5 min |
 
 U2 and B-Central were added by migration 0217, data only, with the windows their rota sheet gives. Unlike the other SME rotations it also inserts their two team rows (keys `u2`, `b-central`), only when no team has that key, so every environment gets them from one script.
+
+Migration 0236 moved both to Day 06:00–18:00 and Night 18:00–06:00 (from 0217's 10:00–22:00 / 22:00–10:00). A used window's hours cannot change (the used-shift guard), so it adds four windows (`SME_U2_DAY_06_18`, `SME_U2_NIGHT_18_06`, `SME_BCN_DAY_06_18`, `SME_BCN_NIGHT_18_06`) in the same zones and retires the old four. Every turn from the day after it runs (LK date) moves to the new window, its instants resolved again; earlier turns keep the hours they were worked, and the one night across the cutover ends at 06:00, when the new day turn starts. The moving turns are first parked a minute apart far ahead, because the same engineers hold day and night and the row-by-row no-overlap check would otherwise trip mid-update. A moved turn that overlaps a turn of the same engineer on another rota stays on the old window and is named in a NOTICE.
 
 Migration 0235 does the same for the other seven SME rotations' teams (keys `asgardeo`, `choreo-runtime`, `bijira`, `devant`, `cloud-agent`, `cloud-core`, `moesif`, with the names and types the local seed uses). They never arrive from the ServiceNow sync, so without them a deployed SME rota has nobody to roster and an escalation to Special Ops pages nobody (the SME page finds no team for SPECIALIST_HANDOFF_CONFIG's `smeTeam`). It also adds IaaS's team (key `iaas`, type `sre-iaas`, as production has it), which a database that did not get it from production lacks, leaving the IaaS rota with no team. A key already held by a team of another type is left alone and named in a NOTICE.
 
