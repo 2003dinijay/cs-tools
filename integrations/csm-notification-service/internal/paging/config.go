@@ -120,11 +120,13 @@ type LadderConfig struct {
 	// rung and nobody acknowledged the incident, to the team's own space
 	// (teamChats), else chat. It is posted whatever channel says, so a
 	// call-only ladder still tells the room the calls have ended. SRE only.
+	// An incident with an INCIDENT_CHAT_SPACES space gets it there whether this is on or not.
 	UnansweredChat bool `yaml:"unansweredChat"`
 	// SMEHandoffChat posts one message to the incident's SRE team space
 	// (teamChats, else chat) when it is escalated to an SME team: who
 	// escalated it, that SRE paging stopped, and that the SMEs are being
 	// paged. Posted whatever channel says. SRE only.
+	// An incident with an INCIDENT_CHAT_SPACES space gets it there whether this is on or not.
 	SMEHandoffChat bool `yaml:"smeHandoffChat"`
 	// AckChat posts one reply in a ladder's thread when the ladder stops for
 	// any reason but a hand-off to the SMEs (which posts its own): who

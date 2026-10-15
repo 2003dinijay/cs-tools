@@ -86,10 +86,9 @@ func run() error {
 		Handler: middleware.SecurityHeaders(
 			middleware.CORS(cfg.CORSOrigins)(
 				middleware.CorrelationID(
-					middleware.Logger(
-						middleware.BodyLimit(maxBodyBytes)(
-							middleware.Auth(cfg.Auth, keyFunc)(
-								routes(handler.New(hc)))))))),
+					middleware.BodyLimit(maxBodyBytes)(
+						middleware.Auth(cfg.Auth, keyFunc)(
+							routes(handler.New(hc))))))),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       cfg.ReadTimeout,
 		WriteTimeout:      cfg.WriteTimeout,
