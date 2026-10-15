@@ -142,6 +142,16 @@ const INVITED_GRANTED_CONTACT: BeProjectContact = {
   grantsCaseAccess: true,
 };
 
+const INTEGRATION_CONTACT: BeProjectContact = {
+  id: "30000000-0000-0000-0000-000000000000",
+  name: "Integration User",
+  email: "integration@example.com",
+  registrationState: "invited",
+  isCsIntegrationUser: true,
+  customerContactPresent: true,
+  grantsCaseAccess: false,
+};
+
 const JANE_EMAIL_FAILED: BeProjectOnboardingMembership = {
   membershipSfId: "a0X000000000001AAA",
   contactSfId: null,
@@ -304,6 +314,15 @@ describe("ProjectContactsTab", () => {
       screen.getByText(/invited under a different address than its linked contact's own/i),
     ).toBeInTheDocument();
     expect(screen.queryByText(/no linked contact record/i)).not.toBeInTheDocument();
+  });
+
+  it("shows an integration user as REGISTERED with no access fault", () => {
+    postMock.mockResolvedValue({ users: [] });
+    mockQueryResult({ data: [INTEGRATION_CONTACT] });
+    renderTab();
+    expect(screen.getByText("Integration user", { selector: ".MuiChip-label" })).toBeInTheDocument();
+    expect(screen.getByText("REGISTERED", { selector: ".MuiChip-label" })).toBeInTheDocument();
+    expect(screen.queryByText("No access", { selector: ".MuiChip-label" })).not.toBeInTheDocument();
   });
 
   // A failed invite has no name (that is only ever known from the contact

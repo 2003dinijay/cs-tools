@@ -76,6 +76,10 @@ interface AccessStatus {
 // (`grantsCaseAccess` absent), so a backend deploy that hasn't caught up yet
 // degrades to the previous behaviour instead of mislabeling every row.
 function deriveAccessStatus(c: BeProjectContact): AccessStatus {
+  // Integration users never register; their access is a service token, not this row.
+  if (c.isCsIntegrationUser) {
+    return { label: "Integration user", color: "default" };
+  }
   if (c.grantsCaseAccess !== undefined) {
     if (c.grantsCaseAccess) {
       return { label: "Has access", color: "success" };
@@ -255,8 +259,8 @@ export default function ProjectContactsTab({
                       {c.registrationState ? (
                         <Chip
                           size="small"
-                          label={c.registrationState}
-                          color={registrationChipColor(c.registrationState)}
+                          label={c.isCsIntegrationUser ? "REGISTERED" : c.registrationState}
+                          color={registrationChipColor(c.isCsIntegrationUser ? "REGISTERED" : c.registrationState)}
                           variant="outlined"
                         />
                       ) : (
