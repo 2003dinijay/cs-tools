@@ -321,7 +321,7 @@ func TestBuildEscalationUnansweredReply(t *testing.T) {
 		Chain: "SaaS SRE", IncidentRef: "INC0100950", Called: []string{"L1 Jane Doe", "L2 John Roe"}, ThreadKey: "incident-abc",
 	})
 	card := msg.CardsV2[0].Card
-	if card.Header.Title != "Unanswered: SaaS SRE paging ended" || card.Header.Subtitle != "#INC0100950" {
+	if card.Header.Title != "Unanswered" || card.Header.Subtitle != "#INC0100950" {
 		t.Errorf("header = %q / %q", card.Header.Title, card.Header.Subtitle)
 	}
 	body := card.Sections[0].Widgets[0].TextParagraph.Text

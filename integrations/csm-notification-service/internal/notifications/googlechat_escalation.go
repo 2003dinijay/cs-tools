@@ -364,16 +364,12 @@ func (c *GoogleChatClient) SendEscalationUnanswered(ctx context.Context, u Escal
 
 // buildEscalationUnansweredReply is the closing message as a reply under the incident card: who was called, and that the calls are over.
 func buildEscalationUnansweredReply(u EscalationUnanswered) chatCardMessage {
-	chain := strings.TrimSpace(u.Chain)
-	if chain == "" {
-		chain = "SRE"
-	}
 	lines := []string{caseAlertLine("<b>Nobody acknowledged this incident</b>")}
 	if len(u.Called) > 0 {
 		lines = append(lines, caseAlertLine("Called %s", strings.Join(u.Called, ", ")))
 	}
 	lines = append(lines, caseAlertLine("No further calls will be made."))
-	return escalationReply("incident-escalation-unanswered", "Unanswered: "+chain+" paging ended", u.IncidentRef, u.ThreadKey, lines)
+	return escalationReply("incident-escalation-unanswered", "Unanswered", u.IncidentRef, u.ThreadKey, lines)
 }
 
 // escalationReply is the compact card every ladder message uses under the incident card.
