@@ -5510,6 +5510,88 @@ func TestCaseService_AggregateCases_GroupsAndCapsBuckets(t *testing.T) {
 	}
 }
 
+// watchListSkipExistingFixture backs the "only validate newly added watchers"
+// tests: the case already carries currentWatchers, an external id has no
+// registered contact row, and an internal id resolves as INTERNAL staff.
+type watchListSkipExistingFixture struct {
+	svc       CaseService
+	submitted []string // ids passed to SetCaseWatchList
+	written   bool
+	checked   []string // ids the contact lookup was asked about
+}
+
+const (
+	wlExistingExternalID = "00000000-0000-0000-0000-0000000000e1"
+	wlNewExternalID      = "00000000-0000-0000-0000-0000000000e2"
+	wlNewInternalID      = "00000000-0000-0000-0000-0000000000a1"
+	wlMissingID          = "00000000-0000-0000-0000-0000000000ff"
+)
+
+func newWatchListSkipExistingFixture(currentWatchers []domain.WatchListUser) *watchListSkipExistingFixture {
+	const projectID = "6fa0b42d-1bfa-a694-a002-c9d3604bcb77"
+	f := &watchListSkipExistingFixture{}
+	repo := &stubCaseRepo{
+		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
+			return domain.CaseView{ProjectDetails: &domain.EntityRef{ID: projectID}, WatchList: currentWatchers}, nil
+		},
+		setCaseWatchList: func(_ context.Context, _ string, ids []string, _ string) ([]domain.WatchListUser, time.Time, error) {
+			f.written = true
+			f.submitted = append([]string(nil), ids...)
+			return nil, time.Now(), nil
+		},
+	}
+	contactRepo := &stubProjectContactRepo{
+		getProjectContactByUserID: func(_ context.Context, _, userID, _ string) (repository.ProjectContactRow, error) {
+			f.checked = append(f.checked, userID)
+			return repository.ProjectContactRow{}, &apierror.NotFoundError{Msg: "contact not found on this project"}
+		},
+	}
+	users := stubUserRepo{
+		getUserByEmail: func(context.Context, string) (domain.User, error) {
+			return domain.User{ID: testDeploymentUUID, Email: "actor@example.com"}, nil
+		},
+		getUserDetail: func(_ context.Context, id string) (domain.UserDetail, error) {
+			switch id {
+			case wlNewInternalID:
+				return domain.UserDetail{UserType: domain.UserTypeInternal, Email: "jane.doe@example.com"}, nil
+			case wlMissingID:
+				return domain.UserDetail{}, &apierror.NotFoundError{Msg: "user not found"}
+			default:
+				return domain.UserDetail{UserType: domain.UserTypeExternal, Email: "john.doe@example.com"}, nil
+			}
+		},
+	}
+	f.svc = NewCaseService(repo, users, nil, alwaysUnrestrictedAccess{}, contactRepo)
+	return f
+}
+
+func (f *watchListSkipExistingFixture) update(t *testing.T, ids []string) error {
+	t.Helper()
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "actor@example.com"))
+	_, err := f.svc.UpdateCase(ctx, domain.UpdateCaseRequest{ID: testDeploymentUUID, WatchList: &ids})
+	return err
+}
+
+func TestCaseService_UpdateCase_WatchList_SkipsValidationForExistingWatchers(t *testing.T) {
+	// Existing id is submitted upper-cased: the comparison is case-insensitive.
+	f := newWatchListSkipExistingFixture([]domain.WatchListUser{{ID: wlExistingExternalID}})
+	ids := []string{strings.ToUpper(wlExistingExternalID), wlNewInternalID}
+	if err := f.update(t, ids); err != nil {
+		t.Fatalf("re-submitting an existing watcher alongside a new valid one must succeed, got %v", err)
+	}
+	if !f.written {
+		t.Fatal("SetCaseWatchList was not called")
+	}
+	if len(f.submitted) != 2 {
+		t.Errorf("SetCaseWatchList must receive the full list, got %v", f.submitted)
+	}
+	for _, id := range f.checked {
+		if strings.EqualFold(id, wlExistingExternalID) {
+			t.Error("membership was validated for an already-persisted watcher")
+		}
+	}
+}
+
 // stubVolumeTrendCache is a minimal in-memory fake of service.CaseVolumeTrendCache,
 // recording every Set call's ttl so tests can assert the midnight-capped/
 // stable split.
@@ -5694,6 +5776,63 @@ func TestCaseService_CaseVolumeTrend_ValidatesDays(t *testing.T) {
 		if _, err := svc.CaseVolumeTrend(ctx, domain.CaseVolumeTrendRequest{Days: days}); err == nil {
 			t.Errorf("days=%d: expected a ValidationError", days)
 		}
+	}
+}
+
+func TestCaseService_UpdateCase_WatchList_StillRejectsNewExternalNonContact(t *testing.T) {
+	f := newWatchListSkipExistingFixture([]domain.WatchListUser{{ID: wlExistingExternalID}})
+	err := f.update(t, []string{wlExistingExternalID, wlNewExternalID})
+	var ve *apierror.ValidationError
+	if !asValidationError(err, &ve) {
+		t.Fatalf("expected a ValidationError for a new external non-contact, got %v", err)
+	}
+	if !strings.Contains(ve.Msg, "neither an internal user nor a registered contact") {
+		t.Errorf("unexpected message: %q", ve.Msg)
+	}
+	if f.written {
+		t.Error("SetCaseWatchList was called despite a rejected new watcher")
+	}
+}
+
+func TestCaseService_UpdateCase_WatchList_StillRejectsNewNonexistentUser(t *testing.T) {
+	f := newWatchListSkipExistingFixture([]domain.WatchListUser{{ID: wlExistingExternalID}})
+	err := f.update(t, []string{wlExistingExternalID, wlMissingID})
+	var ve *apierror.ValidationError
+	if !asValidationError(err, &ve) {
+		t.Fatalf("expected a ValidationError, got %v", err)
+	}
+	if ve.Msg != "one or more watch list users do not exist" {
+		t.Errorf("unexpected message: %q", ve.Msg)
+	}
+	if f.written {
+		t.Error("SetCaseWatchList was called despite a nonexistent user")
+	}
+}
+
+func TestCaseService_UpdateCase_WatchList_RemovalAndEmptyListStillWork(t *testing.T) {
+	f := newWatchListSkipExistingFixture([]domain.WatchListUser{{ID: wlExistingExternalID}, {ID: wlNewInternalID}})
+	if err := f.update(t, []string{wlNewInternalID}); err != nil {
+		t.Fatalf("removing a watcher must succeed, got %v", err)
+	}
+	if err := f.update(t, []string{}); err != nil {
+		t.Fatalf("clearing the watch list must succeed, got %v", err)
+	}
+	if !f.written || len(f.submitted) != 0 {
+		t.Errorf("empty list must be written through, got written=%v submitted=%v", f.written, f.submitted)
+	}
+}
+
+func TestCaseService_UpdateCase_WatchList_LockedStakeholderDoesNotExemptSubmittedID(t *testing.T) {
+	// A Locked entry is a synthesized account stakeholder, not a persisted
+	// row, so submitting the same id still goes through validation.
+	f := newWatchListSkipExistingFixture([]domain.WatchListUser{{ID: wlExistingExternalID, Locked: true}})
+	err := f.update(t, []string{wlExistingExternalID})
+	var ve *apierror.ValidationError
+	if !asValidationError(err, &ve) {
+		t.Fatalf("expected a ValidationError, got %v", err)
+	}
+	if f.written {
+		t.Error("SetCaseWatchList was called despite a rejected watcher")
 	}
 }
 
