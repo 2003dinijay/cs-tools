@@ -34,10 +34,11 @@ import (
 // the identity provider's user id carried on the gateway-validated token — it
 // is NOT the platform's own user record id (see testPlatformUserID). Roles
 // holds every test role testAccessConfig() (access_test.go) grants a
-// permission for, so testUser passes every /spl/* handler's gates by
-// default (PermViewerAccess plus every sub-permission) — a test needing to
+// permission for, so testUser passes every viewer-audience handler's gate
+// by default (PermViewerAccess, PermUsageMetricsViewer) — a test needing to
 // exercise a denial builds its own narrower *middleware.UserInfo instead
-// (see e.g. spl_accounts_test.go's TestSplEscalateCase_RequiresEscalation).
+// (see e.g. reports_test.go's
+// TestGenerateTimelogsBreakdownReport_RejectsMissingViewerAccess).
 var testUser = &middleware.UserInfo{
 	Email:  "agent@example.com",
 	UserID: "f2d9bf5b-7067-43dc-8578-802c8623af5d",

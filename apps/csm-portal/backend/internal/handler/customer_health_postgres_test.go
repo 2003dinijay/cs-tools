@@ -28,7 +28,7 @@ import (
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/entity"
-	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/servicenow"
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/viewer"
 )
 
 // fakeEntityCustomerHealthClient scripts the one health-detail request and
@@ -238,8 +238,8 @@ func TestGetCustomerHealthDetail_AccountNotFound(t *testing.T) {
 	c := NewPostgresCustomerHealthClient(fake)
 
 	_, err := c.GetCustomerHealthDetail(context.Background(), healthTestAccountID)
-	if !errors.Is(err, servicenow.ErrAccountNotFound) {
-		t.Fatalf("got err=%v, want servicenow.ErrAccountNotFound", err)
+	if !errors.Is(err, viewer.ErrAccountNotFound) {
+		t.Fatalf("got err=%v, want viewer.ErrAccountNotFound", err)
 	}
 }
 
@@ -252,7 +252,7 @@ func TestGetCustomerHealthDetail_OtherErrorsPassThroughUnchanged(t *testing.T) {
 	if err != error(upstream) {
 		t.Fatalf("got err=%v, want the upstream error unchanged", err)
 	}
-	if errors.Is(err, servicenow.ErrAccountNotFound) {
+	if errors.Is(err, viewer.ErrAccountNotFound) {
 		t.Fatal("a 429 must not map to not-found")
 	}
 }

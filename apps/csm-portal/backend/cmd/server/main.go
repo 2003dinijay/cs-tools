@@ -46,7 +46,6 @@ import (
 	plgconfig "github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/plg/config"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/risk"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/scim"
-	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/servicenow"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/sftpgo"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/updates"
 )
@@ -207,43 +206,19 @@ func main() {
 	// rejects any grantRoles value as unknown.
 	grantableRoles := handler.ResolveGrantableRoles(accessCfg, roleIDsByName)
 
-	// SupportPortalLite — always registered now; see loadViewerConfig. Ported
-	// from digiops-cs/apps/support-portal-lite's Ballerina backend, which is
-	// being retired. There used to be one blanket SPL_ENABLED flag gating
-	// this whole bundle on or off together, even though only some of these
-	// endpoints actually depend on the upstreams below -- customer-health's
-	// own risk-tracking writes, usage metrics, user-info and the product
-	// list are entity-service-only and need none of them. Removed because an
-	// unconfigured deployment couldn't selectively get the entity-service-only
-	// endpoints working: turning SPL_ENABLED on at all required every one of
-	// these upstreams' credentials to be set (mustEnv) or the process refused
-	// to start. Each upstream's config is now read with loadViewerConfig
-	// (os.Getenv, not mustEnv) and is independently optional: an endpoint
-	// that genuinely needs an unconfigured upstream still fails at call time
-	// (the real client call errors against an empty host/credential and that
-	// error is mapped the same way any other upstream failure is -- see
-	// mapUpstreamErrorGeneric), it's just no longer a blanket 404 for routes
-	// that didn't need to be unavailable at all.
+	// Viewer-audience endpoints (ported from SupportPortalLite's Ballerina
+	// backend) are always registered. Every one of them reads entity-service
+	// through the shared customerEntityClient; only Google Drive (the /files
+	// routes) and the Scan User entity service (Scan User's
+	// lookups) are separate upstreams, and each is independently optional:
+	// unset leaves just its own endpoints failing at call time with a mapped
+	// upstream error -- see loadViewerConfig.
 	viewerCfg := loadViewerConfig()
 	salesEntityClient := entity.NewSalesEntityClient(entity.SalesEntityConfig{
 		BaseURL:      viewerCfg.salesEntityBaseURL,
 		TokenURL:     oauth2TokenURL,
 		ClientID:     oauth2ClientID,
 		ClientSecret: oauth2ClientSecret,
-	})
-	// The ServiceNow host/credentials/escalation-template config this used
-	// to read (SERVICENOW_HOST/USERNAME/PASSWORD/ESCALATION_TEMPLATE_ID) is
-	// gone -- this integration is being phased out, not just made optional,
-	// so there's no deployment this should ever read real values for.
-	// abt-teams, account escalations (the read) and customer-health
-	// summary/detail have all since moved onto entity-service (Postgres) --
-	// see lookups_postgres.go/accounts_postgres.go/customer_health_postgres.go's
-	// own doc comments. What's still wired to snClient (case attachments,
-	// EscalateCase's own submission) always fails its own call now, the
-	// same mapped-upstream-error path as any other upstream failure -- see
-	// loadViewerConfig's own doc comment.
-	snClient := servicenow.NewClient(servicenow.Config{
-		TeamScheduleURL: viewerCfg.teamScheduleURL,
 	})
 	driveClient := googledrive.NewClient(googledrive.Config{
 		ClientID:     viewerCfg.driveClientID,
@@ -259,35 +234,24 @@ func main() {
 	riskClient := risk.NewClient(customerEntityClient)
 
 	// Accounts/projects/cases/team-members read/search/comment paths used
-	// to have their own Postgres translation layer here, wrapping
-	// customerEntityClient into a ServiceNow-shaped response for SPL's
-	// frontend. All four merged onto CS Portal's own /accounts,
-	// /projects, /cases, and /teams/{id}/members routes below instead,
-	// now that SPL's data source for them is the exact same
-	// entity-service data those routes already serve raw, with no
-	// ServiceNow-shape translation left to justify a second, parallel
-	// /spl/* contract. Only attachments (no entity-service storage path
-	// with real data yet) and EscalateCase's own submission (confirmed dead
-	// code -- no real caller, see accounts_postgres.go's own doc comment)
-	// remain ServiceNow-backed and SPL-specific. GetABTTeamList and
-	// GetEscalationsByAccount no longer do -- see lookups_postgres.go's and
-	// accounts_postgres.go's own doc comments.
+	// to have their own translation layer here for the viewer frontend. All
+	// four merged onto CS Portal's own /accounts, /projects, /cases, and
+	// /teams/{id}/members routes below instead, since the viewer audience
+	// reads the exact same entity-service data those routes already serve.
+	// What's constructed here is only what has no shared-route equivalent.
 	postgresLookups := handler.NewPostgresLookupsClient(customerEntityClient)
-	postgresReports := handler.NewPostgresReportsClient(customerEntityClient, snClient)
+	postgresReports := handler.NewPostgresReportsClient(customerEntityClient)
 	postgresUsageMetrics := handler.NewPostgresUsageMetricsClient(customerEntityClient)
 
 	viewerHandlers := &viewerHandlerSet{
-		cases:          handler.NewViewerCaseHandler(snClient, accessGuard),
 		reports:        handler.NewReportsHandler(postgresReports, accessGuard),
-		schedule:       handler.NewViewerScheduleHandler(snClient, accessGuard, viewerCfg.teamScheduleURL),
-		attachments:    handler.NewAttachmentsHandler(snClient, accessGuard),
 		lookups:        handler.NewLookupsHandler(postgresLookups, accessGuard),
 		usageMetrics:   handler.NewUsageMetricsHandler(postgresUsageMetrics, accessGuard),
 		files:          handler.NewFilesHandler(driveClient, accessGuard),
 		customerHealth: handler.NewCustomerHealthHandler(riskClient, handler.NewPostgresCustomerHealthClient(customerEntityClient), customerEntityClient, accessGuard),
 		userInfo:       handler.NewUserInfoHandler(customerEntityClient, accessGuard),
 		userScan:       handler.NewSplUserScanHandler(salesEntityClient, customerEntityClient, accessGuard),
-		accountEsc:     handler.NewViewerAccountHandler(handler.NewPostgresViewerAccountClient(customerEntityClient, snClient), accessGuard),
+		accountEsc:     handler.NewViewerAccountHandler(handler.NewPostgresViewerAccountClient(customerEntityClient), accessGuard),
 	}
 	slog.Info("viewer-access endpoints registered",
 		"googleDriveConfigured", viewerCfg.driveClientID != "",
@@ -712,50 +676,33 @@ func main() {
 	// Called manually today; not yet wired into real incident/case creation.
 	route("POST /notifications/google-chat/alerts", handler.PermWrite, notificationHandler.PostGoogleChatAlert)
 
-	// SupportPortalLite — see viewerHandlers above. Always registered; an
-	// unconfigured deployment's genuinely upstream-dependent endpoints here
-	// (ServiceNow/Google Drive/sales-entity -backed) fail at call time
-	// instead of the route not existing. None of the routes below carry a /spl/ prefix: SPL and
-	// csm-portal are the same backend, so the prefix only ever existed to
-	// avoid colliding with csm-portal's own, differently-shaped
+	// Viewer-audience routes -- see viewerHandlers above. Always registered,
+	// and every one of them is entity-service-backed, except that GET /files
+	// and GET /files/search read Google Drive and POST /scan-user's
+	// Scan User lookups read the Scan User entity service; those two
+	// upstreams are independently optional and fail at call time when
+	// unconfigured. None of the routes below carry a /spl/ prefix: the viewer
+	// audience and csm-portal share one backend, so the prefix only ever
+	// existed to avoid colliding with csm-portal's own, differently-shaped
 	// case-management domain, and none of these routes do. Accounts,
-	// projects, and cases (read/search/comment) used to live under that
-	// prefix for exactly that reason — all three now go through the shared
-	// routes above (/accounts, /projects, /cases) instead, gated by
-	// PermViewSharedEntity like every other caller of those specific routes
-	// now that sales_solutions holds it (see PermViewSharedEntity's own doc
-	// comment) -- unlike GET /teams/{id}/members above, which is a genuinely
-	// unconditional CS Portal route (see teamHandler's own construction) and
-	// so is registered outside this block, not in here. Account escalations
-	// stay unmerged: CreateEscalation is an explicit stub on this data
-	// source (no entity-service equivalent at all, so nothing to merge
-	// onto), and the account-scoped read has no shared route either (CS
-	// Portal's own /cases/{id}/escalations is per-case, not per-account).
-	// Case attachments are unmerged for the same no-entity-service-equivalent
-	// reason.
+	// projects, and cases (read/search/comment) go through the shared routes
+	// above (/accounts, /projects, /cases) instead, gated by
+	// PermViewSharedEntity like every other caller of those routes (see
+	// PermViewSharedEntity's own doc comment) -- unlike GET /teams/{id}/members
+	// above, which is a genuinely unconditional CS Portal route (see
+	// teamHandler's own construction) and so is registered outside this
+	// block. The account-scoped escalation list stays here only because CS
+	// Portal's own /cases/{id}/escalations is per-case, not per-account.
 	//
 	// Every route below is registered with PermViewerAccess (Viewer only),
 	// EXCEPT the /usage-metrics/* routes further down, which are registered
 	// directly on the broader PermUsageMetricsViewer instead -- see that
 	// permission's own doc comment for why this one domain's audience is
-	// wider than its siblings'. EscalateCase and DownloadAttachment
-	// additionally check a narrower permission (PermEscalate/
-	// PermDownloadAttachment) inside the handler itself, the same layered
-	// shape SPL_ADD_ESCALATION_GROUPS/SPL_DOWNLOAD_ATTACHMENT_GROUPS
-	// enforced on top of SPL_ALLOWED_GROUPS before -- see
-	// requireViewerPermission's own doc comment for why that second check
-	// couldn't just move to route-level registration like every other route
-	// in this file.
+	// wider than its siblings'.
 	route("GET /accounts/{accountId}/escalations", handler.PermViewerAccess, viewerHandlers.accountEsc.GetAccountEscalations)
-	route("POST /accounts/{accountId}/cases/{caseId}/escalate", handler.PermViewerAccess, viewerHandlers.accountEsc.EscalateCase)
-	route("GET /cases/{caseId}/attachments-info", handler.PermViewerAccess, viewerHandlers.cases.GetAttachmentsInfo)
-	route("GET /attachments/{attachmentId}/download", handler.PermViewerAccess, viewerHandlers.attachments.DownloadAttachment)
 	route("GET /products", handler.PermViewerAccess, viewerHandlers.lookups.GetProducts)
 	route("GET /abt-teams", handler.PermViewerAccess, viewerHandlers.lookups.GetABTTeams)
-	route("GET /generate-sla-report", handler.PermViewerAccess, viewerHandlers.reports.GenerateSLAReport)
-	route("GET /report-details", handler.PermViewerAccess, viewerHandlers.reports.GetReportDetails)
 	route("GET /generate-timelogs-breakdown-report", handler.PermViewerAccess, viewerHandlers.reports.GenerateTimelogsBreakdownReport)
-	route("GET /abt-team-schedule", handler.PermViewerAccess, viewerHandlers.schedule.GetABTTeamSchedule)
 	route("GET /user-info", handler.PermViewerAccess, viewerHandlers.userInfo.GetUserInfo)
 	route("POST /scan-user", handler.PermViewerAccess, viewerHandlers.userScan.ScanUser)
 	route("GET /files", handler.PermViewerAccess, viewerHandlers.files.ListFiles)
@@ -1434,16 +1381,14 @@ func splitComma(s string) []string {
 	return result
 }
 
-// viewerHandlerSet holds every SupportPortalLite handler -- always
-// constructed and always registered. See loadViewerConfig for the
-// environment variables backing each field; a handler whose upstream isn't
-// configured in a given deployment fails its own calls at request time
-// instead of the route not existing at all.
+// viewerHandlerSet holds every viewer-audience handler -- always constructed
+// and always registered. All of them read entity-service through the shared
+// customerEntityClient; files (Google Drive) and userScan's Scan User
+// lookups are the only ones with an upstream of their own, and an
+// unconfigured one fails its own calls at request time instead of the route
+// not existing at all (see loadViewerConfig).
 type viewerHandlerSet struct {
-	cases          *handler.ViewerCaseHandler
 	reports        *handler.ReportsHandler
-	schedule       *handler.ViewerScheduleHandler
-	attachments    *handler.AttachmentsHandler
 	lookups        *handler.LookupsHandler
 	usageMetrics   *handler.UsageMetricsHandler
 	files          *handler.FilesHandler
@@ -1453,59 +1398,34 @@ type viewerHandlerSet struct {
 	accountEsc     *handler.ViewerAccountHandler
 }
 
-// viewerConfig holds every environment value SupportPortalLite's /spl/*
-// endpoints need, resolved by loadViewerConfig. There is deliberately no
-// ServiceNow host/credential/escalation-template config here any more (see
-// loadViewerConfig) -- snClient is always constructed with none of those
-// set, so every route still backed by it fails its own call at request
-// time rather than this file ever reading real ServiceNow credentials.
+// viewerConfig holds the environment values behind the viewer-audience
+// endpoints' two optional upstreams (Google Drive and the Scan User entity
+// service), resolved by loadViewerConfig. Everything else those endpoints
+// read comes from entity-service via the shared customerEntityClient.
 type viewerConfig struct {
-	teamScheduleURL    string
 	driveClientID      string
 	driveClientSecret  string
 	driveRefreshToken  string
 	salesEntityBaseURL string
 }
 
-// loadViewerConfig resolves SupportPortalLite's upstream configuration.
-// Every value is independently optional (os.Getenv, not mustEnv) -- there
-// used to be a single SPL_ENABLED flag that made every value below required
-// (mustEnv) and gated this whole handler bundle on or off together, which
-// meant a deployment with no real Google Drive/sales-entity credentials
-// (e.g. a dev environment) couldn't register even the endpoints that don't
-// need any of them (customer-health's risk-tracking writes, usage metrics,
-// user-info, the product list -- all entity-service only). An
-// explicitly-set value is still validated the same as before
-// (mustHTTPSBaseURL still exits on a malformed URL -- that's a real
-// misconfiguration, not "feature absent"); only unset values now default to
-// empty instead of failing startup. A handler whose upstream is left empty
-// fails its own calls at request time against an empty host/credential, the
-// same way any other upstream failure is handled (mapUpstreamErrorGeneric),
-// rather than making the whole route 404.
+// loadViewerConfig resolves the viewer-audience endpoints' optional
+// upstream configuration. Every value is independently optional (os.Getenv,
+// not mustEnv): unset Google Drive credentials leave only GET /files and
+// GET /files/search failing at call time, and an unset Scan User entity
+// service URL only Scan User's lookups, each with a normal mapped upstream
+// error (mapUpstreamErrorGeneric) rather than the route being a 404 or the
+// process refusing to start. An explicitly-set value is still validated
+// (optionalHTTPSBaseURL exits on a malformed URL -- that's a real
+// misconfiguration, not "feature absent").
 //
-// ServiceNow host/username/password/escalation-template config
-// (SERVICENOW_HOST/USERNAME/PASSWORD/ESCALATION_TEMPLATE_ID) is gone
-// entirely, not just made optional: that integration is being phased out,
-// so there's no deployment this should ever read real values for --
-// snClient (main) is always constructed with none of it set, and every
-// route still wired to it (abt-teams, case attachments, account
-// escalations, the ServiceNow-sourced half of customer-health) always
-// fails its own call now. TEAM_SCHEDULE_URL is kept (it's a plain display
-// URL, not a ServiceNow credential, and is still read independently).
-//
-// GOOGLE_DRIVE_* and the entity vars below have no SPL_ prefix: they
-// aren't SPL-specific concepts (Google Drive and the sales-side entity
-// service are just this feature's own upstreams) so they follow this
-// file's existing convention of naming a service's own credentials after
-// the service, not the caller. See .env.example for what each variable
-// configures. Customer-health risk tracking used to need its own
-// SPL_RISK_MYSQL_DSN here (a standalone MySQL database); that's gone now
-// that migration 0219 moved those tables into entity-service's own
-// Postgres, so risk.NewClient just wraps the already-constructed
-// customerEntityClient instead.
+// GOOGLE_DRIVE_* and the Scan User entity service URL carry no SPL_ prefix: Google
+// Drive and the Scan User entity service are just this feature's own
+// upstreams, so they follow this file's convention of naming a service's
+// credentials after the service, not the caller. See .env.example for what
+// each variable configures.
 func loadViewerConfig() viewerConfig {
 	return viewerConfig{
-		teamScheduleURL:    os.Getenv("TEAM_SCHEDULE_URL"),
 		driveClientID:      os.Getenv("GOOGLE_DRIVE_CLIENT_ID"),
 		driveClientSecret:  os.Getenv("GOOGLE_DRIVE_CLIENT_SECRET"),
 		driveRefreshToken:  os.Getenv("GOOGLE_DRIVE_REFRESH_TOKEN"),
