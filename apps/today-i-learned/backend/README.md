@@ -51,6 +51,7 @@ them all.
 | Setting | Required | |
 |---|---|---|
 | `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` | yes (port defaults to 3306) | The MySQL database. |
+| `DB_TLS` | no | For a database that requires secure transport. `true` encrypts the connection and checks the server's certificate, which must come from a CA the system trusts and name `DB_HOST`. `skip-verify` encrypts it without checking the certificate: use it only when the certificate can't be verified. Default `false`. |
 | `AUTH_JWKS_ENDPOINT`, `AUTH_ISSUER` | yes | Where the token's signing keys are published, and its issuer. |
 | `AUTH_AUDIENCE` | no | Client ids a token must be issued to. |
 | `AUTH_MODERATOR_GROUPS` | no | Groups whose members may edit and delete anyone's entries. |
