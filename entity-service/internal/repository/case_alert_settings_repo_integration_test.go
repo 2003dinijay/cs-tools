@@ -115,6 +115,25 @@ func TestCaseAlertIntegration_Rooms(t *testing.T) {
 	if n := caseAlertCount(t, pool, `SELECT count(*) FROM team_schedule_audit WHERE table_name = 'paging_chat_secret'`); n != 0 {
 		t.Fatalf("the sealed URL table was audited: %d rows", n)
 	}
+	// A URL as saved (0237) replaces the sealed one, and is not audited either.
+	plain := CaseAlertSecret{URL: "https://chat.googleapis.com/v1/spaces/AAAA/messages?key=k&token=plain-url-token"}
+	if _, err := repo.SetSecret(ctx, caseAlertActor, shared.ID, plain, "spaces/AAAA · …oken"); err != nil {
+		t.Fatalf("SetSecret plain: %v", err)
+	}
+	if stored, err := repo.Secret(ctx, shared.ID); err != nil || stored == nil || stored.URL != plain.URL || stored.Ciphertext != nil || stored.KeyID != "" {
+		t.Fatalf("Secret after a plain URL = %+v, %v", stored, err)
+	}
+	if all, err := repo.Secrets(ctx); err != nil || all[shared.ID].URL != plain.URL {
+		t.Fatalf("Secrets = %+v, %v", all[shared.ID], err)
+	}
+	if n := caseAlertCount(t, pool, `SELECT count(*) FROM team_schedule_audit
+		WHERE changed_at >= $1 AND (old_row::text LIKE '%plain-url-token%' OR new_row::text LIKE '%plain-url-token%')`, since); n != 0 {
+		t.Fatalf("the plain URL reached the history %d times", n)
+	}
+	// A row with no URL either way is refused.
+	if _, err := repo.SetSecret(ctx, caseAlertActor, shared.ID, CaseAlertSecret{}, "x"); err == nil {
+		t.Fatal("a secret row with no URL was stored")
+	}
 	if n := caseAlertCount(t, pool, `SELECT count(*) FROM team_schedule_audit
 		WHERE table_name = 'paging_chat_room' AND actor = $1 AND changed_at >= $2
 		  AND (old_row::text LIKE '%sealed-bytes%' OR new_row::text LIKE '%sealed-bytes%')`, caseAlertActor, since); n != 0 {

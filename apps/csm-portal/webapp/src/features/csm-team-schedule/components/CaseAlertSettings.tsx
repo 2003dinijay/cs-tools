@@ -110,7 +110,7 @@ function statusLine(s: Settings): { tone: "info" | "warn"; text: string } {
     default:
       return {
         tone: "warn",
-        text: "Saved, not in use yet. The alert service still uses its own file and env settings until it is switched to these.",
+        text: "The alert service uses the chat spaces saved here from its next restart.",
       };
   }
 }
@@ -296,7 +296,7 @@ function RoutesAndValues({
 function whenUsed(s: Settings): string {
   return s.revision.appliedMode === "db"
     ? "The alert service uses it after its next restart."
-    : "The alert service uses the saved settings once it is switched to them (db mode).";
+    : "The alert service uses it after its next restart.";
 }
 
 /** A team's name for people: the shared space, else the Team Schedule's
@@ -425,8 +425,7 @@ function TeamChatRouting({
       </p>
       {!webhooksEnabled ? (
         <p className="cas-sub cas-warn">
-          Webhook URLs can&apos;t be saved on this server yet: its encryption
-          key is not set.
+          Webhook URLs can&apos;t be saved on this server.
         </p>
       ) : null}
       {sorted.length === 0 ? (
@@ -838,7 +837,7 @@ function RoomDialog({
         <p className="cp-help">
           {room?.hasWebhook
             ? `Leave empty to keep the saved URL (${room.webhookHint ?? "hidden"}).`
-            : "Copy it from the space: Apps & integrations, then Webhooks. It's stored encrypted and never shown again."}
+            : "Copy it from the space: Apps & integrations, then Webhooks. It's never shown again."}
         </p>
         {teamKey && !roomsOnly ? (
           <label>

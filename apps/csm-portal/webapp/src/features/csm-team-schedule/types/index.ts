@@ -439,7 +439,7 @@ export interface CaseAlertSettings {
   };
   /** e.g. "staging" or "production"; "" when the server has no label. */
   environment: string;
-  /** False when the server cannot save URLs (no encryption key). */
+  /** False only from a server older than 0237 with no encryption key. */
   webhooksEnabled: boolean;
   revision: {
     saved: number;

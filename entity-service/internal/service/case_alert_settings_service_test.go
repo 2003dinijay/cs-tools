@@ -432,8 +432,9 @@ func TestCaseAlertSetWebhook(t *testing.T) {
 	if !room.HasWebhook || room.WebhookHint != "spaces/AAAAtest01 · …wxyz" || repo.actor != "sre.rota@wso2.com" {
 		t.Fatalf("room = %+v by %q", room, repo.actor)
 	}
-	if bytes.Contains(repo.secrets[roomApollo].Ciphertext, []byte("fake-token")) {
-		t.Fatal("the URL was stored in the clear")
+	// Stored as saved (0237): no key, nothing sealed.
+	if got := repo.secrets[roomApollo]; got.URL != testChatWebhook || got.Ciphertext != nil || got.KeyID != "" {
+		t.Fatalf("stored %+v", got)
 	}
 
 	_, err = svc.SetWebhook(asPerson("cre.rota@wso2.com"), roomApollo, domain.SetCaseAlertWebhookRequest{URL: testChatWebhook})
@@ -445,9 +446,18 @@ func TestCaseAlertSetWebhook(t *testing.T) {
 	_, err = svc.SetWebhook(asPerson("sre.rota@wso2.com"), routeSRE, domain.SetCaseAlertWebhookRequest{URL: testChatWebhook})
 	wantAPIError[*apierror.NotFoundError](t, err, "no such room")
 
-	noKey, _ := newCaseAlerts(newFakeCaseAlertRepo(), "")
-	_, err = noKey.SetWebhook(asPerson("sre.rota@wso2.com"), roomApollo, domain.SetCaseAlertWebhookRequest{URL: testChatWebhook})
-	wantAPIError[*apierror.ServiceUnavailableError](t, err, "no CASE_ALERTS_SECRET_KEY")
+	// No CASE_ALERTS_SECRET_KEY is needed to save one.
+	bare := newFakeCaseAlertRepo()
+	noKey, _ := newCaseAlerts(bare, "")
+	if _, err = noKey.SetWebhook(asPerson("sre.rota@wso2.com"), roomApollo, domain.SetCaseAlertWebhookRequest{URL: testChatWebhook}); err != nil {
+		t.Fatalf("without a key: %v", err)
+	}
+	if bare.secrets[roomApollo].URL != testChatWebhook {
+		t.Fatalf("without a key, stored %+v", bare.secrets[roomApollo])
+	}
+	if got, _ := noKey.Get(asPerson("sre.rota@wso2.com")); !got.WebhooksEnabled {
+		t.Fatal("saving URLs is off without a key")
+	}
 }
 
 func TestCaseAlertTestCard(t *testing.T) {
@@ -493,22 +503,26 @@ func TestCaseAlertRuntime(t *testing.T) {
 	repo := newFakeCaseAlertRepo()
 	svc, _ := newCaseAlerts(repo, testCaseAlertKey)
 	admin := asPerson("someone@wso2.com", "cs_admin")
-	for _, id := range []string{roomApollo, roomShared, roomCRE} {
+	for _, id := range []string{roomApollo, roomCRE} {
 		if _, err := svc.SetWebhook(admin, id, domain.SetCaseAlertWebhookRequest{URL: testChatWebhook}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	repo.rooms[roomCRE].Enabled = false
-	// A URL sealed in another environment does not open here.
-	sec := repo.secrets[roomShared]
-	sec.KeyID = "prod"
-	repo.secrets[roomShared] = sec
+	// A URL sealed before 0237, in another environment: it does not open here.
+	sealer, err := newCaseAlertSealer(testCaseAlertKey, "prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repo.secrets[roomShared], err = sealer.seal(roomShared, testChatWebhook); err != nil {
+		t.Fatal(err)
+	}
 	repo.routes["66666666-6666-6666-6666-666666666666"] = repository.CaseAlertRouteRow{ID: "66666666-6666-6666-6666-666666666666", Ladder: "SRE", GroupName: "off group", TeamKey: "artemis"}
 
-	_, err := svc.Runtime(admin)
+	_, err = svc.Runtime(admin)
 	wantAPIError[*apierror.ForbiddenError](t, err, "a person reading the runtime settings")
 	_, err = svc.Runtime(asService("csm-integration-service"))
-	wantAPIError[*apierror.ForbiddenError](t, err, "another service")
+	wantAPIError[*apierror.ForbiddenError](t, err, "a service CASE_ALERTS_RUNTIME_CLIENT_IDS leaves out")
 
 	got, err := svc.Runtime(asService("csm-notification-service"))
 	if err != nil {
@@ -522,11 +536,25 @@ func TestCaseAlertRuntime(t *testing.T) {
 		t.Fatalf("routes = %+v, revision %d", got.Routes, got.Revision)
 	}
 
-	noKey, _ := newCaseAlerts(repo, "")
-	got, err = noKey.Runtime(asService("csm-notification-service"))
-	if err != nil || len(got.Rooms) != 0 {
-		t.Fatalf("without a key: %+v, %v", got.Rooms, err)
+	// A URL sealed under this environment's key still opens.
+	same, _ := newCaseAlertSealer(testCaseAlertKey, "1")
+	if repo.secrets[roomShared], err = same.seal(roomShared, testChatWebhook); err != nil {
+		t.Fatal(err)
 	}
+	if got, err = svc.Runtime(asService("csm-notification-service")); err != nil || len(got.Rooms) != 2 {
+		t.Fatalf("with the sealing key: %+v, %v", got.Rooms, err)
+	}
+
+	// No setting at all: no key, no CASE_ALERTS_RUNTIME_CLIENT_IDS. Any
+	// internal service reads the plain URLs; the sealed one is left out;
+	// a person still may not.
+	bare := NewCaseAlertSettingsService(repo, caseAlertPeople(), alwaysUnrestrictedAccess{}, CaseAlertSettingsConfig{}).(*caseAlertSettingsService)
+	got, err = bare.Runtime(asService("csm-notification-service-dev-client"))
+	if err != nil || !reflect.DeepEqual(got.Rooms, want) {
+		t.Fatalf("with no settings: %+v, %v", got.Rooms, err)
+	}
+	_, err = bare.Runtime(admin)
+	wantAPIError[*apierror.ForbiddenError](t, err, "a person, with no settings")
 }
 
 func TestCaseAlertRecordApplied(t *testing.T) {

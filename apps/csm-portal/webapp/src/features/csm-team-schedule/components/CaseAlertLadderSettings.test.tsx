@@ -266,7 +266,7 @@ describe("CaseAlertLadderSettings", () => {
     // The section it was saved in stays open, and the save is confirmed.
     expect(abts).toBeInTheDocument();
     expect(screen.getByText(/^✓ Saved:/)).toHaveTextContent(
-      "✓ Saved: ABT teams. The alert service uses the saved settings once it is switched to them (db mode).",
+      "✓ Saved: ABT teams. The alert service uses it after its next restart.",
     );
   });
 

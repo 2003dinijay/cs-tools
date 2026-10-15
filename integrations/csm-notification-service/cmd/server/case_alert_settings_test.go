@@ -77,7 +77,7 @@ type envRecorder map[string]string
 func (e envRecorder) set(k, v string) error { e[k] = v; return nil }
 
 func TestCaseAlertSettingsMode(t *testing.T) {
-	for in, want := range map[string]string{"": "off", "off": "off", " DB ": "db", "shadow": "shadow", "true": "off", "database": "off"} {
+	for in, want := range map[string]string{"": "rooms", " Rooms ": "rooms", "off": "off", " DB ": "db", "shadow": "shadow", "true": "off", "database": "off"} {
 		if got := caseAlertSettingsMode(in); got != want {
 			t.Errorf("caseAlertSettingsMode(%q) = %q, want %q", in, got, want)
 		}
@@ -112,6 +112,68 @@ func TestApplyCaseAlertSettings_DBUsesTheSavedRoom(t *testing.T) {
 	}
 	if got.SRE.Chat != fileConfig().SRE.Chat {
 		t.Error("db: the shared room changed without being saved")
+	}
+}
+
+// Unset (rooms): an SRE or SME team's saved room is used in place of the
+// file's; a CRE room, a shared room, a channel, a route and a ladder value
+// are not, whatever is saved.
+func TestApplyCaseAlertSettings_RoomsUsesOnlyTeamRooms(t *testing.T) {
+	cfg := fileConfig()
+	cfg.SME.Enabled = true
+	cfg.SME.TeamChats = map[string]paging.Chat{"asgardeo": {Audience: "Asgardeo SME"}}
+	saved := savedLadderValues()
+	saved.Rooms = []paging.CaseAlertRoom{
+		{Ladder: "SRE", TeamKey: "apollo", Label: "Apollo SRE (saved)", WebhookURL: savedHook, Channel: "log"},
+		{Ladder: "SME", TeamKey: "asgardeo", Label: "Asgardeo SME (saved)", WebhookURL: savedHook},
+		{Ladder: "CRE", Label: "CRE (saved)", WebhookURL: savedHook},
+		{Ladder: "SRE", Label: "SRE shared (saved)", WebhookURL: savedHook},
+	}
+	saved.Routes = []paging.CaseAlertRoute{{Ladder: "CRE", GroupName: "phoenix", TeamKey: "atlas"}}
+	reader, env := &fakeCaseAlertReader{saved: saved}, envRecorder{}
+	got := applyCaseAlertSettings(context.Background(), caseAlertSettingsMode(""), cfg, reader, env.set, caseAlertStart{wait: time.Hour})
+
+	if a := got.SRE.TeamChats["apollo"]; a.Audience != "Apollo SRE (saved)" || env[a.WebhookURLEnv] != savedHook {
+		t.Fatalf("apollo = %+v, env %v", a, env)
+	}
+	if a := got.SME.TeamChats["asgardeo"]; a.Audience != "Asgardeo SME (saved)" || env[a.WebhookURLEnv] != savedHook {
+		t.Fatalf("asgardeo = %+v, env %v", a, env)
+	}
+	if len(env) != 2 {
+		t.Fatalf("env = %v, want the two team rooms only", env)
+	}
+	want := fileConfig()
+	// The merge hands back empty maps where the file had none; what CRE pages
+	// with is compared, field by field.
+	if got.CRE.Chat != want.CRE.Chat || len(got.CRE.TeamChats) != len(want.CRE.TeamChats) || got.CRE.Channel != want.CRE.Channel ||
+		got.CRE.Enabled != want.CRE.Enabled || !reflect.DeepEqual(got.CRE.Teams.ABTs, want.CRE.Teams.ABTs) ||
+		len(got.CRE.Teams.Aliases) != len(want.CRE.Teams.Aliases) || got.CRE.Heads != want.CRE.Heads ||
+		!reflect.DeepEqual(got.CRE.Timing, want.CRE.Timing) {
+		t.Errorf("rooms changed the CRE ladder: %+v", got.CRE)
+	}
+	if got.SRE.Chat != want.SRE.Chat || len(got.SRE.TeamChannels) != 0 || !reflect.DeepEqual(got.SRE.Timing, want.SRE.Timing) {
+		t.Error("rooms changed the SRE shared room, a channel or a ladder value")
+	}
+	if reader.reads != 1 || reader.reported != "db" {
+		t.Fatalf("reads %d, reported %q", reader.reads, reader.reported)
+	}
+}
+
+// Unset (rooms) with nothing saved, or entity-service down: the file, asked
+// once and never waited on.
+func TestApplyCaseAlertSettings_RoomsWithNothingIsTheFile(t *testing.T) {
+	for name, reader := range map[string]*fakeCaseAlertReader{
+		"nothing saved":       {saved: paging.CaseAlertSettings{Revision: 3}},
+		"only a CRE room":     {saved: paging.CaseAlertSettings{Rooms: []paging.CaseAlertRoom{{Ladder: "CRE", Label: "CRE", WebhookURL: savedHook}}}},
+		"entity-service down": {err: errors.New("connection refused")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			env := envRecorder{}
+			got := applyCaseAlertSettings(context.Background(), caseAlertSourceRooms, fileConfig(), reader, env.set, caseAlertStart{wait: time.Hour})
+			if !reflect.DeepEqual(got, fileConfig()) || len(env) != 0 || reader.reads != 1 || reader.reported != "" {
+				t.Fatalf("got a change: env %v, reads %d, reported %q", env, reader.reads, reader.reported)
+			}
+		})
 	}
 }
 

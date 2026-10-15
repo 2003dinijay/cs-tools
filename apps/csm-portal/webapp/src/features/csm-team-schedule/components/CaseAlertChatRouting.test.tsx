@@ -60,7 +60,7 @@ const HINT = "spaces/AAAAtest01 · …wxyz";
 const HOOK =
   "https://chat.googleapis.com/v1/spaces/AAAAtest01/messages?key=k&token=t";
 const NOT_DB =
-  "The alert service uses the saved settings once it is switched to them (db mode).";
+  "The alert service uses it after its next restart.";
 const DB = "The alert service uses it after its next restart.";
 
 function room(over: Partial<CaseAlertChatRoom>): CaseAlertChatRoom {
@@ -606,7 +606,9 @@ describe("Team chat routing", () => {
   it("says when URLs can't be saved on this server, and can't add one", () => {
     settings.data = make({ webhooksEnabled: false });
     render(<CaseAlertSettings chain="SRE_SAAS" />);
-    expect(screen.getByText(/encryption key is not set/)).toBeInTheDocument();
+    expect(
+      screen.getByText("Webhook URLs can't be saved on this server."),
+    ).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "+ Add team chat routing" }),
     ).toBeDisabled();
