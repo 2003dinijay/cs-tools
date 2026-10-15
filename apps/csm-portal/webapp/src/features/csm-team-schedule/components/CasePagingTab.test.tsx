@@ -457,8 +457,9 @@ describe("CasePagingTab", () => {
       ),
     };
     render(<CasePagingTab onOpenRota={vi.fn()} />);
-    // Jane Doe (lead) has a profile number; John Roe (1st responder) a paging one.
-    expect(screen.getByText("Profile ✓")).toBeInTheDocument();
+    // Jane Doe (lead) has a profile number, which shows nothing; John Roe
+    // (1st responder) a paging one.
+    expect(screen.queryByText(/Profile ✓/)).not.toBeInTheDocument();
     expect(screen.getByText(/Alert number · not tested/)).toBeInTheDocument();
 
     fireEvent.click(

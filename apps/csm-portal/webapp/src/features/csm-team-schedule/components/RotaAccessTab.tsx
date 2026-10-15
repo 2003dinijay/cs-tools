@@ -59,12 +59,12 @@ export default function RotaAccessTab({ teams }: Props): JSX.Element {
   };
 
   if (access.isLoading) return <div className="offnone">Loading rota access…</div>;
-  if (access.isError || !access.data) return <div className="offnone">Rota access could not be loaded.</div>;
+  if (access.isError || !access.data) return <div className="offnone">Rota Access could not be loaded.</div>;
 
   return (
     <div className="ra">
       <div className="card-head">
-        <h2>Rota access</h2>
+        <h2>Rota Access</h2>
       </div>
       <p className="ra-intro">
         A team&apos;s lead always marks their own team. Here you can let others do it too. A{" "}
