@@ -546,6 +546,15 @@ export interface BeCaseCreatePayload {
   relatedCaseId?: string;
   /** Optional supporting files (raw base64), like the customer portal. */
   attachments?: BeCaseAttachmentPayload[];
+  /**
+   * People to notify about the case, as emails. Send emails for every entry
+   * (works for contacts with no linked user); every entry must be an email or
+   * every entry a user id, never mixed. Registered project contacts are always
+   * eligible, and an internal-user caller may also add internal users; any
+   * ineligible entry rejects the whole create with a 400. Omit (or send empty)
+   * for no watchers.
+   */
+  watchList?: string[];
 }
 
 /** A single answered catalog-item variable in a service-request create. */
