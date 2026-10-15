@@ -523,7 +523,8 @@ SME's team rooms and ladder values (timing, teams, on leave, closing message).
 With `PAGING_CONFIG_SOURCE` unset csm-notification-service uses everything
 saved, over the file's, at its next start; what is not saved keeps the file's,
 so nothing changes until somebody saves. `off` uses none of it. No setting is
-needed on either service.
+needed on either service. A saved SME room is used even when the file lists no
+SME rooms (`sme.teamChats`); every SME team without one keeps `sme.chat`.
 
 - **Rooms** (`paging_chat_room`), shown as *Team routing*: the CRE and SRE
   shared rooms, an SRE team's own row (Apollo, Artemis, IaaS) and, since 0237,
