@@ -162,28 +162,26 @@ beforeEach(() => {
 });
 
 describe("CasePagingTab", () => {
-  it("opens on CRE: the editable chain, with its readiness", () => {
-    render(<CasePagingTab onOpenRota={vi.fn()} />);
-    expect(screen.getByRole("tab", { name: "CRE" })).toHaveAttribute(
+  it("never offers CRE: its alerts keep their own flow", () => {
+    alertSettings.data = settingsFor(true);
+    render(<CasePagingTab onOpenRota={vi.fn()} initialChain="CRE" />);
+    expect(screen.queryByRole("tab", { name: "CRE" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("table", { name: "CRE alert chain by team and level" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "CRE settings" }),
+    ).not.toBeInTheDocument();
+    // A reader who would open on CRE opens on the first chain offered.
+    expect(screen.getByRole("tab", { name: "SaaS SRE" })).toHaveAttribute(
       "aria-selected",
       "true",
     );
-    expect(
-      screen.getByRole("button", { name: /Edit alert chain/ }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("table", { name: "CRE alert chain by team and level" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("columnheader", { name: /^Alpha/ }),
-    ).toBeInTheDocument();
-    expect(screen.getByText(/✓ ready for the next 7 days/)).toBeInTheDocument();
   });
 
-  it("switches to a rota'd chain: read-only, its own readiness, and a way to the rota", () => {
+  it("opens on SaaS SRE: read-only, its own readiness, and a way to the rota", () => {
     const onOpenRota = vi.fn();
     render(<CasePagingTab onOpenRota={onOpenRota} />);
-    fireEvent.click(screen.getByRole("tab", { name: "SaaS SRE" }));
 
     expect(screen.getByRole("tab", { name: "SaaS SRE" })).toHaveAttribute(
       "aria-selected",
@@ -238,19 +236,14 @@ describe("CasePagingTab", () => {
     expect(
       screen.getByRole("button", { name: "Open the SME rota" }),
     ).toBeInTheDocument();
-    expect(
-      screen.queryByRole("table", {
-        name: "CRE alert chain by team and level",
-      }),
-    ).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("tab", { name: "CRE" }));
-    expect(screen.getByRole("tab", { name: "CRE" })).toHaveAttribute(
+    fireEvent.click(screen.getByRole("tab", { name: "IaaS SRE" }));
+    expect(screen.getByRole("tab", { name: "IaaS SRE" })).toHaveAttribute(
       "aria-selected",
       "true",
     );
     expect(
-      screen.getByRole("table", { name: "CRE alert chain by team and level" }),
+      screen.getByText(/People come from the IaaS SRE rota/),
     ).toBeInTheDocument();
   });
 
@@ -265,19 +258,18 @@ describe("CasePagingTab", () => {
     ).toBeInTheDocument();
   });
 
-  it("offers every chain when given none to keep to (a CSM admin), opening on the reader's own", () => {
+  it("offers every chain but CRE when given none to keep to (a CSM admin), opening on the reader's own", () => {
     render(<CasePagingTab onOpenRota={vi.fn()} initialChain="SME" />);
-    expect(screen.getAllByRole("tab")).toHaveLength(5);
+    expect(screen.getAllByRole("tab")).toHaveLength(4);
     expect(screen.getByRole("tab", { name: "SME" })).toHaveAttribute(
       "aria-selected",
       "true",
     );
   });
 
-  it("offers the chains in order: CRE, the three SRE sub-teams together, then SME", () => {
+  it("offers the chains in order: the three SRE sub-teams together, then SME", () => {
     render(<CasePagingTab onOpenRota={vi.fn()} />);
     expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
-      "CRE",
       "SaaS SRE",
       "IaaS SRE",
       "PaaS SRE",
@@ -285,75 +277,13 @@ describe("CasePagingTab", () => {
     ]);
   });
 
-  it("leaves CRE out for an SRE rota admin, opening on SaaS SRE", () => {
-    alertSettings.data = {
-      ...settingsFor(true),
-      canManage: { view: true, roomLadders: ["SRE"], routeLadders: ["SRE"] },
-    };
-    chain.data = pagingChain({
-      canEdit: {
-        responderTeams: [],
-        teamLeadTeams: [],
-        americasTeamLead: false,
-        heads: false,
-      },
-    });
-    render(<CasePagingTab onOpenRota={vi.fn()} />);
-    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
-      "SaaS SRE",
-      "IaaS SRE",
-      "PaaS SRE",
-      "SME",
-    ]);
+  it("opens a CSM or portal admin on the first chain, whatever their own team's chain", () => {
+    alertSettings.data = settingsFor(true);
+    render(<CasePagingTab onOpenRota={vi.fn()} initialChain="SME" />);
     expect(screen.getByRole("tab", { name: "SaaS SRE" })).toHaveAttribute(
       "aria-selected",
       "true",
     );
-  });
-
-  it("keeps CRE for an SRE rota admin who also leads a CRE team", () => {
-    alertSettings.data = {
-      ...settingsFor(true),
-      canManage: { view: true, roomLadders: ["SRE"], routeLadders: ["SRE"] },
-    };
-    chain.data = pagingChain({
-      canEdit: {
-        responderTeams: ["alpha"],
-        teamLeadTeams: [],
-        americasTeamLead: false,
-        heads: false,
-      },
-    });
-    render(<CasePagingTab onOpenRota={vi.fn()} />);
-    expect(screen.getByRole("tab", { name: "CRE" })).toBeInTheDocument();
-  });
-
-  it("keeps CRE for a CSM admin, and for anyone without settings rights", () => {
-    alertSettings.data = settingsFor(true);
-    const { unmount } = render(<CasePagingTab onOpenRota={vi.fn()} />);
-    expect(screen.getByRole("tab", { name: "CRE" })).toBeInTheDocument();
-    unmount();
-    alertSettings.data = undefined;
-    chain.data = pagingChain({
-      canEdit: {
-        responderTeams: [],
-        teamLeadTeams: [],
-        americasTeamLead: false,
-        heads: false,
-      },
-    });
-    render(<CasePagingTab onOpenRota={vi.fn()} />);
-    expect(screen.getByRole("tab", { name: "CRE" })).toBeInTheDocument();
-  });
-
-  it("opens a CSM or portal admin on CRE, whatever their own team's chain, and still offers every chain", () => {
-    alertSettings.data = settingsFor(true);
-    render(<CasePagingTab onOpenRota={vi.fn()} initialChain="SRE_SAAS" />);
-    expect(screen.getByRole("tab", { name: "CRE" })).toHaveAttribute(
-      "aria-selected",
-      "true",
-    );
-    expect(screen.getAllByRole("tab")).toHaveLength(5);
     // Their own pick still wins.
     fireEvent.click(screen.getByRole("tab", { name: "IaaS SRE" }));
     expect(screen.getByRole("tab", { name: "IaaS SRE" })).toHaveAttribute(
@@ -389,7 +319,7 @@ describe("CasePagingTab", () => {
     expect(paas).toHaveAttribute("aria-disabled", "true");
     expect(paas).toHaveAttribute("title", "No PaaS rota yet");
     fireEvent.click(paas);
-    expect(screen.getByRole("tab", { name: "CRE" })).toHaveAttribute(
+    expect(screen.getByRole("tab", { name: "SaaS SRE" })).toHaveAttribute(
       "aria-selected",
       "true",
     );
@@ -400,7 +330,6 @@ describe("CasePagingTab", () => {
     render(<CasePagingTab onOpenRota={vi.fn()} initialChain="SRE_SAAS" visibleChains={["SRE_SAAS", "SRE_IAAS"]} />);
     expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["SaaS SRE", "IaaS SRE"]);
     expect(screen.getByRole("tab", { name: "SaaS SRE" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.queryByRole("tab", { name: "CRE" })).not.toBeInTheDocument();
   });
 
   it("shows a reader with one chain just that chain, with no picker", () => {
@@ -409,78 +338,19 @@ describe("CasePagingTab", () => {
     expect(screen.getByRole("heading", { name: "IaaS SRE alert chain" })).toBeInTheDocument();
   });
 
-  it("keeps a CRE reader to CRE's chain, whatever chain they would open on", () => {
-    render(<CasePagingTab onOpenRota={vi.fn()} initialChain="SME" visibleChains={["CRE"]} />);
+  it("shows nothing of CRE to a reader whose only chain would be CRE's", () => {
+    render(<CasePagingTab onOpenRota={vi.fn()} initialChain="CRE" visibleChains={["CRE"]} />);
     expect(screen.queryByRole("tab")).not.toBeInTheDocument();
-    expect(screen.queryByText(/SME alert chain/)).not.toBeInTheDocument();
-    expect(screen.getByRole("table", { name: "CRE alert chain by team and level" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("table", { name: "CRE alert chain by team and level" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("There is no alert chain of yours to show.")).toBeInTheDocument();
   });
 
   it("tells a PaaS lead there is no chain yet, rather than showing another team's", () => {
     render(<CasePagingTab onOpenRota={vi.fn()} initialChain="SRE_SAAS" visibleChains={["PAAS"]} />);
     expect(screen.getByText("PaaS SRE has no rota yet, so there is no alert chain to show.")).toBeInTheDocument();
     expect(screen.queryByText(/SaaS SRE alert chain/)).not.toBeInTheDocument();
-  });
-
-  it("goes back to the editable chain from a read-only one", () => {
-    render(<CasePagingTab onOpenRota={vi.fn()} />);
-    fireEvent.click(screen.getByRole("tab", { name: "IaaS SRE" }));
-    expect(
-      screen.getByText(/People come from the IaaS SRE rota/),
-    ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("tab", { name: "CRE" }));
-    expect(
-      screen.getByRole("button", { name: /Edit alert chain/ }),
-    ).toBeInTheDocument();
-  });
-
-  it("shows a phone chip by each person and runs the paging-number actions", () => {
-    const base = pagingChain();
-    chain.data = {
-      ...base,
-      members: base.members.map((m) =>
-        m.membershipId === "a2"
-          ? {
-              ...m,
-              canEditPhone: true,
-              hasProfilePhone: false,
-              pagingPhone: {
-                masked: "+94•••••123",
-                phone: "+94771234123",
-                setBy: "x",
-                setAt: "2026-10-01T09:00:00Z",
-              },
-            }
-          : m.membershipId === "a1"
-            ? { ...m, hasProfilePhone: true }
-            : m,
-      ),
-    };
-    render(<CasePagingTab onOpenRota={vi.fn()} />);
-    // Jane Doe (lead) has a profile number; John Roe (1st responder) a paging one.
-    expect(screen.getByText("Profile ✓")).toBeInTheDocument();
-    expect(screen.getByText(/Alert number · not tested/)).toBeInTheDocument();
-
-    fireEvent.click(
-      screen.getByRole("button", { name: "Test call John Roe's alert number" }),
-    );
-    expect(testMutate).toHaveBeenCalledWith("u-a2", expect.anything());
-
-    // A number is changed on the profile, not here.
-    expect(
-      screen.queryByRole("button", { name: "Change John Roe's alert number" }),
-    ).not.toBeInTheDocument();
-    expect(putMutate).not.toHaveBeenCalled();
-
-    fireEvent.click(
-      screen.getByRole("button", { name: "Remove John Roe's alert number" }),
-    );
-    fireEvent.click(
-      within(screen.getByRole("dialog")).getByRole("button", {
-        name: "Remove",
-      }),
-    );
-    expect(delMutate).toHaveBeenCalledWith("u-a2", expect.anything());
   });
 
   it("points a missing number to the profile, even for a person the reader may edit", () => {
@@ -497,9 +367,9 @@ describe("CasePagingTab", () => {
         }),
       ],
     };
-    readiness.data!.chains[0] = readinessChain({
-      chain: "CRE",
-      label: "CRE",
+    readiness.data!.chains[1] = readinessChain({
+      chain: "SRE_SAAS",
+      label: "SaaS SRE",
       ready: false,
       gaps: [
         readinessGap({
@@ -517,7 +387,7 @@ describe("CasePagingTab", () => {
       ],
     });
     render(<CasePagingTab onOpenRota={vi.fn()} />);
-    const strip = screen.getByRole("list", { name: "CRE gaps" });
+    const strip = screen.getByRole("list", { name: "SaaS SRE gaps" });
     const [sam, ann] = within(strip).getAllByRole("listitem");
     expect(
       within(sam).queryByRole("button", { name: "Add number" }),
@@ -537,11 +407,8 @@ describe("CasePagingTab", () => {
       screen.queryByRole("button", { name: "Settings" }),
     ).not.toBeInTheDocument();
     expect(
-      screen.getByRole("table", { name: "CRE alert chain by team and level" }),
+      screen.getByRole("heading", { name: "SaaS SRE alert chain" }),
     ).toBeInTheDocument();
-    expect(
-      screen.queryByRole("heading", { name: "CRE settings" }),
-    ).not.toBeInTheDocument();
   });
 
   it("switches between who gets alerts and the settings, and remembers the choice", () => {
@@ -552,10 +419,10 @@ describe("CasePagingTab", () => {
     expect(chainBtn).toHaveAttribute("aria-pressed", "true");
     expect(settingsBtn).toHaveAttribute("aria-pressed", "false");
     expect(
-      screen.getByRole("table", { name: "CRE alert chain by team and level" }),
+      screen.getByRole("heading", { name: "SaaS SRE alert chain" }),
     ).toBeInTheDocument();
     expect(
-      screen.queryByRole("heading", { name: "CRE settings" }),
+      screen.queryByRole("heading", { name: "SaaS SRE settings" }),
     ).not.toBeInTheDocument();
 
     fireEvent.click(settingsBtn);
@@ -564,22 +431,20 @@ describe("CasePagingTab", () => {
       "true",
     );
     expect(
-      screen.getByRole("heading", { name: "CRE settings" }),
+      screen.getByRole("heading", { name: "SaaS SRE settings" }),
     ).toBeInTheDocument();
     expect(
-      screen.queryByRole("table", {
-        name: "CRE alert chain by team and level",
-      }),
+      screen.queryByRole("heading", { name: "SaaS SRE alert chain" }),
     ).not.toBeInTheDocument();
     expect(
       screen.queryByText(/ready for the next 7 days/),
     ).not.toBeInTheDocument();
     expect(window.localStorage.getItem(VIEW_KEY)).toBe("settings");
 
-    // The SRE chains keep the choice too.
-    fireEvent.click(screen.getByRole("tab", { name: "SaaS SRE" }));
+    // The other SRE chain keeps the choice too.
+    fireEvent.click(screen.getByRole("tab", { name: "IaaS SRE" }));
     expect(
-      screen.getByRole("heading", { name: "SaaS SRE settings" }),
+      screen.getByRole("heading", { name: "IaaS SRE settings" }),
     ).toBeInTheDocument();
 
     unmount();
@@ -589,11 +454,11 @@ describe("CasePagingTab", () => {
       "true",
     );
     expect(
-      screen.getByRole("heading", { name: "CRE settings" }),
+      screen.getByRole("heading", { name: "SaaS SRE settings" }),
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Who gets alerts" }));
     expect(
-      screen.getByRole("table", { name: "CRE alert chain by team and level" }),
+      screen.getByRole("heading", { name: "SaaS SRE alert chain" }),
     ).toBeInTheDocument();
     expect(window.localStorage.getItem(VIEW_KEY)).toBe("chain");
   });
@@ -602,7 +467,7 @@ describe("CasePagingTab", () => {
     alertSettings.data = settingsFor(true);
     window.localStorage.setItem(VIEW_KEY, "settings");
     render(<CasePagingTab onOpenRota={vi.fn()} initialChain="SME" />);
-    // An admin opens on CRE; their own pick of SME has no switch.
+    // An admin opens on the first chain; their own pick of SME has no switch.
     fireEvent.click(screen.getByRole("tab", { name: "SME" }));
     expect(
       screen.queryByRole("group", { name: "Show" }),
@@ -626,7 +491,7 @@ describe("CasePagingTab", () => {
     ).toHaveAttribute("aria-pressed", "true");
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     expect(
-      screen.getByRole("heading", { name: "CRE settings" }),
+      screen.getByRole("heading", { name: "SaaS SRE settings" }),
     ).toBeInTheDocument();
   });
 });
