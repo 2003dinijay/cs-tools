@@ -403,7 +403,7 @@ backend/
 
 ### Cases
 
-- `POST /cases` — Create a case (`type`: `case`; `service_request` and `security_report_analysis` are ServiceNow data source only)
+- `POST /cases` — Create a case (`type`: `case`; `service_request` and `security_report_analysis` are ServiceNow data source only). A `case` may carry an optional `watchList` (up to 500 entries, all emails or all user IDs; registered project contacts, or internal users for an internal caller) that is validated for shape here and for eligibility by the entity service
 - `GET /cases/{id}` — Get case by ID
 - `PATCH /cases/{id}` — Update a case (state, severity, workState, watchList, or assigneeEmail); optional `resolutionCode`, `cause`, `closeNotes` accepted alongside `state: closed` or `state: solution_proposed`
 - `POST /cases/search` — Search cases; filters include `searchQuery`, `types`, `states`, `severities`, `workStates` (`ongoing`/`paused`), `assignedUserIds`, `projectIds`, `deploymentIds`, `engagementTypes`, `issueTypes`, date ranges, `createdBy`, `createdByMe`

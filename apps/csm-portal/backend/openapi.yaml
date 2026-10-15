@@ -16083,7 +16083,14 @@ components:
           type: array
           items:
             type: string
-          description: Optional list of user IDs to notify.
+          maxItems: 500
+          description: |
+            Optional, `case` type only. People to add as watchers when the case is created.
+            Every entry must be an email address, or every entry a user ID (UUID); mixing the
+            two is rejected. Registered contacts of the case's project are always eligible; a
+            caller who is an internal user may also add internal users. Any ineligible entry
+            rejects the whole request. Entries are trimmed; empty entries are rejected.
+            Omitted or empty adds no watchers.
 
     CaseFieldFilter:
       type: object

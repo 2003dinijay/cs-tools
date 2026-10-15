@@ -212,6 +212,108 @@ func TestCreateCase(t *testing.T) {
 	})
 }
 
+func TestCreateCase_WatchList(t *testing.T) {
+	const base = `"type":"case","projectId":"proj-1","deploymentId":"dep-1","deployedProductId":"dp-1","subject":"Login failure","description":"d","severity":"high","issueType":"error"`
+
+	create := func(t *testing.T, body string) (status int, sent map[string]json.RawMessage) {
+		t.Helper()
+		client := &mockEntityCaseClient{
+			createCaseFn: func(_ context.Context, b []byte) ([]byte, error) {
+				if err := json.Unmarshal(b, &sent); err != nil {
+					t.Fatalf("upstream received invalid JSON: %v", err)
+				}
+				return []byte(`{"id":"case-1"}`), nil
+			},
+		}
+		h := NewCaseHandler(client)
+		r := withUser(httptest.NewRequest(http.MethodPost, "/cases", strings.NewReader(body)))
+		w := httptest.NewRecorder()
+		h.CreateCase(w, r)
+		return w.Code, sent
+	}
+
+	t.Run("forwards an email watch list and trims entries", func(t *testing.T) {
+		status, sent := create(t, `{`+base+`,"watchList":["  jane.doe@example.com ","john.doe@example.com"]}`)
+		if status != http.StatusCreated {
+			t.Fatalf("status = %d, want 201", status)
+		}
+		var got []string
+		if err := json.Unmarshal(sent["watchList"], &got); err != nil {
+			t.Fatalf("watchList not forwarded: %v", err)
+		}
+		if len(got) != 2 || got[0] != "jane.doe@example.com" || got[1] != "john.doe@example.com" {
+			t.Errorf("watchList = %v", got)
+		}
+		if _, ok := sent["projectId"]; !ok {
+			t.Error("other fields must survive the rewrite")
+		}
+	})
+
+	t.Run("forwards a user id watch list", func(t *testing.T) {
+		status, sent := create(t, `{`+base+`,"watchList":["00000000-0000-0000-0000-000000000000"]}`)
+		if status != http.StatusCreated || string(sent["watchList"]) != `["00000000-0000-0000-0000-000000000000"]` {
+			t.Errorf("status = %d watchList = %s", status, sent["watchList"])
+		}
+	})
+
+	t.Run("omitted stays omitted", func(t *testing.T) {
+		status, sent := create(t, `{`+base+`}`)
+		if status != http.StatusCreated {
+			t.Fatalf("status = %d", status)
+		}
+		if _, ok := sent["watchList"]; ok {
+			t.Error("watchList must not be added")
+		}
+	})
+
+	t.Run("empty and null pass through unchanged", func(t *testing.T) {
+		for _, v := range []string{`[]`, `null`} {
+			status, sent := create(t, `{`+base+`,"watchList":`+v+`}`)
+			if status != http.StatusCreated || string(sent["watchList"]) != v {
+				t.Errorf("watchList %s: status = %d forwarded = %s", v, status, sent["watchList"])
+			}
+		}
+	})
+
+	t.Run("rejects invalid watch lists without calling upstream", func(t *testing.T) {
+		tooMany := `"` + strings.Repeat(`a@example.com","`, maxCaseCreateWatchList) + `a@example.com"`
+		for name, wl := range map[string]string{
+			"empty entry":      `["jane.doe@example.com",""]`,
+			"blank entry":      `["   "]`,
+			"non-string entry": `[1]`,
+			"not an array":     `"jane.doe@example.com"`,
+			"too many":         `[` + tooMany + `]`,
+		} {
+			called := false
+			client := &mockEntityCaseClient{
+				createCaseFn: func(context.Context, []byte) ([]byte, error) { called = true; return []byte(`{}`), nil },
+			}
+			h := NewCaseHandler(client)
+			r := withUser(httptest.NewRequest(http.MethodPost, "/cases", strings.NewReader(`{`+base+`,"watchList":`+wl+`}`)))
+			w := httptest.NewRecorder()
+			h.CreateCase(w, r)
+			if w.Code != http.StatusBadRequest || called {
+				t.Errorf("%s: status = %d upstreamCalled = %v, want 400 and no call", name, w.Code, called)
+			}
+		}
+	})
+
+	t.Run("other create types are forwarded untouched", func(t *testing.T) {
+		body := `{"type":"service_request","watchList":[""]}`
+		var got []byte
+		client := &mockEntityCaseClient{
+			createCaseFn: func(_ context.Context, b []byte) ([]byte, error) { got = b; return []byte(`{"id":"x"}`), nil },
+		}
+		h := NewCaseHandler(client)
+		r := withUser(httptest.NewRequest(http.MethodPost, "/cases", strings.NewReader(body)))
+		w := httptest.NewRecorder()
+		h.CreateCase(w, r)
+		if w.Code != http.StatusCreated || string(got) != `{"type":"service_request","watchList":[""]}` {
+			t.Errorf("status = %d forwarded = %s", w.Code, got)
+		}
+	})
+}
+
 // ----- CreateCaseComment -----
 
 func TestCreateCaseComment(t *testing.T) {
