@@ -175,6 +175,42 @@ describe("AnnouncementDetailsPanel", () => {
     expect(screen.getByText("Security")).toBeInTheDocument();
   });
 
+  it("keeps the action row mounted after close so the feedback modal is not torn down", () => {
+    // Closing an announcement PATCHes state to Closed and then opens
+    // CaseFeedbackModal inside CaseDetailsActionRow. If this panel unmounts
+    // the row as soon as status is Closed, the modal flashes and disappears.
+    const openData = {
+      title: "Maintenance window",
+      number: "ANN-100",
+      description: "<p>Scheduled downtime</p>",
+      status: { id: "1", label: "Open" },
+      createdOn: "2024-01-15T10:00:00Z",
+    } as never;
+    const { rerender } = render(
+      <AnnouncementDetailsPanel
+        data={openData}
+        isLoading={false}
+        isError={false}
+        caseId="case-1"
+        projectId="proj-1"
+        onBack={() => {}}
+      />,
+    );
+    expect(screen.getByTestId("case-details-actions")).toBeInTheDocument();
+
+    rerender(
+      <AnnouncementDetailsPanel
+        data={{ ...openData, status: { id: "3", label: "Closed" } } as never}
+        isLoading={false}
+        isError={false}
+        caseId="case-1"
+        projectId="proj-1"
+        onBack={() => {}}
+      />,
+    );
+    expect(screen.getByTestId("case-details-actions")).toBeInTheDocument();
+  });
+
   it("renders back button while loading", () => {
     render(
       <AnnouncementDetailsPanel
