@@ -76,13 +76,13 @@ func person(name, email, phone string) Recipient {
 }
 
 var (
-	atlasLead    = person("Atlas Lead", "atlas.lead@wso2.com", "+94770000101")
-	castorLead   = person("Castor Lead", "castor.lead@wso2.com", "+94770000102")
-	creHead      = person("Cre Head", "cre.head@wso2.com", "+94770000103")
-	csHead       = person("Cs Head", "cs.head@wso2.com", "+94770000104")
-	amLeadA      = person("Am Lead A", "am.a@wso2.com", "+14150000001")
-	amLeadB      = person("Am Lead B", "am.b@wso2.com", "+14150000002")
-	americasLead = person("America Lead", "am.top@wso2.com", "+14150000003")
+	atlasLead    = person("Atlas Lead", "atlas.lead@example.com", "+94770000101")
+	castorLead   = person("Castor Lead", "castor.lead@example.com", "+94770000102")
+	creHead      = person("Cre Head", "cre.head@example.com", "+94770000103")
+	csHead       = person("Cs Head", "cs.head@example.com", "+94770000104")
+	amLeadA      = person("Am Lead A", "am.a@example.com", "+14150000001")
+	amLeadB      = person("Am Lead B", "am.b@example.com", "+14150000002")
+	americasLead = person("America Lead", "am.top@example.com", "+14150000003")
 )
 
 // dayResolver is the day ladder: L1 the case team's lead, L2 one lead from the
@@ -126,10 +126,10 @@ func newEmailRig(res Resolver, start time.Time) *emailRig {
 	cfg := EngineConfig{CallSendingEnabled: true, Channel: ChannelCall, Kind: LadderCRE}
 	cfg.Ladder.Teams = TeamKeys{ABTs: []string{"atlas", "castor"}, Americas: "americas"}
 	cfg.Ladder.Email = RungEmail{Enabled: true, TeamLists: map[string]string{
-		"atlas":    "atlas-team@wso2.com",
-		"castor":   "castor-team@wso2.com",
-		"americas": "americas-team@wso2.com",
-	}, CRETeamList: "cre-team@wso2.com", CSTeamList: "cs-team@wso2.com"}
+		"atlas":    "atlas-team@example.com",
+		"castor":   "castor-team@example.com",
+		"americas": "americas-team@example.com",
+	}, CRETeamList: "cre-team@example.com", CSTeamList: "cs-team@example.com"}
 	rig.e = &Engine{
 		policies:     DefaultPolicy,
 		resolver:     res,
@@ -151,7 +151,7 @@ func caseCreatedAt(t *testing.T, severity string, at time.Time) eventbus.Record 
 		ReporterName: "Jane Customer", ProjectName: "Acme", ProjectID: "p-1", CaseID: testIncidentID,
 		CaseNumber: "CS0099001", CaseTitle: "Gateway down", CaseType: "CASE", Priority: severity,
 		Team: "Atlas", CreatedAt: at.Format(time.RFC3339), Description: "everything fails",
-		Recipients: []string{"watcher@wso2.com"},
+		Recipients: []string{"watcher@example.com"},
 	})
 }
 
@@ -188,10 +188,10 @@ func TestRungEmail_DayRecipientsPerRung(t *testing.T) {
 		to, cc   []string
 		greeting string
 	}{
-		{[]string{"atlas.lead@wso2.com"}, []string{"atlas-team@wso2.com"}, "Hi Atlas Lead,"},
-		{[]string{"atlas.lead@wso2.com", "castor.lead@wso2.com"}, []string{"atlas-team@wso2.com", "castor-team@wso2.com"}, "Hi ABT Team Leads,"},
-		{[]string{"cre.head@wso2.com"}, []string{"cre-team@wso2.com"}, "Hi Cre Head,"},
-		{[]string{"cs.head@wso2.com"}, []string{"cs-team@wso2.com"}, "Hi Cs Head,"},
+		{[]string{"atlas.lead@example.com"}, []string{"atlas-team@example.com"}, "Hi Atlas Lead,"},
+		{[]string{"atlas.lead@example.com", "castor.lead@example.com"}, []string{"atlas-team@example.com", "castor-team@example.com"}, "Hi ABT Team Leads,"},
+		{[]string{"cre.head@example.com"}, []string{"cre-team@example.com"}, "Hi Cre Head,"},
+		{[]string{"cs.head@example.com"}, []string{"cs-team@example.com"}, "Hi Cs Head,"},
 	}
 	for i, w := range want {
 		if !reflect.DeepEqual(sent[i].to, w.to) {
@@ -264,8 +264,8 @@ func TestRungEmail_AcknowledgementStopsTheEmails(t *testing.T) {
 	if len(rig.mail.sent) != 1 {
 		t.Fatalf("sent %d before the acknowledgement, want 1", len(rig.mail.sent))
 	}
-	rig.handle(t, caseAssigned(t, "eng@wso2.com"))
-	rig.handle(t, caseComment(t, "eng@wso2.com", false, true))
+	rig.handle(t, caseAssigned(t, "eng@example.com"))
+	rig.handle(t, caseComment(t, "eng@example.com", false, true))
 	// The stop drops the pending email wakes with the calls', rather than
 	// leaving them for the ticker to find and discard.
 	if n := len(rig.store.wakes); n != 0 {
@@ -308,7 +308,7 @@ func TestRungEmail_RedeliveryAndDoubleTicksSendOnce(t *testing.T) {
 // number and are not held.
 func TestRungEmail_SentWhileTheCallsAreHeld(t *testing.T) {
 	res := dayResolver()
-	res.pool = []Recipient{atlasLead, person("No Phone", "nophone@wso2.com", "")}
+	res.pool = []Recipient{atlasLead, person("No Phone", "nophone@example.com", "")}
 	rig := newEmailRig(res, testClock)
 	rig.handle(t, caseCreatedAt(t, "CRITICAL", testClock))
 	rig.runUntil(t, testClock.Add(4*time.Hour))
@@ -323,11 +323,11 @@ func TestRungEmail_SentWhileTheCallsAreHeld(t *testing.T) {
 // Somebody the call plan drops for want of a number is still emailed.
 func TestRungEmail_ReachesARecipientWithNoNumber(t *testing.T) {
 	res := dayResolver()
-	res.ByLevel[Level3] = []Recipient{person("Cre Head", "cre.head@wso2.com", "")}
+	res.ByLevel[Level3] = []Recipient{person("Cre Head", "cre.head@example.com", "")}
 	rig := newEmailRig(res, testClock)
 	rig.handle(t, caseCreatedAt(t, "CRITICAL", testClock))
 	rig.runUntil(t, testClock.Add(4*time.Hour))
-	if len(rig.mail.sent) != 4 || rig.mail.sent[2].to[0] != "cre.head@wso2.com" {
+	if len(rig.mail.sent) != 4 || rig.mail.sent[2].to[0] != "cre.head@example.com" {
 		t.Fatalf("the CRE head with no number was not emailed at L3: %+v", rig.mail.sent)
 	}
 }
@@ -348,12 +348,12 @@ func TestRungEmail_NightAddsTheAmericas(t *testing.T) {
 		to, cc   []string
 		greeting string
 	}{
-		{[]string{"atlas.lead@wso2.com", "am.a@wso2.com", "am.b@wso2.com"},
-			[]string{"atlas-team@wso2.com", "americas-team@wso2.com"}, "Hi Atlas Lead and Americas Team Leads,"},
-		{[]string{"atlas.lead@wso2.com", "castor.lead@wso2.com", "am.top@wso2.com"},
-			[]string{"atlas-team@wso2.com", "castor-team@wso2.com", "americas-team@wso2.com"}, "Hi ABT Team Leads and America Lead,"},
-		{[]string{"cre.head@wso2.com"}, []string{"cre-team@wso2.com"}, "Hi Cre Head,"},
-		{[]string{"cs.head@wso2.com"}, []string{"cs-team@wso2.com"}, "Hi Cs Head,"},
+		{[]string{"atlas.lead@example.com", "am.a@example.com", "am.b@example.com"},
+			[]string{"atlas-team@example.com", "americas-team@example.com"}, "Hi Atlas Lead and Americas Team Leads,"},
+		{[]string{"atlas.lead@example.com", "castor.lead@example.com", "am.top@example.com"},
+			[]string{"atlas-team@example.com", "castor-team@example.com", "americas-team@example.com"}, "Hi ABT Team Leads and America Lead,"},
+		{[]string{"cre.head@example.com"}, []string{"cre-team@example.com"}, "Hi Cre Head,"},
+		{[]string{"cs.head@example.com"}, []string{"cs-team@example.com"}, "Hi Cs Head,"},
 	}
 	for i, w := range want {
 		if !reflect.DeepEqual(sent[i].to, w.to) || !reflect.DeepEqual(sent[i].cc, w.cc) {
@@ -388,7 +388,7 @@ func TestRungEmail_DayHasNoAmericas(t *testing.T) {
 	rig.handle(t, caseCreatedAt(t, "CRITICAL", testClock))
 	rig.runUntil(t, testClock.Add(4*time.Hour))
 	for i, m := range rig.mail.sent {
-		if containsAddr(m.cc, "americas-team@wso2.com") || strings.Contains(m.body, "America") {
+		if containsAddr(m.cc, "americas-team@example.com") || strings.Contains(m.body, "America") {
 			t.Errorf("day L%d mentions the Americas: %q Cc %v", i+1, m.subject, m.cc)
 		}
 	}
@@ -411,7 +411,7 @@ func TestRungEmail_CaseTeamListThroughAliases(t *testing.T) {
 	rig.e.cfg.Ladder.Teams.Aliases = map[string]string{"Atlas": "castor"}
 	rig.handle(t, caseCreatedAt(t, "CRITICAL", testClock))
 	st, _, _ := rig.store.Get(context.Background(), testIncidentID)
-	if got := st.Plan.Emails[0].Cc; !reflect.DeepEqual(got, []string{"castor-team@wso2.com"}) {
+	if got := st.Plan.Emails[0].Cc; !reflect.DeepEqual(got, []string{"castor-team@example.com"}) {
 		t.Fatalf("L1 Cc = %v; want the aliased team's list", got)
 	}
 }
@@ -428,7 +428,7 @@ func TestRungEmail_SeverityChangeStartsANewSeries(t *testing.T) {
 	if len(rig.mail.sent) != 2 {
 		t.Fatalf("sent %d emails, want L1 of each chain", len(rig.mail.sent))
 	}
-	if !strings.HasPrefix(rig.mail.sent[1].subject, "[Case Alerts] S1 ") || rig.mail.sent[1].to[0] != "atlas.lead@wso2.com" {
+	if !strings.HasPrefix(rig.mail.sent[1].subject, "[Case Alerts] S1 ") || rig.mail.sent[1].to[0] != "atlas.lead@example.com" {
 		t.Errorf("the new chain's first email = %q to %v; want an S1 L1 email", rig.mail.sent[1].subject, rig.mail.sent[1].to)
 	}
 }
@@ -486,15 +486,15 @@ func TestRungEmail_NeverOnTheSRELadder(t *testing.T) {
 // EMAIL_DEBUG_MODE: To the debug list, no Cc, and the body says who it was for.
 func TestRungEmail_DebugModeRedirects(t *testing.T) {
 	rig := newEmailRig(dayResolver(), testClock)
-	rig.e.emailSending = RungEmailSending{Enabled: true, DebugMode: true, DebugRecipients: []string{"qa@wso2.com"}}
+	rig.e.emailSending = RungEmailSending{Enabled: true, DebugMode: true, DebugRecipients: []string{"qa@example.com"}}
 	rig.handle(t, caseCreatedAt(t, "CRITICAL", testClock))
 	rig.runUntil(t, testClock.Add(4*time.Hour))
 	for i, m := range rig.mail.sent {
-		if !reflect.DeepEqual(m.to, []string{"qa@wso2.com"}) || m.cc != nil {
+		if !reflect.DeepEqual(m.to, []string{"qa@example.com"}) || m.cc != nil {
 			t.Fatalf("email %d went to %v cc %v in debug mode", i, m.to, m.cc)
 		}
 	}
-	if len(rig.mail.sent) != 4 || !strings.Contains(rig.mail.sent[1].body, "Expected sent to: atlas.lead@wso2.com, castor.lead@wso2.com, atlas-team@wso2.com, castor-team@wso2.com") {
+	if len(rig.mail.sent) != 4 || !strings.Contains(rig.mail.sent[1].body, "Expected sent to: atlas.lead@example.com, castor.lead@example.com, atlas-team@example.com, castor-team@example.com") {
 		t.Fatal("the debug copy does not say who it was meant for")
 	}
 }
@@ -610,15 +610,15 @@ cre:
   email:
     enabled: true
     teamLists:
-      atlas: atlas-team@wso2.com
-      americas: americas-team@wso2.com
-    creTeamList: cre-team@wso2.com
-    csTeamList: cs-team@wso2.com
+      atlas: atlas-team@example.com
+      americas: americas-team@example.com
+    creTeamList: cre-team@example.com
+    csTeamList: cs-team@example.com
 `)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.CRE.Email.Enabled || cfg.CRE.Email.TeamLists["atlas"] != "atlas-team@wso2.com" {
+	if !cfg.CRE.Email.Enabled || cfg.CRE.Email.TeamLists["atlas"] != "atlas-team@example.com" {
 		t.Fatalf("email = %+v", cfg.CRE.Email)
 	}
 
@@ -638,23 +638,23 @@ cre:
 cre:
   teams: {abts: [atlas]}
   email:
-    teamLists: {atlas: "a@wso2.com, b@wso2.com"}
+    teamLists: {atlas: "a@example.com, b@example.com"}
 `,
 		"an unknown team": `
 cre:
   teams: {abts: [atlas]}
   email:
-    teamLists: {vega: vega-team@wso2.com}
+    teamLists: {vega: vega-team@example.com}
 `,
 		"a bad CRE team list": `
 cre:
   email:
-    creTeamList: "cre team@wso2.com"
+    creTeamList: "cre team@example.com"
 `,
 		"a CS team list on the SRE ladder": `
 sre:
   email:
-    csTeamList: cs-team@wso2.com
+    csTeamList: cs-team@example.com
 `,
 		"a misspelled key": `
 cre:
@@ -697,8 +697,8 @@ func TestRungEmail_ConfigSurvivesSavedSettings(t *testing.T) {
 	if errFull != nil || errSmall != nil {
 		t.Fatalf("shipped examples: %v / %v", errFull, errSmall)
 	}
-	small.CRE.Email = RungEmail{Enabled: true, TeamLists: map[string]string{"atlas": "atlas-team@wso2.com"},
-		CRETeamList: "cre-team@wso2.com", CSTeamList: "cs-team@wso2.com"}
+	small.CRE.Email = RungEmail{Enabled: true, TeamLists: map[string]string{"atlas": "atlas-team@example.com"},
+		CRETeamList: "cre-team@example.com", CSTeamList: "cs-team@example.com"}
 	saved := savedFrom(full)
 	saved.Values = valuesFrom(t, full)
 	merged, _, _, err := MergeCaseAlertSettings(small, saved)

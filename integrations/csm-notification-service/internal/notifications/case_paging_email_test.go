@@ -88,11 +88,11 @@ func TestRenderCasePagingEmail(t *testing.T) {
 }
 
 func TestRenderCasePagingEmail_NoLinkDebugLineAndUnknownSeverity(t *testing.T) {
-	body := RenderCasePagingEmail(CasePagingEmailData{Greeting: "Cs Head", CaseNumber: "CS1", SeverityCode: "S9", IntendedFor: "cs.head@wso2.com"})
+	body := RenderCasePagingEmail(CasePagingEmailData{Greeting: "Cs Head", CaseNumber: "CS1", SeverityCode: "S9", IntendedFor: "cs.head@example.com"})
 	if strings.Contains(body, "View case") {
 		t.Error("a button was rendered with no case URL")
 	}
-	if !strings.Contains(body, "Expected sent to: cs.head@wso2.com") {
+	if !strings.Contains(body, "Expected sent to: cs.head@example.com") {
 		t.Error("a debug-redirected send does not say who it was meant for")
 	}
 	if !strings.Contains(body, "background-color:#868e96;") {
