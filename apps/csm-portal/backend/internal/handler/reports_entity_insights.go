@@ -270,7 +270,8 @@ func toReportProduct(product entityReportDeployedProduct) viewer.Product {
 		out.TPS = strconv.FormatFloat(*product.TPS, 'f', -1, 64)
 	}
 	if len(product.Updates) > 0 {
-		out.UpdateLevelInfo = product.Updates[0].UpdateLevel
+		level := product.Updates[0].UpdateLevel
+		out.UpdateLevelInfo = &level
 	}
 	return out
 }

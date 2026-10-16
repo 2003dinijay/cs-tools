@@ -209,7 +209,7 @@ type Product struct {
 	EOLDate                        string `json:"eolDate"`
 	Cores                          string `json:"cores"`
 	TPS                            string `json:"tps"`
-	UpdateLevelInfo                int    `json:"updateLevelInfo"`
+	UpdateLevelInfo                *int   `json:"updateLevelInfo,omitempty"`
 	EarliestPossibleSupportEOLDate string `json:"earliestPossibleSupportEOLDate"`
 }
 
