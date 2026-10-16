@@ -35,6 +35,7 @@ const (
 	orgExternal = "external"
 
 	domainDefault    = "DEFAULT"
+	attrID           = "id"
 	attrPhoneNumbers = "phoneNumbers"
 	attrUserName     = "userName"
 	attrSchema       = "urn:scim:wso2:schema"
@@ -46,10 +47,15 @@ const (
 )
 
 // SearchUser fetches SCIM data for the given email and returns the extracted
-// phone number, last password update time, and role assignment, mirroring
-// searchUsers + processPhoneNumber + processLastPasswordUpdateTime in the
-// Ballerina SCIM module (roles has no Ballerina-side precedent -- it backs the
-// profile page's own role display, added later than that mirrored logic).
+// phone number, last password update time, role assignment, and the user's
+// own Asgardeo ID (for a subsequent GetUserByID call), mirroring searchUsers
+// + processPhoneNumber + processLastPasswordUpdateTime in the Ballerina SCIM
+// module (roles and id have no Ballerina-side precedent -- id backs
+// GetUserByID, added later than that mirrored logic). A search response only
+// returns whichever attributes are explicitly requested -- id is not
+// returned for free, the same convention the SCIM operations service's own
+// getUserByUserName follows -- so it must be requested here even though
+// nothing SearchUser itself computes needs it.
 // Returns nil if no matching user is found in the SCIM service.
 func (c *Client) SearchUser(ctx context.Context, email string) (*UserInfo, error) {
 	startIndex := 1
@@ -58,7 +64,7 @@ func (c *Client) SearchUser(ctx context.Context, email string) (*UserInfo, error
 	for {
 		reqBody, err := json.Marshal(scimSearchRequest{
 			Domain:     domainDefault,
-			Attributes: []string{attrPhoneNumbers, attrUserName, attrSchema, attrRoles},
+			Attributes: []string{attrID, attrPhoneNumbers, attrUserName, attrSchema, attrRoles},
 			Filter:     fmt.Sprintf("userName eq %s", email),
 			StartIndex: startIndex,
 		})
