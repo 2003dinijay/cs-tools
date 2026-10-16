@@ -183,7 +183,7 @@ function chainHeadings(): string[] {
 describe("CasePagingTab", () => {
   it("lists every SRE and SME chain under SRE, each with its readiness and a way to its rota", () => {
     const onOpenRota = vi.fn();
-    render(<CasePagingTab onOpenRota={onOpenRota} />);
+    render(<CasePagingTab onOpenRota={onOpenRota} visibleChains={["SRE_SAAS", "SRE_IAAS", "PAAS", "SME"]} />);
     // No settings rights: one family, no family tabs, no sub-tabs.
     expect(screen.queryByRole("tablist", { name: "Family" })).not.toBeInTheDocument();
     expect(screen.queryByRole("tablist", { name: "Show" })).not.toBeInTheDocument();
@@ -223,25 +223,54 @@ describe("CasePagingTab", () => {
     expect(screen.getByText("There is no alert chain of yours to show.")).toBeInTheDocument();
   });
 
-  it("offers CRE and SRE family tabs to a CSM admin, opening on CRE's settings alone", () => {
+  it("offers CRE and SRE family tabs to a CSM admin, opening on CRE's alert chain", () => {
     alertSettings.data = rights("CRE", "SRE", "SME");
     render(<CasePagingTab onOpenRota={vi.fn()} initialChain="SME" />);
     const families = screen.getByRole("tablist", { name: "Family" });
     expect(within(families).getAllByRole("tab").map((t) => t.textContent)).toEqual(["CRE", "SRE"]);
     expect(within(families).getByRole("tab", { name: "CRE" })).toHaveAttribute("aria-selected", "true");
+    // CRE has its "Who gets alerts" -- the chain where first responders are
+    // marked -- and its settings.
+    const show = screen.getByRole("tablist", { name: "Show" });
+    expect(within(show).getByRole("tab", { name: "Who gets alerts" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("heading", { name: /^Alert chain/ })).toBeInTheDocument();
+
+    fireEvent.click(within(show).getByRole("tab", { name: "Settings" }));
     expect(screen.getByRole("heading", { name: "CRE settings" })).toBeInTheDocument();
-    // CRE has no "Who gets alerts" here: no sub-tabs.
-    expect(screen.queryByRole("tablist", { name: "Show" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /^Alert chain/ })).not.toBeInTheDocument();
 
     fireEvent.click(within(families).getByRole("tab", { name: "SRE" }));
     expect(screen.getByRole("tablist", { name: "Show" })).toBeInTheDocument();
   });
 
-  it("offers CRE only to those who may change its settings", () => {
+  it("shows a CRE Team lead CRE's alert chain alone: where they mark their team's first responders", () => {
+    // No settings rights: one family, no family tabs, no sub-tabs, no SRE chains.
+    render(<CasePagingTab onOpenRota={vi.fn()} initialChain="CRE" visibleChains={["CRE"]} />);
+    expect(screen.queryByRole("tablist", { name: "Family" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tablist", { name: "Show" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /^Alert chain/ })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "SaaS SRE alert chain" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "CRE settings" })).not.toBeInTheDocument();
+  });
+
+  it("offers CRE to a reader given its chain or its settings, and not to an SRE rota admin with neither", () => {
     alertSettings.data = rights("SRE", "SME");
-    render(<CasePagingTab onOpenRota={vi.fn()} initialChain="CRE" />);
+    const { unmount } = render(
+      <CasePagingTab onOpenRota={vi.fn()} initialChain="CRE" visibleChains={["SRE_SAAS", "SRE_IAAS", "SME"]} />,
+    );
     expect(screen.queryByRole("tab", { name: "CRE" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "CRE settings" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /^Alert chain/ })).not.toBeInTheDocument();
+    unmount();
+
+    // The same SRE rota admin who also leads a CRE team: CRE's chain, no CRE settings.
+    render(
+      <CasePagingTab onOpenRota={vi.fn()} initialChain="CRE" visibleChains={["CRE", "SRE_SAAS", "SRE_IAAS", "SME"]} />,
+    );
+    const families = screen.getByRole("tablist", { name: "Family" });
+    expect(within(families).getByRole("tab", { name: "CRE" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("heading", { name: /^Alert chain/ })).toBeInTheDocument();
+    expect(screen.queryByRole("tablist", { name: "Show" })).not.toBeInTheDocument();
   });
 
   it("shows CRE's settings alone to a CRE rota admin: no tabs, no chain", () => {
@@ -311,6 +340,7 @@ describe("CasePagingTab", () => {
       },
     };
     window.localStorage.setItem("csm-ts.alert-settings.open", JSON.stringify(["CRE.redirects"]));
+    window.localStorage.setItem(VIEW_KEY, "settings");
     render(<CasePagingTab onOpenRota={vi.fn()} />);
     fireEvent.change(screen.getByLabelText("When a case is assigned to"), { target: { value: "Atlas" } });
     fireEvent.change(screen.getByLabelText("send its alerts to"), { target: { value: "team:atlas" } });
