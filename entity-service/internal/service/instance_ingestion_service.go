@@ -39,6 +39,7 @@ type InstanceIngestionService interface {
 	InsertUsageStats(ctx context.Context, req domain.InstanceUsageIngestRequest) (domain.InstanceUsageIngestResponse, error)
 	ImportDailyUsagesBatch(ctx context.Context, req domain.DailyUsageBatchRequest) (domain.DailyUsageBatchResponse, error)
 	GetProjectSecretKey(ctx context.Context, projectKey string) (domain.ProjectSecretKeyResponse, error)
+	GetDeploymentConsumptionSecret(ctx context.Context, deploymentNumber string) (domain.DeploymentConsumptionSecretResponse, error)
 }
 
 // Column widths of the usage tables (migration 0054), checked here so an
@@ -261,6 +262,23 @@ func (s *instanceIngestionService) ImportDailyUsagesBatch(ctx context.Context, r
 		}
 	}
 
+	if len(req.Nodes) > maxDailyUsageBatchSize {
+		return domain.DailyUsageBatchResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("nodes may hold at most %d entries", maxDailyUsageBatchSize)}
+	}
+	for i := range req.Nodes {
+		n := &req.Nodes[i]
+		field := func(name string) string { return fmt.Sprintf("nodes[%d].%s", i, name) }
+		n.NodeID = strings.TrimSpace(n.NodeID)
+		if n.NodeID == "" {
+			return domain.DailyUsageBatchResponse{}, &apierror.ValidationError{Msg: field("nodeId") + " is required"}
+		}
+		if err := checkLen(field("nodeId"), n.NodeID, maxNodeIDLen); err != nil {
+			return domain.DailyUsageBatchResponse{}, err
+		}
+		n.Product = strings.TrimSpace(n.Product)
+		n.Version = strings.TrimSpace(n.Version)
+	}
+
 	count, err := s.repo.ImportDailyUsagesBatch(ctx, req)
 	if err != nil {
 		return domain.DailyUsageBatchResponse{}, err
@@ -280,4 +298,17 @@ func (s *instanceIngestionService) GetProjectSecretKey(ctx context.Context, proj
 		return domain.ProjectSecretKeyResponse{}, err
 	}
 	return domain.ProjectSecretKeyResponse{SecretKey: secretKey}, nil
+}
+
+// GetDeploymentConsumptionSecret resolves a deployment number to its project and
+// the project's primary secret key.
+func (s *instanceIngestionService) GetDeploymentConsumptionSecret(ctx context.Context, deploymentNumber string) (domain.DeploymentConsumptionSecretResponse, error) {
+	number := strings.TrimSpace(deploymentNumber)
+	if number == "" {
+		return domain.DeploymentConsumptionSecretResponse{}, &apierror.ValidationError{Msg: "deployment number is required"}
+	}
+	if err := checkLen("deployment number", number, maxDeploymentNumberLen); err != nil {
+		return domain.DeploymentConsumptionSecretResponse{}, err
+	}
+	return s.repo.GetDeploymentConsumptionSecret(ctx, number)
 }

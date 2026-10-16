@@ -72,6 +72,11 @@ func (m *mockInstanceIngestionRepo) GetProjectSecretKey(_ context.Context, _ str
 	return m.secret, m.secretErr
 }
 
+func (m *mockInstanceIngestionRepo) GetDeploymentConsumptionSecret(_ context.Context, number string) (domain.DeploymentConsumptionSecretResponse, error) {
+	m.calls++
+	return domain.DeploymentConsumptionSecretResponse{DeploymentNumber: number}, m.secretErr
+}
+
 func newTestIngestionService(repo *mockInstanceIngestionRepo) *instanceIngestionService {
 	return &instanceIngestionService{
 		repo: repo,
@@ -169,6 +174,18 @@ func TestInstanceIngestion_RejectsBeforeTheRepository(t *testing.T) {
 			_, err := s.ImportDailyUsagesBatch(ctx, domain.DailyUsageBatchRequest{NodeID: "n", Usages: []domain.DailyUsageBatchItem{{Date: "2026-10-15", Type: "CORES", Value: -5}}})
 			return err
 		}, "usages[0].value"},
+		{"batch node without id", func(s InstanceIngestionService) error {
+			_, err := s.ImportDailyUsagesBatch(ctx, domain.DailyUsageBatchRequest{NodeID: "n", Nodes: []domain.DailyUsageBatchNode{{NodeID: " "}}})
+			return err
+		}, "nodes[0].nodeId is required"},
+		{"deployment secret without number", func(s InstanceIngestionService) error {
+			_, err := s.GetDeploymentConsumptionSecret(ctx, " ")
+			return err
+		}, "deployment number is required"},
+		{"deployment number too long", func(s InstanceIngestionService) error {
+			_, err := s.GetDeploymentConsumptionSecret(ctx, long(51))
+			return err
+		}, "deployment number must be at most 50"},
 		{"secret without key", func(s InstanceIngestionService) error {
 			_, err := s.GetProjectSecretKey(ctx, " ")
 			return err
