@@ -17,10 +17,13 @@
 package handler
 
 import (
+	"bytes"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
@@ -433,6 +436,32 @@ func TestAccessGuard_RolesForGroupNamesTwoRolesSharingAGroup(t *testing.T) {
 	})
 	if got := g.RolesForGroupNames([]string{"Shared Group"}); !slices.Equal(got, []string{"viewer", "admin"}) {
 		t.Errorf("RolesForGroupNames = %v, want [viewer admin]: both roles are configured against this one group", got)
+	}
+}
+
+// TestAccessGuard_WithGroupNamesWarnsOnUnknownPortalRoleKey: a typo in
+// ASGARDEO_ROLE_GROUP_NAMES's key (e.g. "cs_enginer" for "cs_engineer")
+// previously granted nothing with no signal anywhere that it had silently
+// failed to wire up. WithGroupNames must now log a startup warning naming
+// the unrecognized key, while still wiring up every key that IS valid in the
+// same call -- one bad entry must not also drop the good ones.
+func TestAccessGuard_WithGroupNamesWarnsOnUnknownPortalRoleKey(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	g := NewAccessGuard(testAccessConfig()).WithGroupNames(map[string][]string{
+		"cs_enginer": {"CSM Engineers"}, // typo: missing the second "e"
+		"viewer":     {"Viewer Group"},
+	})
+
+	if !strings.Contains(buf.String(), "cs_enginer") {
+		t.Errorf("expected a startup warning naming the unknown key %q, got log: %s", "cs_enginer", buf.String())
+	}
+	// The one genuinely valid key in the same map must still be wired up.
+	if got := g.RolesForGroupNames([]string{"Viewer Group"}); !slices.Equal(got, []string{"viewer"}) {
+		t.Errorf("RolesForGroupNames = %v, want [viewer]: a sibling typo must not also break a valid key in the same config", got)
 	}
 }
 

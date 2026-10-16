@@ -595,8 +595,31 @@ func (g *AccessGuard) RolesForIDs(roleIDs []string) []string {
 // in the Asgardeo console), not its opaque id. A portal role key with no
 // entry here simply never matches by group membership -- the same "no entry
 // means not wired up here" posture WithRoleIDs already has for role names.
+//
+// Unlike a real Asgardeo role name (an open-ended, deployment-specific
+// string ASGARDEO_ROLE_IDS has no fixed vocabulary to check against), a
+// portal role key IS a closed, known set -- exactly g.portalRoles' own keys,
+// fixed by NewAccessGuard above. A key in groupNamesByRoleKey that matches
+// none of them is therefore always a configuration mistake (a typo like
+// "cs_enginer"), not a legitimate "not relevant to this deployment yet"
+// case, and would otherwise grant nothing with no signal anywhere that it
+// silently failed to wire up. Logged as a startup warning naming the
+// offending key(s) -- not a hard failure, matching this guard's existing
+// posture elsewhere (an unset/misconfigured AUTH_<ROLE>_ROLES also only
+// warns, never exits) rather than taking down the whole backend over one
+// bad entry in an otherwise-optional, purely additive feature.
 // Returns g for chaining.
 func (g *AccessGuard) WithGroupNames(groupNamesByRoleKey map[string][]string) *AccessGuard {
+	known := make(map[string]struct{}, len(g.portalRoles))
+	for _, r := range g.portalRoles {
+		known[r.key] = struct{}{}
+	}
+	for key := range groupNamesByRoleKey {
+		if _, ok := known[key]; !ok {
+			slog.Warn("ASGARDEO_ROLE_GROUP_NAMES names an unknown portal role; its configured group(s) grant nothing", "key", key)
+		}
+	}
+
 	for i, r := range g.portalRoles {
 		names := make(map[string]struct{}, len(groupNamesByRoleKey[r.key]))
 		for _, name := range groupNamesByRoleKey[r.key] {
