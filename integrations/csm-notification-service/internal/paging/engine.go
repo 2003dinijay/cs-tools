@@ -1382,8 +1382,13 @@ func (e *Engine) processDue(ctx context.Context, member string) error {
 		// No call went out this time; what came back is the card's.
 		err, cardErr = nil, err
 	}
+	posted := postedIncidentCards(errors.Join(err, cardErr))
 	if err != nil {
 		if !isPermanent(err) {
+			// The incident card already went out: record it, so the retry posts only the reply.
+			if len(posted) > 0 {
+				e.recordIncidentCards(ctx, incidentID, st.Plan.Trigger, posted)
+			}
 			// Transient — leave the wake entry and give the claim back, so the
 			// next tick retries.
 			if rerr := e.store.ReleaseCall(ctx, claim); rerr != nil {
@@ -1468,6 +1473,7 @@ func (e *Engine) processDue(ctx context.Context, member string) error {
 		fresh.Placed[index] = true
 	}
 	fresh.setCardPending(index, retryCard)
+	fresh.Plan.IncidentCards = withRooms(fresh.Plan.IncidentCards, posted)
 	st = fresh
 
 	if err := e.store.Save(ctx, incidentID, st); err != nil {
@@ -1675,6 +1681,29 @@ func pendingMembers(incidentID string, st LadderState) []string {
 		}
 	}
 	return out
+}
+
+// recordIncidentCards saves the rooms a first rung's incident card reached before its reply failed. Best effort: a lost record only posts the card again.
+func (e *Engine) recordIncidentCards(ctx context.Context, incidentID string, chain Trigger, rooms []string) {
+	fresh, found, err := e.store.Get(ctx, incidentID)
+	if err == nil && found && fresh.Cancelled == nil && sameChain(fresh.Plan.Trigger, chain) {
+		fresh.Plan.IncidentCards = withRooms(fresh.Plan.IncidentCards, rooms)
+		err = e.store.Save(ctx, incidentID, fresh)
+	}
+	if err != nil {
+		slog.WarnContext(ctx, "escalation: could not record the posted incident card; the retry may post it again",
+			"incidentId", incidentID, "err", err)
+	}
+}
+
+// withRooms adds the rooms not already listed.
+func withRooms(have, add []string) []string {
+	for _, r := range add {
+		if !slices.Contains(have, r) {
+			have = append(have, r)
+		}
+	}
+	return have
 }
 
 // isPermanent reports whether a call error is one that retrying cannot fix:

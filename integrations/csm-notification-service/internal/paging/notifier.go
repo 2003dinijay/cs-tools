@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -321,7 +322,7 @@ func (n chatNotifier) Deliver(ctx context.Context, plan Plan, call PlannedCall) 
 		Rotation:   rotationOf(plan),
 		OnCall:     onCallName(plan),
 	}
-	parent := sreThread && isFirstCall(plan, call)
+	parent := sreThread && isFirstCall(plan, call) && !slices.Contains(plan.IncidentCards, room)
 	if parent {
 		if err := n.chat.SendIncidentCreatedAlert(ctx, room, incidentCard(t, portal)); err != nil {
 			return Delivery{Channel: ChannelChat}, err
@@ -329,14 +330,40 @@ func (n chatNotifier) Deliver(ctx context.Context, plan Plan, call PlannedCall) 
 	}
 	if err := n.chat.SendEscalationAlert(ctx, alert); err != nil {
 		if parent {
-			// Retrying would post the incident card twice, so the missed reply is only logged.
-			slog.WarnContext(ctx, "escalation: incident card posted but its first rung reply was not",
-				"incidentId", t.IncidentID, "audience", room, "err", err)
-			return Delivery{Channel: ChannelChat, Status: "incident card posted to " + room + "; rung reply not posted"}, nil
+			// The card is in the room: say so, so the retry posts only the reply.
+			return Delivery{Channel: ChannelChat}, &incidentCardPosted{room: room, err: err}
 		}
 		return Delivery{Channel: ChannelChat}, err
 	}
 	return Delivery{Channel: ChannelChat, Status: "posted to " + room}, nil
+}
+
+// incidentCardPosted is a first rung whose "Incident Reported" card reached room but whose reply did not.
+type incidentCardPosted struct {
+	room string
+	err  error
+}
+
+func (e *incidentCardPosted) Error() string { return e.err.Error() }
+func (e *incidentCardPosted) Unwrap() error { return e.err }
+
+// postedIncidentCards is every room a failed delivery already posted the incident card to.
+func postedIncidentCards(err error) []string {
+	switch e := err.(type) {
+	case nil:
+		return nil
+	case *incidentCardPosted:
+		return []string{e.room}
+	case interface{ Unwrap() []error }:
+		var rooms []string
+		for _, inner := range e.Unwrap() {
+			rooms = append(rooms, postedIncidentCards(inner)...)
+		}
+		return rooms
+	case interface{ Unwrap() error }:
+		return postedIncidentCards(e.Unwrap())
+	}
+	return nil
 }
 
 // isFirstCall reports whether call is the plan's first, the one that opens the SRE space's incident thread.

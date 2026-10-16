@@ -149,6 +149,8 @@ type Plan struct {
 	// pool is not verified with phone numbers yet. A call-only ladder held
 	// this way has nothing left to do and ends without a work note.
 	CallsHeld bool `json:",omitempty"`
+	// IncidentCards are the SRE spaces the "Incident Reported" card already went to, so a retried first rung posts only its reply there.
+	IncidentCards []string `json:",omitempty"`
 }
 
 // BuildPlan expands a trigger into every call the ladder would place, with

@@ -180,8 +180,8 @@ func TestSRECards_OnlyTheFirstCallPostsTheCard(t *testing.T) {
 	}
 }
 
-// A failed incident card fails the rung, so the retry posts both; a failed first reply after the card is not retried, so the card is never posted twice.
-func TestSRECards_FailuresNeverDuplicateTheCard(t *testing.T) {
+// A failed incident card fails the rung, so the retry posts both; a failed first reply after the card is retryable and names the room the card reached.
+func TestSRECards_FailuresAreRetryable(t *testing.T) {
 	plan := Plan{
 		Trigger: Trigger{IncidentID: "inc-1", Number: "INC1", Record: RecordIncident, Routing: RoutingContext{Ladder: LadderSRE}},
 		Calls:   []PlannedCall{{Level: Level0, Ordinal: 1, Recipient: Recipient{Name: "Jane"}}},
@@ -189,17 +189,67 @@ func TestSRECards_FailuresNeverDuplicateTheCard(t *testing.T) {
 	ctx := context.Background()
 
 	down := &fakeChat{err: errors.New("webhook down")}
-	if _, err := (chatNotifier{chat: down, audience: "SRE"}).Deliver(ctx, plan, plan.Calls[0]); err == nil {
-		t.Error("a failed incident card should fail the rung so it is retried")
+	_, err := (chatNotifier{chat: down, audience: "SRE"}).Deliver(ctx, plan, plan.Calls[0])
+	if err == nil || len(postedIncidentCards(err)) != 0 {
+		t.Errorf("a failed incident card: err %v; want a retryable error naming no posted card", err)
 	}
 
 	half := rungFails{&fakeChat{}}
-	d, err := (chatNotifier{chat: half, audience: "SRE"}).Deliver(ctx, plan, plan.Calls[0])
-	if err != nil {
-		t.Fatalf("a failed reply after the card was posted must not be retried: %v", err)
+	_, err = (chatNotifier{chat: half, audience: "SRE"}).Deliver(ctx, plan, plan.Calls[0])
+	if err == nil || isPermanent(err) {
+		t.Fatalf("a failed reply after the card: err %v; want a retryable error", err)
 	}
-	if len(half.incidents) != 1 || d.Status == "" {
-		t.Errorf("incident cards %d status %q; want the card posted once and the miss in the status", len(half.incidents), d.Status)
+	if got := postedIncidentCards(errors.Join(errors.New("other"), err)); len(got) != 1 || got[0] != "SRE" {
+		t.Errorf("posted incident cards = %v; want [SRE]", got)
+	}
+
+	retry := &fakeChat{}
+	plan.IncidentCards = []string{"SRE"}
+	if _, err := (chatNotifier{chat: retry, audience: "SRE"}).Deliver(ctx, plan, plan.Calls[0]); err != nil {
+		t.Fatal(err)
+	}
+	if len(retry.incidents) != 0 || len(retry.posted) != 1 {
+		t.Errorf("retry: incident cards %d, replies %d; want only the reply", len(retry.incidents), len(retry.posted))
+	}
+}
+
+// rungFailsOnce takes the incident card and rejects the first rung only.
+type rungFailsOnce struct {
+	*fakeChat
+	failed bool
+}
+
+func (r *rungFailsOnce) SendEscalationAlert(ctx context.Context, a notifications.EscalationAlert) error {
+	if !r.failed {
+		r.failed = true
+		return errors.New("webhook down")
+	}
+	return r.fakeChat.SendEscalationAlert(ctx, a)
+}
+
+// Through the engine: the first tick posts the card and fails the reply, the next posts only the reply.
+func TestSRECards_RetriedFirstReplyDoesNotRepostTheCard(t *testing.T) {
+	ctx := context.Background()
+	shared, store := &fakeChat{}, newMemStore()
+	chat := &rungFailsOnce{fakeChat: shared}
+	e := ladderEngine(LadderSRE, shared, store)
+	e.notifiers = []notifier{chatNotifier{chat: chat, links: fakeLinks{}, audience: "SRE"}}
+
+	if err := e.Handle(ctx, created(t, "Apollo", "HIGH")); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Tick(ctx, testClock); err == nil {
+		t.Fatal("the first tick should fail so the reply is retried")
+	}
+	st, _, _ := store.Get(ctx, testIncidentID)
+	if st.Placed[0] || len(st.Plan.IncidentCards) != 1 {
+		t.Fatalf("after the failed reply: placed %v, incident cards %v; want unplaced with the card recorded", st.Placed[0], st.Plan.IncidentCards)
+	}
+	if err := e.Tick(ctx, testClock); err != nil {
+		t.Fatal(err)
+	}
+	if len(shared.incidents) != 1 || len(shared.posted) != 1 {
+		t.Errorf("incident cards %d, replies %d; want the card once and the reply once", len(shared.incidents), len(shared.posted))
 	}
 }
 
