@@ -165,7 +165,7 @@ func TestClient_SearchUser(t *testing.T) {
 }
 
 func TestClient_GetUserByID(t *testing.T) {
-	t.Run("hits the internal org's user-by-id path and extracts role assignments by ID and name", func(t *testing.T) {
+	t.Run("hits the internal org's user-by-id path and extracts role and group assignments by ID and name", func(t *testing.T) {
 		var gotMethod, gotPath string
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			gotMethod, gotPath = r.Method, r.URL.Path
@@ -176,6 +176,10 @@ func TestClient_GetUserByID(t *testing.T) {
 				"roles": [
 					{"value": "role-id-1", "display": "app-csm-admin", "audienceType": "application"},
 					{"value": "role-id-2", "display": "app-csm-admin", "audienceType": "application"}
+				],
+				"groups": [
+					{"value": "group-id-1", "display": "csm-engineers"},
+					{"value": "group-id-2", "display": "csm-engineers"}
 				]
 			}`))
 		}))
@@ -195,16 +199,26 @@ func TestClient_GetUserByID(t *testing.T) {
 
 		// Two distinct roles sharing the same display name must both survive
 		// -- this is the whole reason GetUserByID returns IDs, not names.
-		want := []RoleAssignment{
+		wantRoles := []RoleAssignment{
 			{ID: "role-id-1", Name: "app-csm-admin"},
 			{ID: "role-id-2", Name: "app-csm-admin"},
 		}
-		if !reflect.DeepEqual(assignments, want) {
-			t.Errorf("assignments = %+v, want %+v", assignments, want)
+		if !reflect.DeepEqual(assignments.Roles, wantRoles) {
+			t.Errorf("assignments.Roles = %+v, want %+v", assignments.Roles, wantRoles)
+		}
+
+		// Same reasoning for groups: two distinct groups sharing a display
+		// name must both survive, by ID.
+		wantGroups := []GroupAssignment{
+			{ID: "group-id-1", Name: "csm-engineers"},
+			{ID: "group-id-2", Name: "csm-engineers"},
+		}
+		if !reflect.DeepEqual(assignments.Groups, wantGroups) {
+			t.Errorf("assignments.Groups = %+v, want %+v", assignments.Groups, wantGroups)
 		}
 	})
 
-	t.Run("a user with no roles returns an empty, non-nil slice", func(t *testing.T) {
+	t.Run("a user with no roles or groups returns empty, non-nil slices", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"id": "u-1", "userName": "DEFAULT/jane.doe@wso2.com"}`))
@@ -215,8 +229,11 @@ func TestClient_GetUserByID(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetUserByID: %v", err)
 		}
-		if assignments == nil || len(assignments) != 0 {
-			t.Errorf("assignments = %+v, want an empty non-nil slice", assignments)
+		if assignments.Roles == nil || len(assignments.Roles) != 0 {
+			t.Errorf("assignments.Roles = %+v, want an empty non-nil slice", assignments.Roles)
+		}
+		if assignments.Groups == nil || len(assignments.Groups) != 0 {
+			t.Errorf("assignments.Groups = %+v, want an empty non-nil slice", assignments.Groups)
 		}
 	})
 

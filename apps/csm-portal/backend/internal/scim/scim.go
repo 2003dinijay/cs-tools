@@ -189,8 +189,9 @@ func (c *Client) UpdateUserPhone(ctx context.Context, userID, mobile string) (*s
 
 // GetUserByID fetches the full SCIM user record for the given Asgardeo user
 // ID (see UserInfo.ID, from a prior SearchUser call -- there is no lookup by
-// email alone) and returns the role assignments from it, each carrying both
-// the role's own Asgardeo ID and its display name.
+// email alone) and returns both the role assignments and the group
+// memberships from it, each carrying both the resource's own Asgardeo ID and
+// its display name.
 //
 // This is the canonical resource read, used instead of trusting the "roles"
 // field already present on a /Users/.search result (scimUser.Roles /
@@ -200,21 +201,25 @@ func (c *Client) UpdateUserPhone(ctx context.Context, userID, mobile string) (*s
 // here specifically: matching a held role against ASGARDEO_ROLE_IDS needs
 // each role's ID, not just its display name (two distinct roles can share a
 // name), and getting a reliable ID for every entry is worth the extra round
-// trip.
-func (c *Client) GetUserByID(ctx context.Context, userID string) ([]RoleAssignment, error) {
+// trip. Group membership (for ASGARDEO_ROLE_GROUP_NAMES, see
+// handler.AccessGuard.WithGroupNames) rides along on this same response at
+// no further cost -- there is no separate "get a user's groups" call.
+func (c *Client) GetUserByID(ctx context.Context, userID string) (UserAssignments, error) {
 	path := "/organizations/" + org + "/users/" + url.PathEscape(userID)
 	raw, err := c.do(ctx, http.MethodGet, path, nil)
 	if err != nil {
-		return nil, err
+		return UserAssignments{}, err
 	}
 
 	var user scimUserByID
 	if err := json.Unmarshal(raw, &user); err != nil {
-		return nil, fmt.Errorf("scim: decode user response: %w", err)
+		return UserAssignments{}, fmt.Errorf("scim: decode user response: %w", err)
 	}
-	assignments := make([]RoleAssignment, 0, len(user.Roles))
-	assignments = append(assignments, user.Roles...)
-	return assignments, nil
+	roles := make([]RoleAssignment, 0, len(user.Roles))
+	roles = append(roles, user.Roles...)
+	groups := make([]GroupAssignment, 0, len(user.Groups))
+	groups = append(groups, user.Groups...)
+	return UserAssignments{Roles: roles, Groups: groups}, nil
 }
 
 // GetRole fetches the role with the given Asgardeo role ID and returns its
