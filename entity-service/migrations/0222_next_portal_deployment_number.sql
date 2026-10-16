@@ -22,7 +22,9 @@ BEGIN
     SELECT COALESCE(MAX(SUBSTRING(number FROM '[0-9]+')::BIGINT), 0)
     INTO max_num
     FROM deployment
-    WHERE number ~ '^DEP[0-9]+$';
+    -- Only the generated DEP + up-to-9-digit format: a malformed or over-long number
+    -- must not push the sequence out of range or overflow the BIGINT cast.
+    WHERE number ~ '^DEP[0-9]{1,9}$';
 
     -- Initialize sequence to start at MAX + 1 (e.g. 2183 -> 2184)
     IF NOT EXISTS (SELECT 1 FROM pg_sequences WHERE sequencename = 'portal_deployment_number_seq') THEN
