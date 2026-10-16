@@ -35,6 +35,7 @@ import type { SettingsFamily } from "../utils/caseAlertDrafts";
 import type { CaseAlertChain } from "../utils/pagingChains";
 import CaseAlertDraftsProvider from "./CaseAlertDraftsProvider";
 import CaseAlertSettings from "./CaseAlertSettings";
+import CasePagingPanel from "./CasePagingPanel";
 import PagingReadinessStrip, {
   type PhoneGapAction,
 } from "./PagingReadinessStrip";
@@ -94,8 +95,9 @@ interface ChainOption {
 
 /** The chains under the SRE tab's "Who gets alerts", in order: the three SRE
  *  sub-teams, then SME. PaaS SRE has no rota yet, so it is listed -- it is a
- *  chain people expect -- with no chain to show. CRE has none here: who CRE
- *  pages is set on the rota, and its tab holds its settings alone. */
+ *  chain people expect -- with no chain to show. CRE's "Who gets alerts" is
+ *  its own editable chain (CasePagingPanel), where the CRE Team leads and
+ *  those above them mark each team's first responders. */
 const SRE_CHAINS: readonly ChainOption[] = [
   {
     code: "SRE_SAAS",
@@ -136,11 +138,12 @@ function managesBothLadders(settings?: AlertSettingsData): boolean {
 /**
  * The Alert Settings tab: a family tab for CRE and one for SRE (SaaS, IaaS and
  * SME together), and under it, where both apply, "Who gets alerts" and
- * "Settings". Who gets alerts lists each SRE and SME chain with its readiness
- * and where its people are set (they come from the rota); Settings holds the
- * family's settings, kept as changes until its Submit. CRE has its settings
- * alone, for those who may change them. The last sub-tab is kept for this
- * browser.
+ * "Settings". CRE's Who gets alerts is its chain, edited here: each team's
+ * first responders, its Team lead and the levels above. SRE's lists each SRE
+ * and SME chain with its readiness and where its people are set (they come
+ * from the rota). Settings holds the family's settings, kept as changes until
+ * its Submit, for those who may change them. The last sub-tab is kept for
+ * this browser.
  */
 export default function CasePagingTab(props: Props): JSX.Element {
   // One list of changes for both families, so moving between them keeps both.
@@ -167,8 +170,12 @@ function AlertTabs({
   const sreChains = SRE_CHAINS.filter(
     (c) => !visibleChains || visibleChains.includes(c.code) || manages(c.code),
   );
+  // CRE's chain: for every chain's reader (a CSM admin, the heads) and for
+  // whoever caseAlertChainsFor gave it to (a CRE Team lead, rota admin,
+  // America lead).
+  const creChainShown = !visibleChains || visibleChains.includes("CRE");
   const families: SettingsFamily[] = [
-    ...(mayManageFamily("CRE", roomLadders) ? (["CRE"] as const) : []),
+    ...(creChainShown || mayManageFamily("CRE", roomLadders) ? (["CRE"] as const) : []),
     ...(sreChains.length > 0 || mayManageFamily("SRE", roomLadders) ? (["SRE"] as const) : []),
   ];
   // The reader's pick, else their own family, else the first offered. A CSM
@@ -190,17 +197,19 @@ function AlertTabs({
   };
   const readiness = useGetPagingReadiness(PAGING_READINESS_DAYS);
   const hasSettings = family !== undefined && mayManageFamily(family, roomLadders);
-  const hasChains = family === "SRE" && sreChains.length > 0;
+  const hasChains =
+    family === "SRE" ? sreChains.length > 0 : family === "CRE" && creChainShown;
   const shown: ChainView = !hasChains ? "settings" : !hasSettings ? "chain" : view;
-  // The people a phone gap can be acted on for: SRE's while its chains are on
-  // screen. SME's people are not served as a chain, so its phone gaps keep
-  // the profile hint.
-  const sreOnScreen = hasChains && shown === "chain";
+  // The people a phone gap can be acted on for: the chain on screen, CRE's
+  // or SRE's. SME's people are not served as a chain, so its phone gaps keep
+  // the profile hint. CRE's is the same read as the panel's: no extra request.
+  const creOnScreen = family === "CRE" && hasChains && shown === "chain";
+  const sreOnScreen = family === "SRE" && hasChains && shown === "chain";
+  const creChain = useGetPagingChain("CRE", creOnScreen);
   const sreChain = useGetPagingChain("SRE", sreOnScreen);
-  const members: PagingChainMember[] = sreOnScreen
-    ? (sreChain.data?.members ?? [])
-    : [];
-  const readAt = sreOnScreen ? sreChain.dataUpdatedAt : 0;
+  const onScreen = creOnScreen ? creChain : sreOnScreen ? sreChain : undefined;
+  const members: PagingChainMember[] = onScreen?.data?.members ?? [];
+  const readAt = onScreen?.dataUpdatedAt ?? 0;
   const { controls: phone, dialog } = usePagingPhoneControls(members, readAt);
 
   /** "Test call" on a phone gap for a paging-only number the reader may act
@@ -281,6 +290,25 @@ function AlertTabs({
           family={family}
           teams={teams}
           moveTargetKeys={moveTargetKeys}
+        />
+      ) : family === "CRE" ? (
+        <CasePagingPanel
+          readiness={{
+            chain: readiness.data?.chains.find((x) => x.chain === "CRE"),
+            days: PAGING_READINESS_DAYS,
+            isLoading: readiness.isLoading,
+            isError: readiness.isError,
+          }}
+          onOpenRota={(gap) =>
+            onOpenRota({
+              family: "CRE",
+              teamKey: gap.teamKey,
+              zoneCode: gap.zoneCode,
+              date: gap.date,
+            })
+          }
+          phone={phone}
+          phoneActionFor={phoneActionFor}
         />
       ) : (
         sreChains.map((c) => {
