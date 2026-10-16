@@ -122,12 +122,12 @@ import CsmKBAdminPage from "@features/csm-kb-articles/pages/CsmKBAdminPage";
 // deleted); routing/audience-gating for each is isSplAudience, except Usage
 // Metrics (canViewUsageMetrics) and Customer Health (canViewCustomerHealth) —
 // see each flag's own doc comment.
-import CsReportPage from "@features/csm-reports/pages/CsReportPage";
 import TimelogsReportPage from "@features/csm-reports/pages/TimelogsReportPage";
 import UserScanPage from "@features/csm-user-scan/pages/UserScanPage";
 import UsageMetricsPage from "@features/csm-usage-metrics/pages/UsageMetricsPage";
 import CustomerHealthDashboardPage from "@features/csm-customer-health/pages/CustomerHealthDashboardPage";
 import CustomerHealthDetailPage from "@features/csm-customer-health/pages/CustomerHealthDetailPage";
+import CsReportPage from "@features/csm-reports/pages/CsReportPage";
 
 /**
  * Landing for `/`. Defers to AuthGuard's post-login deep-link restore when a
@@ -680,14 +680,15 @@ export default function App(): JSX.Element {
                     element={<CustomerHealthDetailPage />}
                   />
 
-                  {/* Project reports, launched from a project's own detail page. */}
-                  <Route
-                    path="customers/projects/:projectId/cs-report/:sysId"
-                    element={<CsReportPage />}
-                  />
+                  {/* Time project report, launched from a project's own
+                      detail page — same isSplAudience audience as above. */}
                   <Route
                     path="customers/projects/:projectId/timelogs-report"
                     element={<TimelogsReportPage />}
+                  />
+                  <Route
+                    path="customers/projects/:projectId/cs-report/:sysId"
+                    element={<CsReportPage />}
                   />
                 </Route>
               </Route>
