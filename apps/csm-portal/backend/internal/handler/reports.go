@@ -64,6 +64,14 @@ func (h *ReportsHandler) GetReportDetails(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "projectSysId, from, and to are required.")
 		return
 	}
+	if _, ok := parseReportTime(from); !ok {
+		writeError(w, http.StatusBadRequest, "from must be a date (YYYY-MM-DD) or RFC 3339 timestamp.")
+		return
+	}
+	if _, ok := parseReportTime(to); !ok {
+		writeError(w, http.StatusBadRequest, "to must be a date (YYYY-MM-DD) or RFC 3339 timestamp.")
+		return
+	}
 
 	report, err := h.reports.GetProjectReportDetails(r.Context(), projectID, from, to)
 	if err != nil {

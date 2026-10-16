@@ -105,6 +105,20 @@ func TestGetReportDetails_RequiresRange(t *testing.T) {
 	}
 }
 
+func TestGetReportDetails_RejectsBadDate(t *testing.T) {
+	mock := &mockReportsClient{}
+	h := NewReportsHandler(mock, viewerAccessGuard)
+	req := withUser(httptest.NewRequest(http.MethodGet, "/report-details?projectSysId=ACME&from=abc&to=2026-01-31", nil))
+	w := httptest.NewRecorder()
+
+	h.GetReportDetails(w, req)
+
+	assertStatus(t, w, http.StatusBadRequest)
+	if mock.gotProjectID != "" {
+		t.Error("client should not have been called for an invalid from")
+	}
+}
+
 func TestGetReportDetails_NotFound(t *testing.T) {
 	mock := &mockReportsClient{csErr: viewer.ErrProjectNotFound}
 	h := NewReportsHandler(mock, viewerAccessGuard)
