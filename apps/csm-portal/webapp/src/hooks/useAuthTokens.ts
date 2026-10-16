@@ -78,7 +78,7 @@ export interface AuthTokens {
  * caller to just retry forever against a refresh token that's actually
  * dead.
  *
- * useCaseActivityStream is this hook's consumer today: its EventSource headers
+ * useMultiplexedCaseStream is this hook's consumer today: its EventSource headers
  * are fixed at construction time, so they cannot be refreshed through fetch's
  * own Authorization-header path. useAuthApiClient no longer uses this hook —
  * it resolves tokens itself — so the two coordinate through the shared

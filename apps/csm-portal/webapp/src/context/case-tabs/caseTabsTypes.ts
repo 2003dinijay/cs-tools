@@ -60,6 +60,11 @@ export interface CaseTabState {
    * to decide whether closing this tab needs a confirm — see
    * `CaseTabsContext`'s `reportDraftState`. */
   hasDraft: boolean;
+  /** True when a live update arrived for this case while the tab was not the
+   * one on screen; `CaseTabStrip` blinks the tab header until the tab is
+   * activated, which clears it (see `caseTabsReducer`'s `MARK_UPDATED`).
+   * Absent means false. Transient: not persisted across a reload. */
+  hasUpdate?: boolean;
   /** Router `location.state` most recently associated with this tab — carries
    * the originating list's filtered URL (`{ from: string }`) so the page's
    * own Back button returns to it. Captured at open time, and refreshed on a

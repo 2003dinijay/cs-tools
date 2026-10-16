@@ -81,7 +81,6 @@ import {
 } from "@features/csm-cases/api/useCsmCaseComments";
 import { useGetCsmConversationMessages } from "@features/csm-cases/api/useCsmConversationMessages";
 import { useGetCsmCaseActivities } from "@features/csm-cases/api/useCsmCaseActivities";
-import { useCaseActivityStream } from "@features/csm-cases/api/useCaseActivityStream";
 import { useGetCsmCaseFeedback } from "@features/csm-cases/api/useCsmCaseFeedback";
 import {
   useGetCsmCaseAttachments,
@@ -582,10 +581,9 @@ export default function CsmCaseDetailPage(): JSX.Element {
     refetch: refetchActivities,
     isFetching: isFetchingActivities,
   } = useGetCsmCaseActivities(caseId);
-  // Live updates: invalidates the two queries above whenever another viewer
-  // adds a comment or the case's status changes, so this tab doesn't rely
-  // solely on their own staleTime/a manual refresh to catch up.
-  useCaseActivityStream(caseId);
+  // Live updates for this case arrive over the single multiplexed stream the
+  // case-tabs workspace owns (`useCaseTabsLiveUpdates`); this page opens no
+  // connection of its own.
   // Case Feedback (CSAT survey) submissions for this case, if any — the
   // survey only exists once a case is closed, so the query itself is
   // disabled until then rather than firing early for an open case.
