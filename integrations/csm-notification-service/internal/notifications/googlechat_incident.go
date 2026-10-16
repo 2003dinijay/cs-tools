@@ -132,7 +132,7 @@ func (c *GoogleChatClient) SendIncidentCreatedAlert(ctx context.Context, audienc
 		}}},
 		Thread: &chatThread{ThreadKey: IncidentThreadKey(a.IncidentID)},
 	}
-	return c.sendCardToAudience(ctx, audience, msg)
+	return c.sendCardToAudience(ctx, audience, a.Number, a.IncidentID, msg)
 }
 
 // SendIncidentAssignedAlert posts ServiceNow's "Incident Acknowledged." reply under the incident's card.
@@ -155,7 +155,7 @@ func (c *GoogleChatClient) SendIncidentAssignedAlert(ctx context.Context, audien
 		}}},
 		Thread: &chatThread{ThreadKey: IncidentThreadKey(a.IncidentID)},
 	}
-	return c.sendCardToAudience(ctx, audience, msg)
+	return c.sendCardToAudience(ctx, audience, a.Number, a.IncidentID, msg)
 }
 
 // incidentRef is the incident's number, or its id when an older publisher sent no number.

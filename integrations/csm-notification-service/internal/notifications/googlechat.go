@@ -428,7 +428,7 @@ func (c *GoogleChatClient) SendCaseCreatedAlert(ctx context.Context, audience, s
 		},
 		Thread: &chatThread{ThreadKey: chatThreadKey(caseNumber)},
 	}
-	return c.sendCardToAudience(ctx, audience, msg)
+	return c.sendCardToAudience(ctx, audience, caseNumber, "", msg)
 }
 
 // SendSecurityReportAnalysisAlert posts a card message announcing a newly
@@ -473,7 +473,7 @@ func (c *GoogleChatClient) SendSecurityReportAnalysisAlert(ctx context.Context, 
 		// SendCaseCreatedAlert's own Thread field documents.
 		Thread: &chatThread{ThreadKey: chatThreadKey(caseNumber)},
 	}
-	return c.sendCardToAudience(ctx, audience, msg)
+	return c.sendCardToAudience(ctx, audience, caseNumber, "", msg)
 }
 
 // SendCaseAcknowledgedAlert posts a three-line card message announcing
@@ -519,7 +519,7 @@ func (c *GoogleChatClient) SendCaseAcknowledgedAlert(ctx context.Context, audien
 		},
 		Thread: &chatThread{ThreadKey: chatThreadKey(caseNumber)},
 	}
-	return c.sendCardToAudience(ctx, audience, msg)
+	return c.sendCardToAudience(ctx, audience, caseNumber, "", msg)
 }
 
 // SendSecurityReportAnalysisAcknowledgedAlert is SendCaseAcknowledgedAlert's
@@ -557,7 +557,7 @@ func (c *GoogleChatClient) SendSecurityReportAnalysisAcknowledgedAlert(ctx conte
 		// comment.
 		Thread: &chatThread{ThreadKey: chatThreadKey(caseNumber)},
 	}
-	return c.sendCardToAudience(ctx, audience, msg)
+	return c.sendCardToAudience(ctx, audience, caseNumber, "", msg)
 }
 
 // SendSeverityChangedAlert posts a card message announcing a case's
@@ -599,7 +599,7 @@ func (c *GoogleChatClient) SendSeverityChangedAlert(ctx context.Context, audienc
 			},
 		},
 	}
-	return c.sendCardToAudience(ctx, audience, msg)
+	return c.sendCardToAudience(ctx, audience, caseNumber, "", msg)
 }
 
 // SendFrustrationAlert posts a card message for a comment
@@ -657,7 +657,7 @@ func (c *GoogleChatClient) SendFrustrationAlert(ctx context.Context, audience, c
 		// already old/scrolled past, exactly the opposite of what a
 		// frustration alert is for.
 	}
-	return c.sendCardToAudience(ctx, audience, msg)
+	return c.sendCardToAudience(ctx, audience, caseNumber, "", msg)
 }
 
 // sendCardToAudience posts msg to the webhook configured for audience — the
@@ -680,22 +680,47 @@ func (c *GoogleChatClient) SendFrustrationAlert(ctx context.Context, audience, c
 // and sanitised summaries only, never a raw upstream body that might carry
 // case content (see publishCaseCreatedEvent's identical reasoning,
 // entity-service's CLAUDE.md).
-func (c *GoogleChatClient) sendCardToAudience(ctx context.Context, audience string, msg chatCardMessage) error {
+//
+// number/id are the case/SR/incident's own human-readable number (e.g.
+// "CS0379063") and raw id (a UUID), logged on every line here alongside
+// audience — every caller already has both in hand (or, for the escalation
+// ladder, just a human reference — see its own call sites), so it costs
+// nothing to thread them through. Added because "google chat alert sent"
+// with only an audience gave no way to confirm which specific case/incident
+// a given send was actually for when investigating a report that an alert
+// didn't arrive; a number/id is the same class of safe-to-log value
+// audience already is, never recipient data or case content. Either may be
+// empty when a caller genuinely has nothing better (e.g. a card with no
+// natural id of its own) — logged as an empty string, not omitted, so its
+// absence is itself visible rather than silently missing from the line.
+//
+// alertType (derived from msg's own CardsV2[0].CardID — "case-created-alert",
+// "frustration-alert", "sla-breach-alert", ... — never a second parameter
+// every caller would otherwise have to pass) says WHICH kind of alert this
+// was: "google chat alert sent" alone couldn't tell a routine case-created
+// post apart from a frustration-detection alert for the same case, which
+// matters when investigating whether a *specific* alert (not just any alert
+// for that case) actually went out.
+func (c *GoogleChatClient) sendCardToAudience(ctx context.Context, audience, number, id string, msg chatCardMessage) error {
+	var alertType string
+	if len(msg.CardsV2) > 0 {
+		alertType = msg.CardsV2[0].CardID
+	}
 	webhookURL, ok := c.webhookURLsByAudience[strings.TrimSpace(audience)]
 	if !ok || webhookURL == "" {
-		slog.WarnContext(ctx, "notifications: no google chat space configured for audience; alert was not posted to it", "audience", audience)
+		slog.WarnContext(ctx, "notifications: no google chat space configured for audience; alert was not posted to it", "audience", audience, "number", number, "id", id, "alertType", alertType)
 		return nil
 	}
 	if err := c.postCard(ctx, webhookURL, msg); err != nil {
 		var apiErr *apierror.Error
 		if errors.As(err, &apiErr) {
-			slog.ErrorContext(ctx, "notifications: google chat alert failed to send", "audience", audience, "statusCode", apiErr.StatusCode)
+			slog.ErrorContext(ctx, "notifications: google chat alert failed to send", "audience", audience, "number", number, "id", id, "alertType", alertType, "statusCode", apiErr.StatusCode)
 		} else {
-			slog.ErrorContext(ctx, "notifications: google chat alert failed to send", "audience", audience, "errType", fmt.Sprintf("%T", err))
+			slog.ErrorContext(ctx, "notifications: google chat alert failed to send", "audience", audience, "number", number, "id", id, "alertType", alertType, "errType", fmt.Sprintf("%T", err))
 		}
 		return err
 	}
-	slog.InfoContext(ctx, "notifications: google chat alert sent", "audience", audience)
+	slog.InfoContext(ctx, "notifications: google chat alert sent", "audience", audience, "number", number, "id", id, "alertType", alertType)
 	return nil
 }
 
