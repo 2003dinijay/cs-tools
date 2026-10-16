@@ -333,6 +333,7 @@ describe("UserProfilePage", () => {
     renderPage();
     expect(screen.getByText("Invited", { selector: ".MuiChip-label" })).toBeInTheDocument();
     expect(screen.queryByText(/but linked to a contact whose own address/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Blocked on/i)).not.toBeInTheDocument();
   });
 
   // Same two-causes distinction the project contacts tab makes: "No access"

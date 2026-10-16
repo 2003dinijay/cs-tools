@@ -89,7 +89,8 @@ function deriveAccessStatus(c: BeProjectContact): AccessStatus {
       return {
         label: "Not registered",
         color: "warning",
-        reason: "Access starts once this person completes sign-in.",
+        reason:
+          "Access starts once this person completes sign-in. If they already have, the invited address may differ from their contact's own.",
       };
     }
     // Two distinct faults behind one verdict, and which one it is changes
