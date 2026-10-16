@@ -103,6 +103,9 @@ func TestCaseAlertSettings_ForwardsKnownFieldsOnly(t *testing.T) {
 		{"room", func(h *CaseAlertSettingsHandler) func(http.ResponseWriter, *http.Request) { return h.PutCaseAlertRoom },
 			caseAlertRequest(http.MethodPut, "/x", `{"ladder":"SRE","teamKey":"apollo","label":"Apollo SRE","teamless":true,"createdBy":"someone else"}`),
 			http.StatusOK, "put-room", "", map[string]any{"ladder": "SRE", "teamKey": "apollo", "label": "Apollo SRE", "teamless": true}},
+		{"SME team room", func(h *CaseAlertSettingsHandler) func(http.ResponseWriter, *http.Request) { return h.PutCaseAlertRoom },
+			caseAlertRequest(http.MethodPut, "/x", `{"ladder":"SME","teamKey":"asgardeo","label":"Asgardeo SME"}`),
+			http.StatusOK, "put-room", "", map[string]any{"ladder": "SME", "teamKey": "asgardeo", "label": "Asgardeo SME"}},
 		{"team room channel", func(h *CaseAlertSettingsHandler) func(http.ResponseWriter, *http.Request) { return h.PutCaseAlertRoom },
 			caseAlertRequest(http.MethodPut, "/x", `{"ladder":"SRE","teamKey":"iaas","label":"IaaS SRE","enabled":true,"channel":"chat","phone":"x"}`),
 			http.StatusOK, "put-room", "", map[string]any{"ladder": "SRE", "teamKey": "iaas", "label": "IaaS SRE", "enabled": true, "channel": "chat"}},
@@ -162,8 +165,14 @@ func TestCaseAlertSettings_RefusesABadRequestWithoutCallingOut(t *testing.T) {
 		call func(*CaseAlertSettingsHandler) func(http.ResponseWriter, *http.Request)
 		req  *http.Request
 	}{
-		"room on SME": {func(h *CaseAlertSettingsHandler) func(http.ResponseWriter, *http.Request) { return h.PutCaseAlertRoom },
-			caseAlertRequest(http.MethodPut, "/x", `{"ladder":"SME","label":"x"}`)},
+		"room on another ladder": {func(h *CaseAlertSettingsHandler) func(http.ResponseWriter, *http.Request) { return h.PutCaseAlertRoom },
+			caseAlertRequest(http.MethodPut, "/x", `{"ladder":"PAAS","label":"x"}`)},
+		"values on another ladder": {func(h *CaseAlertSettingsHandler) func(http.ResponseWriter, *http.Request) {
+			return h.PutCaseAlertValues
+		},
+			caseAlertRequest(http.MethodPut, "/x", `{"ladder":"PAAS","values":{"onLeave":"call"}}`)},
+		"route on SME": {func(h *CaseAlertSettingsHandler) func(http.ResponseWriter, *http.Request) { return h.PutCaseAlertRoute },
+			caseAlertRequest(http.MethodPut, "/x", `{"ladder":"SME","groupName":"g","teamKey":"asgardeo"}`)},
 		"room without label": {func(h *CaseAlertSettingsHandler) func(http.ResponseWriter, *http.Request) { return h.PutCaseAlertRoom },
 			caseAlertRequest(http.MethodPut, "/x", `{"ladder":"SRE","label":" "}`)},
 		"room label over 100": {func(h *CaseAlertSettingsHandler) func(http.ResponseWriter, *http.Request) { return h.PutCaseAlertRoom },
@@ -206,7 +215,6 @@ func TestCaseAlertSettings_RefusesABadRequestWithoutCallingOut(t *testing.T) {
 			caseAlertRequest(http.MethodPut, "/x", `{"ladder":"SRE","label":"SRE Case Alerts","channel":"chat"}`)},
 		"not JSON": {func(h *CaseAlertSettingsHandler) func(http.ResponseWriter, *http.Request) { return h.PutCaseAlertRoom },
 			caseAlertRequest(http.MethodPut, "/x", `ladder=SRE`)},
-		"values on SME":             {putValues, caseAlertRequest(http.MethodPut, "/x", `{"ladder":"SME","values":{"onLeave":"skip"}}`)},
 		"values not an object":      {putValues, caseAlertRequest(http.MethodPut, "/x", `{"ladder":"CRE","values":["onLeave","skip"]}`)},
 		"no values":                 {putValues, caseAlertRequest(http.MethodPut, "/x", `{"ladder":"CRE","values":{}}`)},
 		"values missing":            {putValues, caseAlertRequest(http.MethodPut, "/x", `{"ladder":"CRE"}`)},

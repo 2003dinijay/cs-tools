@@ -250,13 +250,14 @@ func TestMergeCaseAlertSettings_UnknownAndWrongValues(t *testing.T) {
 	merged, _, changes, err := MergeCaseAlertSettings(cfg, CaseAlertSettings{Values: []CaseAlertValue{
 		{"CRE", "teams.somethingNew", json.RawMessage(`1`)},
 		{"CRE", "timing.interval", json.RawMessage(`"10m"`)},
-		{"SME", "onLeave", json.RawMessage(`"call"`)},
+		{"PAAS", "onLeave", json.RawMessage(`"call"`)},
+		{"SME", "heads.cre", json.RawMessage(`{"name":"x","email":"y"}`)},
 	}})
 	if err != nil || !reflect.DeepEqual(comparable(merged, fakeHook).CRE, comparable(cfg, fakeHook).CRE) {
 		t.Fatalf("err %v, CRE changed by skipped values", err)
 	}
 	joined := strings.Join(changes, "\n")
-	for _, want := range []string{"skipped cre.teams.somethingNew", "skipped cre.timing.interval: not a CRE setting", `skipped a value for ladder "SME"`} {
+	for _, want := range []string{"skipped cre.teams.somethingNew", "skipped cre.timing.interval: not a CRE setting", `skipped a value for ladder "PAAS"`, "skipped sme.heads.cre: not a setting this build knows"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("changes do not say %q:\n%s", want, joined)
 		}
@@ -355,6 +356,39 @@ func TestCaseAlertKeysMatchTheTab(t *testing.T) {
 	for k, ladders := range want {
 		if spec, ok := caseAlertKeys[k]; !ok || !slices.Equal(spec.ladders, ladders) {
 			t.Errorf("%s: %v here, want %v", k, spec.ladders, ladders)
+		}
+	}
+}
+
+// SME values (0238) lay over the file's sme: section, one key each, and are
+// reported back with where each came from.
+func TestMergeCaseAlertSettings_SMEValues(t *testing.T) {
+	cfg := loadConfigText(t, prodShapedConfig)
+	saved := CaseAlertSettings{Values: []CaseAlertValue{
+		{"SME", "timing.interval", json.RawMessage(`"10m"`)},
+		{"SME", "onLeave", json.RawMessage(`"call"`)},
+		{"SME", "unansweredChat", json.RawMessage(`true`)},
+		{"SME", "teams", json.RawMessage(`{"asgardeo-ops":"asgardeo"}`)},
+	}}
+	merged, _, changes, err := MergeCaseAlertSettings(cfg, saved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if time.Duration(merged.SME.Timing.Interval) != 10*time.Minute || merged.SME.OnLeave != OnLeaveCall ||
+		!merged.SME.UnansweredChat || merged.SME.Teams["asgardeo-ops"] != "asgardeo" {
+		t.Fatalf("sme = %+v", merged.SME)
+	}
+	if cfg.SME.Teams != nil || cfg.SME.OnLeave == OnLeaveCall {
+		t.Fatal("the merge wrote into the caller's configuration")
+	}
+	if !strings.Contains(strings.Join(changes, "\n"), "sme.timing.interval: unset -> \"10m\"") {
+		t.Errorf("changes = %v", changes)
+	}
+	running := RunningCaseAlertValues(merged, SavedCaseAlertKeys(saved))
+	b, _ := json.Marshal(running)
+	for _, want := range []string{`"SME":{`, `"timing.interval":{"source":"saved","value":"10m"}`, `"teams":{"source":"saved"`} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("running does not carry %s:\n%s", want, b)
 		}
 	}
 }

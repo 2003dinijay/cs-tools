@@ -63,7 +63,7 @@ func deniedForRoles(fn http.HandlerFunc, roles []string) bool {
 // cs_engineer and admin get past it, every other configured role is rejected.
 // A handler reverted to the Viewer-only check would fail the cs_engineer case.
 func TestCustomerHealthHandlers_EveryHandlerChecksCustomerHealthAccess(t *testing.T) {
-	health := httpHandlerMethods(NewCustomerHealthHandler(&fakeRiskClient{}, &fakeSNCustomerHealthClient{}, &fakeHealthAccountSearch{}, viewerAccessGuard))
+	health := httpHandlerMethods(NewCustomerHealthHandler(&fakeRiskClient{}, &fakeCustomerHealthDetailClient{}, &fakeHealthAccountSearch{}, viewerAccessGuard))
 	lookups := httpHandlerMethods(NewLookupsHandler(&mockLookupsClient{}, viewerAccessGuard))
 
 	// 17 routes today; a lower count means the reflection above stopped finding

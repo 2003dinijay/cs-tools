@@ -27,6 +27,7 @@ import type {
   PagingReadinessChain,
   PagingReadinessGap,
 } from "../types";
+import { mayBeResponder, responderNeedsProfilePhoneMessage } from "../utils/pagingPhone";
 import { teamDisplayName } from "../utils/teamDisplayName";
 import PagingReadinessStrip, { type PhoneGapAction } from "./PagingReadinessStrip";
 import PhoneChip, { type PagingPhoneControls } from "./PhoneChip";
@@ -380,6 +381,14 @@ export default function CasePagingPanel({
                               allowed: mayResponders(t.key),
                               onPick: (next) => {
                                 const holder = t.members.find((m) => m.responderRank === r);
+                                // A responder must be reachable: someone with
+                                // no number on their profile is refused here,
+                                // before asking (the backend refuses it too).
+                                const picked = next ? t.members.find((m) => m.membershipId === next) : undefined;
+                                if (picked && !mayBeResponder(picked)) {
+                                  showError(`That change to the alert chain was not saved. ${responderNeedsProfilePhoneMessage(nameOf(picked) ?? "This person")}.`);
+                                  return;
+                                }
                                 void apply(
                                   next
                                     ? [{ membershipId: next, responderRank: r }]

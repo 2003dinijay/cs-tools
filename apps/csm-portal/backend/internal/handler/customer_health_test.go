@@ -30,7 +30,7 @@ import (
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/entity"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/risk"
-	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/servicenow"
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/viewer"
 )
 
 // fakeRiskClient is a hand-rolled riskClient test double: only the
@@ -104,11 +104,11 @@ func (f *fakeRiskClient) GetActionItemComments(ctx context.Context, actionItemID
 	return f.getActionItemComments(ctx, actionItemID)
 }
 
-type fakeSNCustomerHealthClient struct {
-	getCustomerHealthDetail func(ctx context.Context, accountID string) (*servicenow.AccountDetail, error)
+type fakeCustomerHealthDetailClient struct {
+	getCustomerHealthDetail func(ctx context.Context, accountID string) (*viewer.AccountDetail, error)
 }
 
-func (f *fakeSNCustomerHealthClient) GetCustomerHealthDetail(ctx context.Context, accountID string) (*servicenow.AccountDetail, error) {
+func (f *fakeCustomerHealthDetailClient) GetCustomerHealthDetail(ctx context.Context, accountID string) (*viewer.AccountDetail, error) {
 	return f.getCustomerHealthDetail(ctx, accountID)
 }
 
@@ -142,7 +142,7 @@ func wireBody(t *testing.T, req entity.CHAccountSearchRequest) string {
 // on any other call), with only the base scope and includeHealthSummary set.
 func TestCustomerHealthHandler_GetSummary_UnfilteredIsOneEntityCall(t *testing.T) {
 	search := &fakeHealthAccountSearch{}
-	h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeSNCustomerHealthClient{}, search, viewerAccessGuard)
+	h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeCustomerHealthDetailClient{}, search, viewerAccessGuard)
 
 	assertStatus(t, postSummary(h, `{}`), http.StatusOK)
 	if len(search.calls) != 1 {
@@ -179,7 +179,7 @@ func TestCustomerHealthHandler_GetSummary_ClientSideFiltersWithoutStatusAreOneCa
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			search := &fakeHealthAccountSearch{}
-			h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeSNCustomerHealthClient{}, search, viewerAccessGuard)
+			h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeCustomerHealthDetailClient{}, search, viewerAccessGuard)
 			assertStatus(t, postSummary(h, tc.body), http.StatusOK)
 			if len(search.calls) != 1 {
 				t.Fatalf("entity search called %d times, want exactly 1", len(search.calls))
@@ -213,7 +213,7 @@ func TestCustomerHealthHandler_GetSummary_UnfilteredMapsRows(t *testing.T) {
 			{ID: idC, Name: "Bare Inc"},
 		},
 	}}
-	h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeSNCustomerHealthClient{}, search, viewerAccessGuard)
+	h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeCustomerHealthDetailClient{}, search, viewerAccessGuard)
 
 	w := postSummary(h, `{}`)
 
@@ -256,7 +256,7 @@ func TestCustomerHealthHandler_GetSummary_IgnoresCallerSuppliedEmail(t *testing.
 		`{"email":"someone-else@example.com","healthStatus":"healthy"}`,
 	} {
 		search := &fakeHealthAccountSearch{}
-		h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeSNCustomerHealthClient{}, search, viewerAccessGuard)
+		h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeCustomerHealthDetailClient{}, search, viewerAccessGuard)
 		assertStatus(t, postSummary(h, body), http.StatusOK)
 		if len(search.calls) != 1 {
 			t.Fatalf("%s: calls = %d, want 1", body, len(search.calls))
@@ -272,7 +272,7 @@ func TestCustomerHealthHandler_GetSummary_IgnoresCallerSuppliedEmail(t *testing.
 func TestCustomerHealthHandler_GetSummary_NoEmailMeansNoOwnerFilter(t *testing.T) {
 	for _, body := range []string{`{}`, `{"email":""}`} {
 		search := &fakeHealthAccountSearch{}
-		h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeSNCustomerHealthClient{}, search, viewerAccessGuard)
+		h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeCustomerHealthDetailClient{}, search, viewerAccessGuard)
 		assertStatus(t, postSummary(h, body), http.StatusOK)
 		if got := search.calls[0].Filters.OwnerEmail; got != "" {
 			t.Errorf("%s: ownerEmail = %q, want none", body, got)
@@ -305,7 +305,7 @@ func postSummary(h *CustomerHealthHandler, body string) *httptest.ResponseRecord
 // risk lookups (the fakes below panic on a nil func if called).
 func TestCustomerHealthHandler_GetSummary_HealthStatusFilterIsOneEntityCall(t *testing.T) {
 	search := &fakeHealthAccountSearch{resp: entity.CHAccountSearchResponse{Total: 0}}
-	h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeSNCustomerHealthClient{}, search, viewerAccessGuard)
+	h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeCustomerHealthDetailClient{}, search, viewerAccessGuard)
 
 	w := postSummary(h, `{"healthStatus":"at_risk","email":"someone-else@example.com","phrase":"acme","risks":"hasEolProduct, hasRecentCases,","region":["ASIA","NA - WEST"],"product":" wso2is ","abtTeam":" Team A ","offset":20,"limit":10}`)
 
@@ -338,7 +338,7 @@ func TestCustomerHealthHandler_GetSummary_HealthStatusFilterIsOneEntityCall(t *t
 // accounts", and that unset filters stay off the wire.
 func TestCustomerHealthHandler_GetSummary_HealthStatusFilterOmitsUnsetFilters(t *testing.T) {
 	search := &fakeHealthAccountSearch{}
-	h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeSNCustomerHealthClient{}, search, viewerAccessGuard)
+	h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeCustomerHealthDetailClient{}, search, viewerAccessGuard)
 
 	assertStatus(t, postSummary(h, `{"healthStatus":"healthy"}`), http.StatusOK)
 	raw, err := json.Marshal(search.calls[0])
@@ -374,7 +374,7 @@ func TestCustomerHealthHandler_GetSummary_HealthStatusFilterMapsRows(t *testing.
 			},
 		}},
 	}}
-	h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeSNCustomerHealthClient{}, search, viewerAccessGuard)
+	h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeCustomerHealthDetailClient{}, search, viewerAccessGuard)
 
 	w := postSummary(h, `{"healthStatus":"at_risk","offset":30,"limit":1}`)
 
@@ -393,7 +393,7 @@ func TestCustomerHealthHandler_GetSummary_HealthStatusFilterMapsRows(t *testing.
 	if got.HealthStatus == nil || *got.HealthStatus != "at_risk" {
 		t.Errorf("HealthStatus = %v, want at_risk", got.HealthStatus)
 	}
-	if got.HasNoGoLive != (servicenow.GoLiveStatus{Status: "No Go Live", IsRisk: true, State: "failure"}) {
+	if got.HasNoGoLive != (viewer.GoLiveStatus{Status: "No Go Live", IsRisk: true, State: "failure"}) {
 		t.Errorf("HasNoGoLive = %+v", got.HasNoGoLive)
 	}
 	if !got.HasRecentCases || !got.HasEolProduct || !got.HasAbandonedMigrations || !got.HasMigrationDelays || !got.HasRecentEscalations || !got.NoSupportCases6mo {
@@ -404,7 +404,7 @@ func TestCustomerHealthHandler_GetSummary_HealthStatusFilterMapsRows(t *testing.
 // TestCustomerHealthHandler_GetSummary_HealthStatusFilterEmptyPageIsEmptyArray
 // pins that an empty result serialises "data" as [] not null.
 func TestCustomerHealthHandler_GetSummary_HealthStatusFilterEmptyPageIsEmptyArray(t *testing.T) {
-	h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeSNCustomerHealthClient{}, &fakeHealthAccountSearch{}, viewerAccessGuard)
+	h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeCustomerHealthDetailClient{}, &fakeHealthAccountSearch{}, viewerAccessGuard)
 	w := postSummary(h, `{"healthStatus":"to_be_reviewed"}`)
 	assertStatus(t, w, http.StatusOK)
 	if got := w.Body.String(); !bytes.Contains([]byte(got), []byte(`"data":[]`)) || !bytes.Contains([]byte(got), []byte(`"totalCount":0`)) {
@@ -434,7 +434,7 @@ func TestCustomerHealthHandler_GetSummary_HealthStatusFilterPagination(t *testin
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			search := &fakeHealthAccountSearch{}
-			h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeSNCustomerHealthClient{}, search, viewerAccessGuard)
+			h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeCustomerHealthDetailClient{}, search, viewerAccessGuard)
 			assertStatus(t, postSummary(h, tc.body), http.StatusOK)
 			if len(search.calls) != 1 {
 				t.Fatalf("calls = %d, want 1", len(search.calls))
@@ -452,7 +452,7 @@ func TestCustomerHealthHandler_GetSummary_HealthStatusFilterPagination(t *testin
 // as it did before (entity-service would reject it with an error).
 func TestCustomerHealthHandler_GetSummary_HealthStatusFilterUnknownValueShortCircuits(t *testing.T) {
 	search := &fakeHealthAccountSearch{}
-	h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeSNCustomerHealthClient{}, search, viewerAccessGuard)
+	h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeCustomerHealthDetailClient{}, search, viewerAccessGuard)
 	w := postSummary(h, `{"healthStatus":"bogus"}`)
 	assertStatus(t, w, http.StatusOK)
 	if len(search.calls) != 0 {
@@ -480,7 +480,7 @@ func TestCustomerHealthHandler_GetSummary_HealthStatusFilterUpstreamErrorMapsGen
 		for _, body := range []string{`{"healthStatus":"at_risk"}`, `{}`, `{"region":["ASIA"],"risks":"hasEolProduct"}`} {
 			t.Run(tc.name+" "+body, func(t *testing.T) {
 				search := &fakeHealthAccountSearch{err: tc.err}
-				h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeSNCustomerHealthClient{}, search, viewerAccessGuard)
+				h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeCustomerHealthDetailClient{}, search, viewerAccessGuard)
 				w := postSummary(h, body)
 				assertStatus(t, w, tc.wantStatus)
 				if !bytes.Contains(w.Body.Bytes(), []byte("Failed to retrieve customer health summary.")) {
@@ -495,7 +495,7 @@ func TestCustomerHealthHandler_GetSummary_HealthStatusFilterUpstreamErrorMapsGen
 }
 
 func TestCustomerHealthHandler_OpenRisk_RejectsMissingUser(t *testing.T) {
-	h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeSNCustomerHealthClient{}, &fakeHealthAccountSearch{}, viewerAccessGuard)
+	h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeCustomerHealthDetailClient{}, &fakeHealthAccountSearch{}, viewerAccessGuard)
 	req := httptest.NewRequest(http.MethodPost, "/spl/customer-health/projects/proj-1/risk", bytes.NewReader([]byte(`{}`)))
 	req.SetPathValue("projectSysId", "proj-1")
 	w := httptest.NewRecorder()
@@ -504,7 +504,7 @@ func TestCustomerHealthHandler_OpenRisk_RejectsMissingUser(t *testing.T) {
 }
 
 func TestCustomerHealthHandler_OpenRisk_RejectsMissingSPLAccess(t *testing.T) {
-	h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeSNCustomerHealthClient{}, &fakeHealthAccountSearch{}, viewerAccessGuard)
+	h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeCustomerHealthDetailClient{}, &fakeHealthAccountSearch{}, viewerAccessGuard)
 	req := httptest.NewRequest(http.MethodPost, "/spl/customer-health/projects/proj-1/risk", bytes.NewReader([]byte(`{}`)))
 	// Authenticated but holds no role granting PermViewerAccess.
 	req = req.WithContext(middleware.WithUserInfo(req.Context(), &middleware.UserInfo{Email: "nobody@example.com", UserID: "u-nobody"}))
@@ -515,12 +515,12 @@ func TestCustomerHealthHandler_OpenRisk_RejectsMissingSPLAccess(t *testing.T) {
 }
 
 func TestCustomerHealthHandler_AllowsCsEngineerAndAdminWithoutViewerRole(t *testing.T) {
-	sn := &fakeSNCustomerHealthClient{
-		getCustomerHealthDetail: func(ctx context.Context, accountID string) (*servicenow.AccountDetail, error) {
-			return &servicenow.AccountDetail{AccountName: "Example Corp"}, nil
+	detail := &fakeCustomerHealthDetailClient{
+		getCustomerHealthDetail: func(ctx context.Context, accountID string) (*viewer.AccountDetail, error) {
+			return &viewer.AccountDetail{AccountName: "Example Corp"}, nil
 		},
 	}
-	h := NewCustomerHealthHandler(&fakeRiskClient{}, sn, &fakeHealthAccountSearch{}, viewerAccessGuard)
+	h := NewCustomerHealthHandler(&fakeRiskClient{}, detail, &fakeHealthAccountSearch{}, viewerAccessGuard)
 	for _, role := range []string{"test-cs-engineer", "test-admin"} {
 		req := httptest.NewRequest(http.MethodGet, "/customer-health/accounts/acct-1", nil)
 		req = req.WithContext(middleware.WithUserInfo(req.Context(), &middleware.UserInfo{Email: "staff@example.com", UserID: "u-staff", Roles: []string{role}}))
@@ -534,7 +534,7 @@ func TestCustomerHealthHandler_AllowsCsEngineerAndAdminWithoutViewerRole(t *test
 }
 
 func TestCustomerHealthHandler_RejectsRolesWithoutCustomerHealthAccess(t *testing.T) {
-	h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeSNCustomerHealthClient{}, &fakeHealthAccountSearch{}, viewerAccessGuard)
+	h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeCustomerHealthDetailClient{}, &fakeHealthAccountSearch{}, viewerAccessGuard)
 	for _, role := range []string{"test-usage-metrics-viewer", "test-escalator", "test-timecard-approver", "test-security-team"} {
 		req := httptest.NewRequest(http.MethodPost, "/customer-health/projects/proj-1/risk", bytes.NewReader([]byte(`{}`)))
 		req = req.WithContext(middleware.WithUserInfo(req.Context(), &middleware.UserInfo{Email: "staff@example.com", UserID: "u-staff", Roles: []string{role}}))
@@ -553,7 +553,7 @@ func TestCustomerHealthHandler_CloseRisk_UpstreamConflictMapsTo409(t *testing.T)
 			return nil, upstreamErr(http.StatusConflict, "Cannot close risk: 1 action item(s) are still open.")
 		},
 	}
-	h := NewCustomerHealthHandler(rc, &fakeSNCustomerHealthClient{}, &fakeHealthAccountSearch{}, viewerAccessGuard)
+	h := NewCustomerHealthHandler(rc, &fakeCustomerHealthDetailClient{}, &fakeHealthAccountSearch{}, viewerAccessGuard)
 
 	req := withUser(httptest.NewRequest(http.MethodPut, "/spl/customer-health/risks/"+testRiskID+"/close", bytes.NewReader([]byte(`{"comment":"done"}`))))
 	req.SetPathValue("riskId", testRiskID)
@@ -565,7 +565,7 @@ func TestCustomerHealthHandler_CloseRisk_UpstreamConflictMapsTo409(t *testing.T)
 }
 
 func TestCustomerHealthHandler_CloseRisk_InvalidRiskIDIs400(t *testing.T) {
-	h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeSNCustomerHealthClient{}, &fakeHealthAccountSearch{}, viewerAccessGuard)
+	h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeCustomerHealthDetailClient{}, &fakeHealthAccountSearch{}, viewerAccessGuard)
 	req := withUser(httptest.NewRequest(http.MethodPut, "/spl/customer-health/risks/not-a-uuid/close", bytes.NewReader([]byte(`{}`))))
 	req.SetPathValue("riskId", "not-a-uuid")
 	w := httptest.NewRecorder()
@@ -574,12 +574,12 @@ func TestCustomerHealthHandler_CloseRisk_InvalidRiskIDIs400(t *testing.T) {
 }
 
 func TestCustomerHealthHandler_GetAccountDetail_NotFoundMapsTo404(t *testing.T) {
-	sn := &fakeSNCustomerHealthClient{
-		getCustomerHealthDetail: func(ctx context.Context, accountID string) (*servicenow.AccountDetail, error) {
-			return nil, servicenow.ErrAccountNotFound
+	detail := &fakeCustomerHealthDetailClient{
+		getCustomerHealthDetail: func(ctx context.Context, accountID string) (*viewer.AccountDetail, error) {
+			return nil, viewer.ErrAccountNotFound
 		},
 	}
-	h := NewCustomerHealthHandler(&fakeRiskClient{}, sn, &fakeHealthAccountSearch{}, viewerAccessGuard)
+	h := NewCustomerHealthHandler(&fakeRiskClient{}, detail, &fakeHealthAccountSearch{}, viewerAccessGuard)
 
 	req := withUser(httptest.NewRequest(http.MethodGet, "/spl/customer-health/accounts/acct-1", nil))
 	req.SetPathValue("accountId", "acct-1")
@@ -595,7 +595,7 @@ func TestCustomerHealthHandler_UpdateActionItemStatus_RequiresResolutionComment(
 			return nil, upstreamErr(http.StatusBadRequest, "resolutionComment is required when status is RESOLVED or CANCELLED")
 		},
 	}
-	h := NewCustomerHealthHandler(rc, &fakeSNCustomerHealthClient{}, &fakeHealthAccountSearch{}, viewerAccessGuard)
+	h := NewCustomerHealthHandler(rc, &fakeCustomerHealthDetailClient{}, &fakeHealthAccountSearch{}, viewerAccessGuard)
 
 	req := withUser(httptest.NewRequest(http.MethodPut, "/spl/customer-health/action-items/"+testActionItemID+"/status", bytes.NewReader([]byte(`{"status":"resolved"}`))))
 	req.SetPathValue("actionItemId", testActionItemID)
@@ -615,7 +615,7 @@ func TestCustomerHealthHandler_InitHealthTracking_Returns202(t *testing.T) {
 			return nil
 		},
 	}
-	h := NewCustomerHealthHandler(rc, &fakeSNCustomerHealthClient{}, &fakeHealthAccountSearch{}, viewerAccessGuard)
+	h := NewCustomerHealthHandler(rc, &fakeCustomerHealthDetailClient{}, &fakeHealthAccountSearch{}, viewerAccessGuard)
 
 	body := []byte(`{"projectSysIds":["proj-1","proj-2"]}`)
 	req := withUser(httptest.NewRequest(http.MethodPost, "/spl/customer-health/accounts/acct-1/init-health-tracking", bytes.NewReader(body)))

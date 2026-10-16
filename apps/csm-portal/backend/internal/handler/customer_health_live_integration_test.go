@@ -169,7 +169,7 @@ func TestLive_GetEscalationsByAccount(t *testing.T) {
 	if accountID == "" {
 		t.Skip("LIVE_ENTITY_SERVICE_TEST_ACCOUNT_ID not set")
 	}
-	c := NewPostgresViewerAccountClient(client, nil)
+	c := NewPostgresViewerAccountClient(client)
 	escalations, err := c.GetEscalationsByAccount(context.Background(), accountID, 0, 10)
 	if err != nil {
 		t.Fatalf("GetEscalationsByAccount: %v", err)

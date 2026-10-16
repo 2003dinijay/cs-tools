@@ -99,7 +99,7 @@ existing `canWrite`-gated controls — no parallel read-only clone was needed.
 A handful of features from that old app have no equivalent on the shared side and were relocated
 (not rewritten) into their own properly-named `csm-*` feature folders, restyled to this app's table/
 page conventions, but still calling the exact same backend routes they always did (`/customer-health/*`,
-`/usage-metrics/*`, `/user-scan`, the SLA/CS/Time-log report endpoints — all still gated backend-side by
+`/usage-metrics/*`, `/user-scan`, the Time-log report endpoint — all still gated backend-side by
 `PermViewCustomerHealth`/`PermViewerAccess`/`PermUsageMetricsViewer`, see `apps/csm-portal/backend`'s
 own `CLAUDE.md`): `csm-customer-health`, `csm-usage-metrics`, `csm-user-scan`, `csm-reports`. Four gating flags on
 `usePortalAccess()` (`portalAccess.ts`) control who sees what in this merged app, and are NOT
@@ -107,7 +107,7 @@ interchangeable:
 
 - **`isSplAudience`** — true for anyone holding the `viewer` role, regardless of what else they hold.
   Gates User Scan, the Escalations and Artifacts-Repository sections added to `CsmAccountDetailPage.tsx`
-  and the SLA/Time/CS report buttons added to `CsmProjectDetailPage.tsx` — all of it invisible to a caller
+  and the Time report button added to `CsmProjectDetailPage.tsx` — all of it invisible to a caller
   who has never held `viewer`.
 - **`canViewCustomerHealth`** — the Customer Health dashboard: `viewer` as well as `cs_engineer`/`admin`
   (mirrors the backend's `PermViewCustomerHealth`). Wider than `isSplAudience` on purpose, so a

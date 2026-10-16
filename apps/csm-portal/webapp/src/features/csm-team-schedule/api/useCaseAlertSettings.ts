@@ -30,6 +30,7 @@ import type {
   CaseAlertGroupRoute,
   CaseAlertLadder,
   CaseAlertLadderValue,
+  CaseAlertRoomLadder,
   CaseAlertSettings,
 } from "../types";
 
@@ -69,7 +70,7 @@ export function useCaseAlertSettings(): UseQueryResult<CaseAlertSettings, Error>
 }
 
 export interface SaveRoomInput {
-  ladder: CaseAlertLadder;
+  ladder: CaseAlertRoomLadder;
   teamKey?: string;
   label: string;
   enabled?: boolean;
@@ -143,7 +144,7 @@ export function useDeleteCaseAlertRoute(): UseMutationResult<unknown, Error, str
 }
 
 export interface SaveValuesInput {
-  ladder: CaseAlertLadder;
+  ladder: CaseAlertRoomLadder;
   /** Key to value, in the file's shape for that key. All are saved together,
    *  or none. */
   values: Record<string, unknown>;

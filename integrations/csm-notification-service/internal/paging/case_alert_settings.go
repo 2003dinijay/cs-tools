@@ -45,7 +45,8 @@ type CaseAlertSettings struct {
 }
 
 // CaseAlertRoom is a saved room. TeamKey is empty for the ladder's shared
-// room (cre.chat, sre.chat); otherwise it is an SRE team's (sre.teamChats).
+// room (cre.chat, sre.chat); otherwise it is an SRE team's (sre.teamChats) or,
+// on ladder SME, an SME team's (sme.teamChats).
 type CaseAlertRoom struct {
 	Ladder   string `json:"ladder"`
 	TeamKey  string `json:"teamKey,omitempty"`
@@ -114,6 +115,8 @@ var nonEnvChar = regexp.MustCompile(`[^A-Za-z0-9_]`)
 //   - A saved room replaces that ladder's shared chat, or that SRE team's
 //     teamChats entry; its URL goes in its own variable. Its teamless flag puts
 //     the team in or out of sre.teamlessChats.
+//   - A saved SME room replaces that SME team's sme.teamChats entry, or adds
+//     one; an SME team with no room of its own still uses sme.chat.
 //   - A saved route sets teams.aliases (to a team) or adds the group to
 //     sre.teams.defaultGroups (to sre.teams.defaultRota); a route to any other
 //     rota is skipped, since a ladder has one default rota.
@@ -131,6 +134,7 @@ func MergeCaseAlertSettings(cfg Config, s CaseAlertSettings) (Config, map[string
 	out := cfg
 	out.CRE = cloneLadderChats(cfg.CRE)
 	out.SRE = cloneLadderChats(cfg.SRE)
+	out.SME.TeamChats = maps.Clone(cfg.SME.TeamChats)
 	env := map[string]string{}
 	var changes []string
 
@@ -181,8 +185,19 @@ func MergeCaseAlertSettings(cfg Config, s CaseAlertSettings) (Config, map[string
 				out.SRE.TeamlessChats = slices.DeleteFunc(out.SRE.TeamlessChats, func(k string) bool { return teamKeyFor(k) == team })
 				changes = append(changes, "sre.teamlessChats: - "+team)
 			}
+		case ladder == "SME" && team != "":
+			if out.SME.TeamChats == nil {
+				out.SME.TeamChats = map[string]Chat{}
+			}
+			key := teamChatKey(out.SME.TeamChats, team)
+			if was, ok := cfg.SME.TeamChats[key]; ok {
+				changes = append(changes, chatChange("sme.teamChats."+team, was, room))
+			} else {
+				changes = append(changes, fmt.Sprintf("sme.teamChats.%s: none (used sme.chat) -> saved room %q", team, room.Audience))
+			}
+			out.SME.TeamChats[key] = room
 		default:
-			changes = append(changes, fmt.Sprintf("skipped a %s room for team %q: only SRE teams have rooms of their own", ladder, team))
+			changes = append(changes, fmt.Sprintf("skipped a %s room for team %q: only SRE and SME teams have rooms of their own", ladder, team))
 			continue
 		}
 		env[name] = url

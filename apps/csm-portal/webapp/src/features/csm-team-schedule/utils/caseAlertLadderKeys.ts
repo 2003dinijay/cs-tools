@@ -20,6 +20,7 @@ import type {
   CaseAlertChannel,
   CaseAlertFileOnly,
   CaseAlertLadder,
+  CaseAlertRoomLadder,
   CaseAlertSettings,
   PagingChainCode,
 } from "../types";
@@ -49,13 +50,22 @@ export const LADDER_KEY_GROUPS: LadderKeyGroup[] = [
 ];
 
 /** How a value is edited: a checkbox, a number, a pick from a few, a line of
- *  text, a comma-separated list, SHIFT=n pairs, a time like 5m, or a head's
- *  name and email. */
-export type LadderKeyEditor = "bool" | "int" | "enum" | "text" | "list" | "shiftCounts" | "duration" | "head";
+ *  text, a comma-separated list, SHIFT=n pairs, key=team pairs, a time like
+ *  5m, or a head's name and email. */
+export type LadderKeyEditor =
+  | "bool"
+  | "int"
+  | "enum"
+  | "text"
+  | "list"
+  | "shiftCounts"
+  | "teamMap"
+  | "duration"
+  | "head";
 
 export interface LadderKeySpec {
   key: string;
-  ladders: CaseAlertLadder[];
+  ladders: CaseAlertRoomLadder[];
   group: LadderKeyGroup;
   label: string;
   help: string;
@@ -72,9 +82,12 @@ export interface LadderKeySpec {
   placeholder?: string;
 }
 
-const BOTH: CaseAlertLadder[] = ["CRE", "SRE"];
-const CRE: CaseAlertLadder[] = ["CRE"];
-const SRE: CaseAlertLadder[] = ["SRE"];
+const BOTH: CaseAlertRoomLadder[] = ["CRE", "SRE"];
+const CRE: CaseAlertRoomLadder[] = ["CRE"];
+const SRE: CaseAlertRoomLadder[] = ["SRE"];
+const ALL: CaseAlertRoomLadder[] = ["CRE", "SRE", "SME"];
+const SRE_SME: CaseAlertRoomLadder[] = ["SRE", "SME"];
+const SME: CaseAlertRoomLadder[] = ["SME"];
 
 export const LADDER_KEYS: LadderKeySpec[] = [
   // Who is paged
@@ -148,6 +161,17 @@ export const LADDER_KEYS: LadderKeySpec[] = [
     help: "Where a head is looked up when the head is not named below.",
     editor: "text",
     placeholder: "e.g. cre-leadership",
+  },
+  {
+    key: "teams",
+    ladders: SME,
+    group: "Who gets alerts",
+    label: "Special Ops teams",
+    help: "Which SME team a Special Ops alert pages, when the alert does not name the SME team itself.",
+    editor: "teamMap",
+    max: 50,
+    empty: "none (the alert names the SME team)",
+    placeholder: "e.g. asgardeo-ops=asgardeo",
   },
   {
     key: "teams.defaultRota",
@@ -280,7 +304,7 @@ export const LADDER_KEYS: LadderKeySpec[] = [
   },
   {
     key: "onLeave",
-    ladders: BOTH,
+    ladders: ALL,
     group: "How it climbs",
     label: "People on leave",
     help: "Skip people on leave that day, or still call them after everyone else on the step.",
@@ -300,7 +324,7 @@ export const LADDER_KEYS: LadderKeySpec[] = [
   },
   {
     key: "timing.initialWait",
-    ladders: SRE,
+    ladders: SRE_SME,
     group: "How it climbs",
     label: "Wait before the first call",
     help: "From 0s to 30m, written like 0s or 2m.",
@@ -309,7 +333,7 @@ export const LADDER_KEYS: LadderKeySpec[] = [
   },
   {
     key: "timing.interval",
-    ladders: SRE,
+    ladders: SRE_SME,
     group: "How it climbs",
     label: "Time between steps",
     help: "From 1m to 30m, written like 5m.",
@@ -348,7 +372,7 @@ export const LADDER_KEYS: LadderKeySpec[] = [
   // Chat messages
   {
     key: "unansweredChat",
-    ladders: SRE,
+    ladders: SRE_SME,
     group: "Chat messages",
     label: "Say when nobody answered",
     help: "After L1 to L3 were all called and nobody acknowledged, post that the calls have ended.",
@@ -364,7 +388,7 @@ export const LADDER_KEYS: LadderKeySpec[] = [
   },
 ];
 
-export function ladderKeysFor(ladder: CaseAlertLadder): LadderKeySpec[] {
+export function ladderKeysFor(ladder: CaseAlertRoomLadder): LadderKeySpec[] {
   return LADDER_KEYS.filter((k) => k.ladders.includes(ladder));
 }
 
@@ -428,7 +452,7 @@ export function draftFor(spec: LadderKeySpec, value: unknown): LadderDraft {
     return { ...draft, name: h?.name ?? "", email: h?.email ?? "" };
   }
   if (Array.isArray(value)) return { ...draft, text: value.map(String).join(", ") };
-  if (spec.editor === "shiftCounts" && isRecord(value)) {
+  if ((spec.editor === "shiftCounts" || spec.editor === "teamMap") && isRecord(value)) {
     return { ...draft, text: Object.entries(value).map(([k, v]) => `${k}=${String(v)}`).join(", ") };
   }
   if (typeof value === "string" || typeof value === "number") return { ...draft, text: String(value) };
@@ -467,6 +491,15 @@ export function parseDraft(spec: LadderKeySpec, draft: LadderDraft): ParsedDraft
       }
       return { ok: true, value: out };
     }
+    case "teamMap": {
+      const out: Record<string, string> = {};
+      for (const part of text.split(",").map((v) => v.trim()).filter(Boolean)) {
+        const m = /^([A-Za-z0-9_.-]+)\s*=\s*([A-Za-z0-9_.-]+)$/.exec(part);
+        if (!m) return { ok: false, error: `${spec.label}: write each as key=team, e.g. asgardeo-ops=asgardeo.` };
+        out[m[1].toLowerCase()] = m[2].toLowerCase();
+      }
+      return { ok: true, value: out };
+    }
     case "head": {
       const name = draft.name.trim();
       const email = draft.email.trim();
@@ -482,7 +515,7 @@ export function parseDraft(spec: LadderKeySpec, draft: LadderDraft): ParsedDraft
 /** The values the alert service runs with from its file and that are not
  *  saved here yet, ready to save in one go. A head the file leaves unnamed is
  *  left out: there is nothing to save for it. */
-export function valuesToCopy(s: CaseAlertSettings, ladder: CaseAlertLadder): Record<string, unknown> {
+export function valuesToCopy(s: CaseAlertSettings, ladder: CaseAlertRoomLadder): Record<string, unknown> {
   const running = s.running?.ladders[ladder];
   if (!running) return {};
   const saved = new Set(s.values.filter((v) => v.ladder === ladder).map((v) => v.key));
@@ -542,7 +575,7 @@ function yesNo(v: boolean | undefined): string {
 /** The settings only the file can set, as rows for people. The heads row is
  *  CRE's only: SRE has no heads. Allowed numbers are a count; the numbers
  *  never reach the page. */
-export function fileOnlyRows(ladder: CaseAlertLadder, f: CaseAlertFileOnly): { label: string; value: string }[] {
+export function fileOnlyRows(ladder: CaseAlertRoomLadder, f: CaseAlertFileOnly): { label: string; value: string }[] {
   const maxCalls = f["safety.maxCallsPerLadder"];
   const maxLevel = f["safety.maxLevel"];
   const allowed = f["safety.allowedNumbers"];
@@ -587,6 +620,8 @@ export function limitHint(spec: LadderKeySpec): string | null {
       return `Separate with commas${spec.max ? `, up to ${spec.max}` : ""}. ${empty}`;
     case "shiftCounts":
       return `SHIFT=number, separated with commas${spec.max ? `, each 0 to ${spec.max}` : ""}. ${empty}`;
+    case "teamMap":
+      return `key=team, separated with commas. ${empty}`;
     default:
       return null;
   }

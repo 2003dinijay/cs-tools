@@ -156,9 +156,9 @@ const (
 	PermViewCustomerHealth
 	// PermUsageMetricsViewer is the Usage Metrics domain (/usage-metrics/*).
 	// Unlike the ex-"Support Portal Lite" domains still gated by
-	// PermViewerAccess (Viewer only: User Scan, the SLA/Time/CS project
-	// reports), and unlike Customer Health (PermViewCustomerHealth, which
-	// cs_engineer and admin hold too), Usage Metrics is registered directly
+	// PermViewerAccess (Viewer only: User Scan, the Time project report),
+	// and unlike Customer Health (PermViewCustomerHealth, which cs_engineer
+	// and admin hold too), Usage Metrics is registered directly
 	// on THIS permission at the route level, not layered on top of
 	// PermViewerAccess: it was reported live as needing a broader audience
 	// than "holds the Viewer role" once Support Portal Lite's separate

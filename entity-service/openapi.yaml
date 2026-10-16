@@ -8768,12 +8768,14 @@ paths:
         rooms, the ServiceNow group routes and the other ladder values the
         paging ladders use, the saved and running revision, what the alert
         service reported it runs with, and what the caller may change.
-        Webhook URLs are never returned, only a hint. Seen by a CSM admin
-        (AUTH_ADMIN_ROLES), a portal admin, the CRE and SRE rota admins and
-        the CRE and CS heads; anybody else internal gets an empty answer (200,
+        Webhook URLs are never returned, only a hint. Each family's settings
+        are sent only to those who may change them: CRE's to the CRE rota
+        admin and the CRE and CS heads, SRE's to the SRE rota admin, SME's to
+        the SME rota admin, all three to a CSM admin (AUTH_ADMIN_ROLES) or
+        portal admin. Anybody else internal gets an empty answer (200,
         canManage.view false), which is how the portal decides not to show the
-        section. Needs a user token. csm-notification-service uses these
-        settings only when it runs with PAGING_CONFIG_SOURCE set.
+        section. Needs a user token. csm-notification-service uses everything
+        saved unless PAGING_CONFIG_SOURCE is off.
       operationId: getCaseAlertSettings
       responses:
         "200":
@@ -8911,9 +8913,8 @@ paths:
     put:
       summary: Set a chat room's webhook URL.
       description: >
-        Write-only: the URL is sealed with this environment's
-        CASE_ALERTS_SECRET_KEY and never returned; the room shows a hint
-        instead. It must be a Google Chat incoming webhook
+        Write-only: the URL is stored as saved (no key needed), never audited
+        and never returned; the room shows a hint instead. It must be a Google Chat incoming webhook
         (https://chat.googleapis.com/v1/spaces/{space}/messages with key and
         token). Replacing it clears the last test card.
       operationId: setCaseAlertWebhook
@@ -8964,12 +8965,6 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "500":
           description: Unexpected error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        "503":
-          description: CASE_ALERTS_SECRET_KEY is not set on this deployment.
           content:
             application/json:
               schema:
@@ -9036,12 +9031,6 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "500":
           description: Unexpected error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        "503":
-          description: CASE_ALERTS_SECRET_KEY is not set on this deployment.
           content:
             application/json:
               schema:
@@ -9254,10 +9243,12 @@ paths:
     get:
       summary: The Case Alerts settings with webhook URLs, for csm-notification-service.
       description: >
-        The enabled rooms whose URL opens with this environment's key, with the
-        URL, and the enabled routes. For csm-notification-service's client only
-        (CASE_ALERTS_RUNTIME_CLIENT_IDS), never a person's token. A room whose
-        URL does not open is left out, so the ladder keeps the file's room.
+        The enabled rooms with their URL, and the enabled routes. For an
+        internal service client (csm-notification-service's; only those
+        CASE_ALERTS_RUNTIME_CLIENT_IDS names, when set), never a person's
+        token. A room whose URL cannot be read (sealed before 0237 under a key
+        this deployment does not have) is left out, so the ladder keeps the
+        file's room.
       operationId: getCaseAlertRuntimeSettings
       responses:
         "200":
@@ -9273,7 +9264,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         "403":
-          description: "Not csm-notification-service: a person's token, or a client not listed in CASE_ALERTS_RUNTIME_CLIENT_IDS."
+          description: "A person's token, or a client CASE_ALERTS_RUNTIME_CLIENT_IDS (when set) does not list."
           content:
             application/json:
               schema:
@@ -9321,7 +9312,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         "403":
-          description: "Not csm-notification-service: a person's token, or a client not listed in CASE_ALERTS_RUNTIME_CLIENT_IDS."
+          description: "A person's token, or a client CASE_ALERTS_RUNTIME_CLIENT_IDS (when set) does not list."
           content:
             application/json:
               schema:
@@ -23415,7 +23406,7 @@ components:
           description: CASE_ALERTS_ENVIRONMENT, e.g. staging or production; empty when unset.
         webhooksEnabled:
           type: boolean
-          description: False when CASE_ALERTS_SECRET_KEY is not set, so no URL can be saved.
+          description: Always true since 0237 (URLs are stored as saved); kept for older pages.
         revision:
           $ref: '#/components/schemas/CaseAlertRevision'
         rooms:
@@ -23470,7 +23461,7 @@ components:
       required: [id, ladder, key, value, updatedBy, updatedOn]
       properties:
         id: { type: string, format: uuid }
-        ladder: { type: string, enum: [CRE, SRE] }
+        ladder: { type: string, enum: [CRE, SRE, SME] }
         key: { type: string, example: teams.abts, description: "A key of the paging file under cre or sre." }
         value: { description: "The value in the file's shape: a list, a number, true or false, text, or a head's name and email." }
         updatedBy: { type: string }
@@ -23479,7 +23470,7 @@ components:
       type: object
       required: [ladder, values]
       properties:
-        ladder: { type: string, enum: [CRE, SRE] }
+        ladder: { type: string, enum: [CRE, SRE, SME] }
         values:
           type: object
           additionalProperties: true
@@ -23497,7 +23488,10 @@ components:
             only), alertDuty.tiers, alertDuty.perTeam,
             acknowledgement.requireBoth. SRE: teams.defaultRota,
             timing.initialWait (0s to 30m), timing.interval (1m to 30m),
-            timing.includeL4, unansweredChat, smeHandoffChat.
+            timing.includeL4, unansweredChat, smeHandoffChat. SME:
+            timing.initialWait (0s to 30m), timing.interval (1m to 30m),
+            onLeave, unansweredChat, teams (Special Ops team key to SME team
+            key).
     CaseAlertValuesResponse:
       type: object
       required: [values]
@@ -23541,8 +23535,12 @@ components:
         view: { type: boolean }
         roomLadders:
           type: array
-          description: The ladders whose rooms and values the caller may change.
-          items: { type: string, enum: [CRE, SRE] }
+          description: >
+            The ladders whose rooms and values the caller may see and change: CRE for the CRE
+            rota admin and the CRE and CS heads, SRE for the SRE rota admin, SME for the SME
+            rota admin, all three for a CSM or portal admin. Another ladder's rooms, routes,
+            values and running settings are never sent.
+          items: { type: string, enum: [CRE, SRE, SME] }
         routeLadders:
           type: array
           items: { type: string, enum: [CRE, SRE] }
@@ -23560,8 +23558,8 @@ components:
       required: [id, ladder, label, enabled, teamless, hasWebhook, updatedBy, updatedOn]
       properties:
         id: { type: string, format: uuid }
-        ladder: { type: string, enum: [CRE, SRE] }
-        teamKey: { type: string, description: "The SRE team whose room it is; absent for the ladder's shared room." }
+        ladder: { type: string, enum: [CRE, SRE, SME] }
+        teamKey: { type: string, description: "The SRE or SME team whose room it is; absent for the ladder's shared room (CRE, SRE). An SME room is always a team's." }
         label: { type: string }
         enabled: { type: boolean }
         teamless: { type: boolean, description: "Also gets the cards of an incident with no SRE team of its own." }
@@ -23590,12 +23588,12 @@ components:
       type: object
       required: [ladder, label]
       properties:
-        ladder: { type: string, enum: [CRE, SRE] }
-        teamKey: { type: string, description: "An SRE team of the Team Schedule; omit for the ladder's shared room." }
+        ladder: { type: string, enum: [CRE, SRE, SME] }
+        teamKey: { type: string, description: "An SRE or SME team of the Team Schedule (required for SME); omit for the ladder's shared room." }
         label: { type: string, maxLength: 100 }
         enabled: { type: boolean, default: true }
-        teamless: { type: boolean, default: false }
-        channel: { type: string, enum: ["", log, chat, call, both], description: "A team room only: chat, call, both or log; an empty string goes back to the ladder's. Refused on a ladder's shared room." }
+        teamless: { type: boolean, default: false, description: "SRE team rooms only." }
+        channel: { type: string, enum: ["", log, chat, call, both], description: "An SRE team room only: chat, call, both or log; an empty string goes back to the ladder's. Refused on a ladder's shared room and on an SME room." }
     SetCaseAlertWebhookRequest:
       type: object
       required: [url]
@@ -23633,14 +23631,14 @@ components:
             type: object
             required: [ladder, key, value]
             properties:
-              ladder: { type: string, enum: [CRE, SRE] }
+              ladder: { type: string, enum: [CRE, SRE, SME] }
               key: { type: string }
               value: { description: "The value in the file's shape." }
     CaseAlertRuntimeRoom:
       type: object
       required: [ladder, label, teamless, webhookUrl]
       properties:
-        ladder: { type: string, enum: [CRE, SRE] }
+        ladder: { type: string, enum: [CRE, SRE, SME] }
         teamKey: { type: string }
         label: { type: string }
         teamless: { type: boolean }

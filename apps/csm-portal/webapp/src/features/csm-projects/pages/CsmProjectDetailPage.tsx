@@ -151,9 +151,9 @@ export default function CsmProjectDetailPage(): JSX.Element {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavTransition();
   const location = useLocation();
-  // isSplAudience is unused while the SLA/Time/CS report buttons below are
+  // isSplAudience is unused while the Time report button below is
   // temporarily disabled — restore it to the destructure above when
-  // re-enabling them.
+  // re-enabling it.
   const { canWrite, canViewWorkItemsStaffView } = usePortalAccess();
   // Prefer wherever the caller came from (e.g. a case's Overview panel) over
   // the hardcoded projects list, so Back returns to that page instead of
@@ -250,45 +250,25 @@ export default function CsmProjectDetailPage(): JSX.Element {
           />
         </Box>
         <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap", flexShrink: 0 }}>
-          {/* Ex-Support Portal Lite reports, no modern equivalent -- kept
-              limited to the same audience they always had (a caller holding
-              the viewer role, regardless of what else they hold). See
-              isSplAudience's own doc comment. Outlined, not contained: the
-              single contained CTA on this page is Create, below.
+          {/* The Time report has no modern equivalent and is limited to the
+              viewer audience (a caller holding the viewer role, regardless of
+              what else they hold). See isSplAudience's own doc comment.
+              Outlined, not contained: the single contained CTA on this page
+              is Create, below.
 
               Temporarily disabled: removed from view for the moment.
               Re-enable by uncommenting this block and restoring
               isSplAudience to the usePortalAccess() destructure above. */}
           {/* {isSplAudience && (
-            <>
-              <Button
-                variant="outlined"
-                size="small"
-                className="csm-print-hide"
-                component={RouterLink}
-                to={`/customers/projects/${p.id}/sla-report/${p.id}`}
-              >
-                SLA Report
-              </Button>
-              <Button
-                variant="outlined"
-                size="small"
-                className="csm-print-hide"
-                component={RouterLink}
-                to={`/customers/projects/${p.id}/timelogs-report`}
-              >
-                Time Report
-              </Button>
-              <Button
-                variant="outlined"
-                size="small"
-                className="csm-print-hide"
-                component={RouterLink}
-                to={`/customers/projects/${p.id}/cs-report/${p.id}`}
-              >
-                CS Report
-              </Button>
-            </>
+            <Button
+              variant="outlined"
+              size="small"
+              className="csm-print-hide"
+              component={RouterLink}
+              to={`/customers/projects/${p.id}/timelogs-report`}
+            >
+              Time Report
+            </Button>
           )} */}
           {/* File any issue type already scoped to this project — every create
               form below locks the project field, so it can't be filed against

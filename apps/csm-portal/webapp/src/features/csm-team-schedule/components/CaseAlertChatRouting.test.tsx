@@ -36,7 +36,7 @@ const settings: { data?: Settings } = {};
 const saveRoom = { mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false };
 const setWebhook = { mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false };
 const testRoom = { mutate: vi.fn(), isPending: false };
-const deleteRoom = { mutate: vi.fn(), isPending: false };
+const deleteRoom = { mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false };
 const noop = { mutate: vi.fn(), isPending: false };
 
 vi.mock("../api/useCaseAlertSettings", () => ({
@@ -60,7 +60,7 @@ const HINT = "spaces/AAAAtest01 · …wxyz";
 const HOOK =
   "https://chat.googleapis.com/v1/spaces/AAAAtest01/messages?key=k&token=t";
 const NOT_DB =
-  "The alert service uses the saved settings once it is switched to them (db mode).";
+  "The alert service only compares it with its file (shadow mode); it uses it once PAGING_CONFIG_SOURCE is db or unset.";
 const DB = "The alert service uses it after its next restart.";
 
 function room(over: Partial<CaseAlertChatRoom>): CaseAlertChatRoom {
@@ -161,16 +161,20 @@ beforeEach(() => {
 });
 
 describe("Team chat routing", () => {
-  it("lists only the routings saved here, with the hint, last test and how each team is alerted", () => {
+  it("lists only the routings saved here, with the hint and last test: the space alone", () => {
     render(<CaseAlertSettings chain="SRE_SAAS" />);
     expect(
       screen.getByRole("heading", { name: "Team chat routing" }),
     ).toBeInTheDocument();
     expect(
       screen.getByText(
-        /This ladder sends alerts by chat only \(set in the alert service's file\)\. A team can do less, never more\./,
+        "Which Google Chat space each team's alerts go to.",
       ),
     ).toBeInTheDocument();
+    // How a team is alerted stays the file's: no column for it.
+    expect(
+      screen.queryByRole("columnheader", { name: "Alerts by" }),
+    ).not.toBeInTheDocument();
     const table = screen.getByRole("table", { name: "Team chat routing" });
     // Artemis has none saved: not listed.
     expect(within(table).queryByText("Artemis")).not.toBeInTheDocument();
@@ -184,10 +188,7 @@ describe("Team chat routing", () => {
     expect(within(a).getByText(/Last test:/)).toHaveTextContent(
       "Last test: delivered ·",
     );
-    expect(
-      within(a).getByText("Same as the ladder (Chat only)"),
-    ).toBeInTheDocument();
-    expect(within(chatRow("IaaS")).getByText("Calls only")).toBeInTheDocument();
+    expect(within(chatRow("IaaS")).queryByText("Calls only")).toBeNull();
     expect(
       within(chatRow("IaaS")).getByText("No URL saved (uses the file's space)"),
     ).toBeInTheDocument();
@@ -207,14 +208,6 @@ describe("Team chat routing", () => {
       expect(
         rows.map((r) => r.querySelector("b")?.textContent).slice(1),
       ).toEqual(["All SRE teams (shared space)", "Apollo", "IaaS"]);
-      expect(
-        within(chatRow("All SRE teams (shared space)")).getByText("Chat only"),
-      ).toBeInTheDocument();
-      expect(
-        within(chatRow("All SRE teams (shared space)")).getByText(
-          "set in the file",
-        ),
-      ).toBeInTheDocument();
       unmount();
     }
   });
@@ -244,348 +237,6 @@ describe("Team chat routing", () => {
     expect(screen.queryByText("Apollo SRE")).not.toBeInTheDocument();
   });
 
-  it("offers only the teams with no routing yet, and the shared space only when it isn't saved", () => {
-    render(<CaseAlertSettings chain="SRE_SAAS" />);
-    const { dialog } = openAdd();
-    expect(optionNames(within(dialog).getByLabelText("Team"))).toEqual([
-      "All SRE teams (shared space)",
-      "Artemis",
-      "Zeus",
-    ]);
-    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
-
-    settings.data = make({ rooms: [apollo, iaas, shared] });
-    render(<CaseAlertSettings chain="SRE_IAAS" />);
-    const second = screen.getAllByRole("button", {
-      name: "+ Add team chat routing",
-    })[1];
-    fireEvent.click(second);
-    expect(
-      optionNames(within(screen.getByRole("dialog")).getByLabelText("Team")),
-    ).toEqual(["Artemis", "Zeus"]);
-  });
-
-  it("keeps the keyboard user's place when the last team is added: focus moves to the note", () => {
-    settings.data = make({
-      rooms: [apollo, iaas, shared, room({ id: "a2", teamKey: "artemis" })],
-    });
-    const { rerender } = render(<CaseAlertSettings chain="SRE_SAAS" />);
-    screen.getByRole("button", { name: "+ Add team chat routing" }).focus();
-    // The save's refetch brings the last team back: the button goes away.
-    settings.data = make({
-      rooms: [
-        apollo,
-        iaas,
-        shared,
-        room({ id: "a2", teamKey: "artemis" }),
-        room({ id: "z", teamKey: "zeus" }),
-      ],
-    });
-    rerender(<CaseAlertSettings chain="SRE_SAAS" />);
-    expect(
-      screen.getByText(/Every SRE team already has a chat routing here/),
-    ).toHaveFocus();
-  });
-
-  it("says so in the page, not in a disabled button, when every team has a routing", () => {
-    settings.data = make({
-      rooms: [
-        apollo,
-        iaas,
-        shared,
-        room({ id: "a2", teamKey: "artemis" }),
-        room({ id: "z", teamKey: "zeus" }),
-      ],
-    });
-    render(<CaseAlertSettings chain="SRE_SAAS" />);
-    expect(
-      screen.queryByRole("button", { name: "+ Add team chat routing" }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.getByText(/Every SRE team already has a chat routing here/),
-    ).toBeInTheDocument();
-  });
-
-  it("needs a Google Chat webhook URL to add one", () => {
-    render(<CaseAlertSettings chain="SRE_SAAS" />);
-    const { dialog } = openAdd();
-    expect(
-      within(dialog).getByLabelText("Google Chat webhook URL"),
-    ).toHaveAttribute("type", "password");
-    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
-    expect(within(dialog).getByRole("alert")).toHaveTextContent(
-      "Paste the space's Google Chat webhook URL.",
-    );
-    fireEvent.change(within(dialog).getByLabelText("Google Chat webhook URL"), {
-      target: { value: "https://example.com/hook" },
-    });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
-    expect(within(dialog).getByRole("alert")).toHaveTextContent(
-      "isn't a Google Chat webhook URL",
-    );
-    expect(saveRoom.mutateAsync).not.toHaveBeenCalled();
-  });
-
-  it("adds a team: the room with every field, then the URL; closes, confirms, and gives focus back", async () => {
-    saveRoom.mutateAsync.mockResolvedValue({ ...apollo, id: "new-room" });
-    setWebhook.mutateAsync.mockResolvedValue({});
-    render(<CaseAlertSettings chain="SRE_SAAS" />);
-    const { button, dialog } = openAdd();
-    const team = within(dialog).getByLabelText("Team");
-    expect(team).toHaveFocus();
-    fireEvent.change(team, { target: { value: "artemis" } });
-    // Artemis starts as the file has it: it also gets incidents with no SRE team.
-    expect(
-      within(dialog).getByRole("checkbox", {
-        name: "Also gets incidents with no SRE team",
-      }),
-    ).toBeChecked();
-    const by = within(dialog).getByLabelText("Alerts by");
-    expect(optionNames(by)).toEqual([
-      "Same as the ladder (Chat only)",
-      "Chat only",
-      "Log only (no calls or chat)",
-    ]);
-    fireEvent.change(by, { target: { value: "log" } });
-    fireEvent.change(within(dialog).getByLabelText("Google Chat webhook URL"), {
-      target: { value: HOOK },
-    });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
-
-    await waitFor(() =>
-      expect(setWebhook.mutateAsync).toHaveBeenCalledWith({
-        roomId: "new-room",
-        url: HOOK,
-      }),
-    );
-    expect(saveRoom.mutateAsync).toHaveBeenCalledWith({
-      ladder: "SRE",
-      teamKey: "artemis",
-      label: "Artemis SRE",
-      enabled: true,
-      teamless: true,
-      channel: "log",
-    });
-    await waitFor(() =>
-      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
-    );
-    expect(button).toHaveFocus();
-    expect(screen.getByText(/^✓ Saved:/)).toHaveTextContent(
-      `✓ Saved: Artemis chat routing. ${NOT_DB}`,
-    );
-  });
-
-  it("names a team the file doesn't know by its name, and adds the shared space without a channel", async () => {
-    saveRoom.mutateAsync.mockResolvedValue({ ...shared, id: "s" });
-    setWebhook.mutateAsync.mockResolvedValue({});
-    render(<CaseAlertSettings chain="SRE_SAAS" />);
-    let { dialog } = openAdd();
-    fireEvent.change(within(dialog).getByLabelText("Team"), {
-      target: { value: "zeus" },
-    });
-    expect(
-      within(dialog).getByRole("checkbox", {
-        name: "Also gets incidents with no SRE team",
-      }),
-    ).not.toBeChecked();
-    fireEvent.change(within(dialog).getByLabelText("Google Chat webhook URL"), {
-      target: { value: HOOK },
-    });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
-    await waitFor(() =>
-      expect(saveRoom.mutateAsync).toHaveBeenCalledWith(
-        expect.objectContaining({
-          teamKey: "zeus",
-          label: "Zeus SRE",
-          teamless: false,
-          channel: "",
-        }),
-      ),
-    );
-    await waitFor(() =>
-      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
-    );
-
-    ({ dialog } = openAdd());
-    // The shared space follows the ladder: no channel, no teamless box.
-    expect(
-      within(dialog).queryByLabelText("Alerts by"),
-    ).not.toBeInTheDocument();
-    expect(within(dialog).queryByRole("checkbox")).not.toBeInTheDocument();
-    fireEvent.change(within(dialog).getByLabelText("Google Chat webhook URL"), {
-      target: { value: HOOK },
-    });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
-    await waitFor(() =>
-      expect(saveRoom.mutateAsync).toHaveBeenLastCalledWith({
-        ladder: "SRE",
-        teamKey: undefined,
-        label: "SRE Case Alerts",
-        enabled: true,
-        teamless: false,
-      }),
-    );
-  });
-
-  it("keeps an error in the dialog", async () => {
-    saveRoom.mutateAsync.mockResolvedValue({ ...apollo, id: "new-room" });
-    setWebhook.mutateAsync.mockRejectedValue(
-      new Error("That webhook URL was not accepted."),
-    );
-    render(<CaseAlertSettings chain="SRE_SAAS" />);
-    const { dialog } = openAdd();
-    fireEvent.change(within(dialog).getByLabelText("Google Chat webhook URL"), {
-      target: { value: HOOK },
-    });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
-    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
-      "That webhook URL was not accepted.",
-    );
-    expect(screen.getByRole("dialog")).toBeInTheDocument();
-    expect(screen.queryByText(/^✓ Saved:/)).not.toBeInTheDocument();
-  });
-
-  it("edits a team: keeps the saved URL when left empty, and sends every field", async () => {
-    saveRoom.mutateAsync.mockResolvedValue(iaas);
-    render(<CaseAlertSettings chain="SRE_SAAS" />);
-    const edit = within(chatRow("IaaS")).getByRole("button", { name: "Edit" });
-    edit.focus();
-    fireEvent.click(edit);
-    const dialog = screen.getByRole("dialog", {
-      name: "Edit IaaS chat routing",
-    });
-    expect(within(dialog).queryByLabelText("Team")).not.toBeInTheDocument();
-    expect(within(dialog).getByText("IaaS")).toBeInTheDocument();
-    expect(within(dialog).getByLabelText("Alerts by")).toHaveValue("call");
-    // Saved before the ladder narrowed to chat: still shown as it is.
-    expect(optionNames(within(dialog).getByLabelText("Alerts by"))).toContain(
-      "Calls only (more than the ladder)",
-    );
-    fireEvent.click(
-      within(dialog).getByRole("checkbox", {
-        name: "Also gets incidents with no SRE team",
-      }),
-    );
-    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
-    await waitFor(() =>
-      expect(saveRoom.mutateAsync).toHaveBeenCalledWith({
-        ladder: "SRE",
-        teamKey: "iaas",
-        label: "IaaS SRE",
-        enabled: true,
-        teamless: true,
-        channel: "call",
-      }),
-    );
-    expect(setWebhook.mutateAsync).not.toHaveBeenCalled();
-    await waitFor(() =>
-      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
-    );
-    expect(edit).toHaveFocus();
-    expect(screen.getByText(/^✓ Saved:/)).toHaveTextContent(
-      "✓ Saved: IaaS chat routing.",
-    );
-  });
-
-  it("shows the saved URL's hint when editing, and sends a new URL when typed", async () => {
-    saveRoom.mutateAsync.mockResolvedValue(apollo);
-    setWebhook.mutateAsync.mockResolvedValue({});
-    render(<CaseAlertSettings chain="SRE_SAAS" />);
-    fireEvent.click(
-      within(chatRow("Apollo")).getByRole("button", { name: "Edit" }),
-    );
-    const dialog = screen.getByRole("dialog", {
-      name: "Edit Apollo chat routing",
-    });
-    expect(
-      within(dialog).getByText(`Leave empty to keep the saved URL (${HINT}).`),
-    ).toBeInTheDocument();
-    fireEvent.change(within(dialog).getByLabelText("Alerts by"), {
-      target: { value: "" },
-    });
-    fireEvent.change(within(dialog).getByLabelText("Google Chat webhook URL"), {
-      target: { value: HOOK },
-    });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
-    await waitFor(() =>
-      expect(setWebhook.mutateAsync).toHaveBeenCalledWith({
-        roomId: "apollo-room",
-        url: HOOK,
-      }),
-    );
-    expect(saveRoom.mutateAsync).toHaveBeenCalledWith(
-      expect.objectContaining({ teamKey: "apollo", channel: "" }),
-    );
-  });
-
-  it("tests, turns off and removes from the row, confirming each change", () => {
-    const succeed = (_v: unknown, opts: { onSuccess?: () => void }) =>
-      opts.onSuccess?.();
-    saveRoom.mutate.mockImplementation(succeed);
-    deleteRoom.mutate.mockImplementation(succeed);
-    render(<CaseAlertSettings chain="SRE_SAAS" />);
-    const a = chatRow("Apollo");
-    // Edit, Test and More: no more than three buttons.
-    expect(
-      within(a)
-        .getAllByRole("button")
-        .map((b) => b.textContent),
-    ).toEqual(["Edit", "Test", "More ▾"]);
-    fireEvent.click(within(a).getByRole("button", { name: "Test" }));
-    expect(testRoom.mutate).toHaveBeenCalledWith(
-      "apollo-room",
-      expect.anything(),
-    );
-
-    fireEvent.click(within(a).getByRole("button", { name: "More" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Turn off" }));
-    expect(saveRoom.mutate).not.toHaveBeenCalled();
-    fireEvent.click(within(a).getByRole("button", { name: "Turn off" }));
-    expect(saveRoom.mutate).toHaveBeenCalledWith(
-      {
-        ladder: "SRE",
-        teamKey: "apollo",
-        label: "Apollo SRE",
-        enabled: false,
-        teamless: true,
-        channel: "",
-      },
-      expect.anything(),
-    );
-    expect(screen.getByText(/^✓ Saved:/)).toHaveTextContent(
-      "✓ Saved: Apollo chat routing turned off.",
-    );
-
-    fireEvent.click(within(a).getByRole("button", { name: "More" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Remove" }));
-    expect(deleteRoom.mutate).not.toHaveBeenCalled();
-    fireEvent.click(within(a).getByRole("button", { name: "Remove" }));
-    expect(deleteRoom.mutate).toHaveBeenCalledWith(
-      "apollo-room",
-      expect.anything(),
-    );
-    expect(screen.getByText(/^✓ Saved:/)).toHaveTextContent(
-      "✓ Saved: Apollo chat routing removed.",
-    );
-  });
-
-  it("turns a room that is off back on from More, without asking", () => {
-    settings.data = make({ rooms: [{ ...iaas, enabled: false }] });
-    render(<CaseAlertSettings chain="SRE_SAAS" />);
-    fireEvent.click(
-      within(chatRow("IaaS")).getByRole("button", { name: "More" }),
-    );
-    fireEvent.click(screen.getByRole("menuitem", { name: "Turn on" }));
-    expect(saveRoom.mutate).toHaveBeenCalledWith(
-      expect.objectContaining({
-        teamKey: "iaas",
-        enabled: true,
-        channel: "call",
-      }),
-      expect.anything(),
-    );
-  });
-
   it("closes the More menu on Escape and on a click outside", () => {
     render(<CaseAlertSettings chain="SRE_SAAS" />);
     const more = within(chatRow("Apollo")).getByRole("button", {
@@ -608,51 +259,275 @@ describe("Team chat routing", () => {
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   });
 
-  it("is read-only for somebody who may only look", () => {
+  it("shows nothing of a family whose settings the reader may not change", () => {
     settings.data = make({
-      canManage: { view: true, roomLadders: [], routeLadders: [] },
+      canManage: { view: true, roomLadders: ["CRE"], routeLadders: ["CRE"] },
     });
-    render(<CaseAlertSettings chain="SRE_SAAS" />);
-    expect(
-      screen.queryByRole("button", {
-        name: /Add team chat routing|Edit|Test|More/,
-      }),
-    ).not.toBeInTheDocument();
-    expect(
-      within(chatRow("Apollo")).getByText("Same as the ladder (Chat only)"),
-    ).toBeInTheDocument();
+    const { container } = render(<CaseAlertSettings chain="SRE_SAAS" />);
+    expect(container).toBeEmptyDOMElement();
   });
 
   it("says when URLs can't be saved on this server, and can't add one", () => {
     settings.data = make({ webhooksEnabled: false });
     render(<CaseAlertSettings chain="SRE_SAAS" />);
-    expect(screen.getByText(/encryption key is not set/)).toBeInTheDocument();
+    expect(
+      screen.getByText("Webhook URLs can't be saved on this server."),
+    ).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "+ Add team chat routing" }),
     ).toBeDisabled();
   });
 
-  it("words the confirmation for db mode, and lets it be dismissed", () => {
+});
+
+/** The SRE tab's Submit, waiting until everything is saved. */
+async function submit(family = "SRE"): Promise<void> {
+  fireEvent.click(screen.getByRole("button", { name: `Submit ${family} changes` }));
+  await waitFor(() =>
+    expect(screen.getByRole("region", { name: `${family} changes to submit` })).toHaveTextContent(
+      "No changes to submit.",
+    ),
+  );
+}
+
+function pending(family = "SRE"): HTMLElement {
+  return screen.getByRole("region", { name: `${family} changes to submit` });
+}
+
+const SME_TEAMS = [
+  { key: "asgardeo", name: "Asgardeo", family: "SME" as const },
+  { key: "u2", name: "U2", family: "SME" as const },
+];
+const asgardeo = room({
+  id: "asg-room",
+  ladder: "SME",
+  teamKey: "asgardeo",
+  label: "Asgardeo SME",
+  hasWebhook: true,
+  webhookHint: HINT,
+});
+
+describe("Team chat routing: changes wait for Submit", () => {
+  it("offers every team of the reader's ladders, marking those with a space, and hides teams people are only moved onto", () => {
     settings.data = make({
-      revision: { saved: 5, applied: 4, appliedMode: "db" },
+      canManage: { view: true, roomLadders: ["SRE", "SME"], routeLadders: ["SRE"] },
+      rooms: [apollo, iaas, asgardeo],
     });
-    saveRoom.mutate.mockImplementation(
-      (_v: unknown, opts: { onSuccess?: () => void }) => opts.onSuccess?.(),
-    );
+    render(<CaseAlertSettings family="SRE" teams={SME_TEAMS} moveTargetKeys={["zeus"]} />);
+    const { dialog } = openAdd();
+    const team = within(dialog).getByLabelText("Team");
+    expect(optionNames(team)).toEqual([
+      "All SRE teams (shared space)",
+      "Apollo · has a space",
+      "Artemis",
+      "IaaS · has a space",
+      "Asgardeo · has a space",
+      "U2",
+    ]);
+    expect(within(team).getAllByRole("group").map((g) => g.getAttribute("label"))).toEqual(["SRE teams", "SME teams"]);
+  });
+
+  it("lists SRE and SME rows together, each changeable only by its own admin", () => {
+    settings.data = make({
+      canManage: { view: true, roomLadders: ["SRE"], routeLadders: ["SRE"] },
+      rooms: [apollo, asgardeo],
+    });
+    render(<CaseAlertSettings family="SRE" teams={SME_TEAMS} />);
+    expect(within(chatRow("Apollo")).getByRole("button", { name: "Edit" })).toBeInTheDocument();
+    expect(within(chatRow("Asgardeo")).queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
+    const { dialog } = openAdd();
+    expect(optionNames(within(dialog).getByLabelText("Team"))).not.toContain("U2");
+  });
+
+  it("needs a Google Chat webhook URL for a new space", () => {
     render(<CaseAlertSettings chain="SRE_SAAS" />);
-    fireEvent.click(
-      within(chatRow("Apollo")).getByRole("button", { name: "More" }),
+    const { dialog } = openAdd();
+    expect(within(dialog).getByLabelText("Google Chat webhook URL")).toHaveAttribute("type", "password");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add to changes" }));
+    expect(within(dialog).getByRole("alert")).toHaveTextContent("Paste the space's Google Chat webhook URL.");
+    fireEvent.change(within(dialog).getByLabelText("Google Chat webhook URL"), {
+      target: { value: "https://example.com/hook" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add to changes" }));
+    expect(within(dialog).getByRole("alert")).toHaveTextContent("isn't a Google Chat webhook URL");
+    expect(pending()).toHaveTextContent("No changes to submit.");
+  });
+
+  it("adds a team: nothing is saved until Submit, then the room and its URL", async () => {
+    saveRoom.mutateAsync.mockResolvedValue({ ...apollo, id: "new-room" });
+    setWebhook.mutateAsync.mockResolvedValue({});
+    render(<CaseAlertSettings chain="SRE_SAAS" />);
+    const { button, dialog } = openAdd();
+    fireEvent.change(within(dialog).getByLabelText("Team"), { target: { value: "SRE|artemis" } });
+    // Artemis starts as the file has it: it also gets incidents with no SRE team.
+    expect(within(dialog).getByRole("checkbox", { name: "Also gets incidents with no SRE team" })).toBeChecked();
+    expect(within(dialog).queryByLabelText("Alerts by")).not.toBeInTheDocument();
+    fireEvent.change(within(dialog).getByLabelText("Google Chat webhook URL"), { target: { value: HOOK } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add to changes" }));
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(button).toHaveFocus();
+    expect(screen.getByText(/^Added to this tab's changes:/)).toHaveTextContent(
+      "Added to this tab's changes: Artemis chat routing. Submit to save them.",
     );
+    expect(pending()).toHaveTextContent("1 change not saved yet");
+    expect(saveRoom.mutateAsync).not.toHaveBeenCalled();
+
+    await submit();
+    expect(saveRoom.mutateAsync).toHaveBeenCalledWith({
+      ladder: "SRE",
+      teamKey: "artemis",
+      label: "Artemis SRE",
+      enabled: true,
+      teamless: true,
+      channel: "",
+    });
+    expect(setWebhook.mutateAsync).toHaveBeenCalledWith({ roomId: "new-room", url: HOOK });
+    // Not reported yet: it is used from the next restart.
+    expect(screen.getByText(/^✓ Saved/)).toHaveTextContent(`✓ Saved 1 change. ${DB}`);
+  });
+
+  it("changes a team that has a space when picked again: its URL kept unless a new one is typed", async () => {
+    saveRoom.mutateAsync.mockResolvedValue(apollo);
+    render(<CaseAlertSettings chain="SRE_SAAS" />);
+    const { dialog } = openAdd();
+    fireEvent.change(within(dialog).getByLabelText("Team"), { target: { value: "SRE|apollo" } });
+    expect(within(dialog).getByText(`Leave empty to keep the saved URL (${HINT}).`)).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("checkbox", { name: "Also gets incidents with no SRE team" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add to changes" }));
+    await submit();
+    expect(saveRoom.mutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ teamKey: "apollo", label: "Apollo SRE", teamless: false }),
+    );
+    expect(setWebhook.mutateAsync).not.toHaveBeenCalled();
+  });
+
+  it("edits a row: keeps the saved URL when left empty, and sends every field", async () => {
+    saveRoom.mutateAsync.mockResolvedValue(iaas);
+    render(<CaseAlertSettings chain="SRE_SAAS" />);
+    const edit = within(chatRow("IaaS")).getByRole("button", { name: "Edit" });
+    edit.focus();
+    fireEvent.click(edit);
+    const dialog = screen.getByRole("dialog", { name: "Edit IaaS chat routing" });
+    expect(within(dialog).queryByLabelText("Team")).not.toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("checkbox", { name: "Also gets incidents with no SRE team" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add to changes" }));
+    expect(edit).toHaveFocus();
+    await submit();
+    expect(saveRoom.mutateAsync).toHaveBeenCalledWith({
+      ladder: "SRE",
+      teamKey: "iaas",
+      label: "IaaS SRE",
+      enabled: true,
+      teamless: true,
+      channel: "call",
+    });
+    expect(setWebhook.mutateAsync).not.toHaveBeenCalled();
+  });
+
+  it("turns off and removes from the row as changes; Test sends at once", async () => {
+    render(<CaseAlertSettings chain="SRE_SAAS" />);
+    const a = chatRow("Apollo");
+    expect(within(a).getAllByRole("button").map((b) => b.textContent)).toEqual(["Edit", "Test", "More ▾"]);
+    fireEvent.click(within(a).getByRole("button", { name: "Test" }));
+    expect(testRoom.mutate).toHaveBeenCalledWith("apollo-room", expect.anything());
+
+    fireEvent.click(within(a).getByRole("button", { name: "More" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Turn off" }));
-    fireEvent.click(
-      within(chatRow("Apollo")).getByRole("button", { name: "Turn off" }),
-    );
-    const done = screen.getByText(/^✓ Saved:/);
-    expect(done).toHaveTextContent(
-      `✓ Saved: Apollo chat routing turned off. ${DB}`,
-    );
-    expect(done.closest("[aria-live]")).toHaveAttribute("aria-live", "polite");
+    fireEvent.click(within(a).getByRole("button", { name: "Turn off" }));
+    fireEvent.click(within(chatRow("IaaS")).getByRole("button", { name: "More" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Remove" }));
+    fireEvent.click(within(chatRow("IaaS")).getByRole("button", { name: "Remove" }));
+    expect(pending()).toHaveTextContent("Apollo chat routing turned off");
+    expect(pending()).toHaveTextContent("IaaS chat routing removed");
+    expect(saveRoom.mutateAsync).not.toHaveBeenCalled();
+    expect(deleteRoom.mutateAsync).not.toHaveBeenCalled();
+
+    await submit();
+    expect(saveRoom.mutateAsync).toHaveBeenCalledWith({
+      ladder: "SRE",
+      teamKey: "apollo",
+      label: "Apollo SRE",
+      enabled: false,
+      teamless: true,
+      channel: "",
+    });
+    expect(deleteRoom.mutateAsync).toHaveBeenCalledWith("iaas-room");
+  });
+
+  it("undoes one change, or discards them all, before Submit", () => {
+    render(<CaseAlertSettings chain="SRE_SAAS" />);
+    fireEvent.click(within(chatRow("Apollo")).getByRole("button", { name: "More" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Turn off" }));
+    fireEvent.click(within(chatRow("Apollo")).getByRole("button", { name: "Turn off" }));
+    fireEvent.click(within(pending()).getByRole("button", { name: "Undo: Apollo chat routing turned off" }));
+    expect(pending()).toHaveTextContent("No changes to submit.");
+
+    fireEvent.click(within(chatRow("IaaS")).getByRole("button", { name: "More" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Turn off" }));
+    fireEvent.click(within(chatRow("IaaS")).getByRole("button", { name: "Turn off" }));
+    expect(pending()).toHaveTextContent("1 change not saved yet");
+    fireEvent.click(within(pending()).getByRole("button", { name: "Discard" }));
+    expect(pending()).toHaveTextContent("No changes to submit.");
+    expect(within(pending()).getByRole("button", { name: "Submit SRE changes" })).toBeDisabled();
+  });
+
+  it("keeps a change that fails on Submit, and says why", async () => {
+    saveRoom.mutateAsync.mockRejectedValueOnce(new Error("That webhook URL was not accepted."));
+    render(<CaseAlertSettings chain="SRE_SAAS" />);
+    const { dialog } = openAdd();
+    fireEvent.change(within(dialog).getByLabelText("Google Chat webhook URL"), { target: { value: HOOK } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add to changes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Submit SRE changes" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("That webhook URL was not accepted.");
+    expect(pending()).toHaveTextContent("1 change not saved yet");
+  });
+
+  it("words the saved line for db mode, and lets it be dismissed", async () => {
+    settings.data = make({ revision: { saved: 5, applied: 4, appliedMode: "db" } });
+    render(<CaseAlertSettings chain="SRE_SAAS" />);
+    fireEvent.click(within(chatRow("Apollo")).getByRole("button", { name: "More" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Turn off" }));
+    fireEvent.click(within(chatRow("Apollo")).getByRole("button", { name: "Turn off" }));
+    await submit();
+    expect(screen.getByText(/^✓ Saved/)).toHaveTextContent(`✓ Saved 1 change. ${DB}`);
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
-    expect(screen.queryByText(/^✓ Saved:/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^✓ Saved/)).not.toBeInTheDocument();
+  });
+
+  it("words the saved line for shadow mode: compared, not used yet", async () => {
+    settings.data = make({ revision: { saved: 5, applied: 4, appliedMode: "shadow" } });
+    render(<CaseAlertSettings chain="SRE_SAAS" />);
+    fireEvent.click(within(chatRow("Apollo")).getByRole("button", { name: "More" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Turn off" }));
+    fireEvent.click(within(chatRow("Apollo")).getByRole("button", { name: "Turn off" }));
+    await submit();
+    expect(screen.getByText(/^✓ Saved/)).toHaveTextContent(`✓ Saved 1 change. ${NOT_DB}`);
+  });
+
+  it("adds an SME team's space with ladder SME and no SRE box", async () => {
+    settings.data = make({
+      rooms: [asgardeo],
+      canManage: { view: true, roomLadders: ["SME"], routeLadders: [] },
+    });
+    saveRoom.mutateAsync.mockResolvedValue({ ...asgardeo, id: "u2-room" });
+    setWebhook.mutateAsync.mockResolvedValue({});
+    render(<CaseAlertSettings family="SRE" teams={SME_TEAMS} />);
+    const { dialog } = openAdd();
+    expect(optionNames(within(dialog).getByLabelText("Team"))).toEqual(["Asgardeo · has a space", "U2"]);
+    fireEvent.change(within(dialog).getByLabelText("Team"), { target: { value: "SME|u2" } });
+    expect(within(dialog).queryByRole("checkbox")).not.toBeInTheDocument();
+    fireEvent.change(within(dialog).getByLabelText("Google Chat webhook URL"), { target: { value: HOOK } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add to changes" }));
+    await submit();
+    expect(saveRoom.mutateAsync).toHaveBeenCalledWith({
+      ladder: "SME",
+      teamKey: "u2",
+      label: "U2 SME",
+      enabled: true,
+      teamless: false,
+      channel: "",
+    });
+    expect(setWebhook.mutateAsync).toHaveBeenCalledWith({ roomId: "u2-room", url: HOOK });
   });
 });

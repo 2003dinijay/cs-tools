@@ -19,7 +19,8 @@
 import type { PagingChainCode, RotaFamily, ScheduleTeam } from "../types";
 
 /** A chain the Case Alerts tab can show: the four the server serves, and
- *  PaaS SRE, which has no rota (and so no chain) yet. */
+ *  PaaS SRE, which has no rota (and so no chain) yet. The tab offers every
+ *  one but CRE's (see caseAlertChainsFor). */
 export type CaseAlertChain = PagingChainCode | "PAAS";
 
 /** The chain a team's alerts go through: CRE's, SME's, or its own SRE rota's
@@ -36,11 +37,11 @@ export function chainOfTeam(team: Pick<ScheduleTeam, "family" | "rotaCode">): Ca
  * The chains a reader is shown on Case Alerts: their own, not every team's.
  *
  * A Team lead or a rota admin sees the chain of each team they run -- an SRE
- * rota admin runs SaaS and IaaS, so both; a CRE rota admin, CRE's. Anybody
- * the server lets change part of CRE's chain (the America lead) sees CRE's.
- * The CRE head and the CS head look across every family, as a CSM admin
- * does, and see them all: `undefined`. What they may change on each is
- * still the server's to say.
+ * rota admin runs SaaS and IaaS, so both -- but never CRE's for running a CRE
+ * team. Whoever may see a family's alert settings (settingsLadders, the
+ * server's canManage.roomLadders) sees that family's chains: CRE's only so. The CRE head and the CS head look
+ * across every family, as a CSM admin does, and see them all: `undefined`.
+ * What they may change on each is still the server's to say.
  *
  * In the picker's order. Only what is shown -- the server still serves every
  * chain to internal staff, and checks every change.
@@ -50,8 +51,6 @@ export function caseAlertChainsFor(reader: {
   teams: readonly Pick<ScheduleTeam, "key" | "family" | "rotaCode">[];
   /** The teams the reader leads or runs as a rota admin. */
   runs: readonly string[];
-  /** Whether the server lets them change some part of CRE's chain. */
-  creRights: boolean;
   /** A CSM admin. */
   portalAdmin: boolean;
   /** The CRE head or the CS head. */
@@ -59,6 +58,8 @@ export function caseAlertChainsFor(reader: {
   /** The reader's own team, from their profile: what places a team the
    *  catalogue does not list -- one with no rota yet, such as PaaS. */
   ownTeam?: { key: string; family?: RotaFamily };
+  /** The families whose alert settings the reader may see and change. */
+  settingsLadders?: readonly string[];
 }): CaseAlertChain[] | undefined {
   if (reader.portalAdmin || reader.head) return undefined;
   const byKey = new Map<string, Pick<ScheduleTeam, "family" | "rotaCode">>(
@@ -71,7 +72,15 @@ export function caseAlertChainsFor(reader: {
     const team = byKey.get(key.toLowerCase());
     if (team) mine.add(chainOfTeam(team));
   }
-  if (reader.creRights) mine.add("CRE");
+  const mineOf: Record<string, CaseAlertChain[]> = {
+    CRE: ["CRE"],
+    SRE: ["SRE_SAAS", "SRE_IAAS"],
+    SME: ["SME"],
+  };
+  mine.delete("CRE");
+  for (const ladder of reader.settingsLadders ?? []) {
+    for (const c of mineOf[ladder] ?? []) mine.add(c);
+  }
   const order: CaseAlertChain[] = ["CRE", "SRE_SAAS", "SRE_IAAS", "PAAS", "SME"];
   return order.filter((c) => mine.has(c));
 }

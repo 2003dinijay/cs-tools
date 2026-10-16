@@ -16,7 +16,7 @@
  * under the License.
  */
 
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import type {
@@ -30,11 +30,21 @@ const settings: { data?: Settings } = {};
 const saveRoom = { mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false };
 const setWebhook = { mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false };
 const testRoom = { mutate: vi.fn(), isPending: false };
-const deleteRoom = { mutate: vi.fn(), isPending: false };
-const saveRoute = { mutate: vi.fn(), isPending: false };
-const deleteRoute = { mutate: vi.fn(), isPending: false };
-const saveValues = { mutate: vi.fn(), isPending: false };
-const deleteValue = { mutate: vi.fn(), isPending: false };
+const deleteRoom = { mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false };
+const saveRoute = { mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false };
+const deleteRoute = { mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false };
+const saveValues = { mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false };
+const deleteValue = { mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false };
+
+/** Presses the family's Submit and waits until it has saved everything. */
+async function submit(family = "SRE"): Promise<void> {
+  fireEvent.click(screen.getByRole("button", { name: `Submit ${family} changes` }));
+  await waitFor(() =>
+    expect(screen.getByRole("region", { name: `${family} changes to submit` })).toHaveTextContent(
+      "No changes to submit.",
+    ),
+  );
+}
 
 vi.mock("../api/useCaseAlertSettings", () => ({
   useCaseAlertSettings: () => ({
@@ -135,9 +145,41 @@ describe("CaseAlertSettings", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it("shows nothing for a chain with no settings here (SME)", () => {
-    const { container } = render(<CaseAlertSettings chain="SME" />);
-    expect(container).toBeEmptyDOMElement();
+  it("shows SRE and SME together on the SRE tab: chat spaces, SRE redirects, both ladders' settings", () => {
+    settings.data = make({
+      canManage: { view: true, roomLadders: ["SRE", "SME"], routeLadders: ["SRE"] },
+    });
+    render(<CaseAlertSettings family="SRE" />);
+    expect(screen.getByRole("heading", { name: "SRE settings" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Team chat routing" })).toBeInTheDocument();
+    expect(screen.getByText(/Send an incident's alerts to another SRE team/)).toBeInTheDocument();
+    expect(screen.getByText(/^SRE ladder settings/)).toBeInTheDocument();
+    expect(screen.getByText(/^SME ladder settings/)).toBeInTheDocument();
+  });
+
+  it("shows the SME rota admin SME's part of the SRE tab only: no redirects, no SRE settings", () => {
+    settings.data = make({
+      canManage: { view: true, roomLadders: ["SME"], routeLadders: [] },
+    });
+    render(<CaseAlertSettings family="SRE" />);
+    expect(screen.getByRole("heading", { name: "SRE settings" })).toBeInTheDocument();
+    expect(screen.queryByText(/redirect/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^SRE ladder settings/)).not.toBeInTheDocument();
+    expect(screen.getByText(/^SME ladder settings/)).toBeInTheDocument();
+  });
+
+  it("shows nothing of a family whose settings the reader may not change", () => {
+    for (const [family, ladders] of [
+      ["CRE", ["SRE", "SME"]],
+      ["SRE", ["CRE"]],
+    ] as const) {
+      settings.data = make({
+        canManage: { view: true, roomLadders: [...ladders], routeLadders: [] },
+      });
+      const { container, unmount } = render(<CaseAlertSettings family={family} />);
+      expect(container).toBeEmptyDOMElement();
+      unmount();
+    }
   });
 
   it("says when saved changes wait for a restart, and when they are in use", () => {
@@ -165,13 +207,7 @@ describe("CaseAlertSettings", () => {
     ).toBeInTheDocument();
   });
 
-  it("confirms a redirect once it is added, and once it is removed", () => {
-    saveRoute.mutate.mockImplementationOnce(
-      (_v: unknown, opts: { onSuccess?: () => void }) => opts.onSuccess?.(),
-    );
-    deleteRoute.mutate.mockImplementationOnce(
-      (_v: unknown, opts: { onSuccess?: () => void }) => opts.onSuccess?.(),
-    );
+  it("adds a redirect and removes one as changes, saved together on Submit", async () => {
     render(<CaseAlertSettings chain="SRE_SAAS" />);
     fireEvent.change(screen.getByLabelText("When an incident is assigned to"), {
       target: { value: "Asgardeo" },
@@ -180,20 +216,24 @@ describe("CaseAlertSettings", () => {
       target: { value: "team:apollo" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Add" }));
-    expect(screen.getByText(/^✓ Saved:/)).toHaveTextContent(
-      "✓ Saved: redirect from Asgardeo to Apollo. The alert service uses the saved settings once it is switched to them (db mode).",
+    expect(screen.getByText(/^Added to this tab's changes:/)).toHaveTextContent(
+      "Added to this tab's changes: redirect from Asgardeo to Apollo. Submit to save them.",
     );
     const redirect = screen
       .getByText("Every team on the SaaS SRE rota")
       .closest("tr") as HTMLElement;
     fireEvent.click(within(redirect).getByRole("button", { name: "Remove" }));
     fireEvent.click(within(redirect).getByRole("button", { name: "Remove" }));
-    expect(screen.getByText(/^✓ Saved:/)).toHaveTextContent(
-      "✓ Saved: redirect from default sre group removed.",
-    );
+    const pending = screen.getByRole("region", { name: "SRE changes to submit" });
+    expect(pending).toHaveTextContent("2 changes not saved yet");
+    expect(saveRoute.mutateAsync).not.toHaveBeenCalled();
+    await submit();
+    expect(saveRoute.mutateAsync).toHaveBeenCalledWith({ ladder: "SRE", groupName: "Asgardeo", teamKey: "apollo" });
+    expect(deleteRoute.mutateAsync).toHaveBeenCalledWith("55555555-5555-4555-8555-555555555555");
+    expect(screen.getByText(/^✓ Saved/)).toHaveTextContent("✓ Saved 2 changes.");
   });
 
-  it("sends an SME team's incidents to a whole rota, picked from lists", () => {
+  it("sends an SME team's incidents to a whole rota, picked from lists", async () => {
     render(<CaseAlertSettings chain="SRE_SAAS" />);
     expect(
       screen.getByText("Every team on the SaaS SRE rota"),
@@ -214,13 +254,11 @@ describe("CaseAlertSettings", () => {
       target: { value: "rota:SRE_SAAS" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Add" }));
-    expect(saveRoute.mutate).toHaveBeenCalledWith(
-      { ladder: "SRE", groupName: "Asgardeo", rotaCode: "SRE_SAAS" },
-      expect.anything(),
-    );
+    await submit();
+    expect(saveRoute.mutateAsync).toHaveBeenCalledWith({ ladder: "SRE", groupName: "Asgardeo", rotaCode: "SRE_SAAS" });
   });
 
-  it("offers the ladder's own teams, then whole rotas, as where alerts go", () => {
+  it("offers the ladder's own teams, then whole rotas, as where alerts go", async () => {
     render(<CaseAlertSettings chain="SRE_SAAS" />);
     const to = screen.getByLabelText("send its alerts to");
     expect(
@@ -237,10 +275,8 @@ describe("CaseAlertSettings", () => {
     });
     fireEvent.change(to, { target: { value: "team:apollo" } });
     fireEvent.click(screen.getByRole("button", { name: "Add" }));
-    expect(saveRoute.mutate).toHaveBeenCalledWith(
-      { ladder: "SRE", groupName: "Asgardeo", teamKey: "apollo" },
-      expect.anything(),
-    );
+    await submit();
+    expect(saveRoute.mutateAsync).toHaveBeenCalledWith({ ladder: "SRE", groupName: "Asgardeo", teamKey: "apollo" });
   });
 
   it("says where a redirected incident's alerts end up: the team's space and channel", () => {
@@ -362,9 +398,10 @@ describe("CaseAlertSettings", () => {
         name: "Send an incident's alerts to another SRE team",
       }),
     ).toBeInTheDocument();
+    // How a team is alerted stays in the file: no column for it.
     expect(
-      screen.getByRole("columnheader", { name: "Alerts by" }),
-    ).toBeInTheDocument();
+      screen.queryByRole("columnheader", { name: "Alerts by" }),
+    ).not.toBeInTheDocument();
     expect(
       screen.getByRole("columnheader", { name: "Assigned to in CSM Portal" }),
     ).toBeInTheDocument();
@@ -390,21 +427,4 @@ describe("CaseAlertSettings", () => {
     expect(screen.queryByText("Other teams")).not.toBeInTheDocument();
   });
 
-  it("tells somebody who may only view who can change the settings", () => {
-    settings.data = make({
-      canManage: { view: true, roomLadders: [], routeLadders: [] },
-    });
-    render(<CaseAlertSettings chain="SRE_IAAS" />);
-    expect(
-      screen.getByRole("heading", { name: "IaaS SRE settings" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        "You can view these. CSM admins and the SRE rota admin can change them.",
-      ),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "More" }),
-    ).not.toBeInTheDocument();
-  });
 });

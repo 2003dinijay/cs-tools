@@ -27,7 +27,7 @@ import (
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/entity"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/risk"
-	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/servicenow"
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/viewer"
 )
 
 // riskClient abstracts the entity-service-backed customer-health risk
@@ -57,12 +57,12 @@ type riskClient interface {
 	GetActionItemComments(ctx context.Context, actionItemID string) ([]risk.ActionItemComment, error)
 }
 
-// customerHealthSNClient abstracts the account-detail lookup used by
+// customerHealthDetailClient abstracts the account-detail lookup used by
 // CustomerHealthHandler (the summary list goes through
 // customerHealthAccountSearchClient, the rest of this domain through
-// riskClient).
-type customerHealthSNClient interface {
-	GetCustomerHealthDetail(ctx context.Context, accountID string) (*servicenow.AccountDetail, error)
+// riskClient). It is entity-service-backed.
+type customerHealthDetailClient interface {
+	GetCustomerHealthDetail(ctx context.Context, accountID string) (*viewer.AccountDetail, error)
 }
 
 // customerHealthAccountSearchClient is the one entity-service call behind the
@@ -73,13 +73,13 @@ type customerHealthAccountSearchClient interface {
 	SearchAccountsWithHealth(ctx context.Context, req entity.CHAccountSearchRequest) (entity.CHAccountSearchResponse, error)
 }
 
-// CustomerHealthHandler handles HTTP requests for SupportPortalLite's
-// customer-health/risk-tracking endpoints (/customer-health/*),
-// delegating to MySQL (risk-tracking state) and ServiceNow (account/project
-// summary data) as each endpoint requires.
+// CustomerHealthHandler handles HTTP requests for the viewer audience's
+// customer-health/risk-tracking endpoints (/customer-health/*). The
+// risk-tracking state, the summary list and the account detail all come from
+// entity-service (Postgres).
 type CustomerHealthHandler struct {
 	risk        riskClient
-	sn          customerHealthSNClient
+	detail      customerHealthDetailClient
 	search      customerHealthAccountSearchClient
 	accessGuard *AccessGuard
 }
@@ -90,8 +90,8 @@ type CustomerHealthHandler struct {
 // beyond it (confirmed by reading every customer-health resource function in
 // service.bal: none call a group list beyond the global request
 // interceptor).
-func NewCustomerHealthHandler(riskClient riskClient, sn customerHealthSNClient, search customerHealthAccountSearchClient, accessGuard *AccessGuard) *CustomerHealthHandler {
-	return &CustomerHealthHandler{risk: riskClient, sn: sn, search: search, accessGuard: accessGuard}
+func NewCustomerHealthHandler(riskClient riskClient, detail customerHealthDetailClient, search customerHealthAccountSearchClient, accessGuard *AccessGuard) *CustomerHealthHandler {
+	return &CustomerHealthHandler{risk: riskClient, detail: detail, search: search, accessGuard: accessGuard}
 }
 
 // customerHealthSummaryRequest is the payload for POST
@@ -118,16 +118,16 @@ type accountSummaryResponse struct {
 }
 
 type accountSummary struct {
-	AccountSysID           string                  `json:"accountSysId"`
-	AccountName            *string                 `json:"accountName"`
-	HasNoGoLive            servicenow.GoLiveStatus `json:"hasNoGoLive"`
-	HasRecentCases         bool                    `json:"hasRecentCases"`
-	HasEolProduct          bool                    `json:"hasEolProduct"`
-	HasAbandonedMigrations bool                    `json:"hasAbandonedMigrations"`
-	HasMigrationDelays     bool                    `json:"hasMigrationDelays"`
-	HasRecentEscalations   bool                    `json:"hasRecentEscalations"`
-	NoSupportCases6mo      bool                    `json:"noSupportCases6mo"`
-	HealthStatus           *string                 `json:"healthStatus"`
+	AccountSysID           string              `json:"accountSysId"`
+	AccountName            *string             `json:"accountName"`
+	HasNoGoLive            viewer.GoLiveStatus `json:"hasNoGoLive"`
+	HasRecentCases         bool                `json:"hasRecentCases"`
+	HasEolProduct          bool                `json:"hasEolProduct"`
+	HasAbandonedMigrations bool                `json:"hasAbandonedMigrations"`
+	HasMigrationDelays     bool                `json:"hasMigrationDelays"`
+	HasRecentEscalations   bool                `json:"hasRecentEscalations"`
+	NoSupportCases6mo      bool                `json:"noSupportCases6mo"`
+	HealthStatus           *string             `json:"healthStatus"`
 }
 
 // GetSummary handles POST /customer-health/summary.
@@ -263,7 +263,7 @@ func (h *CustomerHealthHandler) summaryViaSearch(ctx context.Context, payload cu
 		row := accountSummary{AccountSysID: a.ID, AccountName: &name}
 		if s := a.HealthSummary; s != nil {
 			hs = s.HealthStatus
-			row.HasNoGoLive = servicenow.GoLiveStatus{Status: s.GoLiveStatus.Status, IsRisk: s.GoLiveStatus.IsRisk, State: s.GoLiveStatus.State}
+			row.HasNoGoLive = viewer.GoLiveStatus{Status: s.GoLiveStatus.Status, IsRisk: s.GoLiveStatus.IsRisk, State: s.GoLiveStatus.State}
 			row.HasRecentCases = s.HasRecentCases
 			row.HasEolProduct = s.HasEolProduct
 			row.HasAbandonedMigrations = s.HasAbandonedMigrations
@@ -326,13 +326,13 @@ func (h *CustomerHealthHandler) GetAccountDetail(w http.ResponseWriter, r *http.
 		return
 	}
 
-	detail, err := h.sn.GetCustomerHealthDetail(r.Context(), accountID)
+	detail, err := h.detail.GetCustomerHealthDetail(r.Context(), accountID)
 	if err != nil {
-		if errors.Is(err, servicenow.ErrAccountNotFound) {
+		if errors.Is(err, viewer.ErrAccountNotFound) {
 			writeError(w, http.StatusNotFound, ErrMsgNotFound)
 			return
 		}
-		slog.ErrorContext(r.Context(), "servicenow GetCustomerHealthDetail failed", "userID", user.UserID, "accountId", accountID, "err", err)
+		slog.ErrorContext(r.Context(), "GetCustomerHealthDetail failed", "userID", user.UserID, "accountId", accountID, "err", err)
 		mapUpstreamErrorGeneric(w, err, "Failed to retrieve account health detail.")
 		return
 	}
