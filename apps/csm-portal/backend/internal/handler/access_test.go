@@ -251,6 +251,86 @@ func TestAccessGuard_RolesForUsesConfiguredNames(t *testing.T) {
 	}
 }
 
+// testRoleIDs is a dummy ASGARDEO_ROLE_IDS mapping (real role name -> role
+// ID) covering every name testAccessConfig configures, for WithRoleIDs.
+func testRoleIDs() map[string]string {
+	return map[string]string{
+		"test-viewer":                "viewer-id",
+		"test-escalator":             "escalator-id",
+		"test-attachment-downloader": "attachment-downloader-id",
+		"test-usage-metrics-viewer":  "usage-metrics-viewer-id",
+		"test-cs-engineer":           "cs-engineer-id",
+		"test-admin":                 "admin-id",
+		"test-timecard-approver":     "timecard-approver-id",
+		"test-dashboard-designer":    "dashboard-designer-id",
+		"test-sales-solutions":       "sales-solutions-id",
+		"test-worknote-creator":      "worknote-creator-id",
+		"test-announcement-creator":  "announcement-creator-id",
+		"test-comment-updater":       "comment-updater-id",
+		"test-security-team":         "security-team-id",
+	}
+}
+
+func TestAccessGuard_RolesForIDs(t *testing.T) {
+	g := NewAccessGuard(testAccessConfig()).WithRoleIDs(testRoleIDs())
+	tests := []struct {
+		name string
+		held []string
+		want []string
+	}{
+		{"none", nil, []string{}},
+		{"one role", []string{"viewer-id"}, []string{"viewer"}},
+		{"several roles come back in a fixed order", []string{"admin-id", "escalator-id", "viewer-id"}, []string{"viewer", "escalator", "admin"}},
+		{"unrelated/unconfigured IDs are ignored", []string{"some-other-app-role-id", "another-unrelated-id"}, []string{}},
+		{"a duplicated held ID is reported once", []string{"viewer-id", "viewer-id"}, []string{"viewer"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := g.RolesForIDs(tc.held)
+			if got == nil || !slices.Equal(got, tc.want) {
+				t.Errorf("RolesForIDs = %#v, want %#v (non-nil)", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestAccessGuard_RolesForIDsTwoRolesSharingAName is the whole reason
+// RolesForIDs exists instead of just reusing RolesFor against each role's
+// display name: two distinct Asgardeo roles can share the same display name,
+// so only matching by ID -- never by name -- can tell them apart. Both IDs
+// are configured as granting DIFFERENT portal roles here specifically to
+// prove the match follows the ID, not whatever name happens to be attached
+// to it (RolesForIDs is never even given a name to match against at all).
+func TestAccessGuard_RolesForIDsTwoRolesSharingAName(t *testing.T) {
+	cfg := testAccessConfig()
+	cfg.Viewer = []string{"shared-display-name"}
+	cfg.Admin = []string{"shared-display-name"}
+	g := NewAccessGuard(cfg).WithRoleIDs(map[string]string{
+		"shared-display-name": "viewer-role-real-id",
+	})
+	// Only one of the two portal roles configured for this name actually has
+	// an ID recorded against it in this particular WithRoleIDs call (a real
+	// ASGARDEO_ROLE_IDS can only ever map one name to one ID) -- this proves
+	// RolesForIDs resolves strictly through the ID side of that mapping.
+	if got := g.RolesForIDs([]string{"viewer-role-real-id"}); !slices.Equal(got, []string{"viewer", "admin"}) {
+		t.Errorf("RolesForIDs = %v, want [viewer admin]: both portal roles configured for this name share its one real ID", got)
+	}
+	if got := g.RolesForIDs([]string{"some-other-role-id"}); len(got) != 0 {
+		t.Errorf("RolesForIDs = %v, want none for an unconfigured ID", got)
+	}
+}
+
+// TestAccessGuard_RolesForIDsBeforeWithRoleIDs: calling RolesForIDs before
+// WithRoleIDs has ever run (e.g. a test or call site that builds a guard but
+// never wires role IDs) must answer empty for everything, not panic on a nil
+// map.
+func TestAccessGuard_RolesForIDsBeforeWithRoleIDs(t *testing.T) {
+	g := NewAccessGuard(testAccessConfig())
+	if got := g.RolesForIDs([]string{"viewer-id"}); len(got) != 0 {
+		t.Errorf("RolesForIDs = %v, want none before WithRoleIDs has run", got)
+	}
+}
+
 func TestAccessGuard_OperationsAreForCsEngineersAdminsAndSecurityTeam(t *testing.T) {
 	g := NewAccessGuard(testAccessConfig())
 	for _, role := range []string{
