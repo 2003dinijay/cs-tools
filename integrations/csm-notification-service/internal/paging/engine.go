@@ -495,7 +495,7 @@ func (e *Engine) postUnanswered(ctx context.Context, st LadderState) {
 			PortalURL:   portal,
 			PortalLabel: label,
 			ThreadKey:   t.chatThreadKey(),
-			Reply:       target.reply,
+			Reply:       target.reply || e.sreReplies(t),
 		})
 		if err != nil {
 			slog.ErrorContext(ctx, "escalation: the closing message was not posted", "incidentId", t.IncidentID, "audience", target.room, "err", err)
@@ -545,6 +545,11 @@ func (e *Engine) unansweredRooms(plan Plan) ([]chatRoom, string) {
 		return []chatRoom{*e.sharedRoom}, t.Routing.SREChain()
 	}
 	return nil, ""
+}
+
+// sreReplies reports whether an SRE incident's own space gets its messages as replies: only when its rungs post there, so the "Incident Reported" card exists.
+func (e *Engine) sreReplies(t Trigger) bool {
+	return t.sreIncident() && e.channelFor(t).Uses(ChannelChat)
 }
 
 // incidentRooms is the INCIDENT_CHAT_SPACES spaces an incident's card went to; a case or a group without one keeps the ladder's space.
@@ -737,7 +742,7 @@ func (e *Engine) Handle(ctx context.Context, record eventbus.Record) error {
 			// must not silence their own pager.
 			return nil
 		}
-		return e.cancelBy(ctx, env.EntityID, cancelPublicComment)
+		return e.cancelBy(ctx, env.EntityID, cancelPublicComment, "")
 	case events.TypeIncidentAssigned:
 		if e.cfg.Kind != LadderSRE {
 			// Assignment is the SRE ladder's acknowledgement, not the CRE
@@ -749,13 +754,13 @@ func (e *Engine) Handle(ctx context.Context, record eventbus.Record) error {
 		if err := json.Unmarshal(env.Payload, &p); err != nil {
 			return fmt.Errorf("escalation: decode incident.assigned payload: %w", err)
 		}
-		err := e.cancelBy(ctx, env.EntityID, cancelAssigned)
+		err := e.cancelBy(ctx, env.EntityID, cancelAssigned, p.AssigneeName)
 		// An engineer taking the incident also answers any Special Ops page
 		// raised before the assignment -- open now or still on its way -- so
 		// only a later press pages again.
 		return errors.Join(err, e.closeSMEPages(ctx, env.EntityID, reportedAt(p.AssignedOn)))
 	default:
-		return e.cancelBy(ctx, env.EntityID, cancelStateChange)
+		return e.cancelBy(ctx, env.EntityID, cancelStateChange, "")
 	}
 }
 
@@ -1225,7 +1230,7 @@ func (e *Engine) retireRunning(ctx context.Context, incidentID string) (LadderSt
 // written, then the state is deleted. A failed work note therefore retries
 // with the state still present (and Cancelled already set, so the drop is not
 // repeated), rather than losing the summary.
-func (e *Engine) cancelBy(ctx context.Context, incidentID string, reason cancelReason) error {
+func (e *Engine) cancelBy(ctx context.Context, incidentID string, reason cancelReason, assignee string) error {
 	st, found, err := e.store.Get(ctx, incidentID)
 	if err != nil {
 		return fmt.Errorf("escalation: load ladder for %s: %w", incidentID, err)
@@ -1234,6 +1239,9 @@ func (e *Engine) cancelBy(ctx context.Context, incidentID string, reason cancelR
 		// The common case: an incident acknowledged without a ladder ever
 		// having run, or one already finished.
 		return nil
+	}
+	if st.Cancelled == nil && assignee != "" {
+		st.AssigneeName = assignee
 	}
 
 	// Acknowledgement is BOTH gestures, not either: the incident moved out of
@@ -1749,15 +1757,19 @@ func triggerFromCreated(incidentID string, p events.IncidentCreatedPayload) Trig
 	// the ladder against one shift and route it by another.
 	at := reportedAt(p.ReportedAt)
 	return Trigger{
-		IncidentID: incidentID,
-		Number:     p.Number,
-		WSO2CaseID: p.WSO2CaseID,
-		Priority:   p.Priority,
-		Title:      p.Title,
-		Account:    p.Account,
-		Team:       p.Team,
-		Kind:       TriggerNewIncident,
-		At:         at,
+		IncidentID:  incidentID,
+		Number:      p.Number,
+		WSO2CaseID:  p.WSO2CaseID,
+		Priority:    p.Priority,
+		Title:       p.Title,
+		Account:     p.Account,
+		Team:        p.Team,
+		Kind:        TriggerNewIncident,
+		At:          at,
+		Service:     p.Service,
+		Environment: p.Environment,
+		Category:    p.Category,
+		State:       p.State,
 		Routing: RoutingContext{
 			Product:         p.Product,
 			ABTEligible:     p.ABTEligible,
