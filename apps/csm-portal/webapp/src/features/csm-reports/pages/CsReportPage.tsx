@@ -216,6 +216,13 @@ function EngagementDescription({ text }: { text: string }): JSX.Element {
   );
 }
 
+function getReportMonth(opened: string): number | null {
+  const match = /^(\d{4})-(\d{2})-\d{2}/.exec(opened);
+  if (!match) return null;
+  const month = Number(match[2]) - 1;
+  return month >= 0 && month <= 11 ? month : null;
+}
+
 function EmptyRow({ colSpan, label }: { colSpan: number; label: string }): JSX.Element {
   return (
     <TableRow>
@@ -251,7 +258,7 @@ export default function CsReportPage(): JSX.Element {
   const [notesText, setNotesText] = useState("");
   const businessOverviewTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const notesTextareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const [submitted, setSubmitted] = useState(false);
+  const [submittedRange, setSubmittedRange] = useState<{ from: string; to: string } | null>(null);
 
   const {
     data: csReportData,
@@ -261,10 +268,12 @@ export default function CsReportPage(): JSX.Element {
     refetch: refetchReportData,
   } = useGetCsReportDetails({
     projectSysId,
-    from: from?.format("YYYY-MM-DD") ?? "",
-    to: to?.format("YYYY-MM-DD") ?? "",
-    enabled: submitted,
+    from: submittedRange?.from ?? "",
+    to: submittedRange?.to ?? "",
+    enabled: submittedRange !== null,
   });
+  const reportFrom = submittedRange ? dayjs(submittedRange.from) : from;
+  const reportTo = submittedRange ? dayjs(submittedRange.to) : to;
 
   const handleOptionChange = (value: string) => {
     setSelectedOption(value);
@@ -349,8 +358,8 @@ export default function CsReportPage(): JSX.Element {
       csReportData?.subscriptionDetails?.accountName ?? "Unknown Account",
       csReportData?.subscriptionDetails?.projectKey ?? "Unknown Project Key",
       csReportData?.slaDetails?.slaRecords ?? [],
-      from,
-      to,
+      reportFrom,
+      reportTo,
       notesText,
       notesImage,
       deploymentImage,
@@ -373,11 +382,16 @@ export default function CsReportPage(): JSX.Element {
         return;
       }
     }
+    if (!from || !to) return;
     setDateComparisonError("");
     setDateRangeError("");
     setShowReport(true);
-    setSubmitted(true);
-    void refetchReportData();
+    const nextRange = { from: from.format("YYYY-MM-DD"), to: to.format("YYYY-MM-DD") };
+    if (submittedRange?.from === nextRange.from && submittedRange?.to === nextRange.to) {
+      void refetchReportData();
+      return;
+    }
+    setSubmittedRange(nextRange);
   };
 
   const transformedData = useMemo(() => {
@@ -414,7 +428,8 @@ export default function CsReportPage(): JSX.Element {
 
     const casesByMonthAndPriority = filteredCaseRecords.reduce(
       (acc: { [key: number]: { [key: string]: number } }, record) => {
-        const month = new Date(record.opened).getMonth();
+        const month = getReportMonth(record.opened);
+        if (month === null) return acc;
         const priority = record.casePriority;
         acc[month] = acc[month] || {};
         acc[month][priority] = (acc[month][priority] || 0) + 1;
@@ -427,7 +442,8 @@ export default function CsReportPage(): JSX.Element {
 
     const casesByMonthAndProduct = filteredCaseRecords.reduce(
       (acc: { [key: number]: { [key: string]: number } }, record) => {
-        const month = new Date(record.opened).getMonth();
+        const month = getReportMonth(record.opened);
+        if (month === null) return acc;
         const product = record.productName;
         acc[month] = acc[month] || {};
         acc[month][product] = (acc[month][product] || 0) + 1;
@@ -467,7 +483,7 @@ export default function CsReportPage(): JSX.Element {
     }, new Map<string, ProductDetails>()),
   );
   const engagementCases = (csReportData?.casesRecords ?? []).filter((record) => record.caseType === "Engagement");
-  const rangeLabel = from && to ? `${from.format("MMM D, YYYY")} – ${to.format("MMM D, YYYY")}` : "";
+  const rangeLabel = reportFrom && reportTo ? `${reportFrom.format("MMM D, YYYY")} – ${reportTo.format("MMM D, YYYY")}` : "";
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 2.5 }}>
@@ -698,7 +714,7 @@ export default function CsReportPage(): JSX.Element {
             >
               <Box sx={{ minWidth: 0, overflow: "hidden" }}>
                 {transformedData?.casesByDayAndState ? (
-                  <BarChart data={transformedData.casesByDayAndState} chartType="state" from={from ?? dayjs()} to={to ?? dayjs()} />
+                  <BarChart data={transformedData.casesByDayAndState} chartType="state" from={reportFrom ?? dayjs()} to={reportTo ?? dayjs()} />
                 ) : (
                   <Typography variant="body2" color="text.secondary">
                     No opened or resolved cases in this range.
@@ -713,8 +729,8 @@ export default function CsReportPage(): JSX.Element {
                   <BarChart
                     data={transformedData.casesByMonthAndProduct}
                     distinctProductNames={transformedData.distinctProductNames}
-                    from={from ?? dayjs()}
-                    to={to ?? dayjs()}
+                    from={reportFrom ?? dayjs()}
+                    to={reportTo ?? dayjs()}
                     chartType="product"
                   />
                 ) : (
@@ -728,8 +744,8 @@ export default function CsReportPage(): JSX.Element {
                   <BarChart
                     data={transformedData.casesByMonthAndPriority}
                     distinctPriorities={transformedData.distinctPriorities}
-                    from={from ?? dayjs()}
-                    to={to ?? dayjs()}
+                    from={reportFrom ?? dayjs()}
+                    to={reportTo ?? dayjs()}
                     chartType="priority"
                   />
                 ) : (
@@ -743,7 +759,7 @@ export default function CsReportPage(): JSX.Element {
 
           <SectionCard className="cases-volume-widget" title="Case volume by month">
             {transformedData?.MonthlyCases && transformedData.MonthlyCases.length > 0 ? (
-              <CSLineChart data={transformedData.MonthlyCases} from={from ?? dayjs().startOf("month")} to={to ?? dayjs().endOf("month")} />
+              <CSLineChart data={transformedData.MonthlyCases} from={reportFrom ?? dayjs().startOf("month")} to={reportTo ?? dayjs().endOf("month")} />
             ) : (
               <Typography variant="body2" color="text.secondary">
                 No case volume in this range.
