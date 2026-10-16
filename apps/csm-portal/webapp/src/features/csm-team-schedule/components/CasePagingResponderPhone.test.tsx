@@ -25,7 +25,7 @@ import type { PagingChainResponse } from "../types";
 import { pagingChain, pagingMember } from "../test/fixtures";
 import { mayBeResponder, responderNeedsProfilePhoneMessage } from "../utils/pagingPhone";
 // vi.mock below is hoisted above this import, so the panel gets the mocks.
-import CasePagingTab from "./CasePagingTab";
+import CasePagingPanel from "./CasePagingPanel";
 
 const mutateAsync = vi.fn();
 const showError = vi.fn();
@@ -78,7 +78,7 @@ function chainWithAnn(hasProfilePhone: boolean | undefined): PagingChainResponse
 }
 
 function pickAnnAsSecondResponder() {
-  render(<CasePagingTab onOpenRota={vi.fn()} />);
+  render(<CasePagingPanel readiness={{ days: 7, isLoading: false, isError: false }} />);
   fireEvent.click(screen.getByRole("button", { name: /Edit alert chain/ }));
   fireEvent.change(screen.getByRole("combobox", { name: /2nd responder$/ }), { target: { value: "a3" } });
 }

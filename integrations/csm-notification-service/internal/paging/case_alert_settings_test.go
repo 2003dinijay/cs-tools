@@ -246,3 +246,69 @@ func TestCaseAlertRoomEnv(t *testing.T) {
 		}
 	}
 }
+
+// smeShapedConfig is prodShapedConfig with SME teams' rooms, as Production
+// names them: an audience each, the URLs in GOOGLE_CHAT_SPACES.
+const smeShapedConfig = prodShapedConfig + `
+sme:
+  enabled: true
+  channel: chat
+  teamChats:
+    asgardeo: { audience: "Asgardeo SME" }
+    u2:       { audience: "U2 SME" }
+`
+
+// A saved SME room replaces that SME team's room, or gives a team the file
+// leaves out one of its own; the other SME teams and every SRE and CRE room
+// keep the file's.
+func TestMergeCaseAlertSettings_SMETeamRooms(t *testing.T) {
+	cfg := loadConfigText(t, smeShapedConfig)
+	pristine := loadConfigText(t, smeShapedConfig)
+	saved := CaseAlertSettings{Rooms: []CaseAlertRoom{
+		{Ladder: "SME", TeamKey: "Asgardeo", Label: "Asgardeo SME (saved)", WebhookURL: "https://chat.googleapis.com/v1/spaces/ASG/messages?key=k&token=t"},
+		{Ladder: "SME", TeamKey: "moesif", Label: "Moesif SME", WebhookURL: "https://chat.googleapis.com/v1/spaces/MOE/messages?key=k&token=t"},
+	}}
+	merged, env, changes, err := MergeCaseAlertSettings(cfg, saved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(cfg, pristine) {
+		t.Fatal("the merge wrote into the caller's configuration")
+	}
+	if got := merged.SME.TeamChats["asgardeo"]; got.Audience != "Asgardeo SME (saved)" || got.WebhookURLEnv != "CASE_ALERTS_ROOM_SME_ASGARDEO" || env[got.WebhookURLEnv] != saved.Rooms[0].WebhookURL {
+		t.Errorf("asgardeo room = %+v", got)
+	}
+	if got := merged.SME.TeamChats["moesif"]; got.Audience != "Moesif SME" || env[got.WebhookURLEnv] != saved.Rooms[1].WebhookURL {
+		t.Errorf("moesif room = %+v", got)
+	}
+	if got := merged.SME.TeamChats["u2"]; got != cfg.SME.TeamChats["u2"] {
+		t.Errorf("u2's room changed without being saved: %+v", got)
+	}
+	if !reflect.DeepEqual(merged.SRE.TeamChats, cfg.SRE.TeamChats) || merged.SRE.Chat != cfg.SRE.Chat || merged.CRE.Chat != cfg.CRE.Chat {
+		t.Error("an SRE or CRE room changed when only SME rooms were saved")
+	}
+	joined := strings.Join(changes, "\n")
+	for _, want := range []string{`sme.teamChats.asgardeo: "Asgardeo SME" via GOOGLE_CHAT_SPACES`, "sme.teamChats.moesif: none (used sme.chat)"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("changes do not mention %q:\n%s", want, joined)
+		}
+	}
+	if strings.Contains(joined, "googleapis") || strings.Contains(joined, "token=") {
+		t.Error("a change line quotes a URL")
+	}
+}
+
+// With no SME team rooms in the file, a saved one is used for its team; every
+// other SME team keeps sme.chat (the engine's fallback).
+func TestMergeCaseAlertSettings_SMERoomWithoutTheFilesTeamRooms(t *testing.T) {
+	cfg := loadConfigText(t, prodShapedConfig)
+	merged, env, _, err := MergeCaseAlertSettings(cfg, CaseAlertSettings{Rooms: []CaseAlertRoom{
+		{Ladder: "SME", TeamKey: "asgardeo", Label: "Asgardeo SME", WebhookURL: "https://chat.googleapis.com/v1/spaces/ASG/messages?key=k&token=t"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := merged.SME.TeamChats["asgardeo"]; a.Audience != "Asgardeo SME" || env[a.WebhookURLEnv] == "" || len(merged.SME.TeamChats) != 1 {
+		t.Fatalf("SME rooms = %v, env = %v", merged.SME.TeamChats, env)
+	}
+}

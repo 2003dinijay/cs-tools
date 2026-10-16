@@ -143,6 +143,81 @@ var caseAlertKeys = map[string]caseAlertKey{
 	"smeHandoffChat":     boolKey(caseAlertSRE, func(l *LadderConfig) *bool { return &l.SMEHandoffChat }),
 }
 
+// smeCaseAlertKey is one key of the file's sme: section that can be saved
+// (ladder SME, 0238): how a saved value is laid over it, and read back.
+type smeCaseAlertKey struct {
+	set func(s *SMEConfig, raw json.RawMessage) error
+	get func(s SMEConfig) (any, bool)
+}
+
+// smeCaseAlertKeys are the SME page's values, by the file's name. Whether it
+// runs, its channel, safety and chat rooms are not among them.
+var smeCaseAlertKeys = map[string]smeCaseAlertKey{
+	"timing.initialWait": smeDurationKey(func(s *SMEConfig) *Duration { return &s.Timing.InitialWait }, true),
+	"timing.interval":    smeDurationKey(func(s *SMEConfig) *Duration { return &s.Timing.Interval }, false),
+	"onLeave": {
+		set: func(s *SMEConfig, raw json.RawMessage) error {
+			var v OnLeave
+			if err := strictJSON(raw, &v); err != nil {
+				return err
+			}
+			s.OnLeave = v
+			return nil
+		},
+		get: func(s SMEConfig) (any, bool) {
+			v := OnLeave(strings.ToLower(strings.TrimSpace(string(s.OnLeave))))
+			if v == "" {
+				v = OnLeaveSkip
+			}
+			return string(v), true
+		},
+	},
+	"unansweredChat": {
+		set: func(s *SMEConfig, raw json.RawMessage) error { return strictJSON(raw, &s.UnansweredChat) },
+		get: func(s SMEConfig) (any, bool) { return s.UnansweredChat, true },
+	},
+	"teams": {
+		set: func(s *SMEConfig, raw json.RawMessage) error {
+			var v map[string]string
+			if err := strictJSON(raw, &v); err != nil {
+				return err
+			}
+			s.Teams = v
+			return nil
+		},
+		get: func(s SMEConfig) (any, bool) {
+			if s.Teams == nil {
+				return nil, false
+			}
+			return maps.Clone(s.Teams), true
+		},
+	},
+}
+
+func smeDurationKey(field func(*SMEConfig) *Duration, zeroIsSet bool) smeCaseAlertKey {
+	return smeCaseAlertKey{
+		set: func(s *SMEConfig, raw json.RawMessage) error {
+			var v string
+			if err := strictJSON(raw, &v); err != nil {
+				return err
+			}
+			d, err := time.ParseDuration(strings.TrimSpace(v))
+			if err != nil {
+				return fmt.Errorf("%q is not a duration", v)
+			}
+			*field(s) = Duration(d)
+			return nil
+		},
+		get: func(s SMEConfig) (any, bool) {
+			d := time.Duration(*field(&s))
+			if d == 0 && !zeroIsSet {
+				return "", false
+			}
+			return fileDuration(d), true
+		},
+	}
+}
+
 // strictJSON decodes raw into v, refusing what v does not have room for.
 func strictJSON(raw json.RawMessage, v any) error {
 	dec := json.NewDecoder(bytes.NewReader(raw))
@@ -300,6 +375,12 @@ func usableCaseAlertValue(v CaseAlertValue) (string, caseAlertKey, string) {
 	key := strings.TrimSpace(v.Key)
 	spec, known := caseAlertKeys[key]
 	where := strings.ToLower(ladder) + "." + key
+	if ladder == "SME" {
+		if _, ok := smeCaseAlertKeys[key]; !ok {
+			return "", spec, fmt.Sprintf("skipped %s: not a setting this build knows", where)
+		}
+		return ladder, spec, ""
+	}
 	switch {
 	case ladder != "CRE" && ladder != "SRE":
 		return "", spec, fmt.Sprintf("skipped a value for ladder %q", v.Ladder)
@@ -314,7 +395,7 @@ func usableCaseAlertValue(v CaseAlertValue) (string, caseAlertKey, string) {
 // SavedCaseAlertKeys is which keys of each ladder the saved values set, as
 // MergeCaseAlertSettings applies them.
 func SavedCaseAlertKeys(s CaseAlertSettings) map[string]map[string]bool {
-	out := map[string]map[string]bool{"CRE": {}, "SRE": {}}
+	out := map[string]map[string]bool{"CRE": {}, "SRE": {}, "SME": {}}
 	for _, v := range s.Values {
 		if ladder, _, skip := usableCaseAlertValue(v); skip == "" {
 			out[ladder][strings.TrimSpace(v.Key)] = true
@@ -338,6 +419,12 @@ func mergeCaseAlertValues(out *Config, values []CaseAlertValue, changes *[]strin
 			*changes = append(*changes, skip)
 			continue
 		}
+		if ladder == "SME" {
+			if err := mergeSMEValue(out, v, changes); err != nil {
+				return err
+			}
+			continue
+		}
 		l := ladderFor(out, ladder)
 		where := strings.ToLower(ladder) + "." + strings.TrimSpace(v.Key)
 		was, wasSet := spec.get(*l)
@@ -358,6 +445,27 @@ func mergeCaseAlertValues(out *Config, values []CaseAlertValue, changes *[]strin
 		}
 		*changes = append(*changes, fmt.Sprintf("%s: %s -> %s", where, from, compactJSON(now)))
 	}
+	return nil
+}
+
+// mergeSMEValue lays one saved value over the file's sme: section.
+func mergeSMEValue(out *Config, v CaseAlertValue, changes *[]string) error {
+	key := strings.TrimSpace(v.Key)
+	spec := smeCaseAlertKeys[key]
+	where := "sme." + key
+	was, wasSet := spec.get(out.SME)
+	if err := spec.set(&out.SME, v.Value); err != nil {
+		return fmt.Errorf("%s: %w", where, err)
+	}
+	now, _ := spec.get(out.SME)
+	if wasSet && sameJSON(was, now) {
+		return nil
+	}
+	from := "unset"
+	if wasSet {
+		from = compactJSON(was)
+	}
+	*changes = append(*changes, fmt.Sprintf("%s: %s -> %s", where, from, compactJSON(now)))
 	return nil
 }
 
@@ -401,7 +509,25 @@ func RunningCaseAlertValues(cfg Config, saved map[string]map[string]bool) map[st
 	for _, ladder := range caseAlertBoth {
 		fileOnly[ladder] = fileOnlyCaseAlertValues(cfg, *ladderFor(&cfg, ladder))
 	}
+	fileOnly["SME"] = map[string]any{
+		"enabled":               cfg.Enabled && cfg.SME.Enabled,
+		"channel":               string(cfg.SME.Channel),
+		"safety.allowedNumbers": len(cfg.SME.Safety.AllowedNumbers),
+	}
 	ladders := map[string]any{}
+	sme := map[string]any{}
+	for key, spec := range smeCaseAlertKeys {
+		v, ok := spec.get(cfg.SME)
+		if !ok {
+			continue
+		}
+		source := "file"
+		if saved["SME"][key] {
+			source = "saved"
+		}
+		sme[key] = map[string]any{"value": v, "source": source}
+	}
+	ladders["SME"] = sme
 	for _, ladder := range caseAlertBoth {
 		l := ladderFor(&cfg, ladder)
 		out := map[string]any{}

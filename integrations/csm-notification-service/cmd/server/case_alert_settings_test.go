@@ -77,7 +77,7 @@ type envRecorder map[string]string
 func (e envRecorder) set(k, v string) error { e[k] = v; return nil }
 
 func TestCaseAlertSettingsMode(t *testing.T) {
-	for in, want := range map[string]string{"": "off", "off": "off", " DB ": "db", "shadow": "shadow", "true": "off", "database": "off"} {
+	for in, want := range map[string]string{"": "db", "rooms": "off", "off": "off", " DB ": "db", "shadow": "shadow", "true": "off", "database": "off"} {
 		if got := caseAlertSettingsMode(in); got != want {
 			t.Errorf("caseAlertSettingsMode(%q) = %q, want %q", in, got, want)
 		}
@@ -112,6 +112,44 @@ func TestApplyCaseAlertSettings_DBUsesTheSavedRoom(t *testing.T) {
 	}
 	if got.SRE.Chat != fileConfig().SRE.Chat {
 		t.Error("db: the shared room changed without being saved")
+	}
+}
+
+// Unset is db: everything saved on the tab is used, for every ladder --
+// CRE's values too -- each in place of the file's; what is not saved keeps
+// the file's.
+func TestApplyCaseAlertSettings_UnsetUsesEverythingSaved(t *testing.T) {
+	cfg := fileConfig()
+	cfg.SME.Enabled = true
+	saved := savedLadderValues()
+	saved.Rooms = append(saved.Rooms, paging.CaseAlertRoom{Ladder: "SME", TeamKey: "asgardeo", Label: "Asgardeo SME (saved)", WebhookURL: savedHook})
+	saved.Values = append(saved.Values, paging.CaseAlertValue{Ladder: "SME", Key: "onLeave", Value: json.RawMessage(`"call"`)})
+	reader, env := &fakeCaseAlertReader{saved: saved}, envRecorder{}
+	got := applyCaseAlertSettings(context.Background(), caseAlertSettingsMode(""), cfg, reader, env.set, caseAlertStart{})
+
+	if a := got.SRE.TeamChats["apollo"]; a.Audience != "Apollo SRE (saved)" || env[a.WebhookURLEnv] != savedHook {
+		t.Fatalf("apollo = %+v", a)
+	}
+	if a := got.SME.TeamChats["asgardeo"]; a.Audience != "Asgardeo SME (saved)" || env[a.WebhookURLEnv] != savedHook {
+		t.Fatalf("asgardeo = %+v", a)
+	}
+	if !reflect.DeepEqual(got.CRE.Teams.ABTs, []string{"atlas", "vega"}) || got.SME.OnLeave != paging.OnLeaveCall {
+		t.Fatalf("CRE abts %v, SME onLeave %q", got.CRE.Teams.ABTs, got.SME.OnLeave)
+	}
+	if got.SRE.Chat != fileConfig().SRE.Chat {
+		t.Error("the SRE shared room changed without being saved")
+	}
+	if reader.reported != "db" {
+		t.Fatalf("reported %q", reader.reported)
+	}
+}
+
+// Unset with nothing saved is the file as it is.
+func TestApplyCaseAlertSettings_UnsetWithNothingSavedIsTheFile(t *testing.T) {
+	reader, env := &fakeCaseAlertReader{saved: paging.CaseAlertSettings{Revision: 3}}, envRecorder{}
+	got := applyCaseAlertSettings(context.Background(), caseAlertSettingsMode(""), fileConfig(), reader, env.set, caseAlertStart{})
+	if !reflect.DeepEqual(got, fileConfig()) || len(env) != 0 {
+		t.Fatalf("got a change: env %v", env)
 	}
 }
 

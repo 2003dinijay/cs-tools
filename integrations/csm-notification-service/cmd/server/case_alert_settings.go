@@ -37,11 +37,13 @@ import (
 // group routes and ladder values saved on the Team Schedule's Alert Settings tab
 // are used.
 //
-//	off (or unset)  the file and env vars only, exactly as before. entity-service
+//	db (or unset)   they replace what they name, for every ladder -- CRE, SRE
+//	                and SME; everything else is the file's. Nothing saved is
+//	                the file as it is.
+//	off             the file and env vars only, exactly as before. entity-service
 //	                is not asked.
 //	shadow          they are read and compared with the file's, and every
 //	                difference is logged, but the file's are used.
-//	db              they replace what they name; everything else is the file's.
 //
 // An env var rather than a file key on purpose: the file is decoded strictly,
 // and a new key would turn paging off on any build that does not know it.
@@ -80,16 +82,16 @@ const (
 	caseAlertReadTimeout = 15 * time.Second
 )
 
-// caseAlertSettingsMode reads PAGING_CONFIG_SOURCE. Anything it does not know
-// is off, logged, so a typo can never change what is paged.
+// caseAlertSettingsMode reads PAGING_CONFIG_SOURCE: unset is db. Anything it
+// does not know is off, logged, so a typo can never change what is paged.
 func caseAlertSettingsMode(raw string) string {
 	switch m := strings.ToLower(strings.TrimSpace(raw)); m {
-	case "", caseAlertSourceOff:
-		return caseAlertSourceOff
-	case caseAlertSourceShadow, caseAlertSourceDB:
+	case "":
+		return caseAlertSourceDB
+	case caseAlertSourceOff, caseAlertSourceShadow, caseAlertSourceDB:
 		return m
 	default:
-		slog.Error("PAGING_CONFIG_SOURCE is not off, shadow or db; the file and env vars are used", "value", raw)
+		slog.Error("PAGING_CONFIG_SOURCE is not db, off or shadow; the file and env vars are used", "value", raw)
 		return caseAlertSourceOff
 	}
 }
