@@ -88,6 +88,7 @@ func instanceIngestionTestPool(t *testing.T) *pgxpool.Pool {
 		`CREATE TABLE product (id UUID PRIMARY KEY, name VARCHAR(255) NOT NULL, code VARCHAR(100))`,
 		`CREATE TABLE product_version (id UUID PRIMARY KEY, product_id UUID NOT NULL REFERENCES product(id), version VARCHAR(100) NOT NULL)`,
 		`CREATE TABLE project (id UUID PRIMARY KEY, key VARCHAR(128), product_consumption_primary_secret_key VARCHAR(128))`,
+		`CREATE TABLE deployment (id UUID PRIMARY KEY, number VARCHAR(50), project_id UUID REFERENCES project(id), is_active BOOLEAN, created_on TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
 	} {
 		if _, err := pool.Exec(ctx, ddl); err != nil {
 			t.Fatalf("create table: %v", err)
@@ -114,6 +115,10 @@ func instanceIngestionTestPool(t *testing.T) *pgxpool.Pool {
 		`INSERT INTO project (id, key, product_consumption_primary_secret_key) VALUES
 			('` + ingestProjectWithKey + `', 'CUPRSUBDEV', 'abc123secret'),
 			('` + ingestProjectNoKey + `', 'NOKEYPROJ', NULL)`,
+		`INSERT INTO deployment (id, number, project_id, is_active, created_on) VALUES
+			('6e000000-0000-4000-8000-000000000001', 'DEP-OLD', '` + ingestProjectNoKey + `', FALSE, NOW() - INTERVAL '2 days'),
+			('6e000000-0000-4000-8000-000000000002', 'DEP-OLD', '` + ingestProjectWithKey + `', TRUE, NOW() - INTERVAL '1 day'),
+			('6e000000-0000-4000-8000-000000000003', 'DEP-NOKEY', '` + ingestProjectNoKey + `', TRUE, NOW())`,
 	} {
 		if _, err := pool.Exec(ctx, seed); err != nil {
 			t.Fatalf("seed: %v", err)
@@ -486,6 +491,52 @@ func TestInstanceIngestionIntegration_SecretKey(t *testing.T) {
 		var nf *apierror.NotFoundError
 		if !errors.As(err, &nf) {
 			t.Errorf("by %q: want NotFoundError, got %T (%v)", key, err, err)
+		}
+	}
+}
+
+func TestInstanceIngestionIntegration_DeploymentConsumptionSecret(t *testing.T) {
+	pool := instanceIngestionTestPool(t)
+	repo := repository.NewInstanceIngestionRepository(repository.NewScoped(pool))
+	ctx := internalCtx()
+
+	// Two deployments share the number: the active one decides the project.
+	got, err := repo.GetDeploymentConsumptionSecret(ctx, "DEP-OLD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ProjectID != ingestProjectWithKey || got.ProjectKey != "CUPRSUBDEV" || got.SecretKey != "abc123secret" || got.DeploymentNumber != "DEP-OLD" {
+		t.Fatalf("got %+v", got)
+	}
+	for _, number := range []string{"DEP-NOKEY", "DEP-UNKNOWN"} {
+		_, err := repo.GetDeploymentConsumptionSecret(ctx, number)
+		var nf *apierror.NotFoundError
+		if !errors.As(err, &nf) {
+			t.Errorf("%s: want NotFoundError, got %T (%v)", number, err, err)
+		}
+	}
+}
+
+func TestInstanceIngestionIntegration_BatchRegistersReportNodesWithTheirProducts(t *testing.T) {
+	pool := instanceIngestionTestPool(t)
+	repo := repository.NewInstanceIngestionRepository(repository.NewScoped(pool))
+
+	imported, err := repo.ImportDailyUsagesBatch(internalCtx(), domain.DailyUsageBatchRequest{
+		NodeID:           "node-a",
+		InstanceNodeMeta: domain.InstanceNodeMeta{ProjectKey: "CUPRSUBDEV", DeploymentNumber: "DEP000002442"},
+		Nodes: []domain.DailyUsageBatchNode{
+			{NodeID: "node-a", Product: "wso2am", Version: "4.2.0"},
+			{NodeID: "node-b", Product: "wso2am", Version: "4.3.0"},
+		},
+		Usages: []domain.DailyUsageBatchItem{{Date: "2026-10-15", Type: "CORES", Value: 4, NodeID: "node-a"}},
+	})
+	if err != nil || imported != 1 {
+		t.Fatalf("imported %d, err %v", imported, err)
+	}
+	for node, want := range map[string]string{"node-a": ingestVersionAM420, "node-b": ingestVersionAM430} {
+		nodes := readNodes(t, pool, node)
+		if len(nodes) != 1 || ingestStr(nodes[0].VersionID) != want || ingestStr(nodes[0].DeploymentNumber) != "DEP000002442" {
+			t.Errorf("%s = %+v, want version %s", node, nodes, want)
 		}
 	}
 }

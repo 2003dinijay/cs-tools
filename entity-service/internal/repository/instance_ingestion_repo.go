@@ -50,6 +50,7 @@ type InstanceIngestionRepository interface {
 	InsertUsageStats(ctx context.Context, req domain.InstanceUsageIngestRequest, countedOn time.Time) error
 	ImportDailyUsagesBatch(ctx context.Context, req domain.DailyUsageBatchRequest) (int, error)
 	GetProjectSecretKey(ctx context.Context, projectKey string) (string, error)
+	GetDeploymentConsumptionSecret(ctx context.Context, deploymentNumber string) (domain.DeploymentConsumptionSecretResponse, error)
 }
 
 type instanceIngestionRepo struct {
@@ -374,6 +375,18 @@ func (r *instanceIngestionRepo) ImportDailyUsagesBatch(ctx context.Context, req 
 		return req.NodeID
 	}
 	nodeSet := map[string]domain.InstanceNodeMeta{req.NodeID: req.InstanceNodeMeta}
+	// Nodes the report describes are registered (with their own product and
+	// version) even when they have no usage rows.
+	for _, n := range req.Nodes {
+		if strings.TrimSpace(n.NodeID) == "" {
+			continue
+		}
+		meta := req.InstanceNodeMeta
+		if strings.TrimSpace(n.Product) != "" && strings.TrimSpace(n.Version) != "" {
+			meta.Product, meta.Version = n.Product, n.Version
+		}
+		nodeSet[n.NodeID] = meta
+	}
 	for _, e := range req.Usages {
 		id := entryNode(e)
 		if _, ok := nodeSet[id]; ok {
@@ -449,4 +462,44 @@ func (r *instanceIngestionRepo) GetProjectSecretKey(ctx context.Context, project
 		return "", &apierror.NotFoundError{Msg: fmt.Sprintf("project %q has no product consumption secret key", trimmed)}
 	}
 	return *secretKey, nil
+}
+
+// GetDeploymentConsumptionSecret returns the project a deployment number belongs
+// to and that project's primary secret key. An active deployment wins over an
+// inactive one with the same number. An unknown deployment, or a project with no
+// key, is a NotFoundError.
+func (r *instanceIngestionRepo) GetDeploymentConsumptionSecret(ctx context.Context, deploymentNumber string) (domain.DeploymentConsumptionSecretResponse, error) {
+	number := strings.TrimSpace(deploymentNumber)
+	if number == "" {
+		return domain.DeploymentConsumptionSecretResponse{}, &apierror.ValidationError{Msg: "deployment number is required"}
+	}
+
+	var projectID string
+	var projectKey, secretKey *string
+	err := r.db.QueryRow(ctx, `
+		SELECT p.id::text, p.key, p.product_consumption_primary_secret_key
+		FROM deployment d
+		JOIN project p ON p.id = d.project_id
+		WHERE d.number = $1
+		ORDER BY COALESCE(d.is_active, TRUE) DESC, d.created_on, d.id
+		LIMIT 1`, number).Scan(&projectID, &projectKey, &secretKey)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.DeploymentConsumptionSecretResponse{}, &apierror.NotFoundError{Msg: fmt.Sprintf("deployment %q not found", number)}
+		}
+		return domain.DeploymentConsumptionSecretResponse{}, fmt.Errorf("get deployment consumption secret: %w", err)
+	}
+	if secretKey == nil || strings.TrimSpace(*secretKey) == "" {
+		return domain.DeploymentConsumptionSecretResponse{}, &apierror.NotFoundError{Msg: fmt.Sprintf("the project of deployment %q has no product consumption secret key", number)}
+	}
+	key := ""
+	if projectKey != nil {
+		key = *projectKey
+	}
+	return domain.DeploymentConsumptionSecretResponse{
+		DeploymentNumber: number,
+		ProjectID:        projectID,
+		ProjectKey:       key,
+		SecretKey:        *secretKey,
+	}, nil
 }

@@ -89,11 +89,20 @@ type DailyUsageBatchItem struct {
 	DeploymentNumber string `json:"deploymentNumber,omitempty"`
 }
 
+// DailyUsageBatchNode is a node an offline report describes, with the product
+// it runs. Its product and version override the batch's for that node.
+type DailyUsageBatchNode struct {
+	NodeID  string `json:"nodeId"`
+	Product string `json:"product,omitempty"`
+	Version string `json:"version,omitempty"`
+}
+
 // DailyUsageBatchRequest carries parsed daily usage entries from an offline ZIP file.
 type DailyUsageBatchRequest struct {
 	NodeID string `json:"nodeId"`
 	InstanceNodeMeta
 	UserEmail string                `json:"userEmail"`
+	Nodes     []DailyUsageBatchNode `json:"nodes,omitempty"`
 	Usages    []DailyUsageBatchItem `json:"usages"`
 }
 
@@ -106,4 +115,14 @@ type DailyUsageBatchResponse struct {
 // ProjectSecretKeyResponse carries the HMAC primary secret key for a project.
 type ProjectSecretKeyResponse struct {
 	SecretKey string `json:"secretKey"`
+}
+
+// DeploymentConsumptionSecretResponse carries a deployment's project and the
+// project's HMAC primary secret key, for verifying an offline usage report,
+// which names its deployment but not its project.
+type DeploymentConsumptionSecretResponse struct {
+	DeploymentNumber string `json:"deploymentNumber"`
+	ProjectID        string `json:"projectId"`
+	ProjectKey       string `json:"projectKey"`
+	SecretKey        string `json:"secretKey"`
 }
