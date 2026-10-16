@@ -3,6 +3,10 @@
 Customers is where you look up an account or a project directly, rather than arriving at one
 through a case or dashboard widget. It has two tabs: **Accounts** and **Projects**.
 
+If you hold the viewer role and aren't a CS engineer or admin, **Customers** in the sidebar opens a
+dropdown with **Accounts**, **Projects** and **Customer Health**, the account health dashboard.
+Everyone else finds Customer Health as its own entry near the bottom of the sidebar.
+
 ## Accounts
 
 The Accounts tab lists every customer account, searchable by account name or Salesforce ID.

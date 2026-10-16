@@ -21,6 +21,7 @@ import {
   Briefcase,
   BookOpen,
   Bug,
+  Building,
   Building2,
   CalendarDays,
   ChartColumn,
@@ -28,6 +29,7 @@ import {
   ClipboardList,
   Cog,
   FileWarning,
+  FolderOpen,
   GitPullRequest,
   Headset,
   HeartPulse,
@@ -90,6 +92,18 @@ export interface CsmNavNode {
    * "coming soon" fallback, which would be a downgrade.
    */
   rendersOwnWipPage?: boolean;
+  /**
+   * Marks this node as a second sidebar entry for a page another node owns:
+   * the id of that owning node. A shortcut owns no routes (the route guard,
+   * the active-item highlight, Recent and Pin all keep resolving the page to
+   * its owner), is never a tab in its section's in-page tab strip, and is left
+   * out of Quick-nav (the owner is already listed there). In the sidebar it is
+   * a child of its section, which then opens as a dropdown; when it is shown,
+   * the owner's own top-level entry is dropped so the page is offered once.
+   * Its visibility is the narrower of its own (`requires`, deployment
+   * overrides) and its owner's.
+   */
+  shortcutTo?: string;
   icon?: ComponentType<{ size?: number | string }>;
   children?: CsmNavNode[];
 }
@@ -219,11 +233,29 @@ export const CSM_NAV_ITEMS: CsmNavSection[] = [
         id: "customers.accounts",
         label: "Accounts",
         href: "/customers/accounts",
+        // Shown only where Customers opens as a sidebar dropdown (and in
+        // Quick-nav); the in-page tab strip draws no icons. Same icons Recent
+        // uses for an account and a project (csm-recent/kindMeta.tsx).
+        icon: Building,
       },
       {
         id: "customers.projects",
         label: "Projects",
         href: "/customers/projects",
+        icon: FolderOpen,
+      },
+      {
+        // Viewers reach Customer Health from the Customers dropdown instead
+        // of from its own top-level entry -- see
+        // showCustomerHealthUnderCustomers's own doc comment. The page itself
+        // still belongs to the top-level "customer-health" node (see
+        // CsmNavNode.shortcutTo).
+        id: "customers.customer-health",
+        label: "Customer Health",
+        href: "/customer-health",
+        shortcutTo: "customer-health",
+        requires: "showCustomerHealthUnderCustomers",
+        icon: HeartPulse,
       },
     ],
   },
@@ -295,7 +327,9 @@ export const CSM_NAV_ITEMS: CsmNavSection[] = [
     // equivalent. Its audience is the viewer role plus cs_engineer and admin
     // (PermViewCustomerHealth server-side) -- see canViewCustomerHealth's own
     // doc comment. Like Usage Metrics below, it sits just above User Scan and
-    // Help at the end of the sidebar.
+    // Help at the end of the sidebar -- except for a viewer, who gets it under
+    // Customers instead (the "customers.customer-health" shortcut). This node
+    // still owns the page and its routes for every role.
     requires: "canViewCustomerHealth",
     icon: HeartPulse,
   },
@@ -474,6 +508,11 @@ function isAnchorHref(node: CsmNavNode): boolean {
   return node.href.includes("#");
 }
 
+/** True when `node` is a second sidebar entry for a page another node owns. */
+export function isNavShortcut(node: CsmNavNode): boolean {
+  return Boolean(node.shortcutTo);
+}
+
 /**
  * Route path prefixes a node owns. A query-param tab (`tab` set) or an
  * in-page anchor (`href` with a `#` fragment) owns only its explicit
@@ -482,6 +521,9 @@ function isAnchorHref(node: CsmNavNode): boolean {
  * longest-prefix match in {@link navNodeForPath} ambiguous.
  */
 export function navNodeRoutes(node: CsmNavNode): string[] {
+  // A shortcut points at a page its owner already claims; claiming it too
+  // would make two nodes tie for the same prefix.
+  if (node.shortcutTo) return [];
   const extra = node.routes ?? [];
   return node.tab || isAnchorHref(node) ? extra : [navNodePath(node), ...extra];
 }
