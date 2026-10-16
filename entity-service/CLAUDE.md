@@ -7601,7 +7601,15 @@ signatures with `GET /projects/{key}/secret-key` (`instance_ingestion_*.go`).
 - **Times** are RFC 3339 or `YYYY-MM-DD HH:MM:SS` read as UTC, parsed in Go and
   bound as instants; the daily date is the count's UTC date, never the session's.
 - **Batches** are validated whole (400 naming the entry) and written all or
-  nothing; an entry may override `nodeId`/`deploymentNumber`.
+  nothing; an entry may override `nodeId`/`deploymentNumber`, and `nodes` registers
+  each node an offline report describes with its own product and version.
+- **Offline usage reports** name their deployment (number) but not their project.
+  PCT verifies a report's signature with the key from
+  `GET /deployments/by-number/{number}/consumption-secret` (internal only; the active
+  deployment wins when two share a number; a project with no key is a 404). The
+  customer portal backend first checks the uploader can see that deployment with
+  `POST /deployments/search` `numbers` (exact match), run as the uploader, which
+  row-level security on `deployment` scopes to their projects.
 
 Tests: `instance_ingestion_integration_test.go` (real Postgres, schema from
 migration 0054, session zone Asia/Colombo; `INSTANCE_INGESTION_TEST_DSN`),
