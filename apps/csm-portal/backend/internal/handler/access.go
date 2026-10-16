@@ -347,11 +347,16 @@ type AccessGuard struct {
 	portalRoles []portalRole
 }
 
-// portalRole is one portal role: its stable key (what the frontend sees) and
-// the configured token role names that grant it.
+// portalRole is one portal role: its stable key (what the frontend sees),
+// the configured token role names that grant it, and -- once WithRoleIDs has
+// run -- the real Asgardeo role IDs that resolve to those same names.
 type portalRole struct {
 	key   string
 	names map[string]struct{}
+	// ids is nil until WithRoleIDs runs; RolesForIDs then treats a nil map
+	// the same as an empty one (no match), so calling it before WithRoleIDs
+	// is a safe, silent no-op rather than a nil-map panic.
+	ids map[string]struct{}
 }
 
 // NewAccessGuard builds a guard from cfg. Admin satisfies every permission.
@@ -415,19 +420,19 @@ func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 	}
 	return &AccessGuard{
 		portalRoles: []portalRole{
-			{"viewer", build(cfg.Viewer)},
-			{"escalator", build(cfg.Escalator)},
-			{"attachment_downloader", build(cfg.AttachmentDownloader)},
-			{"cs_engineer", build(cfg.CsEngineer)},
-			{"usage_metrics_viewer", build(cfg.UsageMetricsViewer)},
-			{"timecard_approver", build(cfg.TimecardApprover)},
-			{"dashboard_designer", build(cfg.DashboardDesigner)},
-			{"admin", build(cfg.Admin)},
-			{"sales_solutions", build(cfg.SalesSolutions)},
-			{"worknote_creator", build(cfg.WorknoteCreator)},
-			{"announcement_creator", build(cfg.AnnouncementCreator)},
-			{"comment_updater", build(cfg.CommentUpdater)},
-			{"security_team", build(cfg.SecurityTeam)},
+			{key: "viewer", names: build(cfg.Viewer)},
+			{key: "escalator", names: build(cfg.Escalator)},
+			{key: "attachment_downloader", names: build(cfg.AttachmentDownloader)},
+			{key: "cs_engineer", names: build(cfg.CsEngineer)},
+			{key: "usage_metrics_viewer", names: build(cfg.UsageMetricsViewer)},
+			{key: "timecard_approver", names: build(cfg.TimecardApprover)},
+			{key: "dashboard_designer", names: build(cfg.DashboardDesigner)},
+			{key: "admin", names: build(cfg.Admin)},
+			{key: "sales_solutions", names: build(cfg.SalesSolutions)},
+			{key: "worknote_creator", names: build(cfg.WorknoteCreator)},
+			{key: "announcement_creator", names: build(cfg.AnnouncementCreator)},
+			{key: "comment_updater", names: build(cfg.CommentUpdater)},
+			{key: "security_team", names: build(cfg.SecurityTeam)},
 		},
 		allowed: map[Permission]map[string]struct{}{
 			PermView: build(cfg.Viewer, cfg.Escalator, cfg.AttachmentDownloader,
@@ -497,6 +502,49 @@ func (g *AccessGuard) RolesFor(tokenRoles []string) []string {
 	for _, r := range g.portalRoles {
 		for _, held := range tokenRoles {
 			if _, ok := r.names[held]; ok {
+				keys = append(keys, r.key)
+				break
+			}
+		}
+	}
+	return keys
+}
+
+// WithRoleIDs cross-references each portal role's configured real role
+// name(s) against idsByRoleName (ASGARDEO_ROLE_IDS, see
+// directory.ParseRoleIDs) to resolve the real Asgardeo role ID(s) that grant
+// each portal role, enabling RolesForIDs below. A name with no configured ID
+// simply contributes nothing -- the same "no entry means not wired up here"
+// posture ASGARDEO_ROLE_IDS itself documents; RolesForIDs answers empty for
+// every portal role until this has been called, rather than panicking on a
+// nil map. Returns g for chaining, the same post-construction wiring shape
+// as handler.UsersHandler.WithAccessGuard/WithGrantableRoles.
+func (g *AccessGuard) WithRoleIDs(idsByRoleName map[string]string) *AccessGuard {
+	for i, r := range g.portalRoles {
+		ids := make(map[string]struct{}, len(r.names))
+		for name := range r.names {
+			if id, ok := idsByRoleName[name]; ok {
+				ids[id] = struct{}{}
+			}
+		}
+		g.portalRoles[i].ids = ids
+	}
+	return g
+}
+
+// RolesForIDs is RolesFor's counterpart for a caller that knows which real
+// roles a user holds by their own Asgardeo role ID (e.g. a SCIM GET-by-ID
+// response's "value" field for each role in its "roles" array), not by
+// name -- needed because two distinct Asgardeo roles can share the same
+// display ("name"), which RolesFor's name-based matching cannot tell apart,
+// while a role's ID is always unique. Same fixed GET /users/me-reporting
+// order as RolesFor, and the same "always a non-nil, possibly empty slice"
+// contract. Answers empty for every role until WithRoleIDs has been called.
+func (g *AccessGuard) RolesForIDs(roleIDs []string) []string {
+	keys := make([]string, 0, len(g.portalRoles))
+	for _, r := range g.portalRoles {
+		for _, id := range roleIDs {
+			if _, ok := r.ids[id]; ok {
 				keys = append(keys, r.key)
 				break
 			}

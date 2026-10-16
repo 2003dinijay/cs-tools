@@ -196,7 +196,12 @@ func main() {
 	// it too. accessCfg is also kept (not just the guard built from it) since
 	// grantableRoles below needs the same AUTH_<ROLE>_ROLES lists directly.
 	accessCfg := loadAccessConfig()
-	accessGuard := handler.NewAccessGuard(accessCfg)
+	// WithRoleIDs lets GetUser's withPortalRoles enrichment (see that file's
+	// own doc comment) match a target user's held Asgardeo roles by ID
+	// instead of by display name -- two distinct roles can share a name, but
+	// never an ID. A no-op for RolesFor/GetMe's own JWT-claim-based path,
+	// which is unaffected by this.
+	accessGuard := handler.NewAccessGuard(accessCfg).WithRoleIDs(roleIDsByName)
 
 	// Which portal roles CreateUser may grant via SCIM when an admin adds a
 	// new user through the webapp, each already resolved to its real role ID

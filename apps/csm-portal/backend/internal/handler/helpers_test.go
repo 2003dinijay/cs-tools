@@ -461,6 +461,7 @@ type mockSCIMClient struct {
 	searchExternalUserFn func(ctx context.Context, email string) (*scim.ExternalUserInfo, error)
 	updateUserPhoneFn    func(ctx context.Context, userID, mobile string) (*string, error)
 	getRoleFn            func(ctx context.Context, roleID string) ([]scim.RoleMember, error)
+	getUserByIDFn        func(ctx context.Context, userID string) ([]scim.RoleAssignment, error)
 	addRoleMembersFn     func(ctx context.Context, roleID string, emails []string) error
 }
 
@@ -488,6 +489,13 @@ func (m *mockSCIMClient) UpdateUserPhone(ctx context.Context, userID, mobile str
 func (m *mockSCIMClient) GetRole(ctx context.Context, roleID string) ([]scim.RoleMember, error) {
 	if m.getRoleFn != nil {
 		return m.getRoleFn(ctx, roleID)
+	}
+	return nil, nil
+}
+
+func (m *mockSCIMClient) GetUserByID(ctx context.Context, userID string) ([]scim.RoleAssignment, error) {
+	if m.getUserByIDFn != nil {
+		return m.getUserByIDFn(ctx, userID)
 	}
 	return nil, nil
 }
