@@ -29,14 +29,13 @@ import type {
   CaseAlertSettings as AlertSettingsData,
   PagingChainCode,
   PagingChainMember,
-  PagingChainPermissions,
   PagingReadinessGap,
   RotaFamily,
+  ScheduleTeam,
 } from "../types";
-import { CHAIN_LADDER } from "../utils/caseAlertLadderKeys";
 import CaseAlertSettings from "./CaseAlertSettings";
+import { chainHasSettings } from "../utils/caseAlertChainSettings";
 import type { CaseAlertChain } from "../utils/pagingChains";
-import CasePagingPanel from "./CasePagingPanel";
 import PagingReadinessStrip, {
   type PhoneGapAction,
 } from "./PagingReadinessStrip";
@@ -94,11 +93,11 @@ interface ChainOption {
   disabledReason?: string;
 }
 
-/** The chains, in the order the picker offers them: CRE, the three SRE
- *  sub-teams together, then SME. PaaS SRE has no rota yet, so it is shown --
- *  it is a chain people expect -- but cannot be picked. */
+/** The chains, in the order the picker offers them: the three SRE sub-teams
+ *  together, then SME. PaaS SRE has no rota yet, so it is shown -- it is a
+ *  chain people expect -- but cannot be picked. CRE is not offered: its
+ *  alerts keep their own flow, unchanged, and nothing about them is set here. */
 const CHAINS: readonly ChainOption[] = [
-  { code: "CRE", label: "CRE" },
   {
     code: "SRE_SAAS",
     label: "SaaS SRE",
@@ -117,11 +116,13 @@ interface Props {
   /** Switch the page to the week view on a rota (and team, zone, day). */
   onOpenRota: (target: PagingRotaTarget) => void;
   /** The chain the tab opens on: the reader's own (SME for an SME rota
-   *  admin, their SRE sub-team's for SRE). CRE when absent. */
+   *  admin, their SRE sub-team's for SRE). SaaS SRE when absent. */
   initialChain?: PagingChainCode;
   /** The chains this reader is shown -- their own (caseAlertChainsFor).
    *  Every chain when absent, as for a CSM admin or the CRE and CS heads. */
   visibleChains?: readonly CaseAlertChain[];
+  /** The Team Schedule's teams, for the SME chain's chat spaces. */
+  teams?: readonly Pick<ScheduleTeam, "key" | "name" | "family">[];
 }
 
 /** Whether the reader may change both ladders' settings: what a CSM admin
@@ -131,30 +132,10 @@ function managesBothLadders(settings?: AlertSettingsData): boolean {
   return ladders.includes("CRE") && ladders.includes("SRE");
 }
 
-/** Whether the CRE chain is left out of the picker: for somebody who may
- *  change only the SRE ladder's settings -- an SRE rota admin -- and holds no
- *  CRE role of their own (responder, team lead, Americas lead or head). A CSM
- *  or portal admin may change both ladders and keeps it. */
-function hidesCREChain(
-  settings?: AlertSettingsData,
-  can?: PagingChainPermissions,
-): boolean {
-  const ladders = settings?.canManage.roomLadders ?? [];
-  if (!ladders.includes("SRE") || ladders.includes("CRE")) return false;
-  return (
-    !can ||
-    (can.responderTeams.length === 0 &&
-      can.teamLeadTeams.length === 0 &&
-      !can.americasTeamLead &&
-      !can.heads)
-  );
-}
-
 /**
- * The Case Paging tab: a chain picker, then the chain on screen. CRE's chain
- * is set here, in the editable panel; the SRE and SME chains page whoever the
- * rota has on, so for them the tab says where to set people and how ready the
- * chain is. Each chain opens with its readiness strip.
+ * The Case Paging tab: a chain picker, then the chain on screen. The SRE and
+ * SME chains page whoever the rota has on, so the tab says where to set people
+ * and how ready the chain is. Each chain opens with its readiness strip.
  *
  * For the people who may see a chain's alert settings, a switch above it
  * flips between who gets the alerts and the settings (CaseAlertSettings); the
@@ -163,20 +144,15 @@ function hidesCREChain(
  */
 export default function CasePagingTab({
   onOpenRota,
-  initialChain = "CRE",
+  initialChain = "SRE_SAAS",
   visibleChains,
+  teams,
 }: Props): JSX.Element {
   const alertSettings = useCaseAlertSettings();
-  // The same read as the panel's and the page's probe: no extra request.
-  const creChain = useGetPagingChain("CRE");
-  // The reader's own chains (caseAlertChainsFor), less CRE's for somebody
-  // who may change only the SRE ladder's settings.
-  const own = visibleChains
+  // The reader's own chains (caseAlertChainsFor).
+  const chains = visibleChains
     ? CHAINS.filter((c) => visibleChains.includes(c.code))
     : CHAINS;
-  const chains = hidesCREChain(alertSettings.data, creChain.data?.canEdit)
-    ? own.filter((c) => c.code !== "CRE")
-    : own;
   const offered = (
     code: PagingChainCode | undefined,
   ): code is PagingChainCode =>
@@ -202,25 +178,21 @@ export default function CasePagingTab({
   const readiness = useGetPagingReadiness(PAGING_READINESS_DAYS);
   const hasSettings =
     canViewCaseAlertSettings(alertSettings.data) &&
-    CHAIN_LADDER[chainCode] !== undefined;
+    chainHasSettings(chainCode);
   const [view, setView] = useState<ChainView>(readView);
   const chooseView = (next: ChainView) => {
     setView(next);
     writeView(next);
   };
-  // The people a phone gap can be acted on for: the CRE chain (the same read
-  // as the panel's), and SRE's while an SRE chain is on screen. SME's people
-  // are not served as a chain, so its phone gaps keep the profile hint.
+  // The people a phone gap can be acted on for: SRE's while an SRE chain is
+  // on screen. SME's people are not served as a chain, so its phone gaps keep
+  // the profile hint.
   const sreOnScreen = chainCode === "SRE_SAAS" || chainCode === "SRE_IAAS";
   const sreChain = useGetPagingChain("SRE", sreOnScreen);
-  const members: PagingChainMember[] = [
-    ...(creChain.data?.members ?? []),
-    ...(sreOnScreen ? (sreChain.data?.members ?? []) : []),
-  ];
-  const readAt = Math.max(
-    creChain.dataUpdatedAt,
-    sreOnScreen ? sreChain.dataUpdatedAt : 0,
-  );
+  const members: PagingChainMember[] = sreOnScreen
+    ? (sreChain.data?.members ?? [])
+    : [];
+  const readAt = sreOnScreen ? sreChain.dataUpdatedAt : 0;
   const { controls: phone, dialog } = usePagingPhoneControls(members, readAt);
 
   /** "Test call" on a phone gap for a paging-only number the reader may act
@@ -254,10 +226,10 @@ export default function CasePagingTab({
   };
 
   /** A rota gap opens the rota the gap is on: its team's, its zone's, or the
-   *  chain's own. CRE's rota is the CRE family's. */
+   *  chain's own. */
   const openGap = (gap: PagingReadinessGap) =>
     onOpenRota({
-      family: option.rota?.family ?? "CRE",
+      family: option.rota?.family ?? "SRE",
       rotaCode: option.rota?.rotaCode,
       teamKey: gap.teamKey,
       zoneCode: gap.zoneCode,
@@ -337,27 +309,8 @@ export default function CasePagingTab({
           {picker}
           {viewSwitch}
         </div>
-        <CaseAlertSettings chain={chainCode} />
-        {dialog}
-      </>
-    );
-  }
-
-  if (chainCode === "CRE") {
-    return (
-      <>
-        <CasePagingPanel
-          chainPicker={
-            <>
-              {picker}
-              {viewSwitch}
-            </>
-          }
-          readiness={stripRead}
-          onOpenRota={openGap}
-          phone={phone}
-          phoneActionFor={phoneActionFor}
-        />
+        {/* Keyed by chain: a "Saved" line belongs to the chain it was saved on. */}
+        <CaseAlertSettings key={chainCode} chain={chainCode} teams={teams} />
         {dialog}
       </>
     );

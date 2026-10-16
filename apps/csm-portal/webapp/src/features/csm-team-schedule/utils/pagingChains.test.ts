@@ -28,8 +28,8 @@ const TEAMS = [
   { key: "paas", family: "SRE" as const },
   { key: "asgardeo", family: "SME" as const, rotaCode: "SME_ASGARDEO" },
 ];
-const reader = (runs: string[], over: Partial<{ creRights: boolean; portalAdmin: boolean; head: boolean }> = {}) =>
-  caseAlertChainsFor({ teams: TEAMS, runs, creRights: false, portalAdmin: false, ...over });
+const reader = (runs: string[], over: Partial<{ portalAdmin: boolean; head: boolean }> = {}) =>
+  caseAlertChainsFor({ teams: TEAMS, runs, portalAdmin: false, ...over });
 
 describe("chainOfTeam", () => {
   it("is the family's chain, or the SRE rota's", () => {
@@ -41,7 +41,6 @@ describe("caseAlertChainsFor", () => {
   it("gives each lead their own team's chain only", () => {
     expect(reader(["apollo"])).toEqual(["SRE_SAAS"]);
     expect(reader(["iaas"])).toEqual(["SRE_IAAS"]);
-    expect(reader(["castor"])).toEqual(["CRE"]);
     expect(reader(["paas"])).toEqual(["PAAS"]);
     expect(reader(["asgardeo"])).toEqual(["SME"]);
   });
@@ -49,25 +48,27 @@ describe("caseAlertChainsFor", () => {
   it("gives a rota admin the chains of the teams they run", () => {
     // An SRE rota admin runs every SRE team: SaaS and IaaS.
     expect(reader(["apollo", "artemis", "iaas"])).toEqual(["SRE_SAAS", "SRE_IAAS"]);
-    // A CRE rota admin, every CRE team: CRE's one chain.
-    expect(reader(["castor", "americas"])).toEqual(["CRE"]);
   });
 
-  it("gives CRE's chain to anybody who may change part of it, such as the America lead", () => {
-    expect(reader([], { creRights: true })).toEqual(["CRE"]);
-    expect(reader(["apollo"], { creRights: true })).toEqual(["CRE", "SRE_SAAS"]);
+  it("never offers CRE's chain: CRE alerts keep their own flow", () => {
+    // A CRE lead or rota admin has no chain here, so is not offered the tab.
+    expect(reader(["castor"])).toEqual([]);
+    expect(reader(["castor", "americas"])).toEqual([]);
+    expect(caseAlertsOffered(true, reader(["castor", "americas"]))).toBe(false);
+    // Somebody who runs a CRE team and an SRE one sees the SRE chain alone.
+    expect(reader(["castor", "apollo"])).toEqual(["SRE_SAAS"]);
   });
 
   it("gives the CRE head and the CS head every chain, as a CSM admin", () => {
-    expect(reader([], { creRights: true, head: true })).toBeUndefined();
-    expect(caseAlertsOffered(true, reader([], { creRights: true, head: true }))).toBe(true);
+    expect(reader([], { head: true })).toBeUndefined();
+    expect(caseAlertsOffered(true, reader([], { head: true }))).toBe(true);
   });
 
   it("places a lead's team the catalogue does not list -- PaaS, with no rota -- from their profile", () => {
     const teams = TEAMS.filter((t) => t.key !== "paas");
-    expect(caseAlertChainsFor({ teams, runs: ["paas"], creRights: false, portalAdmin: false })).toEqual([]);
+    expect(caseAlertChainsFor({ teams, runs: ["paas"], portalAdmin: false })).toEqual([]);
     expect(
-      caseAlertChainsFor({ teams, runs: ["paas"], creRights: false, portalAdmin: false, ownTeam: { key: "paas", family: "SRE" } }),
+      caseAlertChainsFor({ teams, runs: ["paas"], portalAdmin: false, ownTeam: { key: "paas", family: "SRE" } }),
     ).toEqual(["PAAS"]);
   });
 
@@ -88,7 +89,7 @@ describe("caseAlertsOffered", () => {
     expect(caseAlertsOffered(true, undefined)).toBe(true); // a CSM admin: every chain
     expect(caseAlertsOffered(true, [])).toBe(false); // leads nothing on the rota
     expect(caseAlertsOffered(true, null)).toBe(false); // not known yet
-    expect(caseAlertsOffered(false, ["CRE"])).toBe(false); // not a lead, rota admin or CRE paging editor
+    expect(caseAlertsOffered(false, ["SRE_SAAS"])).toBe(false); // not a lead or rota admin
   });
 });
 

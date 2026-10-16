@@ -41,11 +41,14 @@ import type {
   CaseAlertChatRoom,
   CaseAlertGroupRoute,
   CaseAlertLadder,
+  CaseAlertRoomLadder,
   CaseAlertRouteOptions,
   CaseAlertSettings as Settings,
   CaseAlertTeamOption,
   PagingChainCode,
+  ScheduleTeam,
 } from "../types";
+import { CHAIN_SETTINGS } from "../utils/caseAlertChainSettings";
 import {
   channelWords,
   teamChannelsUnder,
@@ -55,26 +58,12 @@ import CaseAlertLadderSettings from "./CaseAlertLadderSettings";
 import CaseAlertModal from "./CaseAlertModal";
 import CaseAlertSection from "./CaseAlertSection";
 
-interface ChainSettings {
-  /** The chain as the picker names it. */
-  label: string;
-  ladder: CaseAlertLadder;
-}
-
-/** The chains with settings here. SME has none yet. Both SRE chains show
- *  the one SRE ladder, so every SRE team's chat routing. */
-const CHAIN_SETTINGS: Partial<Record<PagingChainCode, ChainSettings>> = {
-  CRE: { label: "CRE", ladder: "CRE" },
-  SRE_SAAS: { label: "SaaS SRE", ladder: "SRE" },
-  SRE_IAAS: { label: "IaaS SRE", ladder: "SRE" },
-};
-
 /** What a new room starts as, as the alert service's file has it today: its
  *  label, and whether it also gets the incidents with no SRE team (the SaaS
  *  teams do), so adding one never quietly changes where those go. Keyed by
  *  ladder, then team key ("" for the shared space). */
 const ROOM_DEFAULTS: Record<
-  CaseAlertLadder,
+  CaseAlertRoomLadder,
   Record<string, { label: string; teamless?: boolean }>
 > = {
   CRE: { "": { label: "CRE Case Alerts" } },
@@ -84,6 +73,8 @@ const ROOM_DEFAULTS: Record<
     artemis: { label: "Artemis SRE", teamless: true },
     iaas: { label: "IaaS SRE" },
   },
+  // An SME team's room is "<team> SME", as the file's audiences are.
+  SME: {},
 };
 
 /** The value the team select uses for the ladder's shared space. */
@@ -119,7 +110,7 @@ function statusLine(s: Settings): { tone: "info" | "warn"; text: string } {
     default:
       return {
         tone: "warn",
-        text: "Saved, not in use yet. The alert service still uses its own file and env settings until it is switched to these.",
+        text: "The alert service uses the chat spaces saved here from its next restart.",
       };
   }
 }
@@ -127,6 +118,9 @@ function statusLine(s: Settings): { tone: "info" | "warn"; text: string } {
 interface Props {
   /** The chain on screen; its ladder's settings are shown. */
   chain: PagingChainCode;
+  /** The Team Schedule's teams (the catalogue): where an SME room's team is
+   *  picked from, since the route options hold CRE and SRE teams only. */
+  teams?: readonly Pick<ScheduleTeam, "key" | "name" | "family">[];
 }
 
 /**
@@ -144,6 +138,7 @@ interface Props {
  */
 export default function CaseAlertSettings({
   chain,
+  teams = [],
 }: Props): JSX.Element | null {
   const settings = useCaseAlertSettings();
   const [error, setError] = useState<string | null>(null);
@@ -154,12 +149,21 @@ export default function CaseAlertSettings({
 
   const ladder = cfg.ladder;
   const canRooms = s.canManage.roomLadders.includes(ladder);
-  const canRoutes = s.canManage.routeLadders.includes(ladder);
+  const roomOptions: CaseAlertRouteOptions | undefined =
+    ladder === "SME"
+      ? {
+          groups: [],
+          rotas: [],
+          teams: teams
+            .filter((t) => t.family === "SME")
+            .map((t) => ({ key: t.key, name: t.name, family: "SME" as const })),
+        }
+      : s.routeOptions;
   const rooms = s.rooms.filter((r) => r.ladder === ladder);
-  const routes = s.routes.filter((r) => r.ladder === ladder);
   const status = statusLine(s);
   // The ladder's own channel is the file's; a team can only do less.
-  const ladderChannel = s.running?.fileOnly?.[ladder]?.channel;
+  const ladderChannel =
+    ladder === "SME" ? undefined : s.running?.fileOnly?.[ladder]?.channel;
   /** A change went through: say so, in place of the last one. */
   const onSaved = (what: string) => {
     setError(null);
@@ -179,7 +183,7 @@ export default function CaseAlertSettings({
         {savedWhat ? (
           <p className="cas-status ok cas-done">
             <span>
-              ✓ Saved: {savedWhat}. {whenUsed(s)}
+              ✓ Saved: {savedWhat}. {whenUsed()}
             </span>
             <button
               type="button"
@@ -198,7 +202,7 @@ export default function CaseAlertSettings({
           them.
         </p>
       ) : null}
-      {canRooms ? (
+      {canRooms && !cfg.roomsOnly && ladder !== "SME" ? (
         <SetupStep
           settings={s}
           ladder={ladder}
@@ -215,14 +219,52 @@ export default function CaseAlertSettings({
       <TeamChatRouting
         ladder={ladder}
         rooms={rooms}
-        options={s.routeOptions}
+        options={roomOptions}
         ladderChannel={ladderChannel}
         canEdit={canRooms}
+        roomsOnly={Boolean(cfg.roomsOnly)}
         webhooksEnabled={s.webhooksEnabled}
         onError={setError}
         onSaved={onSaved}
       />
 
+      {cfg.roomsOnly || ladder === "SME" ? null : (
+        <RoutesAndValues
+          ladder={ladder}
+          settings={s}
+          rooms={rooms}
+          ladderChannel={ladderChannel}
+          onError={setError}
+          onSaved={onSaved}
+        />
+      )}
+    </section>
+  );
+}
+
+interface RoutesAndValuesProps {
+  ladder: CaseAlertLadder;
+  settings: Settings;
+  rooms: CaseAlertChatRoom[];
+  ladderChannel?: string;
+  onError: (msg: string | null) => void;
+  onSaved: (what: string) => void;
+}
+
+/** A ladder's redirects and the rest of its paging file (CRE only: the SRE
+ *  and SME chains show their chat spaces alone). */
+function RoutesAndValues({
+  ladder,
+  settings: s,
+  rooms,
+  ladderChannel,
+  onError,
+  onSaved,
+}: RoutesAndValuesProps): JSX.Element {
+  const canRoutes = s.canManage.routeLadders.includes(ladder);
+  const routes = s.routes.filter((r) => r.ladder === ladder);
+  return (
+    <>
       <CaseAlertSection
         id={`${ladder}.redirects`}
         label={ROUTE_WORDS[ladder].title}
@@ -240,27 +282,25 @@ export default function CaseAlertSettings({
           rooms={rooms}
           ladderChannel={ladderChannel}
           canEdit={canRoutes}
-          onError={setError}
+          onError={onError}
           onSaved={onSaved}
         />
       </CaseAlertSection>
 
       <CaseAlertLadderSettings ladder={ladder} settings={s} onSaved={onSaved} />
-    </section>
+    </>
   );
 }
 
 /** When the alert service starts using a saved change. */
-function whenUsed(s: Settings): string {
-  return s.revision.appliedMode === "db"
-    ? "The alert service uses it after its next restart."
-    : "The alert service uses the saved settings once it is switched to them (db mode).";
+function whenUsed(): string {
+  return "The alert service uses it after its next restart.";
 }
 
 /** A team's name for people: the shared space, else the Team Schedule's
  *  name for the team, else the room's own label. */
 function roomTeamName(
-  ladder: CaseAlertLadder,
+  ladder: CaseAlertRoomLadder,
   teamKey: string | undefined,
   options: CaseAlertRouteOptions | undefined,
   fallback: string,
@@ -275,12 +315,14 @@ function routingWhat(teamName: string): string {
 }
 
 interface TeamChatRoutingProps {
-  ladder: CaseAlertLadder;
+  ladder: CaseAlertRoomLadder;
   /** The ladder's rooms saved here. */
   rooms: CaseAlertChatRoom[];
   options?: CaseAlertRouteOptions;
   ladderChannel?: string;
   canEdit: boolean;
+  /** Only the chat space is set here: how a team is alerted stays the file's. */
+  roomsOnly: boolean;
   webhooksEnabled: boolean;
   onError: (msg: string | null) => void;
   onSaved: (what: string) => void;
@@ -299,6 +341,7 @@ function TeamChatRouting({
   options,
   ladderChannel,
   canEdit,
+  roomsOnly,
   webhooksEnabled,
   onError,
   onSaved,
@@ -312,16 +355,16 @@ function TeamChatRouting({
   const sorted = [...rooms].sort((a, b) =>
     !a.teamKey ? -1 : !b.teamKey ? 1 : name(a).localeCompare(name(b)),
   );
-  // What can still be added: the shared space when it isn't saved, and (SRE)
-  // each SRE team with no routing yet.
+  // What can still be added: the shared space when it isn't saved (SME has
+  // none here), and (SRE, SME) each of the ladder's teams with no routing yet.
   const savedKeys = new Set(rooms.map((r) => r.teamKey ?? ""));
   const choices: { value: string; label: string }[] = [
-    ...(savedKeys.has("")
+    ...(savedKeys.has("") || ladder === "SME"
       ? []
       : [{ value: SHARED, label: `All ${ladder} teams (shared space)` }]),
-    ...(ladder === "SRE"
+    ...(ladder === "SRE" || ladder === "SME"
       ? (options?.teams ?? [])
-          .filter((t) => t.family === "SRE" && !savedKeys.has(t.key))
+          .filter((t) => t.family === ladder && !savedKeys.has(t.key))
           .map((t) => ({ value: t.key, label: t.name }))
       : []),
   ];
@@ -371,16 +414,16 @@ function TeamChatRouting({
         </p>
       ) : null}
       <p className="cas-sub">
-        Which Google Chat space each team&apos;s alerts go to, and whether the
-        team gets chat cards, calls or both.
-        {ladderWords
+        {roomsOnly
+          ? "Which Google Chat space each team's alerts go to. Everything else stays in the alert service's file."
+          : "Which Google Chat space each team's alerts go to, and whether the team gets chat cards, calls or both."}
+        {!roomsOnly && ladderWords
           ? ` This ladder sends alerts by ${ladderWords.toLowerCase()} (set in the alert service's file). A team can do less, never more.`
           : ""}
       </p>
       {!webhooksEnabled ? (
         <p className="cas-sub cas-warn">
-          Webhook URLs can&apos;t be saved on this server yet: its encryption
-          key is not set.
+          Webhook URLs can&apos;t be saved on this server.
         </p>
       ) : null}
       {sorted.length === 0 ? (
@@ -394,7 +437,7 @@ function TeamChatRouting({
             <tr>
               <th>Team</th>
               <th>Google Chat space</th>
-              <th>Alerts by</th>
+              {roomsOnly ? null : <th>Alerts by</th>}
               {canEdit ? <th aria-label="Actions" /> : null}
             </tr>
           </thead>
@@ -407,6 +450,7 @@ function TeamChatRouting({
                 teamName={name(room)}
                 ladderChannel={ladderChannel}
                 canEdit={canEdit}
+                roomsOnly={roomsOnly}
                 webhooksEnabled={webhooksEnabled}
                 onError={onError}
                 onSaved={onSaved}
@@ -421,6 +465,7 @@ function TeamChatRouting({
           choices={choices}
           options={options}
           ladderChannel={ladderChannel}
+          roomsOnly={roomsOnly}
           webhooksEnabled={webhooksEnabled}
           returnFocus={addRef}
           onClose={() => setAdding(false)}
@@ -432,11 +477,12 @@ function TeamChatRouting({
 }
 
 interface ChatRowProps {
-  ladder: CaseAlertLadder;
+  ladder: CaseAlertRoomLadder;
   room: CaseAlertChatRoom;
   teamName: string;
   ladderChannel?: string;
   canEdit: boolean;
+  roomsOnly: boolean;
   webhooksEnabled: boolean;
   onError: (msg: string | null) => void;
   onSaved: (what: string) => void;
@@ -449,6 +495,7 @@ function ChatRow({
   teamName,
   ladderChannel,
   canEdit,
+  roomsOnly,
   webhooksEnabled,
   onError,
   onSaved,
@@ -528,12 +575,14 @@ function ChatRow({
           </span>
         )}
       </td>
-      <td>
-        <span>{alertsBy}</span>
-        {!room.teamKey && ladderWords ? (
-          <span className="cas-chip">set in the file</span>
-        ) : null}
-      </td>
+      {roomsOnly ? null : (
+        <td>
+          <span>{alertsBy}</span>
+          {!room.teamKey && ladderWords ? (
+            <span className="cas-chip">set in the file</span>
+          ) : null}
+        </td>
+      )}
       {canEdit ? (
         <td>
           <div className="cas-acts">
@@ -620,6 +669,7 @@ function ChatRow({
               room={room}
               teamName={teamName}
               ladderChannel={ladderChannel}
+              roomsOnly={roomsOnly}
               webhooksEnabled={webhooksEnabled}
               returnFocus={editRef}
               onClose={() => setEditing(false)}
@@ -633,7 +683,7 @@ function ChatRow({
 }
 
 interface RoomDialogProps {
-  ladder: CaseAlertLadder;
+  ladder: CaseAlertRoomLadder;
   /** Editing this room; absent when adding one. */
   room?: CaseAlertChatRoom;
   /** The room's team, as the row names it (edit only). */
@@ -642,6 +692,8 @@ interface RoomDialogProps {
   choices?: { value: string; label: string }[];
   options?: CaseAlertRouteOptions;
   ladderChannel?: string;
+  /** Only the space is set: a team's channel is kept as it is. */
+  roomsOnly: boolean;
   webhooksEnabled: boolean;
   returnFocus: RefObject<HTMLButtonElement | null>;
   onClose: () => void;
@@ -661,6 +713,7 @@ function RoomDialog({
   choices = [],
   options,
   ladderChannel,
+  roomsOnly,
   webhooksEnabled,
   returnFocus,
   onClose,
@@ -782,47 +835,45 @@ function RoomDialog({
         <p className="cp-help">
           {room?.hasWebhook
             ? `Leave empty to keep the saved URL (${room.webhookHint ?? "hidden"}).`
-            : "Copy it from the space: Apps & integrations, then Webhooks. It's stored encrypted and never shown again."}
+            : "Copy it from the space: Apps & integrations, then Webhooks. It's never shown again."}
         </p>
-        {teamKey ? (
-          <>
-            <label>
-              Alerts by
-              <select
-                value={channel}
-                onChange={(e) =>
-                  setChannel(e.target.value as CaseAlertChannel | "")
-                }
-              >
-                <option value="">
-                  {ladderWords
-                    ? `Same as the ladder (${ladderWords})`
-                    : "Same as the ladder"}
+        {teamKey && !roomsOnly ? (
+          <label>
+            Alerts by
+            <select
+              value={channel}
+              onChange={(e) =>
+                setChannel(e.target.value as CaseAlertChannel | "")
+              }
+            >
+              <option value="">
+                {ladderWords
+                  ? `Same as the ladder (${ladderWords})`
+                  : "Same as the ladder"}
+              </option>
+              {allowed.map((c) => (
+                <option key={c} value={c}>
+                  {channelWords(c)}
                 </option>
-                {allowed.map((c) => (
-                  <option key={c} value={c}>
-                    {channelWords(c)}
-                  </option>
-                ))}
-                {/* Saved before the ladder's channel narrowed: kept as is. */}
-                {channel && !allowed.includes(channel) ? (
-                  <option value={channel}>
-                    {channelWords(channel)} (more than the ladder)
-                  </option>
-                ) : null}
-              </select>
-            </label>
-            {ladder === "SRE" ? (
-              <label className="cas-check">
-                <input
-                  type="checkbox"
-                  checked={teamless}
-                  onChange={(e) => setTeamless(e.target.checked)}
-                />
-                Also gets incidents with no SRE team
-              </label>
-            ) : null}
-          </>
+              ))}
+              {/* Saved before the ladder's channel narrowed: kept as is. */}
+              {channel && !allowed.includes(channel) ? (
+                <option value={channel}>
+                  {channelWords(channel)} (more than the ladder)
+                </option>
+              ) : null}
+            </select>
+          </label>
+        ) : null}
+        {teamKey && ladder === "SRE" ? (
+          <label className="cas-check">
+            <input
+              type="checkbox"
+              checked={teamless}
+              onChange={(e) => setTeamless(e.target.checked)}
+            />
+            Also gets incidents with no SRE team
+          </label>
         ) : null}
         {error ? (
           <p className="cp-err" role="alert">

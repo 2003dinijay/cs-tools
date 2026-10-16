@@ -151,9 +151,8 @@ type Engine struct {
 	smeNotifiers []notifier
 	// smeTeamNotifiers is set only when sme.teamChats is: each listed SME
 	// team's notifiers, posting to its own Chat space. A team not listed
-	// gets smeNoChatNotifiers, the SME channel without chat.
-	smeTeamNotifiers   map[string][]notifier
-	smeNoChatNotifiers []notifier
+	// gets smeNotifiers, the shared SME space.
+	smeTeamNotifiers map[string][]notifier
 	// teamNotifiers is set only when the SRE ladder's teamChats is: each
 	// listed team's notifiers, posting its rung cards to its own space.
 	teamNotifiers map[string][]notifier
@@ -163,8 +162,7 @@ type Engine struct {
 	teamRooms  map[string]chatRoom
 	sharedRoom *chatRoom
 	// smeRooms and smeSharedRoom are where an SME ladder's closing message
-	// goes (sme.unansweredChat): the SME team's own space, else sme.chat
-	// when sme.teamChats is unset.
+	// goes (sme.unansweredChat): the SME team's own space, else sme.chat.
 	smeRooms      map[string]chatRoom
 	smeSharedRoom *chatRoom
 	links         PortalLinks
@@ -239,7 +237,6 @@ func NewEngine(policies map[string]PriorityPolicy, resolver Resolver, calls *not
 			for team, c := range cfg.SME.TeamChats {
 				e.smeTeamNotifiers[teamKeyFor(team)], _ = buildNotifiers(cfg.SME.Channel, c, cfg.UseSSML, calls, chat, links, defaultChatProduct)
 			}
-			e.smeNoChatNotifiers = withoutChat(e.smeNotifiers)
 		}
 	}
 	return e
@@ -275,10 +272,9 @@ func (e *Engine) buildTeamChats(cfg EngineConfig, calls *notifications.TwilioCli
 				e.smeRooms[teamKeyFor(team)] = chatRoom{chat: client, room: room}
 			}
 		}
-		if len(cfg.SME.TeamChats) == 0 {
-			if client, room := ladderChat(cfg.SME.Chat, chat, defaultChatProduct, os.Getenv); client != nil {
-				e.smeSharedRoom = &chatRoom{chat: client, room: room}
-			}
+		// A team with no space of its own closes in the shared one.
+		if client, room := ladderChat(cfg.SME.Chat, chat, defaultChatProduct, os.Getenv); client != nil {
+			e.smeSharedRoom = &chatRoom{chat: client, room: room}
 		}
 	}
 	if !cfg.Ladder.UnansweredChat && !cfg.Ladder.SMEHandoffChat {
@@ -601,26 +597,13 @@ func smeTeamLabel(key string) string {
 }
 
 // smeNotifiersFor is how the SME page reaches one SME team: its own Chat
-// space when sme.teamChats lists it, no chat card when sme.teamChats is set
-// but does not list it, and the shared SME space when sme.teamChats is unset.
+// space when sme.teamChats (or a room saved on the Alert Settings tab) has
+// one, else the shared SME space -- never no card at all.
 func (e *Engine) smeNotifiersFor(team string) []notifier {
-	if e.smeTeamNotifiers == nil {
-		return e.smeNotifiers
-	}
 	if n, ok := e.smeTeamNotifiers[teamKeyFor(team)]; ok {
 		return n
 	}
-	return e.smeNoChatNotifiers
-}
-
-// smeTeamHasNoChat reports whether a team's page posts no card only because
-// sme.teamChats does not list it.
-func (e *Engine) smeTeamHasNoChat(team string) bool {
-	if e.smeTeamNotifiers == nil || !e.cfg.SME.Channel.Uses(ChannelChat) {
-		return false
-	}
-	_, ok := e.smeTeamNotifiers[teamKeyFor(team)]
-	return !ok
+	return e.smeNotifiers
 }
 
 // onlyChat is notifiers with only the chat ones kept.

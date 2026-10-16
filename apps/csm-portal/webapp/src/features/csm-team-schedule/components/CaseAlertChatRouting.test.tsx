@@ -60,7 +60,7 @@ const HINT = "spaces/AAAAtest01 · …wxyz";
 const HOOK =
   "https://chat.googleapis.com/v1/spaces/AAAAtest01/messages?key=k&token=t";
 const NOT_DB =
-  "The alert service uses the saved settings once it is switched to them (db mode).";
+  "The alert service uses it after its next restart.";
 const DB = "The alert service uses it after its next restart.";
 
 function room(over: Partial<CaseAlertChatRoom>): CaseAlertChatRoom {
@@ -161,16 +161,20 @@ beforeEach(() => {
 });
 
 describe("Team chat routing", () => {
-  it("lists only the routings saved here, with the hint, last test and how each team is alerted", () => {
+  it("lists only the routings saved here, with the hint and last test: the space alone", () => {
     render(<CaseAlertSettings chain="SRE_SAAS" />);
     expect(
       screen.getByRole("heading", { name: "Team chat routing" }),
     ).toBeInTheDocument();
     expect(
       screen.getByText(
-        /This ladder sends alerts by chat only \(set in the alert service's file\)\. A team can do less, never more\./,
+        "Which Google Chat space each team's alerts go to. Everything else stays in the alert service's file.",
       ),
     ).toBeInTheDocument();
+    // How a team is alerted stays the file's: no column for it.
+    expect(
+      screen.queryByRole("columnheader", { name: "Alerts by" }),
+    ).not.toBeInTheDocument();
     const table = screen.getByRole("table", { name: "Team chat routing" });
     // Artemis has none saved: not listed.
     expect(within(table).queryByText("Artemis")).not.toBeInTheDocument();
@@ -184,10 +188,7 @@ describe("Team chat routing", () => {
     expect(within(a).getByText(/Last test:/)).toHaveTextContent(
       "Last test: delivered ·",
     );
-    expect(
-      within(a).getByText("Same as the ladder (Chat only)"),
-    ).toBeInTheDocument();
-    expect(within(chatRow("IaaS")).getByText("Calls only")).toBeInTheDocument();
+    expect(within(chatRow("IaaS")).queryByText("Calls only")).toBeNull();
     expect(
       within(chatRow("IaaS")).getByText("No URL saved (uses the file's space)"),
     ).toBeInTheDocument();
@@ -207,14 +208,6 @@ describe("Team chat routing", () => {
       expect(
         rows.map((r) => r.querySelector("b")?.textContent).slice(1),
       ).toEqual(["All SRE teams (shared space)", "Apollo", "IaaS"]);
-      expect(
-        within(chatRow("All SRE teams (shared space)")).getByText("Chat only"),
-      ).toBeInTheDocument();
-      expect(
-        within(chatRow("All SRE teams (shared space)")).getByText(
-          "set in the file",
-        ),
-      ).toBeInTheDocument();
       unmount();
     }
   });
@@ -340,13 +333,8 @@ describe("Team chat routing", () => {
         name: "Also gets incidents with no SRE team",
       }),
     ).toBeChecked();
-    const by = within(dialog).getByLabelText("Alerts by");
-    expect(optionNames(by)).toEqual([
-      "Same as the ladder (Chat only)",
-      "Chat only",
-      "Log only (no calls or chat)",
-    ]);
-    fireEvent.change(by, { target: { value: "log" } });
+    // Only the space is set here: how the team is alerted stays the file's.
+    expect(within(dialog).queryByLabelText("Alerts by")).not.toBeInTheDocument();
     fireEvent.change(within(dialog).getByLabelText("Google Chat webhook URL"), {
       target: { value: HOOK },
     });
@@ -364,7 +352,7 @@ describe("Team chat routing", () => {
       label: "Artemis SRE",
       enabled: true,
       teamless: true,
-      channel: "log",
+      channel: "",
     });
     await waitFor(() =>
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
@@ -456,11 +444,8 @@ describe("Team chat routing", () => {
     });
     expect(within(dialog).queryByLabelText("Team")).not.toBeInTheDocument();
     expect(within(dialog).getByText("IaaS")).toBeInTheDocument();
-    expect(within(dialog).getByLabelText("Alerts by")).toHaveValue("call");
-    // Saved before the ladder narrowed to chat: still shown as it is.
-    expect(optionNames(within(dialog).getByLabelText("Alerts by"))).toContain(
-      "Calls only (more than the ladder)",
-    );
+    // A channel saved before stays as it is: not shown, sent back unchanged.
+    expect(within(dialog).queryByLabelText("Alerts by")).not.toBeInTheDocument();
     fireEvent.click(
       within(dialog).getByRole("checkbox", {
         name: "Also gets incidents with no SRE team",
@@ -500,9 +485,6 @@ describe("Team chat routing", () => {
     expect(
       within(dialog).getByText(`Leave empty to keep the saved URL (${HINT}).`),
     ).toBeInTheDocument();
-    fireEvent.change(within(dialog).getByLabelText("Alerts by"), {
-      target: { value: "" },
-    });
     fireEvent.change(within(dialog).getByLabelText("Google Chat webhook URL"), {
       target: { value: HOOK },
     });
@@ -618,15 +600,15 @@ describe("Team chat routing", () => {
         name: /Add team chat routing|Edit|Test|More/,
       }),
     ).not.toBeInTheDocument();
-    expect(
-      within(chatRow("Apollo")).getByText("Same as the ladder (Chat only)"),
-    ).toBeInTheDocument();
+    expect(within(chatRow("Apollo")).getByText(HINT)).toBeInTheDocument();
   });
 
   it("says when URLs can't be saved on this server, and can't add one", () => {
     settings.data = make({ webhooksEnabled: false });
     render(<CaseAlertSettings chain="SRE_SAAS" />);
-    expect(screen.getByText(/encryption key is not set/)).toBeInTheDocument();
+    expect(
+      screen.getByText("Webhook URLs can't be saved on this server."),
+    ).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "+ Add team chat routing" }),
     ).toBeDisabled();
@@ -654,5 +636,85 @@ describe("Team chat routing", () => {
     expect(done.closest("[aria-live]")).toHaveAttribute("aria-live", "polite");
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
     expect(screen.queryByText(/^✓ Saved:/)).not.toBeInTheDocument();
+  });
+});
+
+describe("SME team chat spaces", () => {
+  const SME_TEAMS = [
+    { key: "asgardeo", name: "Asgardeo", family: "SME" as const },
+    { key: "u2", name: "U2", family: "SME" as const },
+    { key: "apollo", name: "Apollo", family: "SRE" as const },
+  ];
+  const asgardeo = room({
+    id: "asg-room",
+    ladder: "SME",
+    teamKey: "asgardeo",
+    label: "Asgardeo SME",
+    hasWebhook: true,
+    webhookHint: HINT,
+  });
+
+  it("lists the SME rooms only, by the team's name, with no shared space", () => {
+    settings.data = make({ rooms: [apollo, iaas, asgardeo] });
+    render(<CaseAlertSettings chain="SME" teams={SME_TEAMS} />);
+    expect(
+      screen.getByRole("heading", { name: "SME settings" }),
+    ).toBeInTheDocument();
+    const rows = within(
+      screen.getByRole("table", { name: "Team chat routing" }),
+    ).getAllByRole("row");
+    expect(rows.map((r) => r.querySelector("b")?.textContent).slice(1)).toEqual(
+      ["Asgardeo"],
+    );
+    expect(within(chatRow("Asgardeo")).getByText(HINT)).toBeInTheDocument();
+    // Nothing else: no redirects, no ladder settings.
+    expect(screen.queryByText(/redirect/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/ladder settings/i)).not.toBeInTheDocument();
+  });
+
+  it("adds an SME team's space: its SME teams only, the URL alone", async () => {
+    settings.data = make({
+      rooms: [asgardeo],
+      canManage: { view: true, roomLadders: ["SME"], routeLadders: [] },
+    });
+    saveRoom.mutateAsync.mockResolvedValue({ ...asgardeo, id: "u2-room" });
+    setWebhook.mutateAsync.mockResolvedValue({});
+    render(<CaseAlertSettings chain="SME" teams={SME_TEAMS} />);
+    const { dialog } = openAdd();
+    expect(optionNames(within(dialog).getByLabelText("Team"))).toEqual(["U2"]);
+    expect(within(dialog).queryByLabelText("Alerts by")).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("checkbox")).not.toBeInTheDocument();
+    fireEvent.change(within(dialog).getByLabelText("Google Chat webhook URL"), {
+      target: { value: HOOK },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(setWebhook.mutateAsync).toHaveBeenCalledWith({
+        roomId: "u2-room",
+        url: HOOK,
+      }),
+    );
+    expect(saveRoom.mutateAsync).toHaveBeenCalledWith({
+      ladder: "SME",
+      teamKey: "u2",
+      label: "U2 SME",
+      enabled: true,
+      teamless: false,
+      channel: "",
+    });
+  });
+
+  it("is read-only for somebody who may change only the SRE spaces", () => {
+    settings.data = make({
+      rooms: [asgardeo],
+      canManage: { view: true, roomLadders: ["SRE"], routeLadders: ["SRE"] },
+    });
+    render(<CaseAlertSettings chain="SME" teams={SME_TEAMS} />);
+    expect(
+      screen.queryByRole("button", { name: /Add team chat routing|Edit/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/CSM admins and the SME rota admin can change them/),
+    ).toBeInTheDocument();
   });
 });

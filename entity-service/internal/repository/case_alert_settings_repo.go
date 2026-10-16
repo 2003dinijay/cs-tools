@@ -50,9 +50,9 @@ type CaseAlertSettingsRepository interface {
 	// clears the last test, which was of the old one. False when the room is
 	// gone.
 	SetSecret(ctx context.Context, actor, roomID string, s CaseAlertSecret, hint string) (bool, error)
-	// Secret is a room's sealed URL, or nil when none is stored.
+	// Secret is a room's stored URL, or nil when none is stored.
 	Secret(ctx context.Context, roomID string) (*CaseAlertSecret, error)
-	// Secrets is every stored sealed URL, by room id.
+	// Secrets is every stored URL, by room id.
 	Secrets(ctx context.Context) (map[string]CaseAlertSecret, error)
 	// ClaimTest records a test card as asked for at at, only when the last
 	// one was at or before notBefore (or there was none). False means a test
@@ -146,8 +146,11 @@ type CaseAlertRoomWrite struct {
 	Channel string
 }
 
-// CaseAlertSecret is a sealed webhook URL.
+// CaseAlertSecret is a room's webhook URL: as saved (URL), or -- a row saved
+// before 0237 -- sealed under CASE_ALERTS_SECRET_KEY (KeyID, Nonce,
+// Ciphertext), which only a deployment holding that key can open.
 type CaseAlertSecret struct {
+	URL        string
 	KeyID      string
 	Nonce      []byte
 	Ciphertext []byte
@@ -362,12 +365,12 @@ func (r *caseAlertSettingsRepository) SetSecret(ctx context.Context, actor, room
 		}
 		found = true
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO paging_chat_secret (room_id, key_id, nonce, ciphertext, set_at, set_by)
-			VALUES ($1::uuid, $2, $3, $4, now(), $5)
+			INSERT INTO paging_chat_secret (room_id, webhook_url, key_id, nonce, ciphertext, set_at, set_by)
+			VALUES ($1::uuid, NULLIF($2, ''), NULLIF($3, ''), $4, $5, now(), $6)
 			ON CONFLICT (room_id) DO UPDATE
-			   SET key_id = EXCLUDED.key_id, nonce = EXCLUDED.nonce, ciphertext = EXCLUDED.ciphertext,
-			       set_at = EXCLUDED.set_at, set_by = EXCLUDED.set_by`,
-			roomID, s.KeyID, s.Nonce, s.Ciphertext, actor); err != nil {
+			   SET webhook_url = EXCLUDED.webhook_url, key_id = EXCLUDED.key_id, nonce = EXCLUDED.nonce,
+			       ciphertext = EXCLUDED.ciphertext, set_at = EXCLUDED.set_at, set_by = EXCLUDED.set_by`,
+			roomID, s.URL, s.KeyID, s.Nonce, s.Ciphertext, actor); err != nil {
 			return fmt.Errorf("store case alert webhook: %w", err)
 		}
 		return nil
@@ -378,8 +381,9 @@ func (r *caseAlertSettingsRepository) SetSecret(ctx context.Context, actor, room
 func (r *caseAlertSettingsRepository) Secret(ctx context.Context, roomID string) (*CaseAlertSecret, error) {
 	var s CaseAlertSecret
 	err := r.db.QueryRow(ctx, `
-		SELECT key_id, nonce, ciphertext FROM paging_chat_secret WHERE room_id = $1::uuid`, roomID).
-		Scan(&s.KeyID, &s.Nonce, &s.Ciphertext)
+		SELECT COALESCE(webhook_url, ''), COALESCE(key_id, ''), nonce, ciphertext
+		  FROM paging_chat_secret WHERE room_id = $1::uuid`, roomID).
+		Scan(&s.URL, &s.KeyID, &s.Nonce, &s.Ciphertext)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -390,7 +394,9 @@ func (r *caseAlertSettingsRepository) Secret(ctx context.Context, roomID string)
 }
 
 func (r *caseAlertSettingsRepository) Secrets(ctx context.Context) (map[string]CaseAlertSecret, error) {
-	rows, err := r.db.Query(ctx, `SELECT room_id::text, key_id, nonce, ciphertext FROM paging_chat_secret`)
+	rows, err := r.db.Query(ctx, `
+		SELECT room_id::text, COALESCE(webhook_url, ''), COALESCE(key_id, ''), nonce, ciphertext
+		  FROM paging_chat_secret`)
 	if err != nil {
 		return nil, fmt.Errorf("list case alert webhooks: %w", err)
 	}
@@ -399,7 +405,7 @@ func (r *caseAlertSettingsRepository) Secrets(ctx context.Context) (map[string]C
 	for rows.Next() {
 		var id string
 		var s CaseAlertSecret
-		if err := rows.Scan(&id, &s.KeyID, &s.Nonce, &s.Ciphertext); err != nil {
+		if err := rows.Scan(&id, &s.URL, &s.KeyID, &s.Nonce, &s.Ciphertext); err != nil {
 			return nil, fmt.Errorf("scan case alert webhook: %w", err)
 		}
 		out[id] = s

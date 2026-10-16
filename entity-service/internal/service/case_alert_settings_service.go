@@ -19,6 +19,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -63,11 +64,15 @@ type CaseAlertSettingsService interface {
 	RecordApplied(ctx context.Context, report domain.CaseAlertAppliedReport) error
 }
 
-// CaseAlertSettingsConfig is the deployment's settings for this service.
+// CaseAlertSettingsConfig is the deployment's settings for this service. None
+// is needed to save and use chat rooms: URLs are stored as saved (0237).
 type CaseAlertSettingsConfig struct {
-	AdminRoles       []string // AUTH_ADMIN_ROLES
-	SecretKey        string   // CASE_ALERTS_SECRET_KEY
-	SecretKeyID      string   // CASE_ALERTS_SECRET_KEY_ID
+	AdminRoles []string // AUTH_ADMIN_ROLES
+	// SecretKey and SecretKeyID only open a URL saved sealed before 0237.
+	SecretKey   string // CASE_ALERTS_SECRET_KEY
+	SecretKeyID string // CASE_ALERTS_SECRET_KEY_ID
+	// RuntimeClientIDs narrows who may read the runtime settings; empty, any
+	// internal service client may (csm-notification-service's among them).
 	RuntimeClientIDs []string // CASE_ALERTS_RUNTIME_CLIENT_IDS
 	Environment      string   // CASE_ALERTS_ENVIRONMENT
 }
@@ -84,12 +89,12 @@ type caseAlertSettingsService struct {
 }
 
 // NewCaseAlertSettingsService constructs the service. A CASE_ALERTS_SECRET_KEY
-// that cannot be used is logged and turns saving URLs off; it never stops
-// the service, so nothing else on it is affected.
+// that cannot be used is logged; it only means a URL sealed before 0237 cannot
+// be opened, and never stops the service.
 func NewCaseAlertSettingsService(repo repository.CaseAlertSettingsRepository, people repository.PagingChainRepository, access AccessService, cfg CaseAlertSettingsConfig) CaseAlertSettingsService {
 	sealer, err := newCaseAlertSealer(cfg.SecretKey, cfg.SecretKeyID)
 	if err != nil {
-		slog.Error("case alerts: webhook URLs cannot be saved", "error", err)
+		slog.Error("case alerts: CASE_ALERTS_SECRET_KEY cannot be used; a URL sealed before 0237 cannot be opened", "error", err)
 		sealer = nil
 	}
 	runtimes := map[string]bool{}
@@ -115,6 +120,10 @@ const (
 
 var caseAlertLadders = []string{familyCRE, familySRE}
 
+// caseAlertRoomLadders are the ladders with chat rooms here: CRE's and SRE's,
+// and SME's team rooms (0237). SME has no routes or ladder values here.
+var caseAlertRoomLadders = []string{familyCRE, familySRE, familySME}
+
 var caseAlertModes = map[string]bool{"off": true, "shadow": true, "db": true}
 
 // caseAlertChannels are how a team's alerts can go out, as the paging file
@@ -129,8 +138,17 @@ type caseAlertCaller struct {
 }
 
 func (c caseAlertCaller) ladders() []string {
+	return c.of(caseAlertLadders)
+}
+
+// roomLadders are the ladders whose rooms the caller may change.
+func (c caseAlertCaller) roomLadders() []string {
+	return c.of(caseAlertRoomLadders)
+}
+
+func (c caseAlertCaller) of(ladders []string) []string {
 	out := []string{}
-	for _, l := range caseAlertLadders {
+	for _, l := range ladders {
 		if c.ladder[l] {
 			out = append(out, l)
 		}
@@ -150,7 +168,7 @@ func (s *caseAlertSettingsService) whoIsAsking(ctx context.Context) (caseAlertCa
 	}
 	c := caseAlertCaller{email: id.UserEmail, ladder: map[string]bool{}}
 	if holdsAnyRole(id.Roles, s.cfg.AdminRoles) {
-		c.view, c.ladder[familyCRE], c.ladder[familySRE] = true, true, true
+		c.view, c.ladder[familyCRE], c.ladder[familySRE], c.ladder[familySME] = true, true, true, true
 		return c, nil
 	}
 	who, err := s.people.CallerAuthority(ctx, id.UserEmail)
@@ -160,12 +178,13 @@ func (s *caseAlertSettingsService) whoIsAsking(ctx context.Context) (caseAlertCa
 	a := authorityOf(who)
 	switch {
 	case a.portalAdmin:
-		c.ladder[familyCRE], c.ladder[familySRE] = true, true
+		c.ladder[familyCRE], c.ladder[familySRE], c.ladder[familySME] = true, true, true
 	default:
 		c.ladder[familyCRE] = a.creRotaAdmin
 		c.ladder[familySRE] = a.sreRotaAdmin
+		c.ladder[familySME] = a.smeRotaAdmin
 	}
-	c.view = a.portalAdmin || a.creRotaAdmin || a.sreRotaAdmin || a.head
+	c.view = a.portalAdmin || a.creRotaAdmin || a.sreRotaAdmin || a.smeRotaAdmin || a.head
 	return c, nil
 }
 
@@ -175,6 +194,18 @@ func (c caseAlertCaller) mayChange(ladder string) error {
 		return &apierror.ForbiddenError{Msg: fmt.Sprintf("only a CSM admin, a portal admin or the %s rota admin can change the %s alert settings", ladder, ladder)}
 	}
 	return nil
+}
+
+// normRoomLadder is normLadder for a chat room, which SME has too.
+func normRoomLadder(v string) (string, error) {
+	if l := strings.ToUpper(strings.TrimSpace(v)); l == familySME {
+		return l, nil
+	}
+	l, err := normLadder(v)
+	if err != nil {
+		return "", &apierror.ValidationError{Msg: "ladder must be CRE, SRE or SME"}
+	}
+	return l, nil
 }
 
 func normLadder(v string) (string, error) {
@@ -194,7 +225,7 @@ func (s *caseAlertSettingsService) Get(ctx context.Context) (domain.CaseAlertSet
 		return domain.CaseAlertSettings{}, err
 	}
 	out := domain.CaseAlertSettings{
-		CanManage: domain.CaseAlertSettingsRights{View: c.view, RoomLadders: c.ladders(), RouteLadders: c.ladders()},
+		CanManage: domain.CaseAlertSettingsRights{View: c.view, RoomLadders: c.roomLadders(), RouteLadders: c.ladders()},
 		Rooms:     []domain.CaseAlertChatRoom{},
 		Routes:    []domain.CaseAlertGroupRoute{},
 		Values:    []domain.CaseAlertLadderValue{},
@@ -204,7 +235,7 @@ func (s *caseAlertSettingsService) Get(ctx context.Context) (domain.CaseAlertSet
 		return out, nil
 	}
 	out.Environment = s.cfg.Environment
-	out.WebhooksEnabled = s.sealer != nil
+	out.WebhooksEnabled = true
 	rev, err := s.repo.Revision(ctx)
 	if err != nil {
 		return domain.CaseAlertSettings{}, err
@@ -343,7 +374,7 @@ func (s *caseAlertSettingsService) SaveRoom(ctx context.Context, req domain.Save
 	if err != nil {
 		return domain.CaseAlertChatRoom{}, err
 	}
-	ladder, err := normLadder(req.Ladder)
+	ladder, err := normRoomLadder(req.Ladder)
 	if err != nil {
 		return domain.CaseAlertChatRoom{}, err
 	}
@@ -367,16 +398,26 @@ func (s *caseAlertSettingsService) SaveRoom(ctx context.Context, req domain.Save
 			return domain.CaseAlertChatRoom{}, &apierror.ValidationError{Msg: "channel must be chat, call, both or log; leave it empty for the ladder's"}
 		}
 	}
+	if ladder == familySME {
+		// An SME room is a team's room and nothing more: no shared room,
+		// teamless or channel (0237).
+		if w.TeamKey == "" {
+			return domain.CaseAlertChatRoom{}, &apierror.ValidationError{Msg: "an SME room is an SME team's: send its teamKey"}
+		}
+		if w.Teamless || w.Channel != "" {
+			return domain.CaseAlertChatRoom{}, &apierror.ValidationError{Msg: "teamless and channel are for SRE team rooms; an SME room has only its URL"}
+		}
+	}
 	if w.TeamKey != "" {
-		if ladder != familySRE {
-			return domain.CaseAlertChatRoom{}, &apierror.ValidationError{Msg: "only SRE teams have rooms of their own; CRE has one shared room"}
+		if ladder == familyCRE {
+			return domain.CaseAlertChatRoom{}, &apierror.ValidationError{Msg: "only SRE and SME teams have rooms of their own; CRE has one shared room"}
 		}
 		family, ok, err := s.repo.RosteredTeamFamily(ctx, w.TeamKey)
 		if err != nil {
 			return domain.CaseAlertChatRoom{}, err
 		}
-		if !ok || family != familySRE {
-			return domain.CaseAlertChatRoom{}, &apierror.ValidationError{Msg: "teamKey must be an SRE team of the Team Schedule"}
+		if !ok || family != ladder {
+			return domain.CaseAlertChatRoom{}, &apierror.ValidationError{Msg: fmt.Sprintf("teamKey must be an %s team of the Team Schedule", ladder)}
 		}
 	} else if w.Teamless {
 		return domain.CaseAlertChatRoom{}, &apierror.ValidationError{Msg: "teamless is for a team's room; the shared room is not one"}
@@ -418,18 +459,13 @@ func (s *caseAlertSettingsService) SetWebhook(ctx context.Context, roomID string
 	if err != nil {
 		return domain.CaseAlertChatRoom{}, err
 	}
-	if s.sealer == nil {
-		return domain.CaseAlertChatRoom{}, &apierror.ServiceUnavailableError{Msg: "webhook URLs cannot be saved on this deployment: CASE_ALERTS_SECRET_KEY is not set"}
-	}
 	webhook, hint, err := parseChatWebhook(req.URL)
 	if err != nil {
 		return domain.CaseAlertChatRoom{}, &apierror.ValidationError{Msg: err.Error()}
 	}
-	sealed, err := s.sealer.seal(r.ID, webhook)
-	if err != nil {
-		return domain.CaseAlertChatRoom{}, err
-	}
-	found, err := s.repo.SetSecret(ctx, c.email, r.ID, sealed, hint)
+	// Stored as saved, in its own table that is never audited or returned
+	// to a browser; a sealed one saved before 0237 is replaced.
+	found, err := s.repo.SetSecret(ctx, c.email, r.ID, repository.CaseAlertSecret{URL: webhook}, hint)
 	if err != nil {
 		return domain.CaseAlertChatRoom{}, err
 	}
@@ -479,9 +515,6 @@ func (s *caseAlertSettingsService) SendTestCard(ctx context.Context, roomID stri
 	if err != nil {
 		return domain.CaseAlertTestCardResponse{}, err
 	}
-	if s.sealer == nil {
-		return domain.CaseAlertTestCardResponse{}, &apierror.ServiceUnavailableError{Msg: "test cards are not available on this deployment: CASE_ALERTS_SECRET_KEY is not set"}
-	}
 	sec, err := s.repo.Secret(ctx, r.ID)
 	if err != nil {
 		return domain.CaseAlertTestCardResponse{}, err
@@ -489,7 +522,7 @@ func (s *caseAlertSettingsService) SendTestCard(ctx context.Context, roomID stri
 	if sec == nil {
 		return domain.CaseAlertTestCardResponse{}, &apierror.ConflictError{Msg: "this room has no webhook URL saved here to test"}
 	}
-	webhook, err := s.sealer.open(r.ID, *sec)
+	webhook, err := s.webhookOf(r.ID, *sec)
 	if err != nil {
 		return domain.CaseAlertTestCardResponse{}, &apierror.ConflictError{Msg: err.Error()}
 	}
@@ -698,7 +731,21 @@ func (s *caseAlertSettingsService) DeleteValue(ctx context.Context, valueID stri
 	return nil
 }
 
-// runtimeCaller refuses anybody but csm-notification-service's client.
+// webhookOf is a stored room's URL: as saved, or a URL sealed before 0237
+// opened with CASE_ALERTS_SECRET_KEY. The error never quotes the URL.
+func (s *caseAlertSettingsService) webhookOf(roomID string, sec repository.CaseAlertSecret) (string, error) {
+	if sec.URL != "" {
+		return sec.URL, nil
+	}
+	if s.sealer == nil {
+		return "", errors.New("its URL was saved sealed under a key this deployment does not have; save the URL again")
+	}
+	return s.sealer.open(roomID, sec)
+}
+
+// runtimeCaller refuses a person, and any service but those
+// CASE_ALERTS_RUNTIME_CLIENT_IDS names when it names any: with it unset, an
+// internal service client (csm-notification-service's) may read.
 func (s *caseAlertSettingsService) runtimeCaller(ctx context.Context) (string, error) {
 	if err := RequireInternalCaller(ctx, s.access, "the Case Alerts runtime settings are only for internal services"); err != nil {
 		return "", err
@@ -707,7 +754,7 @@ func (s *caseAlertSettingsService) runtimeCaller(ctx context.Context) (string, e
 	if id.UserEmail != "" {
 		return "", &apierror.ForbiddenError{Msg: "the Case Alerts runtime settings are read by csm-notification-service, not by a person"}
 	}
-	if id.ClientID == "" || !s.runtimes[id.ClientID] {
+	if id.ClientID == "" || (len(s.runtimes) > 0 && !s.runtimes[id.ClientID]) {
 		return "", &apierror.ForbiddenError{Msg: "this client may not read the Case Alerts runtime settings (CASE_ALERTS_RUNTIME_CLIENT_IDS)"}
 	}
 	return id.ClientID, nil
@@ -733,11 +780,9 @@ func (s *caseAlertSettingsService) Runtime(ctx context.Context) (domain.CaseAler
 	if err != nil {
 		return domain.CaseAlertRuntimeSettings{}, err
 	}
-	var secrets map[string]repository.CaseAlertSecret
-	if s.sealer != nil {
-		if secrets, err = s.repo.Secrets(ctx); err != nil {
-			return domain.CaseAlertRuntimeSettings{}, err
-		}
+	secrets, err := s.repo.Secrets(ctx)
+	if err != nil {
+		return domain.CaseAlertRuntimeSettings{}, err
 	}
 	for _, r := range rooms {
 		if !r.Enabled {
@@ -748,9 +793,9 @@ func (s *caseAlertSettingsService) Runtime(ctx context.Context) (domain.CaseAler
 		webhook := ""
 		if r.HasSecret {
 			if sec, ok := secrets[r.ID]; !ok {
-				slog.WarnContext(ctx, "case alerts: room's URL left out of the runtime settings: CASE_ALERTS_SECRET_KEY is not set", "roomId", r.ID)
-			} else if opened, err := s.sealer.open(r.ID, sec); err != nil {
-				slog.WarnContext(ctx, "case alerts: room's URL left out of the runtime settings: it does not open with this environment's key", "roomId", r.ID)
+				slog.WarnContext(ctx, "case alerts: room's URL left out of the runtime settings: it is not stored", "roomId", r.ID)
+			} else if opened, err := s.webhookOf(r.ID, sec); err != nil {
+				slog.WarnContext(ctx, "case alerts: room's URL left out of the runtime settings", "roomId", r.ID, "reason", err.Error())
 			} else {
 				webhook = opened
 			}

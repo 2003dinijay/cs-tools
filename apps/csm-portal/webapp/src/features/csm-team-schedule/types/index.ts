@@ -427,15 +427,19 @@ export interface RotaMarkerGrant extends RotaGrant {
  */
 export type CaseAlertLadder = "CRE" | "SRE";
 
+/** A ladder with chat rooms: CRE's and SRE's, and SME's, which has only its
+ *  teams' rooms here (no shared room, routes or ladder values). */
+export type CaseAlertRoomLadder = CaseAlertLadder | "SME";
+
 export interface CaseAlertSettings {
   canManage: {
     view: boolean;
-    roomLadders: CaseAlertLadder[];
+    roomLadders: CaseAlertRoomLadder[];
     routeLadders: CaseAlertLadder[];
   };
   /** e.g. "staging" or "production"; "" when the server has no label. */
   environment: string;
-  /** False when the server cannot save URLs (no encryption key). */
+  /** False only from a server older than 0237 with no encryption key. */
   webhooksEnabled: boolean;
   revision: {
     saved: number;
@@ -474,11 +478,11 @@ export interface CaseAlertRouteOptions {
   rotas: { code: string; label: string }[];
 }
 
-/** A chat room: a ladder's shared room (no teamKey) or an SRE team's own. The
- *  webhook URL itself never reaches the page, only a hint. */
+/** A chat room: a ladder's shared room (no teamKey) or an SRE or SME team's
+ *  own. The webhook URL itself never reaches the page, only a hint. */
 export interface CaseAlertChatRoom {
   id: string;
-  ladder: CaseAlertLadder;
+  ladder: CaseAlertRoomLadder;
   teamKey?: string;
   label: string;
   enabled: boolean;
