@@ -488,53 +488,25 @@ describe("useMultiplexedCaseStream", () => {
       setDocumentVisibility("visible");
     });
 
-    it("does not connect while the browser page is hidden", async () => {
+    it("connects even while the browser page is hidden", async () => {
       setDocumentVisibility("hidden");
       renderStream([ID_A]);
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(mockInstances).toHaveLength(0);
+      await waitFor(() => expect(mockInstances).toHaveLength(1));
     });
 
-    it("closes when the page is hidden, and on return reconnects and invalidates every subscribed case once without flagging any tab", async () => {
+    it("stays open when the page is hidden and still reports updates", async () => {
       const onCaseUpdated = vi.fn();
       renderStream([ID_A, ID_B], onCaseUpdated);
       await waitFor(() => expect(mockInstances).toHaveLength(1));
-      expect(invalidateQueriesMock).not.toHaveBeenCalled();
 
       act(() => setDocumentVisibility("hidden"));
-      expect(mockInstances[0].closed).toBe(true);
+      expect(mockInstances[0].closed).toBe(false);
       expect(mockInstances).toHaveLength(1);
 
+      emit(mockInstances[0], JSON.stringify({ caseId: ID_B }));
+      expect(onCaseUpdated).toHaveBeenCalledWith(ID_B);
+
       act(() => setDocumentVisibility("visible"));
-      await waitFor(() => expect(mockInstances).toHaveLength(2));
-      expect(mockInstances[1].closed).toBe(false);
-      expect(invalidatedKeys()).toEqual([
-        ["csm-case-comments", ID_A],
-        ["csm-case-activities", ID_A],
-        ["csm-case-detail", ID_A],
-        ["csm-case-slas", ID_A],
-        ["csm-case-comments", ID_B],
-        ["csm-case-activities", ID_B],
-        ["csm-case-detail", ID_B],
-        ["csm-case-slas", ID_B],
-        ["csm-cases"],
-        ["csm-case-children"],
-      ]);
-      expect(onCaseUpdated).not.toHaveBeenCalled();
-    });
-
-    it("cancels a pending reconnect when the page is hidden", async () => {
-      vi.useFakeTimers({ shouldAdvanceTime: true });
-      renderStream([ID_A]);
-      await waitFor(() => expect(mockInstances).toHaveLength(1));
-
-      emitError(mockInstances[0]);
-      act(() => setDocumentVisibility("hidden"));
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(60_000);
-      });
-
       expect(mockInstances).toHaveLength(1);
     });
   });

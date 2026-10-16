@@ -21,11 +21,8 @@ import { useAuthTokens } from "@hooks/useAuthTokens";
 import { useLogger } from "@hooks/useLogger";
 import {
   MAX_BACKOFF_ATTEMPTS,
-  invalidateCaseById,
-  invalidateCaseLists,
   invalidateCaseQueries,
   reconnectDelay,
-  usePageVisible,
 } from "@features/csm-cases/api/caseStreamShared";
 
 /** The backend rejects more distinct ids than this with a 400. */
@@ -79,11 +76,9 @@ export function parseCaseUpdatedCaseId(data: unknown): string | undefined {
  * - Ids the caller cannot read are silently dropped server-side, so a requested
  *   id is not guaranteed to be live. Frames for ids that were never requested
  *   are ignored.
- * - While the browser page is hidden the connection is closed (no point holding
- *   a socket nobody is looking at); on return every subscribed case is
- *   invalidated once, because frames emitted meanwhile were not delivered.
- *   `onCaseUpdated` is deliberately NOT called for that catch-up, so returning
- *   to the page does not flag every tab.
+ * - The connection stays open while the browser page is hidden, so a background
+ *   case tab is still flagged when the user is on another browser tab. It is
+ *   still a single connection, so keeping it costs one slot, not one per tab.
  * - A 404/405 means the backend predates this endpoint. Retrying every few
  *   seconds would be pointless, so the hook drops straight to the slow idle
  *   retry (`RECONNECT_IDLE_DELAY_MS`), which still recovers after a deploy.
@@ -100,7 +95,6 @@ export function useMultiplexedCaseStream(
   const queryClient = useQueryClient();
   const getTokens = useAuthTokens();
   const logger = useLogger();
-  const pageVisible = usePageVisible();
 
   // Order-insensitive, so reordering tabs never reconnects.
   const idsKey = [...new Set(caseIds)].sort().join(",");
@@ -114,7 +108,7 @@ export function useMultiplexedCaseStream(
 
   // Read through refs so a new callback/logger/token-getter identity never
   // reconnects the stream: this hook lives in a component that re-renders on
-  // every tab-state change, and only a changed id set or page visibility may
+  // every tab-state change, and only a changed id set may
   // tear the connection down.
   const onCaseUpdatedRef = useRef(onCaseUpdated);
   const getTokensRef = useRef(getTokens);
@@ -125,23 +119,10 @@ export function useMultiplexedCaseStream(
     loggerRef.current = logger;
   });
 
-  // True while the stream is deliberately closed because the page is hidden,
-  // so the run that reopens it knows it missed events.
-  const wasHiddenRef = useRef(false);
-
   useEffect(() => {
     if (!settledKey || !apiConfig.streamEnabled || !apiConfig.streamUrl) return;
-    if (!pageVisible) {
-      wasHiddenRef.current = true;
-      return;
-    }
 
     const ids = settledKey.split(",");
-    if (wasHiddenRef.current) {
-      wasHiddenRef.current = false;
-      for (const id of ids) invalidateCaseById(queryClient, id);
-      invalidateCaseLists(queryClient);
-    }
 
     const requested = new Map(ids.map((id) => [id.toLowerCase(), id]));
     let cancelled = false;
@@ -227,5 +208,5 @@ export function useMultiplexedCaseStream(
       clearTimeout(reconnectTimer);
       source?.close();
     };
-  }, [settledKey, pageVisible, queryClient]);
+  }, [settledKey, queryClient]);
 }

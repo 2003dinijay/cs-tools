@@ -177,51 +177,6 @@ function tabChipSx(active: boolean): (theme: ColorSchemeAwareTheme) => Record<st
   });
 }
 
-/**
- * Extra `sx` for a tab that has an unseen live update. The blink is a pulse of
- * two pseudo-elements rather than of the chip itself, so the label stays fully
- * legible throughout: a neutral `action.selected` wash behind the label and a
- * 2px `primary.main` rule along the bottom edge (the theme accent kept as a
- * thin line, never a filled surface). Both come from theme tokens, so they
- * follow the light and dark schemes. A small static dot in the label (see
- * `UpdateDot`) carries the cue without relying on motion.
- *
- * Under `prefers-reduced-motion: reduce` the animation is dropped and the same
- * two layers are shown steadily, a static highlight instead of a blink.
- */
-const TAB_UPDATE_BLINK_SX = {
-  position: "relative",
-  // Own stacking context, so the wash (z-index -1) sits behind the label but
-  // never behind the strip.
-  isolation: "isolate",
-  "&::before, &::after": {
-    content: '""',
-    position: "absolute",
-    pointerEvents: "none",
-    animation: "csmTabUpdateBlink 1.4s ease-in-out infinite",
-  },
-  "&::before": {
-    inset: 0,
-    zIndex: -1,
-    borderRadius: TAB_CORNER_RADIUS,
-    bgcolor: "action.selected",
-  },
-  "&::after": {
-    left: 0,
-    right: 0,
-    bottom: 0,
-    height: 2,
-    bgcolor: "primary.main",
-  },
-  "@keyframes csmTabUpdateBlink": {
-    "0%, 100%": { opacity: 0.15 },
-    "50%": { opacity: 1 },
-  },
-  "@media (prefers-reduced-motion: reduce)": {
-    "&::before, &::after": { animation: "none", opacity: 1 },
-  },
-} as const;
-
 /** Standard visually-hidden styles: read by screen readers, invisible on screen. */
 const VISUALLY_HIDDEN_SX = {
   border: 0,
@@ -235,8 +190,8 @@ const VISUALLY_HIDDEN_SX = {
   width: "1px",
 } as const;
 
-/** A tab's label with the cues for an unseen update: a small static dot (the
- * non-motion cue, hidden from assistive tech) and screen-reader text, since
+/** A tab's label with the cues for an unseen update: a small static dot
+ * (hidden from assistive tech) and screen-reader text, since
  * the chip's accessible name is its content. */
 function UpdatedTabLabel({ label }: { label: string }): JSX.Element {
   return (
@@ -582,7 +537,7 @@ export default function CaseTabStrip({
                   // file's own test for how it's exercised: by test id, not by
                   // an accessible name, until oxygen-ui/MUI's `Chip` exposes
                   // one for `deleteIcon` directly).
-                  sx={hasUpdate ? [tabChipSx(active), TAB_UPDATE_BLINK_SX] : tabChipSx(active)}
+                  sx={tabChipSx(active)}
                 />
               </Tooltip>
             </Fragment>
