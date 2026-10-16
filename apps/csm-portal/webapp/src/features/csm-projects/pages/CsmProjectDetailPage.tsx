@@ -254,7 +254,7 @@ export default function CsmProjectDetailPage(): JSX.Element {
           <Tooltip title="Coming">
             <Box component="span" className="csm-print-hide" sx={{ display: "inline-flex" }}>
               <Button variant="outlined" size="small" disabled>
-                SLA Report
+                SLA Report — Coming soon
               </Button>
             </Box>
           </Tooltip>

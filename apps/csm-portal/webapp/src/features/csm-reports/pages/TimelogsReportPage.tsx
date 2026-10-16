@@ -185,11 +185,13 @@ const CASE_ROWS_PER_PAGE = [10, 20, 50];
 
 function CasesCard({
   cases,
+  linkedCaseNumbers,
   isCustomerReport,
   showAll,
   onOpenCase,
 }: {
   cases: TimeLogBreakdownCase[];
+  linkedCaseNumbers: Set<string>;
   isCustomerReport: boolean;
   showAll: boolean;
   onOpenCase: (row: TimeLogBreakdownCase) => void;
@@ -236,7 +238,7 @@ function CasesCard({
                     <TableCell>{display(row.shortDescription)}</TableCell>
                     <TableCell>{row.state ? <Chip size="small" variant="outlined" label={row.state} /> : "—"}</TableCell>
                     <TableCell>
-                      {parseFloat(hours) > 0 ? (
+                      {parseFloat(hours) > 0 && linkedCaseNumbers.has(row.caseNumber) ? (
                         <Button variant="text" size="small" sx={{ p: 0, minWidth: 0 }} href={`#${row.caseNumber}`}>
                           {hours}
                         </Button>
@@ -423,6 +425,7 @@ export default function TimelogsReportPage(): JSX.Element {
           <CasesCard
             key={isCustomerReport ? "customer" : "internal"}
             cases={cases}
+            linkedCaseNumbers={new Set(timeCardCases.map((entry) => entry.caseItem.caseNumber))}
             isCustomerReport={isCustomerReport}
             showAll={printing}
             onOpenCase={handleOpenCase}

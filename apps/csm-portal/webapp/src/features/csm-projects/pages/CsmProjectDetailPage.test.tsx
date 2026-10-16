@@ -249,7 +249,7 @@ describe("CsmProjectDetailPage — report buttons", () => {
     renderPage();
     expect(screen.getByRole("link", { name: "Time Report" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "CS Report" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "SLA Report" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "SLA Report — Coming soon" })).toBeDisabled();
   });
 });
 
