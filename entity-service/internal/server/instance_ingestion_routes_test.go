@@ -24,10 +24,11 @@ import (
 )
 
 // TestInstanceIngestionRoutesAreInternalOnly pins the access guard on the
-// product-consumption-tracking ingestion routes: the writes have no project
-// scoping of their own and the secret key is the credential telemetry
-// signatures are checked with, so none may be reachable by an external caller
-// (or by a request with no token at all).
+// product-consumption routes: the ingestion writes have no project scoping of
+// their own, the secret keys are the credentials telemetry and report
+// signatures are checked with, and the provisioning status carries the
+// project's client secret, so none may be reachable by an external caller (or
+// by a request with no token at all).
 func TestInstanceIngestionRoutesAreInternalOnly(t *testing.T) {
 	src, err := os.ReadFile("routes.go")
 	if err != nil {
@@ -40,6 +41,10 @@ func TestInstanceIngestionRoutesAreInternalOnly(t *testing.T) {
 		"POST /instances/daily-usages/batch",
 		"GET /projects/{key}/secret-key",
 		"GET /deployments/by-number/{number}/consumption-secret",
+		"GET /projects/{id}/consumption/status",
+		"POST /projects/{id}/consumption/status",
+		"PATCH /projects/{id}/consumption",
+		"POST /projects/{id}/consumption",
 	} {
 		re := regexp.MustCompile(`HandleFunc\("` + regexp.QuoteMeta(route) + `",\s*([^\n]+)`)
 		matches := re.FindAllStringSubmatch(string(src), -1)

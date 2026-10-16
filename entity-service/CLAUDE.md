@@ -7946,16 +7946,14 @@ ones that should have unconditional access. A caller that reaches entity-service
 *through* another service is identified by that other service's client id, not
 its own.
 
-The three product-consumption routes (`GET`/`PATCH
-/projects/{id}/consumption`, `POST
-/projects/{id}/deployments/{deploymentId}/license`) are scoped too, but check
-membership in `service.authorizeProject` rather than pushing the scope into a
-query. Two of the three have no query to push it into: a write and an upstream
-call that leaves the service entirely. Refused as a 404 for the same reason as
-the by-id reads. **These are scoped on both data sources**, unlike the five
-operations above -- they are registered in ServiceNow mode deliberately (see
-"Product-consumption provisioning state" in `README.md`), so ServiceNow is not
-there to scope them.
+The product-consumption provisioning routes (`GET`/`POST
+/projects/{id}/consumption/status`, `PATCH`/`POST /projects/{id}/consumption`) are
+**internal callers only** (`internalOnly`), not project-scoped: the status carries the
+project's client secret and HMAC secret keys and the update replaces them, so even a
+member of the project must not read or change them. Their one caller is the
+subscription service (`choreo-subscription-on-project-create`), whose client id must
+be in `M2M_CLIENT_IDS`; customers reach provisioning only through it (customer
+portal backend → subscription service). They are registered on both data sources.
 
 **Not yet wired**: every other project/case-adjacent read (comments,
 time cards, attachments, conversations, change requests,

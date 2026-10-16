@@ -1859,10 +1859,14 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 	mux.HandleFunc("GET /projects/{id}", projectHandler.GetProject)
 	mux.HandleFunc("POST /projects/search", projectHandler.SearchProjects)
-	mux.HandleFunc("GET /projects/{id}/consumption/status", projectConsumptionHandler.GetProjectConsumptionStatus)
-	mux.HandleFunc("POST /projects/{id}/consumption/status", projectConsumptionHandler.GetProjectConsumptionStatus)
-	mux.HandleFunc("PATCH /projects/{id}/consumption", projectConsumptionHandler.UpdateProjectConsumption)
-	mux.HandleFunc("POST /projects/{id}/consumption", projectConsumptionHandler.UpdateProjectConsumption)
+	// Product-consumption provisioning state, internal callers only: the status
+	// carries the project's client secret and HMAC secret keys, and the update
+	// replaces them. The caller is the subscription service (its client id in
+	// M2M_CLIENT_IDS); customers reach provisioning only through it.
+	mux.HandleFunc("GET /projects/{id}/consumption/status", internalOnly(accessSvc, projectConsumptionHandler.GetProjectConsumptionStatus))
+	mux.HandleFunc("POST /projects/{id}/consumption/status", internalOnly(accessSvc, projectConsumptionHandler.GetProjectConsumptionStatus))
+	mux.HandleFunc("PATCH /projects/{id}/consumption", internalOnly(accessSvc, projectConsumptionHandler.UpdateProjectConsumption))
+	mux.HandleFunc("POST /projects/{id}/consumption", internalOnly(accessSvc, projectConsumptionHandler.UpdateProjectConsumption))
 	mux.HandleFunc("POST /projects/{id}/contacts/search", projectMemberOnly(accessSvc, projectContactHandler.SearchProjectContacts))
 	mux.HandleFunc("GET /projects/{id}/contacts/{contactId}", projectMemberOnly(accessSvc, projectContactHandler.GetProjectContact))
 	if projectMembershipHandler != nil {
