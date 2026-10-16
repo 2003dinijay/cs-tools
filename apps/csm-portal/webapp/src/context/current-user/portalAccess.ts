@@ -170,9 +170,9 @@ export interface PortalAccess {
   canUpdateDeleteAnyComment: boolean;
   /**
    * The small set of sections that used to live in the separate, now-removed
-   * "Support Portal Lite" app (Customer Health, User scan, SLA/Time/CS
-   * project reports, and the extra Account detail tabs they added): `viewer`
-   * only, regardless of what other roles the caller also holds — mirrors the
+   * "Support Portal Lite" app (Customer Health, User scan, the Time project
+   * report, and the extra Account detail tabs they added): `viewer` only,
+   * regardless of what other roles the caller also holds — mirrors the
    * backend's `PermViewerAccess` (`access.go`), which is built only from the
    * viewer role, not folded into the usual "full access" `cs_engineer`/`admin`
    * bundle the way every other flag above is. A `cs_engineer` who does not

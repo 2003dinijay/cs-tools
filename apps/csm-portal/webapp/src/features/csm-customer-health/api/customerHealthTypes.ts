@@ -16,8 +16,8 @@
 
 // Ported verbatim from apps/support-portal-lite/webapp's own
 // customerHealthTypes.ts — these field names are already verified
-// against the real Go backend (internal/handler/spl_customer_health*.go,
-// internal/risk/*.go, internal/servicenow/customer_health.go).
+// against the real Go backend (internal/handler/customer_health*.go,
+// internal/risk/*.go, internal/viewer/viewer.go).
 
 export interface AccountSummary {
   accountSysId: string;

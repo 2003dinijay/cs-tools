@@ -162,9 +162,9 @@ var caseStateToDisplay = map[string]string{
 	"closed":            "Closed",
 }
 
-// derefStr returns "" for a nil pointer, matching servicenow.CaseDetails's
-// own convention of empty-string-not-omitted for a field ServiceNow itself
-// never leaves absent.
+// derefStr returns "" for a nil pointer: the viewer wire types keep the
+// empty-string-not-omitted convention for fields the webapp always expects
+// to be present.
 func derefStr(s *string) string {
 	if s == nil {
 		return ""

@@ -252,9 +252,9 @@ export default function CustomerHealthDetailTable({ accountId, onAccountNameLoad
 
   // FIXED (was `error.status === 500`, matching the OLD Ballerina backend's
   // behavior of 500-ing on an unknown account — the new Go backend
-  // (GetAccountDetail/servicenow.GetCustomerHealthDetail) deliberately
-  // returns 404 instead, see servicenow.ErrAccountNotFound in
-  // internal/servicenow/customer_health.go). Checking 404 via
+  // (GetAccountDetail/GetCustomerHealthDetail) deliberately returns 404
+  // instead, see viewer.ErrAccountNotFound in the backend's
+  // internal/viewer/viewer.go). Checking 404 via
   // isNotFoundError (BackendApiError.status === 404).
   if (isError && isNotFoundError(error)) {
     return <Typography sx={{ mt: 3, textAlign: "center" }}>Couldn't find that account.</Typography>;

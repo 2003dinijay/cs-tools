@@ -24,7 +24,7 @@ import (
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/entity"
-	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/servicenow"
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/viewer"
 )
 
 // entityCustomerHealthClient is the subset of internal/entity.CustomerEntityClient
@@ -33,7 +33,7 @@ type entityCustomerHealthClient interface {
 	GetAccountHealthDetail(ctx context.Context, accountID string) (entity.CHAccountHealthDetail, error)
 }
 
-// postgresCustomerHealthClient implements customerHealthSNClient entirely
+// postgresCustomerHealthClient implements customerHealthDetailClient entirely
 // against entity-service (Postgres). entity-service computes the per-project
 // risk flags and the items behind them (recent cases, delayed and abandoned
 // migrations, end-of-life software, escalations, go-live status) in one
@@ -49,19 +49,19 @@ func NewPostgresCustomerHealthClient(entity entityCustomerHealthClient) *postgre
 	return &postgresCustomerHealthClient{entity: entity}
 }
 
-// GetCustomerHealthDetail implements customerHealthSNClient with exactly one
+// GetCustomerHealthDetail implements customerHealthDetailClient with exactly one
 // entity-service request (GET /accounts/{id}/health-detail), however many
 // projects and cases the account has. A 404 (no such account) becomes
-// servicenow.ErrAccountNotFound; every other error is returned unchanged for
+// viewer.ErrAccountNotFound; every other error is returned unchanged for
 // the handler's upstream-error mapping. The account lookup is deliberately
 // unscoped: a CS engineer may legitimately view a deactivated account's
 // health history.
-func (c *postgresCustomerHealthClient) GetCustomerHealthDetail(ctx context.Context, accountID string) (*servicenow.AccountDetail, error) {
+func (c *postgresCustomerHealthClient) GetCustomerHealthDetail(ctx context.Context, accountID string) (*viewer.AccountDetail, error) {
 	detail, err := c.entity.GetAccountHealthDetail(ctx, accountID)
 	if err != nil {
 		var apiErr *apierror.Error
 		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
-			return nil, servicenow.ErrAccountNotFound
+			return nil, viewer.ErrAccountNotFound
 		}
 		return nil, err
 	}
@@ -73,25 +73,25 @@ func (c *postgresCustomerHealthClient) GetCustomerHealthDetail(ctx context.Conte
 // uuidToSysID) and every list is a non-nil slice, so the JSON always carries
 // [] rather than null. A group's case list and a link's fields are omitted
 // when empty, as before.
-func accountDetailFromEntity(d entity.CHAccountHealthDetail) *servicenow.AccountDetail {
-	projects := make([]servicenow.ProjectDetail, 0, len(d.CustomerProjects))
+func accountDetailFromEntity(d entity.CHAccountHealthDetail) *viewer.AccountDetail {
+	projects := make([]viewer.ProjectDetail, 0, len(d.CustomerProjects))
 	for _, p := range d.CustomerProjects {
-		recent := make([]servicenow.CaseGroup, 0, len(p.DetailedRecentCases))
+		recent := make([]viewer.CaseGroup, 0, len(p.DetailedRecentCases))
 		for _, g := range p.DetailedRecentCases {
-			group := servicenow.CaseGroup{Priority: g.Priority, Count: g.Count}
+			group := viewer.CaseGroup{Priority: g.Priority, Count: g.Count}
 			if len(g.Cases) > 0 {
-				group.Cases = make([]servicenow.CaseInfo, 0, len(g.Cases))
+				group.Cases = make([]viewer.CaseInfo, 0, len(g.Cases))
 				for _, cs := range g.Cases {
-					group.Cases = append(group.Cases, servicenow.CaseInfo{SysID: uuidToSysID(cs.ID), Number: cs.Number})
+					group.Cases = append(group.Cases, viewer.CaseInfo{SysID: uuidToSysID(cs.ID), Number: cs.Number})
 				}
 			}
 			recent = append(recent, group)
 		}
-		software := make([]servicenow.EolProduct, 0, len(p.SoftwareModel))
+		software := make([]viewer.EolProduct, 0, len(p.SoftwareModel))
 		for _, s := range p.SoftwareModel {
-			software = append(software, servicenow.EolProduct{Name: s.Name, EolDate: s.EolDate, Deployments: deploymentRefsFromEntity(s.Deployments)})
+			software = append(software, viewer.EolProduct{Name: s.Name, EolDate: s.EolDate, Deployments: deploymentRefsFromEntity(s.Deployments)})
 		}
-		projects = append(projects, servicenow.ProjectDetail{
+		projects = append(projects, viewer.ProjectDetail{
 			SysID:                   uuidToSysID(p.ID),
 			Name:                    p.Name,
 			HasRecentCases:          p.HasRecentCases,
@@ -106,24 +106,24 @@ func accountDetailFromEntity(d entity.CHAccountHealthDetail) *servicenow.Account
 			DetailedMigrationDelays: caseLinksFromEntity(p.DetailedMigrationDelays),
 			HasEscalatedCases:       p.HasEscalatedCases,
 			DetailedEscalatedCases:  caseLinksFromEntity(p.DetailedEscalatedCases),
-			GoLiveStatus:            servicenow.GoLiveStatus{Status: p.GoLiveStatus.Status, IsRisk: p.GoLiveStatus.IsRisk, State: p.GoLiveStatus.State},
+			GoLiveStatus:            viewer.GoLiveStatus{Status: p.GoLiveStatus.Status, IsRisk: p.GoLiveStatus.IsRisk, State: p.GoLiveStatus.State},
 		})
 	}
-	return &servicenow.AccountDetail{AccountName: d.AccountName, CustomerProjects: projects}
+	return &viewer.AccountDetail{AccountName: d.AccountName, CustomerProjects: projects}
 }
 
-func deploymentRefsFromEntity(in []entity.CHHealthDeploymentRef) []servicenow.Deployment {
-	out := make([]servicenow.Deployment, 0, len(in))
+func deploymentRefsFromEntity(in []entity.CHHealthDeploymentRef) []viewer.Deployment {
+	out := make([]viewer.Deployment, 0, len(in))
 	for _, d := range in {
-		out = append(out, servicenow.Deployment{SysID: uuidToSysID(d.ID), Name: d.Name})
+		out = append(out, viewer.Deployment{SysID: uuidToSysID(d.ID), Name: d.Name})
 	}
 	return out
 }
 
-func caseLinksFromEntity(in []entity.CHHealthCaseLink) []servicenow.CaseLink {
-	out := make([]servicenow.CaseLink, 0, len(in))
+func caseLinksFromEntity(in []entity.CHHealthCaseLink) []viewer.CaseLink {
+	out := make([]viewer.CaseLink, 0, len(in))
 	for _, l := range in {
-		link := servicenow.CaseLink{Number: l.Number, EscalationNumber: l.EscalationNumber}
+		link := viewer.CaseLink{Number: l.Number, EscalationNumber: l.EscalationNumber}
 		if l.ID != "" {
 			link.SysID = uuidToSysID(l.ID)
 		}

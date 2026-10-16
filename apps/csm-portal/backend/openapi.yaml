@@ -10039,22 +10039,22 @@ paths:
                 $ref: "#/components/schemas/ErrorPayload"
 
   # ---------------------------------------------------------------------
-  # SupportPortalLite — ported from digiops-cs's apps/support-portal-lite
-  # Ballerina backend (being retired), serving the Sales/Solutions-Architecture
-  # audience. None of the routes below carry a /spl/ prefix: SPL and this
-  # API are the same backend now, and none of these routes collide with
-  # anything this API's own, differently-shaped case-management domain owns.
-  # Account/project/case list-search-detail (which used to collide, and so
-  # used to live here under /spl/accounts, /spl/projects, /spl/cases) are
-  # gone entirely -- consolidated onto the shared /accounts, /projects, and
-  # /cases search/detail routes above. Always registered. Google Drive/the
-  # sales-side entity service are independently optional -- an endpoint
-  # needing one that isn't configured in a given deployment fails at call
-  # time instead of the route not existing. ServiceNow's own host/
-  # credential config is gone entirely (that integration is being phased
-  # out), so every ServiceNow-backed endpoint here always fails its own
-  # call now -- see cmd/server/main.go's loadViewerConfig. Path parameters
-  # here are ServiceNow sys_ids or case/account/project numbers, not UUIDs.
+  # Viewer-audience routes — ported from digiops-cs's apps/support-portal-lite
+  # Ballerina backend (being retired). None of the routes below carry a /spl/
+  # prefix: the viewer audience and this API are the same backend now, and
+  # none of these routes collide with anything this API's own,
+  # differently-shaped case-management domain owns. Account/project/case
+  # list-search-detail (which used to collide, and so used to live here under
+  # /spl/accounts, /spl/projects, /spl/cases) are gone entirely --
+  # consolidated onto the shared /accounts, /projects, and /cases
+  # search/detail routes above. Always registered, and every route is served
+  # from entity-service; only Google Drive (/files) and the Scan User entity
+  # service (/scan-user) are separate, independently optional upstreams -- an
+  # endpoint needing one that isn't configured in a given deployment fails at
+  # call time instead of the route not existing (see cmd/server/main.go's
+  # loadViewerConfig). Identifiers here are the ones the ported viewer
+  # frontend already sends: entity-service ids, or a project key for the
+  # time-log report.
   # ---------------------------------------------------------------------
 
   /accounts/{accountId}/escalations:
@@ -10119,136 +10119,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /accounts/{accountId}/cases/{caseId}/escalate:
-    post:
-      summary: Escalate a case on this account.
-      operationId: escalateCase
-      parameters:
-        - name: accountId
-          in: path
-          required: true
-          schema:
-            type: string
-        - name: caseId
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/EscalationRequest'
-      responses:
-        "200":
-          description: Ok
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/EscalationResponse'
-        "400":
-          description: BadRequest
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorPayload'
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorPayload'
-        "403":
-          description: Forbidden — caller lacks SPL_ADD_ESCALATION_GROUPS membership.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorPayload'
-        "404":
-          description: NotFound
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorPayload'
-        "409":
-          description: Conflict — the case has already been escalated.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorPayload'
-        "500":
-          description: InternalServerError
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorPayload'
-
-  /cases/{caseId}/attachments-info:
-    get:
-      summary: List metadata for a case's attachments.
-      operationId: getAttachmentsInfo
-      parameters:
-        - name: caseId
-          in: path
-          required: true
-          schema:
-            type: string
-        - name: offset
-          in: query
-          required: true
-          schema:
-            type: integer
-            minimum: 0
-        - name: limit
-          in: query
-          required: true
-          schema:
-            type: integer
-            minimum: 1
-      responses:
-        "200":
-          description: Ok
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/AttachmentInfo'
-        "400":
-          description: BadRequest
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorPayload'
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorPayload'
-        "403":
-          description: Forbidden
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorPayload'
-        "404":
-          description: NotFound
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorPayload'
-        "500":
-          description: InternalServerError
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorPayload'
-
   /products:
     get:
-      summary: List the distinct product names known to ServiceNow deployments.
+      summary: List the distinct product names known to deployments.
       operationId: getProducts
       responses:
         "200":
@@ -10291,110 +10164,6 @@ paths:
                 type: array
                 items:
                   type: string
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorPayload'
-        "403":
-          description: Forbidden
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorPayload'
-        "500":
-          description: InternalServerError
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorPayload'
-
-  /generate-sla-report:
-    get:
-      summary: Generate a project's SLA report for a date range.
-      operationId: generateSLAReport
-      parameters:
-        - name: projectSysId
-          in: query
-          required: true
-          schema:
-            type: string
-        - name: from
-          in: query
-          required: true
-          schema:
-            type: string
-        - name: to
-          in: query
-          required: true
-          schema:
-            type: string
-      responses:
-        "200":
-          description: Ok
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SLAReportDetails'
-        "400":
-          description: BadRequest
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorPayload'
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorPayload'
-        "403":
-          description: Forbidden
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorPayload'
-        "500":
-          description: InternalServerError
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorPayload'
-
-  /report-details:
-    get:
-      summary: Generate a project's detailed CS report for a date range.
-      operationId: getReportDetails
-      parameters:
-        - name: projectSysId
-          in: query
-          required: true
-          schema:
-            type: string
-        - name: from
-          in: query
-          required: true
-          schema:
-            type: string
-        - name: to
-          in: query
-          required: true
-          schema:
-            type: string
-      responses:
-        "200":
-          description: Ok
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CSReportDetails'
-        "400":
-          description: BadRequest
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorPayload'
         "401":
           description: Unauthorized
           content:
@@ -10462,124 +10231,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /attachments/{attachmentId}/download:
-    get:
-      summary: Download the binary content of a case attachment (ServiceNow-backed).
-      operationId: downloadAttachment
-      parameters:
-        - name: attachmentId
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        "200":
-          description: >-
-            Raw file content. Content-Type is restricted to a safe allowlist
-            (anything outside it is served as application/octet-stream);
-            Content-Disposition is always attachment. X-Content-Type-Options:
-            nosniff is set on every response by this API's SecurityHeaders
-            middleware.
-          content:
-            application/octet-stream:
-              schema:
-                type: string
-                format: binary
-        "400":
-          description: BadRequest
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorPayload'
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorPayload'
-        "403":
-          description: Forbidden — caller lacks SPL_DOWNLOAD_ATTACHMENT_GROUPS membership.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorPayload'
-        "404":
-          description: NotFound
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorPayload'
-        "500":
-          description: InternalServerError
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorPayload'
-
-  /abt-team-schedule:
-    get:
-      summary: Get an ABT team's schedule.
-      operationId: getABTTeamSchedule
-      parameters:
-        - name: from
-          in: query
-          required: false
-          schema:
-            type: string
-        - name: duration
-          in: query
-          required: false
-          schema:
-            type: string
-        - name: teamId
-          in: query
-          required: false
-          schema:
-            type: string
-        - name: eventType
-          in: query
-          required: false
-          schema:
-            type: string
-      responses:
-        "200":
-          description: Ok
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ABTTeamScheduleData'
-        "400":
-          description: BadRequest
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorPayload'
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorPayload'
-        "403":
-          description: Forbidden
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorPayload'
-        "500":
-          description: InternalServerError
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorPayload'
-
-  # SupportPortalLite usage-metrics (/usage-metrics/*) — every endpoint
-  # here forwards the request/response body close to verbatim to ServiceNow's
-  # custom scoped-app API (raw passthrough, not reshaped by this backend), so
-  # request/response schemas are intentionally left open (additionalProperties:
-  # true) rather than fully typed against an upstream contract this backend
-  # does not own or reshape. Every endpoint additionally requires
-  # PermUsageMetricsViewer on top of the blanket PermSPLAccess gate.
+  # Viewer-audience usage-metrics (/usage-metrics/*) — every endpoint here
+  # is served from entity-service, with the response reshaped to the field
+  # names the usage-metrics dashboard already reads, so request/response
+  # schemas are intentionally left open (additionalProperties: true) rather
+  # than fully typed here. Every endpoint is registered directly on
+  # PermUsageMetricsViewer rather than the blanket PermViewerAccess gate --
+  # see that permission's own doc comment in internal/handler/access.go.
 
   /usage-metrics/projects:
     get:
@@ -10606,7 +10264,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
         "403":
-          description: Forbidden — caller lacks SPL_USAGE_METRICS_GROUPS membership.
+          description: Forbidden — the caller's roles do not grant PermUsageMetricsViewer (usage_metrics_viewer, cs_engineer or admin).
           content:
             application/json:
               schema:
@@ -10620,7 +10278,7 @@ paths:
 
   /usage-metrics/instances/metrics/search:
     post:
-      summary: Search instance-level product metrics (raw passthrough to ServiceNow's custom API).
+      summary: Search instance-level product metrics.
       operationId: searchInstanceMetrics
       requestBody:
         required: true
@@ -10650,7 +10308,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
         "403":
-          description: Forbidden — caller lacks SPL_USAGE_METRICS_GROUPS membership.
+          description: Forbidden — the caller's roles do not grant PermUsageMetricsViewer (usage_metrics_viewer, cs_engineer or admin).
           content:
             application/json:
               schema:
@@ -10670,7 +10328,7 @@ paths:
 
   /usage-metrics/instances/metrics/stats:
     post:
-      summary: Get aggregated instance metrics stats (raw passthrough to ServiceNow's custom API).
+      summary: Get aggregated instance metrics stats.
       operationId: getInstanceMetricsStats
       requestBody:
         required: true
@@ -10700,7 +10358,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
         "403":
-          description: Forbidden — caller lacks SPL_USAGE_METRICS_GROUPS membership.
+          description: Forbidden — the caller's roles do not grant PermUsageMetricsViewer (usage_metrics_viewer, cs_engineer or admin).
           content:
             application/json:
               schema:
@@ -10720,7 +10378,7 @@ paths:
 
   /usage-metrics/instances/usages/search:
     post:
-      summary: Search instance-level usage records (raw passthrough to ServiceNow's custom API).
+      summary: Search instance-level usage records.
       operationId: searchInstanceUsages
       requestBody:
         required: true
@@ -10750,7 +10408,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
         "403":
-          description: Forbidden — caller lacks SPL_USAGE_METRICS_GROUPS membership.
+          description: Forbidden — the caller's roles do not grant PermUsageMetricsViewer (usage_metrics_viewer, cs_engineer or admin).
           content:
             application/json:
               schema:
@@ -10770,7 +10428,7 @@ paths:
 
   /usage-metrics/instances/usages/stats:
     post:
-      summary: Get aggregated instance usage stats (raw passthrough to ServiceNow's custom API).
+      summary: Get aggregated instance usage stats.
       operationId: getInstanceUsagesStats
       requestBody:
         required: true
@@ -10800,7 +10458,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
         "403":
-          description: Forbidden — caller lacks SPL_USAGE_METRICS_GROUPS membership.
+          description: Forbidden — the caller's roles do not grant PermUsageMetricsViewer (usage_metrics_viewer, cs_engineer or admin).
           content:
             application/json:
               schema:
@@ -10820,7 +10478,7 @@ paths:
 
   /usage-metrics/deployments/search:
     post:
-      summary: Search deployments (raw passthrough to ServiceNow's custom API).
+      summary: Search deployments.
       operationId: searchUsageMetricsDeployments
       requestBody:
         required: true
@@ -10850,7 +10508,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
         "403":
-          description: Forbidden — caller lacks SPL_USAGE_METRICS_GROUPS membership.
+          description: Forbidden — the caller's roles do not grant PermUsageMetricsViewer (usage_metrics_viewer, cs_engineer or admin).
           content:
             application/json:
               schema:
@@ -10870,7 +10528,7 @@ paths:
 
   /usage-metrics/projects/search:
     post:
-      summary: Search projects for the usage-metrics dashboard (raw passthrough to ServiceNow's custom API).
+      summary: Search projects for the usage-metrics dashboard.
       operationId: searchUsageMetricsProjects
       requestBody:
         required: true
@@ -10900,7 +10558,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
         "403":
-          description: Forbidden — caller lacks SPL_USAGE_METRICS_GROUPS membership.
+          description: Forbidden — the caller's roles do not grant PermUsageMetricsViewer (usage_metrics_viewer, cs_engineer or admin).
           content:
             application/json:
               schema:
@@ -10920,7 +10578,7 @@ paths:
 
   /usage-metrics/deployed-products/search:
     post:
-      summary: Search deployed products (raw passthrough to ServiceNow's custom API).
+      summary: Search deployed products.
       operationId: searchUsageMetricsDeployedProducts
       requestBody:
         required: true
@@ -10950,7 +10608,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
         "403":
-          description: Forbidden — caller lacks SPL_USAGE_METRICS_GROUPS membership.
+          description: Forbidden — the caller's roles do not grant PermUsageMetricsViewer (usage_metrics_viewer, cs_engineer or admin).
           content:
             application/json:
               schema:
@@ -10970,7 +10628,7 @@ paths:
 
   /usage-metrics/instances/search:
     post:
-      summary: Search instances (raw passthrough to ServiceNow's custom API).
+      summary: Search instances.
       operationId: searchUsageMetricsInstances
       requestBody:
         required: true
@@ -11000,7 +10658,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
         "403":
-          description: Forbidden — caller lacks SPL_USAGE_METRICS_GROUPS membership.
+          description: Forbidden — the caller's roles do not grant PermUsageMetricsViewer (usage_metrics_viewer, cs_engineer or admin).
           content:
             application/json:
               schema:
@@ -11020,7 +10678,7 @@ paths:
 
   /usage-metrics/deployed-products/{id}/metrics/search:
     post:
-      summary: Get metrics for a deployed product over a date range (raw passthrough to ServiceNow's custom API).
+      summary: Get metrics for a deployed product over a date range.
       operationId: getDeployedProductMetrics
       parameters:
         - name: id
@@ -11063,7 +10721,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
         "403":
-          description: Forbidden — caller lacks SPL_USAGE_METRICS_GROUPS membership.
+          description: Forbidden — the caller's roles do not grant PermUsageMetricsViewer (usage_metrics_viewer, cs_engineer or admin).
           content:
             application/json:
               schema:
@@ -11083,7 +10741,7 @@ paths:
 
   /usage-metrics/deployed-products/{id}/metrics/usage-counts/search:
     post:
-      summary: Get usage counts for a deployed product over a date range (raw passthrough to ServiceNow's custom API).
+      summary: Get usage counts for a deployed product over a date range.
       operationId: getDeployedProductUsageCounts
       parameters:
         - name: id
@@ -11126,7 +10784,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
         "403":
-          description: Forbidden — caller lacks SPL_USAGE_METRICS_GROUPS membership.
+          description: Forbidden — the caller's roles do not grant PermUsageMetricsViewer (usage_metrics_viewer, cs_engineer or admin).
           content:
             application/json:
               schema:
@@ -24842,30 +24500,6 @@ components:
         escalatedOn:
           type: string
 
-    EscalationRequest:
-      type: object
-      required: [justification, requestSource, reason, severity]
-      properties:
-        justification:
-          type: string
-        requestSource:
-          type: string
-          enum: [Customer, Internal]
-        reason:
-          type: string
-          enum: ["Inactivity", "Lack Of Progress", "Customer Imposed Deadline"]
-        severity:
-          type: string
-          enum: ["High Severity", "Medium Severity"]
-
-    EscalationResponse:
-      type: object
-      properties:
-        linkedCaseNumber:
-          type: string
-        sysId:
-          type: string
-
     CaseDetails:
       type: object
       properties:
@@ -24944,256 +24578,6 @@ components:
           items:
             $ref: '#/components/schemas/Comment'
 
-    AttachmentInfo:
-      type: object
-      properties:
-        sysId:
-          type: string
-        fileName:
-          type: string
-        createdOn:
-          type: string
-        createdBy:
-          type: string
-        updatedOn:
-          type: string
-        updatedBy:
-          type: string
-        contentType:
-          type: string
-        state:
-          type: string
-
-    SLAReportDetails:
-      type: object
-      properties:
-        projectName:
-          type: string
-        projectKey:
-          type: string
-        percentileDataList:
-          type: array
-          items:
-            $ref: '#/components/schemas/PercentileDataList'
-        caseDataList:
-          type: array
-          items:
-            $ref: '#/components/schemas/CaseDataList'
-
-    PercentileDataList:
-      type: object
-      properties:
-        key:
-          type: string
-        caseType:
-          type: string
-        priority:
-          type: string
-        responseTime:
-          type: string
-        workaroundTime:
-          type: string
-        resolutionTime:
-          type: string
-
-    CaseDataList:
-      type: object
-      properties:
-        caseSysId:
-          type: string
-        caseId:
-          type: string
-        caseNumber:
-          type: string
-        caseType:
-          type: string
-        casePriority:
-          type: string
-        caseState:
-          type: string
-        opened:
-          type: string
-        response:
-          type: string
-        responseSysId:
-          type: string
-        workaround:
-          type: string
-        workaroundSysId:
-          type: string
-        resolution:
-          type: string
-        resolutionSysId:
-          type: string
-
-    CSReportDetails:
-      type: object
-      properties:
-        subscriptionDetails:
-          $ref: '#/components/schemas/SubscriptionDetail'
-        casesRecords:
-          type: array
-          items:
-            $ref: '#/components/schemas/CaseRecordDetail'
-        slaDetails:
-          $ref: '#/components/schemas/SlaStats'
-        projectDeployments:
-          type: array
-          items:
-            $ref: '#/components/schemas/ProjectDeployment'
-        monthlyCounts:
-          type: array
-          items:
-            $ref: '#/components/schemas/MonthlyCount'
-
-    SubscriptionDetail:
-      type: object
-      properties:
-        projectName:
-          type: string
-        projectKey:
-          type: string
-        projectType:
-          type: string
-        accountName:
-          type: string
-        startDate:
-          type: string
-        endDate:
-          type: string
-        supportTier:
-          type: string
-        subscription:
-          type: string
-        totalQueryHours:
-          type: string
-        consumedQueryHours:
-          type: string
-
-    CaseRecordDetail:
-      type: object
-      properties:
-        caseSysId:
-          type: string
-        caseNumber:
-          type: string
-        engagementType:
-          type: string
-        caseType:
-          type: string
-        casePriority:
-          type: string
-        caseState:
-          type: string
-        opened:
-          type: string
-        description:
-          type: string
-        updated:
-          type: string
-        deployment:
-          type: string
-        productName:
-          type: string
-
-    SlaStats:
-      type: object
-      properties:
-        slaRecords:
-          type: array
-          items:
-            $ref: '#/components/schemas/SlaRecordDetail'
-        slaPerformanceStats:
-          $ref: '#/components/schemas/SlaPerformanceStats'
-
-    SlaRecordDetail:
-      type: object
-      properties:
-        task:
-          type: string
-        slaDefinition:
-          type: string
-        businessElapsedPercentage:
-          type: string
-
-    SlaStatsDetail:
-      type: object
-      properties:
-        fraction:
-          description: Upstream (ServiceNow) sends this as either a string or an integer; both are preserved as-is rather than coerced.
-          oneOf:
-            - type: string
-            - type: integer
-        percentage:
-          type: string
-
-    SlaPerformanceStats:
-      type: object
-      description: >-
-        Field names are capitalized (Workaround/Resolution/Response), not
-        camelCase — deliberately preserved as-is to match this exact wire
-        contract from the original backend, which the SPL frontend already
-        codes against.
-      properties:
-        Workaround:
-          $ref: '#/components/schemas/SlaStatsDetail'
-        Resolution:
-          $ref: '#/components/schemas/SlaStatsDetail'
-        Response:
-          $ref: '#/components/schemas/SlaStatsDetail'
-
-    ProjectDeployment:
-      type: object
-      properties:
-        name:
-          type: string
-        products:
-          type: array
-          items:
-            $ref: '#/components/schemas/ViewerProduct'
-
-    ViewerProduct:
-      type: object
-      properties:
-        name:
-          type: string
-        version:
-          type: string
-        supportStatus:
-          type: string
-        eolDate:
-          type: string
-        cores:
-          description: Upstream sends this as either a string or an integer; both are preserved as-is.
-          oneOf:
-            - type: string
-            - type: integer
-        tps:
-          description: Upstream sends this as either a string or an integer; both are preserved as-is.
-          oneOf:
-            - type: string
-            - type: integer
-        updateLevelInfo:
-          type: integer
-        earliestPossibleSupportEOLDate:
-          type: string
-
-    MonthlyCount:
-      type: object
-      properties:
-        yearAndMonth:
-          type: string
-        counts:
-          $ref: '#/components/schemas/Count'
-
-    Count:
-      type: object
-      properties:
-        incidentCount:
-          type: integer
-        queryCount:
-          type: integer
-
     TimeLogBreakdownDetails:
       type: object
       properties:
@@ -25260,98 +24644,6 @@ components:
         number:
           type: string
         updatedOn:
-          type: string
-
-    ABTTeamScheduleData:
-      type: object
-      properties:
-        list:
-          type: array
-          items:
-            $ref: '#/components/schemas/ABTTeamScheduleList'
-        metadata:
-          type: array
-          items:
-            $ref: '#/components/schemas/ABTTeamScheduleMetadata'
-        snURL:
-          type: string
-
-    ABTTeamScheduleMetadata:
-      type: object
-      description: >-
-        Populates the SPL frontend's team/event-type filter dropdowns.
-        FIXED: an earlier version of this backend never decoded this field
-        from ServiceNow's response, silently leaving it empty — caught
-        during frontend reconciliation; see internal/servicenow/schedule.go.
-      properties:
-        teams:
-          type: array
-          items:
-            $ref: '#/components/schemas/ABTTeamScheduleMetadataTeam'
-        eventTypes:
-          type: array
-          items:
-            $ref: '#/components/schemas/ABTTeamScheduleMetadataEventType'
-
-    ABTTeamScheduleMetadataTeam:
-      type: object
-      properties:
-        label:
-          type: string
-        id:
-          type: string
-        link:
-          type: string
-
-    ABTTeamScheduleMetadataEventType:
-      type: object
-      properties:
-        name:
-          type: string
-        label:
-          type: string
-
-    ABTTeamScheduleList:
-      type: object
-      properties:
-        label:
-          type: string
-        members:
-          type: array
-          items:
-            $ref: '#/components/schemas/ABTTeamScheduleMember'
-
-    ABTTeamScheduleMember:
-      type: object
-      properties:
-        name:
-          type: string
-        roles:
-          type: array
-          items:
-            $ref: '#/components/schemas/ABTTeamScheduleMemberRole'
-        schedule:
-          type: object
-          description: Keyed by date; each value is the list of schedule entries for that date.
-          additionalProperties:
-            type: array
-            items:
-              $ref: '#/components/schemas/ABTTeamScheduleMemberSchedule'
-
-    ABTTeamScheduleMemberRole:
-      type: object
-      properties:
-        name:
-          type: string
-        label:
-          type: string
-
-    ABTTeamScheduleMemberSchedule:
-      type: object
-      properties:
-        name:
-          type: string
-        label:
           type: string
 
     DriveFile:
