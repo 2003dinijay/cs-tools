@@ -105,7 +105,7 @@ func (r *instanceIngestionRepo) UpsertDeploymentNode(ctx context.Context, req do
 	if existingID != "" {
 		const updateSQL = `
 			UPDATE deployment_node
-			SET project_key = $2, deployment_number = $3, product_version_id = $4, updated_on = NOW()
+			SET project_key = $2, deployment_number = $3, product_version_id = $4, updated_on = NOW(), updated_by = 'system'
 			WHERE id = $1::uuid`
 		if _, err := r.db.Exec(ctx, updateSQL, existingID, req.ProjectKey, req.DeploymentNumber, versionID); err != nil {
 			return "", fmt.Errorf("update deployment node: %w", err)
@@ -114,8 +114,8 @@ func (r *instanceIngestionRepo) UpsertDeploymentNode(ctx context.Context, req do
 	}
 
 	const insertSQL = `
-		INSERT INTO deployment_node (node_id, project_key, deployment_number, product_version_id, created_on, updated_on)
-		VALUES ($1, $2, $3, $4, NOW(), NOW())
+		INSERT INTO deployment_node (id, node_id, project_key, deployment_number, product_version_id, created_by, updated_by, created_on, updated_on)
+		VALUES (gen_random_uuid(), $1, $2, $3, $4, 'system', 'system', NOW(), NOW())
 		RETURNING id::text`
 	var insertedID string
 	if err := r.db.QueryRow(ctx, insertSQL, req.NodeID, req.ProjectKey, req.DeploymentNumber, versionID).Scan(&insertedID); err != nil {
@@ -161,12 +161,16 @@ func (r *instanceIngestionRepo) InsertDeploymentInformation(ctx context.Context,
 
 	const insertSQL = `
 		INSERT INTO deployment_information (
-			deployment_node_id, jdk_version, core_count, deployment_info, deployment_info_hash, created_time, created_on, updated_on
-		) VALUES ($1::uuid, $2, $3, $4::jsonb, $5, $6, NOW(), NOW())
+			id, node_id, jdk_version, core_count, deployment_info, deployment_info_hash,
+			payload_created_on, payload_updated_on, created_by, updated_by, created_on, updated_on
+		) VALUES (
+			gen_random_uuid(), $1, $2, $3, $4::jsonb, $5,
+			$6::timestamptz, NOW(), 'system', 'system', NOW(), NOW()
+		)
 		RETURNING id::text`
 
 	var id string
-	if err := r.db.QueryRow(ctx, insertSQL, nodeUUID, req.JDKVersion, req.CoreCount, string(deploymentInfoJSON), req.Hash, createdTime).Scan(&id); err != nil {
+	if err := r.db.QueryRow(ctx, insertSQL, req.NodeID, req.JDKVersion, req.CoreCount, string(deploymentInfoJSON), req.Hash, createdTime).Scan(&id); err != nil {
 		return "", fmt.Errorf("insert deployment information: %w", err)
 	}
 	return id, nil
@@ -203,8 +207,11 @@ func (r *instanceIngestionRepo) InsertUsageStats(ctx context.Context, req domain
 
 	// Insert hourly record
 	const hourlySQL = `
-		INSERT INTO hourly_usage_summary (deployment_node_id, count_type, count, counted_on, created_on, updated_on)
-		VALUES ($1::uuid, $2, $3, $4::timestamp, NOW(), NOW())`
+		INSERT INTO hourly_usage_summary (
+			id, deployment_node_id, count_type, count, counted_on, created_by, updated_by, created_on, updated_on
+		) VALUES (
+			gen_random_uuid(), $1::uuid, $2, $3, $4::timestamp, 'system', 'system', NOW(), NOW()
+		)`
 	if _, err := r.db.Exec(ctx, hourlySQL, nodeUUID, req.CountType, req.Count, countedOn); err != nil {
 		return fmt.Errorf("insert hourly usage: %w", err)
 	}
@@ -226,14 +233,17 @@ func (r *instanceIngestionRepo) InsertUsageStats(ctx context.Context, req domain
 	}
 
 	if existingDailyID != "" {
-		const updateDailySQL = `UPDATE daily_usage_summary SET value = $2, updated_on = NOW() WHERE id = $1::uuid`
+		const updateDailySQL = `UPDATE daily_usage_summary SET value = $2, updated_by = 'system', updated_on = NOW() WHERE id = $1::uuid`
 		if _, err := r.db.Exec(ctx, updateDailySQL, existingDailyID, req.Count); err != nil {
 			return fmt.Errorf("update daily usage: %w", err)
 		}
 	} else {
 		const insertDailySQL = `
-			INSERT INTO daily_usage_summary (deployment_node_id, summary_date, count_type, value, data_source, created_on, updated_on)
-			VALUES ($1::uuid, $2::date, $3, $4, 'API_CALL', NOW(), NOW())`
+			INSERT INTO daily_usage_summary (
+				id, deployment_node_id, summary_date, count_type, value, data_source, created_by, updated_by, created_on, updated_on
+			) VALUES (
+				gen_random_uuid(), $1::uuid, $2::date, $3, $4, 'API_CALL', 'system', 'system', NOW(), NOW()
+			)`
 		if _, err := r.db.Exec(ctx, insertDailySQL, nodeUUID, summaryDate, req.CountType, req.Count); err != nil {
 			return fmt.Errorf("insert daily usage: %w", err)
 		}
@@ -247,6 +257,11 @@ func (r *instanceIngestionRepo) ImportDailyUsagesBatch(ctx context.Context, req 
 	ctx = ensureCallerIdentity(ctx)
 	if strings.TrimSpace(req.NodeID) == "" {
 		return 0, &apierror.ValidationError{Msg: "nodeId is required"}
+	}
+
+	actorEmail := strings.TrimSpace(req.UserEmail)
+	if actorEmail == "" {
+		actorEmail = "system"
 	}
 
 	nodeUUID, err := r.UpsertDeploymentNode(ctx, domain.InstanceMetaRequest{
@@ -278,17 +293,19 @@ func (r *instanceIngestionRepo) ImportDailyUsagesBatch(ctx context.Context, req 
 		if existingID != "" {
 			const updateSQL = `
 				UPDATE daily_usage_summary
-				SET value = $2, created_by = $3, updated_on = NOW()
+				SET value = $2, updated_by = $3, updated_on = NOW()
 				WHERE id = $1::uuid`
-			if _, err := r.db.Exec(ctx, updateSQL, existingID, entry.Value, req.UserEmail); err != nil {
+			if _, err := r.db.Exec(ctx, updateSQL, existingID, entry.Value, actorEmail); err != nil {
 				return importedCount, fmt.Errorf("update daily usage: %w", err)
 			}
 		} else {
 			const insertSQL = `
 				INSERT INTO daily_usage_summary (
-					deployment_node_id, summary_date, count_type, value, data_source, created_by, created_on, updated_on
-				) VALUES ($1::uuid, $2::date, $3, $4, 'FILE_UPLOAD', $5, NOW(), NOW())`
-			if _, err := r.db.Exec(ctx, insertSQL, nodeUUID, entry.Date, entry.Type, entry.Value, req.UserEmail); err != nil {
+					id, deployment_node_id, summary_date, count_type, value, data_source, created_by, updated_by, created_on, updated_on
+				) VALUES (
+					gen_random_uuid(), $1::uuid, $2::date, $3, $4, 'FILE_UPLOAD', $5, $5, NOW(), NOW()
+				)`
+			if _, err := r.db.Exec(ctx, insertSQL, nodeUUID, entry.Date, entry.Type, entry.Value, actorEmail); err != nil {
 				return importedCount, fmt.Errorf("insert daily usage: %w", err)
 			}
 		}
