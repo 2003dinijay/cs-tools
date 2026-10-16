@@ -64,6 +64,13 @@ export type CaseTabsAction =
       subject?: string;
     }
   | { type: "SET_DRAFT"; id: string; hasDraft: boolean }
+  /** A live update arrived for `caseId`. Flags that case's tab as having an
+   * update unless the user is looking at it right now. `activeTabVisible` says
+   * whether the active tab is actually on screen: it is `false` while the
+   * pinned "current location" tab is the live view (the active tab id is then
+   * only the last-used case tab, which nobody is looking at). Defaults to
+   * `true`. */
+  | { type: "MARK_UPDATED"; caseId: string; activeTabVisible?: boolean }
   | { type: "HYDRATE"; state: CaseTabsState };
 
 /** Picks the tab that should become active after the given one closes: the
@@ -78,6 +85,16 @@ function nextActiveAfterClose(
   if (rightNeighbor) return rightNeighbor.id;
   const leftNeighbor = tabsBeforeClose[closedIndex - 1];
   return leftNeighbor?.id ?? null;
+}
+
+/** Returns `tabs` with the has-update flag cleared on `id`, or `tabs` itself
+ * (same reference) when it was not set. */
+function clearUpdateFlag(tabs: CaseTabState[], id: string): CaseTabState[] {
+  const index = tabs.findIndex((t) => t.id === id);
+  if (index === -1 || !tabs[index].hasUpdate) return tabs;
+  const next = tabs.slice();
+  next[index] = { ...tabs[index], hasUpdate: false };
+  return next;
 }
 
 export function caseTabsReducer(
@@ -103,10 +120,11 @@ export function caseTabsReducer(
         const pathChanged = existing.path !== action.path || existing.kind !== action.kind;
         const dataChanged = existing.state !== action.state;
         const activeChanged = existing.id !== state.activeTabId;
-        if (!pathChanged && !dataChanged && !activeChanged) {
+        const updateFlagged = !!existing.hasUpdate;
+        if (!pathChanged && !dataChanged && !activeChanged && !updateFlagged) {
           return state;
         }
-        const tabs =
+        const updated =
           pathChanged || dataChanged
             ? state.tabs.map((t) =>
                 t.id === existing.id
@@ -114,6 +132,8 @@ export function caseTabsReducer(
                   : t,
               )
             : state.tabs;
+        // Reactivating a tab is "seeing" it, so it no longer has anything new.
+        const tabs = clearUpdateFlag(updated, existing.id);
         return { tabs, activeTabId: existing.id };
       }
       let tabs = state.tabs;
@@ -167,9 +187,25 @@ export function caseTabsReducer(
     }
 
     case "SET_ACTIVE": {
-      if (state.activeTabId === action.id) return state;
       if (!state.tabs.some((t) => t.id === action.id)) return state;
-      return { ...state, activeTabId: action.id };
+      // Clicking the already-active tab still clears its flag: it can be
+      // flagged while the pinned tab is the live view, and this click is what
+      // brings it back on screen.
+      const tabs = clearUpdateFlag(state.tabs, action.id);
+      if (state.activeTabId === action.id && tabs === state.tabs) return state;
+      return { tabs, activeTabId: action.id };
+    }
+
+    case "MARK_UPDATED": {
+      const index = state.tabs.findIndex((t) => t.caseId === action.caseId);
+      if (index === -1) return state;
+      const tab = state.tabs[index];
+      if (tab.hasUpdate) return state;
+      const onScreen = tab.id === state.activeTabId && action.activeTabVisible !== false;
+      if (onScreen) return state;
+      const tabs = state.tabs.slice();
+      tabs[index] = { ...tab, hasUpdate: true };
+      return { ...state, tabs };
     }
 
     case "UPDATE_TAB_PATH": {

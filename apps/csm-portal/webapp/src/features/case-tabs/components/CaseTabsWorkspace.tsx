@@ -25,6 +25,7 @@ import { useCaseTabsBehavior } from "@context/case-tabs/CaseTabsBehaviorContext"
 import { useNavTransition } from "@hooks/useNavTransition";
 import CaseTabIsolatedRouter from "@features/case-tabs/components/CaseTabIsolatedRouter";
 import CaseTabStrip from "@features/case-tabs/components/CaseTabStrip";
+import { useCaseTabsLiveUpdates } from "@features/case-tabs/hooks/useCaseTabsLiveUpdates";
 import { useCaseTabCloseConfirm } from "@features/case-tabs/hooks/useCaseTabCloseConfirm";
 import { useCurrentLocationTab } from "@features/case-tabs/hooks/useCurrentLocationTab";
 
@@ -152,6 +153,11 @@ export function CaseTabsContentHost(): JSX.Element | null {
   const navigate = useNavTransition();
   const { tabs, activeTabId } = useCaseTabsController();
   const currentLocationTab = useCurrentLocationTab();
+  // The one live-update stream for every open case tab (and a flag on the
+  // ones not on screen). Mounted here because this host lives for the whole
+  // authenticated layout, not per tab: per-tab streams starved the browser's
+  // connection pool.
+  useCaseTabsLiveUpdates();
 
   const currentMatch = matchCaseLocation(location.pathname);
   // Whether a tab actually backs the CURRENT route's specific case — not
