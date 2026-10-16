@@ -41,6 +41,7 @@ import {
   endDateLabel,
   startDateLabel,
 } from "@features/csm-projects/utils/projectLifecycle";
+import { canRaiseServiceRequests } from "@features/csm-projects/utils/subscriptionType";
 import { useNavTransition } from "@hooks/useNavTransition";
 import { useQueryParamTabs } from "@hooks/useSectionTabs";
 
@@ -163,8 +164,8 @@ export default function CsmProjectDetailPage(): JSX.Element {
   const { data, isLoading, isError } = useGetProject(id);
   // Only used to gate the "Create service request" menu item below — fail
   // open (show the item) while metadata is loading or failed, since
-  // `subscriptionType === managed_cloud_subscription` already narrows to
-  // projects where SR is normally offered; an explicit `false` once loaded
+  // `canRaiseServiceRequests` (managed-cloud and Cloud Support) already
+  // narrows to projects where SR is normally offered; an explicit `false` once loaded
   // is what actually hides it. The create page itself is the authoritative,
   // fail-closed gate (see CreateServiceRequestPage.tsx's hasNoSrReadAccess).
   const projectMetadata = useProjectMetadata(id);
@@ -300,7 +301,7 @@ export default function CsmProjectDetailPage(): JSX.Element {
               >
                 Create case
               </MenuItem>
-              {p.subscriptionType === "managed_cloud_subscription" && !hasNoSrReadAccess && (
+              {canRaiseServiceRequests(p.subscriptionType) && !hasNoSrReadAccess && (
                 <MenuItem
                   onClick={() => {
                     setCreateMenuAnchor(null);
