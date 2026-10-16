@@ -16,13 +16,28 @@
 
 package domain
 
+// InstanceIngestionActor is the created_by/updated_by stamped on rows written by
+// product-consumption-tracking telemetry, the value that service wrote when it
+// still talked to Postgres directly.
+const InstanceIngestionActor = "product-consumption-tracking"
+
+// InstanceNodeMeta is the deployment meta information a telemetry payload
+// carries about the node that sent it. Every ingestion request carries it so a
+// node seen for the first time through info or usage telemetry is registered
+// with its project, deployment and product, not as a bare node id. A blank
+// field never clears what is already stored; Product and Version only move the
+// stored product version when both are sent.
+type InstanceNodeMeta struct {
+	ProjectKey       string `json:"projectKey,omitempty"`
+	DeploymentNumber string `json:"deploymentNumber,omitempty"`
+	Product          string `json:"product,omitempty"`
+	Version          string `json:"version,omitempty"`
+}
+
 // InstanceMetaRequest carries metadata to register or update a deployment node.
 type InstanceMetaRequest struct {
-	NodeID           string `json:"nodeId"`
-	ProjectKey       string `json:"projectKey"`
-	DeploymentNumber string `json:"deploymentNumber"`
-	Product          string `json:"product"`
-	Version          string `json:"version"`
+	NodeID string `json:"nodeId"`
+	InstanceNodeMeta
 }
 
 // InstanceMetaResponse carries the UUID of the registered deployment node.
@@ -31,6 +46,7 @@ type InstanceMetaResponse struct {
 }
 
 // InstanceInfoRequest carries JDK and host environment details for a deployment node.
+// CreatedTime is RFC 3339, or YYYY-MM-DD HH:MM:SS read as UTC; empty means now.
 type InstanceInfoRequest struct {
 	NodeID         string `json:"nodeId"`
 	JDKVersion     string `json:"jdkVersion"`
@@ -38,19 +54,23 @@ type InstanceInfoRequest struct {
 	DeploymentInfo any    `json:"deploymentInfo"`
 	Hash           string `json:"hash"`
 	CreatedTime    string `json:"createdTime"`
+	InstanceNodeMeta
 }
 
-// InstanceInfoResponse carries the UUID of the inserted deployment_information record.
+// InstanceInfoResponse carries the UUID of the deployment_information record,
+// the existing one when the same snapshot (node and hash) was already stored.
 type InstanceInfoResponse struct {
 	ID string `json:"id"`
 }
 
 // InstanceUsageIngestRequest carries live hourly and daily telemetry for a deployment node.
+// CreatedTime is RFC 3339, or YYYY-MM-DD HH:MM:SS read as UTC; empty means now.
 type InstanceUsageIngestRequest struct {
 	NodeID      string `json:"nodeId"`
 	CountType   string `json:"countType"`
 	Count       int    `json:"count"`
 	CreatedTime string `json:"createdTime"`
+	InstanceNodeMeta
 }
 
 // InstanceUsageIngestResponse carries status of usage stats insertion.
@@ -59,21 +79,22 @@ type InstanceUsageIngestResponse struct {
 }
 
 // DailyUsageBatchItem represents a single daily metric value in an offline import.
+// NodeID and DeploymentNumber override the batch's own for this entry, as the
+// offline ZIP format allows.
 type DailyUsageBatchItem struct {
-	Date  string `json:"date"`
-	Type  string `json:"type"`
-	Value int    `json:"value"`
+	Date             string `json:"date"`
+	Type             string `json:"type"`
+	Value            int    `json:"value"`
+	NodeID           string `json:"nodeId,omitempty"`
+	DeploymentNumber string `json:"deploymentNumber,omitempty"`
 }
 
 // DailyUsageBatchRequest carries parsed daily usage entries from an offline ZIP file.
 type DailyUsageBatchRequest struct {
-	NodeID           string                `json:"nodeId"`
-	ProjectKey       string                `json:"projectKey"`
-	DeploymentNumber string                `json:"deploymentNumber"`
-	Product          string                `json:"product"`
-	Version          string                `json:"version"`
-	UserEmail        string                `json:"userEmail"`
-	Usages           []DailyUsageBatchItem `json:"usages"`
+	NodeID string `json:"nodeId"`
+	InstanceNodeMeta
+	UserEmail string                `json:"userEmail"`
+	Usages    []DailyUsageBatchItem `json:"usages"`
 }
 
 // DailyUsageBatchResponse carries the number of imported daily usage entries.
