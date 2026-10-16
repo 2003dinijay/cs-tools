@@ -10251,6 +10251,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
+        "503":
+          description: The entity service is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
 
   /generate-timelogs-breakdown-report:
     get:
@@ -24669,26 +24675,155 @@ components:
       type: object
       properties:
         subscriptionDetails:
-          type: object
-          additionalProperties: true
+          $ref: '#/components/schemas/CSReportSubscription'
         casesRecords:
           type: array
           items:
-            type: object
-            additionalProperties: true
+            $ref: '#/components/schemas/CSReportCase'
         slaDetails:
-          type: object
-          additionalProperties: true
+          $ref: '#/components/schemas/CSReportSla'
         projectDeployments:
           type: array
           items:
-            type: object
-            additionalProperties: true
+            $ref: '#/components/schemas/CSReportDeployment'
         monthlyCounts:
           type: array
           items:
-            type: object
-            additionalProperties: true
+            $ref: '#/components/schemas/CSReportMonth'
+
+    CSReportSubscription:
+      type: object
+      properties:
+        projectName:
+          type: string
+        projectKey:
+          type: string
+        projectType:
+          type: string
+        accountName:
+          type: string
+        startDate:
+          type: string
+        endDate:
+          type: string
+        supportTier:
+          type: string
+        subscription:
+          type: string
+        totalQueryHours:
+          type: string
+        consumedQueryHours:
+          type: string
+
+    CSReportCase:
+      type: object
+      properties:
+        caseSysId:
+          type: string
+        caseNumber:
+          type: string
+        engagementType:
+          type: string
+        caseType:
+          type: string
+        casePriority:
+          type: string
+        caseState:
+          type: string
+        opened:
+          type: string
+        description:
+          type: string
+        updated:
+          type: string
+        deployment:
+          type: string
+        productName:
+          type: string
+
+    CSReportSla:
+      type: object
+      properties:
+        slaRecords:
+          type: array
+          items:
+            $ref: '#/components/schemas/CSReportSlaRecord'
+        slaPerformanceStats:
+          $ref: '#/components/schemas/CSReportSlaPerformance'
+
+    CSReportSlaRecord:
+      type: object
+      properties:
+        task:
+          type: string
+        slaDefinition:
+          type: string
+        businessElapsedPercentage:
+          type: string
+
+    CSReportSlaPerformance:
+      type: object
+      properties:
+        Workaround:
+          $ref: '#/components/schemas/CSReportSlaMetric'
+        Resolution:
+          $ref: '#/components/schemas/CSReportSlaMetric'
+        Response:
+          $ref: '#/components/schemas/CSReportSlaMetric'
+
+    CSReportSlaMetric:
+      type: object
+      properties:
+        fraction:
+          type: string
+        percentage:
+          type: string
+
+    CSReportDeployment:
+      type: object
+      properties:
+        name:
+          type: string
+        products:
+          type: array
+          items:
+            $ref: '#/components/schemas/CSReportProduct'
+
+    CSReportProduct:
+      type: object
+      properties:
+        name:
+          type: string
+        version:
+          type: string
+        supportStatus:
+          type: string
+        eolDate:
+          type: string
+        cores:
+          type: string
+        tps:
+          type: string
+        updateLevelInfo:
+          type: integer
+        earliestPossibleSupportEOLDate:
+          type: string
+
+    CSReportMonth:
+      type: object
+      properties:
+        yearAndMonth:
+          type: string
+        counts:
+          $ref: '#/components/schemas/CSReportMonthCounts'
+
+    CSReportMonthCounts:
+      type: object
+      properties:
+        incidentCount:
+          type: integer
+        queryCount:
+          type: integer
 
     TimeLogBreakdownCase:
       type: object
