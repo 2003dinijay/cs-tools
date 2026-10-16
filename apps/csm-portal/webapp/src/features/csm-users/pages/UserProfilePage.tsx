@@ -151,6 +151,13 @@ interface ProjectAccessStatus {
  */
 function deriveProjectAccessStatus(pa: UserProjectAccess): ProjectAccessStatus {
   if (!pa.grantsCaseAccess) {
+    // A linked row whose addresses agree is only waiting on registration.
+    if (
+      pa.contactRecordPresent &&
+      (pa.contactRecordEmail ?? "").toLowerCase() === pa.contactEmail.toLowerCase()
+    ) {
+      return { label: "Invited", color: "warning" };
+    }
     return {
       label: "No access",
       color: "error",
