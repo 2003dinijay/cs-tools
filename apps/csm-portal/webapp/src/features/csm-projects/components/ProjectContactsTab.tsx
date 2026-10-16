@@ -76,9 +76,22 @@ interface AccessStatus {
 // (`grantsCaseAccess` absent), so a backend deploy that hasn't caught up yet
 // degrades to the previous behaviour instead of mislabeling every row.
 function deriveAccessStatus(c: BeProjectContact): AccessStatus {
+  // Integration users never register; their access is a service token, not this row.
+  if (c.isCsIntegrationUser) {
+    return { label: "Integration user", color: "default" };
+  }
   if (c.grantsCaseAccess !== undefined) {
     if (c.grantsCaseAccess) {
       return { label: "Has access", color: "success" };
+    }
+    // A linked row that has simply not registered yet is pending, not a fault.
+    if (c.customerContactPresent && (c.registrationState ?? "").toLowerCase() !== "registered") {
+      return {
+        label: "Not registered",
+        color: "warning",
+        reason:
+          "Access starts once this person completes sign-in. If they already have, the invited address may differ from their contact's own.",
+      };
     }
     // Two distinct faults behind one verdict, and which one it is changes
     // what you do about it: no contact record means the invite never
@@ -252,11 +265,11 @@ export default function ProjectContactsTab({
                       )}
                     </TableCell>
                     <TableCell>
-                      {c.registrationState ? (
+                      {c.isCsIntegrationUser || c.registrationState ? (
                         <Chip
                           size="small"
-                          label={c.registrationState}
-                          color={registrationChipColor(c.registrationState)}
+                          label={c.isCsIntegrationUser ? "REGISTERED" : c.registrationState}
+                          color={registrationChipColor(c.isCsIntegrationUser ? "REGISTERED" : c.registrationState)}
                           variant="outlined"
                         />
                       ) : (
