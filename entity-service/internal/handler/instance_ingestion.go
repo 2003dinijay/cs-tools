@@ -107,3 +107,16 @@ func (h *InstanceIngestionHandler) GetProjectSecretKey(w http.ResponseWriter, r 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
 }
+
+// GetDeploymentConsumptionSecret handles GET /deployments/by-number/{number}/consumption-secret.
+// The body carries a credential, so it must never be cached on the way back.
+func (h *InstanceIngestionHandler) GetDeploymentConsumptionSecret(w http.ResponseWriter, r *http.Request) {
+	resp, err := h.svc.GetDeploymentConsumptionSecret(r.Context(), r.PathValue("number"))
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}

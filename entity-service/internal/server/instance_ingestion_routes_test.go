@@ -39,6 +39,7 @@ func TestInstanceIngestionRoutesAreInternalOnly(t *testing.T) {
 		"POST /instances/usage-stats",
 		"POST /instances/daily-usages/batch",
 		"GET /projects/{key}/secret-key",
+		"GET /deployments/by-number/{number}/consumption-secret",
 	} {
 		re := regexp.MustCompile(`HandleFunc\("` + regexp.QuoteMeta(route) + `",\s*([^\n]+)`)
 		matches := re.FindAllStringSubmatch(string(src), -1)

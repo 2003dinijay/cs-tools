@@ -44,6 +44,18 @@ type mockInstanceIngestionSvc struct {
 	getSecretRes domain.ProjectSecretKeyResponse
 	getSecretErr error
 	gotKey       string
+
+	depSecretRes domain.DeploymentConsumptionSecretResponse
+	depSecretErr error
+	gotNumber    string
+}
+
+func (m *mockInstanceIngestionSvc) GetDeploymentConsumptionSecret(_ context.Context, number string) (domain.DeploymentConsumptionSecretResponse, error) {
+	m.gotNumber = number
+	if m.depSecretErr != nil {
+		return domain.DeploymentConsumptionSecretResponse{}, m.depSecretErr
+	}
+	return m.depSecretRes, nil
 }
 
 func (m *mockInstanceIngestionSvc) UpsertInstanceMeta(_ context.Context, _ domain.InstanceMetaRequest) (domain.InstanceMetaResponse, error) {
@@ -211,6 +223,45 @@ func TestInstanceIngestionHandler(t *testing.T) {
 		w := httptest.NewRecorder()
 
 		h.GetProjectSecretKey(w, req)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("expected 404, got %d", w.Code)
+		}
+	})
+
+	t.Run("GetDeploymentConsumptionSecret 200 OK", func(t *testing.T) {
+		svc := &mockInstanceIngestionSvc{depSecretRes: domain.DeploymentConsumptionSecretResponse{
+			DeploymentNumber: "DEP1", ProjectID: "p-1", ProjectKey: "PROJ", SecretKey: "abc",
+		}}
+		h := NewInstanceIngestionHandler(svc)
+		req := httptest.NewRequest(http.MethodGet, "/deployments/by-number/DEP1/consumption-secret", nil)
+		req.SetPathValue("number", "DEP1")
+		w := httptest.NewRecorder()
+
+		h.GetDeploymentConsumptionSecret(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", w.Code)
+		}
+		if svc.gotNumber != "DEP1" {
+			t.Errorf("service got number %q", svc.gotNumber)
+		}
+		if got := w.Header().Get("Cache-Control"); got != "no-store" {
+			t.Errorf("Cache-Control = %q, want no-store", got)
+		}
+		var resp domain.DeploymentConsumptionSecretResponse
+		_ = json.NewDecoder(w.Body).Decode(&resp)
+		if resp.ProjectKey != "PROJ" || resp.SecretKey != "abc" || resp.ProjectID != "p-1" {
+			t.Errorf("response = %+v", resp)
+		}
+	})
+
+	t.Run("GetDeploymentConsumptionSecret 404", func(t *testing.T) {
+		svc := &mockInstanceIngestionSvc{depSecretErr: &apierror.NotFoundError{Msg: "deployment not found"}}
+		h := NewInstanceIngestionHandler(svc)
+		req := httptest.NewRequest(http.MethodGet, "/deployments/by-number/X/consumption-secret", nil)
+		req.SetPathValue("number", "X")
+		w := httptest.NewRecorder()
+
+		h.GetDeploymentConsumptionSecret(w, req)
 		if w.Code != http.StatusNotFound {
 			t.Fatalf("expected 404, got %d", w.Code)
 		}
