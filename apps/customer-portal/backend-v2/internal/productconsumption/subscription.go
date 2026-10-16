@@ -43,51 +43,6 @@ func (c *Client) ProcessLicenseDownload(ctx context.Context, req LicenseDownload
 	return license.Result.License, nil
 }
 
-// getConsumptionStatus calls POST /projects/{projectId}/consumption/status.
-func (c *Client) getConsumptionStatus(ctx context.Context, projectID string, req ConsumptionStatusRequest) (ConsumptionResult, error) {
-	var out ConsumptionResult
-	err := c.postJSON(ctx, fmt.Sprintf("/projects/%s/consumption/status", pathEscape(uuidToSysID(projectID))), req, &out)
-	return out, err
-}
-
-// createApplication calls POST /applications.
-func (c *Client) createApplication(ctx context.Context, req ApplicationCreateRequest) (ApplicationCreateResponse, error) {
-	var out ApplicationCreateResponse
-	err := c.postJSON(ctx, "/applications", req, &out)
-	return out, err
-}
-
-// updateProjectStatus calls PATCH /projects/{projectId} — the
-// product-consumption service's own per-project state record.
-func (c *Client) updateProjectStatus(ctx context.Context, projectID string, req UpdateProjectStatusRequest) (ConsumptionResult, error) {
-	var out ConsumptionResult
-	err := c.patchJSON(ctx, fmt.Sprintf("/projects/%s", pathEscape(uuidToSysID(projectID))), req, &out)
-	return out, err
-}
-
-// subscribeApplication calls POST /applications/{applicationId}/subscribe.
-// The request body is the bare applicationId string, as the upstream
-// endpoint expects.
-func (c *Client) subscribeApplication(ctx context.Context, applicationID string) (ApplicationSubscriptionResponse, error) {
-	var out ApplicationSubscriptionResponse
-	err := c.postText(ctx, fmt.Sprintf("/applications/%s/subscribe", pathEscape(applicationID)), applicationID, &out)
-	return out, err
-}
-
-// generateCredentials calls POST /applications/{applicationId}/generate-credentials.
-func (c *Client) generateCredentials(ctx context.Context, applicationID string) (ApplicationKeyGenerationResponse, error) {
-	var out ApplicationKeyGenerationResponse
-	err := c.postJSON(ctx, fmt.Sprintf("/applications/%s/generate-credentials", pathEscape(applicationID)), struct{}{}, &out)
-	return out, err
-}
-
-// generateSecretKeys calls POST /generate-secret-keys.
-func (c *Client) generateSecretKeys(ctx context.Context) (SecretKeysResponse, error) {
-	var out SecretKeysResponse
-	err := c.postJSON(ctx, "/generate-secret-keys", struct{}{}, &out)
-	return out, err
-}
-
 // getDeploymentLicense calls POST /projects/{projectId}/deployments/{deploymentId}/license.
 //
 // A refusal arrives as a 200 carrying success:false, and a malformed

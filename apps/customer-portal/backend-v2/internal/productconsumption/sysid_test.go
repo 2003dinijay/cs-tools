@@ -18,7 +18,6 @@ package productconsumption
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -103,55 +102,5 @@ func TestLicenceCallsSendBareSysIDs(t *testing.T) {
 	}
 	if !strings.Contains(joined, bareDeploy) {
 		t.Errorf("no bare deployment sysid in the licence path. paths: %v", paths)
-	}
-}
-
-// TestConsumptionStatusCallsSendBareSysIDs asserts that getConsumptionStatus
-// also uses bare sysids in both the path parameter and the request body.
-func TestConsumptionStatusCallsSendBareSysIDs(t *testing.T) {
-	const (
-		dashedProject = "6fa0b42d-1bfa-a694-a002-c9d3604bcb77"
-		bareProject   = "6fa0b42d1bfaa694a002c9d3604bcb77"
-		dashedDeploy  = "937bd77b-1ba0-8750-a002-c9d3604bcbbc"
-		bareDeploy    = "937bd77b1ba08750a002c9d3604bcbbc"
-	)
-
-	var path string
-	var statusBody map[string]any
-
-	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"access_token":"t","token_type":"Bearer","expires_in":3600}`))
-	}))
-	defer tokenSrv.Close()
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		path = r.URL.Path
-		_ = json.NewDecoder(r.Body).Decode(&statusBody)
-		_, _ = w.Write([]byte(`{"result":{"status":5,"applicationId":"app-1"}}`))
-	}))
-	defer srv.Close()
-
-	c := NewClient(Config{
-		SubscriptionBaseURL: srv.URL,
-		TokenURL:            tokenSrv.URL,
-		ClientID:            "id",
-		ClientSecret:        "secret",
-	})
-
-	if _, err := c.getConsumptionStatus(context.Background(), dashedProject, ConsumptionStatusRequest{
-		Email: "someone@wso2.com", DeploymentID: uuidToSysID(dashedDeploy),
-	}); err != nil {
-		t.Fatalf("getConsumptionStatus: %v", err)
-	}
-
-	if strings.Contains(path, dashedProject) {
-		t.Errorf("dashed project id reached consumption status path: %s", path)
-	}
-	if !strings.Contains(path, bareProject) {
-		t.Errorf("bare project sysid missing from consumption status path: %s", path)
-	}
-	if got, _ := statusBody["deploymentId"].(string); got != bareDeploy {
-		t.Errorf("consumption-status body deploymentId = %q, want bare sysid %q", got, bareDeploy)
 	}
 }
