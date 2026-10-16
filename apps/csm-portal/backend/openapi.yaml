@@ -10055,6 +10055,10 @@ paths:
   # loadViewerConfig). Identifiers here are the ones the ported viewer
   # frontend already sends: entity-service ids, or a project key for the
   # time-log report.
+  # Audience: every route here needs the viewer role, except /usage-metrics/*
+  # (usage_metrics_viewer, cs_engineer, admin) and the Customer Health routes
+  # plus the GET /products and GET /abt-teams lists its filters read (viewer,
+  # cs_engineer, admin).
   # ---------------------------------------------------------------------
 
   /accounts/{accountId}/escalations:

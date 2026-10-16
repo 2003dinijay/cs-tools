@@ -48,8 +48,8 @@ describe("feature visibility by portal access", () => {
   // comment_updater), which a plain viewer holds none of. Usage Metrics is
   // also hidden: canViewUsageMetrics needs full access or
   // usage_metrics_viewer, which a plain viewer holds neither of (reported
-  // live). Customer Health/User Scan stay visible: isSplAudience holds for a
-  // plain viewer.
+  // live). Customer Health (canViewCustomerHealth) and User Scan
+  // (isSplAudience) stay visible: both hold for a plain viewer.
   //
   // Asserted as an explicit allowlist rather than
   // `visibleNavSections().length - N`: that form silently drifted stale
@@ -81,6 +81,43 @@ describe("feature visibility by portal access", () => {
       "user-scan",
       "help",
     ]);
+  });
+
+  // Customer Health is for the viewer role AND for cs_engineer/admin
+  // (canViewCustomerHealth); Usage Metrics for cs_engineer/admin and
+  // usage_metrics_viewer. Both sit together at the end of the sidebar, above
+  // User Scan (viewer-only), Settings and Help.
+  it("shows Customer Health and Usage Metrics to a CS engineer, at the end of the sidebar above Settings and Help", () => {
+    expect(visibleNavSections(csEngineer).map((s) => s.id).slice(-4)).toEqual([
+      "customer-health",
+      "usage-metrics",
+      "admin",
+      "help",
+    ]);
+    expect(featureStateForPath("/customer-health", csEngineer)).toBe("enabled");
+    expect(featureStateForPath("/customer-health/account/acct-1", csEngineer)).toBe("enabled");
+    expect(featureStateForPath("/usage-metrics", csEngineer)).toBe("enabled");
+  });
+
+  it("puts Customer Health and Usage Metrics above User Scan and Help for a CS engineer who also holds viewer", () => {
+    const both = getPortalAccess(["cs_engineer", "viewer"]);
+    expect(visibleNavSections(both).map((s) => s.id).slice(-5)).toEqual([
+      "customer-health",
+      "usage-metrics",
+      "user-scan",
+      "admin",
+      "help",
+    ]);
+  });
+
+  it("keeps User Scan viewer-only while Customer Health also opens to a CS engineer", () => {
+    expect(visibleNavSections(csEngineer).map((s) => s.id)).not.toContain("user-scan");
+    expect(featureStateForPath("/user-scan", csEngineer)).toBe("hidden");
+    // Roles that hold neither viewer nor full access still do not see it.
+    for (const role of ["escalator", "attachment_downloader", "usage_metrics_viewer", "timecard_approver", "dashboard_designer", "security_team"]) {
+      const access = getPortalAccess([role]);
+      expect(featureStateForPath("/customer-health", access)).toBe("hidden");
+    }
   });
 
   it("hides every Operations tab and route along with the section", () => {
