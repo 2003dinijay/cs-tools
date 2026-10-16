@@ -125,7 +125,7 @@ describe("useCaseActivityStream", () => {
     const source = mockInstances[0];
     expect(source.url).toBe("https://stream.example.test/cases/case-1/activities/stream");
     expect(source.headers).toEqual({
-      "x-jwt-assertion": "access-token",
+      Authorization: "Bearer access-token",
       "x-user-id-token": "id-token",
     });
   });
@@ -171,7 +171,7 @@ describe("useCaseActivityStream", () => {
     });
 
     await waitFor(() => expect(mockInstances).toHaveLength(2));
-    expect(mockInstances[1].headers?.["x-jwt-assertion"]).toBe("fresh-access-token");
+    expect(mockInstances[1].headers?.Authorization).toBe("Bearer fresh-access-token");
   });
 
   it("backs off exponentially on consecutive errors, and resets after a successful connection", async () => {
