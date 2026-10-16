@@ -44,6 +44,10 @@ const TAB_2: CaseTabState = {
 };
 
 const PINNED: PinnedTabProps = { label: "Dashboard", active: false, onClick: vi.fn() };
+const PINNED_WITH_ICON: PinnedTabProps = {
+  ...PINNED,
+  icon: <svg data-testid="pinned-tab-icon" />,
+};
 
 function noopHandlers() {
   return {
@@ -63,12 +67,35 @@ describe("CaseTabStrip", () => {
     expect(screen.queryByText("Dashboard")).not.toBeInTheDocument();
   });
 
-  it("shows the pinned tab once at least one case tab is open", () => {
+  it("shows the pinned tab once at least one case tab is open, with a divider separating it from the case tabs", () => {
     render(
       <CaseTabStrip tabs={[TAB_1]} activeTabId="t1" pinnedTab={PINNED} {...noopHandlers()} />,
     );
     expect(screen.getByText("Dashboard")).toBeInTheDocument();
     expect(screen.getByText("CS0001")).toBeInTheDocument();
+    expect(screen.getByTestId("pinned-tab-divider")).toBeInTheDocument();
+  });
+
+  it("renders the pinned tab's own icon, and a divider separating it from the case tabs, only when an icon is given", () => {
+    const { rerender } = render(
+      <CaseTabStrip tabs={[TAB_1]} activeTabId="t1" pinnedTab={PINNED} {...noopHandlers()} />,
+    );
+    expect(screen.queryByTestId("pinned-tab-icon")).not.toBeInTheDocument();
+
+    rerender(
+      <CaseTabStrip
+        tabs={[TAB_1]}
+        activeTabId="t1"
+        pinnedTab={PINNED_WITH_ICON}
+        {...noopHandlers()}
+      />,
+    );
+    expect(screen.getByTestId("pinned-tab-icon")).toBeInTheDocument();
+  });
+
+  it("renders no divider at all when there is no pinned tab", () => {
+    render(<CaseTabStrip tabs={[TAB_1]} activeTabId="t1" {...noopHandlers()} />);
+    expect(screen.queryByTestId("pinned-tab-divider")).not.toBeInTheDocument();
   });
 
   it("renders one chip per open tab, highlighting the active one", () => {
