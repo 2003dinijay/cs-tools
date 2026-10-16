@@ -10200,11 +10200,18 @@ paths:
         - name: from
           in: query
           required: true
+          description: >
+            Inclusive lower bound on case createdOn. An RFC3339 timestamp is
+            used as given. A YYYY-MM-DD date is UTC midnight at the start of
+            that day.
           schema:
             type: string
         - name: to
           in: query
           required: true
+          description: >
+            Inclusive upper bound on case createdOn. An RFC3339 timestamp is
+            used as given. A YYYY-MM-DD date includes that entire UTC day.
           schema:
             type: string
       responses:
