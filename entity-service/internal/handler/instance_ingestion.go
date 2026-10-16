@@ -94,17 +94,16 @@ func (h *InstanceIngestionHandler) ImportDailyUsagesBatch(w http.ResponseWriter,
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
-// GetProjectSecretKey handles GET /projects/{id}/secret-key.
+// GetProjectSecretKey handles GET /projects/{key}/secret-key, where key is the
+// project key (a project id is accepted too). The body is a credential, so it
+// must never be cached on the way back.
 func (h *InstanceIngestionHandler) GetProjectSecretKey(w http.ResponseWriter, r *http.Request) {
-	key := r.PathValue("id")
-	if key == "" {
-		key = r.PathValue("key")
-	}
-	resp, err := h.svc.GetProjectSecretKey(r.Context(), key)
+	resp, err := h.svc.GetProjectSecretKey(r.Context(), r.PathValue("key"))
 	if err != nil {
 		writeServiceError(w, r, err)
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
 }

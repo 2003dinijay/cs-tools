@@ -43,6 +43,7 @@ type mockInstanceIngestionSvc struct {
 
 	getSecretRes domain.ProjectSecretKeyResponse
 	getSecretErr error
+	gotKey       string
 }
 
 func (m *mockInstanceIngestionSvc) UpsertInstanceMeta(_ context.Context, _ domain.InstanceMetaRequest) (domain.InstanceMetaResponse, error) {
@@ -73,7 +74,8 @@ func (m *mockInstanceIngestionSvc) ImportDailyUsagesBatch(_ context.Context, _ d
 	return m.importBatchRes, nil
 }
 
-func (m *mockInstanceIngestionSvc) GetProjectSecretKey(_ context.Context, _ string) (domain.ProjectSecretKeyResponse, error) {
+func (m *mockInstanceIngestionSvc) GetProjectSecretKey(_ context.Context, key string) (domain.ProjectSecretKeyResponse, error) {
+	m.gotKey = key
 	if m.getSecretErr != nil {
 		return domain.ProjectSecretKeyResponse{}, m.getSecretErr
 	}
@@ -178,17 +180,39 @@ func TestInstanceIngestionHandler(t *testing.T) {
 		h := NewInstanceIngestionHandler(svc)
 
 		req := httptest.NewRequest(http.MethodGet, "/projects/CUPRSUBDEV/secret-key", nil)
-		req.SetPathValue("id", "CUPRSUBDEV")
+		req.SetPathValue("key", "CUPRSUBDEV")
 		w := httptest.NewRecorder()
 
 		h.GetProjectSecretKey(w, req)
 		if w.Code != http.StatusOK {
 			t.Fatalf("expected 200 OK, got %d", w.Code)
 		}
+		if svc.gotKey != "CUPRSUBDEV" {
+			t.Errorf("service got key %q, want CUPRSUBDEV", svc.gotKey)
+		}
+		if got := w.Header().Get("Cache-Control"); got != "no-store" {
+			t.Errorf("Cache-Control = %q, want no-store: the body is a credential", got)
+		}
 		var resp domain.ProjectSecretKeyResponse
 		_ = json.NewDecoder(w.Body).Decode(&resp)
 		if resp.SecretKey != "secret-abc" {
 			t.Errorf("expected 'secret-abc', got %q", resp.SecretKey)
+		}
+	})
+
+	t.Run("GetProjectSecretKey 404 when the project has no key", func(t *testing.T) {
+		svc := &mockInstanceIngestionSvc{
+			getSecretErr: &apierror.NotFoundError{Msg: `project "X" has no product consumption secret key`},
+		}
+		h := NewInstanceIngestionHandler(svc)
+
+		req := httptest.NewRequest(http.MethodGet, "/projects/X/secret-key", nil)
+		req.SetPathValue("key", "X")
+		w := httptest.NewRecorder()
+
+		h.GetProjectSecretKey(w, req)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("expected 404, got %d", w.Code)
 		}
 	})
 }
