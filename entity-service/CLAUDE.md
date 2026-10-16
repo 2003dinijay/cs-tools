@@ -7571,6 +7571,43 @@ shape has a monthly-granularity rollup concept to serve from it;
 field either. Left unused rather than exposed speculatively, same as other
 tables with no current caller elsewhere in this file.
 
+### Telemetry ingestion (the write side, for product-consumption-tracking)
+
+`digiops-cs`'s product-consumption-tracking (PCT) no longer talks to Postgres:
+it writes these tables through `POST /instances/meta`, `/instances/info`,
+`/instances/usage-stats`, `/instances/daily-usages/batch` and verifies telemetry
+signatures with `GET /projects/{key}/secret-key` (`instance_ingestion_*.go`).
+
+- **Internal callers only** (`internalOnly`): PCT's client id must be in
+  `M2M_CLIENT_IDS`. The repository has no system-identity fallback. The
+  secret key is a credential (`Cache-Control: no-store`); a project with no key
+  is a 404. `/projects/by-key/{key}/...` cannot be used: it overlaps
+  `GET /projects/{id}/contacts/{contactId}` and the router refuses it.
+- **One transaction per call, under a per-node advisory lock**
+  (`deployment-node:<nodeId>`). `deployment_node.node_id` is not unique (synced,
+  and ServiceNow's identity is not consistent upstream), and every write is a
+  read-then-insert; without the lock two first heartbeats create two nodes. Do not
+  add a unique index instead. Batches lock their nodes in id order.
+- **Node meta rides on every call**: a blank project key or deployment number
+  never clears a stored one; the product version moves only when both product and
+  version are sent (to NULL for a pair not in the catalogue). Product resolution is
+  exact code, then exact name, then the shortest name containing it, with LIKE
+  wildcards escaped.
+- **Parity with PCT's own SQL**: `daily_usage_summary.deployment_number` is
+  written (the request's, else the node's); the latest count wins on a day's row;
+  a host snapshot is stored once per (node, hash) and later reports move its
+  `payload_updated_on`; rows are `created_by` `product-consumption-tracking`
+  (FILE_UPLOAD rows: the uploader's email).
+- **Times** are RFC 3339 or `YYYY-MM-DD HH:MM:SS` read as UTC, parsed in Go and
+  bound as instants; the daily date is the count's UTC date, never the session's.
+- **Batches** are validated whole (400 naming the entry) and written all or
+  nothing; an entry may override `nodeId`/`deploymentNumber`.
+
+Tests: `instance_ingestion_integration_test.go` (real Postgres, schema from
+migration 0054, session zone Asia/Colombo; `INSTANCE_INGESTION_TEST_DSN`),
+including concurrent first heartbeats (fails without the lock) and a batch that
+fails part-way.
+
 ## Service offerings and task SLAs
 
 `service_offering` (migration 0045) is now Postgres-backed
