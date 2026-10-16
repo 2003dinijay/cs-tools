@@ -274,6 +274,15 @@ It backs two routes:
   check in the handler, which together validate the upload the way the upstream service requires.
   The Go client base64-encodes the bytes before forwarding to the upstream service, matching its
   JSON contract exactly (`{"email": "...", "zip": "<base64>"}`).
+  **The upload names no project, so the report decides whose usage it is.** A usage report is a
+  ZIP holding one JSON file as WSO2 products export it; `usageReportDeploymentNumber`
+  (`internal/handler/usage_report.go`) reads only its `export_metadata.deployment_id`
+  (decompression capped at `maxUsageReportBytes`), and the handler looks that deployment number up
+  with entity-service's `POST /deployments/search` (`numbers`, inactive included) **as the caller**.
+  entity-service returns it only to an internal user or a registered contact of its project, so a
+  report for someone else's deployment is a 404 and is never forwarded. Anything that is not such a
+  report is a 400. The product-consumption service then verifies the report's signature against that
+  deployment's key and refuses a report the product marked invalid; this backend checks neither.
 
 ## The registry service
 
