@@ -438,6 +438,9 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 	// leaving HasSr at its Go zero value (false) for every project
 	// regardless of type, which is what this data source used to do.
 	var hasSr *bool
+	// Cloud Support overrides hasSr with the project's own is_pdp_subscription
+	// (see srAccessForProject), the same rule the project-metadata features use.
+	var isPdpSubscription *bool
 	// onboarding owner id/name/email: all NULL when the project has no owner.
 	var ownerID, ownerName, ownerEmail *string
 	// tou/amu: this view's Account.OwnerEmail/TechnicalOwnerEmail were
@@ -488,7 +491,8 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 		        tou.email, amu.email,
 		        onb.id,
 		        COALESCE(onb.name, NULLIF(TRIM(CONCAT_WS(' ', onb.first_name, onb.last_name)), '')),
-		        onb.email
+		        onb.email,
+		        p.is_pdp_subscription
 		 FROM project p
 		 LEFT JOIN account a ON p.account_id = a.id
 		 LEFT JOIN project_type pt ON pt.id = p.project_type_id
@@ -523,6 +527,7 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 		&v.TotalOnboardingHours, &v.ConsumedOnboardingHours, &v.RemainingOnboardingHours,
 		&v.Account.TechnicalOwnerEmail, &v.Account.OwnerEmail,
 		&ownerID, &ownerName, &ownerEmail,
+		&isPdpSubscription,
 	)
 	// v.Account.Tier is sourced from account.support_tier (migration 0101).
 	// ServiceNow's own u_support_tier/u_support_timezone fields are swapped on
@@ -553,8 +558,8 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 	v.Account.Tier = stringOrEmpty(supportTier)
 	if projectTypeName != nil {
 		v.SubscriptionType = projectTypeNameToSubscriptionType(*projectTypeName)
+		v.HasSr = srAccessForProject(*projectTypeName, hasSr != nil && *hasSr, isPdpSubscription)
 	}
-	v.HasSr = hasSr != nil && *hasSr
 	v.OnboardingOwner = onboardingOwnerRef(ownerID, ownerName, ownerEmail)
 	// The backing data source stores a sign-inverted consumed balance for some
 	// projects; normalise at read, leaving the stored value untouched.
