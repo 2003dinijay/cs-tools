@@ -777,11 +777,11 @@ export default function CsReportPage(): JSX.Element {
             )}
           </SectionCard>
 
-          {deployments.some((d) => d.products?.some((p) => p.updateLevelInfo != null)) && (
+          {deployments.some((d) => (d.products?.length ?? 0) > 0) && (
             <SectionCard className="product-updates-widget" title="Product update levels">
               {deployments.map((deployment, index) => {
-                const productsWithUpdateInfo = deployment.products?.filter((p) => p.updateLevelInfo != null) ?? [];
-                if (productsWithUpdateInfo.length === 0) return null;
+                const products = deployment.products ?? [];
+                if (products.length === 0) return null;
                 return (
                   <Box key={index} sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
                     <Typography variant="body2" color="text.secondary">
@@ -796,13 +796,15 @@ export default function CsReportPage(): JSX.Element {
                           </TableRow>
                         </TableHead>
                         <TableBody>
-                          {productsWithUpdateInfo.map((product, i) => (
+                          {products.map((product, i) => (
                             <TableRow key={i}>
                               <TableCell>
                                 {product.name}
                                 {product.version ? ` v${product.version}` : ""}
                               </TableCell>
-                              <TableCell>{product.updateLevelInfo ?? "—"}</TableCell>
+                              <TableCell>
+                                {product.updateLevelInfo != null ? product.updateLevelInfo : "No update history"}
+                              </TableCell>
                             </TableRow>
                           ))}
                         </TableBody>

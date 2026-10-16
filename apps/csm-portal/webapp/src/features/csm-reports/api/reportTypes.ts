@@ -121,7 +121,7 @@ export interface ProductDetails extends DataStruct {
   eolDate: string;
   cores: string;
   tps: string;
-  updateLevelInfo: number | null;
+  updateLevelInfo?: number | null;
   earliestPossibleSupportEOLDate?: string;
 }
 
