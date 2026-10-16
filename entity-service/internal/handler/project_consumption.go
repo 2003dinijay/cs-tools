@@ -52,6 +52,8 @@ func (h *ProjectConsumptionHandler) GetProjectConsumptionStatus(w http.ResponseW
 		Result:        status,
 	}
 
+	// The result carries the project's client secret and HMAC secret keys.
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
 }
@@ -91,6 +93,7 @@ func (h *ProjectConsumptionHandler) UpdateProjectConsumption(w http.ResponseWrit
 		},
 	}
 
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
 }

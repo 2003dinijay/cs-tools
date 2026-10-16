@@ -77,6 +77,9 @@ func TestGetProjectConsumptionStatus_Success(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
 	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store: the result carries the project's secrets", got)
+	}
 
 	var body struct {
 		ApplicationID *string                         `json:"applicationId"`
@@ -145,6 +148,9 @@ func TestUpdateProjectConsumption_Success(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", got)
 	}
 	if svc.updateID != "11111111-1111-1111-1111-111111111111" {
 		t.Errorf("svc.updateID = %q", svc.updateID)
