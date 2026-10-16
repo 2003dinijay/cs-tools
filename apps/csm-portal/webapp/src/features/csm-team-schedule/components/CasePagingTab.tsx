@@ -17,10 +17,7 @@
  */
 
 import { useState, type JSX } from "react";
-import {
-  canViewCaseAlertSettings,
-  useCaseAlertSettings,
-} from "../api/useCaseAlertSettings";
+import { useCaseAlertSettings } from "../api/useCaseAlertSettings";
 import {
   useGetPagingChain,
   useGetPagingReadiness,
@@ -33,9 +30,11 @@ import type {
   RotaFamily,
   ScheduleTeam,
 } from "../types";
-import CaseAlertSettings from "./CaseAlertSettings";
-import { chainHasSettings } from "../utils/caseAlertChainSettings";
+import { mayManageChain, mayManageFamily } from "../utils/caseAlertChainSettings";
+import type { SettingsFamily } from "../utils/caseAlertDrafts";
 import type { CaseAlertChain } from "../utils/pagingChains";
+import CaseAlertDraftsProvider from "./CaseAlertDraftsProvider";
+import CaseAlertSettings from "./CaseAlertSettings";
 import PagingReadinessStrip, {
   type PhoneGapAction,
 } from "./PagingReadinessStrip";
@@ -45,7 +44,7 @@ import { usePagingPhoneControls } from "./usePagingPhoneControls";
 /** The readiness gaps that are about one person's number. */
 const PHONE_GAPS = new Set(["NO_PHONE", "PHONE_UNTESTED", "PHONE_TEST_FAILED"]);
 
-/** What a chain shows: who gets its alerts, or its settings. */
+/** What a family's tab shows: who gets its alerts, or its settings. */
 type ChainView = "chain" | "settings";
 
 /** Where the last choice is kept, for this browser. */
@@ -93,11 +92,11 @@ interface ChainOption {
   disabledReason?: string;
 }
 
-/** The chains, in the order the picker offers them: the three SRE sub-teams
- *  together, then SME. PaaS SRE has no rota yet, so it is shown -- it is a
- *  chain people expect -- but cannot be picked. CRE is not offered: its
- *  alerts keep their own flow, unchanged, and nothing about them is set here. */
-const CHAINS: readonly ChainOption[] = [
+/** The chains under the SRE tab's "Who gets alerts", in order: the three SRE
+ *  sub-teams, then SME. PaaS SRE has no rota yet, so it is listed -- it is a
+ *  chain people expect -- with no chain to show. CRE has none here: who CRE
+ *  pages is set on the rota, and its tab holds its settings alone. */
+const SRE_CHAINS: readonly ChainOption[] = [
   {
     code: "SRE_SAAS",
     label: "SaaS SRE",
@@ -115,14 +114,16 @@ const CHAINS: readonly ChainOption[] = [
 interface Props {
   /** Switch the page to the week view on a rota (and team, zone, day). */
   onOpenRota: (target: PagingRotaTarget) => void;
-  /** The chain the tab opens on: the reader's own (SME for an SME rota
-   *  admin, their SRE sub-team's for SRE). SaaS SRE when absent. */
+  /** The chain the tab opens on: the reader's own. Its family (CRE, else
+   *  SRE) is the tab it opens on. */
   initialChain?: PagingChainCode;
   /** The chains this reader is shown -- their own (caseAlertChainsFor).
    *  Every chain when absent, as for a CSM admin or the CRE and CS heads. */
   visibleChains?: readonly CaseAlertChain[];
-  /** The Team Schedule's teams, for the SME chain's chat spaces. */
+  /** The Team Schedule's teams, for the SME teams' chat spaces. */
   teams?: readonly Pick<ScheduleTeam, "key" | "name" | "family">[];
+  /** Teams people are only moved onto (Migration, SaaS Night cover). */
+  moveTargetKeys?: readonly string[];
 }
 
 /** Whether the reader may change both ladders' settings: what a CSM admin
@@ -133,61 +134,68 @@ function managesBothLadders(settings?: AlertSettingsData): boolean {
 }
 
 /**
- * The Case Paging tab: a chain picker, then the chain on screen. The SRE and
- * SME chains page whoever the rota has on, so the tab says where to set people
- * and how ready the chain is. Each chain opens with its readiness strip.
- *
- * For the people who may see a chain's alert settings, a switch above it
- * flips between who gets the alerts and the settings (CaseAlertSettings); the
- * last choice is kept for this browser. Everyone else, and the SME chain,
- * which has no settings here, sees the chain alone.
+ * The Alert Settings tab: a family tab for CRE and one for SRE (SaaS, IaaS and
+ * SME together), and under it, where both apply, "Who gets alerts" and
+ * "Settings". Who gets alerts lists each SRE and SME chain with its readiness
+ * and where its people are set (they come from the rota); Settings holds the
+ * family's settings, kept as changes until its Submit. CRE has its settings
+ * alone, for those who may change them. The last sub-tab is kept for this
+ * browser.
  */
-export default function CasePagingTab({
+export default function CasePagingTab(props: Props): JSX.Element {
+  // One list of changes for both families, so moving between them keeps both.
+  return (
+    <CaseAlertDraftsProvider>
+      <AlertTabs {...props} />
+    </CaseAlertDraftsProvider>
+  );
+}
+
+function AlertTabs({
   onOpenRota,
   initialChain = "SRE_SAAS",
   visibleChains,
   teams,
+  moveTargetKeys,
 }: Props): JSX.Element {
   const alertSettings = useCaseAlertSettings();
-  // The reader's own chains (caseAlertChainsFor).
-  const chains = visibleChains
-    ? CHAINS.filter((c) => visibleChains.includes(c.code))
-    : CHAINS;
-  const offered = (
-    code: PagingChainCode | undefined,
-  ): code is PagingChainCode =>
-    !!code && chains.some((c) => c.code === code && !c.disabledReason);
-  // The reader's pick, else the chain they belong to, else the first one
-  // offered. Derived rather than seeded into state, so a profile that settles
-  // after the first frame still opens the right chain.
-  const [chainChoice, setChainCode] = useState<PagingChainCode | undefined>(
-    undefined,
+  const roomLadders = alertSettings.data?.canManage.roomLadders;
+  const manages = (code: CaseAlertChain) =>
+    code !== "PAAS" && mayManageChain(code, roomLadders);
+  // The SRE and SME chains the reader is shown: their own, and every one
+  // whose settings they may change.
+  const sreChains = SRE_CHAINS.filter(
+    (c) => !visibleChains || visibleChains.includes(c.code) || manages(c.code),
   );
-  const firstOffered = chains.find((c) => !c.disabledReason)?.code as
-    PagingChainCode | undefined;
-  // A CSM or portal admin, who may change both ladders, belongs to no one
-  // chain: they open on the first, whatever their own team's family is.
-  const ownChain = managesBothLadders(alertSettings.data)
-    ? firstOffered
-    : initialChain;
-  const chainCode: PagingChainCode = offered(chainChoice)
-    ? chainChoice
-    : offered(ownChain)
-      ? ownChain
-      : (firstOffered ?? initialChain);
-  const readiness = useGetPagingReadiness(PAGING_READINESS_DAYS);
-  const hasSettings =
-    canViewCaseAlertSettings(alertSettings.data) &&
-    chainHasSettings(chainCode);
+  const families: SettingsFamily[] = [
+    ...(mayManageFamily("CRE", roomLadders) ? (["CRE"] as const) : []),
+    ...(sreChains.length > 0 || mayManageFamily("SRE", roomLadders) ? (["SRE"] as const) : []),
+  ];
+  // The reader's pick, else their own family, else the first offered. A CSM
+  // or portal admin belongs to no one family: they open on the first.
+  const [familyChoice, setFamily] = useState<SettingsFamily | undefined>(undefined);
+  const own: SettingsFamily = initialChain === "CRE" ? "CRE" : "SRE";
+  const family: SettingsFamily | undefined =
+    familyChoice && families.includes(familyChoice)
+      ? familyChoice
+      : managesBothLadders(alertSettings.data)
+        ? families[0]
+        : families.includes(own)
+          ? own
+          : families[0];
   const [view, setView] = useState<ChainView>(readView);
   const chooseView = (next: ChainView) => {
     setView(next);
     writeView(next);
   };
-  // The people a phone gap can be acted on for: SRE's while an SRE chain is
-  // on screen. SME's people are not served as a chain, so its phone gaps keep
+  const readiness = useGetPagingReadiness(PAGING_READINESS_DAYS);
+  const hasSettings = family !== undefined && mayManageFamily(family, roomLadders);
+  const hasChains = family === "SRE" && sreChains.length > 0;
+  const shown: ChainView = !hasChains ? "settings" : !hasSettings ? "chain" : view;
+  // The people a phone gap can be acted on for: SRE's while its chains are on
+  // screen. SME's people are not served as a chain, so its phone gaps keep
   // the profile hint.
-  const sreOnScreen = chainCode === "SRE_SAAS" || chainCode === "SRE_IAAS";
+  const sreOnScreen = hasChains && shown === "chain";
   const sreChain = useGetPagingChain("SRE", sreOnScreen);
   const members: PagingChainMember[] = sreOnScreen
     ? (sreChain.data?.members ?? [])
@@ -213,139 +221,118 @@ export default function CasePagingTab({
     };
   };
 
-  const option =
-    chains.find((c) => c.code === chainCode) ?? chains[0] ?? CHAINS[0];
-  const chainReadiness = readiness.data?.chains.find(
-    (c) => c.chain === chainCode,
-  );
-  const stripRead = {
-    chain: chainReadiness,
-    days: PAGING_READINESS_DAYS,
-    isLoading: readiness.isLoading,
-    isError: readiness.isError,
-  };
+  if (!family) {
+    return <div className="offnone">There is no alert chain of yours to show.</div>;
+  }
 
-  /** A rota gap opens the rota the gap is on: its team's, its zone's, or the
-   *  chain's own. */
-  const openGap = (gap: PagingReadinessGap) =>
-    onOpenRota({
-      family: option.rota?.family ?? "SRE",
-      rotaCode: option.rota?.rotaCode,
-      teamKey: gap.teamKey,
-      zoneCode: gap.zoneCode,
-      date: gap.date,
-    });
-
-  // A reader with one chain has nothing to pick between.
-  const picker = chains.length < 2 ? null : (
-    <div
-      className="seg teamseg cp-chains"
-      role="tablist"
-      aria-label="Alert chain"
-    >
-      {chains.map((c) => {
-        const disabled = Boolean(c.disabledReason);
-        return (
+  // The family tabs; one family has nothing to pick between.
+  const familyTabs =
+    families.length < 2 ? null : (
+      <div className="seg teamseg cp-families" role="tablist" aria-label="Family">
+        {families.map((f) => (
           <button
-            key={c.code}
+            key={f}
             type="button"
             role="tab"
-            aria-selected={chainCode === c.code}
-            // aria-disabled rather than disabled: a disabled button shows no
-            // tooltip and is skipped by the keyboard, and the reason it cannot
-            // be picked is the point.
-            aria-disabled={disabled || undefined}
-            title={c.disabledReason}
-            className={
-              `${chainCode === c.code ? "on" : ""}${disabled ? " off" : ""}`.trim() ||
-              undefined
-            }
-            onClick={() => {
-              if (!disabled) setChainCode(c.code as PagingChainCode);
-            }}
+            aria-selected={family === f}
+            className={family === f ? "on" : undefined}
+            onClick={() => setFamily(f)}
           >
-            {c.label}
+            {f}
           </button>
-        );
-      })}
-    </div>
-  );
-
-  // Nothing to show: their only chain is one with no rota yet (PaaS SRE).
-  if (!offered(chainCode)) {
-    const only = chains[0];
-    return (
-      <div className="offnone">
-        {only ? `${only.label} has no rota yet, so there is no alert chain to show.` : "There is no alert chain of yours to show."}
+        ))}
       </div>
     );
-  }
+  // Under the family: who gets alerts, and its settings, where both apply.
+  const subTabs =
+    hasChains && hasSettings ? (
+      <div className="cp-subtabs" role="tablist" aria-label="Show">
+        {(
+          [
+            ["chain", "Who gets alerts"],
+            ["settings", "Settings"],
+          ] as const
+        ).map(([v, label]) => (
+          <button
+            key={v}
+            type="button"
+            role="tab"
+            aria-selected={shown === v}
+            className={shown === v ? "on" : undefined}
+            onClick={() => chooseView(v)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+    ) : null;
 
-  const viewSwitch = hasSettings ? (
-    <div className="seg cas-view" role="group" aria-label="Show">
-      {(
-        [
-          ["chain", "Who gets alerts"],
-          ["settings", "Settings"],
-        ] as const
-      ).map(([v, label]) => (
-        <button
-          key={v}
-          type="button"
-          aria-pressed={view === v}
-          className={view === v ? "on" : undefined}
-          onClick={() => chooseView(v)}
-        >
-          {label}
-        </button>
-      ))}
-    </div>
-  ) : null;
-
-  if (hasSettings && view === "settings") {
-    return (
-      <>
-        <div className="card-head">
-          {picker}
-          {viewSwitch}
-        </div>
-        {/* Keyed by chain: a "Saved" line belongs to the chain it was saved on. */}
-        <CaseAlertSettings key={chainCode} chain={chainCode} teams={teams} />
-        {dialog}
-      </>
-    );
-  }
-
-  const rota = option.rota;
   return (
     <>
-      <div className="card-head">
-        {picker}
-        {viewSwitch}
-        <h2>{option.label} alert chain</h2>
-      </div>
-      <PagingReadinessStrip
-        key={chainCode}
-        label={option.label}
-        {...stripRead}
-        onOpenRota={openGap}
-        phoneActionFor={phoneActionFor}
-      />
-      <p className="cp-from">
-        People come from the {option.label} rota; set them in the Team Schedule
-        views.{" "}
-        {rota ? (
-          <button
-            type="button"
-            className="btn sm"
-            onClick={() =>
-              onOpenRota({ family: rota.family, rotaCode: rota.rotaCode })
-            }
-          >
-            Open the {option.label} rota
-          </button>
-        ) : null}
-      </p>
+      {familyTabs || subTabs ? (
+        <div className="cp-tabs">
+          {familyTabs}
+          {subTabs}
+        </div>
+      ) : null}
+      {shown === "settings" ? (
+        <CaseAlertSettings
+          key={family}
+          family={family}
+          teams={teams}
+          moveTargetKeys={moveTargetKeys}
+        />
+      ) : (
+        sreChains.map((c) => {
+          const chainReadiness = readiness.data?.chains.find((x) => x.chain === c.code);
+          const rota = c.rota;
+          /** A rota gap opens the rota the gap is on: its team's, its
+           *  zone's, or the chain's own. */
+          const openGap = (gap: PagingReadinessGap) =>
+            onOpenRota({
+              family: rota?.family ?? "SRE",
+              rotaCode: rota?.rotaCode,
+              teamKey: gap.teamKey,
+              zoneCode: gap.zoneCode,
+              date: gap.date,
+            });
+          return (
+            <section key={c.code} className="cp-chain" aria-labelledby={`cp-h-${c.code}`}>
+              <h2 id={`cp-h-${c.code}`}>{c.label} alert chain</h2>
+              {c.disabledReason ? (
+                <p className="cp-from">{c.label} has no rota yet, so there is no alert chain to show.</p>
+              ) : (
+                <>
+                  <PagingReadinessStrip
+                    label={c.label}
+                    chain={chainReadiness}
+                    days={PAGING_READINESS_DAYS}
+                    isLoading={readiness.isLoading}
+                    isError={readiness.isError}
+                    onOpenRota={openGap}
+                    phoneActionFor={phoneActionFor}
+                  />
+                  <p className="cp-from">
+                    People come from the {c.label} rota; set them in the Team
+                    Schedule views.{" "}
+                    {rota ? (
+                      <button
+                        type="button"
+                        className="btn sm"
+                        onClick={() =>
+                          onOpenRota({ family: rota.family, rotaCode: rota.rotaCode })
+                        }
+                      >
+                        Open the {c.label} rota
+                      </button>
+                    ) : null}
+                  </p>
+                </>
+              )}
+            </section>
+          );
+        })
+      )}
       {dialog}
     </>
   );

@@ -782,9 +782,9 @@ func main() {
 		// did -- see loadEscalationConfig.
 		escalationCfg, cfgErr := loadEscalationConfig(escalationChannel)
 		if cfgErr == nil {
-			// The chat rooms saved on the Team Schedule's Alert Settings tab:
-			// unset PAGING_CONFIG_SOURCE uses the SRE and SME teams' rooms only
-			// (rooms); db adds routes and ladder values; off asks nobody.
+			// What is saved on the Team Schedule's Alert Settings tab, for
+			// every ladder, over the file's (unset PAGING_CONFIG_SOURCE is db);
+			// off asks nobody.
 			if mode := caseAlertSettingsMode(os.Getenv("PAGING_CONFIG_SOURCE")); mode != caseAlertSourceOff {
 				escalationCfg = applyCaseAlertSettings(ctx, mode, escalationCfg, caseAlertSettingsEntity(), os.Setenv, caseAlertStartFor(redisClient))
 			}

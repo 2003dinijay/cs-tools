@@ -32,8 +32,8 @@ import (
 )
 
 // The ladder values are the rest of csm-notification-service's paging file
-// that can be set on the Alert Settings tab: one key of the file's cre: or sre:
-// section each, in the file's own shape. Only the keys below can be saved,
+// that can be set on the Alert Settings tab: one key of the file's cre:, sre:
+// or (0238) sme: section each, in the file's own shape. Only the keys below can be saved,
 // each with its limits. What decides whether paging runs and what it may cost
 // -- enabled, channel, safety, phones.source, testCall -- is deliberately not
 // among them: changing those stays a reviewed change to the file.
@@ -59,6 +59,9 @@ var (
 	bothLadders = []string{familyCRE, familySRE}
 	creOnly     = []string{familyCRE}
 	sreOnly     = []string{familySRE}
+	sreSME      = []string{familySRE, familySME}
+	allLadders  = []string{familyCRE, familySRE, familySME}
+	smeOnly     = []string{familySME}
 
 	// caseAlertTeamKey is what a team key looks like (team.key).
 	caseAlertTeamKey = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,63}$`)
@@ -78,7 +81,7 @@ var caseAlertValueSpecs = map[string]caseAlertValueSpec{
 	"trigger.excludeTeams":     {bothLadders, stringListValue(100, groupNameItem)},
 	"trigger.shifts":           {bothLadders, stringListValue(len(caseAlertShifts), shiftNameItem)},
 	"trigger.requireKnownTeam": {bothLadders, boolValue},
-	"onLeave":                  {bothLadders, enumValue("skip", "call")},
+	"onLeave":                  {allLadders, enumValue("skip", "call")},
 	"teams.abtType":            {bothLadders, abtTypeValue},
 	"teams.abts":               {bothLadders, stringListValue(30, ladderTeamItem)},
 
@@ -98,11 +101,39 @@ var caseAlertValueSpecs = map[string]caseAlertValueSpec{
 	"acknowledgement.requireBoth":     {creOnly, boolValue},
 
 	"teams.defaultRota":  {sreOnly, defaultRotaValue},
-	"timing.initialWait": {sreOnly, durationValue(0, 30*time.Minute, "0s or 2m")},
-	"timing.interval":    {sreOnly, durationValue(time.Minute, 30*time.Minute, "5m")},
+	"timing.initialWait": {sreSME, durationValue(0, 30*time.Minute, "0s or 2m")},
+	"timing.interval":    {sreSME, durationValue(time.Minute, 30*time.Minute, "5m")},
 	"timing.includeL4":   {sreOnly, boolValue},
-	"unansweredChat":     {sreOnly, boolValue},
+	"unansweredChat":     {sreSME, boolValue},
 	"smeHandoffChat":     {sreOnly, boolValue},
+
+	// sme.teams: a Special Ops team key to the SME team it pages.
+	"teams": {smeOnly, smeTeamsValue},
+}
+
+// smeTeamsValue is sme.teams: Special Ops team keys, each to one of the Team
+// Schedule's SME teams.
+func smeTeamsValue(ctx context.Context, s *caseAlertSettingsService, _ string, raw json.RawMessage) (any, error) {
+	var in map[string]string
+	if err := json.Unmarshal(raw, &in); err != nil || in == nil {
+		return nil, invalidf("send an object of Special Ops team key to SME team key")
+	}
+	if len(in) > 50 {
+		return nil, invalidf("at most 50 teams")
+	}
+	out := make(map[string]string, len(in))
+	for from, to := range in {
+		k := strings.ToLower(strings.TrimSpace(from))
+		if !caseAlertTeamKey.MatchString(k) {
+			return nil, invalidf("%q is not a team key", from)
+		}
+		team, err := teamItem(ctx, s, familySME, strings.TrimSpace(to))
+		if err != nil {
+			return nil, err
+		}
+		out[k] = team
+	}
+	return out, nil
 }
 
 // checkCaseAlertValue checks one key's value for ladder and returns it as

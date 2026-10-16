@@ -204,12 +204,33 @@ func TestCaseAlertSaveValues(t *testing.T) {
 	repo := newFakeCaseAlertRepo()
 	svc, _ := newCaseAlerts(repo, testCaseAlertKey)
 
-	// The SRE rota admin changes SRE, not CRE; a head changes nothing.
+	// The SRE rota admin changes SRE, not CRE; a head changes CRE, not SRE;
+	// the SME rota admin changes SME, which has its own keys only.
 	sre := asPerson("sre.rota@wso2.com")
 	_, err := svc.SaveValues(sre, domain.SaveCaseAlertValuesRequest{Ladder: "CRE", Values: map[string]json.RawMessage{"onLeave": json.RawMessage(`"call"`)}})
 	wantAPIError[*apierror.ForbiddenError](t, err, "SRE rota admin on CRE")
-	_, err = svc.SaveValues(asPerson("crehead@wso2.com"), domain.SaveCaseAlertValuesRequest{Ladder: "CRE", Values: map[string]json.RawMessage{"onLeave": json.RawMessage(`"call"`)}})
-	wantAPIError[*apierror.ForbiddenError](t, err, "head")
+	head := asPerson("crehead@wso2.com")
+	_, err = svc.SaveValues(head, domain.SaveCaseAlertValuesRequest{Ladder: "SRE", Values: map[string]json.RawMessage{"onLeave": json.RawMessage(`"call"`)}})
+	wantAPIError[*apierror.ForbiddenError](t, err, "head on SRE")
+	if _, err = svc.SaveValues(head, domain.SaveCaseAlertValuesRequest{Ladder: "CRE", Values: map[string]json.RawMessage{"onLeave": json.RawMessage(`"skip"`)}}); err != nil {
+		t.Fatalf("head on CRE: %v", err)
+	}
+	sme := asPerson("sme.rota@wso2.com")
+	_, err = svc.SaveValues(sme, domain.SaveCaseAlertValuesRequest{Ladder: "SRE", Values: map[string]json.RawMessage{"onLeave": json.RawMessage(`"call"`)}})
+	wantAPIError[*apierror.ForbiddenError](t, err, "SME rota admin on SRE")
+	_, err = svc.SaveValues(sme, domain.SaveCaseAlertValuesRequest{Ladder: "SME", Values: map[string]json.RawMessage{"heads.cre": json.RawMessage(`{"name":"x","email":"x@example.test"}`)}})
+	wantAPIError[*apierror.ValidationError](t, err, "a CRE key on SME")
+	if _, err = svc.SaveValues(sme, domain.SaveCaseAlertValuesRequest{Ladder: "sme", Values: map[string]json.RawMessage{
+		"timing.interval": json.RawMessage(`"10m"`),
+		"onLeave":         json.RawMessage(`"call"`),
+		"unansweredChat":  json.RawMessage(`true`),
+		"teams":           json.RawMessage(`{"Asgardeo-Ops":"asgardeo"}`),
+	}}); err != nil {
+		t.Fatalf("SME values: %v", err)
+	}
+	_, err = svc.SaveValues(sme, domain.SaveCaseAlertValuesRequest{Ladder: "SME", Values: map[string]json.RawMessage{"teams": json.RawMessage(`{"ops":"apollo"}`)}})
+	wantAPIError[*apierror.ValidationError](t, err, "sme.teams to an SRE team")
+	repo.values = map[string]repository.CaseAlertValueRow{}
 
 	// One refused value saves none of them.
 	_, err = svc.SaveValues(sre, domain.SaveCaseAlertValuesRequest{Ladder: "sre", Values: map[string]json.RawMessage{
@@ -244,7 +265,7 @@ func TestCaseAlertSaveValues(t *testing.T) {
 
 	for name, req := range map[string]domain.SaveCaseAlertValuesRequest{
 		"nothing":      {Ladder: "CRE"},
-		"bad ladder":   {Ladder: "SME", Values: map[string]json.RawMessage{"onLeave": json.RawMessage(`"call"`)}},
+		"bad ladder":   {Ladder: "PAAS", Values: map[string]json.RawMessage{"onLeave": json.RawMessage(`"call"`)}},
 		"over the cap": {Ladder: "CRE", Values: tooManyValues()},
 	} {
 		if _, err := svc.SaveValues(admin, req); err == nil {
@@ -321,6 +342,13 @@ func TestCaseAlertGetShowsValuesAndRunning(t *testing.T) {
 	// The lists a route is made from.
 	if o := got.RouteOptions; o == nil || len(o.Groups) != 3 || len(o.Teams) != 2 || len(o.Rotas) != 1 || o.Groups[2].Family != "SME" {
 		t.Fatalf("route options %+v", got.RouteOptions)
+	}
+
+	// The CRE rota admin is sent neither SRE's values nor what SRE runs with.
+	repo.mode, repo.summary = &shadow, []byte(`{"rooms":0,"running":{"ladders":{"SRE":{"timing.interval":{"value":"5m","source":"file"}},"CRE":{"onLeave":{"value":"skip","source":"file"}}},"fileOnly":{"SRE":{"channel":"call"},"CRE":{"channel":"both"}}}}`)
+	cre, _ := svc.Get(asPerson("cre.rota@wso2.com"))
+	if len(cre.Values) != 0 || cre.Running == nil || cre.Running.Ladders["SRE"] != nil || cre.Running.FileOnly["SRE"] != nil || cre.Running.Ladders["CRE"] == nil {
+		t.Fatalf("CRE rota admin was sent %+v / %+v", cre.Values, cre.Running)
 	}
 
 	// Somebody who may see nothing gets no values either.

@@ -523,7 +523,7 @@ export interface CaseAlertGroupRoute {
  *  and email, and so on. */
 export interface CaseAlertLadderValue {
   id: string;
-  ladder: CaseAlertLadder;
+  ladder: CaseAlertRoomLadder;
   key: string;
   value: unknown;
   updatedBy: string;
@@ -543,11 +543,11 @@ export interface CaseAlertRunning {
   mode: "off" | "shadow" | "db";
   /** Per ladder, each key's value in use. */
   ladders: Partial<
-    Record<CaseAlertLadder, Record<string, CaseAlertRunningValue>>
+    Record<CaseAlertRoomLadder, Record<string, CaseAlertRunningValue>>
   >;
   /** Per ladder, the settings only the file can set. Absent from an alert
    *  service that doesn't report them yet. */
-  fileOnly?: Partial<Record<CaseAlertLadder, CaseAlertFileOnly>>;
+  fileOnly?: Partial<Record<CaseAlertRoomLadder, CaseAlertFileOnly>>;
 }
 
 /** What decides whether a ladder pages and what it may cost: read here, set

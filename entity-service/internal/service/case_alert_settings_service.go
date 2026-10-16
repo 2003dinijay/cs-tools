@@ -168,7 +168,8 @@ func (s *caseAlertSettingsService) whoIsAsking(ctx context.Context) (caseAlertCa
 	}
 	c := caseAlertCaller{email: id.UserEmail, ladder: map[string]bool{}}
 	if holdsAnyRole(id.Roles, s.cfg.AdminRoles) {
-		c.view, c.ladder[familyCRE], c.ladder[familySRE], c.ladder[familySME] = true, true, true, true
+		c.ladder[familyCRE], c.ladder[familySRE], c.ladder[familySME] = true, true, true
+		c.view = true
 		return c, nil
 	}
 	who, err := s.people.CallerAuthority(ctx, id.UserEmail)
@@ -176,15 +177,19 @@ func (s *caseAlertSettingsService) whoIsAsking(ctx context.Context) (caseAlertCa
 		return caseAlertCaller{}, err
 	}
 	a := authorityOf(who)
+	// Each family's settings are its own: the CRE rota admin and the CRE and
+	// CS heads have CRE's, the SRE rota admin SRE's, the SME rota admin SME's.
+	// Seeing a family's settings and changing them go together; another
+	// family's are never sent. A CSM or portal admin has all three.
 	switch {
 	case a.portalAdmin:
 		c.ladder[familyCRE], c.ladder[familySRE], c.ladder[familySME] = true, true, true
 	default:
-		c.ladder[familyCRE] = a.creRotaAdmin
+		c.ladder[familyCRE] = a.creRotaAdmin || a.head
 		c.ladder[familySRE] = a.sreRotaAdmin
 		c.ladder[familySME] = a.smeRotaAdmin
 	}
-	c.view = a.portalAdmin || a.creRotaAdmin || a.sreRotaAdmin || a.smeRotaAdmin || a.head
+	c.view = len(c.roomLadders()) > 0
 	return c, nil
 }
 
@@ -198,6 +203,18 @@ func (c caseAlertCaller) mayChange(ladder string) error {
 
 // normRoomLadder is normLadder for a chat room, which SME has too.
 func normRoomLadder(v string) (string, error) {
+	if l := strings.ToUpper(strings.TrimSpace(v)); l == familySME {
+		return l, nil
+	}
+	l, err := normLadder(v)
+	if err != nil {
+		return "", &apierror.ValidationError{Msg: "ladder must be CRE, SRE or SME"}
+	}
+	return l, nil
+}
+
+// normValueLadder is normLadder for a ladder value, which SME has too (0238).
+func normValueLadder(v string) (string, error) {
 	if l := strings.ToUpper(strings.TrimSpace(v)); l == familySME {
 		return l, nil
 	}
@@ -246,23 +263,29 @@ func (s *caseAlertSettingsService) Get(ctx context.Context) (domain.CaseAlertSet
 		return domain.CaseAlertSettings{}, err
 	}
 	for _, r := range rooms {
-		out.Rooms = append(out.Rooms, roomView(r))
+		if c.ladder[r.Ladder] {
+			out.Rooms = append(out.Rooms, roomView(r))
+		}
 	}
 	routes, err := s.repo.ListRoutes(ctx)
 	if err != nil {
 		return domain.CaseAlertSettings{}, err
 	}
 	for _, r := range routes {
-		out.Routes = append(out.Routes, routeView(r))
+		if c.ladder[r.Ladder] {
+			out.Routes = append(out.Routes, routeView(r))
+		}
 	}
 	values, err := s.repo.ListValues(ctx)
 	if err != nil {
 		return domain.CaseAlertSettings{}, err
 	}
 	for _, v := range values {
-		out.Values = append(out.Values, valueView(v))
+		if c.ladder[v.Ladder] {
+			out.Values = append(out.Values, valueView(v))
+		}
 	}
-	out.Running = runningView(ctx, rev)
+	out.Running = runningView(ctx, rev, c.ladder)
 	if out.RouteOptions, err = s.routeOptions(ctx); err != nil {
 		return domain.CaseAlertSettings{}, err
 	}
@@ -312,7 +335,9 @@ func valueView(r repository.CaseAlertValueRow) domain.CaseAlertLadderValue {
 // runningView is what the alert service reported it runs with, from the
 // summary of its last report; nil when that start was in off mode, or carried
 // no such report.
-func runningView(ctx context.Context, rev repository.CaseAlertRevisionRow) *domain.CaseAlertRunning {
+// runningView is what the alert service last reported it runs with, for the
+// ladders the caller may see (mine) only.
+func runningView(ctx context.Context, rev repository.CaseAlertRevisionRow, mine map[string]bool) *domain.CaseAlertRunning {
 	if len(rev.AppliedSummary) == 0 || rev.AppliedMode == nil || *rev.AppliedMode == "off" {
 		return nil
 	}
@@ -329,10 +354,22 @@ func runningView(ctx context.Context, rev repository.CaseAlertRevisionRow) *doma
 	if summary.Running == nil || len(summary.Running.Ladders) == 0 {
 		return nil
 	}
-	return &domain.CaseAlertRunning{
+	out := &domain.CaseAlertRunning{
 		ReportedAt: rev.AppliedAt, Mode: *rev.AppliedMode,
-		Ladders: summary.Running.Ladders, FileOnly: summary.Running.FileOnly,
+		Ladders:  map[string]map[string]domain.CaseAlertRunningValue{},
+		FileOnly: map[string]map[string]json.RawMessage{},
 	}
+	for l, v := range summary.Running.Ladders {
+		if mine[l] {
+			out.Ladders[l] = v
+		}
+	}
+	for l, v := range summary.Running.FileOnly {
+		if mine[l] {
+			out.FileOnly[l] = v
+		}
+	}
+	return out
 }
 
 func revisionView(r repository.CaseAlertRevisionRow) domain.CaseAlertRevision {
@@ -662,7 +699,7 @@ func (s *caseAlertSettingsService) SaveValues(ctx context.Context, req domain.Sa
 	if err != nil {
 		return domain.CaseAlertValuesResponse{}, err
 	}
-	ladder, err := normLadder(req.Ladder)
+	ladder, err := normValueLadder(req.Ladder)
 	if err != nil {
 		return domain.CaseAlertValuesResponse{}, err
 	}

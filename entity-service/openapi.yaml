@@ -8768,13 +8768,14 @@ paths:
         rooms, the ServiceNow group routes and the other ladder values the
         paging ladders use, the saved and running revision, what the alert
         service reported it runs with, and what the caller may change.
-        Webhook URLs are never returned, only a hint. Seen by a CSM admin
-        (AUTH_ADMIN_ROLES), a portal admin, the CRE and SRE rota admins and
-        the CRE and CS heads; anybody else internal gets an empty answer (200,
+        Webhook URLs are never returned, only a hint. Each family's settings
+        are sent only to those who may change them: CRE's to the CRE rota
+        admin and the CRE and CS heads, SRE's to the SRE rota admin, SME's to
+        the SME rota admin, all three to a CSM admin (AUTH_ADMIN_ROLES) or
+        portal admin. Anybody else internal gets an empty answer (200,
         canManage.view false), which is how the portal decides not to show the
-        section. Needs a user token. csm-notification-service uses the SRE
-        and SME teams' rooms by default (PAGING_CONFIG_SOURCE unset), and
-        everything saved with PAGING_CONFIG_SOURCE=db.
+        section. Needs a user token. csm-notification-service uses everything
+        saved unless PAGING_CONFIG_SOURCE is off.
       operationId: getCaseAlertSettings
       responses:
         "200":
@@ -23460,7 +23461,7 @@ components:
       required: [id, ladder, key, value, updatedBy, updatedOn]
       properties:
         id: { type: string, format: uuid }
-        ladder: { type: string, enum: [CRE, SRE] }
+        ladder: { type: string, enum: [CRE, SRE, SME] }
         key: { type: string, example: teams.abts, description: "A key of the paging file under cre or sre." }
         value: { description: "The value in the file's shape: a list, a number, true or false, text, or a head's name and email." }
         updatedBy: { type: string }
@@ -23469,7 +23470,7 @@ components:
       type: object
       required: [ladder, values]
       properties:
-        ladder: { type: string, enum: [CRE, SRE] }
+        ladder: { type: string, enum: [CRE, SRE, SME] }
         values:
           type: object
           additionalProperties: true
@@ -23487,7 +23488,10 @@ components:
             only), alertDuty.tiers, alertDuty.perTeam,
             acknowledgement.requireBoth. SRE: teams.defaultRota,
             timing.initialWait (0s to 30m), timing.interval (1m to 30m),
-            timing.includeL4, unansweredChat, smeHandoffChat.
+            timing.includeL4, unansweredChat, smeHandoffChat. SME:
+            timing.initialWait (0s to 30m), timing.interval (1m to 30m),
+            onLeave, unansweredChat, teams (Special Ops team key to SME team
+            key).
     CaseAlertValuesResponse:
       type: object
       required: [values]
@@ -23531,7 +23535,11 @@ components:
         view: { type: boolean }
         roomLadders:
           type: array
-          description: The ladders whose rooms the caller may change, and (CRE, SRE) whose values. SME has team rooms only.
+          description: >
+            The ladders whose rooms and values the caller may see and change: CRE for the CRE
+            rota admin and the CRE and CS heads, SRE for the SRE rota admin, SME for the SME
+            rota admin, all three for a CSM or portal admin. Another ladder's rooms, routes,
+            values and running settings are never sent.
           items: { type: string, enum: [CRE, SRE, SME] }
         routeLadders:
           type: array
@@ -23623,7 +23631,7 @@ components:
             type: object
             required: [ladder, key, value]
             properties:
-              ladder: { type: string, enum: [CRE, SRE] }
+              ladder: { type: string, enum: [CRE, SRE, SME] }
               key: { type: string }
               value: { description: "The value in the file's shape." }
     CaseAlertRuntimeRoom:
