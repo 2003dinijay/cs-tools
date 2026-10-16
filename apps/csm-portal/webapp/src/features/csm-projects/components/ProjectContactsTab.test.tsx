@@ -316,6 +316,14 @@ describe("ProjectContactsTab", () => {
     expect(screen.queryByText(/no linked contact record/i)).not.toBeInTheDocument();
   });
 
+  it("shows a linked but not yet registered row as Not registered, not as an address mismatch", () => {
+    postMock.mockResolvedValue({ users: [] });
+    mockQueryResult({ data: [{ ...INVITED_GRANTED_CONTACT, grantsCaseAccess: false }] });
+    renderTab();
+    expect(screen.getByText("Not registered", { selector: ".MuiChip-label" })).toBeInTheDocument();
+    expect(screen.queryByText(/invited under a different address/i)).not.toBeInTheDocument();
+  });
+
   it("shows an integration user as REGISTERED with no access fault", () => {
     postMock.mockResolvedValue({ users: [] });
     mockQueryResult({ data: [INTEGRATION_CONTACT] });

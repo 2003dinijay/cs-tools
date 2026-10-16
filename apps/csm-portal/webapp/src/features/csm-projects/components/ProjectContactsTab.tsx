@@ -84,6 +84,14 @@ function deriveAccessStatus(c: BeProjectContact): AccessStatus {
     if (c.grantsCaseAccess) {
       return { label: "Has access", color: "success" };
     }
+    // A linked row that has simply not registered yet is pending, not a fault.
+    if (c.customerContactPresent && (c.registrationState ?? "").toLowerCase() !== "registered") {
+      return {
+        label: "Not registered",
+        color: "warning",
+        reason: "Access starts once this person completes sign-in.",
+      };
+    }
     // Two distinct faults behind one verdict, and which one it is changes
     // what you do about it: no contact record means the invite never
     // completed, so chase the onboarding; a linked record whose own address
@@ -256,7 +264,7 @@ export default function ProjectContactsTab({
                       )}
                     </TableCell>
                     <TableCell>
-                      {c.registrationState ? (
+                      {c.isCsIntegrationUser || c.registrationState ? (
                         <Chip
                           size="small"
                           label={c.isCsIntegrationUser ? "REGISTERED" : c.registrationState}
