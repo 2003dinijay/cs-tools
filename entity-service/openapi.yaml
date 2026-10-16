@@ -4156,15 +4156,19 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
-  /projects/{id}/secret-key:
+  /projects/{key}/secret-key:
     get:
       summary: Retrieve the primary secret key for HMAC signature verification.
+      description: >-
+        Internal callers only. Returns the project's product-consumption primary
+        secret key, which product-consumption-tracking verifies telemetry
+        signatures with. Sent with Cache-Control no-store.
       operationId: getProjectSecretKey
       parameters:
-        - name: id
+        - name: key
           in: path
           required: true
-          description: Project key or UUID.
+          description: Project key (e.g. CUPRSUBDEV); a project UUID is accepted too.
           schema:
             type: string
       responses:
@@ -4183,8 +4187,20 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller (product-consumption-tracking's client id must be in M2M_CLIENT_IDS).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "404":
-          description: Project not found.
+          description: Project not found, or the project has no secret key.
           content:
             application/json:
               schema:
@@ -12349,7 +12365,8 @@ paths:
 
   /instances/meta:
     post:
-      summary: Upsert deployment node metadata.
+      summary: Register or update a deployment node.
+      description: Internal callers only.
       operationId: upsertInstanceMeta
       requestBody:
         required: true
@@ -12362,17 +12379,23 @@ paths:
               properties:
                 nodeId:
                   type: string
+                  maxLength: 36
                 projectKey:
                   type: string
+                  maxLength: 128
+                  description: Project (subscription) key of the node. Blank leaves the stored value.
                 deploymentNumber:
                   type: string
+                  maxLength: 50
+                  description: Deployment number (e.g. DEP000002442). Blank leaves the stored value.
                 product:
                   type: string
+                  description: Product code or name. Moves the node's product version only together with version.
                 version:
                   type: string
       responses:
         "200":
-          description: Node upserted successfully.
+          description: Node registered or updated.
           content:
             application/json:
               schema:
@@ -12380,8 +12403,21 @@ paths:
                 properties:
                   id:
                     type: string
+                    format: uuid
         "400":
           description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller (product-consumption-tracking's client id must be in M2M_CLIENT_IDS).
           content:
             application/json:
               schema:
@@ -12395,7 +12431,12 @@ paths:
 
   /instances/info:
     post:
-      summary: Insert deployment host information snapshot.
+      summary: Record a deployment host information snapshot.
+      description: >-
+        Internal callers only. Registers the node from the meta fields first. A snapshot
+        already stored for the node with the same hash is not stored again (its
+        payload_updated_on moves and its id is returned). Without a hash, the
+        SHA-256 of deploymentInfo is used.
       operationId: insertInstanceInfo
       requestBody:
         required: true
@@ -12408,15 +12449,34 @@ paths:
               properties:
                 nodeId:
                   type: string
+                  maxLength: 36
                 jdkVersion:
                   type: string
+                  maxLength: 64
                 coreCount:
                   type: integer
+                  minimum: 0
                 deploymentInfo:
                   type: object
                 hash:
                   type: string
+                  maxLength: 128
                 createdTime:
+                  type: string
+                  description: RFC 3339, or YYYY-MM-DD HH:MM:SS read as UTC. Empty means now.
+                  example: "2026-10-15 10:00:00"
+                projectKey:
+                  type: string
+                  maxLength: 128
+                  description: Project (subscription) key of the node. Blank leaves the stored value.
+                deploymentNumber:
+                  type: string
+                  maxLength: 50
+                  description: Deployment number (e.g. DEP000002442). Blank leaves the stored value.
+                product:
+                  type: string
+                  description: Product code or name. Moves the node's product version only together with version.
+                version:
                   type: string
       responses:
         "200":
@@ -12428,8 +12488,21 @@ paths:
                 properties:
                   id:
                     type: string
+                    format: uuid
         "400":
           description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller (product-consumption-tracking's client id must be in M2M_CLIENT_IDS).
           content:
             application/json:
               schema:
@@ -12443,7 +12516,12 @@ paths:
 
   /instances/usage-stats:
     post:
-      summary: Ingest live hourly and daily usage statistics.
+      summary: Ingest a live usage count.
+      description: >-
+        Internal callers only. Registers the node from the meta fields first, records the
+        count in hourly_usage_summary and sets the day's API_CALL row in
+        daily_usage_summary (the day is createdTime's UTC date; the latest count
+        wins). The daily row's deployment number is the request's, else the node's.
       operationId: insertInstanceUsageStats
       requestBody:
         required: true
@@ -12457,11 +12535,30 @@ paths:
               properties:
                 nodeId:
                   type: string
+                  maxLength: 36
                 countType:
                   type: string
+                  maxLength: 50
                 count:
                   type: integer
+                  minimum: 0
+                  maximum: 2147483647
                 createdTime:
+                  type: string
+                  description: RFC 3339, or YYYY-MM-DD HH:MM:SS read as UTC. Empty means now.
+                  example: "2026-10-15 10:00:00"
+                projectKey:
+                  type: string
+                  maxLength: 128
+                  description: Project (subscription) key of the node. Blank leaves the stored value.
+                deploymentNumber:
+                  type: string
+                  maxLength: 50
+                  description: Deployment number (e.g. DEP000002442). Blank leaves the stored value.
+                product:
+                  type: string
+                  description: Product code or name. Moves the node's product version only together with version.
+                version:
                   type: string
       responses:
         "200":
@@ -12479,6 +12576,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller (product-consumption-tracking's client id must be in M2M_CLIENT_IDS).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "500":
           description: Internal server error.
           content:
@@ -12489,6 +12598,11 @@ paths:
   /instances/daily-usages/batch:
     post:
       summary: Batch ingest daily usage entries from offline imports.
+      description: >-
+        Internal callers only. All or nothing: every entry is validated first and the
+        import is written in one transaction. Entries are FILE_UPLOAD rows created
+        by userEmail; an entry's nodeId and deploymentNumber override the batch's.
+        Re-importing a day updates its rows.
       operationId: importDailyUsagesBatch
       requestBody:
         required: true
@@ -12502,27 +12616,47 @@ paths:
               properties:
                 nodeId:
                   type: string
+                  maxLength: 36
                 projectKey:
                   type: string
+                  maxLength: 128
+                  description: Project (subscription) key of the node. Blank leaves the stored value.
                 deploymentNumber:
                   type: string
+                  maxLength: 50
+                  description: Deployment number (e.g. DEP000002442). Blank leaves the stored value.
                 product:
                   type: string
+                  description: Product code or name. Moves the node's product version only together with version.
                 version:
                   type: string
                 userEmail:
                   type: string
                 usages:
                   type: array
+                  maxItems: 5000
                   items:
                     type: object
+                    required:
+                      - date
+                      - type
                     properties:
                       date:
                         type: string
+                        format: date
                       type:
                         type: string
+                        maxLength: 100
                       value:
                         type: integer
+                        minimum: 0
+                        maximum: 2147483647
+                      nodeId:
+                        type: string
+                        maxLength: 36
+                      deploymentNumber:
+                        type: string
+                        maxLength: 50
       responses:
         "200":
           description: Batch imported successfully.
@@ -12537,6 +12671,18 @@ paths:
                     type: string
         "400":
           description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller (product-consumption-tracking's client id must be in M2M_CLIENT_IDS).
           content:
             application/json:
               schema:
