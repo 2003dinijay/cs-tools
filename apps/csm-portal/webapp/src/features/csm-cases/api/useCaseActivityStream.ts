@@ -108,13 +108,13 @@ function usePageVisible(): boolean {
  *
  * Uses `@sanity/eventsource` rather than the browser's native `EventSource`
  * because native EventSource cannot set custom headers — it only supports
- * cookies/query params for auth. Unlike useAuthApiClient.ts, which sets
- * `Authorization` and relies on Choreo's gateway to translate it into
- * `x-jwt-assertion` before the main :8080 API ever sees it, this connects to
- * this stream's own, separately-declared Choreo endpoint (see
- * openapi-stream.yaml) — not guaranteed to apply the same translation — so
- * this hook sets `x-jwt-assertion`/`x-user-id-token` directly, matching
- * exactly what backend's `middleware.Auth` reads. There is no separate
+ * cookies/query params for auth. Like useAuthApiClient.ts, it sends
+ * `Authorization: Bearer <access token>` plus `x-user-id-token` and lets the
+ * Choreo gateway validate the access token and inject `x-jwt-assertion`
+ * (the gateway-signed JWT that backend's `middleware.Auth` verifies against
+ * the gateway's JWKS). The hook must never set `x-jwt-assertion` itself: the
+ * raw IdP access token is not signed with the gateway key, so the backend
+ * rejects it with a token-validation failure. There is no separate
  * ticket/token-exchange step.
  *
  * Headers are fixed at construction time, so they can't be refreshed on the
@@ -202,7 +202,7 @@ export function useCaseActivityStream(caseId: string | undefined): void {
       const url = `${apiConfig.streamUrl}/cases/${encodeURIComponent(caseId)}/activities/stream`;
       source = new EventSourcePolyfill(url, {
         headers: {
-          "x-jwt-assertion": token,
+          Authorization: `Bearer ${token}`,
           "x-user-id-token": idToken,
         },
       });
