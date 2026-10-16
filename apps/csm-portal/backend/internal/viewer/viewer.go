@@ -117,6 +117,7 @@ type TimeLogBreakdownDetails struct {
 
 // TimeLogBreakdownCase is one case's row in the time-log breakdown report.
 type TimeLogBreakdownCase struct {
+	CaseSysID          string            `json:"caseSysId"`
 	CaseNumber         string            `json:"caseNumber"`
 	CaseID             string            `json:"caseId"`
 	CaseType           string            `json:"caseType"`

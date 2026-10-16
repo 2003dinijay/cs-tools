@@ -39,8 +39,8 @@ type mockEntityReportsClient struct {
 	searchCasesPages     [][]byte
 	searchCasesCallCount int
 
-	searchTimeCardsPagesByCase map[string][][]byte
-	searchTimeCardsCallCount   map[string]int
+	searchTimeCardsPages     [][]byte
+	searchTimeCardsCallCount int
 }
 
 func (m *mockEntityReportsClient) SearchProjects(ctx context.Context, body []byte) ([]byte, error) {
@@ -70,12 +70,12 @@ func (m *mockEntityReportsClient) SearchTimeCards(ctx context.Context, body []by
 	if err := json.Unmarshal(body, &req); err != nil {
 		return nil, err
 	}
-	if m.searchTimeCardsCallCount == nil {
-		m.searchTimeCardsCallCount = map[string]int{}
+	if len(req.Filters.ProjectIDs) != 1 {
+		return nil, errors.New("time-card search must be scoped to one project")
 	}
-	call := m.searchTimeCardsCallCount[req.Filters.CaseID]
-	m.searchTimeCardsCallCount[req.Filters.CaseID] = call + 1
-	return m.searchTimeCardsPagesByCase[req.Filters.CaseID][call], nil
+	page := m.searchTimeCardsPages[m.searchTimeCardsCallCount]
+	m.searchTimeCardsCallCount++
+	return page, nil
 }
 
 func jsonBytesReports(t *testing.T, v any) []byte {
@@ -116,22 +116,21 @@ func TestGetTimeLogBreakdown_PagesThroughAllCasesAndTimeCards(t *testing.T) {
 				Cases: makeCaseViews(50, 1, "case"),
 			}),
 		},
-		searchTimeCardsPagesByCase: map[string][][]byte{},
-	}
-	// Every case's own time-card search: also split across two pages
-	// (60 total) to exercise the same pagination path per case.
-	for i := 0; i < 51; i++ {
-		caseID := caseIDFor(i, "case")
-		entity.searchTimeCardsPagesByCase[caseID] = [][]byte{
+		// One project search, two pages. Cards land on the first case except the
+		// last card, which lands on the last case, so grouping is checked too.
+		searchTimeCardsPages: [][]byte{
 			jsonBytesReports(t, entitySearchTimeCardsResponse{
 				Total:     60,
-				TimeCards: makeTimeCardViews(50, 1.0),
+				TimeCards: makeTimeCardViews(50, 1.0, caseIDFor(0, "case")),
 			}),
 			jsonBytesReports(t, entitySearchTimeCardsResponse{
-				Total:     60,
-				TimeCards: makeTimeCardViews(10, 1.0),
+				Total: 60,
+				TimeCards: append(
+					makeTimeCardViews(9, 1.0, caseIDFor(0, "case")),
+					entityTimeCardView{ID: "tc-last", TotalTime: 1, WorkDate: "2026-01-01", Case: &entityTimeCardRef{ID: caseIDFor(50, "case")}},
+				),
 			}),
-		}
+		},
 	}
 
 	c := NewPostgresReportsClient(entity)
@@ -139,13 +138,17 @@ func TestGetTimeLogBreakdown_PagesThroughAllCasesAndTimeCards(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetTimeLogBreakdown: %v", err)
 	}
+	if entity.searchTimeCardsCallCount != 2 {
+		t.Fatalf("time-card searches = %d, want 2 (one project search, not one per case)", entity.searchTimeCardsCallCount)
+	}
 	if len(got.Cases) != 51 {
 		t.Fatalf("len(Cases) = %d, want 51 (all cases across both pages, not truncated at 50)", len(got.Cases))
 	}
-	for _, cr := range got.Cases {
-		if len(cr.TimeCards) != 60 {
-			t.Errorf("case %s: len(TimeCards) = %d, want 60 (all time cards across both pages)", cr.CaseNumber, len(cr.TimeCards))
-		}
+	if len(got.Cases[0].TimeCards) != 59 || len(got.Cases[50].TimeCards) != 1 {
+		t.Fatalf("time cards grouped as %d and %d, want 59 on the first case and 1 on the last", len(got.Cases[0].TimeCards), len(got.Cases[50].TimeCards))
+	}
+	if got.Cases[0].CaseSysID != caseIDFor(0, "case") {
+		t.Fatalf("CaseSysID = %q", got.Cases[0].CaseSysID)
 	}
 }
 
@@ -164,10 +167,13 @@ func makeCaseViews(start, n int, prefix string) []entitySearchCaseView {
 	return views
 }
 
-func makeTimeCardViews(n int, hours float64) []entityTimeCardView {
+func makeTimeCardViews(n int, hours float64, caseID string) []entityTimeCardView {
 	views := make([]entityTimeCardView, n)
 	for i := 0; i < n; i++ {
-		views[i] = entityTimeCardView{ID: "tc-" + strconv.Itoa(i), TotalTime: hours, WorkDate: "2026-01-01"}
+		views[i] = entityTimeCardView{
+			ID: "tc-" + strconv.Itoa(i), TotalTime: hours, WorkDate: "2026-01-01",
+			Case: &entityTimeCardRef{ID: caseID},
+		}
 	}
 	return views
 }
