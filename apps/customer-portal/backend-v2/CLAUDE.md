@@ -252,21 +252,21 @@ happen to point at the same host in some deployments, which is why `TrackingBase
 guaranteed to always match, so don't collapse them into a single field.
 
 It backs two routes:
-- `POST /projects/{projectId}/deployments/{deploymentId}/license` — provisions (or resumes
-  provisioning) a WSO2 API Manager application/subscription/credentials for a deployment and
-  returns the resulting license. `ProcessLicenseDownload` (`internal/productconsumption/subscription.go`)
-  implements the upstream state machine — it is **not idempotent-by-accident-safe to reimplement
-  casually**: it can make up to 5 sequential upstream calls, several with side effects (creating an
-  application, subscribing it, generating credentials), and each step only runs if the project's
-  upstream-tracked status hasn't reached it yet. Read the whole function before touching it — a
-  subtly wrong condition could create a duplicate WSO2 API Manager application. The handler first
-  calls `entity.GetProject` purely as an access-control gate, discarding the result —
-  entity-service is still the actual authorization boundary for "does this caller own this
-  project." Because up to 5 sequential upstream calls can plausibly exceed the server's global
-  `WriteTimeout` (see `cmd/server/main.go`) even when no single step is slow, the handler extends
-  its own write deadline via `http.NewResponseController(w).SetWriteDeadline` — which only works
-  because `middleware.responseWriter` forwards `SetWriteDeadline`/`SetReadDeadline` to the
-  underlying `ResponseWriter`, the same reason it forwards `Hijack` for the WebSocket route above.
+- `POST /projects/{projectId}/deployments/{deploymentId}/license` — returns the deployment's
+  license. `ProcessLicenseDownload` (`internal/productconsumption/subscription.go`) is **one call**
+  to the subscription service's `POST /projects/{projectId}/deployments/{deploymentId}/license`;
+  the provisioning state machine (create the WSO2 API Manager application, subscribe it, generate
+  credentials and secret keys, each step only once and resumable) lives in that service, not here.
+  Do not move steps back into this backend: a second driver of that state machine could create a
+  duplicate application. The client refuses a `success:false` answer, missing subscription data or
+  a missing signature as a data error rather than handing back an unusable license. The handler
+  first calls `entity.GetProject` purely as an access-control gate, discarding the result —
+  entity-service is still the authorization boundary for "does this caller own this project."
+  Provisioning a first license can still take several upstream calls inside the subscription
+  service, so the handler extends its own write deadline via
+  `http.NewResponseController(w).SetWriteDeadline`, which only works because
+  `middleware.responseWriter` forwards `SetWriteDeadline`/`SetReadDeadline` to the underlying
+  `ResponseWriter`, the same reason it forwards `Hijack` for the WebSocket route above.
 - `POST /deployment-usages` — imports a deployment-usage zip file. Unlike every other endpoint in
   this backend, the request body is **raw binary**, not JSON — see `readBinaryBody` in
   `internal/handler/response.go` (a `readJSONBody` counterpart with a larger size cap,
