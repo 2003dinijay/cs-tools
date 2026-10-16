@@ -1,334 +1,446 @@
 # CSM Notification Service
 
-Go background worker (`net/http`, Go 1.26+) with no inbound API beyond a health check. `csm-portal-backend` and `customer-portal-backend` publish domain events (case created, comment added, status changed, case assigned, incident created) directly to Azure Event Hub; this service's own consumers read them back and react asynchronously by sending email, Google Chat alerts, and voice calls. See [Event-driven notifications](#event-driven-notifications).
+A Go background worker that turns CSM platform domain events into outbound
+notifications: email, Google Chat posts, and voice calls. It consumes events from an
+event bus (Azure Event Hub through its Kafka-compatible endpoint), renders and sends the
+matching notifications, and runs an optional SLA breach-alerting engine and an optional
+incident call-escalation ladder. Its only HTTP route is `GET /health`.
 
-This service was extracted from `apps/csm-portal/backend/internal/notifications`, which previously hosted the same email/Google Chat clients. That backend no longer constructs or calls any notification client directly. This service itself used to expose `POST /events` (backends called it, and it published to Event Hub on their behalf) — that producer-side hop was removed once the backends took over publishing directly; this service is a pure consumer now.
+- [Architecture](#architecture)
+- [Developer guide](#developer-guide)
+- [Configuration](#configuration)
+- [Security notes](#security-notes)
 
-## Why no `Auth` middleware
+## Architecture
 
-The only route this service exposes is `GET /health` (Choreo's liveness probe) — there's no end-user or caller identity to check, since everything else is Kafka consumption, not an HTTP request.
+### Purpose and position
 
-## Current scope — TODO
-
-- **SMS and direct call channels are unused.** `TwilioClient.SendSMS` has no caller — `MakeCall` is only invoked by `incident.created`.
-
-A dead-letter queue exists (see [Event-driven notifications](#event-driven-notifications)) — a record that exhausts the main consumer's retries is published there and gets a fresh retry pass from a separate DLQ consumer, rather than being dropped immediately. There is still no third tier past that.
-
-This service deliberately has no database connection and never talks to one directly. Deduplicating a publish, or recovering one Event Hub never acknowledged, is now entirely the publishing backend's job — `entity-service`'s `event_publish_failures` table exists for that, written to only when Event Hub doesn't ack a publish, and this service never reads or writes it.
-
-Recipient resolution for `case.*` events is **not** a TODO in the same sense: the caller (e.g. `csm-portal-backend`) supplies a `recipients` array in the event payload itself, since this service has no way to resolve watchers/assignee/reporter on its own. That's still short of "real" resolution in the sense that the caller has to already know the audience, but it's not a fixed/hardcoded stand-in either — every event picks its own recipients. This service *does* now resolve which portal link each of those recipients gets (`internal/recipientlinks`, backed by `internal/entity`'s customer-entity-service client) — a distinct, smaller kind of resolution from audience resolution; see [Event-driven notifications](#event-driven-notifications).
-
-## Middleware chain
-
-`SecurityHeaders → CorrelationID → Logger → Mux`
-
-- `SecurityHeaders` (`internal/middleware/security_headers.go`): sets `X-Content-Type-Options: nosniff`, `Content-Security-Policy: upgrade-insecure-requests`, and `Strict-Transport-Security: max-age=31536000; includeSubDomains` on every response
-- `CorrelationID` (`internal/middleware/correlation.go`): reads `X-CSM-Correlation-ID` from the incoming request or generates a UUID v4; ensures the ID carries a `cns-` prefix (CSM Notification Service) either way; stores the ID in context for the slog handler; echoes the ID in the response header
-- `Logger` (`internal/middleware/logger.go`): logs every completed request (method, path, status, elapsed) via slog
-
-`middleware.ConfigureLogger()` must be called at startup — it wraps the default slog handler so every `slog.*Context(r.Context(), …)` call automatically includes `correlationID=<id>` when the context carries one.
-
-## Notification channels
-
-| Package | Notes |
-|---------|-------|
-| `notifications` | Hosts `EmailClient`/`SendEmail` (`email.go`, OAuth2 client-credentials auth), `GoogleChatClient`/`Send*Alert` (`googlechat.go`, per-audience incoming-webhook auth — see `GOOGLE_CHAT_SPACES` below), and `TwilioClient`/`SendSMS`+`MakeCall` (`twilio.go`, HTTP Basic Auth — sms and call are two methods on one client, since both are the same Twilio account/auth) |
-
-Each channel gets its own config/client pair in its own file, since channels differ in upstream auth scheme. All three clients are constructed once in `cmd/server/main.go` and handed to `dispatch.NewDispatcher` — a new channel follows the same client pattern, then gets wired into `Dispatcher` for whichever event type should trigger it (see "Adding a new event type" in CLAUDE.md).
-
-## Event-driven notifications
+The entity service (and, for change-request notices, the flow service) publishes events (a case was created, a comment
+was added, an incident was raised, a change request needs approval, a contact was
+invited...). This service is a **pure consumer**: it does not own a database, does not
+publish the events it reacts to, and has no inbound API besides the health probe. For how
+it fits into the wider platform (portals, backends, entity service, event backbone), see
+the [platform architecture](../../apps/csm-portal/README.md#architecture).
 
 ```text
-csm-portal-backend ──┐
-                      ├──▶ Event Hub topic ──▶ main consumer group ──▶ dispatch.Dispatcher.Handle
-customer-portal-backend ┘                           │                  (render email or send incident alerts)
-                                                      │ (retries exhausted)
-                                                      ▼
-                                              Event Hub DLQ topic ──▶ DLQ consumer group ──▶ dispatch.Dispatcher.Handle
-                                                                       (fresh retry pass, same Handle;
-                                                                        exhausting it here just logs+drops)
+ entity service, flow service (publishers)
+        |  publish JSON envelopes {type, entityId, payload}
+        v
+ Event Hub topics (Kafka protocol)
+   case topic | change-request topic | outage topic | onboarding topic | shared ops topic | DLQ topics
+        |
+        v   one consumer group per topic, N consumers per group
+ internal/eventbus.Consumer  --(3 attempts, 2 s apart)-->  dispatch.Dispatcher.Handle
+        |                                                      |
+        | retries exhausted                                    +--> email service      (OAuth2 client credentials)
+        v                                                      +--> Google Chat webhooks
+ dead-letter topic --> DLQ consumer --> same handler           +--> voice-call provider (Twilio REST)
+   (a second failure is logged and dropped)                    +--> entity service     (link/role lookup, onboarding ledger)
+                                                               +--> identity-admin (SCIM) service
+                                                               +--> frustration-detector service
+                                                               +--> public status-page webhooks
+                          Redis <-- SLA engine, call-escalation ladder
 ```
 
-Both backends publish directly to the main topic — there is no HTTP hop through this service. Two packages implement the bus→consumer side; `internal/notifications` (templates + channel clients) is the last-mile sender they call.
+### Interactions
 
-- **`internal/events`** — the event schema and its only remaining validation boundary. `Envelope{Type, EntityID, Payload}` plus one payload struct per `Type` (`case.created`, `case.comment_added`, `case.status_changed`, `case.assigned`, `case.acknowledged`, `case.severity_changed`, `incident.created`, the two `change_request.*` notices, and `project_contact.invited` — see [Customer onboarding](#customer-onboarding-project_contactinvited)), each carrying every value its matching reaction needs. `case.acknowledged` is Chat-only (no email/`recipients`); `case.severity_changed` has both an email and a Chat reaction, same as `case.created`. `EntityID` is a case ID for the `case.*` types or an incident ID for `incident.created` — whatever this event is about; for the `case.*` types, it must match the payload's own `caseId`. `Validate(entityID, type, payload)` decodes strictly and checks required fields — moved here from a since-removed HTTP handler, since there's no request boundary to validate at anymore; `dispatch.Dispatcher.Handle` calls it before rendering/sending anything. Payloads still carry denormalized display values (names/titles) this service has no other way to obtain, but no longer carry pre-built case/comment links — five of the six `case.*` payloads (every one except `case.acknowledged`, which is Chat-only) carry `projectId`/`caseId` (and `commentId`, for `case.comment_added`) instead, and `internal/dispatch` resolves each recipient's own portal-appropriate link itself via `internal/recipientlinks`. `incident.created` has exactly one reaction — a voice call — not an email, per explicit product direction (an incident pages on-call directly; a separate Chat post was redundant with that). Its call destination (`callTo`) is caller-supplied or falls back to `INCIDENT_DEFAULT_CALL_TO`. `case.created`/`case.acknowledged`/`case.severity_changed` each post their own Google Chat alert (via their own `Send*Alert` method), always to the fixed `"Incident Monitor"` audience — no team detection, no per-product routing — and, for `case.created`/`case.severity_changed`, alongside their email (a failure in one doesn't block the other); `case.acknowledged` is Chat-only. `case.created`'s/`case.acknowledged`'s/`case.severity_changed`'s Chat alerts always target the CSM portal's case link (`recipientlinks.Resolver.CSMLink`), not a per-recipient link, since a Chat post has no per-recipient audience the way an email does.
-- **`internal/entity`** — a minimal customer-entity-service client implementing exactly two endpoints: `POST /users/search` (backs `internal/recipientlinks`'s per-recipient role lookup) and `PUT /onboarding-steps/{membershipSfId}/{step}` (`RecordOnboardingStep`, the one write — `project_contact.invited`'s step outcomes), unlike `apps/csm-portal/backend`'s own entity client, a ~60-method passthrough surface. Not a notification channel — doesn't follow the `<Name>Config`/`<Name>Client`-in-`internal/notifications` pattern below, since it's an upstream data client, not something that sends a notification itself.
-- **`internal/recipientlinks`** — `Resolver.ResolveLinks(ctx, emails, projectID, caseID)` looks up each email's role via `internal/entity` and returns the case link appropriate to their portal (customer vs CSM), with a role → role → userType → CSM-default fallback chain. A per-*recipient* decision, not per-event: the same `case.comment_added` notification can go to both a customer watcher and an internal CSM watcher at once, each needing a different link.
-- **`internal/eventbus`** — a thin wrapper around [`github.com/segmentio/kafka-go`](https://github.com/segmentio/kafka-go) (a pure-Go Kafka client, no cgo — keeps this service on Choreo's buildpack deploy, MIT licensed) for Azure Event Hub's Kafka-compatible endpoint. `Producer.Publish` does a synchronous produce — this service's own use of it today is only for publishing to the dead-letter topic, since the main topic's producer side now lives in the backends. `Consumer.Run(ctx, handle, onExhausted)` polls a consumer group, retries a failing record `handleAttempts` (3) times with a fixed delay, then calls `onExhausted` (or logs at ERROR and drops, if `onExhausted` is nil) before committing either way. `PartitionCount(ctx, cfg)` reports a topic's real partition count, used at startup to sanity-check a configured consumer count. See CLAUDE.md for the franz-go → kafka-go swap rationale and its two known trade-offs.
-- **`internal/dispatch`** — `Dispatcher.Handle` implements `eventbus.Handle`: decode the record as an `events.Envelope`, validate it (`events.Validate`), then for the four `case.*` types, resolve each recipient's own case link (`groupByLink`, via `internal/recipientlinks`), bucket recipients by the link they resolved to, and render+send one email per distinct link (`sendPerGroup`) — recipients sharing a link still batch into one `SendEmail` call. `case.created`/`case.severity_changed` additionally post a Google Chat alert to the CSM portal's case link (fixed `"Incident Monitor"` audience), independent of the email step (a failure in one doesn't block the other); `case.acknowledged` is Chat-only. `incident.created` skips the email/link-resolution path entirely and places a voice call directly from the payload's own `callTo` field (falling back to `INCIDENT_DEFAULT_CALL_TO` when the payload omits it) — no Google Chat reaction.
-- **`internal/scim`** — a minimal SCIM operations service client (`EnsureExternalUser` → `POST /organizations/external/users`, 201 created / 200 already existed) used only by the `project_contact.invited` handler to create an invitee's Asgardeo user. Not a notification channel, so it lives beside `internal/entity` rather than in `internal/notifications`.
-- **`project_contact.invited`** — the customer onboarding flow's consumer side, published by entity-service once a Salesforce project-contact membership in state INVITED / RE-INVITED is in its database. Two sequential steps, each behind its own default-off flag and each recorded on entity-service's onboarding-step ledger as SUCCEEDED / FAILED / SKIPPED: **IDENTITY** (`CSM_MIGRATION_ONBOARD_IDENTITY_ENABLED`) creates the Asgardeo user via `internal/scim`; **EMAIL** (`CSM_MIGRATION_ONBOARD_EMAIL_ENABLED`) sends the invitation — the "welcome, your account was created" template for a new user, the "project added to your account" template when SCIM said the user already existed — to the invitee alone, linking to `ONBOARD_PORTAL_URL`. An integration user records both steps SKIPPED and gets nothing. A failed step records FAILED with the error and returns it (normal retry/DLQ path); a retry after an email failure reuses the first attempt's identity answer rather than asking SCIM again. Step recording is best-effort: a ledger write failing is logged, never turned into a retry. Arrives on its own topic (`PROJECT_EVENT_HUB_TOPIC`, default `project-events`, with `PROJECT_EVENT_HUB_DLQ_TOPIC` as its dead-letter queue), not the main case-events one. Before sending, the handler checks entity-service's ledger and skips a membership whose EMAIL step already succeeded — the guard that stops a portal invitation and the Salesforce event it produces from both inviting the same contact. A **resend** (`isResend` on the payload, set when an admin presses "Resend invitation") deliberately bypasses that check and sends a third, short reminder template instead: the guard is for an accidental second invitation, not a requested one, and by then the Asgardeo account exists, so neither the "welcome" nor the "you already have an account" wording fits someone who may never have seen the first email. The EMAIL step is still recorded, so the ledger's attempt count keeps counting. See CLAUDE.md for the full reasoning.
-- **`project_contact.registered`** — sends the Welcome email after a contact's first sign-in, once per membership (`WELCOME_EMAIL` step).
-- **Dead-letter queue** — when the main consumer's `Handle` call fails on all `handleAttempts` attempts, the record is published to `EVENT_HUB_DLQ_TOPIC` instead of being dropped. A second, independent consumer group runs against that topic, using the same `Dispatcher.Handle` — so a dead-lettered record gets its own fresh retry pass — but with nowhere further to escalate to: exhausting retries there just logs and drops. Provision `EVENT_HUB_DLQ_TOPIC` as its own Event Hub in Azure before deploying; this service doesn't create topics itself.
-- **Configurable consumer counts** — `MAIN_CONSUMER_COUNT`/`DLQ_CONSUMER_COUNT` each start that many independent `eventbus.Consumer` instances, all joining the same consumer group; Kafka's own rebalancing splits a topic's partitions across however many are actually running. Keep each count at or below its topic's real partition count — a startup check logs a warning (not a hard failure) if it isn't, since excess consumers just sit idle rather than causing an error.
+| Direction | Peer | Purpose |
+|---|---|---|
+| Inbound | Event Hub topics | Events to react to (see [Event types](#event-types)). |
+| Inbound | Health probe | `GET /health` returns 200 with no body. |
+| Outbound | Event Hub | Dead-letter topics; `sla.tier_reached` on the case topic. |
+| Outbound | Email service | `POST` of rendered HTML mail; OAuth2 client credentials. |
+| Outbound | Google Chat | Incoming-webhook posts, one webhook per audience (space). |
+| Outbound | Twilio | Voice calls (and an SMS client that nothing calls today). |
+| Outbound | Entity service | Per-recipient role lookup (`POST /users/search`), onboarding-step ledger, full comment/case content, SLA duration policy and clock state, paging contacts, execution-summary notes, cloud-status delivery reports. |
+| Outbound | Identity-admin (SCIM) service | Create the invitee's user for `project_contact.invited`; fallback phone lookup for paging. |
+| Outbound | Frustration-detector service | Analyse customer comments (optional). |
+| Outbound | Status-page webhooks | Post outage declared/ended notices (optional). |
+| Outbound | Redis | Clock and ladder state for the SLA engine and call-escalation ladder (optional). |
 
-## Configuration
+The service holds no durable state of its own. Deduplicating a publish and recovering a
+publish that was never acknowledged are the publisher's job.
 
-Copy `.env.example` to `.env` and fill in the values:
+### Event types
 
-### Email notification channel
+`internal/events` defines the envelope and one payload struct per type;
+`events.Validate` (called first by `Dispatcher.Handle`) is the service's only input
+validation boundary. Types and their reaction, from `dispatch.Dispatcher.Handle`:
 
-| Variable | Description |
+| Type | Reaction |
 |---|---|
-| `EMAIL_BASE_URL` | Base URL of the email notification service (optional) |
-| `EMAIL_SCOPES` | Comma-separated OAuth2 scopes for the email service (optional) — authenticates with the shared `OAUTH2_CLIENT_ID`/`OAUTH2_CLIENT_SECRET`/`OAUTH2_TOKEN_URL` below, not its own credentials |
-| `EMAIL_FROM_ADDRESS` | Fixed "From" address used for every outgoing email (optional) |
-| `EMAIL_REPLY_TO` | Reply-To for onboarding emails only. Unset means `support@wso2.com`; empty means none |
-| `EMAIL_SENDING_ENABLED` | Temporary killswitch for `case.*` email delivery — unset/anything but `false` means real sending. Checked before `EMAIL_DEBUG_MODE` below, so it silences email regardless of debug mode. Doesn't affect Google Chat or Twilio |
-| `EMAIL_DEBUG_MODE` | Set to `true` to redirect every `case.*` email to `EMAIL_DEBUG_RECIPIENTS` instead of the event's real recipients (recipient links are still resolved against the real recipients either way) — the email still actually sends, just to a safe test list; unset/anything else means real sending to real recipients. Doesn't affect Google Chat or Twilio |
-| `EMAIL_DEBUG_RECIPIENTS` | Comma-separated email addresses used instead of the real recipients when `EMAIL_DEBUG_MODE=true`. Empty + debug mode on skips that email entirely rather than sending to nobody |
+| `case.created`, `case.comment_added`, `case.status_changed`, `case.assigned`, `case.severity_changed` | One email per distinct portal link among the recipients (recipients are supplied in the payload). `case.created` and `case.severity_changed` also post a Chat alert to the fixed "Incident Monitor" audience; the two steps are independent. `case.comment_added` also feeds frustration detection and the SLA engine. |
+| `case.acknowledged` | Chat alert only. |
+| `case.workaround_provided` | Completes the workaround SLA clock (no message). |
+| `case.escalated` | One email to the escalation's notification list. |
+| `incident.created` | Voice call to the payload's `callTo`, or `INCIDENT_DEFAULT_CALL_TO`; incident Chat card where `INCIDENT_CHAT_SPACES` has an entry. |
+| `incident.assigned` | "Incident Acknowledged." reply in the incident's Chat thread. |
+| `incident.acknowledged`, `incident.priority_elevated`, `incident.comment_added` | Ignored here; owned by the call-escalation ladder. |
+| `incident.special_ops_alert` | Pages the subject-matter expert through the SRE ladder engine, if enabled. |
+| `change_request.approval_requested`, `change_request.plan_date_notice` | One email; the payload's audience (internal or customer) picks the portal link. |
+| `outage.notification_due`, `outage.communication_due` | Outage email. |
+| `outage.status_page_due` | One status-page webhook attempt, reported back to the entity service. |
+| `project_contact.invited` | Onboarding: IDENTITY step (create user via SCIM) then EMAIL step (invitation), each recorded on the entity service's ledger as SUCCEEDED, FAILED or SKIPPED. A resend sends a short reminder and bypasses the duplicate-invitation check. |
+| `project_contact.registered` | Welcome email after first sign-in, once per membership. |
+| `sr.created`, `sr.acknowledged`, `sr.comment_added` | Chat alert to the owning SRE team's audience, threaded per service request. |
+| `paging.test_call_requested` | Places a test call to a paging number (needs Redis and the entity service). |
+| `sla.tier_reached` | Published by the SLA engine; ignored by the dispatcher. |
 
-### Google Chat notification channel
+On shared topics (`Dispatcher.HandleShared`) an unknown type is skipped; on topics this
+service owns, an unknown type is an error and ends in the DLQ.
 
-| Variable | Description |
-|---|---|
-| `GOOGLE_CHAT_SPACES` | JSON array of `{"audience","webhookUrl"}` objects, one per Google Chat space — the only Google Chat routing mechanism this service has. `audience` is either a real CRE team name (exact, case-sensitive match — see entity-service's `"group".name`) or one of the standing audiences `"Incident Monitor"`/`"Onboarding"`/`"Americas"`/`"Evaluation"`. `case.created`/`case.acknowledged`/`case.severity_changed` always route to the fixed `"Incident Monitor"` audience; SLA breach alerts resolve a real per-team/onboarding/time-of-day audience (see `internal/chataudience`). An SRE team's display name (e.g. `"MS/PC SRE Group"`, the `sr.*` payload's `sreTeamName`, exact) is also an audience: it receives that team's service-request alerts (`sr.created`, `sr.acknowledged`, and customer comments on a `devops-sm` SR) from the `sre-events` topic, threaded per SR; a team with no entry gets none (no fallback space). Optional — left unset or malformed, Google Chat alerts are unavailable but startup and every other endpoint work normally. An audience with no configured space is skipped (logged), not an error |
+Recipient links: the dispatcher asks the entity service for each recipient's roles and
+builds a customer-portal or CSM-portal case link per recipient. Roles in `CUSTOMER_ROLES`
+mean customer, then roles in `CSM_ROLES` mean CSM, otherwise the email domain decides (the
+operator's own domain, hard-coded in `internal/recipientlinks`, gets the CSM link).
 
-### Frustration detection (`case.comment_added`)
+### Delivery semantics
 
-`dispatch.checkFrustration` sends a new, customer-authored case comment to the existing `ai-escalate-comment-detector` service for an OpenAI-backed frustration analysis, and — when it crosses that service's own configured threshold — posts a Chat alert through `GOOGLE_CHAT_SPACES` above, routed the same way an SLA breach alert is (team-first, falling back to `"Incident Monitor"`). Authenticates with the shared `OAUTH2_*` credentials above, not its own — only `ESCALATION_DETECTOR_BASE_URL`/`ESCALATION_DETECTOR_SCOPES` are specific to this client.
+- Each consumer retries a failing record 3 times with a 2 s delay, then hands it to the
+  dead-letter publisher (or, on a DLQ consumer, logs and drops it), then commits.
+- Each topic has its own DLQ; a new consumer group starts at the first offset.
+- The call-escalation ladder has its own DLQ so a failed ladder record is never replayed
+  through the dispatcher (which would place a duplicate call).
+- Consumer counts should not exceed a topic's partition count; a startup check warns
+  (extra consumers sit idle).
 
-| Variable | Description |
-|---|---|
-| `ESCALATION_DETECTOR_BASE_URL` | Base URL of the `ai-escalate-comment-detector` service (optional). Unset means a customer comment is never sent for analysis and no frustration Chat alert is ever sent — nothing else in this service is affected |
-| `ESCALATION_DETECTOR_SCOPES` | Comma-separated OAuth2 scopes for the escalation detector (optional) — authenticates with the shared `OAUTH2_CLIENT_ID`/`OAUTH2_CLIENT_SECRET`/`OAUTH2_TOKEN_URL` above, not its own credentials |
+### Optional engines (need Redis)
 
-### SMS and call notification channels (Twilio)
+- **SLA breach-alerting engine** (`internal/slaengine`). Active when `REDIS_URL` or
+  `REDIS_ADDR` is set. Clocks are registered, paused and completed by three dispatcher
+  handlers (`case.created`, `case.status_changed`, `case.comment_added`); a ticker scans a
+  Redis wake-index, and on a new 50/75/100 percent crossing publishes `sla.tier_reached`
+  and posts a Chat breach alert. Durations come from the entity service's
+  duration-policy endpoint, fetched once at startup; a failure there disables SLA tracking
+  for the run (logged) without stopping the service. State is rebuilt from the entity
+  service by a one-shot reconciliation at startup.
+- **Call-escalation ladder** (`internal/paging`). Active when Redis is set, escalation is
+  enabled, and a resolver is available (a roster or the Team Schedule). Two ladders (CRE
+  and SRE) climb a priority-driven plan of calls and/or Chat posts, each with its own
+  consumer group and store namespace. Behaviour is governed by an optional YAML file
+  (`INCIDENT_ESCALATION_CONFIG`; schema in `internal/paging/config.go`) plus the database
+  settings described under `PAGING_CONFIG_SOURCE`. With no resolver the engine
+  deliberately does not start, because a ladder that can call nobody looks like coverage.
 
-| Variable | Description |
-|---|---|
-| `TWILIO_ACCOUNT_SID` | Twilio Account SID (optional) |
-| `TWILIO_AUTH_TOKEN` | Twilio Auth Token (optional) |
-| `TWILIO_MESSAGING_SERVICE_SID` | Twilio Messaging Service SID — preferred for sms, since this is how our account actually sends (optional) |
-| `TWILIO_FROM_NUMBER` | Fixed Twilio-provisioned sending number, E.164 format. Used for sms only if `TWILIO_MESSAGING_SERVICE_SID` is unset; **always required for the call channel** — Voice has no Messaging Service equivalent (optional overall, but the call channel won't work without it) |
-| `TWILIO_VOICE` | Call channel only: TTS voice for `<Say>` (e.g. `Polly.Raveena`). Optional — empty uses Twilio's account default voice |
-| `TWILIO_LANGUAGE` | Call channel only: TTS language/locale for `<Say>` (e.g. `en-IN`), affects pronunciation. Optional — empty uses Twilio's default for the selected voice |
-| `TWILIO_API_BASE_URL` | Overrides Twilio's REST API base (default `https://api.twilio.com/2010-04-01`). Optional — only for a regional Twilio edge/API endpoint |
-| `CALL_SENDING_ENABLED` | Temporary killswitch — set to `false` to log instead of actually placing `incident.created`'s Twilio call; unset/anything else means real calling. `incident.created` has no Google Chat reaction to affect — voice call only |
-| `INCIDENT_DEFAULT_CALL_TO` | Fallback on-call phone number (E.164) used when an `incident.created` payload omits `callTo` (optional) |
+The Redis client is a plain non-clustered client. Managed Redis must use a non-clustered
+policy; a cluster-aware ("OSS cluster") policy is not supported.
 
-### Customer entity service
+### Middleware and runtime
 
-Backs `internal/recipientlinks`'s per-recipient role lookup (`POST /users/search` only). Optional per deployment like the channels above, but an unset `CUSTOMER_ENTITY_BASE_URL` makes every `case.*` email fail rather than just disabling one channel — a startup warning is logged when this happens. Like the email channel above, this client authenticates with the **shared** `OAUTH2_CLIENT_ID`/`OAUTH2_CLIENT_SECRET`/`OAUTH2_TOKEN_URL` credentials (see below), the same OAuth2 app `apps/csm-portal/backend`'s own entity client uses — only `BaseURL`/`Scopes` are specific to this client.
+`SecurityHeaders` (nosniff, upgrade-insecure-requests, HSTS), then `CorrelationID`
+(reads or generates `X-CSM-Correlation-ID`, ensures a `cns-` prefix, echoes it, enriches
+logs), then `Logger` (one access-log line per request). Server timeouts: header 10 s,
+read/write 30 s, idle 60 s; graceful shutdown on `SIGINT`/`SIGTERM`. There is no
+application-level auth because the only route is the health probe.
 
-| Variable | Description |
-|---|---|
-| `OAUTH2_CLIENT_ID` | Shared OAuth2 client ID, used by the email channel, the customer entity service client, and the escalation detector client (optional) |
-| `OAUTH2_CLIENT_SECRET` | Shared OAuth2 client secret (optional) |
-| `OAUTH2_TOKEN_URL` | Shared OAuth2 token endpoint (optional) |
-| `CUSTOMER_ENTITY_BASE_URL` | Base URL of this repo's entity-service (optional, see above) |
-| `CUSTOMER_ENTITY_SCOPES` | Comma-separated OAuth2 scopes (optional) |
-
-### Customer onboarding (`project_contact.invited`)
-
-Both flags default off, so a deployment without them records both steps as SKIPPED and sends nothing. The SCIM client authenticates with the shared `OAUTH2_*` app above, same as the email and entity clients; step recording reuses the entity client, and entity-service requires this service's OAuth2 client id to be in its `AUTH_INTERNAL_CLIENT_IDS` for the `/onboarding-steps` endpoints.
-
-| Variable | Description |
-|---|---|
-| `CSM_MIGRATION_ONBOARD_IDENTITY_ENABLED` | Set to `true` to create the invitee's Asgardeo user via the SCIM operations service; unset/anything else records IDENTITY as SKIPPED (default off) |
-| `CSM_MIGRATION_ONBOARD_EMAIL_ENABLED` | Set to `true` to send the invitation email; unset/anything else records EMAIL as SKIPPED (default off). Still subject to `EMAIL_SENDING_ENABLED` and `EMAIL_DEBUG_MODE` above |
-| `SCIM_BASE_URL` | Base URL of the SCIM operations service (`POST /organizations/external/users`). Optional — required in practice once `CSM_MIGRATION_ONBOARD_IDENTITY_ENABLED=true` (a startup warning is logged if missing) |
-| `SCIM_SCOPES` | Comma-separated OAuth2 scopes for the SCIM operations service (optional) — shared `OAUTH2_*` credentials, not its own |
-| `ONBOARD_EMAIL_FROM` | Sender address for the invitation email, sent through the same email client as everything else. Optional — defaults to `EMAIL_FROM_ADDRESS` |
-| `ONBOARD_PORTAL_URL` | Sign-in link the invitation points at. Optional — defaults to `https://support.wso2.com` |
-
-### Recipient portal links
-
-| Variable | Description |
-|---|---|
-| `CSM_PORTAL_WEB_BASE_URL` | CSM portal webapp base URL — `<CSM_PORTAL_WEB_BASE_URL>/cases/{caseId}` for recipients classified CSM. Technically optional (empty just yields a relative, non-clickable link), but should be set for any deployment that actually sends `case.*` emails — a startup warning is logged if it's unset |
-| `CUSTOMER_PORTAL_WEB_BASE_URL` | Customer portal webapp base URL — `<CUSTOMER_PORTAL_WEB_BASE_URL>/projects/{projectId}/support/cases/{caseId}` for recipients classified customer. Same caveat as above — logged as a startup warning if unset |
-| `CUSTOMER_ROLES` | Comma-separated role names classified customer (optional) |
-| `CSM_ROLES` | Comma-separated role names classified CSM (optional) |
-
-Classification isn't just "role in `CUSTOMER_ROLES`" — it's a fallback chain, since neither role list needs to be exhaustive: a role in `CUSTOMER_ROLES` → customer; else a role in `CSM_ROLES` → CSM; else — including when entity-service has no record for the recipient at all — the recipient's email domain (`@wso2.com` → CSM, anything else → customer). See `Resolver.linkFor`'s doc comment for the full reasoning.
-
-### Event bus (Azure Event Hub)
-
-Required — unlike the channels above, this is this service's core purpose, so a missing value fails startup loudly. This service is a pure consumer; the backends publish directly to `EVENT_HUB_TOPIC` themselves.
-
-| Variable | Description |
-|---|---|
-| `EVENT_HUB_BROKER` | Kafka bootstrap address: `<namespace>.servicebus.windows.net:9093` |
-| `EVENT_HUB_CONNECTION_STRING` | The namespace's Shared Access Policy connection string (Namespace > Shared access policies > a policy's Primary Connection String); used as the SASL/PLAIN password. Never commit a real value |
-| `EVENT_HUB_TOPIC` | Event Hub (Kafka topic) name, e.g. `case-events` |
-| `EVENT_HUB_CONSUMER_GROUP` | Consumer group ID the main consumer's instances join. Optional — defaults to `csm-notification-service` |
-| `MAIN_CONSUMER_COUNT` | How many concurrent consumer instances to run for `EVENT_HUB_TOPIC`. Optional — defaults to `1`; keep at or below the topic's real partition count |
-
-### Dead-letter queue
-
-Required — a record that exhausts the main consumer's retries is published here rather than dropped; without a valid topic here, that would fail loudly at publish time instead.
-
-| Variable | Description |
-|---|---|
-| `EVENT_HUB_DLQ_TOPIC` | A second Event Hub in the same namespace, provisioned separately in Azure |
-| `EVENT_HUB_DLQ_CONSUMER_GROUP` | Consumer group ID the DLQ consumer's instances join. Optional — defaults to `csm-notification-service-dlq` |
-| `DLQ_CONSUMER_COUNT` | How many concurrent consumer instances to run for `EVENT_HUB_DLQ_TOPIC`. Optional — defaults to `1`; same partition-count guidance as `MAIN_CONSUMER_COUNT` |
-
-### Customer-onboarding topics
-
-`project_contact.invited` rides its own topic pair, not `EVENT_HUB_TOPIC` — a separate consumer group isolates processing, only a separate topic isolates volume, and an invitation backlog must never sit behind a flood of case events. Its dead-letter queue is likewise its own, so the onboarding DLQ can be watched on its own. Both are consumed by the same `Dispatcher.Handle` as every other topic. All optional (the defaults are what entity-service publishes to), but both Event Hubs must be provisioned in Azure before deploying — this service doesn't create topics itself.
-
-| Variable | Description |
-|---|---|
-| `PROJECT_EVENT_HUB_TOPIC` | Event Hub carrying the onboarding events. Optional — defaults to `project-events` |
-| `PROJECT_EVENT_HUB_DLQ_TOPIC` | Its dead-letter Event Hub. Optional — defaults to `project-events-dlq` |
-| `PROJECT_CONSUMER_GROUP` | Consumer group ID for `PROJECT_EVENT_HUB_TOPIC`. Optional — defaults to `csm-notification-service-project` |
-| `PROJECT_DLQ_CONSUMER_GROUP` | Consumer group ID for `PROJECT_EVENT_HUB_DLQ_TOPIC`. Optional — defaults to `csm-notification-service-project-dlq` |
-| `PROJECT_CONSUMER_COUNT` | How many concurrent consumer instances to run for `PROJECT_EVENT_HUB_TOPIC`. Optional — defaults to `1`; same partition-count guidance as `MAIN_CONSUMER_COUNT` |
-| `PROJECT_DLQ_CONSUMER_COUNT` | Same, for `PROJECT_EVENT_HUB_DLQ_TOPIC`. Optional — defaults to `1` |
-
-### SLA breach-alerting engine
-
-Optional, gated on `REDIS_URL` or `REDIS_ADDR` — unset (both) means `internal/slaengine` never starts. Not a Kafka consumer of its own: `RegisterClocks`/`ApplyStateEffects`/`CompleteResponseClock` are called directly from three of `dispatch.Dispatcher`'s own handlers (`case.created`/`case.status_changed`/`case.comment_added`) on the existing main consumer — only the tick itself runs on its own ticker, scanning a Redis wake-index this engine computes and schedules entirely on its own (every clock's due dates, display fields, paused flag and alerted-tier cursor all live in Redis — see `internal/slaengine`'s own `CLAUDE.md` section). On a genuinely new 50%/75%/100% crossing it publishes `sla.tier_reached` and sends a Google Chat breach alert directly (not routed through `internal/dispatch`). Durations come from `GET /sla-duration-policy` — a small, static reference table, fetched once at startup, independent of the ServiceNow-synced `sla`/`sla_policy` tables an earlier design here polled in bulk every tick (that endpoint's own query turned out to be too slow at real data volumes — reliably timing out — which is what this redesign replaces). Pausing/resuming/completing a clock is driven entirely by the same three events, not a live lookup: `case.status_changed`'s `Awaiting Info`/`Solution Proposed`/`Closed` pause or complete `workaround`/`resolution`, and a qualifying support-engineer reply (`case.comment_added`'s own `isSupportEngineerResponse`, computed by entity-service) completes `response` early.
-
-`REDIS_URL` (a `rediss://:<password>@<host>:<port>` connection string, parsed with `redis.ParseURL`) is how a managed, TLS-only Redis is configured — Azure Managed Redis, Azure Cache for Redis — since the `rediss` scheme makes go-redis dial with TLS automatically; takes priority over `REDIS_ADDR`/`REDIS_PASSWORD` when set. `REDIS_ADDR`/`REDIS_PASSWORD` remain the plain, non-TLS pair for a local Redis.
-
-The client is a plain `redis.NewClient` — it only supports a non-clustered Redis (a real standalone instance, or a managed Redis under a non-clustered/"Enterprise" clustering policy, where the provider's own proxy hides the sharding). It does **not** support "OSS Cluster" policy, which needs a cluster-aware client to follow `MOVED`/`ASK` redirects. Confirm the target resource's clustering policy before pointing `REDIS_URL` at it.
-
-This engine's own narrow entity-service client talks to the same entity-service as `CUSTOMER_ENTITY_BASE_URL`/`CUSTOMER_ENTITY_SCOPES` (see [Customer entity service](#customer-entity-service) above) — not a different backend — so it reuses those same two variables, plus the shared `OAUTH2_*` credentials (all required once `REDIS_URL` or `REDIS_ADDR` is set), rather than a redundant `SLA_ENTITY_*` pair. Unlike the design this replaced, this client is called exactly once, at startup, to fetch `GET /sla-duration-policy` — never on a recurring poll.
-
-| Variable | Description |
-|---|---|
-| `REDIS_URL` | `rediss://:<url-encoded-password>@<host>:<port>` connection string for a TLS Redis (Azure Managed Redis/Azure Cache for Redis). Percent-encode the password if it contains `+`, `/`, or `=`. Takes priority over `REDIS_ADDR`/`REDIS_PASSWORD` |
-| `REDIS_ADDR` | Redis address for a plain, non-TLS Redis, e.g. `localhost:6379`. Ignored when `REDIS_URL` is set. Unset (with `REDIS_URL` also unset) disables this whole engine |
-| `REDIS_PASSWORD` | Optional — empty for a local Redis with no auth. Ignored when `REDIS_URL` is set |
-| `SLA_TICK_INTERVAL` | How often this engine scans its own Redis wake-index for a newly-due tier. Optional — defaults to `5m`. A shorter interval mostly just adds load on Redis for no real benefit, since most clocks have hours between tiers |
-
-### Server
-
-| Variable | Description |
-|---|---|
-| `PORT` | Server listen port — a plain number, not an address (default `8080`) |
-
-## Project Structure
+### Project structure
 
 ```text
 csm-notification-service/
-├── cmd/
-│   └── server/main.go           # Entry point — starts the HTTP health server + both consumer groups
+├── cmd/server/
+│   ├── main.go                  # Wiring: config, clients, consumers, engines, health server
+│   ├── sre_topic.go             # Shared operations-topic (sre-events) consumer planning
+│   └── case_alert_settings.go   # PAGING_CONFIG_SOURCE: load ladder settings from the entity service
 ├── internal/
-│   ├── apierror/               # Typed upstream error type (4xx/5xx passthrough)
-│   ├── middleware/
-│   │   ├── correlation.go      # X-CSM-Correlation-ID propagation + slog enrichment
-│   │   ├── logger.go           # Per-request access log
-│   │   └── security_headers.go # X-Content-Type-Options, CSP, HSTS on every response
-│   ├── notifications/
-│   │   ├── doc.go              # Package overview — one config/client pair per channel
-│   │   ├── email.go            # EmailConfig/EmailClient/SendEmail
-│   │   ├── googlechat.go       # GoogleChatConfig/GoogleChatClient/Send*Alert (audience-keyed)
-│   │   ├── twilio.go           # TwilioConfig/TwilioClient/SendSMS+MakeCall
-│   │   └── templates/          # HTML email templates (case.*, change_request.*, project_contact_invited_*) + templates.go's Render* functions
-│   ├── events/
-│   │   ├── events.go           # Envelope + per-Type payload structs (the event schema)
-│   │   └── validate.go         # Validate — the only remaining validation boundary
-│   ├── entity/
-│   │   ├── customer.go         # Minimal entity-service client (POST /users/search)
-│   │   └── onboarding.go       # RecordOnboardingStep (PUT /onboarding-steps/{membershipSfId}/{step})
-│   ├── scim/
-│   │   └── client.go           # SCIM operations service client (EnsureExternalUser) for project_contact.invited
-│   ├── recipientlinks/
-│   │   └── resolver.go         # Resolver.ResolveLinks — per-recipient customer/CSM portal link
-│   ├── eventbus/
-│   │   ├── config.go            # Config + SASL/PLAIN setup + PartitionCount, shared by producer/consumer
-│   │   ├── producer.go          # Producer — publish a record, wait for ack
-│   │   └── consumer.go          # Consumer — consumer-group poll loop, retry, OnExhausted, commit
-│   ├── dispatch/
-│   │   └── dispatch.go          # Dispatcher.Handle — envelope → validate → resolve links → group → template → EmailClient; handleProjectContactInvited (SCIM → invitation → step ledger)
-│   └── slaengine/
-│       ├── client.go            # EntityClient — fetches GET /sla-duration-policy once, at startup
-│       ├── redis.go             # Store — wake-index ZSET + per-clock metadata/paused/alerted-tier hash
-│       └── engine.go            # RegisterClocks/ApplyStateEffects/CompleteResponseClock + Tick/RunTicker
-├── .env                         # Local config (git-ignored)
-└── go.mod
+│   ├── apierror/                # Typed upstream error
+│   ├── chataudience/            # Which Chat audiences an SLA breach resolves to
+│   ├── dispatch/                # Dispatcher.Handle: validate, route by type, send
+│   ├── entity/                  # Entity-service client (users search, onboarding ledger, content, cloud status)
+│   ├── escalation/              # Frustration-detector client
+│   ├── eventbus/                # kafka-go wrapper: Config, Producer, Consumer (retry, DLQ hook, commit)
+│   ├── events/                  # Envelope, per-type payloads, Validate
+│   ├── middleware/              # security_headers, correlation, logger
+│   ├── notifications/           # Email, Google Chat, Twilio clients; HTML templates/
+│   ├── oauthhttp/               # Shared OAuth2 client-credentials HTTP client
+│   ├── paging/                  # Call-escalation ladder engine, resolvers, store, config
+│   ├── recipientlinks/          # Per-recipient customer/CSM portal link
+│   ├── scim/                    # Identity-admin (SCIM) client
+│   ├── slaengine/               # SLA clocks in Redis + ticker
+│   └── statuspage/              # Status-page webhook poster
+├── .choreo/component.yaml       # Deployment descriptor (port 8080, Organization visibility)
+├── openapi.yaml                 # Contract: GET /health only
+└── .env.example
 ```
 
-## Running locally
+Channels are one client per file in `internal/notifications`, each with its own config
+(upstream auth schemes differ). All clients are built once in `cmd/server/main.go`.
+
+## Developer guide
+
+### Prerequisites
+
+- Go `1.26.6` or newer (see `go.mod`) - [install](https://go.dev/doc/install)
+- An Event Hub namespace (or any Kafka endpoint reachable with TLS and SASL/PLAIN) with
+  the topics provisioned. The service does not create topics. Local brokers without TLS
+  are not supported: `internal/eventbus` always dials with TLS and SASL/PLAIN.
+- Optional: Redis for the SLA engine and call-escalation ladder; `gosec` for scanning.
+
+### Build and run
 
 ```bash
 # from integrations/csm-notification-service
-go run ./cmd/server/main.go
+go build -o server ./cmd/server
+cp .env.example .env        # fill in at least the required event bus variables
+go run ./cmd/server
 ```
 
-The server auto-loads `.env` from the working directory at startup (silently ignored if absent).
+`.env` is read from the working directory if present; variables already set in the
+process environment win. Missing required variables cause an immediate exit with an error
+log. The health probe is `curl http://localhost:8080/health`. To exercise the whole
+pipeline, publish a valid envelope to your case topic and watch the logs; use
+`EMAIL_DEBUG_MODE=true` with `EMAIL_DEBUG_RECIPIENTS` so email goes to a safe test list,
+and `EMAIL_SENDING_ENABLED=false` or `CALL_SENDING_ENABLED=false` to log instead of send.
 
-`cmd/server` needs a real Event Hub: `internal/eventbus` dials its broker with
-TLS and SASL/PLAIN unconditionally (correct for Azure Event Hub, impractical
-against a laptop broker), and `EVENT_HUB_BROKER`/`EVENT_HUB_CONNECTION_STRING`/
-`EVENT_HUB_TOPIC`/`EVENT_HUB_DLQ_TOPIC` are all `mustEnv`. Point them at the dev
-namespace to run the whole service; there is no local-broker mode.
-
-## Testing the incident call escalation
-
-### Testing a ladder against the local Team Schedule
-
-`scripts/csm-compose/trigger-sre-escalation.sh` runs the real engine against the
-local stack's rota and shows who each rung reaches. By default nothing leaves the
-machine: it runs on the `log` channel, which prints who each rung would reach
-and contacts nobody, so no Chat space, webhook or Twilio account is needed.
+### Test and lint
 
 ```bash
-scripts/csm-compose/trigger-sre-escalation.sh                         # apollo (SRE), HIGH, logged
-scripts/csm-compose/trigger-sre-escalation.sh -p all -m 200ms         # every priority, fast
-scripts/csm-compose/trigger-sre-escalation.sh -t castor -p P0 -l both # a CRE P0: both ladders
-scripts/csm-compose/trigger-sre-escalation.sh -c 3 -o chat            # post to the space instead
+go vet ./...
+go test -race ./...
 ```
 
-An SRE team climbs the SRE ladder, the same clock for every priority, so
-`-p all` on one shows five identical plans; a CRE team's clock is set by the
-priority. A P0 on a CRE team climbs both ladders; `-l both` runs the CRE
-one and then the SRE one, so each can be read on its own (`-l sre` alone, on a
-CRE team below P0, schedules nothing -- that is the rule). `-o chat` needs
-`GOOGLE_CHAT_SPACES` (exported, or in the `.env` `ESCALATION_ENV_FILE` points
-at) and masks names on the cards; the default log shows real names, since it
-stays on the terminal. It needs entity-service, mock-oidc and Redis up, and runs
-the repo's gateway shim in front of entity-service for the run, because
-entity-service reads the caller from `x-jwt-assertion`, which only the Choreo
-gateway adds. The local seed rosters SRE engineers on L1 and L2 only, so L3
-reports NO_RECIPIENTS. `-h` lists every option.
-
-### Running the full service against it
-
-To exercise the Kafka hop and `cmd/server` itself, point the service at the dev
-Event Hub namespace with `REDIS_ADDR=localhost:6379` and an
-`INCIDENT_ESCALATION_ROSTER`, then create a real incident through
-entity-service's `POST /incidents` and raise its priority with a `PATCH`. That
-is the only path that covers the publisher, the topic and the consumer group
-together. Note `CUSTOMER_ENTITY_BASE_URL` is optional: without it the engine
-still runs a full ladder and logs its execution summary instead of writing it
-back to the incident.
-
-Also unset `INCIDENT_DEFAULT_CALL_TO` while testing, or every incident gets
-`dispatch`'s own single immediate call as well as the ladder — the service warns
-at startup when both are live.
-
-### Redis-backed store tests
-
-`internal/paging/store_test.go` covers the ladder store against a real
-Redis and skips when none is reachable, so `go test ./...` stays dependency-free:
+Tests are self-contained, with two optional exceptions: `internal/paging/store_test.go`
+runs against a real Redis (it tries `REDIS_URL`, then `REDIS_ADDR`, then
+`localhost:6379`) and skips when none is reachable:
 
 ```bash
 docker run --rm -p 6379:6379 redis
-go test ./internal/paging/ -run TestStore -v
+go test ./internal/paging/ -v
 ```
 
-## Commands
+For security scanning: `go install github.com/securego/gosec/v2/cmd/gosec@latest`
+then `gosec -fmt=text ./...`.
 
-```bash
-go vet ./...              # vet
-go test -race ./...       # vet + race-detector tests
-go build -o server ./cmd/server   # compile
-```
+### Exercising the call-escalation ladder locally
 
-## API Endpoints
+The repository's local stack (see the platform README) includes helper scripts under
+`scripts/csm-compose/`, for example `trigger-escalation.sh` and
+`trigger-sre-escalation.sh`, that publish incidents against the local stack's rota.
+Run them with `-h` for options. They default to the `log` channel, which prints who each
+rung would reach and contacts nobody. To cover the Kafka hop and `cmd/server` itself,
+point the service at a real namespace with `REDIS_ADDR` and an escalation roster or Team
+Schedule resolver, then create and re-prioritise an incident through the entity service.
+Unset `INCIDENT_DEFAULT_CALL_TO` while testing, otherwise each incident also gets the
+dispatcher's single immediate call (the service warns at startup when both are live).
 
-- `GET /health` — Health check (Choreo's liveness probe). This is the only inbound HTTP route this service has — everything else happens via the two Kafka consumer groups described in [Event-driven notifications](#event-driven-notifications).
+### Extending
 
-## Security
+- **A new event type**: add the constant, payload struct and `Validate` rule in
+  `internal/events` (and `KnownTypes`), add a case to `Dispatcher.Handle`, and a handler
+  in `internal/dispatch`. Return an error only for failures a retry could fix. Add tests
+  next to the handler.
+- **A new channel**: add a `<Name>Config`/`<Name>Client` in `internal/notifications`, build
+  it in `main.go`, pass it to the dispatcher, and call it from the handler that should
+  trigger it.
+- **A new email**: add an HTML template under `internal/notifications/templates` and a
+  render function in `templates.go`.
+- **A new topic**: add a config, a consumer group and a dead-letter producer in
+  `main.go`, and consider whether it should ride the shared operations topic instead.
+- Keep logs free of recipient addresses, phone numbers and upstream response bodies.
 
-- **Never commit secrets** — client IDs/secrets, webhook URLs, and service URLs with credentials must not appear in source code or config files; use environment variables
-- **No sensitive data in logs** — log only IDs and error summaries
-- **No app-level inbound auth** — this is intentional (see above), not an oversight
-- **Input validation** — `events.Validate`, called from `dispatch.Dispatcher.Handle`, is the only validation boundary this service has left; keep rejecting unexpected input there rather than letting it reach a notification client
-- **No recipient emails in logs** — `internal/recipientlinks`'s role-lookup warnings log `caseID`/`roles`/`userType`, never the recipient's email address (PII); keep it that way if this code changes
-- **Security fixes in PRs** — describe security-related changes in neutral functional terms only, not called out as security fixes in the title/description
+## Configuration
+
+Environment variables only, optionally loaded from `.env` (process environment wins).
+Conventions: booleans accept `true`/`false` case-insensitively and fall back to the
+default for anything else, except the three marked "exact", which compare to the
+lowercase string `true`; counts must be positive integers or the default is used;
+durations use Go syntax (`30s`, `5m`) and must be positive or the default is used.
+"Optional" variables left unset disable the feature rather than failing startup unless a
+note says otherwise. Examples are placeholders.
+
+### Event bus (required)
+
+| Variable | Required | Default | Description | Example |
+|---|---|---|---|---|
+| `EVENT_HUB_BROKER` | Yes | none | Kafka bootstrap address of the namespace. | `<namespace>.servicebus.windows.net:9093` |
+| `EVENT_HUB_CONNECTION_STRING` | Yes | none | Shared-access connection string, used as the SASL/PLAIN password. Secret. | `<connection-string>` |
+| `EVENT_HUB_TOPIC` | Yes | none | Case topic (case.*, incident.*, paging.*, sla.*). | `case-events` |
+| `EVENT_HUB_DLQ_TOPIC` | Yes | none | Dead-letter topic for the case topic. Provision separately. | `case-events-dlq` |
+| `EVENT_HUB_CONSUMER_GROUP` | No | `csm-notification-service` | Group for the case topic. | |
+| `EVENT_HUB_DLQ_CONSUMER_GROUP` | No | `csm-notification-service-dlq` | Group for the case DLQ. | |
+| `MAIN_CONSUMER_COUNT` | No | `1` | Consumer instances for the case topic. | `2` |
+| `DLQ_CONSUMER_COUNT` | No | `1` | Consumer instances for the case DLQ. | `1` |
+
+### Additional topics (all optional)
+
+Each topic has a topic variable, a DLQ topic, consumer groups and counts. Topics must
+exist before deployment and their names must match the publisher's configuration.
+
+| Variables | Defaults |
+|---|---|
+| `CR_EVENT_HUB_TOPIC`, `CR_EVENT_HUB_DLQ_TOPIC` | `cr-events`, `cr-events-dlq` |
+| `CR_CONSUMER_GROUP`, `CR_DLQ_CONSUMER_GROUP` | `csm-notification-service-cr`, `csm-notification-service-cr-dlq` |
+| `CR_CONSUMER_COUNT`, `CR_DLQ_CONSUMER_COUNT` | `1`, `1` |
+| `OUTAGE_EVENT_HUB_TOPIC`, `OUTAGE_EVENT_HUB_DLQ_TOPIC` | `outage-events`, `outage-events-dlq` |
+| `OUTAGE_CONSUMER_GROUP`, `OUTAGE_DLQ_CONSUMER_GROUP` | `csm-notification-service-outage`, `csm-notification-service-outage-dlq` |
+| `OUTAGE_CONSUMER_COUNT`, `OUTAGE_DLQ_CONSUMER_COUNT` | `1`, `1` |
+| `PROJECT_EVENT_HUB_TOPIC`, `PROJECT_EVENT_HUB_DLQ_TOPIC` | `project-events`, `project-events-dlq` |
+| `PROJECT_CONSUMER_GROUP`, `PROJECT_DLQ_CONSUMER_GROUP` | `csm-notification-service-project`, `csm-notification-service-project-dlq` |
+| `PROJECT_CONSUMER_COUNT`, `PROJECT_DLQ_CONSUMER_COUNT` | `1`, `1` |
+| `INCIDENT_ESCALATION_DLQ_TOPIC` | `escalation-events-dlq` (the ladder's own DLQ) |
+
+The change-request, outage and project consumers are always started (unless replaced by
+the shared operations topic below).
+
+**Shared operations topic.** One topic can carry change-request notices, outage emails
+and service-request alerts, routed by event type. Off unless `SRE_EVENT_HUB_TOPIC` is set.
+
+| Variable | Default | Description |
+|---|---|---|
+| `SRE_EVENT_HUB_TOPIC` | unset (feature off) | Shared topic, e.g. `sre-events`. Must not equal the case or onboarding topic. When it equals the CR or outage topic, that consumer is not started (the shared consumer replaces it). |
+| `SRE_EVENT_HUB_DLQ_TOPIC` | `<SRE topic>-dlq` | Its DLQ. Must exist and differ from the topic. |
+| `SRE_CONSUMER_GROUP`, `SRE_DLQ_CONSUMER_GROUP` | takes over the CR/outage consumer's group when that consumer read the same topic (to keep its committed offset); otherwise `csm-notification-service-sre` and `csm-notification-service-sre-dlq` | An explicit value always wins. |
+| `SRE_CONSUMER_COUNT`, `SRE_DLQ_CONSUMER_COUNT` | `1`, `1` | Instances. |
+
+**Incidents on their own topic.**
+
+| Variable | Default | Description |
+|---|---|---|
+| `INCIDENT_EVENT_HUB_TOPIC` | unset | Topic where the entity service publishes `incident.*`. Set it here before setting it on the publisher. Empty or equal to the case topic adds nothing. |
+| `INCIDENT_CONSUMER_GROUP` | `<EVENT_HUB_CONSUMER_GROUP>-incidents` | Dispatcher consumer for that topic (skipped when the shared operations consumer already reads it). Dead-letters to the case DLQ. |
+| `INCIDENT_CONSUMER_COUNT` | `1` | Instances. |
+| `PAGING_SRE_INCIDENT_CONSUMER_GROUP` | `csm-notification-service-paging-sre-incidents` | Group the SRE ladder uses to read that topic. |
+
+### Email
+
+| Variable | Required | Default | Description | Example |
+|---|---|---|---|---|
+| `EMAIL_BASE_URL` | Yes, to send email | none | Base URL of the email service. | `https://email.example.com` |
+| `EMAIL_SCOPES` | No | none | Comma-separated OAuth2 scopes. | `scope-a,scope-b` |
+| `EMAIL_FROM_ADDRESS` | Yes unless `EMAIL_SENDING_ENABLED=false` | none | Fixed From address; startup exits if missing while sending is on. | `no-reply@example.com` |
+| `EMAIL_REPLY_TO` | No | built-in support address if unset; none if set to empty | Reply-To for onboarding emails. Comma-separated. | `support@example.com` |
+| `EMAIL_SENDING_ENABLED` | No | `true` | Killswitch for case.* email. `false` logs instead of sending, regardless of debug mode. Does not affect Chat or calls. | `false` |
+| `EMAIL_DEBUG_MODE` | No | off (exact `true` to enable) | Redirect case.* email to `EMAIL_DEBUG_RECIPIENTS`. Links are still resolved from the real recipients. | `true` |
+| `EMAIL_DEBUG_RECIPIENTS` | No | none | Comma-separated test addresses. With debug on and this empty, the email is skipped. | `qa@example.com` |
+| `DEFAULT_CSM_EMAIL_CC` | No | none | Comma-separated CC added to the CSM-portal-link group of case.* email only, never to the customer group and never in debug mode. | `team@example.com` |
+
+### Google Chat
+
+| Variable | Default | Description | Example |
+|---|---|---|---|
+| `GOOGLE_CHAT_SPACES` | unset (Chat alerts unavailable) | JSON array of `{"audience","webhookUrl"}`, one per space. Audience matching ignores whitespace but is case-sensitive. An audience is a team name, an SRE team's display name, or a standing audience: `Incident Monitor`, `Onboarding`, `Americas`, `Evaluation`. A malformed value (or unknown JSON keys, such as the legacy product-keyed shape) logs an error and disables Chat. An audience with no entry is skipped. | `[{"audience":"Incident Monitor","webhookUrl":"<webhook-url>"}]` |
+| `INCIDENT_CHAT_SPACES` | unset (no incident cards) | JSON object, assignment group (matched case-insensitively) to webhook URL. | `{"Example SRE Group":"<webhook-url>"}` |
+| `INCIDENT_CHAT_FANOUT` | unset | JSON object, assignment group to the list of groups whose `INCIDENT_CHAT_SPACES` spaces get its cards. Names only. The call is placed once; a card that fails in one space is not retried. | `{"Default Group":["Group A","Group B"]}` |
+| `GOOGLE_CHAT_AUDIENCE_SPACES` | n/a | Removed; if set, a warning is logged and it is ignored. Use `GOOGLE_CHAT_SPACES`. | |
+
+### Voice calls and SMS (Twilio)
+
+| Variable | Default | Description | Example |
+|---|---|---|---|
+| `TWILIO_ACCOUNT_SID` | none | Account SID. A missing config only errors when a call is requested. | `<account-sid>` |
+| `TWILIO_AUTH_TOKEN` | none | Auth token. Secret. | `<auth-token>` |
+| `TWILIO_FROM_NUMBER` | none | E.164 sending number. Always required for calls; SMS fallback sender. | `+15550100000` |
+| `TWILIO_MESSAGING_SERVICE_SID` | none | Preferred SMS sender (SMS only; nothing sends SMS today). | `<messaging-service-sid>` |
+| `TWILIO_VOICE` | provider default | TTS voice for calls. | `Polly.Raveena` |
+| `TWILIO_LANGUAGE` | provider default | TTS language for calls. | `en-IN` |
+| `TWILIO_API_BASE_URL` | `https://api.twilio.com/2010-04-01` | Override for a regional API edge. | |
+| `TWILIO_RING_TIMEOUT_SECONDS` | `0` (provider default, 60 s) | How long a call rings before giving up. Applies when positive. | `30` |
+| `CALL_SENDING_ENABLED` | `true` | Killswitch for calls (single incident call and the ladder). `false` logs instead of dialling. | `false` |
+| `INCIDENT_DEFAULT_CALL_TO` | none | Fallback E.164 number for `incident.created` when the payload omits `callTo`. | `+15550100001` |
+
+### Shared OAuth2 client (used by email, entity, SCIM, detector and paging clients)
+
+| Variable | Required | Description | Example |
+|---|---|---|---|
+| `OAUTH2_TOKEN_URL` | Yes if any of those clients or Redis is used | Token endpoint. | `https://auth.example.com/oauth2/token` |
+| `OAUTH2_CLIENT_ID` | Same | Client id. | `<client-id>` |
+| `OAUTH2_CLIENT_SECRET` | Same | Client secret. Secret. | `<client-secret>` |
+
+All three are read with plain lookups (a missing value fails at first use), except that
+setting `REDIS_URL`/`REDIS_ADDR` makes them, with `CUSTOMER_ENTITY_BASE_URL`, mandatory at
+startup.
+
+### Entity service and recipient links
+
+| Variable | Default | Description | Example |
+|---|---|---|---|
+| `CUSTOMER_ENTITY_BASE_URL` | none | Entity service base URL. Unset makes every case.* email fail (startup warning) and disables paging test calls, notes and the Team Schedule resolver. Mandatory when Redis is set. | `https://entity.example.com` |
+| `CUSTOMER_ENTITY_SCOPES` | none | Comma-separated OAuth2 scopes. | `scope-a` |
+| `CSM_PORTAL_WEB_BASE_URL` | none | Builds `<url>/cases/{caseId}` for CSM recipients, `/operations/outages/{id}` for outages and incident links. Unset yields relative links (warning). | `https://csm.example.com` |
+| `CUSTOMER_PORTAL_WEB_BASE_URL` | none | Builds `<url>/projects/{projectId}/support/cases/{caseId}` for customer recipients. | `https://portal.example.com` |
+| `CUSTOMER_ROLES` | none | Comma-separated role names classified customer. | `role-a,role-b` |
+| `CSM_ROLES` | none | Comma-separated role names classified CSM. | `role-c` |
+
+The entity service must allow this service's OAuth2 client id for the onboarding-ledger,
+paging and note endpoints (it returns 403 otherwise).
+
+### Customer onboarding
+
+| Variable | Default | Description | Example |
+|---|---|---|---|
+| `CSM_MIGRATION_ONBOARD_IDENTITY_ENABLED` | `true` (code default; see note) | Run the IDENTITY step (create the invitee's user via SCIM). `false` records it SKIPPED. | `false` |
+| `CSM_MIGRATION_ONBOARD_EMAIL_ENABLED` | `true` (code default; see note) | Run the EMAIL step. `false` records it SKIPPED. Still subject to `EMAIL_SENDING_ENABLED` and debug mode. | `false` |
+| `SCIM_BASE_URL` | none | Identity-admin service base URL (`POST /organizations/external/users`). Needed for the IDENTITY step; also enables the phone fallback for paging. | `https://scim.example.com` |
+| `SCIM_SCOPES` | none | Comma-separated OAuth2 scopes. | `scope-a` |
+| `ONBOARD_EMAIL_FROM` | `EMAIL_FROM_ADDRESS` | Sender of invitation email. | `welcome@example.com` |
+| `ONBOARD_PORTAL_URL` | built-in public support-portal URL | Sign-in link in the invitation. | `https://portal.example.com` |
+
+Note: `.env.example` and the comments in `cmd/server/main.go` describe these two flags as
+opt-in (off unless exactly `true`), but the code reads them with a default of `true`
+(`envBool(..., true)`). Set them to `false` explicitly to keep a deployment from running
+the steps until the code or documentation is reconciled.
+
+### Frustration detection
+
+| Variable | Default | Description | Example |
+|---|---|---|---|
+| `ESCALATION_DETECTOR_BASE_URL` | unset (feature off) | Base URL of the frustration-detector service (`POST {url}/escalations`). A result above its threshold posts a Chat alert through `GOOGLE_CHAT_SPACES` (team first, falling back to `Incident Monitor`). | `https://detector.example.com` |
+| `ESCALATION_DETECTOR_SCOPES` | none | Comma-separated OAuth2 scopes. | `scope-a` |
+
+### Status-page webhooks
+
+| Variable | Default | Description | Example |
+|---|---|---|---|
+| `CLOUD_STATUS_WEBHOOK_URLS` | unset (events reported undelivered for a scheduler to retry) | JSON object of cloud slug to base URL (`https` only; posts to `<url>/api/v1/webhook`). An unparseable value stops startup. | `{"cloud-a":"https://status.example.com"}` |
+| `CLOUD_STATUS_WEBHOOK_SECRETS` | none | JSON object of secrets; the whole `X-Webhook-Signature` header value, with a `default` entry as fallback. Required to parse when URLs are set. | `{"default":"Secret <token>"}` |
+
+### SLA engine and Redis
+
+| Variable | Default | Description | Example |
+|---|---|---|---|
+| `REDIS_URL` | unset | `rediss://` (TLS) connection string; percent-encode the password. Takes priority over `REDIS_ADDR`. A malformed value stops startup. | `rediss://:<password>@<host>:6380` |
+| `REDIS_ADDR` | unset | Plain non-TLS address. Setting either `REDIS_URL` or `REDIS_ADDR` enables the SLA engine and makes the ladder and paging test calls possible. | `localhost:6379` |
+| `REDIS_PASSWORD` | none | Password for `REDIS_ADDR`; ignored with `REDIS_URL`. | |
+| `SLA_TICK_INTERVAL` | `5m` | How often the wake-index is scanned. | `1m` |
+| `SLA_EMAIL_SENDING_ENABLED` | `true` | Killswitch for all SLA messages (breach Chat card). Events still publish and tiers still advance. | `false` |
+
+### Call-escalation ladder
+
+Requires Redis. The ladder starts only if escalation is enabled, a resolver can answer
+(roster, or Team Schedule with the entity service configured) and the configuration parses.
+
+| Variable | Default | Description | Example |
+|---|---|---|---|
+| `INCIDENT_ESCALATION_CONFIG` | unset | Path to the escalation YAML (schema: `internal/paging/config.go`). Unset keeps the env-derived behaviour: CRE ladder enabled, SRE ladder enabled only with the Team Schedule resolver. A bad file disables both ladders. | `/etc/csm/escalation.yaml` |
+| `INCIDENT_ESCALATION_ENABLED` | unset | If non-empty, overrides the file's master switch (`true` on, anything else off). | `false` |
+| `INCIDENT_ESCALATION_CHANNEL` | `call` | `call`, `chat`, `both` or `log` (log only prints who would be reached). The file's per-ladder channel wins when present. An invalid value disables the ladder. | `log` |
+| `INCIDENT_ESCALATION_RESOLVER` | roster | `team-schedule` resolves rungs from the entity service's Team Schedule (needs `CUSTOMER_ENTITY_BASE_URL`); anything else uses the roster. | `team-schedule` |
+| `INCIDENT_ESCALATION_ROSTER` | none | JSON roster of level to recipients, used by the roster resolver. Contains phone numbers (secret). Invalid JSON stops the ladder. | `{"default":{"LEVEL_1":[<recipient>]}}` |
+| `INCIDENT_ESCALATION_PHONES` | none | JSON object, lower-case email to E.164 number, for the Team Schedule resolver. | `{"jane.doe@example.com":"+15550100002"}` |
+| `INCIDENT_ESCALATION_TEST_CALL_TO` | none | If set, every call goes to this number instead (safe rehearsal). | `+15550100003` |
+| `INCIDENT_ESCALATION_SRE_L4` | off (exact `true`) | Include level 4 in the SRE ladder when no file is used. | `true` |
+| `INCIDENT_ESCALATION_SSML` | off (exact `true`) | Use SSML for call speech. | `true` |
+| `INCIDENT_ESCALATION_CHAT_AUDIENCE` | none | Chat audience a rung posts to when the incident names no product. | `Incident Monitor` |
+| `INCIDENT_ESCALATION_NOTE_ACTOR` | built-in system actor | Identity under which a customer case's execution summary is written; must be allowed by the entity service. | `bot@example.com` |
+| `INCIDENT_ESCALATION_CONSUMER_GROUP` | `csm-notification-service-escalation` | CRE ladder group. | |
+| `INCIDENT_ESCALATION_SRE_CONSUMER_GROUP` | `csm-notification-service-escalation-sre` | SRE ladder group. | |
+| `INCIDENT_ESCALATION_DLQ_CONSUMER_GROUP` | `<CRE group>-dlq` | CRE ladder DLQ group (the SRE one is `<SRE group>-dlq`). | |
+| `INCIDENT_ESCALATION_CONSUMER_COUNT`, `INCIDENT_ESCALATION_DLQ_CONSUMER_COUNT` | `1`, `1` | Instances per ladder. | |
+| `INCIDENT_ESCALATION_TICK_INTERVAL` | `5s` | Ladder scheduler tick. | `5s` |
+| `PAGING_CONFIG_SOURCE` | `db` | `db` uses ladder settings saved in the entity service (Team Schedule alert settings) over the file's; `off` uses file and env only; `shadow` reads them, logs differences and keeps the file's. Unknown values act as `off`. Read once at start. Needs `CUSTOMER_ENTITY_BASE_URL`. | `off` |
+| `PAGING_CONFIG_WAIT` | `2m` | How long a `db` start retries the entity service (`0` tries once). On failure it uses the last settings stored in Redis, else the file's. | `30s` |
+| `PAGING_PHONE_SCIM_FALLBACK` | on | `false` stops asking the identity-admin service for numbers the entity service lacks. | `false` |
+
+### Server
+
+| Variable | Default | Description |
+|---|---|---|
+| `PORT` | `8080` | Listen port; a bare number between 1 and 65535, not an address. Anything else exits. |
+
+## Security notes
+
+- Never commit `.env`, client secrets, webhook URLs, rosters or phone numbers.
+- Logs carry IDs and error summaries only: no recipient emails, phone numbers or upstream
+  response bodies. Keep it that way when changing handlers.
+- `events.Validate` is the only input boundary; keep rejecting unexpected input there
+  before it reaches a notification client.
+- Describe security-related fixes in PRs in neutral functional terms.
