@@ -128,6 +128,102 @@ type TimeLogBreakdownCase struct {
 	TimeCards          []TimeCardDetails `json:"timeCards"`
 }
 
+// CSReportDetails is the customer-success report for one project over a date range.
+// SLA clocks stay empty: Postgres does not store them yet.
+type CSReportDetails struct {
+	SubscriptionDetails SubscriptionDetail  `json:"subscriptionDetails"`
+	CasesRecords        []CaseRecordDetail  `json:"casesRecords"`
+	SlaDetails          SlaStats            `json:"slaDetails"`
+	ProjectDeployments  []ProjectDeployment `json:"projectDeployments"`
+	MonthlyCounts       []MonthlyCount      `json:"monthlyCounts"`
+}
+
+// SubscriptionDetail is the project header on the CS report.
+type SubscriptionDetail struct {
+	ProjectName        string `json:"projectName"`
+	ProjectKey         string `json:"projectKey"`
+	ProjectType        string `json:"projectType"`
+	AccountName        string `json:"accountName"`
+	StartDate          string `json:"startDate"`
+	EndDate            string `json:"endDate"`
+	SupportTier        string `json:"supportTier"`
+	Subscription       string `json:"subscription"`
+	TotalQueryHours    string `json:"totalQueryHours"`
+	ConsumedQueryHours string `json:"consumedQueryHours"`
+}
+
+// CaseRecordDetail is one case row on the CS report.
+type CaseRecordDetail struct {
+	CaseSysID      string `json:"caseSysId"`
+	CaseNumber     string `json:"caseNumber"`
+	EngagementType string `json:"engagementType"`
+	CaseType       string `json:"caseType"`
+	CasePriority   string `json:"casePriority"`
+	CaseState      string `json:"caseState"`
+	Opened         string `json:"opened"`
+	Description    string `json:"description"`
+	Updated        string `json:"updated"`
+	Deployment     string `json:"deployment"`
+	ProductName    string `json:"productName"`
+}
+
+// SlaStats is the SLA block. Records stay empty until SLA clocks live in Postgres.
+// An empty performance object is omitted so the page shows that nothing is available.
+type SlaStats struct {
+	SlaRecords          []SlaRecordDetail   `json:"slaRecords"`
+	SlaPerformanceStats SlaPerformanceStats `json:"slaPerformanceStats,omitzero"`
+}
+
+// SlaRecordDetail is one SLA task row.
+type SlaRecordDetail struct {
+	Task                      string `json:"task"`
+	SlaDefinition             string `json:"slaDefinition"`
+	BusinessElapsedPercentage string `json:"businessElapsedPercentage"`
+}
+
+// SlaStatsDetail is one percentile cell in the SLA summary.
+type SlaStatsDetail struct {
+	Fraction   string `json:"fraction"`
+	Percentage string `json:"percentage"`
+}
+
+// SlaPerformanceStats keeps the capitalized keys the CS report page already reads.
+type SlaPerformanceStats struct {
+	Workaround SlaStatsDetail `json:"Workaround"`
+	Resolution SlaStatsDetail `json:"Resolution"`
+	Response   SlaStatsDetail `json:"Response"`
+}
+
+// ProjectDeployment is one environment and the products deployed in it.
+type ProjectDeployment struct {
+	Name     string    `json:"name"`
+	Products []Product `json:"products"`
+}
+
+// Product is one deployed product on the CS report.
+type Product struct {
+	Name                           string `json:"name"`
+	Version                        string `json:"version"`
+	SupportStatus                  string `json:"supportStatus"`
+	EOLDate                        string `json:"eolDate"`
+	Cores                          string `json:"cores"`
+	TPS                            string `json:"tps"`
+	UpdateLevelInfo                int    `json:"updateLevelInfo"`
+	EarliestPossibleSupportEOLDate string `json:"earliestPossibleSupportEOLDate"`
+}
+
+// MonthlyCount is one month of incident and query counts.
+type MonthlyCount struct {
+	YearAndMonth string `json:"yearAndMonth"`
+	Counts       Count  `json:"counts"`
+}
+
+// Count is the incident and query totals for one month.
+type Count struct {
+	IncidentCount int `json:"incidentCount"`
+	QueryCount    int `json:"queryCount"`
+}
+
 // TimeCardDetails is one time card under a TimeLogBreakdownCase.
 type TimeCardDetails struct {
 	Total      string `json:"total"`

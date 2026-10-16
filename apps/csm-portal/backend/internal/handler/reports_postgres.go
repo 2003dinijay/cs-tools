@@ -35,6 +35,8 @@ type entityReportsClient interface {
 	GetProject(ctx context.Context, id string) ([]byte, error)
 	SearchCases(ctx context.Context, body []byte) ([]byte, error)
 	SearchTimeCards(ctx context.Context, body []byte) ([]byte, error)
+	SearchDeployments(ctx context.Context, body []byte) ([]byte, error)
+	SearchDeployedProducts(ctx context.Context, body []byte) ([]byte, error)
 }
 
 type entityTimeCardRef struct {
@@ -66,10 +68,9 @@ type entitySearchTimeCardsResponse struct {
 }
 
 // postgresReportsClient implements reportsClient by calling entity-service
-// (Postgres). The former SLA and CS reports are retired rather than ported:
-// their statistics (SLA percentile breakdowns, monthly case counts,
-// subscription/SLA summaries) only ever existed inside ServiceNow scoped-app
-// scripts, with no equivalent data or business rules on the Postgres side.
+// (Postgres). The CS report is built from the project, its cases, and its
+// deployments. SLA percentile clocks are not stored in Postgres, so that
+// report stays retired.
 type postgresReportsClient struct {
 	entity entityReportsClient
 }

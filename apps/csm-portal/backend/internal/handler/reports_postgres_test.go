@@ -57,6 +57,14 @@ func (m *mockEntityReportsClient) SearchCases(ctx context.Context, body []byte) 
 	return page, nil
 }
 
+func (m *mockEntityReportsClient) SearchDeployments(ctx context.Context, body []byte) ([]byte, error) {
+	return []byte(`{"deployments":[],"total":0}`), nil
+}
+
+func (m *mockEntityReportsClient) SearchDeployedProducts(ctx context.Context, body []byte) ([]byte, error) {
+	return []byte(`{"deployedProducts":[],"total":0}`), nil
+}
+
 func (m *mockEntityReportsClient) SearchTimeCards(ctx context.Context, body []byte) ([]byte, error) {
 	var req entitySearchTimeCardsRequest
 	if err := json.Unmarshal(body, &req); err != nil {
@@ -162,6 +170,36 @@ func makeTimeCardViews(n int, hours float64) []entityTimeCardView {
 		views[i] = entityTimeCardView{ID: "tc-" + strconv.Itoa(i), TotalTime: hours, WorkDate: "2026-01-01"}
 	}
 	return views
+}
+
+func TestBuildCSReportCountsQueriesAndIncidents(t *testing.T) {
+	total := 10.0
+	consumed := 4.0
+	question := "question"
+	project := entityProjectDetailsView{
+		Name: "Acme", Key: "ACME", SubscriptionType: "standard",
+		Account:            entityProjectAccountRef{Name: "Acme Inc", Tier: "gold"},
+		TotalQueryHours:    &total,
+		ConsumedQueryHours: &consumed,
+	}
+	cases := []entitySearchCaseView{
+		{ID: "c1", Number: "CS1", Type: "case", CreatedOn: "2026-03-02T00:00:00Z"},
+		{ID: "c2", Number: "CS2", Type: "engagement", IssueType: &question, CreatedOn: "2026-03-15T00:00:00Z"},
+	}
+
+	got := buildCSReport(project, cases, []viewer.ProjectDeployment{})
+	if got.SubscriptionDetails.SupportTier != "gold" || got.SubscriptionDetails.ConsumedQueryHours != "4" {
+		t.Fatalf("subscription = %+v", got.SubscriptionDetails)
+	}
+	if len(got.CasesRecords) != 2 || got.CasesRecords[1].CaseType != "Query" {
+		t.Fatalf("cases = %+v", got.CasesRecords)
+	}
+	if len(got.MonthlyCounts) != 1 || got.MonthlyCounts[0].Counts.IncidentCount != 1 || got.MonthlyCounts[0].Counts.QueryCount != 1 {
+		t.Fatalf("monthly = %+v", got.MonthlyCounts)
+	}
+	if len(got.SlaDetails.SlaRecords) != 0 {
+		t.Fatalf("sla records = %+v, want none", got.SlaDetails.SlaRecords)
+	}
 }
 
 func TestFormatHoursMinutes(t *testing.T) {
