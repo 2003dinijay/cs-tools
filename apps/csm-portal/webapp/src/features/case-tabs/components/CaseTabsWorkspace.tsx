@@ -16,6 +16,7 @@
 
 import { Suspense, useEffect, useRef, type JSX } from "react";
 import { useLocation } from "react-router";
+import { LayoutDashboard } from "@wso2/oxygen-ui-icons-react";
 import { pageComponentForKind } from "@features/case-tabs/tabPageRegistry";
 import RouteSuspenseFallback from "@components/route-fallback/RouteSuspenseFallback";
 import { basePathForKind, matchCaseLocation } from "@context/case-tabs/caseRoutePatterns";
@@ -76,6 +77,10 @@ export function CaseTabStripBar(): JSX.Element | null {
           label: currentLocationTab.label,
           active: currentLocationTab.active,
           onClick: () => navigate(currentLocationTab.path),
+          // A fixed "you are here" glyph, the same regardless of which page
+          // is currently pinned — not that page's own nav-section icon (see
+          // `PinnedTabProps.icon`'s own doc comment).
+          icon: <LayoutDashboard size={14} />,
         }}
         onActivate={(id) => {
           const tab = tabs.find((t) => t.id === id);
