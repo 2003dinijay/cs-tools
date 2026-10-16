@@ -10187,6 +10187,64 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
+  /report-details:
+    get:
+      summary: Build a project's customer-success report from entity-service.
+      operationId: getReportDetails
+      parameters:
+        - name: projectSysId
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: from
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: to
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CSReportDetails'
+        "400":
+          description: BadRequest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: NotFound
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: InternalServerError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
   /generate-timelogs-breakdown-report:
     get:
       summary: Generate a project's time-log breakdown report.
@@ -24600,9 +24658,36 @@ components:
           items:
             $ref: '#/components/schemas/TimeLogBreakdownCase'
 
+    CSReportDetails:
+      type: object
+      properties:
+        subscriptionDetails:
+          type: object
+          additionalProperties: true
+        casesRecords:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        slaDetails:
+          type: object
+          additionalProperties: true
+        projectDeployments:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        monthlyCounts:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+
     TimeLogBreakdownCase:
       type: object
       properties:
+        caseSysId:
+          type: string
         caseNumber:
           type: string
         caseId:
