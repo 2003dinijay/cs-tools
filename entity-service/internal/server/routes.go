@@ -2200,12 +2200,16 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	mux.HandleFunc("POST /instances/usages/search", instanceHandler.SearchInstanceUsage)
 	mux.HandleFunc("POST /instances/metrics/stats/search", instanceHandler.SearchInstanceMetricsStats)
 	mux.HandleFunc("POST /instances/usages/stats/search", instanceHandler.SearchInstanceUsageStats)
+	// Telemetry ingestion for product-consumption-tracking, internal callers
+	// only: the writes run as the caller with no project scoping of their own,
+	// and the secret key is the credential telemetry signatures are verified
+	// with. product-consumption-tracking's client id must be in M2M_CLIENT_IDS.
 	if instanceIngestionHandler != nil {
-		mux.HandleFunc("POST /instances/meta", instanceIngestionHandler.UpsertInstanceMeta)
-		mux.HandleFunc("POST /instances/info", instanceIngestionHandler.InsertInstanceInfo)
-		mux.HandleFunc("POST /instances/usage-stats", instanceIngestionHandler.InsertUsageStats)
-		mux.HandleFunc("POST /instances/daily-usages/batch", instanceIngestionHandler.ImportDailyUsagesBatch)
-		mux.HandleFunc("GET /projects/{id}/secret-key", instanceIngestionHandler.GetProjectSecretKey)
+		mux.HandleFunc("POST /instances/meta", internalOnly(accessSvc, instanceIngestionHandler.UpsertInstanceMeta))
+		mux.HandleFunc("POST /instances/info", internalOnly(accessSvc, instanceIngestionHandler.InsertInstanceInfo))
+		mux.HandleFunc("POST /instances/usage-stats", internalOnly(accessSvc, instanceIngestionHandler.InsertUsageStats))
+		mux.HandleFunc("POST /instances/daily-usages/batch", internalOnly(accessSvc, instanceIngestionHandler.ImportDailyUsagesBatch))
+		mux.HandleFunc("GET /projects/{key}/secret-key", internalOnly(accessSvc, instanceIngestionHandler.GetProjectSecretKey))
 	}
 
 	// Token validation always runs -- there is no config flag to disable it.
