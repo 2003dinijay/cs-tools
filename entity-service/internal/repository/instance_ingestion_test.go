@@ -19,64 +19,48 @@ package repository
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 )
 
+// TestInstanceIngestionValidation checks the repository refuses a request it
+// cannot key before it touches the database (the repository is built without one).
 func TestInstanceIngestionValidation(t *testing.T) {
-	t.Run("UpsertDeploymentNode requires nodeId", func(t *testing.T) {
-		repo := NewInstanceIngestionRepository(nil)
-		_, err := repo.UpsertDeploymentNode(context.Background(), domain.InstanceMetaRequest{
-			NodeID: "",
-		})
-		if err == nil {
-			t.Fatal("expected error when nodeId is empty, got nil")
-		}
-	})
+	ctx := context.Background()
+	repo := NewInstanceIngestionRepository(nil)
 
-	t.Run("InsertDeploymentInformation requires nodeId", func(t *testing.T) {
-		repo := NewInstanceIngestionRepository(nil)
-		_, err := repo.InsertDeploymentInformation(context.Background(), domain.InstanceInfoRequest{
-			NodeID: "",
-		})
-		if err == nil {
-			t.Fatal("expected error when nodeId is empty, got nil")
-		}
-	})
+	if _, err := repo.UpsertDeploymentNode(ctx, " ", domain.InstanceNodeMeta{}); err == nil {
+		t.Error("UpsertDeploymentNode: want an error for an empty nodeId")
+	}
+	if _, err := repo.InsertDeploymentInformation(ctx, domain.InstanceInfoRequest{}, time.Now()); err == nil {
+		t.Error("InsertDeploymentInformation: want an error for an empty nodeId")
+	}
+	if err := repo.InsertUsageStats(ctx, domain.InstanceUsageIngestRequest{}, time.Now()); err == nil {
+		t.Error("InsertUsageStats: want an error for an empty nodeId")
+	}
+	if err := repo.InsertUsageStats(ctx, domain.InstanceUsageIngestRequest{NodeID: "n"}, time.Now()); err == nil {
+		t.Error("InsertUsageStats: want an error for an empty countType")
+	}
+	if _, err := repo.ImportDailyUsagesBatch(ctx, domain.DailyUsageBatchRequest{}); err == nil {
+		t.Error("ImportDailyUsagesBatch: want an error for an empty nodeId")
+	}
+	if _, err := repo.GetProjectSecretKey(ctx, "  "); err == nil {
+		t.Error("GetProjectSecretKey: want an error for a blank key")
+	}
+}
 
-	t.Run("InsertUsageStats requires nodeId and countType", func(t *testing.T) {
-		repo := NewInstanceIngestionRepository(nil)
-		err := repo.InsertUsageStats(context.Background(), domain.InstanceUsageIngestRequest{
-			NodeID: "",
-		})
-		if err == nil {
-			t.Fatal("expected error when nodeId is empty, got nil")
-		}
-
-		err = repo.InsertUsageStats(context.Background(), domain.InstanceUsageIngestRequest{
-			NodeID:    "test-node",
-			CountType: "",
-		})
-		if err == nil {
-			t.Fatal("expected error when countType is empty, got nil")
-		}
-	})
-
-	t.Run("ImportDailyUsagesBatch requires nodeId", func(t *testing.T) {
-		repo := NewInstanceIngestionRepository(nil)
-		_, err := repo.ImportDailyUsagesBatch(context.Background(), domain.DailyUsageBatchRequest{
-			NodeID: "",
-		})
-		if err == nil {
-			t.Fatal("expected error when nodeId is empty, got nil")
-		}
-	})
-
-	t.Run("GetProjectSecretKey requires projectKey", func(t *testing.T) {
-		repo := NewInstanceIngestionRepository(nil)
-		_, err := repo.GetProjectSecretKey(context.Background(), "  ")
-		if err == nil {
-			t.Fatal("expected error when project key is whitespace, got nil")
-		}
-	})
+// TestInstanceIngestion_RefusesAContextWithNoIdentity pins that the repository
+// no longer falls back to the system identity: a caller that reached it without
+// the identity middleware gets ErrNoCallerIdentity, never unrestricted access.
+func TestInstanceIngestion_RefusesAContextWithNoIdentity(t *testing.T) {
+	repo := NewInstanceIngestionRepository(NewScoped(nil))
+	_, err := repo.UpsertDeploymentNode(context.Background(), "node-1", domain.InstanceNodeMeta{})
+	if err != ErrNoCallerIdentity {
+		t.Fatalf("err = %v, want ErrNoCallerIdentity", err)
+	}
+	_, err = repo.GetProjectSecretKey(context.Background(), "PROJ")
+	if err == nil {
+		t.Fatal("GetProjectSecretKey with no identity: want an error")
+	}
 }

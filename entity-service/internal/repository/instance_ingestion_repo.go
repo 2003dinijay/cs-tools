@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -29,12 +30,24 @@ import (
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 )
 
-// InstanceIngestionRepository defines the persistence operations for telemetry ingestion.
+// InstanceIngestionRepository defines the persistence operations for the
+// telemetry product-consumption-tracking sends: node registration, host
+// snapshots, live usage counts and offline (ZIP) daily usages.
+//
+// Every write runs in one transaction that first takes a transaction-scoped
+// advisory lock on each node id it touches. deployment_node.node_id is not
+// unique (the table is synced from ServiceNow, whose own identity is not
+// consistent upstream, so a unique index is not an option), and every write
+// here is a read-then-insert: without the lock two first heartbeats from one
+// node would create two deployment_node rows, and two counts for one day two
+// daily_usage_summary rows.
+//
+// The caller's identity must already be on ctx (the routes are internal-only);
+// there is no fallback to the system identity.
 type InstanceIngestionRepository interface {
-	ResolveProductVersionID(ctx context.Context, productName, version string) (*string, error)
-	UpsertDeploymentNode(ctx context.Context, req domain.InstanceMetaRequest) (string, error)
-	InsertDeploymentInformation(ctx context.Context, req domain.InstanceInfoRequest) (string, error)
-	InsertUsageStats(ctx context.Context, req domain.InstanceUsageIngestRequest) error
+	UpsertDeploymentNode(ctx context.Context, nodeID string, meta domain.InstanceNodeMeta) (string, error)
+	InsertDeploymentInformation(ctx context.Context, req domain.InstanceInfoRequest, reportedOn time.Time) (string, error)
+	InsertUsageStats(ctx context.Context, req domain.InstanceUsageIngestRequest, countedOn time.Time) error
 	ImportDailyUsagesBatch(ctx context.Context, req domain.DailyUsageBatchRequest) (int, error)
 	GetProjectSecretKey(ctx context.Context, projectKey string) (string, error)
 }
@@ -48,19 +61,22 @@ func NewInstanceIngestionRepository(db *Scoped) InstanceIngestionRepository {
 	return &instanceIngestionRepo{db: db}
 }
 
-func ensureCallerIdentity(ctx context.Context) context.Context {
-	if _, ok := CallerIdentityFromContext(ctx); !ok {
-		return WithSystemIdentity(ctx)
-	}
-	return ctx
+// deploymentNodeLockKey is the advisory-lock key every ingestion write takes
+// for a node before reading or writing anything about it.
+func deploymentNodeLockKey(nodeID string) string {
+	return "deployment-node:" + nodeID
 }
 
-// ResolveProductVersionID maps a product name/code and version string to a product_version.id UUID.
-func (r *instanceIngestionRepo) ResolveProductVersionID(ctx context.Context, productName, version string) (*string, error) {
-	ctx = ensureCallerIdentity(ctx)
-	trimmedProduct := strings.TrimSpace(productName)
-	trimmedVersion := strings.TrimSpace(version)
-	if trimmedProduct == "" || trimmedVersion == "" {
+// resolveProductVersionIDTx maps a product name or code and a version to a
+// product_version id. An exact code match wins over an exact name match, which
+// wins over a name containing the product (the reported value is sometimes a
+// shortened name); among the contained-name matches the shortest name wins, so
+// "API Manager" picks "WSO2 API Manager" over "WSO2 API Manager Analytics".
+// The remaining ties are broken by id, so the answer never depends on the plan.
+func resolveProductVersionIDTx(ctx context.Context, q querier, productName, version string) (*string, error) {
+	product := strings.TrimSpace(productName)
+	ver := strings.TrimSpace(version)
+	if product == "" || ver == "" {
 		return nil, nil
 	}
 
@@ -68,12 +84,20 @@ func (r *instanceIngestionRepo) ResolveProductVersionID(ctx context.Context, pro
 		SELECT pv.id::text
 		FROM product_version pv
 		JOIN product p ON p.id = pv.product_id
-		WHERE (LOWER(p.name) = LOWER($1) OR LOWER(p.code) = LOWER($1) OR LOWER(p.name) LIKE '%' || LOWER($1) || '%')
-		  AND pv.version = $2
+		WHERE pv.version = $2
+		  AND (LOWER(p.code) = LOWER($1)
+		       OR LOWER(p.name) = LOWER($1)
+		       OR LOWER(p.name) LIKE '%' || LOWER($3) || '%' ESCAPE '\')
+		ORDER BY CASE
+		           WHEN LOWER(p.code) = LOWER($1) THEN 0
+		           WHEN LOWER(p.name) = LOWER($1) THEN 1
+		           ELSE 2
+		         END,
+		         LENGTH(p.name), p.name, p.id, pv.id
 		LIMIT 1`
 
 	var id string
-	err := r.db.QueryRow(ctx, query, trimmedProduct, trimmedVersion).Scan(&id)
+	err := q.QueryRow(ctx, query, product, ver, escapeLikeWildcards(product)).Scan(&id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -83,102 +107,216 @@ func (r *instanceIngestionRepo) ResolveProductVersionID(ctx context.Context, pro
 	return &id, nil
 }
 
-// UpsertDeploymentNode registers or updates a node in deployment_node.
-func (r *instanceIngestionRepo) UpsertDeploymentNode(ctx context.Context, req domain.InstanceMetaRequest) (string, error) {
-	ctx = ensureCallerIdentity(ctx)
-	if strings.TrimSpace(req.NodeID) == "" {
-		return "", &apierror.ValidationError{Msg: "nodeId is required"}
+// lockAndUpsertNodeTx takes the node's advisory lock, then registers the node
+// or updates it from meta, returning deployment_node.id. A blank project key or
+// deployment number leaves the stored value alone; the product version is only
+// moved when both product and version are sent (to NULL when that pair is not
+// in the catalogue, so a node never keeps reporting a version it has left).
+// When several rows already share the node id, the oldest one is the node.
+func lockAndUpsertNodeTx(ctx context.Context, tx pgx.Tx, nodeID string, meta domain.InstanceNodeMeta) (string, error) {
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0::bigint))`, deploymentNodeLockKey(nodeID)); err != nil {
+		return "", fmt.Errorf("lock deployment node: %w", err)
 	}
 
-	versionID, err := r.ResolveProductVersionID(ctx, req.Product, req.Version)
-	if err != nil {
-		return "", err
+	moveVersion := strings.TrimSpace(meta.Product) != "" && strings.TrimSpace(meta.Version) != ""
+	var versionID *string
+	if moveVersion {
+		var err error
+		versionID, err = resolveProductVersionIDTx(ctx, tx, meta.Product, meta.Version)
+		if err != nil {
+			return "", err
+		}
 	}
 
-	// Check if node exists by node_id.
 	var existingID string
-	err = r.db.QueryRow(ctx, "SELECT id::text FROM deployment_node WHERE node_id = $1 LIMIT 1", req.NodeID).Scan(&existingID)
+	err := tx.QueryRow(ctx, `
+		SELECT id::text FROM deployment_node
+		WHERE node_id = $1
+		ORDER BY created_on, id
+		LIMIT 1`, nodeID).Scan(&existingID)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return "", fmt.Errorf("check existing deployment node: %w", err)
+		return "", fmt.Errorf("find deployment node: %w", err)
 	}
 
 	if existingID != "" {
 		const updateSQL = `
 			UPDATE deployment_node
-			SET project_key = $2, deployment_number = $3, product_version_id = $4, updated_on = NOW(), updated_by = 'system'
+			SET project_key        = COALESCE(NULLIF($2, ''), project_key),
+			    deployment_number  = COALESCE(NULLIF($3, ''), deployment_number),
+			    product_version_id = CASE WHEN $5 THEN $4::uuid ELSE product_version_id END,
+			    updated_on = NOW(),
+			    updated_by = $6
 			WHERE id = $1::uuid`
-		if _, err := r.db.Exec(ctx, updateSQL, existingID, req.ProjectKey, req.DeploymentNumber, versionID); err != nil {
+		if _, err := tx.Exec(ctx, updateSQL, existingID, meta.ProjectKey, meta.DeploymentNumber, versionID, moveVersion, domain.InstanceIngestionActor); err != nil {
 			return "", fmt.Errorf("update deployment node: %w", err)
 		}
 		return existingID, nil
 	}
 
 	const insertSQL = `
-		INSERT INTO deployment_node (id, node_id, project_key, deployment_number, product_version_id, created_by, updated_by, created_on, updated_on)
-		VALUES (gen_random_uuid(), $1, $2, $3, $4, 'system', 'system', NOW(), NOW())
+		INSERT INTO deployment_node (
+			id, created_on, updated_on, created_by, updated_by,
+			node_id, project_key, deployment_number, product_version_id
+		) VALUES (
+			gen_random_uuid(), NOW(), NOW(), $5, $5,
+			$1, $2, NULLIF($3, ''), $4::uuid
+		)
 		RETURNING id::text`
 	var insertedID string
-	if err := r.db.QueryRow(ctx, insertSQL, req.NodeID, req.ProjectKey, req.DeploymentNumber, versionID).Scan(&insertedID); err != nil {
+	if err := tx.QueryRow(ctx, insertSQL, nodeID, meta.ProjectKey, meta.DeploymentNumber, versionID, domain.InstanceIngestionActor).Scan(&insertedID); err != nil {
 		return "", fmt.Errorf("insert deployment node: %w", err)
 	}
 	return insertedID, nil
 }
 
-// InsertDeploymentInformation records host and JDK metadata snapshot.
-func (r *instanceIngestionRepo) InsertDeploymentInformation(ctx context.Context, req domain.InstanceInfoRequest) (string, error) {
-	ctx = ensureCallerIdentity(ctx)
+// storedDeploymentNumberTx reads the node's own deployment number, the value a
+// daily row gets when the request names none.
+func storedDeploymentNumberTx(ctx context.Context, tx pgx.Tx, nodeUUID string) (*string, error) {
+	var dn *string
+	if err := tx.QueryRow(ctx, `SELECT deployment_number FROM deployment_node WHERE id = $1::uuid`, nodeUUID).Scan(&dn); err != nil {
+		return nil, fmt.Errorf("read deployment number: %w", err)
+	}
+	return dn, nil
+}
+
+// upsertDailyUsageTx writes one daily_usage_summary row per (node, day, count
+// type, data source): the latest value wins, as product-consumption-tracking's
+// own SQL did. The caller holds the node's advisory lock.
+func upsertDailyUsageTx(ctx context.Context, tx pgx.Tx, nodeUUID string, deploymentNumber *string, summaryDate, countType string, value int, dataSource, actor string) error {
+	var existingID string
+	err := tx.QueryRow(ctx, `
+		SELECT id::text FROM daily_usage_summary
+		WHERE deployment_node_id = $1::uuid
+		  AND summary_date = $2::date
+		  AND count_type = $3
+		  AND data_source = $4::usage_data_source_enum
+		ORDER BY created_on, id
+		LIMIT 1`, nodeUUID, summaryDate, countType, dataSource).Scan(&existingID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("find daily usage: %w", err)
+	}
+
+	if existingID != "" {
+		if _, err := tx.Exec(ctx, `
+			UPDATE daily_usage_summary
+			SET value = $2,
+			    deployment_number = COALESCE($3, deployment_number),
+			    updated_by = $4,
+			    updated_on = NOW()
+			WHERE id = $1::uuid`, existingID, value, deploymentNumber, actor); err != nil {
+			return fmt.Errorf("update daily usage: %w", err)
+		}
+		return nil
+	}
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO daily_usage_summary (
+			id, created_on, updated_on, created_by, updated_by,
+			deployment_node_id, deployment_number, summary_date, count_type, value, data_source
+		) VALUES (
+			gen_random_uuid(), NOW(), NOW(), $7, $7,
+			$1::uuid, $2, $3::date, $4, $5, $6::usage_data_source_enum
+		)`, nodeUUID, deploymentNumber, summaryDate, countType, value, dataSource, actor); err != nil {
+		return fmt.Errorf("insert daily usage: %w", err)
+	}
+	return nil
+}
+
+func nonBlank(s string) *string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	return &s
+}
+
+// positiveOrNil stores an unreported (zero) core count as NULL, as
+// product-consumption-tracking did when the snapshot carried none.
+func positiveOrNil(n int) *int {
+	if n <= 0 {
+		return nil
+	}
+	return &n
+}
+
+// UpsertDeploymentNode registers or updates a node in deployment_node.
+func (r *instanceIngestionRepo) UpsertDeploymentNode(ctx context.Context, nodeID string, meta domain.InstanceNodeMeta) (string, error) {
+	if strings.TrimSpace(nodeID) == "" {
+		return "", &apierror.ValidationError{Msg: "nodeId is required"}
+	}
+	return InTxReturning(ctx, r.db, func(tx pgx.Tx) (string, error) {
+		return lockAndUpsertNodeTx(ctx, tx, nodeID, meta)
+	})
+}
+
+// InsertDeploymentInformation registers the node from the request's meta, then
+// records the host snapshot. A snapshot already stored for the node with the
+// same hash is not stored again: its payload_updated_on is moved instead and
+// its id returned, so a node that reports the same environment every hour keeps
+// one row, as product-consumption-tracking's own SQL did.
+func (r *instanceIngestionRepo) InsertDeploymentInformation(ctx context.Context, req domain.InstanceInfoRequest, reportedOn time.Time) (string, error) {
 	if strings.TrimSpace(req.NodeID) == "" {
 		return "", &apierror.ValidationError{Msg: "nodeId is required"}
 	}
 
-	var nodeUUID string
-	err := r.db.QueryRow(ctx, "SELECT id::text FROM deployment_node WHERE node_id = $1 LIMIT 1", req.NodeID).Scan(&nodeUUID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			// Create a default node record if missing so snapshot does not fail
-			inserted, insErr := r.UpsertDeploymentNode(ctx, domain.InstanceMetaRequest{NodeID: req.NodeID})
-			if insErr != nil {
-				return "", fmt.Errorf("create missing deployment node for info: %w", insErr)
-			}
-			nodeUUID = inserted
-		} else {
-			return "", fmt.Errorf("find deployment node: %w", err)
-		}
-	}
-
-	var deploymentInfoJSON []byte
+	infoJSON := []byte("{}")
 	if req.DeploymentInfo != nil {
-		deploymentInfoJSON, _ = json.Marshal(req.DeploymentInfo)
-	}
-	if len(deploymentInfoJSON) == 0 {
-		deploymentInfoJSON = []byte("{}")
-	}
-
-	createdTime := req.CreatedTime
-	if strings.TrimSpace(createdTime) == "" {
-		createdTime = time.Now().UTC().Format("2006-01-02 15:04:05")
+		b, err := json.Marshal(req.DeploymentInfo)
+		if err != nil {
+			return "", &apierror.ValidationError{Msg: "deploymentInfo must be valid JSON"}
+		}
+		infoJSON = b
 	}
 
-	const insertSQL = `
-		INSERT INTO deployment_information (
-			id, node_id, jdk_version, core_count, deployment_info, deployment_info_hash,
-			payload_created_on, payload_updated_on, created_by, updated_by, created_on, updated_on
-		) VALUES (
-			gen_random_uuid(), $1, $2, $3, $4::jsonb, $5,
-			$6::timestamptz, NOW(), 'system', 'system', NOW(), NOW()
-		)
-		RETURNING id::text`
+	return InTxReturning(ctx, r.db, func(tx pgx.Tx) (string, error) {
+		if _, err := lockAndUpsertNodeTx(ctx, tx, req.NodeID, req.InstanceNodeMeta); err != nil {
+			return "", err
+		}
 
-	var id string
-	if err := r.db.QueryRow(ctx, insertSQL, req.NodeID, req.JDKVersion, req.CoreCount, string(deploymentInfoJSON), req.Hash, createdTime).Scan(&id); err != nil {
-		return "", fmt.Errorf("insert deployment information: %w", err)
-	}
-	return id, nil
+		var existingID string
+		err := tx.QueryRow(ctx, `
+			SELECT id::text FROM deployment_information
+			WHERE node_id = $1 AND deployment_info_hash = $2
+			ORDER BY created_on, id
+			LIMIT 1`, req.NodeID, req.Hash).Scan(&existingID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return "", fmt.Errorf("find deployment information: %w", err)
+		}
+		if existingID != "" {
+			if _, err := tx.Exec(ctx, `
+				UPDATE deployment_information
+				SET payload_updated_on = GREATEST(payload_updated_on, $2),
+				    updated_on = NOW(),
+				    updated_by = $3
+				WHERE id = $1::uuid`, existingID, reportedOn, domain.InstanceIngestionActor); err != nil {
+				return "", fmt.Errorf("update deployment information: %w", err)
+			}
+			return existingID, nil
+		}
+
+		var id string
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO deployment_information (
+				id, created_on, updated_on, created_by, updated_by,
+				node_id, jdk_version, core_count, deployment_info, deployment_info_hash,
+				payload_created_on, payload_updated_on
+			) VALUES (
+				gen_random_uuid(), NOW(), NOW(), $7, $7,
+				$1, $2, $3, $4::jsonb, $5,
+				$6, $6
+			)
+			RETURNING id::text`,
+			req.NodeID, nonBlank(req.JDKVersion), positiveOrNil(req.CoreCount), string(infoJSON), req.Hash, reportedOn, domain.InstanceIngestionActor,
+		).Scan(&id); err != nil {
+			return "", fmt.Errorf("insert deployment information: %w", err)
+		}
+		return id, nil
+	})
 }
 
-// InsertUsageStats records hourly usage and rolls up into daily_usage_summary.
-func (r *instanceIngestionRepo) InsertUsageStats(ctx context.Context, req domain.InstanceUsageIngestRequest) error {
-	ctx = ensureCallerIdentity(ctx)
+// InsertUsageStats registers the node from the request's meta, records the
+// count in hourly_usage_summary and rolls it into the day's API_CALL row of
+// daily_usage_summary (the day is countedOn's UTC date).
+func (r *instanceIngestionRepo) InsertUsageStats(ctx context.Context, req domain.InstanceUsageIngestRequest, countedOn time.Time) error {
 	if strings.TrimSpace(req.NodeID) == "" {
 		return &apierror.ValidationError{Msg: "nodeId is required"}
 	}
@@ -186,156 +324,129 @@ func (r *instanceIngestionRepo) InsertUsageStats(ctx context.Context, req domain
 		return &apierror.ValidationError{Msg: "countType is required"}
 	}
 
-	var nodeUUID string
-	err := r.db.QueryRow(ctx, "SELECT id::text FROM deployment_node WHERE node_id = $1 LIMIT 1", req.NodeID).Scan(&nodeUUID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			inserted, insErr := r.UpsertDeploymentNode(ctx, domain.InstanceMetaRequest{NodeID: req.NodeID})
-			if insErr != nil {
-				return fmt.Errorf("create missing deployment node for usage: %w", insErr)
-			}
-			nodeUUID = inserted
-		} else {
-			return fmt.Errorf("find deployment node: %w", err)
+	return r.db.InTx(ctx, func(tx pgx.Tx) error {
+		nodeUUID, err := lockAndUpsertNodeTx(ctx, tx, req.NodeID, req.InstanceNodeMeta)
+		if err != nil {
+			return err
 		}
-	}
 
-	countedOn := req.CreatedTime
-	if strings.TrimSpace(countedOn) == "" {
-		countedOn = time.Now().UTC().Format("2006-01-02 15:04:05")
-	}
-
-	// Insert hourly record
-	const hourlySQL = `
-		INSERT INTO hourly_usage_summary (
-			id, deployment_node_id, count_type, count, counted_on, created_by, updated_by, created_on, updated_on
-		) VALUES (
-			gen_random_uuid(), $1::uuid, $2, $3, $4::timestamp, 'system', 'system', NOW(), NOW()
-		)`
-	if _, err := r.db.Exec(ctx, hourlySQL, nodeUUID, req.CountType, req.Count, countedOn); err != nil {
-		return fmt.Errorf("insert hourly usage: %w", err)
-	}
-
-	// Extract summary date (YYYY-MM-DD)
-	summaryDate := countedOn
-	if len(summaryDate) >= 10 {
-		summaryDate = summaryDate[:10]
-	}
-
-	// Upsert daily roll-up (API_CALL)
-	var existingDailyID string
-	err = r.db.QueryRow(ctx, `
-		SELECT id::text FROM daily_usage_summary
-		WHERE deployment_node_id = $1::uuid AND summary_date = $2::date AND count_type = $3 AND data_source = 'API_CALL'
-		LIMIT 1`, nodeUUID, summaryDate, req.CountType).Scan(&existingDailyID)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return fmt.Errorf("check daily usage: %w", err)
-	}
-
-	if existingDailyID != "" {
-		const updateDailySQL = `UPDATE daily_usage_summary SET value = $2, updated_by = 'system', updated_on = NOW() WHERE id = $1::uuid`
-		if _, err := r.db.Exec(ctx, updateDailySQL, existingDailyID, req.Count); err != nil {
-			return fmt.Errorf("update daily usage: %w", err)
-		}
-	} else {
-		const insertDailySQL = `
-			INSERT INTO daily_usage_summary (
-				id, deployment_node_id, summary_date, count_type, value, data_source, created_by, updated_by, created_on, updated_on
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO hourly_usage_summary (
+				id, created_on, updated_on, created_by, updated_by,
+				deployment_node_id, count_type, count, counted_on
 			) VALUES (
-				gen_random_uuid(), $1::uuid, $2::date, $3, $4, 'API_CALL', 'system', 'system', NOW(), NOW()
-			)`
-		if _, err := r.db.Exec(ctx, insertDailySQL, nodeUUID, summaryDate, req.CountType, req.Count); err != nil {
-			return fmt.Errorf("insert daily usage: %w", err)
+				gen_random_uuid(), NOW(), NOW(), $5, $5,
+				$1::uuid, $2, $3, $4
+			)`, nodeUUID, req.CountType, req.Count, countedOn, domain.InstanceIngestionActor); err != nil {
+			return fmt.Errorf("insert hourly usage: %w", err)
 		}
-	}
 
-	return nil
+		deploymentNumber := nonBlank(req.DeploymentNumber)
+		if deploymentNumber == nil {
+			if deploymentNumber, err = storedDeploymentNumberTx(ctx, tx, nodeUUID); err != nil {
+				return err
+			}
+		}
+		summaryDate := countedOn.UTC().Format("2006-01-02")
+		return upsertDailyUsageTx(ctx, tx, nodeUUID, deploymentNumber, summaryDate, req.CountType, req.Count, "API_CALL", domain.InstanceIngestionActor)
+	})
 }
 
-// ImportDailyUsagesBatch batch-inserts daily records into daily_usage_summary.
+// ImportDailyUsagesBatch writes an offline import's daily usages as FILE_UPLOAD
+// rows, all or nothing: one transaction, so a failure part-way leaves nothing
+// imported and the upload can simply be retried. An entry's own nodeId and
+// deploymentNumber override the batch's. Nodes are locked in id order, so two
+// imports touching the same nodes cannot deadlock.
 func (r *instanceIngestionRepo) ImportDailyUsagesBatch(ctx context.Context, req domain.DailyUsageBatchRequest) (int, error) {
-	ctx = ensureCallerIdentity(ctx)
 	if strings.TrimSpace(req.NodeID) == "" {
 		return 0, &apierror.ValidationError{Msg: "nodeId is required"}
 	}
 
-	actorEmail := strings.TrimSpace(req.UserEmail)
-	if actorEmail == "" {
-		actorEmail = "system"
+	actor := strings.TrimSpace(req.UserEmail)
+	if actor == "" {
+		actor = domain.InstanceIngestionActor
 	}
 
-	nodeUUID, err := r.UpsertDeploymentNode(ctx, domain.InstanceMetaRequest{
-		NodeID:           req.NodeID,
-		ProjectKey:       req.ProjectKey,
-		DeploymentNumber: req.DeploymentNumber,
-		Product:          req.Product,
-		Version:          req.Version,
-	})
-	if err != nil {
-		return 0, fmt.Errorf("ensure deployment node: %w", err)
+	entryNode := func(e domain.DailyUsageBatchItem) string {
+		if strings.TrimSpace(e.NodeID) != "" {
+			return e.NodeID
+		}
+		return req.NodeID
 	}
-
-	importedCount := 0
-	for _, entry := range req.Usages {
-		if strings.TrimSpace(entry.Date) == "" || strings.TrimSpace(entry.Type) == "" {
+	nodeSet := map[string]domain.InstanceNodeMeta{req.NodeID: req.InstanceNodeMeta}
+	for _, e := range req.Usages {
+		id := entryNode(e)
+		if _, ok := nodeSet[id]; ok {
 			continue
 		}
-
-		var existingID string
-		err := r.db.QueryRow(ctx, `
-			SELECT id::text FROM daily_usage_summary
-			WHERE deployment_node_id = $1::uuid AND summary_date = $2::date AND count_type = $3 AND data_source = 'FILE_UPLOAD'
-			LIMIT 1`, nodeUUID, entry.Date, entry.Type).Scan(&existingID)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return importedCount, fmt.Errorf("check existing daily usage: %w", err)
+		meta := req.InstanceNodeMeta
+		if strings.TrimSpace(e.DeploymentNumber) != "" {
+			meta.DeploymentNumber = e.DeploymentNumber
 		}
-
-		if existingID != "" {
-			const updateSQL = `
-				UPDATE daily_usage_summary
-				SET value = $2, updated_by = $3, updated_on = NOW()
-				WHERE id = $1::uuid`
-			if _, err := r.db.Exec(ctx, updateSQL, existingID, entry.Value, actorEmail); err != nil {
-				return importedCount, fmt.Errorf("update daily usage: %w", err)
-			}
-		} else {
-			const insertSQL = `
-				INSERT INTO daily_usage_summary (
-					id, deployment_node_id, summary_date, count_type, value, data_source, created_by, updated_by, created_on, updated_on
-				) VALUES (
-					gen_random_uuid(), $1::uuid, $2::date, $3, $4, 'FILE_UPLOAD', $5, $5, NOW(), NOW()
-				)`
-			if _, err := r.db.Exec(ctx, insertSQL, nodeUUID, entry.Date, entry.Type, entry.Value, actorEmail); err != nil {
-				return importedCount, fmt.Errorf("insert daily usage: %w", err)
-			}
-		}
-		importedCount++
+		nodeSet[id] = meta
 	}
+	nodeIDs := make([]string, 0, len(nodeSet))
+	for id := range nodeSet {
+		nodeIDs = append(nodeIDs, id)
+	}
+	sort.Strings(nodeIDs)
 
-	return importedCount, nil
+	return InTxReturning(ctx, r.db, func(tx pgx.Tx) (int, error) {
+		nodeUUIDs := make(map[string]string, len(nodeIDs))
+		for _, id := range nodeIDs {
+			uuid, err := lockAndUpsertNodeTx(ctx, tx, id, nodeSet[id])
+			if err != nil {
+				return 0, err
+			}
+			nodeUUIDs[id] = uuid
+		}
+
+		imported := 0
+		for _, e := range req.Usages {
+			nodeID := entryNode(e)
+			deploymentNumber := nonBlank(e.DeploymentNumber)
+			if deploymentNumber == nil {
+				deploymentNumber = nonBlank(nodeSet[nodeID].DeploymentNumber)
+			}
+			if deploymentNumber == nil {
+				var err error
+				if deploymentNumber, err = storedDeploymentNumberTx(ctx, tx, nodeUUIDs[nodeID]); err != nil {
+					return 0, err
+				}
+			}
+			if err := upsertDailyUsageTx(ctx, tx, nodeUUIDs[nodeID], deploymentNumber, e.Date, e.Type, e.Value, "FILE_UPLOAD", actor); err != nil {
+				return 0, err
+			}
+			imported++
+		}
+		return imported, nil
+	})
 }
 
-// GetProjectSecretKey retrieves product_consumption_primary_secret_key from project table.
+// GetProjectSecretKey returns the project's product-consumption HMAC primary
+// secret key, looked up by project key (or project id). A project with no key
+// set is a NotFoundError as well: there is nothing to verify a signature with.
 func (r *instanceIngestionRepo) GetProjectSecretKey(ctx context.Context, projectKey string) (string, error) {
-	ctx = ensureCallerIdentity(ctx)
 	trimmed := strings.TrimSpace(projectKey)
 	if trimmed == "" {
 		return "", &apierror.ValidationError{Msg: "project key is required"}
 	}
 
-	const query = `
-		SELECT COALESCE(product_consumption_primary_secret_key, '')
+	var secretKey *string
+	err := r.db.QueryRow(ctx, `
+		SELECT product_consumption_primary_secret_key
 		FROM project
 		WHERE key = $1 OR id::text = $1
-		LIMIT 1`
-
-	var secretKey string
-	err := r.db.QueryRow(ctx, query, trimmed).Scan(&secretKey)
+		ORDER BY (key = $1) DESC
+		LIMIT 1`, trimmed).Scan(&secretKey)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return "", &apierror.NotFoundError{Msg: fmt.Sprintf("project %q not found", trimmed)}
 		}
 		return "", fmt.Errorf("get project secret key: %w", err)
 	}
-	return secretKey, nil
+	if secretKey == nil || strings.TrimSpace(*secretKey) == "" {
+		return "", &apierror.NotFoundError{Msg: fmt.Sprintf("project %q has no product consumption secret key", trimmed)}
+	}
+	return *secretKey, nil
 }
