@@ -88,6 +88,7 @@ import {
   zoneLabelOn,
   zoneColumnOf,
 } from "../utils/rota";
+import { isSettled, sitsAboveTeamLeads } from "../utils/myWeek";
 import { zoneColour } from "../utils/rotaHues";
 import { onItsStandingCard, standingDayRows } from "../utils/standingDay";
 import { SCHEDULE_THEME_VARS } from "../utils/useScheduleTheme";
@@ -136,7 +137,7 @@ const TITLE: Record<ViewTab, string> = {
   week: "This Week",
   roster: "Roster",
   paging: "Alert Settings",
-  access: "Rota access",
+  access: "Rota Access",
 };
 
 /** The roster's window as days, "14 Sept – 12 Oct 2026": it opens and closes
@@ -387,30 +388,42 @@ export default function CsmTeamSchedulePage(): JSX.Element {
   /** Nobody's group: a manager, who belongs to no team and runs no rota. */
   const isManager = myFamily === undefined;
 
+  /** Whether the reader sits above the team leads -- a CSM admin, the
+   *  Americas team lead, the CRE head or the CS head. Only they go without My
+   *  week; everyone else keeps it, a rota admin of several groups included
+   *  (who has no single group, so isManager, but still works their own team's
+   *  rota). Read from the two reads the page already makes, so it waits on
+   *  them: until both have answered the tab strip is held back, so My week
+   *  never shows and then disappears. */
+  const aboveLeadsKnown = isSettled(rotaAccess) && isSettled(pagingProbe);
+  const aboveTeamLeads =
+    aboveLeadsKnown && sitsAboveTeamLeads(readerEmail, rotaAccess.data?.canManage.rotaAdmins, pagingProbe.data?.members);
+
   /** The tab the page opens on. An engineer's first question is their own
-   *  rota, so they land on My week; a manager holds none, and comes here to see
-   *  who is covering, so they land on Today. Derived rather than set in an
-   *  effect: /users/me has settled before this page mounts, so the first frame
-   *  is already the right one. */
-  const tab: ViewTab = tabChoice ?? (isManager ? "today" : "mine");
+   *  rota, so they land on My week; somebody above the team leads holds none,
+   *  and comes here to see who is covering, so they land on Today. */
+  const tab: ViewTab = tabChoice ?? (aboveTeamLeads ? "today" : "mine");
 
   /**
-   * Which tabs are on the strip at all. A manager holds no rota on either
-   * group, so My week can never apply to them, and a permanently dead tab is
-   * just something to wonder about. It is not offered.
+   * Which tabs are on the strip at all. Somebody above the team leads holds no
+   * rota, so My week can never apply to them, and a permanently dead tab is
+   * just something to wonder about. It is not offered. Nothing is offered
+   * until that is known.
    */
-  const visibleTabs: ViewTab[] = (["mine", "today", "week", "roster", "access", "paging"] as ViewTab[]).filter(
-    (t) => !(isManager && t === "mine") && (t !== "paging" || pagingOffered) && (t !== "access" || showAccess),
-  );
+  const visibleTabs: ViewTab[] = aboveLeadsKnown
+    ? (["mine", "today", "week", "roster", "access", "paging"] as ViewTab[]).filter(
+        (t) => !(aboveTeamLeads && t === "mine") && (t !== "paging" || pagingOffered) && (t !== "access" || showAccess),
+      )
+    : [];
 
-  /** The tab actually being shown. A manager's remembered My week (from
-   *  before the profile said they hold no rota) falls back to Today, and Case
-   *  Paging to the reader's default while it is not offered. */
+  /** The tab actually being shown. A remembered My week of somebody above the
+   *  team leads falls back to Today, and Case Paging to the reader's default
+   *  while it is not offered. */
   const view: ViewTab =
-    isManager && tab === "mine"
+    aboveTeamLeads && tab === "mine"
       ? "today"
       : (tab === "paging" && !pagingOffered) || (tab === "access" && !showAccess)
-        ? isManager
+        ? aboveTeamLeads
           ? "today"
           : "mine"
         : tab;
@@ -1314,7 +1327,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
     return <QueryErrorState message="Could not load the schedule catalogue." error={catalogue.error} />;
   }
 
-  const busy = catalogue.isLoading || (view === "mine" ? mine.isLoading : assignments.isLoading);
+  const busy = catalogue.isLoading || !aboveLeadsKnown || (view === "mine" ? mine.isLoading : assignments.isLoading);
 
   return (
     <TeamColourProvider teams={catalogue.data?.teams ?? []}>
@@ -1555,9 +1568,9 @@ export default function CsmTeamSchedulePage(): JSX.Element {
 
         {/* Above the card, not in it: this answers a question about the reader,
             so the answer must not change when they click to another view. Not
-            for a manager: they hold no rota, so it could only ever say
-            "nothing rostered". */}
-        {isManager ? null : (
+            for somebody above the team leads: they hold no rota, so it could
+            only ever say "nothing rostered". */}
+        {!aboveLeadsKnown || aboveTeamLeads ? null : (
           <NextRotation
             mine={upcoming.data?.assignments ?? []}
             shifts={shifts}

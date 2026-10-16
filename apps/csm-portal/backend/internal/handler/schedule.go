@@ -24,6 +24,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"strings"
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
@@ -380,6 +381,11 @@ func (h *ScheduleHandler) UpdatePagingMember(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	if status, msg := h.responderPhoneRefusal(r.Context(), id, body); status != 0 {
+		writeErrorCode(w, status, msg, errCodeResponderNeedsProfilePhone)
+		return
+	}
+
 	result, err := h.entity.UpdatePagingMember(r.Context(), id, body)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity UpdatePagingMember failed", "userID", userID, "err", err)
@@ -388,6 +394,92 @@ func (h *ScheduleHandler) UpdatePagingMember(w http.ResponseWriter, r *http.Requ
 	}
 
 	writeJSON(w, http.StatusOK, result)
+}
+
+// errCodeResponderNeedsProfilePhone names the refusal of a 1st, 2nd or 3rd
+// responder with no phone number on their CSM Profile.
+const errCodeResponderNeedsProfilePhone = "paging_responder_needs_profile_phone"
+
+// pagingChainFamilies are the chains a membership is looked up in.
+var pagingChainFamilies = []string{"CRE", "SRE"}
+
+// responderPhoneRefusal decides whether a change that makes someone a 1st,
+// 2nd or 3rd responder (Level 0, the people paged first) must be refused
+// because they have no phone number on their CSM Profile: a responder nobody
+// can call leaves the chain's first level empty in practice. It returns the
+// status and message to answer with, or status 0 to let the change through.
+//
+// "Has a number" is the same answer the chain's own read gives (entity-
+// service's "user".phone, then the SCIM fallback), so the page and this
+// check never disagree. Clearing a responder (rank 0), every other change,
+// and a membership the chains do not list are left to entity-service. An
+// answer that cannot be had just now refuses the change rather than letting
+// an unreachable responder in.
+func (h *ScheduleHandler) responderPhoneRefusal(ctx context.Context, membershipID string, body []byte) (int, string) {
+	var req struct {
+		ResponderRank *int `json:"responderRank"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil || req.ResponderRank == nil || *req.ResponderRank < 1 || *req.ResponderRank > 3 {
+		return 0, ""
+	}
+
+	type chainMember struct {
+		MembershipID    string `json:"membershipId"`
+		Name            string `json:"name"`
+		Email           string `json:"email"`
+		HasProfilePhone *bool  `json:"hasProfilePhone"`
+	}
+	var member *chainMember
+	for _, family := range pagingChainFamilies {
+		raw, err := h.entity.GetPagingChain(ctx, family)
+		if err != nil {
+			slog.WarnContext(ctx, "paging responder check: could not read the chain", "family", family, "err", err)
+			continue
+		}
+		var chain struct {
+			Members []chainMember `json:"members"`
+		}
+		if json.Unmarshal(raw, &chain) != nil {
+			continue
+		}
+		for i := range chain.Members {
+			if strings.EqualFold(chain.Members[i].MembershipID, membershipID) {
+				member = &chain.Members[i]
+				break
+			}
+		}
+		if member != nil {
+			break
+		}
+	}
+	if member == nil {
+		return 0, ""
+	}
+
+	name := strings.TrimSpace(member.Name)
+	if name == "" {
+		name = member.Email
+	}
+	has := member.HasProfilePhone != nil && *member.HasProfilePhone
+	email := normalizeEmail(member.Email)
+	if !has && h.phones != nil && email != "" {
+		entityAnswer := map[string]bool{}
+		if member.HasProfilePhone != nil {
+			entityAnswer[email] = *member.HasProfilePhone
+		}
+		hasPhone, failed := h.phones.profilePhones(ctx, []string{email}, entityAnswer)
+		if failed[email] {
+			return http.StatusServiceUnavailable, "Could not check whether " + name + " has a phone number on their CSM Profile just now. Try again."
+		}
+		has = hasPhone[email]
+	} else if !has && member.HasProfilePhone == nil {
+		// Nobody can say either way: entity-service is left to decide.
+		return 0, ""
+	}
+	if has {
+		return 0, ""
+	}
+	return http.StatusConflict, name + " can't be added to Level 0: a phone number should be included in their CSM Profile (avatar › Profile)"
 }
 
 // e164Re is a phone number in E.164: a +, a country code that does not start
