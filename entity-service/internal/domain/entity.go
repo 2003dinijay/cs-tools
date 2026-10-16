@@ -1977,6 +1977,9 @@ type SearchDeploymentsRequest struct {
 	ProjectIDs      []string         `json:"projectIds"`
 	DeploymentTypes []DeploymentType `json:"deploymentTypes"`
 	IDs             []string         `json:"ids"`
+	// Numbers matches deployments by their exact deployment number (e.g.
+	// "DEP000002442"), the identifier an offline usage report carries.
+	Numbers []string `json:"numbers,omitempty"`
 	// IncludeInactive additively widens the result to also include deployments
 	// with is_active = FALSE -- omitted/false reproduces today's exact
 	// behavior for every existing caller (the permanent is_active = TRUE

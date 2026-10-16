@@ -107,6 +107,12 @@ func (r *deploymentRepo) SearchDeployments(ctx context.Context, req domain.Searc
 		argIdx++
 	}
 
+	if len(req.Numbers) > 0 {
+		where += fmt.Sprintf(" AND d.number = ANY($%d::text[])", argIdx)
+		filterArgs = append(filterArgs, req.Numbers)
+		argIdx++
+	}
+
 	if len(req.DeploymentTypes) > 0 {
 		// Convert []DeploymentType to []string — pgx has no codec for named string types.
 		// Cast the parameter to deployment_type_enum[] so the column stays uncast and idx_deployments_type is usable.

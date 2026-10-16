@@ -19,6 +19,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -162,6 +163,31 @@ func TestDeploymentService_SearchDeployments_IncludeInactivePassesThrough(t *tes
 	}
 	if gotReq.IncludeInactive {
 		t.Error("IncludeInactive should default to false when omitted")
+	}
+}
+
+// SearchDeployments passes the numbers filter through trimmed, and refuses a
+// blank or over-long number -- the customer portal backend resolves an offline
+// usage report's deployment number this way, as the uploading user.
+func TestDeploymentService_SearchDeployments_NumbersFilter(t *testing.T) {
+	var gotReq domain.SearchDeploymentsRequest
+	svc := NewDeploymentService(&stubDeploymentRepo{
+		searchDeployments: func(_ context.Context, req domain.SearchDeploymentsRequest) ([]domain.DeploymentView, int, error) {
+			gotReq = req
+			return nil, 0, nil
+		},
+	})
+
+	if _, err := svc.SearchDeployments(context.Background(), domain.SearchDeploymentsRequest{Numbers: []string{" DEP000002442 "}}); err != nil {
+		t.Fatalf("SearchDeployments: unexpected error: %v", err)
+	}
+	if len(gotReq.Numbers) != 1 || gotReq.Numbers[0] != "DEP000002442" {
+		t.Errorf("repository got numbers %q", gotReq.Numbers)
+	}
+	for _, bad := range [][]string{{" "}, {strings.Repeat("9", 51)}} {
+		if _, err := svc.SearchDeployments(context.Background(), domain.SearchDeploymentsRequest{Numbers: bad}); err == nil {
+			t.Errorf("numbers %q: want a validation error", bad)
+		}
 	}
 }
 

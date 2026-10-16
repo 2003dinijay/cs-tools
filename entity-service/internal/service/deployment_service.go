@@ -300,6 +300,15 @@ func (s *deploymentService) SearchDeployments(ctx context.Context, req domain.Se
 	if err := validateUUIDs("ids", req.IDs); err != nil {
 		return domain.SearchDeploymentsResponse{}, err
 	}
+	if len(req.Numbers) > 50 {
+		return domain.SearchDeploymentsResponse{}, &apierror.ValidationError{Msg: "numbers may hold at most 50 entries"}
+	}
+	for i, n := range req.Numbers {
+		req.Numbers[i] = strings.TrimSpace(n)
+		if req.Numbers[i] == "" || len(req.Numbers[i]) > 50 {
+			return domain.SearchDeploymentsResponse{}, &apierror.ValidationError{Msg: "numbers must be deployment numbers of 1 to 50 characters"}
+		}
+	}
 
 	views, total, err := s.repo.SearchDeployments(ctx, req)
 	if err != nil {
