@@ -512,6 +512,34 @@ describe("useMultiplexedCaseStream", () => {
     expect(onCaseUpdated).not.toHaveBeenCalled();
   });
 
+  it("on an id-set change, catches up only the cases that stay subscribed", async () => {
+    const { rerender } = renderStream([ID_A, ID_B]);
+    await waitFor(() => expect(mockInstances).toHaveLength(1));
+    act(() => {
+      mockInstances[0].dispatchEvent(new Event("open"));
+    });
+    expect(invalidateQueriesMock).not.toHaveBeenCalled();
+
+    // ID_B stays, ID_C is new.
+    rerender({ ids: [ID_B, ID_C] });
+    await waitFor(() => expect(mockInstances).toHaveLength(2), {
+      timeout: ID_SET_DEBOUNCE_MS * 10,
+    });
+    expect(mockInstances[0].closed).toBe(true);
+    act(() => {
+      mockInstances[1].dispatchEvent(new Event("open"));
+    });
+
+    expect(invalidatedKeys()).toEqual([
+      ["csm-case-comments", ID_B],
+      ["csm-case-activities", ID_B],
+      ["csm-case-detail", ID_B],
+      ["csm-case-slas", ID_B],
+      ["csm-cases"],
+      ["csm-case-children"],
+    ]);
+  });
+
   describe("page visibility", () => {
     function setDocumentVisibility(state: "visible" | "hidden") {
       Object.defineProperty(document, "visibilityState", {

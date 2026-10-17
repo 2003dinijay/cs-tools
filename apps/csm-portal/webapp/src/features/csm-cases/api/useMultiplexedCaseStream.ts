@@ -121,6 +121,10 @@ export function useMultiplexedCaseStream(
     loggerRef.current = logger;
   });
 
+  // Ids of the most recent connection that opened, kept across effect runs
+  // (an id-set change tears one connection down and opens the next).
+  const openedIdsRef = useRef<Set<string> | null>(null);
+
   useEffect(() => {
     if (!settledKey || !apiConfig.streamEnabled || !apiConfig.streamUrl) return;
 
@@ -131,9 +135,6 @@ export function useMultiplexedCaseStream(
     let source: EventSourcePolyfill | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
     let attempt = 0;
-    // Whether an earlier connection in this run opened; a later open is a
-    // replacement, and frames published in between were never delivered.
-    let hasConnected = false;
 
     const scheduleReconnect = (): void => {
       const delay = reconnectDelay(attempt);
@@ -173,11 +174,17 @@ export function useMultiplexedCaseStream(
       // failures should back off.
       current.addEventListener("open", () => {
         attempt = 0;
-        if (hasConnected) {
-          for (const id of ids) invalidateCaseById(queryClient, id);
-          invalidateCaseLists(queryClient);
+        // Frames published between the previous connection closing (error,
+        // or the id set changing) and this one opening were never delivered
+        // and are not replayed, so catch up the cases that were already
+        // subscribed. Newly added ids were just loaded and need nothing.
+        const previous = openedIdsRef.current;
+        if (previous) {
+          const carriedOver = ids.filter((id) => previous.has(id.toLowerCase()));
+          for (const id of carriedOver) invalidateCaseById(queryClient, id);
+          if (carriedOver.length > 0) invalidateCaseLists(queryClient);
         }
-        hasConnected = true;
+        openedIdsRef.current = new Set(ids.map((id) => id.toLowerCase()));
       });
 
       current.addEventListener("case_updated", (event) => {
