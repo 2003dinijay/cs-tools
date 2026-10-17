@@ -170,7 +170,9 @@ function List({ rows }: { rows: number }): JSX.Element {
 
 export default function ScheduleSkeleton({ variant, label, rows }: Props): JSX.Element {
   return (
-    <div className={`sk sk-${variant}-wrap`} role="status" aria-live="polite" aria-busy="true">
+    // No aria-busy here: on a live region it holds the announcement until busy
+    // turns false, and this is unmounted before it ever would be.
+    <div className={`sk sk-${variant}-wrap`} role="status" aria-live="polite">
       <p className="sk-caption">
         <span className="sk-spin" aria-hidden="true" />
         {label}

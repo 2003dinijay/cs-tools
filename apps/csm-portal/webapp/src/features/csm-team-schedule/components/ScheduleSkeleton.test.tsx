@@ -25,7 +25,9 @@ describe("ScheduleSkeleton: a view drawn in its own shape while it loads", () =>
   it("says what is loading, once, to a screen reader and on screen", () => {
     render(<ScheduleSkeleton variant="roster" label="Loading the rota…" />);
     const status = screen.getByRole("status");
-    expect(status).toHaveAttribute("aria-busy", "true");
+    // Not aria-busy: that would hold the announcement until a false state the
+    // skeleton never reaches before it is replaced.
+    expect(status).not.toHaveAttribute("aria-busy");
     expect(status).toHaveTextContent("Loading the rota…");
     // The placeholder shapes are decoration, not content.
     expect(status.querySelector(".sk-body")).toHaveAttribute("aria-hidden", "true");
