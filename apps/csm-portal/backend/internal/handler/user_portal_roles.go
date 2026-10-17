@@ -36,27 +36,55 @@ import (
 //
 // GET /users/me computes this from the CALLER's own JWT "roles" claim, which
 // only ever describes the caller -- there is no way to read another user's
-// token from here. SCIM's own user search returns the same role assignment
-// for ANY user by email, so this reaches the same portal-role vocabulary for
-// the user being VIEWED via SCIM instead.
+// token from here. SCIM reaches the same portal-role vocabulary for the user
+// being VIEWED instead, in two steps: SearchUser (by email, the only lookup
+// key available here) to resolve the target's own Asgardeo user ID, then
+// GetUserByID (by that ID) for their full, authoritative role assignment
+// list -- deliberately not SearchUser's own Roles field, even though that
+// search response does carry one. A search response only returns whichever
+// attributes the caller asked for, while GetUserByID's GET-by-ID is the
+// canonical resource read and always returns the complete representation.
 //
-// SCIM's roles span every Asgardeo application the person holds a role in,
-// not just this portal, but the full, unfiltered list is handed straight to
-// RolesFor -- the exact same call GetMe makes with the JWT claim's roles.
-// RolesFor already only matches a role name against what AUTH_<ROLE>_ROLES
-// actually configures per portal role, so a role belonging to some other
-// application simply never matches anything and is silently ignored, same as
-// it would be filtered out here. An earlier version first narrowed SCIM's
-// roles to a hardcoded prefix (guessed at, not derived from this
-// deployment's actual Asgardeo role-naming convention) before calling
-// RolesFor -- confirmed live, via temporary diagnostic logging, that the
-// guess was wrong, so the filter silently dropped every role and no CSM
-// Platform role was ever resolved for anyone, regardless of what they
-// actually held in Asgardeo. RolesFor's own exact-match-against-
-// configuration behavior makes that intermediate filter both wrong and
-// unnecessary -- removed outright rather than repointed at a different
-// hardcoded guess, which would only repeat the same failure mode the next
-// time the naming convention changes.
+// More importantly, RolesForIDs matches by each role's own Asgardeo ID, not
+// its display name: two distinct roles can share the same display name,
+// which a name-based match (the plain RolesFor GetMe uses on the JWT's own
+// role-name claim) cannot tell apart. ASGARDEO_ROLE_IDS is what supplies the
+// name -> ID mapping AccessGuard.WithRoleIDs resolves this against (see
+// cmd/server/main.go) -- a role with no configured ID there simply never
+// matches, same "no entry means not wired up" posture as every other
+// consumer of that config.
+//
+// SCIM's own role list spans every Asgardeo application the person holds a
+// role in, not just this portal, but the full, unfiltered list is handed
+// straight to RolesForIDs: a role belonging to another application has no
+// configured ID here either, so it never matches anything, the same "doesn't
+// match, so it's silently ignored" shape RolesFor already has for names. An
+// earlier version first narrowed SCIM's roles to a hardcoded prefix (guessed
+// at, not derived from this deployment's actual Asgardeo role-naming
+// convention) before calling RolesFor -- confirmed live, via temporary
+// diagnostic logging, that the guess was wrong, so the filter silently
+// dropped every role and no CSM Platform role was ever resolved for anyone,
+// regardless of what they actually held in Asgardeo. Matching against
+// configuration (by name there, by ID here) rather than a guessed shape is
+// what makes that whole class of failure impossible.
+//
+// Some portal roles are granted by Asgardeo GROUP membership instead of a
+// role assignment at all -- a deployment choice, not something this handler
+// decides. GetUserByID's response already carries the target's group
+// memberships alongside their roles (same canonical GET-by-ID read, no
+// second call), and ASGARDEO_ROLE_GROUP_NAMES (see
+// directory.ParseRoleGroupNames, wired via AccessGuard.WithGroupNames) is
+// what maps a portal role directly to the group display name(s) that grant
+// it -- by name, not by the group's opaque id, since a deployment names a
+// group the same way it already names a real role for AUTH_<ROLE>_ROLES: as
+// a human-readable string, not a UUID looked up separately. (Two distinct
+// groups sharing a display name is a real possibility this still accepts --
+// unlike role matching, which switched to ID specifically to rule that out
+// -- but the deployment asked for name-based matching here regardless, since
+// a group's id is not something this configuration is meant to require
+// looking up.) RolesForIDsAndGroupNames matches by EITHER a held role ID or
+// a held group name in one pass, so a portal role reachable through a role,
+// a group, or both is still only ever reported once.
 //
 // Gated on the target's email domain (isWso2Email), not `userType`: a
 // wso2.com address is reserved for WSO2 staff regardless of what userType
@@ -92,12 +120,31 @@ func (h *UsersHandler) withPortalRoles(ctx context.Context, raw []byte, callerID
 		slog.WarnContext(ctx, "withPortalRoles: scim SearchUser failed", "userID", callerID, "err", err)
 		return raw
 	}
-	if info == nil {
+	if info == nil || info.ID == "" {
 		slog.WarnContext(ctx, "withPortalRoles: scim SearchUser: no result", "userID", callerID)
 		return raw
 	}
 
-	encoded, err := json.Marshal(h.access.RolesFor(info.Roles))
+	assignments, err := h.scim.GetUserByID(ctx, info.ID)
+	if err != nil {
+		slog.WarnContext(ctx, "withPortalRoles: scim GetUserByID failed", "userID", callerID, "err", err)
+		return raw
+	}
+
+	roleIDs := make([]string, 0, len(assignments.Roles))
+	for _, a := range assignments.Roles {
+		if a.ID != "" {
+			roleIDs = append(roleIDs, a.ID)
+		}
+	}
+	groupNames := make([]string, 0, len(assignments.Groups))
+	for _, g := range assignments.Groups {
+		if g.Name != "" {
+			groupNames = append(groupNames, g.Name)
+		}
+	}
+
+	encoded, err := json.Marshal(h.access.RolesForIDsAndGroupNames(roleIDs, groupNames))
 	if err != nil {
 		slog.WarnContext(ctx, "withPortalRoles: encode roles failed", "userID", callerID, "err", err)
 		return raw

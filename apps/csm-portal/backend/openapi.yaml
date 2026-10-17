@@ -10055,6 +10055,10 @@ paths:
   # loadViewerConfig). Identifiers here are the ones the ported viewer
   # frontend already sends: entity-service ids, or a project key for the
   # time-log report.
+  # Audience: every route here needs the viewer role, except /usage-metrics/*
+  # (usage_metrics_viewer, cs_engineer, admin) and the Customer Health routes
+  # plus the GET /products and GET /abt-teams lists its filters read (viewer,
+  # cs_engineer, admin).
   # ---------------------------------------------------------------------
 
   /accounts/{accountId}/escalations:
@@ -12445,8 +12449,9 @@ paths:
       summary: Create or change a Case Alerts chat room.
       operationId: putTeamScheduleCaseAlertRoom
       description: >
-        A ladder's shared room (no teamKey) or an SRE team's room. Only the fields below are
-        forwarded; the entity service decides who may.
+        A ladder's shared room (no teamKey), an SRE team's room, or an SME team's room (SME
+        has team rooms only). Only the fields below are forwarded; the entity service decides
+        who may.
       requestBody:
         required: true
         content:
@@ -12455,7 +12460,7 @@ paths:
               type: object
               required: [ladder, label]
               properties:
-                ladder: { type: string, enum: [CRE, SRE] }
+                ladder: { type: string, enum: [CRE, SRE, SME] }
                 teamKey: { type: string }
                 label: { type: string, maxLength: 100 }
                 enabled: { type: boolean }
@@ -12794,7 +12799,7 @@ paths:
               type: object
               required: [ladder, values]
               properties:
-                ladder: { type: string, enum: [CRE, SRE] }
+                ladder: { type: string, enum: [CRE, SRE, SME] }
                 values:
                   type: object
                   minProperties: 1

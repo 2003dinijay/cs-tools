@@ -2100,6 +2100,44 @@ func TestCaseService_UpdateCase_MirrorsFieldToServiceNow(t *testing.T) {
 	}
 }
 
+// TestCaseService_UpdateCase_SameStateResendSkipsMirror is the regression
+// guard for the largest recurring entry in sn_writeback_failures: a caller
+// resending the exact state the case is already in (a documented
+// read-then-write race in applyCustomerReplyStateTransition, or a plain
+// retry/double-click) must no-op in Postgres as before AND must never reach
+// the ServiceNow mirror -- the downstream data source's own workflow has no
+// "transition to self" entry, so it rejected this identically on every
+// single attempt with no path to ever succeed on retry.
+func TestCaseService_UpdateCase_SameStateResendSkipsMirror(t *testing.T) {
+	sameState := domain.CaseStateOpen
+	mirrorCalled := false
+	mirror := &stubMirrorCaseService{
+		patchCaseFieldsFn: func(context.Context, string, *domain.CaseState, *domain.CaseSeverity, *domain.CaseWorkState, *bool, *caseResolutionFields, bool) (domain.UpdatedCase, error) {
+			mirrorCalled = true
+			return domain.UpdatedCase{}, nil
+		},
+	}
+	repo := &stubCaseRepo{
+		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
+			return domain.CaseView{ID: testDeploymentUUID, State: &sameState}, nil
+		},
+		updateCase: func(_ context.Context, req domain.UpdateCaseRequest) (domain.Case, *domain.CaseSeverity, error) {
+			return domain.Case{ID: req.ID, State: req.State}, nil, nil
+		},
+	}
+	dispatcher := NewSNWritebackDispatcher(&recordingSNWritebackFailures{})
+	svc := NewCaseServiceWithSNWriteback(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, nil, dispatcher, mirror, nil, "")
+
+	if _, err := svc.UpdateCase(context.Background(), domain.UpdateCaseRequest{ID: testDeploymentUUID, State: &sameState}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	if mirrorCalled {
+		t.Error("mirror.patchCaseFields must not be called for a same-state resend")
+	}
+}
+
 // TestCaseService_UpdateCase_PublishesStatusChanged is the regression guard
 // for a real bug: caseService.UpdateCase never published case.status_changed
 // at all, for any DATA_SOURCE that writes state through this repository

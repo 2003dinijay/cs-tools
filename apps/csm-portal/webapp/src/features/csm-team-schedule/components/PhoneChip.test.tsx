@@ -50,10 +50,19 @@ describe("PhoneChip", () => {
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
 
-  it("offers nothing to add when the profile has a number", () => {
-    render(<PhoneChip member={pagingMember({ membershipId: "a", hasProfilePhone: true, canEditPhone: true })} controls={controls()} />);
-    expect(screen.getByText("Profile ✓")).toBeInTheDocument();
-    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+  it("shows nothing when the profile has a number", () => {
+    const { container } = render(
+      <PhoneChip member={pagingMember({ membershipId: "a", hasProfilePhone: true, canEditPhone: true })} controls={controls()} />,
+    );
+    expect(container).toBeEmptyDOMElement();
+    expect(screen.queryByText(/Profile/)).not.toBeInTheDocument();
+  });
+
+  it("keeps an older paging number's actions beside a profile number, without a status", () => {
+    const m = pagingMember({ membershipId: "a", name: "Jane Doe", hasProfilePhone: true, canEditPhone: true, pagingPhone: paging });
+    render(<PhoneChip member={m} controls={controls()} />);
+    expect(screen.getByRole("button", { name: "Remove Jane Doe's alert number" })).toBeInTheDocument();
+    expect(screen.queryByText(/Alert number/)).not.toBeInTheDocument();
   });
 
   it("offers Remove and Test call on an existing paging number, not Change, and says Calling while a test is awaited", () => {

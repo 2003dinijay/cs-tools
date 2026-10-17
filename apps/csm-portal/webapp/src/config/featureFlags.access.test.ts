@@ -13,17 +13,20 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
-import { beforeEach, describe, expect, it } from "vitest";
-import { navNodeById } from "@config/csmNavItems";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { navNodeById, navNodeForPath, navNodeRoutes } from "@config/csmNavItems";
 import {
   enabledNavChildren,
   featureState,
   featureStateForPath,
   firstEnabledDestination,
+  listPreviewableFeatures,
   navigableNavNodes,
   resetFeatureStatesForTests,
   visibleNavChildren,
   visibleNavSections,
+  visibleRailChildren,
+  visibleShortcutTo,
 } from "@config/featureFlags";
 import { getPortalAccess } from "@context/current-user/portalAccess";
 
@@ -48,8 +51,9 @@ describe("feature visibility by portal access", () => {
   // comment_updater), which a plain viewer holds none of. Usage Metrics is
   // also hidden: canViewUsageMetrics needs full access or
   // usage_metrics_viewer, which a plain viewer holds neither of (reported
-  // live). Customer Health/User Scan stay visible: isSplAudience holds for a
-  // plain viewer.
+  // live). User Scan (isSplAudience) stays visible. Customer Health is not a
+  // top-level section for a plain viewer: it moves under the Customers
+  // dropdown (showCustomerHealthUnderCustomers), see the describe block below.
   //
   // Asserted as an explicit allowlist rather than
   // `visibleNavSections().length - N`: that form silently drifted stale
@@ -77,10 +81,46 @@ describe("feature visibility by portal access", () => {
       "engagements",
       "announcements",
       "customers",
-      "customer-health",
       "user-scan",
       "help",
     ]);
+  });
+
+  // Customer Health is for the viewer role AND for cs_engineer/admin
+  // (canViewCustomerHealth); Usage Metrics for cs_engineer/admin and
+  // usage_metrics_viewer. Both sit together at the end of the sidebar, above
+  // User Scan (viewer-only), Settings and Help.
+  it("shows Customer Health and Usage Metrics to a CS engineer, at the end of the sidebar above Settings and Help", () => {
+    expect(visibleNavSections(csEngineer).map((s) => s.id).slice(-4)).toEqual([
+      "customer-health",
+      "usage-metrics",
+      "admin",
+      "help",
+    ]);
+    expect(featureStateForPath("/customer-health", csEngineer)).toBe("enabled");
+    expect(featureStateForPath("/customer-health/account/acct-1", csEngineer)).toBe("enabled");
+    expect(featureStateForPath("/usage-metrics", csEngineer)).toBe("enabled");
+  });
+
+  it("puts Customer Health and Usage Metrics above User Scan and Help for a CS engineer who also holds viewer", () => {
+    const both = getPortalAccess(["cs_engineer", "viewer"]);
+    expect(visibleNavSections(both).map((s) => s.id).slice(-5)).toEqual([
+      "customer-health",
+      "usage-metrics",
+      "user-scan",
+      "admin",
+      "help",
+    ]);
+  });
+
+  it("keeps User Scan viewer-only while Customer Health also opens to a CS engineer", () => {
+    expect(visibleNavSections(csEngineer).map((s) => s.id)).not.toContain("user-scan");
+    expect(featureStateForPath("/user-scan", csEngineer)).toBe("hidden");
+    // Roles that hold neither viewer nor full access still do not see it.
+    for (const role of ["escalator", "attachment_downloader", "usage_metrics_viewer", "timecard_approver", "dashboard_designer", "security_team"]) {
+      const access = getPortalAccess([role]);
+      expect(featureStateForPath("/customer-health", access)).toBe("hidden");
+    }
   });
 
   it("hides every Operations tab and route along with the section", () => {
@@ -209,5 +249,244 @@ describe("feature visibility by portal access", () => {
         "help.settings",
       ]),
     );
+  });
+});
+
+// A viewer (who is not also a CS engineer/admin) finds Customer Health under
+// the Customers dropdown instead of as its own top-level entry; the page and
+// its route still belong to the top-level "customer-health" node for everyone.
+describe("Customer Health under Customers for a viewer", () => {
+  const customers = navNodeById("customers")!;
+  const ids = (nodes: { id: string }[]): string[] => nodes.map((n) => n.id);
+
+  function setOverrides(value: unknown): void {
+    window.config = {
+      ...window.config,
+      CSM_PORTAL_FEATURE_OVERRIDES: value,
+    } as Window["config"];
+    resetFeatureStatesForTests();
+  }
+
+  beforeEach(() => setOverrides(undefined));
+  afterEach(() => setOverrides(undefined));
+
+  it("puts Customer Health in the viewer's Customers dropdown and drops the top-level entry", () => {
+    expect(ids(visibleRailChildren(customers, viewer))).toEqual([
+      "customers.accounts",
+      "customers.projects",
+      "customers.customer-health",
+    ]);
+    expect(ids(visibleNavSections(viewer))).not.toContain("customer-health");
+    expect(visibleShortcutTo("customer-health", viewer)?.id).toBe("customers.customer-health");
+  });
+
+  it("keeps the Customers page's own tab strip to Accounts and Projects", () => {
+    expect(ids(visibleNavChildren(customers, viewer))).toEqual(["customers.accounts", "customers.projects"]);
+    expect(ids(enabledNavChildren(customers, viewer))).toEqual(["customers.accounts", "customers.projects"]);
+    // The strip is built without a role filter (useRouteTabs); the shortcut
+    // must still never be one of its tabs.
+    expect(ids(visibleNavChildren(customers))).toEqual(["customers.accounts", "customers.projects"]);
+  });
+
+  it("still lets a viewer open the page and its account detail, owned by the top-level node", () => {
+    expect(navNodeRoutes(navNodeById("customers.customer-health")!)).toEqual([]);
+    expect(navNodeForPath("/customer-health")?.id).toBe("customer-health");
+    expect(navNodeForPath("/customer-health/account/acct-1")?.id).toBe("customer-health");
+    expect(featureStateForPath("/customer-health", viewer)).toBe("enabled");
+    expect(featureStateForPath("/customer-health/account/acct-1", viewer)).toBe("enabled");
+  });
+
+  it("offers Customer Health once in Quick-nav for a viewer, at the dashboard's own route", () => {
+    const entries = navigableNavNodes(viewer).filter((n) => n.label === "Customer Health");
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ id: "customer-health", href: "/customer-health" });
+  });
+
+  it("leaves CS engineers and admins on the top-level entry, even when they also hold viewer", () => {
+    for (const roles of [["cs_engineer"], ["admin"], ["cs_engineer", "viewer"], ["admin", "viewer"]]) {
+      const access = getPortalAccess(roles);
+      expect(ids(visibleRailChildren(customers, access))).toEqual(["customers.accounts", "customers.projects"]);
+      expect(ids(visibleNavSections(access))).toContain("customer-health");
+      expect(visibleShortcutTo("customer-health", access)).toBeUndefined();
+      expect(featureState("customers.customer-health", access)).toBe("hidden");
+    }
+  });
+
+  it("shows neither entry to a role that cannot see Customer Health", () => {
+    for (const role of ["escalator", "usage_metrics_viewer", "timecard_approver", "security_team"]) {
+      const access = getPortalAccess([role]);
+      expect(featureState("customers.customer-health", access)).toBe("hidden");
+      expect(ids(visibleNavSections(access))).not.toContain("customer-health");
+    }
+  });
+
+  it("hides the shortcut too when a deployment hides Customer Health, and the top-level entry stays hidden", () => {
+    setOverrides({ "customer-health": "hidden" });
+    expect(featureState("customers.customer-health", viewer)).toBe("hidden");
+    expect(ids(visibleRailChildren(customers, viewer))).toEqual(["customers.accounts", "customers.projects"]);
+    expect(ids(visibleNavSections(viewer))).not.toContain("customer-health");
+  });
+
+  it("marks the shortcut WIP when a deployment marks Customer Health WIP", () => {
+    setOverrides({ "customer-health": "wip" });
+    expect(featureState("customers.customer-health", viewer)).toBe("wip");
+  });
+
+  it("hides only the shortcut when a deployment hides it, bringing back the top-level entry", () => {
+    setOverrides({ "customers.customer-health": "hidden" });
+    expect(visibleShortcutTo("customer-health", viewer)).toBeUndefined();
+    expect(ids(visibleNavSections(viewer))).toContain("customer-health");
+  });
+
+  // The shipped config.js.example marks Customers WIP. A WIP section renders
+  // as one disabled entry with no dropdown, so the viewer must keep the
+  // working top-level Customer Health entry instead of losing it.
+  it("keeps a viewer's top-level entry when a deployment marks Customers WIP", () => {
+    setOverrides({ customers: "wip" });
+    expect(featureState("customers", viewer)).toBe("wip");
+    expect(visibleShortcutTo("customer-health", viewer)).toBeUndefined();
+    expect(ids(visibleNavSections(viewer))).toContain("customer-health");
+    expect(featureState("customer-health", viewer)).toBe("enabled");
+  });
+
+  it("keeps a viewer's top-level entry when a deployment hides Customers", () => {
+    setOverrides({ customers: "hidden" });
+    expect(visibleShortcutTo("customer-health", viewer)).toBeUndefined();
+    expect(ids(visibleNavSections(viewer))).toContain("customer-health");
+  });
+
+  it("offers a working shortcut when a WIP Customers is promoted by an enabled tab", () => {
+    setOverrides({ customers: "wip", "customers.accounts": "enabled" });
+    expect(featureState("customers", viewer)).toBe("enabled");
+    // Not the section's inherited WIP: the shortcut is not one of its tabs.
+    expect(featureState("customers.customer-health", viewer)).toBe("enabled");
+    expect(visibleShortcutTo("customer-health", viewer)?.id).toBe("customers.customer-health");
+    expect(ids(visibleRailChildren(customers, viewer))).toContain("customers.customer-health");
+    expect(ids(visibleNavSections(viewer))).not.toContain("customer-health");
+  });
+
+  it("does not let the shortcut promote a WIP Customers section for anyone", () => {
+    setOverrides({ customers: "wip", "customers.customer-health": "enabled" });
+    expect(featureState("customers")).toBe("wip");
+    expect(featureState("customers", getPortalAccess(["cs_engineer"]))).toBe("wip");
+  });
+
+  // An admin's Feature Preview toggles (featurePreview.ts) only ever promote
+  // for that admin; the shortcut is for viewers, so it has no toggle of its
+  // own and a viewer never benefits from an admin's preview.
+  it("leaves the shortcut out of the Feature Preview list, even when the deployment names it", () => {
+    const admin = getPortalAccess(["admin"]);
+    setOverrides({ "customers.customer-health": "hidden" });
+    expect(ids(listPreviewableFeatures(admin))).not.toContain("customers.customer-health");
+    expect(ids(listPreviewableFeatures())).not.toContain("customers.customer-health");
+    setOverrides({ "customer-health": "hidden", "customers.customer-health": "wip" });
+    expect(ids(listPreviewableFeatures(admin))).toContain("customer-health");
+    expect(ids(listPreviewableFeatures(admin))).not.toContain("customers.customer-health");
+  });
+
+  it("lets an admin preview a hidden Customer Health without showing it to viewers", () => {
+    setOverrides({ "customer-health": "hidden" });
+    const preview = { "customer-health": true };
+    expect(ids(visibleNavSections(getPortalAccess(["admin"]), preview))).toContain("customer-health");
+    expect(ids(visibleNavSections(viewer, preview))).not.toContain("customer-health");
+    expect(visibleShortcutTo("customer-health", viewer, preview)).toBeUndefined();
+    expect(ids(visibleRailChildren(customers, viewer, preview))).toEqual(["customers.accounts", "customers.projects"]);
+  });
+
+  it("never offers the shortcut to an admin, whatever they preview", () => {
+    const admin = getPortalAccess(["admin"]);
+    setOverrides({ customers: "wip", "customer-health": "hidden", "customers.customer-health": "hidden" });
+    const preview = { customers: true, "customer-health": true, "customers.customer-health": true };
+    expect(featureState("customers.customer-health", admin, preview)).toBe("hidden");
+    expect(visibleShortcutTo("customer-health", admin, preview)).toBeUndefined();
+    expect(ids(visibleRailChildren(customers, admin, preview))).not.toContain("customers.customer-health");
+    expect(ids(visibleNavSections(admin, preview))).toContain("customer-health");
+  });
+
+  // Main's Feature Preview promotes a restricted section when one of its tabs
+  // is previewed. The shortcut is not a tab, so a stored value for it (it has
+  // no toggle, so only a stale or hand-edited one) must not surface Customers.
+  it("does not let a preview value for the shortcut promote its section", () => {
+    const admin = getPortalAccess(["admin"]);
+    setOverrides({ customers: "hidden" });
+    expect(featureState("customers", admin, { "customers.customer-health": true })).toBe("hidden");
+    expect(ids(visibleNavSections(admin, { "customers.customer-health": true }))).not.toContain("customers");
+    // A real tab still promotes it.
+    expect(featureState("customers", admin, { "customers.accounts": true })).toBe("enabled");
+    setOverrides({ customers: "wip" });
+    expect(featureState("customers", admin, { "customers.customer-health": true })).toBe("wip");
+  });
+
+  it("does not change anything a viewer sees, whatever preview values are passed for them", () => {
+    const preview = {
+      customers: true,
+      "customers.accounts": true,
+      "customer-health": true,
+      "customers.customer-health": true,
+    };
+    for (const overrides of [
+      undefined,
+      { customers: "wip" },
+      { customers: "hidden" },
+      { "customer-health": "hidden" },
+      { "customer-health": "wip" },
+      { "customers.customer-health": "hidden" },
+    ]) {
+      setOverrides(overrides);
+      expect(ids(visibleNavSections(viewer, preview))).toEqual(ids(visibleNavSections(viewer)));
+      expect(ids(visibleRailChildren(customers, viewer, preview))).toEqual(ids(visibleRailChildren(customers, viewer)));
+      expect(visibleShortcutTo("customer-health", viewer, preview)?.id).toBe(
+        visibleShortcutTo("customer-health", viewer)?.id,
+      );
+      expect(featureState("customers.customer-health", viewer, preview)).toBe(
+        featureState("customers.customer-health", viewer),
+      );
+    }
+  });
+
+  // The narrowing in featureState: the owner's preview reaches the shortcut,
+  // the shortcut's own preview value does not. Only an access object that is
+  // both an admin and placed under Customers can show it, which no real role
+  // set is today (the placement flag excludes admins) -- this pins the
+  // threading in case the two ever overlap.
+  it("lets the owner's preview reach the shortcut, but not the shortcut's own preview value", () => {
+    const adminUnderCustomers = { ...viewer, isAdmin: true };
+    setOverrides({ "customer-health": "hidden" });
+    expect(featureState("customers.customer-health", adminUnderCustomers)).toBe("hidden");
+    expect(featureState("customers.customer-health", adminUnderCustomers, { "customer-health": true })).toBe(
+      "enabled",
+    );
+    expect(visibleShortcutTo("customer-health", adminUnderCustomers, { "customer-health": true })?.id).toBe(
+      "customers.customer-health",
+    );
+    expect(ids(visibleRailChildren(customers, adminUnderCustomers, { "customer-health": true }))).toContain(
+      "customers.customer-health",
+    );
+    expect(ids(visibleNavSections(adminUnderCustomers, { "customer-health": true }))).not.toContain(
+      "customer-health",
+    );
+
+    setOverrides({ "customers.customer-health": "hidden" });
+    expect(
+      featureState("customers.customer-health", adminUnderCustomers, { "customers.customer-health": true }),
+    ).toBe("hidden");
+    expect(
+      visibleShortcutTo("customer-health", adminUnderCustomers, { "customers.customer-health": true }),
+    ).toBeUndefined();
+
+    // The section's own preview decides whether it opens as a dropdown at all.
+    setOverrides({ customers: "wip" });
+    expect(visibleShortcutTo("customer-health", adminUnderCustomers)).toBeUndefined();
+    expect(visibleShortcutTo("customer-health", adminUnderCustomers, { customers: true })?.id).toBe(
+      "customers.customer-health",
+    );
+  });
+
+  it("hides the shortcut from a role that cannot reach the Customer Health page itself", () => {
+    // Today the placement flag implies the page flag; this pins that the
+    // shortcut follows the owner even if the two ever drift apart.
+    const access = { ...viewer, canViewCustomerHealth: false };
+    expect(featureState("customers.customer-health", access)).toBe("hidden");
+    expect(visibleShortcutTo("customer-health", access)).toBeUndefined();
   });
 });

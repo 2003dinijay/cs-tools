@@ -133,22 +133,18 @@ func TestStoppedChat_OtherStops(t *testing.T) {
 	}
 }
 
-// An SRE incident stops on an assignee, and names its chain.
+// An SRE incident stops on an assignee, and its space gets the "Incident Acknowledged." card instead of a stopped reply.
 func TestStoppedChat_SREIncidentAssigned(t *testing.T) {
 	chat, store := &fakeChat{}, newMemStore()
 	e := ladderEngine(LadderSRE, chat, store)
 
 	stoppedRun(t, e, store, created(t, "Apollo", "HIGH"), assigned(t))
 
-	if len(chat.stopped) != 1 {
-		t.Fatalf("stopped replies = %d; want 1", len(chat.stopped))
+	if len(chat.stopped) != 0 || len(chat.acks) != 1 {
+		t.Fatalf("stopped %d, acknowledged %d; want only the acknowledged card", len(chat.stopped), len(chat.acks))
 	}
-	s := chat.stopped[0]
-	if !s.Answered || s.Detail != "Acknowledged (assigned)." || !strings.HasSuffix(s.Chain, "SRE") {
-		t.Errorf("reply = %+v; want an acknowledged SRE reply naming no one", s)
-	}
-	if s.PortalLabel != "View incident" || s.ThreadKey != "incident-"+testIncidentID {
-		t.Errorf("label %q thread %q; want the incident's", s.PortalLabel, s.ThreadKey)
+	if a := chat.acks[0]; a.AssigneeName != "a-l2" || a.IncidentID != testIncidentID {
+		t.Errorf("acknowledged = %+v; want the assignee", a)
 	}
 }
 

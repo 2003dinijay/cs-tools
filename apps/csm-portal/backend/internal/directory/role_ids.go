@@ -76,3 +76,56 @@ func ParseRoleIDs(raw string) (map[string]string, error) {
 	}
 	return ids, nil
 }
+
+// ParseRoleGroupNames parses a portal-role-key -> Asgardeo-group-display-
+// name(s) mapping from its configuration form: a JSON object string, e.g.
+//
+//	{"cs_engineer": ["CSM Engineers"]}
+//
+// Unlike ParseRoleIDs, the key here is the portal role's own stable key --
+// the same strings handler.NewAccessGuard assigns ("viewer", "cs_engineer",
+// "admin", ...) -- not a real Asgardeo role name: a group has no equivalent
+// of a role's display name to cross-reference against AUTH_<ROLE>_ROLES, so
+// the deployment names the portal role being granted directly. The value is
+// the group's own display name (the one visible in the Asgardeo console),
+// not its opaque id -- matched case-sensitively against SCIM's "display"
+// field for each group a user belongs to, the same exact-match convention
+// AUTH_<ROLE>_ROLES itself already uses for role names. It is an array, not
+// a single string, because more than one group can grant the same portal
+// role.
+//
+// There is no default and no requirement that every portal role be present:
+// a portal role with no entry here simply has no group that grants it --
+// the same "no entry means not wired up here" posture ParseRoleIDs
+// documents for a real role name.
+func ParseRoleGroupNames(raw string) (map[string][]string, error) {
+	if raw == "" {
+		return map[string][]string{}, nil
+	}
+
+	var names map[string][]string
+	if err := json.Unmarshal([]byte(raw), &names); err != nil {
+		return nil, fmt.Errorf("role group name mapping: invalid JSON: %w", err)
+	}
+	// Same "null" trap ParseRoleIDs guards against -- json.Unmarshal of the
+	// literal "null" succeeds with names == nil and no error, indistinguishable
+	// from "{}" to the zero-value check below.
+	if names == nil {
+		return nil, fmt.Errorf("role group name mapping: configuration must not be JSON null")
+	}
+
+	for key, groupNames := range names {
+		if key == "" {
+			return nil, fmt.Errorf("role group name mapping: a portal role key is empty")
+		}
+		if len(groupNames) == 0 {
+			return nil, fmt.Errorf("role group name mapping: role %q has no group names", key)
+		}
+		for _, name := range groupNames {
+			if name == "" {
+				return nil, fmt.Errorf("role group name mapping: role %q has an empty group name", key)
+			}
+		}
+	}
+	return names, nil
+}

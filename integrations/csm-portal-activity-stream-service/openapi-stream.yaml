@@ -16,6 +16,69 @@ servers:
       port:
         default: "9092"
 paths:
+  /cases/activities/stream:
+    get:
+      summary: Live activity updates for several cases on one connection.
+      description: >
+        Like `/cases/{id}/activities/stream`, but one Server-Sent Events
+        connection covers up to 20 distinct case ids. Each `case_updated`
+        event carries its `caseId` in the data payload. Every id is checked
+        against the caller's read access before subscribing; ids the caller
+        cannot read (or that do not exist for them) are silently dropped from
+        the subscription and never produce events. If none of the ids is
+        readable the upstream 403/404 is returned; any other upstream failure
+        fails the whole request. Returns 503 when Event Hub isn't configured on
+        the service.
+      operationId: getCasesActivitiesStream
+      parameters:
+        - name: ids
+          in: query
+          description: >
+            Comma-separated case UUIDs. Duplicates are ignored; at most 20
+            distinct ids.
+          required: true
+          schema:
+            type: string
+        - name: x-user-id-token
+          in: header
+          description: >
+            Forwarded to upstream entity-service calls as the caller's
+            identity for per-case ACL checks. Optional — falls back to the
+            x-jwt-assertion value itself when absent (see middleware.Auth).
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Ok
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "400":
+          description: BadRequest (missing, malformed or more than 20 ids)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "503":
+          description: ServiceUnavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
   /cases/{id}/activities/stream:
     get:
       summary: Live case-activity updates.

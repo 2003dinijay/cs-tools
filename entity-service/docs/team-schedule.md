@@ -518,23 +518,31 @@ ladders' settings can be kept here and changed on the Alert Settings tab, instea
 of a Choreo secret and csm-notification-service's YAML file mount. Only what
 decides whether paging runs and what it may cost -- the switches, the channel,
 the safety caps, `phones.source`, test calls and the SME page -- stays in the
-file (`scripts/csm-compose/paging-alert.minimal.yaml` is that small file). **Nothing changes until
-csm-notification-service runs with `PAGING_CONFIG_SOURCE` set**: until then the
-file and env vars are all it reads, and the tab says the settings are saved but
-not in use.
+file (`scripts/csm-compose/paging-alert.minimal.yaml` is that small file).
+**Each family's settings are its own** (0237, 0238): CRE's chat room,
+redirects and ladder values; SRE's team rooms, redirects and ladder values;
+SME's team rooms and ladder values (timing, teams, on leave, closing message).
+With `PAGING_CONFIG_SOURCE` unset csm-notification-service uses everything
+saved, over the file's, at its next start; what is not saved keeps the file's,
+so nothing changes until somebody saves. `off` uses none of it. No setting is
+needed on either service. A saved SME room is used even when the file lists no
+SME rooms (`sme.teamChats`); every SME team without one keeps `sme.chat`.
 
 - **Rooms** (`paging_chat_room`), shown as *Team routing*: the CRE and SRE
-  shared rooms, and an SRE team's own row (Apollo, Artemis, IaaS). A team row
+  shared rooms, an SRE team's own row (Apollo, Artemis, IaaS) and, since 0237,
+  an SME team's (no shared SME room, teamless or channel). A team row
   may be marked *teamless* (it also gets the cards of an incident with no SRE
   team), and may set how that team's alerts go out: chat, call, both or log.
   A team never does more than its ladder -- the ladder's channel stays in the
   alert service's file and is the ceiling -- and a row can hold a channel
   without a URL of its own.
-- **Webhook URLs** (`paging_chat_secret`) are write-only. entity-service seals
-  them with AES-256-GCM under `CASE_ALERTS_SECRET_KEY`, one key per environment,
-  so a database copied from another environment cannot open them. People see a
-  hint (space id and the token's last characters); the URL never reaches a
-  browser, a log or the audit history -- that table has no audit trigger.
+- **Webhook URLs** (`paging_chat_secret.webhook_url`) are write-only and, since
+  0237, stored as saved: no key is needed. People see a hint (space id and the
+  token's last characters); the URL never reaches a browser, a log or the audit
+  history -- that table has no audit trigger. Anyone who can read the database
+  or a copy of it can read the URLs and post into those spaces; accepted, the
+  database being internal. A URL sealed before 0237 opens only where
+  `CASE_ALERTS_SECRET_KEY` is set, and saving it again stores it plainly.
 - **Routes** (`paging_group_route`): a ServiceNow group to a team, or (SRE) a
   default group to a rota such as `SRE_SAAS`.
 - **Ladder values** (`paging_ladder_value`): one row per other key of the file's
@@ -552,24 +560,26 @@ not in use.
   values here in one go -- the first step of moving to the small file. What
   only the file sets (on/off, channel, safety caps, where numbers come from) is
   reported too and shown read-only; allowed numbers as a count only.
-- **Who:** a CSM admin (`AUTH_ADMIN_ROLES`) or portal admin changes both
-  ladders; the CRE or SRE rota admin their own ladder; the CRE and CS heads can
-  look. Team leads and everyone else see the tab as before.
+- **Who:** seeing a family's settings and changing them go together, and
+  another family's are never sent. CRE: the CRE rota admin and the CRE and CS
+  heads. SRE (SaaS and IaaS): the SRE rota admin. SME: the SME rota admin. A CSM
+  admin (`AUTH_ADMIN_ROLES`) or portal admin, or anybody with all three rota
+  admin roles: all three. Team leads see who gets alerts, not the settings.
 - **Test card:** entity-service posts a short card to the saved URL and records
   delivered or failed; one per room every two minutes. entity-service needs to
   reach `chat.googleapis.com` for this.
 - **csm-notification-service** reads `GET /team-schedule/case-alerts/settings/runtime`
-  (its client must be in `CASE_ALERTS_RUNTIME_CLIENT_IDS`; a person's token is
-  refused) at start-up only, and reports what it loaded on `PUT .../applied`.
+  (any internal service client; `CASE_ALERTS_RUNTIME_CLIENT_IDS`, when set,
+  narrows it; a person's token is refused) at start-up only, and reports what
+  it loaded on `PUT .../applied`.
   `paging_config_revision` tells "saved" from "running".
 - **Audited:** room, route and ladder value changes go to `team_schedule_audit`
   with the caller as actor.
 
-Settings on entity-service: `CASE_ALERTS_SECRET_KEY` (base64 of 32 random bytes,
-e.g. `openssl rand -base64 32`; a Choreo secret), `CASE_ALERTS_SECRET_KEY_ID`
-(default `1`), `CASE_ALERTS_RUNTIME_CLIENT_IDS` (csm-notification-service's
-client id) and `CASE_ALERTS_ENVIRONMENT` (a label such as `staging`). Without
-the key the tab works but no URL can be saved.
+Settings on entity-service, all optional: `CASE_ALERTS_ENVIRONMENT` (a label
+such as `staging`), `CASE_ALERTS_RUNTIME_CLIENT_IDS` (narrows who may read the
+URLs), and `CASE_ALERTS_SECRET_KEY` / `_KEY_ID` (only to open a URL sealed
+before 0237).
 
 ## 5. Known gaps
 
@@ -586,6 +596,12 @@ the key the tab works but no URL can be saved.
   change as well as a migration.
 
 ## Change log
+
+- **0238 Case Alerts: SME ladder values.** `paging_ladder_value` takes ladder
+  `SME`. Additive and re-runnable; no row changes.
+- **0237 Case Alerts: SME team rooms, plain URLs.** `paging_chat_room` takes
+  ladder `SME` (team rooms only); `paging_chat_secret` gains `webhook_url`, and
+  its sealed columns become optional. Additive and re-runnable; no row changes.
 
 - **0233 Case Alerts settings.** New tables `paging_chat_room`,
   `paging_chat_secret`, `paging_group_route`, `paging_ladder_value` and

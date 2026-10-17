@@ -69,9 +69,18 @@ window.config = {
   // Available ids: dashboard, support, operations{.service-requests,
   // .change-requests, .incidents, .problems}, engagements, security-center
   // {.reports, .vulnerabilities}, updates, time-cards, announcements,
-  // customers{.accounts, .projects}, admin{.user-management{.users, .roles,
+  // customers{.accounts, .projects, .customer-health}, customer-health,
+  // usage-metrics, user-scan, admin{.user-management{.users, .roles,
   // .groups, .teams, .permissions}, .dashboards}. Unknown ids are ignored
   // with a console warning.
+  //
+  // "customers.customer-health" is not a Customers tab but a second sidebar
+  // entry for the Customer Health page (shown to viewers who are not CS
+  // engineers/admins, inside the Customers dropdown). It follows
+  // "customer-health": hiding or WIP-ing that hides or WIPs both entries.
+  // A WIP or hidden Customers section does not hide Customer Health: those
+  // viewers then get the separate Customer Health entry instead. It is never
+  // offered in the Feature Preview dialog; preview "customer-health" instead.
   CSM_PORTAL_FEATURE_OVERRIDES: {
     "operations": "wip",
     "operations.incidents": "enabled",

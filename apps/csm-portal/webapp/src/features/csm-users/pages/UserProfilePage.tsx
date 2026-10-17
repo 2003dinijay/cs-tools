@@ -151,6 +151,13 @@ interface ProjectAccessStatus {
  */
 function deriveProjectAccessStatus(pa: UserProjectAccess): ProjectAccessStatus {
   if (!pa.grantsCaseAccess) {
+    // A linked row whose addresses agree is only waiting on registration.
+    if (
+      pa.contactRecordPresent &&
+      (pa.contactRecordEmail ?? "").toLowerCase() === pa.contactEmail.toLowerCase()
+    ) {
+      return { label: "Invited", color: "warning" };
+    }
     return {
       label: "No access",
       color: "error",
@@ -404,7 +411,7 @@ function PermissionsCard({ user }: { user: NormalizedUserDetail }): JSX.Element 
  */
 function AccessibleProjectsCard({ user }: { user: NormalizedUserDetail }): JSX.Element {
   const access = user.projectAccess ?? [];
-  const blockedCount = access.filter((pa) => !pa.grantsCaseAccess).length;
+  const blockedCount = access.filter((pa) => deriveProjectAccessStatus(pa).label === "No access").length;
 
   return (
     <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2 }}>

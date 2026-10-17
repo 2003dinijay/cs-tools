@@ -258,7 +258,8 @@ func (e *Engine) postSMEHandoffTo(ctx context.Context, target chatRoom, pr speci
 		PortalURL:   e.links.IncidentLink(pr.IncidentID),
 		PortalLabel: "View incident",
 		ThreadKey:   notifications.IncidentThreadKey(pr.IncidentID),
-		Reply:       target.reply,
+		// Always an SRE incident, so a reply under its "Incident Reported" card wherever the ladder posted one.
+		Reply: target.reply || e.sreReplies(Trigger{Team: pr.PreviousGroup, Routing: RoutingContext{Ladder: LadderSRE}}),
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "escalation: the SME handoff message was not posted", "incidentId", pr.IncidentID, "audience", target.room, "err", err)
@@ -315,15 +316,6 @@ func smeTrigger(pr specialOpsPress, team string) Trigger {
 func (e *Engine) startSMELadder(ctx context.Context, t Trigger, p specialOpsPress) (bool, error) {
 	sme := e.cfg.SME
 	if len(e.smeNotifiersFor(t.Routing.SMETeam)) == 0 && e.cfg.CallSendingEnabled {
-		if e.smeTeamHasNoChat(t.Routing.SMETeam) {
-			// sme.teamChats is set and does not list this team, and the
-			// channel is chat only: nothing to post and nobody to call.
-			slog.WarnContext(ctx, "escalation: the SME team has no Chat space of its own (sme.teamChats); nobody was contacted",
-				"incidentId", t.IncidentID, "smeTeam", t.Routing.SMETeam)
-			e.writeSMENote(ctx, t, p, nil, "NO_CHAT_SPACE",
-				fmt.Sprintf("SME team %s has no Chat space of its own (sme.teamChats)", t.Routing.SMETeam))
-			return false, nil
-		}
 		// sme.channel names a channel with no client (logged at startup).
 		slog.ErrorContext(ctx, "escalation: no notifier for the SME page's channel; nobody was contacted",
 			"incidentId", t.IncidentID, "channel", string(sme.Channel))

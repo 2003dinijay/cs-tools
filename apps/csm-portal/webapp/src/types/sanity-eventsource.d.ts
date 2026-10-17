@@ -17,9 +17,9 @@
 // @sanity/eventsource ships types only for its Node entry point (its
 // package.json declares "types": "./node.d.ts") — not for the browser
 // bundle Vite actually resolves. This declares the minimal surface
-// useCaseActivityStream.ts needs: an EventSource-compatible constructor that
+// useMultiplexedCaseStream.ts needs: an EventSource-compatible constructor that
 // additionally accepts a `headers` option, which native browser EventSource
-// does not support (see useCaseActivityStream.ts for why that's required).
+// does not support (see useMultiplexedCaseStream.ts for why that's required).
 declare module "@sanity/eventsource" {
   export default class EventSourcePolyfill extends EventTarget {
     constructor(url: string, eventSourceInitDict?: { headers?: Record<string, string> });

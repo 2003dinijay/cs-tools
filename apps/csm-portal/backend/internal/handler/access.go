@@ -136,11 +136,29 @@ const (
 	// from it by default in the webapp's own nav. See usePortalView.ts and
 	// useAccess.ts for the matching frontend halves of this split;
 	// keep all three in sync on which role each one checks.
+	//
+	// Customer Health is the one viewer-audience domain that is NOT on this
+	// permission any more: see PermViewCustomerHealth, which cs_engineer and
+	// admin hold as well as Viewer.
 	PermViewerAccess
+	// PermViewCustomerHealth is the Customer Health dashboard: its summary,
+	// account detail, risk and action-item routes (/customer-health/*) and the
+	// two filter lists it reads (GET /products, GET /abt-teams).
+	//
+	// Held by Viewer, the audience the dashboard was built for, and also by
+	// cs_engineer and admin, who work the same accounts and need the same
+	// view -- so unlike PermViewerAccess it does not require the Viewer role:
+	// a cs_engineer or admin reaches it without separately holding Viewer.
+	// Every other route in the viewer-audience block (User Scan, Time report,
+	// the account escalation list, Drive files) stays on PermViewerAccess.
+	// Keep the webapp's canViewCustomerHealth (portalAccess.ts) in sync with
+	// this set.
+	PermViewCustomerHealth
 	// PermUsageMetricsViewer is the Usage Metrics domain (/usage-metrics/*).
-	// Unlike every other ex-"Support Portal Lite" domain (Customer Health,
-	// User Scan, the SLA/Time/CS project reports — all still gated by
-	// PermViewerAccess, Viewer only), Usage Metrics is registered directly
+	// Unlike the ex-"Support Portal Lite" domains still gated by
+	// PermViewerAccess (Viewer only: User Scan, the Time project report),
+	// and unlike Customer Health (PermViewCustomerHealth, which cs_engineer
+	// and admin hold too), Usage Metrics is registered directly
 	// on THIS permission at the route level, not layered on top of
 	// PermViewerAccess: it was reported live as needing a broader audience
 	// than "holds the Viewer role" once Support Portal Lite's separate
@@ -347,11 +365,24 @@ type AccessGuard struct {
 	portalRoles []portalRole
 }
 
-// portalRole is one portal role: its stable key (what the frontend sees) and
-// the configured token role names that grant it.
+// portalRole is one portal role: its stable key (what the frontend sees),
+// the configured token role names that grant it, -- once WithRoleIDs has
+// run -- the real Asgardeo role IDs that resolve to those same names, and --
+// once WithGroupNames has run -- the real Asgardeo group display names
+// configured directly against this role's own key.
 type portalRole struct {
 	key   string
 	names map[string]struct{}
+	// ids is nil until WithRoleIDs runs; RolesForIDs then treats a nil map
+	// the same as an empty one (no match), so calling it before WithRoleIDs
+	// is a safe, silent no-op rather than a nil-map panic.
+	ids map[string]struct{}
+	// groupNames is nil until WithGroupNames runs; RolesForGroupNames and
+	// RolesForIDsAndGroupNames treat a nil map the same way ids is treated
+	// above -- a safe, silent no-op, never a nil-map panic. Matched
+	// case-sensitively, the same exact-match convention AUTH_<ROLE>_ROLES
+	// itself uses for role names.
+	groupNames map[string]struct{}
 }
 
 // NewAccessGuard builds a guard from cfg. Admin satisfies every permission.
@@ -415,19 +446,19 @@ func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 	}
 	return &AccessGuard{
 		portalRoles: []portalRole{
-			{"viewer", build(cfg.Viewer)},
-			{"escalator", build(cfg.Escalator)},
-			{"attachment_downloader", build(cfg.AttachmentDownloader)},
-			{"cs_engineer", build(cfg.CsEngineer)},
-			{"usage_metrics_viewer", build(cfg.UsageMetricsViewer)},
-			{"timecard_approver", build(cfg.TimecardApprover)},
-			{"dashboard_designer", build(cfg.DashboardDesigner)},
-			{"admin", build(cfg.Admin)},
-			{"sales_solutions", build(cfg.SalesSolutions)},
-			{"worknote_creator", build(cfg.WorknoteCreator)},
-			{"announcement_creator", build(cfg.AnnouncementCreator)},
-			{"comment_updater", build(cfg.CommentUpdater)},
-			{"security_team", build(cfg.SecurityTeam)},
+			{key: "viewer", names: build(cfg.Viewer)},
+			{key: "escalator", names: build(cfg.Escalator)},
+			{key: "attachment_downloader", names: build(cfg.AttachmentDownloader)},
+			{key: "cs_engineer", names: build(cfg.CsEngineer)},
+			{key: "usage_metrics_viewer", names: build(cfg.UsageMetricsViewer)},
+			{key: "timecard_approver", names: build(cfg.TimecardApprover)},
+			{key: "dashboard_designer", names: build(cfg.DashboardDesigner)},
+			{key: "admin", names: build(cfg.Admin)},
+			{key: "sales_solutions", names: build(cfg.SalesSolutions)},
+			{key: "worknote_creator", names: build(cfg.WorknoteCreator)},
+			{key: "announcement_creator", names: build(cfg.AnnouncementCreator)},
+			{key: "comment_updater", names: build(cfg.CommentUpdater)},
+			{key: "security_team", names: build(cfg.SecurityTeam)},
 		},
 		allowed: map[Permission]map[string]struct{}{
 			PermView: build(cfg.Viewer, cfg.Escalator, cfg.AttachmentDownloader,
@@ -451,6 +482,9 @@ func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 			// Viewer, unconditionally (no cs_engineer exclusion) -- see
 			// PermViewerAccess's own doc comment for why.
 			PermViewerAccess: build(cfg.Viewer),
+			// Viewer plus the staff roles that hold full access -- see
+			// PermViewCustomerHealth's own doc comment.
+			PermViewCustomerHealth: build(cfg.Viewer, cfg.CsEngineer, cfg.Admin),
 			// Every existing PermView holder, so nothing they could already
 			// read stops being readable, plus SalesSolutions for exactly the
 			// routes this permission is registered on -- see
@@ -500,6 +534,151 @@ func (g *AccessGuard) RolesFor(tokenRoles []string) []string {
 				keys = append(keys, r.key)
 				break
 			}
+		}
+	}
+	return keys
+}
+
+// WithRoleIDs cross-references each portal role's configured real role
+// name(s) against idsByRoleName (ASGARDEO_ROLE_IDS, see
+// directory.ParseRoleIDs) to resolve the real Asgardeo role ID(s) that grant
+// each portal role, enabling RolesForIDs below. A name with no configured ID
+// simply contributes nothing -- the same "no entry means not wired up here"
+// posture ASGARDEO_ROLE_IDS itself documents; RolesForIDs answers empty for
+// every portal role until this has been called, rather than panicking on a
+// nil map. Returns g for chaining, the same post-construction wiring shape
+// as handler.UsersHandler.WithAccessGuard/WithGrantableRoles.
+func (g *AccessGuard) WithRoleIDs(idsByRoleName map[string]string) *AccessGuard {
+	for i, r := range g.portalRoles {
+		ids := make(map[string]struct{}, len(r.names))
+		for name := range r.names {
+			if id, ok := idsByRoleName[name]; ok {
+				ids[id] = struct{}{}
+			}
+		}
+		g.portalRoles[i].ids = ids
+	}
+	return g
+}
+
+// RolesForIDs is RolesFor's counterpart for a caller that knows which real
+// roles a user holds by their own Asgardeo role ID (e.g. a SCIM GET-by-ID
+// response's "value" field for each role in its "roles" array), not by
+// name -- needed because two distinct Asgardeo roles can share the same
+// display ("name"), which RolesFor's name-based matching cannot tell apart,
+// while a role's ID is always unique. Same fixed GET /users/me-reporting
+// order as RolesFor, and the same "always a non-nil, possibly empty slice"
+// contract. Answers empty for every role until WithRoleIDs has been called.
+func (g *AccessGuard) RolesForIDs(roleIDs []string) []string {
+	keys := make([]string, 0, len(g.portalRoles))
+	for _, r := range g.portalRoles {
+		for _, id := range roleIDs {
+			if _, ok := r.ids[id]; ok {
+				keys = append(keys, r.key)
+				break
+			}
+		}
+	}
+	return keys
+}
+
+// WithGroupNames wires ASGARDEO_ROLE_GROUP_NAMES -- a portal-role-key ->
+// Asgardeo-group-display-name(s) mapping (see directory.ParseRoleGroupNames)
+// -- enabling RolesForGroupNames/RolesForIDsAndGroupNames below. Unlike
+// WithRoleIDs, which cross-references a portal role's configured real role
+// NAMES against ASGARDEO_ROLE_IDS, this matches directly on the portal
+// role's own stable KEY: a group has no equivalent of a role's "real name"
+// on the token to cross-reference against AUTH_<ROLE>_ROLES, so the
+// deployment names the portal role being granted directly (e.g.
+// "cs_engineer") and lists the group display name(s) that should grant it
+// -- matched against a group's SCIM "display" value (the same name visible
+// in the Asgardeo console), not its opaque id. A portal role key with no
+// entry here simply never matches by group membership -- the same "no entry
+// means not wired up here" posture WithRoleIDs already has for role names.
+//
+// Unlike a real Asgardeo role name (an open-ended, deployment-specific
+// string ASGARDEO_ROLE_IDS has no fixed vocabulary to check against), a
+// portal role key IS a closed, known set -- exactly g.portalRoles' own keys,
+// fixed by NewAccessGuard above. A key in groupNamesByRoleKey that matches
+// none of them is therefore always a configuration mistake (a typo like
+// "cs_enginer"), not a legitimate "not relevant to this deployment yet"
+// case, and would otherwise grant nothing with no signal anywhere that it
+// silently failed to wire up. Logged as a startup warning naming the
+// offending key(s) -- not a hard failure, matching this guard's existing
+// posture elsewhere (an unset/misconfigured AUTH_<ROLE>_ROLES also only
+// warns, never exits) rather than taking down the whole backend over one
+// bad entry in an otherwise-optional, purely additive feature.
+// Returns g for chaining.
+func (g *AccessGuard) WithGroupNames(groupNamesByRoleKey map[string][]string) *AccessGuard {
+	known := make(map[string]struct{}, len(g.portalRoles))
+	for _, r := range g.portalRoles {
+		known[r.key] = struct{}{}
+	}
+	for key := range groupNamesByRoleKey {
+		if _, ok := known[key]; !ok {
+			slog.Warn("ASGARDEO_ROLE_GROUP_NAMES names an unknown portal role; its configured group(s) grant nothing", "key", key)
+		}
+	}
+
+	for i, r := range g.portalRoles {
+		names := make(map[string]struct{}, len(groupNamesByRoleKey[r.key]))
+		for _, name := range groupNamesByRoleKey[r.key] {
+			names[name] = struct{}{}
+		}
+		g.portalRoles[i].groupNames = names
+	}
+	return g
+}
+
+// RolesForGroupNames is RolesForIDs' counterpart for matching by Asgardeo
+// group membership instead of role assignment: some portal roles are
+// granted by placing a user in a specific Asgardeo group rather than
+// assigning them a role, configured via WithGroupNames. Matches on each
+// group's display name, case-sensitively -- the same exact-match convention
+// AUTH_<ROLE>_ROLES itself uses for role names. Same fixed order and
+// non-nil-slice contract as RolesFor/RolesForIDs. Answers empty for every
+// role until WithGroupNames has been called.
+func (g *AccessGuard) RolesForGroupNames(groupNames []string) []string {
+	keys := make([]string, 0, len(g.portalRoles))
+	for _, r := range g.portalRoles {
+		for _, name := range groupNames {
+			if _, ok := r.groupNames[name]; ok {
+				keys = append(keys, r.key)
+				break
+			}
+		}
+	}
+	return keys
+}
+
+// RolesForIDsAndGroupNames merges RolesForIDs and RolesForGroupNames into one
+// fixed-order, deduplicated list: a portal role granted by EITHER a held
+// role ID or group membership appears exactly once, in GET /users/me's usual
+// order, never twice (and never out of order) the way separately computing
+// and concatenating the two slices could produce. This is what
+// withPortalRoles actually calls -- a user can reach the same portal role
+// through a role assignment, a group membership, or both, and the caller
+// should not have to merge/dedupe two independently-ordered slices itself.
+func (g *AccessGuard) RolesForIDsAndGroupNames(roleIDs, groupNames []string) []string {
+	keys := make([]string, 0, len(g.portalRoles))
+	for _, r := range g.portalRoles {
+		matched := false
+		for _, id := range roleIDs {
+			if _, ok := r.ids[id]; ok {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			for _, name := range groupNames {
+				if _, ok := r.groupNames[name]; ok {
+					matched = true
+					break
+				}
+			}
+		}
+		if matched {
+			keys = append(keys, r.key)
 		}
 	}
 	return keys

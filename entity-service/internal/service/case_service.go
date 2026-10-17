@@ -2198,7 +2198,17 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 	if s.snWriteback != nil {
 		if patcher, ok := s.snMirror.(snFieldPatcher); ok {
 			switch {
-			case req.State != nil:
+			// Same no-op exemption as the state-transition guard above: a
+			// caller resending the state the case is already in (a
+			// documented read-then-write race, or a retry/double-click)
+			// isn't a transition, so there is nothing for the mirror to
+			// apply either. Without this guard the mirror PATCHed the
+			// downstream data source with the unchanged state every time,
+			// which its own workflow has no "transition to self" entry for
+			// and rejects identically on every attempt -- a steady stream
+			// of permanently unretried sn_writeback_failures rows for a
+			// state that never actually changed.
+			case req.State != nil && (before == nil || before.State == nil || *before.State != *req.State):
 				state := *req.State
 				// closed/solution_proposed must carry resolutionCode, cause
 				// and closeNotes to the mirror: the downstream data source
