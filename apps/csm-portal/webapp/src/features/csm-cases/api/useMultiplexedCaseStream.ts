@@ -21,6 +21,8 @@ import { useAuthTokens } from "@hooks/useAuthTokens";
 import { useLogger } from "@hooks/useLogger";
 import {
   MAX_BACKOFF_ATTEMPTS,
+  invalidateCaseById,
+  invalidateCaseLists,
   invalidateCaseQueries,
   reconnectDelay,
 } from "@features/csm-cases/api/caseStreamShared";
@@ -129,6 +131,9 @@ export function useMultiplexedCaseStream(
     let source: EventSourcePolyfill | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
     let attempt = 0;
+    // Whether an earlier connection in this run opened; a later open is a
+    // replacement, and frames published in between were never delivered.
+    let hasConnected = false;
 
     const scheduleReconnect = (): void => {
       const delay = reconnectDelay(attempt);
@@ -168,6 +173,11 @@ export function useMultiplexedCaseStream(
       // failures should back off.
       current.addEventListener("open", () => {
         attempt = 0;
+        if (hasConnected) {
+          for (const id of ids) invalidateCaseById(queryClient, id);
+          invalidateCaseLists(queryClient);
+        }
+        hasConnected = true;
       });
 
       current.addEventListener("case_updated", (event) => {

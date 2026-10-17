@@ -475,6 +475,43 @@ describe("useMultiplexedCaseStream", () => {
     expect(source.closed).toBe(true);
   });
 
+  it("invalidates every subscribed case when a replacement connection opens, but not on the first open", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.spyOn(Math, "random").mockReturnValue(1);
+    const onCaseUpdated = vi.fn();
+    renderStream([ID_A, ID_B], onCaseUpdated);
+    await waitFor(() => expect(mockInstances).toHaveLength(1));
+
+    act(() => {
+      mockInstances[0].dispatchEvent(new Event("open"));
+    });
+    expect(invalidateQueriesMock).not.toHaveBeenCalled();
+
+    emitError(mockInstances[0]);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_001);
+    });
+    await waitFor(() => expect(mockInstances).toHaveLength(2));
+    act(() => {
+      mockInstances[1].dispatchEvent(new Event("open"));
+    });
+
+    expect(invalidatedKeys()).toEqual([
+      ["csm-case-comments", ID_A],
+      ["csm-case-activities", ID_A],
+      ["csm-case-detail", ID_A],
+      ["csm-case-slas", ID_A],
+      ["csm-case-comments", ID_B],
+      ["csm-case-activities", ID_B],
+      ["csm-case-detail", ID_B],
+      ["csm-case-slas", ID_B],
+      ["csm-cases"],
+      ["csm-case-children"],
+    ]);
+    // Catching up refreshes data; it must not flag any tab.
+    expect(onCaseUpdated).not.toHaveBeenCalled();
+  });
+
   describe("page visibility", () => {
     function setDocumentVisibility(state: "visible" | "hidden") {
       Object.defineProperty(document, "visibilityState", {
