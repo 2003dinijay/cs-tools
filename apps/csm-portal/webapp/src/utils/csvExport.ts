@@ -17,15 +17,18 @@
 import { saveBlob } from "@utils/saveBlob";
 
 /**
- * Quotes a CSV field only when it needs it (contains a comma, quote, or
- * carriage return/newline), doubling any internal quotes — the minimal
- * escaping RFC 4180 requires. Shared by every CSV export on the portal so the
- * escaping rules can't drift between them (originally lived only in the time
- * cards export).
+ * Serializes one CSV field: always quoted, internal quotes doubled (RFC 4180),
+ * and neutralized against spreadsheet formula injection. A value whose first
+ * character is `=`, `+`, `-`, `@`, tab or carriage return would be evaluated as
+ * a formula when the file is opened in Excel/Sheets, and exported cells carry
+ * user-controlled text (case subjects, names), so such values get a leading
+ * apostrophe, which spreadsheets render as plain text. Shared by every CSV
+ * export on the portal so the escaping rules can't drift between them
+ * (originally lived only in the time cards export).
  */
 export function csvField(value: string): string {
-  if (!/["\r\n,]/.test(value)) return value;
-  return `"${value.replace(/"/g, '""')}"`;
+  const safe = /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
+  return `"${safe.replace(/"/g, '""')}"`;
 }
 
 /** Builds RFC 4180-ish CSV text (CRLF line endings) from a header row and a
