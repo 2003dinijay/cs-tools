@@ -613,7 +613,7 @@ describe("CasesList row selection", () => {
       name: "Select all rows on this page",
     }) as HTMLInputElement;
     expect(headerCheckbox).not.toBeChecked();
-    expect(headerCheckbox.indeterminate).toBe(true);
+    expect(headerCheckbox).toHaveAttribute("data-indeterminate", "true");
   });
 });
 
