@@ -366,8 +366,10 @@ type AccessGuard struct {
 }
 
 // portalRole is one portal role: its stable key (what the frontend sees),
-// the configured token role names that grant it, and -- once WithRoleIDs has
-// run -- the real Asgardeo role IDs that resolve to those same names.
+// the configured token role names that grant it, -- once WithRoleIDs has
+// run -- the real Asgardeo role IDs that resolve to those same names, and --
+// once WithGroupNames has run -- the real Asgardeo group display names
+// configured directly against this role's own key.
 type portalRole struct {
 	key   string
 	names map[string]struct{}
@@ -375,6 +377,12 @@ type portalRole struct {
 	// the same as an empty one (no match), so calling it before WithRoleIDs
 	// is a safe, silent no-op rather than a nil-map panic.
 	ids map[string]struct{}
+	// groupNames is nil until WithGroupNames runs; RolesForGroupNames and
+	// RolesForIDsAndGroupNames treat a nil map the same way ids is treated
+	// above -- a safe, silent no-op, never a nil-map panic. Matched
+	// case-sensitively, the same exact-match convention AUTH_<ROLE>_ROLES
+	// itself uses for role names.
+	groupNames map[string]struct{}
 }
 
 // NewAccessGuard builds a guard from cfg. Admin satisfies every permission.
@@ -569,6 +577,108 @@ func (g *AccessGuard) RolesForIDs(roleIDs []string) []string {
 				keys = append(keys, r.key)
 				break
 			}
+		}
+	}
+	return keys
+}
+
+// WithGroupNames wires ASGARDEO_ROLE_GROUP_NAMES -- a portal-role-key ->
+// Asgardeo-group-display-name(s) mapping (see directory.ParseRoleGroupNames)
+// -- enabling RolesForGroupNames/RolesForIDsAndGroupNames below. Unlike
+// WithRoleIDs, which cross-references a portal role's configured real role
+// NAMES against ASGARDEO_ROLE_IDS, this matches directly on the portal
+// role's own stable KEY: a group has no equivalent of a role's "real name"
+// on the token to cross-reference against AUTH_<ROLE>_ROLES, so the
+// deployment names the portal role being granted directly (e.g.
+// "cs_engineer") and lists the group display name(s) that should grant it
+// -- matched against a group's SCIM "display" value (the same name visible
+// in the Asgardeo console), not its opaque id. A portal role key with no
+// entry here simply never matches by group membership -- the same "no entry
+// means not wired up here" posture WithRoleIDs already has for role names.
+//
+// Unlike a real Asgardeo role name (an open-ended, deployment-specific
+// string ASGARDEO_ROLE_IDS has no fixed vocabulary to check against), a
+// portal role key IS a closed, known set -- exactly g.portalRoles' own keys,
+// fixed by NewAccessGuard above. A key in groupNamesByRoleKey that matches
+// none of them is therefore always a configuration mistake (a typo like
+// "cs_enginer"), not a legitimate "not relevant to this deployment yet"
+// case, and would otherwise grant nothing with no signal anywhere that it
+// silently failed to wire up. Logged as a startup warning naming the
+// offending key(s) -- not a hard failure, matching this guard's existing
+// posture elsewhere (an unset/misconfigured AUTH_<ROLE>_ROLES also only
+// warns, never exits) rather than taking down the whole backend over one
+// bad entry in an otherwise-optional, purely additive feature.
+// Returns g for chaining.
+func (g *AccessGuard) WithGroupNames(groupNamesByRoleKey map[string][]string) *AccessGuard {
+	known := make(map[string]struct{}, len(g.portalRoles))
+	for _, r := range g.portalRoles {
+		known[r.key] = struct{}{}
+	}
+	for key := range groupNamesByRoleKey {
+		if _, ok := known[key]; !ok {
+			slog.Warn("ASGARDEO_ROLE_GROUP_NAMES names an unknown portal role; its configured group(s) grant nothing", "key", key)
+		}
+	}
+
+	for i, r := range g.portalRoles {
+		names := make(map[string]struct{}, len(groupNamesByRoleKey[r.key]))
+		for _, name := range groupNamesByRoleKey[r.key] {
+			names[name] = struct{}{}
+		}
+		g.portalRoles[i].groupNames = names
+	}
+	return g
+}
+
+// RolesForGroupNames is RolesForIDs' counterpart for matching by Asgardeo
+// group membership instead of role assignment: some portal roles are
+// granted by placing a user in a specific Asgardeo group rather than
+// assigning them a role, configured via WithGroupNames. Matches on each
+// group's display name, case-sensitively -- the same exact-match convention
+// AUTH_<ROLE>_ROLES itself uses for role names. Same fixed order and
+// non-nil-slice contract as RolesFor/RolesForIDs. Answers empty for every
+// role until WithGroupNames has been called.
+func (g *AccessGuard) RolesForGroupNames(groupNames []string) []string {
+	keys := make([]string, 0, len(g.portalRoles))
+	for _, r := range g.portalRoles {
+		for _, name := range groupNames {
+			if _, ok := r.groupNames[name]; ok {
+				keys = append(keys, r.key)
+				break
+			}
+		}
+	}
+	return keys
+}
+
+// RolesForIDsAndGroupNames merges RolesForIDs and RolesForGroupNames into one
+// fixed-order, deduplicated list: a portal role granted by EITHER a held
+// role ID or group membership appears exactly once, in GET /users/me's usual
+// order, never twice (and never out of order) the way separately computing
+// and concatenating the two slices could produce. This is what
+// withPortalRoles actually calls -- a user can reach the same portal role
+// through a role assignment, a group membership, or both, and the caller
+// should not have to merge/dedupe two independently-ordered slices itself.
+func (g *AccessGuard) RolesForIDsAndGroupNames(roleIDs, groupNames []string) []string {
+	keys := make([]string, 0, len(g.portalRoles))
+	for _, r := range g.portalRoles {
+		matched := false
+		for _, id := range roleIDs {
+			if _, ok := r.ids[id]; ok {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			for _, name := range groupNames {
+				if _, ok := r.groupNames[name]; ok {
+					matched = true
+					break
+				}
+			}
+		}
+		if matched {
+			keys = append(keys, r.key)
 		}
 	}
 	return keys

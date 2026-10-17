@@ -80,6 +80,22 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Portal-role-key -> identity-provider GROUP display name(s) mapping
+	// (ASGARDEO_ROLE_GROUP_NAMES), a JSON object string, e.g.
+	// {"cs_engineer":["CSM Engineers"]}. Unlike ASGARDEO_ROLE_IDS above, keyed
+	// directly by the portal role's own stable key (not a real Asgardeo role
+	// name), and by the group's own display NAME (not its opaque id) -- see
+	// directory.ParseRoleGroupNames's own doc comment for why. Lets GetUser's
+	// withPortalRoles enrichment grant a portal role from Asgardeo GROUP
+	// membership instead of (or alongside) a role assignment. Optional and
+	// empty by default: a portal role with no entry here simply has no group
+	// that grants it.
+	roleGroupNamesByKey, err := directory.ParseRoleGroupNames(os.Getenv("ASGARDEO_ROLE_GROUP_NAMES"))
+	if err != nil {
+		slog.Error("invalid ASGARDEO_ROLE_GROUP_NAMES", "err", err)
+		os.Exit(1)
+	}
+
 	reqTimeouts, err := loadTimeouts(os.Getenv)
 	if err != nil {
 		slog.Error("invalid timeout configuration", "err", err)
@@ -199,9 +215,13 @@ func main() {
 	// WithRoleIDs lets GetUser's withPortalRoles enrichment (see that file's
 	// own doc comment) match a target user's held Asgardeo roles by ID
 	// instead of by display name -- two distinct roles can share a name, but
-	// never an ID. A no-op for RolesFor/GetMe's own JWT-claim-based path,
-	// which is unaffected by this.
-	accessGuard := handler.NewAccessGuard(accessCfg).WithRoleIDs(roleIDsByName)
+	// never an ID. WithGroupNames is the same enrichment's second, independent
+	// source: some portal roles are granted by Asgardeo GROUP membership
+	// instead, configured directly by portal role key against the group's own
+	// display name (ASGARDEO_ROLE_GROUP_NAMES, see
+	// directory.ParseRoleGroupNames). Both are a no-op for RolesFor/GetMe's
+	// own JWT-claim-based path, which is unaffected by either.
+	accessGuard := handler.NewAccessGuard(accessCfg).WithRoleIDs(roleIDsByName).WithGroupNames(roleGroupNamesByKey)
 
 	// Which portal roles CreateUser may grant via SCIM when an admin adds a
 	// new user through the webapp, each already resolved to its real role ID

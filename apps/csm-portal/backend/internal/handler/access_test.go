@@ -17,10 +17,13 @@
 package handler
 
 import (
+	"bytes"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
@@ -329,6 +332,165 @@ func TestAccessGuard_RolesForIDsBeforeWithRoleIDs(t *testing.T) {
 	g := NewAccessGuard(testAccessConfig())
 	if got := g.RolesForIDs([]string{"viewer-id"}); len(got) != 0 {
 		t.Errorf("RolesForIDs = %v, want none before WithRoleIDs has run", got)
+	}
+}
+
+// testGroupNames is a dummy ASGARDEO_ROLE_GROUP_NAMES mapping (portal role
+// key -> group display name(s)), covering a role with one group and a role
+// with several.
+func testGroupNames() map[string][]string {
+	return map[string][]string{
+		"viewer":      {"Viewer Group"},
+		"cs_engineer": {"CS Engineer Group 1", "CS Engineer Group 2"},
+	}
+}
+
+func TestAccessGuard_RolesForGroupNames(t *testing.T) {
+	g := NewAccessGuard(testAccessConfig()).WithGroupNames(testGroupNames())
+	tests := []struct {
+		name string
+		held []string
+		want []string
+	}{
+		{"none", nil, []string{}},
+		{"one group", []string{"Viewer Group"}, []string{"viewer"}},
+		{"a role configured with several groups matches on any one of them", []string{"CS Engineer Group 2"}, []string{"cs_engineer"}},
+		{"several groups come back in the fixed GET /users/me order", []string{"CS Engineer Group 1", "Viewer Group"}, []string{"viewer", "cs_engineer"}},
+		{"unrelated/unconfigured group names are ignored", []string{"Some Other Group"}, []string{}},
+		{"a duplicated held group name is reported once", []string{"Viewer Group", "Viewer Group"}, []string{"viewer"}},
+		{"matching is case-sensitive, the same exact-match convention AUTH_<ROLE>_ROLES itself uses", []string{"viewer group"}, []string{}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := g.RolesForGroupNames(tc.held)
+			if got == nil || !slices.Equal(got, tc.want) {
+				t.Errorf("RolesForGroupNames = %#v, want %#v (non-nil)", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestAccessGuard_RolesForGroupNamesBeforeWithGroupNames mirrors
+// TestAccessGuard_RolesForIDsBeforeWithRoleIDs: calling RolesForGroupNames
+// (or RolesForIDsAndGroupNames) before WithGroupNames has ever run must
+// answer empty, never panic on a nil map.
+func TestAccessGuard_RolesForGroupNamesBeforeWithGroupNames(t *testing.T) {
+	g := NewAccessGuard(testAccessConfig())
+	if got := g.RolesForGroupNames([]string{"Viewer Group"}); len(got) != 0 {
+		t.Errorf("RolesForGroupNames = %v, want none before WithGroupNames has run", got)
+	}
+	if got := g.RolesForIDsAndGroupNames(nil, []string{"Viewer Group"}); len(got) != 0 {
+		t.Errorf("RolesForIDsAndGroupNames = %v, want none before WithGroupNames has run", got)
+	}
+}
+
+// TestAccessGuard_RolesForIDsAndGroupNames is the behavior withPortalRoles
+// actually depends on: a portal role reachable through a role ID, a group
+// name, or both must appear exactly once, in the usual fixed order -- never
+// twice, and never missing because only one of the two matched.
+func TestAccessGuard_RolesForIDsAndGroupNames(t *testing.T) {
+	g := NewAccessGuard(testAccessConfig()).WithRoleIDs(testRoleIDs()).WithGroupNames(testGroupNames())
+
+	tests := []struct {
+		name       string
+		roleIDs    []string
+		groupNames []string
+		want       []string
+	}{
+		{"role ID only", []string{"admin-id"}, nil, []string{"admin"}},
+		{"group name only", nil, []string{"Viewer Group"}, []string{"viewer"}},
+		{"neither", []string{"some-other-role-id"}, []string{"Some Other Group"}, []string{}},
+		{
+			"a role granted by its role ID AND a different role granted by a group both appear, in fixed order",
+			[]string{"admin-id"}, []string{"Viewer Group"},
+			[]string{"viewer", "admin"},
+		},
+		{
+			"the SAME portal role matched by both its role ID and its group name appears exactly once",
+			[]string{"cs-engineer-id"}, []string{"CS Engineer Group 1"},
+			[]string{"cs_engineer"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := g.RolesForIDsAndGroupNames(tc.roleIDs, tc.groupNames)
+			if got == nil || !slices.Equal(got, tc.want) {
+				t.Errorf("RolesForIDsAndGroupNames = %#v, want %#v (non-nil)", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestAccessGuard_RolesForGroupNamesTwoRolesSharingAGroup mirrors
+// TestAccessGuard_RolesForIDsTwoRolesSharingAName for groups: two portal
+// roles configured against the SAME group name must both come back when a
+// caller holds that one group -- a real, accepted possibility of name-based
+// matching (unlike role matching, which switched to ID specifically to rule
+// this out): the deployment asked for group names here regardless, since a
+// group's id is not something this configuration is meant to require
+// looking up.
+func TestAccessGuard_RolesForGroupNamesTwoRolesSharingAGroup(t *testing.T) {
+	g := NewAccessGuard(testAccessConfig()).WithGroupNames(map[string][]string{
+		"viewer": {"Shared Group"},
+		"admin":  {"Shared Group"},
+	})
+	if got := g.RolesForGroupNames([]string{"Shared Group"}); !slices.Equal(got, []string{"viewer", "admin"}) {
+		t.Errorf("RolesForGroupNames = %v, want [viewer admin]: both roles are configured against this one group", got)
+	}
+}
+
+// TestAccessGuard_WithGroupNamesWarnsOnUnknownPortalRoleKey: a typo in
+// ASGARDEO_ROLE_GROUP_NAMES's key (e.g. "cs_enginer" for "cs_engineer")
+// previously granted nothing with no signal anywhere that it had silently
+// failed to wire up. WithGroupNames must now log a startup warning naming
+// the unrecognized key, while still wiring up every key that IS valid in the
+// same call -- one bad entry must not also drop the good ones.
+func TestAccessGuard_WithGroupNamesWarnsOnUnknownPortalRoleKey(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	g := NewAccessGuard(testAccessConfig()).WithGroupNames(map[string][]string{
+		"cs_enginer": {"CSM Engineers"}, // typo: missing the second "e"
+		"viewer":     {"Viewer Group"},
+	})
+
+	if !strings.Contains(buf.String(), "cs_enginer") {
+		t.Errorf("expected a startup warning naming the unknown key %q, got log: %s", "cs_enginer", buf.String())
+	}
+	// The one genuinely valid key in the same map must still be wired up.
+	if got := g.RolesForGroupNames([]string{"Viewer Group"}); !slices.Equal(got, []string{"viewer"}) {
+		t.Errorf("RolesForGroupNames = %v, want [viewer]: a sibling typo must not also break a valid key in the same config", got)
+	}
+}
+
+// TestAccessGuard_RolesForIDsAndGroupNames_NoGroupConfigMatchesRolesForIDsExactly
+// is the explicit backward-compatibility guarantee: a deployment that never
+// sets ASGARDEO_ROLE_GROUP_NAMES (main.go then calls WithGroupNames with the
+// empty map ParseRoleGroupNames("") returns, exactly as below) must see
+// IDENTICAL output to plain RolesForIDs for every input -- group matching is
+// purely additive and must never change, filter, or reorder what role-ID
+// matching alone already produces.
+func TestAccessGuard_RolesForIDsAndGroupNames_NoGroupConfigMatchesRolesForIDsExactly(t *testing.T) {
+	withGroups := NewAccessGuard(testAccessConfig()).WithRoleIDs(testRoleIDs()).WithGroupNames(map[string][]string{})
+	withoutGroups := NewAccessGuard(testAccessConfig()).WithRoleIDs(testRoleIDs())
+
+	inputs := [][]string{
+		nil,
+		{"viewer-id"},
+		{"admin-id", "escalator-id", "viewer-id"},
+		{"some-other-app-role-id"},
+	}
+	for _, roleIDs := range inputs {
+		plain := withoutGroups.RolesForIDs(roleIDs)
+		// Any groupNames argument at all -- here, something that would match a
+		// portal role if group config were wired up -- must still have zero
+		// effect when the config itself is empty.
+		combined := withGroups.RolesForIDsAndGroupNames(roleIDs, []string{"Viewer Group", "CS Engineer Group 1"})
+		if !slices.Equal(plain, combined) {
+			t.Errorf("roleIDs=%v: RolesForIDs = %v, RolesForIDsAndGroupNames (no group config) = %v, want identical", roleIDs, plain, combined)
+		}
 	}
 }
 
