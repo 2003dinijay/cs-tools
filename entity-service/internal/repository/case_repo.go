@@ -3552,7 +3552,14 @@ func buildCaseSearchWhere(req domain.SearchCasesRequest, scope SearchScope) (str
 	// check and, with no remaining WHERE-clause reference to the p alias at
 	// all, lets the planner drop the dead LEFT JOIN from a COUNT(*) query
 	// entirely -- measured as a 12% database-CPU reduction for this filter
-	// alone. The `notIn` branch below is left as the simple join check: it
+	// alone. The exclusion is a NOT EXISTS probe on project's primary key,
+	// not `wi.project_id <> ALL(ARRAY(...))`: `<> ALL(array)` compares every
+	// case row with every excluded id (no index, no hash), so when only one or
+	// two statuses are selected and the exclusion list is long (1,955 projects)
+	// it cost 242 ms against 16 ms for the probe, measured on production-size
+	// data; with the usual six statuses the two are equal (16-18 ms). See the
+	// state filter's anti-join for the same problem (digiops-cs #3459).
+	// The `notIn` branch below is left as the simple join check: it
 	// already satisfies both the no-project and null-status cases via the OR,
 	// and nothing here claims it is a bottleneck on real traffic the way
 	// `in` is -- rewriting it the same way would need its own extra `OR
@@ -3564,7 +3571,7 @@ func buildCaseSearchWhere(req domain.SearchCasesRequest, scope SearchScope) (str
 			return "", nil, argIdx, err
 		}
 		where += fmt.Sprintf(
-			" AND wi.project_id IS NOT NULL AND wi.project_id <> ALL(ARRAY(SELECT id FROM project WHERE onboarding_status IS NULL OR onboarding_status <> ALL($%d::text[]::onboarding_status_enum[])))",
+			" AND wi.project_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM project excluded WHERE excluded.id = wi.project_id AND (excluded.onboarding_status IS NULL OR excluded.onboarding_status <> ALL($%d::text[]::onboarding_status_enum[])))",
 			argIdx,
 		)
 		filterArgs = append(filterArgs, labels)
