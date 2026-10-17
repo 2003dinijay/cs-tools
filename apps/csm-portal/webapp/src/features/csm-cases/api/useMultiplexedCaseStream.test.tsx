@@ -475,6 +475,89 @@ describe("useMultiplexedCaseStream", () => {
     expect(source.closed).toBe(true);
   });
 
+  it("invalidates every subscribed case when a replacement connection opens, but not on the first open", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.spyOn(Math, "random").mockReturnValue(1);
+    const onCaseUpdated = vi.fn();
+    renderStream([ID_A, ID_B], onCaseUpdated);
+    await waitFor(() => expect(mockInstances).toHaveLength(1));
+
+    act(() => {
+      mockInstances[0].dispatchEvent(new Event("open"));
+    });
+    expect(invalidateQueriesMock).not.toHaveBeenCalled();
+
+    emitError(mockInstances[0]);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_001);
+    });
+    await waitFor(() => expect(mockInstances).toHaveLength(2));
+    act(() => {
+      mockInstances[1].dispatchEvent(new Event("open"));
+    });
+
+    expect(invalidatedKeys()).toEqual([
+      ["csm-case-comments", ID_A],
+      ["csm-case-activities", ID_A],
+      ["csm-case-detail", ID_A],
+      ["csm-case-slas", ID_A],
+      ["csm-case-comments", ID_B],
+      ["csm-case-activities", ID_B],
+      ["csm-case-detail", ID_B],
+      ["csm-case-slas", ID_B],
+      ["csm-cases"],
+      ["csm-case-children"],
+    ]);
+    // Catching up refreshes data; it must not flag any tab.
+    expect(onCaseUpdated).not.toHaveBeenCalled();
+  });
+
+  it("on an id-set change, catches up only the cases that stay subscribed", async () => {
+    const { rerender } = renderStream([ID_A, ID_B]);
+    await waitFor(() => expect(mockInstances).toHaveLength(1));
+    act(() => {
+      mockInstances[0].dispatchEvent(new Event("open"));
+    });
+    expect(invalidateQueriesMock).not.toHaveBeenCalled();
+
+    // ID_B stays, ID_C is new.
+    rerender({ ids: [ID_B, ID_C] });
+    await waitFor(() => expect(mockInstances).toHaveLength(2), {
+      timeout: ID_SET_DEBOUNCE_MS * 10,
+    });
+    expect(mockInstances[0].closed).toBe(true);
+    act(() => {
+      mockInstances[1].dispatchEvent(new Event("open"));
+    });
+
+    expect(invalidatedKeys()).toEqual([
+      ["csm-case-comments", ID_B],
+      ["csm-case-activities", ID_B],
+      ["csm-case-detail", ID_B],
+      ["csm-case-slas", ID_B],
+      ["csm-cases"],
+      ["csm-case-children"],
+    ]);
+  });
+
+  it("still refreshes the case lists when the id set is replaced with no id in common", async () => {
+    const { rerender } = renderStream([ID_A]);
+    await waitFor(() => expect(mockInstances).toHaveLength(1));
+    act(() => {
+      mockInstances[0].dispatchEvent(new Event("open"));
+    });
+
+    rerender({ ids: [ID_B] });
+    await waitFor(() => expect(mockInstances).toHaveLength(2), {
+      timeout: ID_SET_DEBOUNCE_MS * 10,
+    });
+    act(() => {
+      mockInstances[1].dispatchEvent(new Event("open"));
+    });
+
+    expect(invalidatedKeys()).toEqual([["csm-cases"], ["csm-case-children"]]);
+  });
+
   describe("page visibility", () => {
     function setDocumentVisibility(state: "visible" | "hidden") {
       Object.defineProperty(document, "visibilityState", {
@@ -488,53 +571,25 @@ describe("useMultiplexedCaseStream", () => {
       setDocumentVisibility("visible");
     });
 
-    it("does not connect while the browser page is hidden", async () => {
+    it("connects even while the browser page is hidden", async () => {
       setDocumentVisibility("hidden");
       renderStream([ID_A]);
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(mockInstances).toHaveLength(0);
+      await waitFor(() => expect(mockInstances).toHaveLength(1));
     });
 
-    it("closes when the page is hidden, and on return reconnects and invalidates every subscribed case once without flagging any tab", async () => {
+    it("stays open when the page is hidden and still reports updates", async () => {
       const onCaseUpdated = vi.fn();
       renderStream([ID_A, ID_B], onCaseUpdated);
       await waitFor(() => expect(mockInstances).toHaveLength(1));
-      expect(invalidateQueriesMock).not.toHaveBeenCalled();
 
       act(() => setDocumentVisibility("hidden"));
-      expect(mockInstances[0].closed).toBe(true);
+      expect(mockInstances[0].closed).toBe(false);
       expect(mockInstances).toHaveLength(1);
 
+      emit(mockInstances[0], JSON.stringify({ caseId: ID_B }));
+      expect(onCaseUpdated).toHaveBeenCalledWith(ID_B);
+
       act(() => setDocumentVisibility("visible"));
-      await waitFor(() => expect(mockInstances).toHaveLength(2));
-      expect(mockInstances[1].closed).toBe(false);
-      expect(invalidatedKeys()).toEqual([
-        ["csm-case-comments", ID_A],
-        ["csm-case-activities", ID_A],
-        ["csm-case-detail", ID_A],
-        ["csm-case-slas", ID_A],
-        ["csm-case-comments", ID_B],
-        ["csm-case-activities", ID_B],
-        ["csm-case-detail", ID_B],
-        ["csm-case-slas", ID_B],
-        ["csm-cases"],
-        ["csm-case-children"],
-      ]);
-      expect(onCaseUpdated).not.toHaveBeenCalled();
-    });
-
-    it("cancels a pending reconnect when the page is hidden", async () => {
-      vi.useFakeTimers({ shouldAdvanceTime: true });
-      renderStream([ID_A]);
-      await waitFor(() => expect(mockInstances).toHaveLength(1));
-
-      emitError(mockInstances[0]);
-      act(() => setDocumentVisibility("hidden"));
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(60_000);
-      });
-
       expect(mockInstances).toHaveLength(1);
     });
   });

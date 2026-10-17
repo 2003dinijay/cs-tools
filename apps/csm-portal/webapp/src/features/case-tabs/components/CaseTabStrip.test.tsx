@@ -376,7 +376,7 @@ describe("CaseTabStrip", () => {
   describe("unseen live update cue", () => {
     const FLAGGED: CaseTabState = { ...TAB_2, hasUpdate: true };
 
-    it("marks a flagged, non-active tab with the blink attribute and an accessible cue", () => {
+    it("marks a flagged, non-active tab with the update attribute and an accessible cue", () => {
       render(
         <CaseTabStrip tabs={[TAB_1, FLAGGED]} activeTabId="t1" {...noopHandlers()} />,
       );
@@ -410,16 +410,12 @@ describe("CaseTabStrip", () => {
       expect(handlers.onActivate).toHaveBeenCalledWith("t2");
     });
 
-    it("animates the blink, and switches the animation off under prefers-reduced-motion", () => {
+    it("shows a static dot for a flagged tab and emits no animation", () => {
       render(<CaseTabStrip tabs={[TAB_1, FLAGGED]} activeTabId="t1" {...noopHandlers()} />);
       const css = Array.from(document.querySelectorAll("style"))
         .map((el) => el.textContent ?? "")
         .join("\n");
-      // jsdom does not evaluate animations or media queries, so assert on the
-      // rules the strip actually emitted.
-      expect(css).toContain("csmTabUpdateBlink");
-      const reduced = css.slice(css.indexOf("prefers-reduced-motion"));
-      expect(reduced).toMatch(/animation:\s*none/);
+      expect(css).not.toContain("csmTabUpdateBlink");
     });
   });
 });

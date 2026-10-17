@@ -68,6 +68,24 @@ import (
 // configuration (by name there, by ID here) rather than a guessed shape is
 // what makes that whole class of failure impossible.
 //
+// Some portal roles are granted by Asgardeo GROUP membership instead of a
+// role assignment at all -- a deployment choice, not something this handler
+// decides. GetUserByID's response already carries the target's group
+// memberships alongside their roles (same canonical GET-by-ID read, no
+// second call), and ASGARDEO_ROLE_GROUP_NAMES (see
+// directory.ParseRoleGroupNames, wired via AccessGuard.WithGroupNames) is
+// what maps a portal role directly to the group display name(s) that grant
+// it -- by name, not by the group's opaque id, since a deployment names a
+// group the same way it already names a real role for AUTH_<ROLE>_ROLES: as
+// a human-readable string, not a UUID looked up separately. (Two distinct
+// groups sharing a display name is a real possibility this still accepts --
+// unlike role matching, which switched to ID specifically to rule that out
+// -- but the deployment asked for name-based matching here regardless, since
+// a group's id is not something this configuration is meant to require
+// looking up.) RolesForIDsAndGroupNames matches by EITHER a held role ID or
+// a held group name in one pass, so a portal role reachable through a role,
+// a group, or both is still only ever reported once.
+//
 // Gated on the target's email domain (isWso2Email), not `userType`: a
 // wso2.com address is reserved for WSO2 staff regardless of what userType
 // the backing data source happens to have recorded for that row (the same
@@ -113,14 +131,20 @@ func (h *UsersHandler) withPortalRoles(ctx context.Context, raw []byte, callerID
 		return raw
 	}
 
-	roleIDs := make([]string, 0, len(assignments))
-	for _, a := range assignments {
+	roleIDs := make([]string, 0, len(assignments.Roles))
+	for _, a := range assignments.Roles {
 		if a.ID != "" {
 			roleIDs = append(roleIDs, a.ID)
 		}
 	}
+	groupNames := make([]string, 0, len(assignments.Groups))
+	for _, g := range assignments.Groups {
+		if g.Name != "" {
+			groupNames = append(groupNames, g.Name)
+		}
+	}
 
-	encoded, err := json.Marshal(h.access.RolesForIDs(roleIDs))
+	encoded, err := json.Marshal(h.access.RolesForIDsAndGroupNames(roleIDs, groupNames))
 	if err != nil {
 		slog.WarnContext(ctx, "withPortalRoles: encode roles failed", "userID", callerID, "err", err)
 		return raw

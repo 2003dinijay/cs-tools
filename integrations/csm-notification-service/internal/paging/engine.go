@@ -172,6 +172,9 @@ type Engine struct {
 	// outcomes logs how each placed call ended (ALERTING_CALL_OUTCOME_CHECK);
 	// nil, the default, leaves it off. See call_outcome.go.
 	outcomes *CallOutcomeWatcher
+	// emails sends the rung email (rung_email.go); nil leaves cre.email off.
+	emails       emailSender
+	emailSending RungEmailSending
 	// clock is time.Now unless a test substitutes one; the staleness check
 	// in start is the only thing that reads it, and it has to be testable
 	// against a trigger that is genuinely old.
@@ -506,7 +509,7 @@ func (e *Engine) postUnanswered(ctx context.Context, st LadderState) {
 			PortalURL:   portal,
 			PortalLabel: label,
 			ThreadKey:   t.chatThreadKey(),
-			Reply:       target.reply,
+			Reply:       target.reply || e.sreReplies(t),
 		})
 		if err != nil {
 			slog.ErrorContext(ctx, "escalation: the closing message was not posted", "incidentId", t.IncidentID, "audience", target.room, "err", err)
@@ -556,6 +559,11 @@ func (e *Engine) unansweredRooms(plan Plan) ([]chatRoom, string) {
 		return []chatRoom{*e.sharedRoom}, t.Routing.SREChain()
 	}
 	return nil, ""
+}
+
+// sreReplies reports whether an SRE incident's own space gets its messages as replies: only when its rungs post there, so the "Incident Reported" card exists.
+func (e *Engine) sreReplies(t Trigger) bool {
+	return t.sreIncident() && e.channelFor(t).Uses(ChannelChat)
 }
 
 // incidentRooms is the INCIDENT_CHAT_SPACES spaces an incident's card went to; a case or a group without one keeps the ladder's space.
@@ -748,7 +756,7 @@ func (e *Engine) Handle(ctx context.Context, record eventbus.Record) error {
 			// must not silence their own pager.
 			return nil
 		}
-		return e.cancelBy(ctx, env.EntityID, cancelPublicComment)
+		return e.cancelBy(ctx, env.EntityID, cancelPublicComment, "")
 	case events.TypeIncidentAssigned:
 		if e.cfg.Kind != LadderSRE {
 			// Assignment is the SRE ladder's acknowledgement, not the CRE
@@ -760,13 +768,13 @@ func (e *Engine) Handle(ctx context.Context, record eventbus.Record) error {
 		if err := json.Unmarshal(env.Payload, &p); err != nil {
 			return fmt.Errorf("escalation: decode incident.assigned payload: %w", err)
 		}
-		err := e.cancelBy(ctx, env.EntityID, cancelAssigned)
+		err := e.cancelBy(ctx, env.EntityID, cancelAssigned, p.AssigneeName)
 		// An engineer taking the incident also answers any Special Ops page
 		// raised before the assignment -- open now or still on its way -- so
 		// only a later press pages again.
 		return errors.Join(err, e.closeSMEPages(ctx, env.EntityID, reportedAt(p.AssignedOn)))
 	default:
-		return e.cancelBy(ctx, env.EntityID, cancelStateChange)
+		return e.cancelBy(ctx, env.EntityID, cancelStateChange, "")
 	}
 }
 
@@ -868,7 +876,15 @@ func (e *Engine) schedule(ctx context.Context, t Trigger, replace bool) error {
 			"level0Included", t.Routing.HasNotificationLevel())
 	}
 
-	plan, err := BuildPlan(ctx, t, e.policies, e.resolver, e.channelFor(t))
+	resolver := e.resolver
+	var recorded *recordingResolver
+	if e.rungEmailsOn(t) {
+		// The rung emails reach the people the calls' rungs resolve to, so
+		// keep them as BuildPlan asks rather than asking twice.
+		recorded = &recordingResolver{Resolver: e.resolver, got: map[Level][]Recipient{}}
+		resolver = recorded
+	}
+	plan, err := BuildPlan(ctx, t, e.policies, resolver, e.channelFor(t))
 	if err != nil {
 		return fmt.Errorf("escalation: build plan for %s: %w", t.IncidentID, err)
 	}
@@ -878,6 +894,10 @@ func (e *Engine) schedule(ctx context.Context, t Trigger, replace bool) error {
 	// reach. Adopt the stamped copy so every line below names the row the
 	// recipients actually came from.
 	t = plan.Trigger
+	if recorded != nil {
+		// Before applySafety: holding the calls must not hold the emails.
+		e.planEmails(ctx, &plan, recorded.got)
+	}
 	e.applySafety(ctx, &plan)
 	for _, issue := range plan.Issues {
 		// Logged without the recipient's email — plan issues carry one in
@@ -888,12 +908,14 @@ func (e *Engine) schedule(ctx context.Context, t Trigger, replace bool) error {
 			"incidentId", t.IncidentID, "rule", t.Routing.Rule(),
 			"level", issue.Level.String(), "reason", issue.Reason)
 	}
-	if len(plan.Calls) == 0 && plan.CallsHeld {
+	// A plan with rung emails still has something to deliver when it has no
+	// calls; only a plan with neither ends here.
+	if len(plan.Calls) == 0 && len(plan.Emails) == 0 && plan.CallsHeld {
 		// Setup, not an incident outcome: the lead pool has no numbers yet,
 		// and a call-only ladder has nothing else to deliver. No work note.
 		return nil
 	}
-	if len(plan.Calls) == 0 {
+	if len(plan.Calls) == 0 && len(plan.Emails) == 0 {
 		slog.WarnContext(ctx, "escalation: plan has no reachable recipients; nothing scheduled",
 			"incidentId", t.IncidentID, "priority", t.Priority, "rule", t.Routing.Rule(),
 			"shift", string(t.Routing.Shift), "product", t.Routing.Product, "team", t.Routing.AssignedCRETeam)
@@ -912,14 +934,17 @@ func (e *Engine) schedule(ctx context.Context, t Trigger, replace bool) error {
 	// catches up correctly (the due calls go out on the next tick, at the
 	// rung the ladder should be on by now); it is the ladder that has run
 	// its whole course before we heard about it that must be dropped.
-	if last := plan.Calls[len(plan.Calls)-1]; last.At.Before(e.now()) {
+	if last := plan.lastScheduled(); last.Before(e.now()) {
 		slog.WarnContext(ctx, "escalation: trigger is older than its whole ladder; not scheduling",
 			"incidentId", t.IncidentID, "priority", t.Priority, "trigger", string(t.Kind),
-			"triggeredAt", t.At.Format(time.RFC3339), "lastCallAt", last.At.Format(time.RFC3339))
+			"triggeredAt", t.At.Format(time.RFC3339), "lastCallAt", last.Format(time.RFC3339))
 		return nil
 	}
 
 	st := LadderState{Plan: plan, Placed: make([]bool, len(plan.Calls))}
+	if len(plan.Emails) > 0 {
+		st.EmailSent = make([]bool, len(plan.Emails))
+	}
 	if replace {
 		// A replay of the elevation this ladder was built from -- a redelivery, or
 		// the same record dead-lettered by the other ladder's engine and read back
@@ -992,12 +1017,12 @@ func (e *Engine) schedule(ctx context.Context, t Trigger, replace bool) error {
 	if err != nil {
 		return err
 	}
-	if seeded != len(plan.Calls) {
+	if seeded != len(plan.Calls)+len(plan.Emails) {
 		// A ladder written moments ago has nothing placed and nothing failed,
 		// so this cannot happen. If it ever does, the ladder is short of calls
 		// and somebody needs to know which incident.
 		slog.WarnContext(ctx, "escalation: ladder scheduled with fewer wakes than calls",
-			"incidentId", t.IncidentID, "seeded", seeded, "calls", len(plan.Calls))
+			"incidentId", t.IncidentID, "seeded", seeded, "calls", len(plan.Calls), "emails", len(plan.Emails))
 	}
 	// One line that answers "which ladder, and by which path" without anyone
 	// re-deriving section 5.0's table from four fields by hand. levels is the
@@ -1010,8 +1035,8 @@ func (e *Engine) schedule(ctx context.Context, t Trigger, replace bool) error {
 		"product", t.Routing.Product, "team", t.Routing.AssignedCRETeam,
 		"abtEligible", t.Routing.ABTEligibility(),
 		"ladder", ladderName(t.Routing.Ladder),
-		"levels", plan.LevelsClimbed(), "calls", len(plan.Calls),
-		"lastCallAt", plan.Calls[len(plan.Calls)-1].At.Format(time.RFC3339))
+		"levels", plan.LevelsClimbed(), "calls", len(plan.Calls), "emails", len(plan.Emails),
+		"lastCallAt", plan.lastScheduled().Format(time.RFC3339))
 	return nil
 }
 
@@ -1162,6 +1187,15 @@ func (e *Engine) seedPendingWakes(ctx context.Context, incidentID string, st Lad
 		}
 		seeded++
 	}
+	for i, email := range st.Plan.Emails {
+		if st.emailDone(i) {
+			continue
+		}
+		if err := e.store.AddWake(ctx, emailWakeMember(incidentID, i), email.At); err != nil {
+			return seeded, fmt.Errorf("escalation: schedule email %d for %s: %w", i, incidentID, err)
+		}
+		seeded++
+	}
 	return seeded, nil
 }
 
@@ -1236,7 +1270,7 @@ func (e *Engine) retireRunning(ctx context.Context, incidentID string) (LadderSt
 // written, then the state is deleted. A failed work note therefore retries
 // with the state still present (and Cancelled already set, so the drop is not
 // repeated), rather than losing the summary.
-func (e *Engine) cancelBy(ctx context.Context, incidentID string, reason cancelReason) error {
+func (e *Engine) cancelBy(ctx context.Context, incidentID string, reason cancelReason, assignee string) error {
 	st, found, err := e.store.Get(ctx, incidentID)
 	if err != nil {
 		return fmt.Errorf("escalation: load ladder for %s: %w", incidentID, err)
@@ -1245,6 +1279,9 @@ func (e *Engine) cancelBy(ctx context.Context, incidentID string, reason cancelR
 		// The common case: an incident acknowledged without a ladder ever
 		// having run, or one already finished.
 		return nil
+	}
+	if st.Cancelled == nil && assignee != "" {
+		st.AssigneeName = assignee
 	}
 
 	// Acknowledgement is BOTH gestures, not either: the incident moved out of
@@ -1346,6 +1383,9 @@ func (e *Engine) processDue(ctx context.Context, member string) error {
 		slog.ErrorContext(ctx, "escalation: malformed wake member, dropping", "member", member)
 		return e.store.RemoveWakes(ctx, member)
 	}
+	if ladderKey, isEmail := strings.CutSuffix(incidentID, emailWakeTag); isEmail {
+		return e.processDueEmail(ctx, ladderKey, index, member)
+	}
 
 	st, found, err := e.store.Get(ctx, incidentID)
 	if err != nil {
@@ -1385,8 +1425,13 @@ func (e *Engine) processDue(ctx context.Context, member string) error {
 		// No call went out this time; what came back is the card's.
 		err, cardErr = nil, err
 	}
+	posted := postedIncidentCards(errors.Join(err, cardErr))
 	if err != nil {
 		if !isPermanent(err) {
+			// The incident card already went out: record it, so the retry posts only the reply.
+			if len(posted) > 0 {
+				e.recordIncidentCards(ctx, incidentID, st.Plan.Trigger, posted)
+			}
 			// Transient — leave the wake entry and give the claim back, so the
 			// next tick retries.
 			if rerr := e.store.ReleaseCall(ctx, claim); rerr != nil {
@@ -1471,6 +1516,7 @@ func (e *Engine) processDue(ctx context.Context, member string) error {
 		fresh.Placed[index] = true
 	}
 	fresh.setCardPending(index, retryCard)
+	fresh.Plan.IncidentCards = withRooms(fresh.Plan.IncidentCards, posted)
 	st = fresh
 
 	if err := e.store.Save(ctx, incidentID, st); err != nil {
@@ -1676,7 +1722,7 @@ func (e *Engine) RunTicker(ctx context.Context, interval time.Duration) {
 }
 
 // pendingMembers lists the wake members for calls that have not been placed,
-// or still owe their card.
+// or still owe their card, and rung emails that have not been sent.
 func pendingMembers(incidentID string, st LadderState) []string {
 	var out []string
 	for i := range st.Placed {
@@ -1684,7 +1730,35 @@ func pendingMembers(incidentID string, st LadderState) []string {
 			out = append(out, wakeMember(incidentID, i))
 		}
 	}
+	for i := range st.Plan.Emails {
+		if !st.emailDone(i) {
+			out = append(out, emailWakeMember(incidentID, i))
+		}
+	}
 	return out
+}
+
+// recordIncidentCards saves the rooms a first rung's incident card reached before its reply failed. Best effort: a lost record only posts the card again.
+func (e *Engine) recordIncidentCards(ctx context.Context, incidentID string, chain Trigger, rooms []string) {
+	fresh, found, err := e.store.Get(ctx, incidentID)
+	if err == nil && found && fresh.Cancelled == nil && sameChain(fresh.Plan.Trigger, chain) {
+		fresh.Plan.IncidentCards = withRooms(fresh.Plan.IncidentCards, rooms)
+		err = e.store.Save(ctx, incidentID, fresh)
+	}
+	if err != nil {
+		slog.WarnContext(ctx, "escalation: could not record the posted incident card; the retry may post it again",
+			"incidentId", incidentID, "err", err)
+	}
+}
+
+// withRooms adds the rooms not already listed.
+func withRooms(have, add []string) []string {
+	for _, r := range add {
+		if !slices.Contains(have, r) {
+			have = append(have, r)
+		}
+	}
+	return have
 }
 
 // isPermanent reports whether a call error is one that retrying cannot fix:
@@ -1767,15 +1841,19 @@ func triggerFromCreated(incidentID string, p events.IncidentCreatedPayload) Trig
 	// the ladder against one shift and route it by another.
 	at := reportedAt(p.ReportedAt)
 	return Trigger{
-		IncidentID: incidentID,
-		Number:     p.Number,
-		WSO2CaseID: p.WSO2CaseID,
-		Priority:   p.Priority,
-		Title:      p.Title,
-		Account:    p.Account,
-		Team:       p.Team,
-		Kind:       TriggerNewIncident,
-		At:         at,
+		IncidentID:  incidentID,
+		Number:      p.Number,
+		WSO2CaseID:  p.WSO2CaseID,
+		Priority:    p.Priority,
+		Title:       p.Title,
+		Account:     p.Account,
+		Team:        p.Team,
+		Kind:        TriggerNewIncident,
+		At:          at,
+		Service:     p.Service,
+		Environment: p.Environment,
+		Category:    p.Category,
+		State:       p.State,
 		Routing: RoutingContext{
 			Product:         p.Product,
 			ABTEligible:     p.ABTEligible,

@@ -13,7 +13,6 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 
-import { useSyncExternalStore } from "react";
 import type { QueryClient } from "@tanstack/react-query";
 import { ApiQueryKeys } from "@constants/apiConstants";
 
@@ -89,16 +88,3 @@ export function invalidateCaseQueries(queryClient: QueryClient, caseId: string):
   invalidateCaseLists(queryClient);
 }
 
-function subscribePageVisibility(onChange: () => void): () => void {
-  document.addEventListener("visibilitychange", onChange);
-  return () => document.removeEventListener("visibilitychange", onChange);
-}
-
-/** Whether the browser tab itself is in the foreground. */
-export function usePageVisible(): boolean {
-  return useSyncExternalStore(
-    subscribePageVisibility,
-    () => document.visibilityState !== "hidden",
-    () => true,
-  );
-}
