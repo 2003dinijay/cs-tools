@@ -805,7 +805,12 @@ rows for case number, WSO2 case ID, short description, severity, account, team,
 escalation level (coloured L1 blue to L4 red), created, waiting for, already
 notified, next escalation, and a "View case" button; tables and inline styles
 only, ASCII only. It never shows a customer escalation (`case.escalated` is a
-separate flow). `cre.email` lives in the file -- both `paging-alert.yaml` and
+separate flow). Every rung's email opens "Case <n> (<sev>) is still in open
+state and response SLA remaining time is <t>" ("...was breached <t> ago" once
+past it), counted from the chain's start against the `response` clock of the
+SLA duration policy the SLA engine fetches at startup (`RungEmailSending.SLADurations`),
+else WSO2's published defaults (S0 15m, S1 1h, S2 4h, S3 6h, S4 24h, as migration
+0192 seeds them). `cre.email` lives in the file -- both `paging-alert.yaml` and
 `paging-alert.minimal.yaml` -- never on the Alert Settings tab: it is a switch
 and a few addresses, and `MergeCaseAlertSettings` keeps it as the file has it
 (`TestRungEmail_ConfigSurvivesSavedSettings`). Leave its lists out rather than

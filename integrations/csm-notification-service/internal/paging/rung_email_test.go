@@ -709,3 +709,52 @@ func TestRungEmail_ConfigSurvivesSavedSettings(t *testing.T) {
 		t.Fatalf("cre.email after the merge = %+v, want the file's %+v", merged.CRE.Email, small.CRE.Email)
 	}
 }
+
+// The opening says the case is still open and how long is left on its
+// response SLA, from the fetched policy when there is one, else the published
+// default; past the deadline it says by how much it was breached.
+func TestRungEmail_OpeningCountsDownTheResponseSLA(t *testing.T) {
+	e := &Engine{}
+	at := testClock
+	s0 := Trigger{Number: "CS1", Priority: "CATASTROPHIC", At: at}
+	for _, tc := range []struct {
+		name string
+		t    Trigger
+		now  time.Time
+		sla  map[string]map[string]time.Duration
+		want string
+	}{
+		{"S0 default, 14m left", s0, at.Add(time.Minute), nil,
+			"Case CS1 (S0) is still in open state and response SLA remaining time is 14m."},
+		{"S0 default, breached", s0, at.Add(18 * time.Minute), nil,
+			"Case CS1 (S0) is still in open state and the response SLA was breached 3m ago."},
+		{"S1 fetched policy wins", Trigger{Number: "CS2", Priority: "CRITICAL", At: at}, at.Add(18 * time.Minute),
+			map[string]map[string]time.Duration{"CRITICAL": {"response": 2 * time.Hour}},
+			"Case CS2 (S1) is still in open state and response SLA remaining time is 1h42m."},
+		{"S3 default, hours", Trigger{Number: "CS3", Priority: "MEDIUM", At: at}, at.Add(90 * time.Minute), nil,
+			"Case CS3 (S3) is still in open state and response SLA remaining time is 4h30m."},
+		{"unknown severity", Trigger{Number: "CS4", Priority: "WHATEVER", At: at}, at, nil,
+			"Case CS4 (WHATEVER) is still in open state."},
+	} {
+		e.emailSending.SLADurations = tc.sla
+		code, _ := emailSeverity(tc.t.Priority)
+		if got := e.rungEmailOpening(tc.t, code, tc.now); got != tc.want {
+			t.Errorf("%s: %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// Every rung's email opens with the SLA countdown, L1 included.
+func TestRungEmail_EveryRungOpensWithTheSLA(t *testing.T) {
+	rig := newEmailRig(dayResolver(), testClock)
+	rig.handle(t, caseCreatedAt(t, "CRITICAL", testClock))
+	rig.runUntil(t, testClock.Add(4*time.Hour))
+	if len(rig.mail.sent) != 4 {
+		t.Fatalf("sent %d emails, want 4", len(rig.mail.sent))
+	}
+	for i, m := range rig.mail.sent {
+		if !strings.Contains(m.body, "Case CS0099001 (S1) is still in open state and ") {
+			t.Errorf("L%d does not open with the SLA sentence", i+1)
+		}
+	}
+}

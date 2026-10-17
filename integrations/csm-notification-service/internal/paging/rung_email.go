@@ -86,6 +86,51 @@ type RungEmailSending struct {
 	// no Cc, and says who it was meant for.
 	DebugMode       bool
 	DebugRecipients []string
+	// SLADurations is the SLA duration policy entity-service serves
+	// (GET /sla-duration-policy, severity word -> clock type -> duration),
+	// as the SLA engine fetched it at startup; the email's opening line
+	// counts down the "response" clock. Nil (the fetch failed, or a test)
+	// falls back to defaultResponseSLA.
+	SLADurations map[string]map[string]time.Duration
+}
+
+// defaultResponseSLA is WSO2's published response SLA per severity -- the
+// values entity-service seeds into sla_duration_policy (migration 0192) --
+// used only when the policy could not be fetched, so the email still says
+// how long is left.
+var defaultResponseSLA = map[string]time.Duration{
+	"P0": 15 * time.Minute, "P1": time.Hour, "P2": 4 * time.Hour, "P3": 6 * time.Hour, "P4": 24 * time.Hour,
+}
+
+// severityWords is the severity as the SLA policy keys it ("CATASTROPHIC").
+var severityWords = map[string]string{"P0": "CATASTROPHIC", "P1": "CRITICAL", "P2": "HIGH", "P3": "MEDIUM", "P4": "LOW"}
+
+// responseSLA is the case severity's response SLA: the fetched policy's,
+// else the published default.
+func (e *Engine) responseSLA(priority string) (time.Duration, bool) {
+	p := NormalisePriority(priority)
+	if d, ok := e.emailSending.SLADurations[severityWords[p]]["response"]; ok && d > 0 {
+		return d, true
+	}
+	d, ok := defaultResponseSLA[p]
+	return d, ok
+}
+
+// rungEmailOpening is the email's first sentence: the case is still open, and
+// how long is left on its response SLA, counted from when the chain started
+// (the case's creation, or its severity change, when entity-service restarts
+// the clock too).
+func (e *Engine) rungEmailOpening(t Trigger, code string, now time.Time) string {
+	open := fmt.Sprintf("Case %s (%s) is still in open state", orNone(t.Number), code)
+	sla, ok := e.responseSLA(t.Priority)
+	if !ok || t.At.IsZero() {
+		return open + "."
+	}
+	left := t.At.Add(sla).Sub(now)
+	if left <= 0 {
+		return open + " and the response SLA was breached " + shortDuration(-left) + " ago."
+	}
+	return open + " and response SLA remaining time is " + shortDuration(left) + "."
 }
 
 // WithRungEmail gives the engine its email sender. Without it, cre.email does
@@ -546,10 +591,7 @@ func (e *Engine) sendRungEmail(ctx context.Context, st LadderState, i int) error
 	email := st.Plan.Emails[i]
 	code, severity := emailSeverity(t.Priority)
 
-	opening := fmt.Sprintf("Case %s (%s) has not been acknowledged yet.", orNone(t.Number), code)
-	if email.Level > Level1 {
-		opening = fmt.Sprintf("Case %s (%s) has still not been acknowledged and has now been escalated to you.", orNone(t.Number), code)
-	}
+	opening := e.rungEmailOpening(t, code, e.now())
 	night := isNightShift(t.Routing.Shift)
 	var notified []string
 	for j := 0; j < i; j++ {

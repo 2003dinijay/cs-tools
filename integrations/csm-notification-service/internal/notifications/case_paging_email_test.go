@@ -37,7 +37,7 @@ func TestRenderCasePagingEmail(t *testing.T) {
 	body := RenderCasePagingEmail(CasePagingEmailData{
 		Greeting:        "ABT Team Leads",
 		RungLine:        "S1 alert at L2 for all ABT Team Leads",
-		Opening:         "Case CS0099001 (S1) has still not been acknowledged and has now been escalated to you.",
+		Opening:         "Case CS0099001 (S1) is still in open state and response SLA remaining time is 42m.",
 		CaseNumber:      "CS0099001",
 		WSO2CaseID:      "WSO2-1000",
 		Title:           "Gateway <down> & out",
@@ -53,6 +53,7 @@ func TestRenderCasePagingEmail(t *testing.T) {
 		CaseURL:         "https://csm.example/cases/abc",
 	})
 	for _, want := range []string{
+		">Case Alert Notification</td>",                             // the heading (agreed 2026-10-17)
 		`color:#7a2e04;">S1 alert at L2 for all ABT Team Leads</p>`, // S1's callout
 		"background-color:#e8590c;",                                 // S1's bar
 		"Hi ABT Team Leads,",
