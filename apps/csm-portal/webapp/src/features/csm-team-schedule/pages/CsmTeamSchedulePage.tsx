@@ -93,6 +93,7 @@ import { zoneColour } from "../utils/rotaHues";
 import { onItsStandingCard, standingDayRows } from "../utils/standingDay";
 import { SCHEDULE_THEME_VARS } from "../utils/useScheduleTheme";
 import ScheduleSkeleton, { TabStripSkeleton } from "../components/ScheduleSkeleton";
+import { rotaIsLoading } from "../utils/rotaLoading";
 import "../teamSchedule.css";
 import { teamDisplayName } from "../utils/teamDisplayName";
 /** What the banner says when an edit is refused: the server's own reason where
@@ -1336,7 +1337,15 @@ export default function CsmTeamSchedulePage(): JSX.Element {
     return <QueryErrorState message="Could not load the schedule catalogue." error={catalogue.error} />;
   }
 
-  const busy = catalogue.isLoading || !aboveLeadsKnown || (view === "mine" ? mine.isLoading : assignments.isLoading);
+  const busy = rotaIsLoading({
+    view,
+    catalogueLoading: catalogue.isLoading,
+    tabsKnown: aboveLeadsKnown,
+    mine,
+    // The week and day views draw from the single read, which keeps the last
+    // range's rows while the next loads (see rotaIsLoading).
+    assignments: rosterView ? assignments : singleRead,
+  });
 
   return (
     <TeamColourProvider teams={catalogue.data?.teams ?? []}>
