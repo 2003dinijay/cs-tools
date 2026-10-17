@@ -7733,8 +7733,22 @@ fallback is removed (`routes.go`'s `activeInstanceSvc` wiring, and both
 methods on `deployedProductService` no longer check `s.snMirror`) rather
 than kept as a standing workaround for what is a one-time data-linkage
 problem, not a structural gap. `DATA_SOURCE=servicenow` (no Postgres pool at
-all) is the one real exception for `InstanceService`, which still routes to
-the previous system there.
+all) is the one real exception for both services -- `activeInstanceSvc` and
+`activeDeployedProductSvc` each still route to the previous system under
+that one `DATA_SOURCE` value, same as every other entity this service backs
+with it.
+
+Also fixed in this same pass: `resolveDeployedProductNodes` (the shared node
+resolution both `deployed_product_service.go` methods above call) resolved
+a deployed product by its deployment and product-version references alone,
+never checking that its product reference was also set -- the same "is this
+a real deployed product" requirement `deployment_repo.go`'s own
+`productCount` subquery already enforces to decide whether a deployment is
+even offered as a choice at all. Without it, a direct request naming a
+deployed product with no product reference could still resolve its nodes
+and return real usage/metrics data, even though that same record is treated
+everywhere else as having no product at all. The resolver's own lookup now
+requires `product_id IS NOT NULL` too.
 
 Two real bugs were also found and fixed in `SearchInstanceMetricsStats`
 while reconciling this against the real upstream aggregation logic it is

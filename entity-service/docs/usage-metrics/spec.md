@@ -7,9 +7,12 @@ data are tied together. It intentionally does not reference how any upstream
 system used to supply this data, or how it got into these tables — only the
 tables themselves and how a reader should interpret them.
 
-All of the data described here is read directly from the application's own
-Postgres database. There is no live external call involved in producing any
-of the responses described below.
+This describes the default operating mode. In that mode, all of the data
+described here is read directly from the application's own Postgres
+database, with no live external call involved in producing any of the
+responses described below. One alternate operating mode (used in a small
+number of deployments, and not covered by this document) still reads this
+same data from a different source instead.
 
 ## The five tables
 
@@ -87,6 +90,27 @@ one of the following has to be true at once:
   (instance, calendar day), with every usage type recorded for that node on
   that day collected together.
 
+- **A single deployed product's core-count metrics** (as opposed to the
+  generic metrics history above) read `hourly_usage_summary` instead of
+  `deployment_information` — specifically, only the rows whose usage type is
+  the core-count type, for that deployed product's own resolved nodes. This
+  means a deployed product can have plenty of `deployment_information`
+  snapshots and still show nothing here, if none of its nodes have a
+  core-count row in `hourly_usage_summary` for the requested range — the two
+  are genuinely separate facts about a node, not two views of the same data.
+
+- **A single deployed product's usage counts** read `hourly_usage_summary`
+  for that deployed product's own resolved nodes, across every usage type,
+  the same way the generic usage history above does.
+
+Resolving "this deployed product's own nodes" for either of the two
+deployed-product-scoped reads above requires the deployed product's record
+to have its product reference set, not only its deployment and
+product-version references — the same requirement the picker already
+applies (see point 3 under "How a node is tied to a project, deployment and
+product" above). A deployed product missing that reference resolves to no
+nodes at all for these two reads, exactly as if it did not exist.
+
 - **Aggregated metrics ("stats")** for a set of instances takes, for each
   calendar day in the requested range, only the single latest
   `deployment_information` snapshot per node that day, and sums the core
@@ -112,18 +136,25 @@ one of the following has to be true at once:
 Given the resolution rules above, for a specific deployed product's pages to
 show anything at all:
 
+- the deployed product's own record must have its product reference set,
+  alongside its deployment and product-version references (see above) —
+  without it, these two reads resolve no nodes at all, independent of
+  whatever `deployment_node`/`hourly_usage_summary` data otherwise exists;
 - at least one `deployment_node` row must exist whose reported project key,
   deployment number and product version correctly resolve to that exact
   deployed product (see "How a node is tied to a project, deployment and
   product" above);
-- for the metrics page: that node needs at least one `deployment_information`
-  row within the requested date range;
+- for the metrics page: that node needs at least one `hourly_usage_summary`
+  row of the core-count type within the requested date range — not a
+  `deployment_information` row, which backs the separate, instance-scoped
+  metrics history instead;
 - for the usage page: that node needs at least one `hourly_usage_summary`
-  row within the requested date range;
+  row (any usage type) within the requested date range;
 - for the deployment to be offered as a choice at all in a product/deployment
   picker: the deployed product record under it must have both its product
   reference and its product-version reference set, and must not be marked
-  inactive.
+  inactive — the same requirement the two reads above enforce directly, not
+  only through the picker.
 
 A node with none of the above still exists as a row and can still show up
 in a plain, unscoped instance listing — it simply contributes nothing to any

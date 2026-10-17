@@ -121,7 +121,14 @@ func (r *deployedProductRepo) GetDeployedProductCategory(ctx context.Context, id
 func (r *deployedProductRepo) resolveDeployedProductNodes(ctx context.Context, id, deploymentID string) (domain.ReferenceTableItem, []domain.ReferenceTableItem, error) {
 	var name, number *string
 	var dpDeploymentID, versionID *string
-	err := r.db.QueryRow(ctx, `SELECT name, number, deployment_id, version_id FROM deployed_product WHERE id = $1`, id).
+	// product_id IS NOT NULL matches the same "is this a real deployed
+	// product" definition the deployment picker's own productCount already
+	// enforces (see deployment_repo.go's own doc comment on that subquery)
+	// -- without it, a caller who already knows a deployed product's id
+	// could reach its usage/metrics directly even though that same record
+	// is treated as having no product at all everywhere else, including
+	// being hidden from ever being offered as a choice in the first place.
+	err := r.db.QueryRow(ctx, `SELECT name, number, deployment_id, version_id FROM deployed_product WHERE id = $1 AND product_id IS NOT NULL`, id).
 		Scan(&name, &number, &dpDeploymentID, &versionID)
 	if err != nil {
 		if err == pgx.ErrNoRows {
