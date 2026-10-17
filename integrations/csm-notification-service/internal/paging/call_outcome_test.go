@@ -192,3 +192,39 @@ func TestEngine_NoWatcherNoOutcomeLine(t *testing.T) {
 		t.Fatalf("an engine with no watcher logged an outcome: %s", buf.String())
 	}
 }
+
+// slowStatuses answers "ringing" and moves the fake clock on by each read's
+// cost, the way a slow Twilio would; its last answer is "completed".
+type slowStatuses struct {
+	clock *time.Time
+	cost  time.Duration
+	reads int
+	until int
+}
+
+func (s *slowStatuses) GetCall(_ context.Context, sid string) (notifications.Call, error) {
+	*s.clock = s.clock.Add(s.cost)
+	s.reads++
+	if s.reads >= s.until {
+		return notifications.Call{SID: sid, Status: "completed"}, nil
+	}
+	return notifications.Call{SID: sid, Status: "ringing"}, nil
+}
+
+// GiveUpAfter is elapsed time: slow reads count against it, not only the
+// pauses between them.
+func TestCallOutcomeWatcher_GiveUpAfterIsElapsedTime(t *testing.T) {
+	clock := time.Date(2026, 10, 17, 10, 0, 0, 0, time.UTC)
+	calls := &slowStatuses{clock: &clock, cost: 10 * time.Second, until: 4}
+	w := newCallOutcomeWatcher(context.Background(), calls)
+	w.FirstCheck, w.PollEvery, w.GiveUpAfter = 0, 0, 30*time.Second
+	w.now = func() time.Time { return clock }
+
+	result, status, ok := w.await("CA1")
+	if !ok || result != CallOutcomeUnresolved || status != "ringing" {
+		t.Fatalf("await = (%q, %q, %v); want unresolved after the deadline", result, status, ok)
+	}
+	if calls.reads != 3 {
+		t.Errorf("read %d times in 30s of 10s reads; want 3", calls.reads)
+	}
+}

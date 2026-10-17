@@ -63,8 +63,8 @@ type callStatusReader interface {
 	GetCall(ctx context.Context, callSID string) (notifications.Call, error)
 }
 
-// callStatusTimeout bounds one status read, so a slow Twilio cannot hold a
-// watcher past GiveUpAfter by much.
+// callStatusTimeout bounds one status read; await also cuts it to the time
+// left before GiveUpAfter.
 const callStatusTimeout = 10 * time.Second
 
 // CallOutcomeWatcher logs how each placed call ended. A nil watcher is off.
@@ -79,6 +79,9 @@ type CallOutcomeWatcher struct {
 	// cover Twilio's 60 s ring timeout plus a short message. Fields so tests
 	// can shorten them.
 	FirstCheck, PollEvery, GiveUpAfter time.Duration
+	// now is time.Now unless a test substitutes one; GiveUpAfter is measured
+	// on it.
+	now func() time.Time
 
 	wg sync.WaitGroup
 }
@@ -93,6 +96,7 @@ func newCallOutcomeWatcher(base context.Context, calls callStatusReader) *CallOu
 	return &CallOutcomeWatcher{
 		calls: calls, base: base,
 		FirstCheck: time.Minute, PollEvery: 20 * time.Second, GiveUpAfter: 3 * time.Minute,
+		now: time.Now,
 	}
 }
 
@@ -148,18 +152,25 @@ func (w *CallOutcomeWatcher) Wait() {
 // server's context ended first.
 //
 //	completed, no-answer, busy, failed, canceled  that, as Twilio says it
-//	queued, ringing, in-progress                  ask again; past GiveUpAfter,
-//	                                              unresolved
+//	queued, ringing, in-progress                  ask again; once GiveUpAfter
+//	                                              has elapsed, unresolved
 //
 // A failed status read counts as "still going" and is asked again.
 func (w *CallOutcomeWatcher) await(callSID string) (result, twilioStatus string, ok bool) {
+	// GiveUpAfter is elapsed time from the start, not the sum of the sleeps:
+	// a slow status read must not stretch the wait past it. Each read and
+	// each pause is cut to the time left.
+	deadline := w.now().Add(w.GiveUpAfter)
 	last := "unknown"
-	waited := w.FirstCheck
 	if !w.sleep(w.FirstCheck) {
 		return "", "", false
 	}
 	for {
-		ctx, cancel := context.WithTimeout(w.base, callStatusTimeout)
+		left := deadline.Sub(w.now())
+		if left <= 0 {
+			return CallOutcomeUnresolved, last, true
+		}
+		ctx, cancel := context.WithTimeout(w.base, min(callStatusTimeout, left))
 		got, err := w.calls.GetCall(ctx, callSID)
 		cancel()
 		if err != nil {
@@ -174,13 +185,13 @@ func (w *CallOutcomeWatcher) await(callSID string) (result, twilioStatus string,
 				return last, last, true
 			}
 		}
-		if waited+w.PollEvery > w.GiveUpAfter {
+		left = deadline.Sub(w.now())
+		if left <= 0 {
 			return CallOutcomeUnresolved, last, true
 		}
-		if !w.sleep(w.PollEvery) {
+		if !w.sleep(min(w.PollEvery, left)) {
 			return "", "", false
 		}
-		waited += w.PollEvery
 	}
 }
 
