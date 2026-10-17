@@ -19,6 +19,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -185,6 +186,22 @@ func TestCatalog_SearchProductVersions(t *testing.T) {
 	}
 	if _, has := v["createdOn"]; has {
 		t.Errorf("createdOn leaked: %v", v)
+	}
+}
+
+func TestCatalog_VersionsSurviveProductLookupFailure(t *testing.T) {
+	m := &mockCatalogClient{
+		products: func([]byte) ([]byte, error) { return nil, errors.New("boom") },
+		versions: func([]byte) ([]byte, error) {
+			return []byte(`{"productVersions":[{"id":"v1","version":"4.0.0"}],"total":1,"hasMore":false}`), nil
+		},
+	}
+	w := serveCatalog(t, m, "", "/products/"+catalogUUID+"/versions/search")
+	assertStatus(t, w, http.StatusOK)
+	data := decodeJSON[map[string]any](t, w)["data"].(map[string]any)
+	prod := data["versions"].([]any)[0].(map[string]any)["product"].(map[string]any)
+	if prod["id"] != catalogUUID || prod["name"] != nil {
+		t.Errorf("product = %v, want id set and name null", prod)
 	}
 }
 

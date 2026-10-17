@@ -442,25 +442,28 @@ func (h *CatalogHandler) SearchProductVersions(w http.ResponseWriter, r *http.Re
 		}
 		return page[productVersionView]{items: out, total: p.Total, hasMore: p.HasMore}, nil
 	})
-	if err == nil && len(all) > 0 {
-		name := ""
-		var products []productView
-		if products, err = h.fetchAllProducts(r.Context(), ""); err == nil {
-			for _, p := range products {
-				if p.ID == id {
-					name = p.Name
-					break
-				}
-			}
-			for i := range all {
-				all[i].Product.Name = &name
-			}
-		}
-	}
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity SearchProductVersions failed", "productID", id, "err", summarizeErr(err))
 		mapUpstreamError(w, err, "Failed to search product versions.")
 		return
+	}
+
+	// The product name is a convenience lookup: if it fails or finds no match the
+	// versions are still returned, with product.name left null.
+	if len(all) > 0 {
+		products, perr := h.fetchAllProducts(r.Context(), "")
+		if perr != nil {
+			slog.WarnContext(r.Context(), "entity SearchProducts failed, product name omitted", "productID", id, "err", summarizeErr(perr))
+		}
+		for _, p := range products {
+			if p.ID == id {
+				name := p.Name
+				for i := range all {
+					all[i].Product.Name = &name
+				}
+				break
+			}
+		}
 	}
 
 	sort.SliceStable(all, func(i, j int) bool {

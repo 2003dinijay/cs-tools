@@ -1135,8 +1135,9 @@ paths:
       operationId: searchProductVersions
       description: >
         Response shape is that of the ServiceNow scripted REST API this replaces, built from
-        entity-service responses. abbreviation and product.name are always null
-        (entity-service does not return them); product.id is the path id.
+        entity-service responses. abbreviation is always null (entity-service does not return it);
+        product.id is the path id. product.name is looked up from the product list and is null
+        when no product matches or the lookup fails.
       parameters:
         - name: id
           in: path
