@@ -1,81 +1,226 @@
 # CSM Scheduled Tasks
 
-A single Choreo Scheduled Task (Go 1.26+) that runs several independently-scheduled sub-crons —
-"flows and actions" that need to happen on a recurring basis — behind one shared trigger, with
-failure tracking and automatic retry backed by entity-service.
+A single scheduled-task component (Go) that runs several independently-scheduled recurring jobs
+("sub-crons") behind one shared platform trigger, with failure tracking and automatic retry backed
+by the entity-service.
 
-Each invocation runs exactly one tick and exits — there is no long-running process here, unlike
-every other Go component in this repo. Choreo's own Scheduled Task trigger supplies the cadence.
+Each invocation runs exactly one tick and exits. There is no long-running process and no HTTP
+surface, unlike most other Go components in this repository. The hosting platform's own scheduled
+trigger supplies the cadence.
 
-## Why this shape
+## Contents
 
-Choreo bills/schedules per component trigger, not per job, so registering ten Choreo Scheduled
-Tasks for ten sub-crons is both operationally heavier and harder to reason about than one component
-that fans out internally. The trade-off this design makes to support that: every sub-cron's
-schedule is evaluated against a single shared "driver" cadence (this component's own Choreo
-trigger), which must be at least as frequent as the tightest sub-cron registered.
+- [Architecture](#architecture)
+- [Developer guide](#developer-guide)
+- [Configuration](#configuration)
 
-Failure handling doesn't use a fixed retry-count cap. A failed sub-cron keeps retrying on every
-eligible tick until it either succeeds, or its own next scheduled period comes due — at which point
-the old, still-unresolved attempt is abandoned ("superseded") rather than resurrected, and only the
-newest period is chased from then on. See `CLAUDE.md` for the full design ("period keys",
-"supersede") and why an earlier two-pass version of the tick algorithm collapsed into one pass.
+## Architecture
 
-## Project structure
+### Purpose and place in the platform
+
+This component is the platform's recurring-job runner: housekeeping, scheduled reports, scheduled
+publishing, and similar work that must happen on a clock rather than in response to a user action.
+It sits beside the other backend services, holds no database of its own, and talks only to
+entity-service (and an email service) over HTTPS using OAuth2 client credentials. For how it fits
+into the wider CSM platform, see the
+[platform architecture](../../apps/csm-portal/README.md#architecture).
+
+```text
+ platform scheduled trigger (every DRIVER_INTERVAL)
+            |
+            v
+   csm-scheduled-tasks  (one Engine.Tick per invocation, then exit)
+      |             |
+      |             +--> email service      (failure alerts, report emails)
+      v
+   entity-service  (scheduled_task_run ledger, case search, announcements, ...)
+```
+
+### Trigger model
+
+- **Driver cadence.** The component is created as a "Scheduled Task" (not a "Service") in the
+  hosting platform, whose cron trigger fires it. `DRIVER_INTERVAL` must be set to match that
+  trigger. It must be at least as frequent as the tightest sub-cron registered, because every
+  sub-cron's schedule is only evaluated when the process runs.
+- **Sub-cron schedules.** Each registered task has its own 5-field cron expression (a 6-field form
+  with a leading seconds field is also accepted). Schedules are evaluated in the process's local
+  time zone; set `TZ=UTC` in the deployment so the documented times mean UTC.
+- **Why one component.** Scheduling is per component trigger, not per job, so fanning out
+  internally is operationally simpler than one component per job.
+
+### Period keys, retry and supersede
+
+For a task's cron expression `E` and the current time, `internal/schedule.PeriodKey` returns the
+most recent firing of `E` at or before now. Every tick between two firings derives the same key, so
+retries land on the same ledger row.
+
+On each tick, for each registered task, `internal/engine` does one pass:
+
+1. Compute the current period key.
+2. Ask entity-service to claim an attempt (`POST /scheduled-tasks/attempts`). It atomically allows
+   or denies: a new period supersedes any still-open older period for the same task and is claimed;
+   an existing failed row whose retry time has arrived is claimed again; anything else is denied.
+3. If allowed, run the task's handler, then report the outcome
+   (`PATCH /scheduled-tasks/attempts/{id}`) as success or failure. A failure sets a next-retry time;
+   there is no retry cap.
+
+A failing task therefore retries on every eligible tick until it succeeds or its own next period
+comes due, at which point the old attempt is abandoned ("superseded"). Handlers must be idempotent
+per period. Every failed attempt sends a failure alert email (see [Alerting](#alerting)).
+
+### Registered tasks
+
+| Task name (ledger key) | Default schedule | Enabled | What it does |
+|---|---|---|---|
+| `housekeeping_cleanup` | `0 3 * * *` | Always | Deletes resolved (succeeded or superseded) ledger rows older than `HOUSEKEEPING_RETENTION_DAYS`. Open or failed rows are never deleted. |
+| `stale_cases_report` | `0 7 * * *` | Always | Emails a report of cases not closed and created at least 30 days ago (fixed threshold). Does nothing and still succeeds if the task has no `to` recipients. |
+| `open_cases_report` | `0 8 * * *` | Always | Emails a report of cases still in the `open` state that were created before the start of yesterday (UTC calendar-day boundary). Does nothing and still succeeds if the task has no `to` recipients. |
+| `publish_scheduled_announcements` | `*/15 * * * *` | Always | Finds scheduled announcements whose publish time has arrived and asks entity-service to publish each one. Every due item is attempted independently; failures are joined into one error. |
+| `cloud_status_webhooks` | `*/5 * * * *` | Only if `CLOUD_STATUS_ENABLED=true` | Asks entity-service which service-status transitions owe an outbound webhook, posts each to its configured status-dashboard base URL, and records delivery. |
+| `availability_recalculation` | `0 3 * * *` | Only if `AVAILABILITY_RECALC_ENABLED=true` | Triggers entity-service to recompute service availability figures; fails the run on a partial sweep or an empty subject list. The arithmetic runs in entity-service. |
+
+Effective promptness of any task is bounded by the shared driver cadence, not by its schedule
+string alone. Task names are API contracts: renaming one orphans its history and stops matching any
+`SUB_CRON_SCHEDULES` or `SUB_CRON_RECIPIENTS` entry.
+
+### Alerting
+
+- `ALERT_RECIPIENTS` is a standing audience emailed on every failed attempt of every task.
+- A task's own `to`/`cc` in `SUB_CRON_RECIPIENTS` is added to the failure alert for that task (its
+  `to` is merged into the same To line). For the two report tasks, that `to`/`cc` instead is the
+  actual report audience.
+- A task's failures send no email only when both lists are empty. The failure is still recorded
+  and retried.
+- `ALERTS_ENABLED=false` is a global kill switch for every email the component sends, including
+  reports; the report tasks then skip their work entirely for that tick.
+
+### Code structure
 
 ```text
 csm-scheduled-tasks/
-├── cmd/server/main.go       # Entry point — builds the registry, runs one Engine.Tick, exits
+├── cmd/server/main.go            # Entry point: reads config, builds the task list, runs one Engine.Tick, exits
 ├── internal/
-│   ├── schedule/period.go   # PeriodKey(cronExpr, now) — the "most recent scheduled firing" concept
-│   ├── registry/registry.go # Task{Name, Schedule, Handler, RetryBackoff, To, Cc}
-│   ├── engine/engine.go     # Tick: claim → run → report back, once per task per invocation
-│   ├── ledger/client.go     # entity-service client for this component's own durable state (Attempt/Complete/Fail/DeleteResolvedBefore)
-│   ├── entitycases/client.go # Separate, read-only entity-service client for case search — used by report-style sub-crons (see CLAUDE.md, "Per-task report emails")
-│   ├── notify/              # Email sending — same internal email service csm-notification-service uses; alert.html (failure alerts) plus one template per report-style sub-cron (see CLAUDE.md, "Per-task report emails")
-│   ├── httpsec/httpsec.go   # Shared HTTPS/redirect guards for ledger, entitycases, and notify's OAuth2 clients
-│   ├── housekeeping/        # Sub-cron: deletes old resolved scheduled_task_run rows (see CLAUDE.md, "Housekeeping")
-│   ├── stalecases/          # Sub-cron: reports cases open too long (see CLAUDE.md, "Stale cases report")
-│   ├── opencases/           # Sub-cron: reports cases still in Open state (see CLAUDE.md, "Open cases report")
-│   └── apierror/errors.go   # Typed upstream-error wrapper, shared by ledger, entitycases, and notify
+│   ├── schedule/                 # PeriodKey(cronExpr, now): most recent scheduled firing
+│   ├── registry/                 # Task{Name, Schedule, Handler, RetryBackoff, To, Cc}
+│   ├── engine/                   # Tick: claim -> run -> report back, once per task per invocation
+│   ├── ledger/                   # entity-service client for run state (Attempt/Complete/Fail/DeleteResolvedBefore)
+│   ├── entitycases/              # entity-service client for case search (used by report tasks)
+│   ├── announcementpublish/      # Client + handler for publish_scheduled_announcements
+│   ├── cloudstatus/              # Client, outbound webhook poster and handler for cloud_status_webhooks
+│   ├── availability/             # Client + handler for availability_recalculation
+│   ├── housekeeping/             # Handler for housekeeping_cleanup
+│   ├── stalecases/               # Handler for stale_cases_report
+│   ├── opencases/                # Handler for open_cases_report
+│   ├── notify/                   # Email client and HTML templates (alert, stale/open case reports)
+│   ├── httpsec/                  # Shared https-only URL guard and redirect guard for the HTTP clients
+│   └── apierror/                 # Typed upstream-error wrapper shared by the clients
+├── .env.example                  # Configuration template
+└── go.mod
 ```
 
-No `.choreo/component.yaml` here — this component is created as a Choreo "Scheduled Task" (not
-"Service") directly in Choreo Console, where its cron trigger is also configured; there's no
-endpoint declaration this component needs to check in.
+There is no `.choreo/component.yaml`: the component is created as a Scheduled Task directly in the
+hosting console, where its cron trigger is configured, and it declares no endpoints.
 
-## Running locally
+**Single `package main` rule.** `cmd/server` must remain the only `package main` in this module. The
+Google Go buildpack used for deployment picks the package to build by listing `main` packages; with
+two it cannot choose and fails with `no Go files in /workspace`, a message that names neither
+offending directory.
+
+### Entity-service dependency
+
+All claim, retry, success and failure state lives in entity-service's `scheduled_task_run` table
+and its `/scheduled-tasks/attempts` endpoints. Deploy an entity-service version that includes them
+before this component's first real invocation.
+
+## Developer guide
+
+### Prerequisites
+
+- Go 1.26.6 or newer (per `go.mod`).
+- An entity-service instance this component can reach over HTTPS (plain `http` is accepted only
+  for `localhost`/loopback addresses), and an OAuth2 client-credentials client that entity-service
+  accepts.
+- Optional: an email service endpoint, needed only if alert or report recipients are configured.
+
+### Build, run, test
 
 ```bash
 # from operations/csm-scheduled-tasks
-cp .env.example .env   # fill in CUSTOMER_ENTITY_SERVICE_* at minimum
-go run ./cmd/server
-```
+cp .env.example .env      # then fill in the required values (see Configuration)
+go run ./cmd/server       # runs exactly one tick against the configured entity-service, then exits
 
-Each run is one tick against whichever entity-service `.env` points at, then the process exits.
-Three sub-crons are registered today: `housekeeping_cleanup` (see `CLAUDE.md`, "Housekeeping"),
-`stale_cases_report` (see `CLAUDE.md`, "Stale cases report"), and `open_cases_report` (see
-`CLAUDE.md`, "Open cases report"); see `CLAUDE.md` ("Adding a sub-cron") for how to register
-another.
-
-## Environment variables
-
-See `CLAUDE.md` for the full table. At minimum, `CUSTOMER_ENTITY_SERVICE_BASE_URL` and the shared
-`OAUTH2_CLIENT_ID`/`OAUTH2_CLIENT_SECRET`/`OAUTH2_TOKEN_URL` are required — this component cannot
-claim or report anything without entity-service. The same `OAUTH2_*` credentials also back the
-email client, and any future service client — see `CLAUDE.md`'s own note on that convention.
-
-## Commands
-
-```bash
-go vet ./...              # vet
-go test -race ./...       # race-detector tests
 go build -o server ./cmd/server
+go vet ./...
+go test -race ./...
 ```
 
-## Entity-service dependency
+`.env` in the working directory is loaded automatically at startup if present; variables already
+set in the real environment take precedence. `.env` is git-ignored; never commit it. Logs are JSON
+on stdout.
 
-This component has no database of its own. All claim/retry/succeed/fail state lives in
-entity-service's `scheduled_task_run` table, added alongside this component (see that repo's
-`migrations/000013_create_scheduled_task_run.up.sql`, `CLAUDE.md` — "Scheduled task runs" — and
-`openapi.yaml`). Deploy that migration before this component's first real invocation.
+Because a run is a single tick, re-run the command to simulate further ticks. A task is only
+claimed if its period key is new or its retry time has arrived, so a second immediate run usually
+does nothing for tasks that already succeeded. For quick local testing of a handler, a task
+schedule can be overridden through `SUB_CRON_SCHEDULES`.
+
+### Adding a new task
+
+1. **Write the handler** in its own package under `internal/`: a
+   `func(ctx context.Context) error`. Return `nil` on success and a descriptive error on failure.
+   It must be idempotent per period and needs no knowledge of retries, periods or the ledger. If it
+   needs a new entity-service endpoint, add a small dedicated client in the same package (follow
+   `announcementpublish` or `entitycases`) and build it with `httpsec`-guarded https URLs.
+2. **Register it** in the `tasks` slice in `cmd/server/main.go` as a `registry.Task`:
+   - `Name`: a stable ledger key.
+   - `Schedule`: `scheduleFor(scheduleOverrides, "<name>", "<default cron>")`, so the default lives
+     in code and can be overridden by `SUB_CRON_SCHEDULES`.
+   - `Handler`: your handler.
+   - `To`/`Cc`: from `recipientsFor(recipientOverrides, "<name>")`. Do not hardcode addresses.
+   - Optionally `RetryBackoff`; it defaults to `DRIVER_INTERVAL` when zero.
+3. **Gate risky tasks** behind an explicit `*_ENABLED` flag (default false) and register them only
+   when enabled, as `cloud_status_webhooks` and `availability_recalculation` do, so a switched-off
+   task leaves no ledger rows.
+4. **Report-style tasks** own their email template (`internal/notify/templates/`) and recipients
+   inside the handler; the engine never sends success emails.
+5. **Add tests** next to the handler with a fake client (handlers depend on small interfaces for
+   this reason), and add any new variable to `.env.example` and the table below.
+
+The schedule of every registered task is validated at startup; an invalid cron expression stops the
+component from starting.
+
+## Configuration
+
+Variables are read from the process environment, with `.env` in the working directory used as a
+fallback. Booleans use Go `strconv.ParseBool` syntax (`true`/`false`/`1`/`0`); a malformed value
+falls back to the default with a warning. JSON-valued variables that fail to parse are logged and
+treated as unset, except where noted. All example values are placeholders.
+
+| Variable | Required | Default | Description | Example |
+|---|---|---|---|---|
+| `OAUTH2_TOKEN_URL` | Yes | none | OAuth2 token endpoint for the client-credentials grant. One shared credential set backs the entity-service and email clients. Startup fails if unset. | `https://auth.example.com/oauth2/token` |
+| `OAUTH2_CLIENT_ID` | Yes | none | OAuth2 client id. Startup fails if unset. | `<client-id>` |
+| `OAUTH2_CLIENT_SECRET` | Yes | none | OAuth2 client secret. Startup fails if unset. | `<client-secret>` |
+| `CUSTOMER_ENTITY_SERVICE_BASE_URL` | Yes | none | Base URL of entity-service. Must be `https` (loopback hosts may use `http`). | `https://entity.example.com` |
+| `CUSTOMER_ENTITY_SERVICE_SCOPES` | No | empty | Comma-separated OAuth2 scopes requested for every entity-service client. | `scope-a,scope-b` |
+| `EMAIL_BASE_URL` | Conditional | empty | Email service base URL (`/send-email` is appended). Required at startup when `ALERTS_ENABLED` is true and `ALERT_RECIPIENTS` or any task's `to` list is non-empty. Must be `https` if set. | `https://email.example.com` |
+| `EMAIL_SCOPES` | No | empty | Comma-separated OAuth2 scopes for the email client. | `scope-a` |
+| `EMAIL_FROM_ADDRESS` | No | empty | Fixed From address on every email sent. | `noreply@example.com` |
+| `ALERTS_ENABLED` | No | `true` | Global kill switch for all emails (failure alerts and report emails). When false, failures are still recorded and retried, and report tasks skip their work. | `false` |
+| `ALERT_RECIPIENTS` | No | empty | Comma-separated standing audience emailed on every failed attempt of every task. | `oncall@example.com` |
+| `SUB_CRON_RECIPIENTS` | No | empty | JSON object of per-task recipients keyed by task name: `{"<task>": {"to": [...], "cc": [...]}}`. Extra failure-alert audience for most tasks; the actual report audience for `stale_cases_report` and `open_cases_report`. | `{"stale_cases_report":{"to":["team@example.com"],"cc":[]}}` |
+| `SUB_CRON_SCHEDULES` | No | empty | JSON object overriding task schedules by name: `{"<task>": "<cron>"}`. Unlisted tasks keep their built-in default. An invalid cron expression stops startup. | `{"housekeeping_cleanup":"0 4 * * *"}` |
+| `DRIVER_INTERVAL` | No | `1h` | Expected invocation cadence; must match the platform trigger. Go duration syntax, must be positive. Used as the default retry backoff and to size the orphaned-claim safety margin. | `15m` |
+| `HOUSEKEEPING_RETENTION_DAYS` | No | `30` | Days of resolved ledger history kept by `housekeeping_cleanup`. Plain positive integer, not a duration string. | `30` |
+| `AVAILABILITY_RECALC_ENABLED` | No | `false` | Registers `availability_recalculation`. Enable only once no other process writes the same availability data, otherwise rows can be duplicated. | `true` |
+| `CLOUD_STATUS_ENABLED` | No | `false` | Registers `cloud_status_webhooks`. Enable only once no other system posts the same status events, otherwise each event is published twice. | `true` |
+| `CLOUD_STATUS_WEBHOOK_URLS` | Yes, when `CLOUD_STATUS_ENABLED` is true | none | JSON object mapping a cloud slug to the status dashboard's base URL (`/api/v1/webhook` is appended). Empty or unparseable stops startup. | `{"cloud-a":"https://status-a.example.com"}` |
+| `CLOUD_STATUS_WEBHOOK_SECRETS` | Yes, when `CLOUD_STATUS_ENABLED` is true | none | JSON object of the full `X-Webhook-Signature` header value, per cloud slug, with a `default` key as fallback. The value is the whole header, including any scheme prefix the receiver expects. Empty or unparseable stops startup. | `{"default":"Secret <token>"}` |
+
+Notes:
+
+- Not configurable by environment: the stale-cases age threshold (fixed at 30 days) and the
+  per-request HTTP timeouts.
+- The component sets no execution timeout of its own; the platform's scheduled-task time limit
+  bounds a run. On `SIGTERM` it cancels in-flight requests and exits.
+- Obsolete: `SUB_CRON_RECIPIENTS` entries for the former outage-email tasks are ignored; those
+  emails are now sent by other services.
