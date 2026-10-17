@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -35,6 +36,8 @@ const (
 	// served by several upstream calls.
 	entityMaxPageSize = 50
 	maxSfIDs          = 100
+	// maxCatalogScan bounds how many products or versions are read to order them before paging.
+	maxCatalogScan = 5000
 	// maxSfScopedDeployments bounds the deployments gathered to scope a deployed-products search by sfIds.
 	maxSfScopedDeployments = 5000
 )
@@ -42,7 +45,6 @@ const (
 const (
 	errMsgInvalidLimit  = "Invalid limit. It must be a positive integer."
 	errMsgInvalidOffset = "Invalid offset. It must be a non-negative integer."
-	errMsgInvalidClass  = "Invalid class. It must be one of product_model, software_model, service_model."
 	errMsgTooManySfIDs  = "Too many sfIds."
 )
 
@@ -256,39 +258,72 @@ type productView struct {
 	Class string `json:"class"`
 }
 
-var validProductClasses = map[string]struct{}{"product_model": {}, "software_model": {}, "service_model": {}}
+// productClasses maps the ?class filter to entity-service's product category
+// ("" = every product) and to the label returned in each product's class.
+var productClasses = map[string]struct{ category, label string }{
+	"product_model":  {"", "Product Model"},
+	"software_model": {"software", "Software Model"},
+	"service_model":  {"service", "Service Model"},
+}
 
-// SearchProducts handles GET /products/search.
+// productClassLabels maps entity-service's product category to the class label.
+var productClassLabels = map[string]string{
+	"software": productClasses["software_model"].label,
+	"service":  productClasses["service_model"].label,
+}
+
+// fetchAllProducts reads every product matching class (an entity-service
+// category, or "" for all) and returns them ordered by name, which entity-service
+// cannot do itself.
+func (h *CatalogHandler) fetchAllProducts(ctx context.Context, category string) ([]productView, error) {
+	items, _, err := fetchWindow(maxCatalogScan, 0, func(n, o int) (page[productView], error) {
+		req := map[string]any{"pagination": map[string]int{"limit": n, "offset": o}}
+		if category != "" {
+			req["class"] = category
+		}
+		body, _ := json.Marshal(req)
+		var p entityProductsPage
+		if err := h.call(ctx, func() ([]byte, error) { return h.entity.SearchProducts(ctx, body) }, &p); err != nil {
+			return page[productView]{}, err
+		}
+		out := make([]productView, 0, len(p.Products))
+		for _, x := range p.Products {
+			label, ok := productClassLabels[x.Class]
+			if !ok {
+				label = x.Class
+			}
+			out = append(out, productView{ID: x.ID, Name: x.Name, Class: label})
+		}
+		return page[productView]{items: out, total: p.Total, hasMore: p.HasMore}, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name)
+	})
+	return items, nil
+}
+
+// window returns the offset/limit slice of items; an offset past the end gives an empty slice.
+func window[T any](items []T, limit, offset int) []T {
+	if offset >= len(items) {
+		return []T{}
+	}
+	return items[offset:min(offset+limit, len(items))]
+}
+
+// SearchProducts handles GET /products/search. An unrecognised ?class is ignored
+// (no class filter), as it always was.
 func (h *CatalogHandler) SearchProducts(w http.ResponseWriter, r *http.Request) {
 	limit, offset, msg := parseLimitOffset(r)
 	if msg != "" {
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
-	class := r.URL.Query().Get("class")
-	if class != "" {
-		if _, ok := validProductClasses[class]; !ok {
-			writeError(w, http.StatusBadRequest, errMsgInvalidClass)
-			return
-		}
-	}
+	category := productClasses[strings.TrimSpace(r.URL.Query().Get("class"))].category
 
-	items, total, err := fetchWindow(limit, offset, func(n, o int) (page[productView], error) {
-		req := map[string]any{"pagination": map[string]int{"limit": n, "offset": o}}
-		if class != "" {
-			req["class"] = class
-		}
-		body, _ := json.Marshal(req)
-		var p entityProductsPage
-		if err := h.call(r.Context(), func() ([]byte, error) { return h.entity.SearchProducts(r.Context(), body) }, &p); err != nil {
-			return page[productView]{}, err
-		}
-		out := make([]productView, 0, len(p.Products))
-		for _, x := range p.Products {
-			out = append(out, productView{ID: x.ID, Name: x.Name, Class: x.Class})
-		}
-		return page[productView]{items: out, total: p.Total, hasMore: p.HasMore}, nil
-	})
+	all, err := h.fetchAllProducts(r.Context(), category)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity SearchProducts failed", "err", summarizeErr(err))
 		mapUpstreamError(w, err, "Failed to search products.")
@@ -296,7 +331,7 @@ func (h *CatalogHandler) SearchProducts(w http.ResponseWriter, r *http.Request) 
 	}
 
 	writeEnvelope(w, map[string]any{
-		"products": items, "total": total, "offset": offset, "limit": limit,
+		"products": window(all, limit, offset), "total": len(all), "offset": offset, "limit": limit,
 		"warnings": []string{},
 	})
 }
@@ -332,7 +367,50 @@ type productVersionView struct {
 	Product                        productRefView `json:"product"`
 }
 
-// SearchProductVersions handles GET /products/{id}/versions/search.
+// compareVersionsDesc orders dotted version strings newest first, comparing
+// each part numerically (a non-numeric or missing part counts as 0).
+func compareVersionsDesc(a, b string) bool {
+	pa, pb := versionParts(a), versionParts(b)
+	for i := 0; i < max(len(pa), len(pb)); i++ {
+		var x, y int
+		if i < len(pa) {
+			x = pa[i]
+		}
+		if i < len(pb) {
+			y = pb[i]
+		}
+		if x != y {
+			return x > y
+		}
+	}
+	return false
+}
+
+func versionParts(v string) []int {
+	if v == "" {
+		v = "0.0.0"
+	}
+	parts := strings.Split(v, ".")
+	out := make([]int, len(parts))
+	for i, p := range parts {
+		out[i], _ = strconv.Atoi(leadingDigits(p))
+	}
+	return out
+}
+
+// leadingDigits mirrors parseInt: the numeric prefix of s, or "" when there is none.
+func leadingDigits(s string) string {
+	s = strings.TrimSpace(s)
+	i := 0
+	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+		i++
+	}
+	return s[:i]
+}
+
+// SearchProductVersions handles GET /products/{id}/versions/search. Versions are
+// ordered newest first across the whole product and then windowed, so every
+// version is read before paging.
 func (h *CatalogHandler) SearchProductVersions(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" || !uuidRe.MatchString(id) {
@@ -345,7 +423,7 @@ func (h *CatalogHandler) SearchProductVersions(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	items, total, err := fetchWindow(limit, offset, func(n, o int) (page[productVersionView], error) {
+	all, total, err := fetchWindow(maxCatalogScan, 0, func(n, o int) (page[productVersionView], error) {
 		body, _ := json.Marshal(map[string]any{"pagination": map[string]int{"limit": n, "offset": o}})
 		var p entityVersionsPage
 		if err := h.call(r.Context(), func() ([]byte, error) { return h.entity.SearchProductVersions(r.Context(), id, body) }, &p); err != nil {
@@ -355,20 +433,45 @@ func (h *CatalogHandler) SearchProductVersions(w http.ResponseWriter, r *http.Re
 		for _, v := range p.ProductVersions {
 			out = append(out, productVersionView{
 				ID: v.ID, Version: v.Version, CurrentSupportStatus: v.CurrentSupportStatus,
-				ReleaseDate: v.ReleaseDate, SupportEOLDate: v.SupportEOLDate,
-				EarliestPossibleSupportEOLDate: v.EarliestPossibleSupportEOLDate,
+				ReleaseDate: formatDate(v.ReleaseDate), SupportEOLDate: formatDate(v.SupportEOLDate),
+				EarliestPossibleSupportEOLDate: formatDate(v.EarliestPossibleSupportEOLDate),
 				Product:                        productRefView{ID: id},
 			})
 		}
 		return page[productVersionView]{items: out, total: p.Total, hasMore: p.HasMore}, nil
 	})
+	if err == nil && len(all) > 0 {
+		name := ""
+		var products []productView
+		if products, err = h.fetchAllProducts(r.Context(), ""); err == nil {
+			for _, p := range products {
+				if p.ID == id {
+					name = p.Name
+					break
+				}
+			}
+			for i := range all {
+				all[i].Product.Name = &name
+			}
+		}
+	}
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity SearchProductVersions failed", "productID", id, "err", summarizeErr(err))
 		mapUpstreamError(w, err, "Failed to search product versions.")
 		return
 	}
 
-	writeEnvelope(w, map[string]any{"versions": items, "total": total, "offset": offset, "limit": limit})
+	sort.SliceStable(all, func(i, j int) bool {
+		return compareVersionsDesc(deref(all[i].Version), deref(all[j].Version))
+	})
+	writeEnvelope(w, map[string]any{"versions": window(all, limit, offset), "total": total, "offset": offset, "limit": limit})
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // ----- GET /deployments/search -----

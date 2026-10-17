@@ -219,7 +219,17 @@ does not pass bytes through** — entity-service stays unchanged. Consequences:
 - `limit` allows up to 100 (sample contract); entity-service caps at 50, so
   larger windows are several upstream calls.
 - Fields entity-service cannot supply are null/empty: `deployment.version`,
-  `productVersion.abbreviation`, `productVersion.product.name`, `warnings`.
+  `productVersion.abbreviation`, `warnings`.
+- Ordering and paging follow the original API, so they happen here: products are
+  read in full, ordered by name (case-insensitive) and then windowed; versions are
+  read in full, ordered newest-first by numeric dotted version, then windowed.
+  Both are bounded by `maxCatalogScan`. An unrecognised `class` is ignored rather
+  than rejected. `class` maps onto entity-service's product category
+  (`software_model`→software, `service_model`→service, `product_model`→all), and
+  the returned class label is inferred from that category — Postgres has no model
+  class, so verify the labels and the `product_model` meaning against live data.
+  The manufacturer and edition filters of the original cannot be applied.
+  `product.name` on a version is looked up from the product list.
   `deployment.type.id` is ServiceNow's type key (1–6) and `label` is derived
   from the enum — an inference, not read from ServiceNow.
 - Errors use this service's usual `{"message"}` body, not the sample's `{success:false,error}`.

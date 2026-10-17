@@ -1082,6 +1082,7 @@ paths:
           schema:
             type: string
             enum: [product_model, software_model, service_model]
+            description: An unrecognised value is ignored (no class filter), not rejected.
         - $ref: '#/components/parameters/Limit'
         - $ref: '#/components/parameters/Offset'
       responses:
@@ -1983,9 +1984,9 @@ components:
         id: {type: string}
         version: {type: string, nullable: true}
         currentSupportStatus: {type: string, nullable: true}
-        releaseDate: {type: string, nullable: true}
-        supportEolDate: {type: string, nullable: true}
-        earliestPossibleSupportEolDate: {type: string, nullable: true}
+        releaseDate: {type: string, nullable: true, description: 'Date only, "YYYY-MM-DD".'}
+        supportEolDate: {type: string, nullable: true, description: 'Date only, "YYYY-MM-DD".'}
+        earliestPossibleSupportEolDate: {type: string, nullable: true, description: 'Date only, "YYYY-MM-DD".'}
         abbreviation: {type: string, nullable: true, description: Always null.}
         product: {$ref: '#/components/schemas/CatalogRef'}
     ProductVersionSearchResponse:

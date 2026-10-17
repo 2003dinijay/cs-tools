@@ -83,7 +83,6 @@ func TestCatalog_InvalidParams(t *testing.T) {
 		{"/products/search?limit=101", errMsgInvalidLimit},
 		{"/deployments/search?limit=abc", errMsgInvalidLimit},
 		{"/deployments/search?offset=-1", errMsgInvalidOffset},
-		{"/products/search?class=bogus", errMsgInvalidClass},
 		{"/products/not-a-uuid/versions/search", ErrMsgInvalidUUID},
 	} {
 		w := serveCatalog(t, m, "", tc.target)
@@ -96,20 +95,25 @@ func TestCatalog_SearchProducts(t *testing.T) {
 	var got map[string]any
 	m := &mockCatalogClient{products: func(b []byte) ([]byte, error) {
 		_ = json.Unmarshal(b, &got)
-		return []byte(`{"products":[{"id":"a","name":"APIM","class":"Software Model","createdOn":"x"}],"total":1,"limit":10,"offset":0,"hasMore":false}`), nil
+		return []byte(`{"products":[{"id":"b","name":"Zeta","class":"software","createdOn":"x"},{"id":"a","name":"apim","class":"software"},{"id":"c","name":"Mid","class":"software"}],"total":3,"hasMore":false}`), nil
 	}}
-	w := serveCatalog(t, m, "", "/products/search?class=software_model&limit=5&offset=2")
+	w := serveCatalog(t, m, "", "/products/search?class=software_model&limit=2&offset=1")
 	assertStatus(t, w, http.StatusOK)
-	if got["class"] != "software_model" {
-		t.Errorf("class not forwarded: %v", got)
+	if got["class"] != "software" {
+		t.Errorf("class not mapped to entity category: %v", got)
 	}
 	resp := decodeJSON[map[string]any](t, w)
 	data := resp["data"].(map[string]any)
-	if resp["success"] != true || data["total"].(float64) != 1 || data["limit"].(float64) != 5 || data["offset"].(float64) != 2 {
+	if resp["success"] != true || data["total"].(float64) != 3 || data["limit"].(float64) != 2 || data["offset"].(float64) != 1 {
 		t.Errorf("unexpected envelope: %v", resp)
 	}
-	p := data["products"].([]any)[0].(map[string]any)
-	if _, has := p["createdOn"]; has || p["name"] != "APIM" {
+	items := data["products"].([]any)
+	// ordered by name (case-insensitive): apim, Mid, Zeta -> window offset 1 limit 2 = Mid, Zeta
+	if len(items) != 2 || items[0].(map[string]any)["name"] != "Mid" || items[1].(map[string]any)["name"] != "Zeta" {
+		t.Fatalf("products not ordered by name then windowed: %v", items)
+	}
+	p := items[0].(map[string]any)
+	if _, has := p["createdOn"]; has || p["class"] != "Software Model" {
 		t.Errorf("product not reshaped: %v", p)
 	}
 	if w, ok := data["warnings"].([]any); !ok || len(w) != 0 {
@@ -117,9 +121,21 @@ func TestCatalog_SearchProducts(t *testing.T) {
 	}
 }
 
+func TestCatalog_UnknownClassIsIgnored(t *testing.T) {
+	var got map[string]any
+	m := &mockCatalogClient{products: func(b []byte) ([]byte, error) {
+		_ = json.Unmarshal(b, &got)
+		return []byte(`{"products":[],"total":0,"hasMore":false}`), nil
+	}}
+	assertStatus(t, serveCatalog(t, m, "", "/products/search?class=bogus"), http.StatusOK)
+	if _, has := got["class"]; has {
+		t.Errorf("unknown class must not filter: %v", got)
+	}
+}
+
 func TestCatalog_LimitAbovePageCapUsesSeveralCalls(t *testing.T) {
 	var calls []int
-	m := &mockCatalogClient{products: func(b []byte) ([]byte, error) {
+	m := &mockCatalogClient{deployments: func(b []byte) ([]byte, error) {
 		var req struct {
 			Pagination struct{ Limit, Offset int } `json:"pagination"`
 		}
@@ -127,35 +143,62 @@ func TestCatalog_LimitAbovePageCapUsesSeveralCalls(t *testing.T) {
 		calls = append(calls, req.Pagination.Limit)
 		items := make([]string, req.Pagination.Limit)
 		for i := range items {
-			items[i] = `{"id":"a","name":"n","class":"c"}`
+			items[i] = `{"id":"a","name":"n","type":"qa"}`
 		}
-		return []byte(`{"products":[` + strings.Join(items, ",") + `],"total":500,"hasMore":true}`), nil
+		return []byte(`{"deployments":[` + strings.Join(items, ",") + `],"total":500,"hasMore":true}`), nil
 	}}
-	w := serveCatalog(t, m, "", "/products/search?limit=100")
+	w := serveCatalog(t, m, "", "/deployments/search?limit=100")
 	assertStatus(t, w, http.StatusOK)
 	if len(calls) != 2 || calls[0] != 50 || calls[1] != 50 {
 		t.Errorf("upstream page sizes = %v, want [50 50]", calls)
 	}
 	data := decodeJSON[map[string]any](t, w)["data"].(map[string]any)
-	if n := len(data["products"].([]any)); n != 100 {
-		t.Errorf("got %d products, want 100", n)
+	if n := len(data["deployments"].([]any)); n != 100 {
+		t.Errorf("got %d deployments, want 100", n)
 	}
 }
 
 func TestCatalog_SearchProductVersions(t *testing.T) {
-	m := &mockCatalogClient{versions: func([]byte) ([]byte, error) {
-		return []byte(`{"productVersions":[{"id":"v1","productId":"x","version":"4.0.0","currentSupportStatus":"available","releaseDate":"2024-01-01","supportEolDate":null,"createdOn":"c"}],"total":1,"hasMore":false}`), nil
-	}}
-	w := serveCatalog(t, m, "", "/products/"+catalogUUID+"/versions/search")
+	m := &mockCatalogClient{
+		products: func([]byte) ([]byte, error) {
+			return []byte(`{"products":[{"id":"` + catalogUUID + `","name":"APIM","class":"software"}],"total":1,"hasMore":false}`), nil
+		},
+		versions: func([]byte) ([]byte, error) {
+			return []byte(`{"productVersions":[` +
+				`{"id":"v1","version":"4.0.0","currentSupportStatus":"available","releaseDate":"2024-01-01T00:00:00Z","supportEolDate":null,"createdOn":"c"},` +
+				`{"id":"v2","version":"4.10.0","currentSupportStatus":"available","releaseDate":"2025-01-01T00:00:00Z","supportEolDate":"2027-02-03T00:00:00Z"},` +
+				`{"id":"v3","version":"4.2.1","currentSupportStatus":"extended","releaseDate":null,"supportEolDate":null}` +
+				`],"total":3,"hasMore":false}`), nil
+		},
+	}
+	w := serveCatalog(t, m, "", "/products/"+catalogUUID+"/versions/search?limit=2&offset=0")
 	assertStatus(t, w, http.StatusOK)
 	data := decodeJSON[map[string]any](t, w)["data"].(map[string]any)
-	v := data["versions"].([]any)[0].(map[string]any)
+	vs := data["versions"].([]any)
+	if len(vs) != 2 || vs[0].(map[string]any)["id"] != "v2" || vs[1].(map[string]any)["id"] != "v3" || data["total"].(float64) != 3 {
+		t.Fatalf("versions not newest-first and windowed: %v", data)
+	}
+	v := vs[0].(map[string]any)
 	prod := v["product"].(map[string]any)
-	if prod["id"] != catalogUUID || prod["name"] != nil || v["abbreviation"] != nil || v["supportEolDate"] != nil || v["version"] != "4.0.0" {
+	if prod["id"] != catalogUUID || prod["name"] != "APIM" || v["abbreviation"] != nil || v["releaseDate"] != "2025-01-01" || v["supportEolDate"] != "2027-02-03" {
 		t.Errorf("unexpected version: %v", v)
 	}
 	if _, has := v["createdOn"]; has {
 		t.Errorf("createdOn leaked: %v", v)
+	}
+}
+
+func TestCompareVersionsDesc(t *testing.T) {
+	for _, tc := range []struct {
+		a, b string
+		want bool
+	}{
+		{"4.10.0", "4.2.0", true}, {"4.2.0", "4.10.0", false}, {"4.0", "4.0.0", false},
+		{"4.0.1", "4.0", true}, {"", "0.0.1", false}, {"4.0.0-beta", "4.0.0", false},
+	} {
+		if got := compareVersionsDesc(tc.a, tc.b); got != tc.want {
+			t.Errorf("compareVersionsDesc(%q,%q)=%v want %v", tc.a, tc.b, got, tc.want)
+		}
 	}
 }
 
