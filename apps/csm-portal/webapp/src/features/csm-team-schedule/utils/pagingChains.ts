@@ -19,8 +19,7 @@
 import type { PagingChainCode, RotaFamily, ScheduleTeam } from "../types";
 
 /** A chain the Case Alerts tab can show: the four the server serves, and
- *  PaaS SRE, which has no rota (and so no chain) yet. The tab offers every
- *  one but CRE's (see caseAlertChainsFor). */
+ *  PaaS SRE, which has no rota (and so no chain) yet. */
 export type CaseAlertChain = PagingChainCode | "PAAS";
 
 /** The chain a team's alerts go through: CRE's, SME's, or its own SRE rota's
@@ -37,11 +36,14 @@ export function chainOfTeam(team: Pick<ScheduleTeam, "family" | "rotaCode">): Ca
  * The chains a reader is shown on Case Alerts: their own, not every team's.
  *
  * A Team lead or a rota admin sees the chain of each team they run -- an SRE
- * rota admin runs SaaS and IaaS, so both -- but never CRE's for running a CRE
- * team. Whoever may see a family's alert settings (settingsLadders, the
- * server's canManage.roomLadders) sees that family's chains: CRE's only so. The CRE head and the CS head look
- * across every family, as a CSM admin does, and see them all: `undefined`.
- * What they may change on each is still the server's to say.
+ * rota admin runs SaaS and IaaS, so both; a CRE Team lead or CRE rota admin
+ * CRE's, where they mark their team's first responders. So does anybody the
+ * server lets change part of CRE's chain (creRights: a responder setter, a
+ * Team lead, the America lead). Whoever may see a family's alert settings
+ * (settingsLadders, the server's canManage.roomLadders) sees that family's
+ * chains. The CRE head and the CS head look across every family, as a CSM
+ * admin does, and see them all: `undefined`. What they may change on each is
+ * still the server's to say.
  *
  * In the picker's order. Only what is shown -- the server still serves every
  * chain to internal staff, and checks every change.
@@ -51,6 +53,9 @@ export function caseAlertChainsFor(reader: {
   teams: readonly Pick<ScheduleTeam, "key" | "family" | "rotaCode">[];
   /** The teams the reader leads or runs as a rota admin. */
   runs: readonly string[];
+  /** The server lets the reader change some part of CRE's chain (the CRE
+   *  chain's canEdit: responder teams, Team lead teams, the America lead). */
+  creRights?: boolean;
   /** A CSM admin. */
   portalAdmin: boolean;
   /** The CRE head or the CS head. */
@@ -77,7 +82,7 @@ export function caseAlertChainsFor(reader: {
     SRE: ["SRE_SAAS", "SRE_IAAS"],
     SME: ["SME"],
   };
-  mine.delete("CRE");
+  if (reader.creRights) mine.add("CRE");
   for (const ladder of reader.settingsLadders ?? []) {
     for (const c of mineOf[ladder] ?? []) mine.add(c);
   }

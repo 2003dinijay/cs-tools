@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -207,6 +208,10 @@ type chatSender interface {
 	// SendEscalationStopped replies in a ladder's thread that it stopped
 	// (ackChat).
 	SendEscalationStopped(ctx context.Context, s notifications.EscalationStopped) error
+	// SendIncidentCreatedAlert posts the "Incident Reported" card an SRE incident's rung replies sit under.
+	SendIncidentCreatedAlert(ctx context.Context, audience string, a notifications.IncidentCreatedAlert) error
+	// SendIncidentAssignedAlert posts the "Incident Acknowledged." reply that ends an assigned SRE incident's thread.
+	SendIncidentAssignedAlert(ctx context.Context, audience string, a notifications.IncidentAssignedAlert) error
 	// HasAudienceSpace reports whether GOOGLE_CHAT_SPACES has a room for the
 	// audience. Asked before every rung, because the client itself treats an
 	// unknown audience as a quiet success.
@@ -270,6 +275,8 @@ func (n chatNotifier) Deliver(ctx context.Context, plan Plan, call PlannedCall) 
 	}
 
 	t := plan.Trigger
+	// The SRE ladder's own space gets the INCIDENT_CHAT_SPACES design; an incident space (n.reply) already has its card.
+	sreThread := !n.reply && t.sreIncident()
 	nextRung, nextIn := plan.NextRungAfter(call)
 	portal, portalLabel := "", "View incident"
 	if t.isCase() {
@@ -304,7 +311,7 @@ func (n chatNotifier) Deliver(ctx context.Context, plan Plan, call PlannedCall) 
 		NextIn:      nextIn,
 		// An incident's rungs reply under its "Incident Reported" card, so the space shows the escalation in that one thread.
 		ThreadKey: t.chatThreadKey(),
-		Reply:     n.reply,
+		Reply:     n.reply || sreThread,
 		Team:      t.Team,
 		// Both stamps in IST, because every shift boundary this ladder routes
 		// by is expressed in it. Rendering either in the reader's own zone
@@ -315,10 +322,74 @@ func (n chatNotifier) Deliver(ctx context.Context, plan Plan, call PlannedCall) 
 		Rotation:   rotationOf(plan),
 		OnCall:     onCallName(plan),
 	}
+	parent := sreThread && isFirstCall(plan, call) && !slices.Contains(plan.IncidentCards, room)
+	if parent {
+		if err := n.chat.SendIncidentCreatedAlert(ctx, room, incidentCard(t, portal)); err != nil {
+			return Delivery{Channel: ChannelChat}, err
+		}
+	}
 	if err := n.chat.SendEscalationAlert(ctx, alert); err != nil {
+		if parent {
+			// The card is in the room: say so, so the retry posts only the reply.
+			return Delivery{Channel: ChannelChat}, &incidentCardPosted{room: room, err: err}
+		}
 		return Delivery{Channel: ChannelChat}, err
 	}
 	return Delivery{Channel: ChannelChat, Status: "posted to " + room}, nil
+}
+
+// incidentCardPosted is a first rung whose "Incident Reported" card reached room but whose reply did not.
+type incidentCardPosted struct {
+	room string
+	err  error
+}
+
+func (e *incidentCardPosted) Error() string { return e.err.Error() }
+func (e *incidentCardPosted) Unwrap() error { return e.err }
+
+// postedIncidentCards is every room a failed delivery already posted the incident card to.
+func postedIncidentCards(err error) []string {
+	switch e := err.(type) {
+	case nil:
+		return nil
+	case *incidentCardPosted:
+		return []string{e.room}
+	case interface{ Unwrap() []error }:
+		var rooms []string
+		for _, inner := range e.Unwrap() {
+			rooms = append(rooms, postedIncidentCards(inner)...)
+		}
+		return rooms
+	case interface{ Unwrap() error }:
+		return postedIncidentCards(e.Unwrap())
+	}
+	return nil
+}
+
+// isFirstCall reports whether call is the plan's first, the one that opens the SRE space's incident thread.
+func isFirstCall(plan Plan, call PlannedCall) bool {
+	if len(plan.Calls) == 0 {
+		return false
+	}
+	first := plan.Calls[0]
+	return first.Level == call.Level && first.Ordinal == call.Ordinal && first.At.Equal(call.At) &&
+		first.Recipient.Email == call.Recipient.Email && first.Recipient.Name == call.Recipient.Name
+}
+
+// incidentCard is the "Incident Reported" card the SRE space's rung replies sit under, the same card INCIDENT_CHAT_SPACES gets.
+func incidentCard(t Trigger, link string) notifications.IncidentCreatedAlert {
+	return notifications.IncidentCreatedAlert{
+		IncidentID:       t.IncidentID,
+		Number:           t.Number,
+		Team:             t.Team,
+		Priority:         t.Priority,
+		ShortDescription: t.Title,
+		Service:          t.Service,
+		Environment:      t.Environment,
+		Category:         t.Category,
+		State:            t.State,
+		IncidentLink:     link,
+	}
 }
 
 // fanoutChat posts one rung's card to several Chat spaces: an incident with

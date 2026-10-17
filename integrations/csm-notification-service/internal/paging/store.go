@@ -83,6 +83,8 @@ type LadderState struct {
 	// wake entries are dropped, so a retry of the cancellation knows the
 	// dropping half already happened.
 	Cancelled *time.Time `json:"cancelled,omitempty"`
+	// AssigneeName is who the stopping incident.assigned named, for the SRE space's "Incident Acknowledged." card.
+	AssigneeName string `json:"assigneeName,omitempty"`
 	// SawStateChange and SawPublicComment remember which acknowledgement
 	// gestures have arrived so far.
 	//

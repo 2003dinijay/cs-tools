@@ -307,4 +307,70 @@ describe("caseTabsReducer", () => {
       expect(state.tabs.map((t) => t.id)).toEqual(["t1", "t2"]);
     });
   });
+  describe("MARK_UPDATED (unseen live update flag)", () => {
+    function twoTabs(): CaseTabsState {
+      let state = open(INITIAL_CASE_TABS_STATE, "t1", "CS1");
+      state = open(state, "t2", "CS2"); // t2 active
+      return state;
+    }
+    const mark = (state: CaseTabsState, caseId: string, activeTabVisible?: boolean) =>
+      caseTabsReducer(state, { type: "MARK_UPDATED", caseId, activeTabVisible });
+
+    it("flags a tab that is not the active one", () => {
+      const state = mark(twoTabs(), "CS1");
+      expect(state.tabs.find((t) => t.id === "t1")?.hasUpdate).toBe(true);
+      expect(state.tabs.find((t) => t.id === "t2")?.hasUpdate).toBeFalsy();
+    });
+
+    it("does not flag the active tab when it is on screen", () => {
+      const before = twoTabs();
+      expect(mark(before, "CS2")).toBe(before);
+      expect(mark(before, "CS2", true)).toBe(before);
+    });
+
+    it("flags the active tab when it is not actually on screen (pinned view is live)", () => {
+      const state = mark(twoTabs(), "CS2", false);
+      expect(state.tabs.find((t) => t.id === "t2")?.hasUpdate).toBe(true);
+    });
+
+    it("ignores a case with no open tab, and is idempotent", () => {
+      const before = twoTabs();
+      expect(mark(before, "CS-unknown")).toBe(before);
+      const once = mark(before, "CS1");
+      expect(mark(once, "CS1")).toBe(once);
+    });
+
+    it("clears the flag when the tab is activated", () => {
+      const flagged = mark(twoTabs(), "CS1");
+      const state = caseTabsReducer(flagged, { type: "SET_ACTIVE", id: "t1" });
+      expect(state.activeTabId).toBe("t1");
+      expect(state.tabs.find((t) => t.id === "t1")?.hasUpdate).toBe(false);
+    });
+
+    it("clears the flag when the already-active tab is clicked while the pinned view is live", () => {
+      const flagged = mark(twoTabs(), "CS2", false);
+      const state = caseTabsReducer(flagged, { type: "SET_ACTIVE", id: "t2" });
+      expect(state.tabs.find((t) => t.id === "t2")?.hasUpdate).toBe(false);
+    });
+
+    it("clears the flag when an outside navigation reactivates the tab", () => {
+      const flagged = mark(twoTabs(), "CS1");
+      const state = open(flagged, "ignored", "CS1");
+      expect(state.activeTabId).toBe("t1");
+      expect(state.tabs.find((t) => t.id === "t1")?.hasUpdate).toBe(false);
+    });
+
+    it("does not touch other tabs' flags when one is activated", () => {
+      let state = open(twoTabs(), "t3", "CS3"); // t3 active
+      state = mark(mark(state, "CS1"), "CS2");
+      state = caseTabsReducer(state, { type: "SET_ACTIVE", id: "t1" });
+      expect(state.tabs.find((t) => t.id === "t2")?.hasUpdate).toBe(true);
+    });
+
+    it("drops the flag with the tab when it is closed", () => {
+      const flagged = mark(twoTabs(), "CS1");
+      const state = caseTabsReducer(flagged, { type: "CLOSE", id: "t1" });
+      expect(state.tabs.map((t) => t.id)).toEqual(["t2"]);
+    });
+  });
 });

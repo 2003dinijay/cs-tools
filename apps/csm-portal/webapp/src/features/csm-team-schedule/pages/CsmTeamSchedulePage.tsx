@@ -338,8 +338,10 @@ export default function CsmTeamSchedulePage(): JSX.Element {
   const showAccess = canManageRotaAccess(rotaAccess.data);
 
   /** The alert chains Case Alerts shows this reader: their own -- the chain
-   *  of each team they lead or run, never CRE's -- or every chain for a CSM admin and for the CRE and CS heads (who
-   *  hold that position on a team, which CRE's chain lists). Not ready until what it is
+   *  of each team they lead or run, and CRE's for anybody who may change part
+   *  of it (where the CRE Team leads mark their first responders) -- or every
+   *  chain for a CSM admin and for the CRE and CS heads (who hold that
+   *  position on a team, which CRE's chain lists). Not ready until what it is
    *  worked out from has been read; the tab is not offered until then, so
    *  nobody sees every chain, or a tab with none, for a moment. A lead does not
    *  wait on the reads that only add chains (see caseAlertChainsReady). */
@@ -358,6 +360,12 @@ export default function CsmTeamSchedulePage(): JSX.Element {
       chains: caseAlertChainsFor({
         teams: catalogue.data.teams,
         runs: fullTeams,
+        creRights:
+          !!pagingCan &&
+          (pagingCan.responderTeams.length > 0 ||
+            pagingCan.teamLeadTeams.length > 0 ||
+            pagingCan.americasTeamLead ||
+            pagingCan.heads),
         portalAdmin: Boolean(rotaAccess.data?.canManage.rotaAdmins),
         head:
           readerEmail !== "" &&
@@ -368,7 +376,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
         settingsLadders: alertSettings.data?.canManage.roomLadders,
       }),
     };
-  }, [catalogue.data, leadTeams, markerOnlyTeams, rotaAccess, pagingProbe, alertSettings, fullTeams, ownTeamKey, ownTeamFamily, readerEmail]);
+  }, [catalogue.data, leadTeams, markerOnlyTeams, rotaAccess, pagingProbe, pagingCan, alertSettings, fullTeams, ownTeamKey, ownTeamFamily, readerEmail]);
   /** Case Alerts as offered: to whoever showPaging lets in, once their chains
    *  are known, and only when there is one -- not a tab with nothing of theirs. */
   const pagingOffered = caseAlertsOffered(showPaging, pagingChains.ready ? pagingChains.chains : null);

@@ -15,7 +15,7 @@
 // under the License.
 
 import { render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { MemoryRouter } from "react-router";
 import type { ReactNode } from "react";
@@ -29,6 +29,7 @@ interface CapturedSidebarProps {
   activeItem?: string;
   expandedMenus?: Record<string, boolean>;
   onSelect?: (id: string) => void;
+  onToggleExpand?: (id: string) => void;
 }
 
 function lastSidebarProps(): CapturedSidebarProps {
@@ -40,9 +41,14 @@ function lastActiveItem(): string | undefined {
 }
 
 const navigateMock = vi.fn();
+// The signed-in user's roles; cs_engineer unless a describe block switches it.
+const currentRoles = vi.hoisted(() => ({ value: ["cs_engineer"] as string[] }));
+// The id keys the user's Feature Preview values in localStorage
+// (featurePreview.ts); nothing is stored under it unless a test does so.
+const CURRENT_USER_ID = "user-1";
 vi.mock("@context/current-user/CurrentUserContext", () => ({
   useCurrentUser: () => ({
-    user: { roles: ["cs_engineer"] },
+    user: { id: CURRENT_USER_ID, roles: currentRoles.value },
     isLoading: false,
     isError: false,
     error: null,
@@ -72,9 +78,10 @@ vi.mock("@wso2/oxygen-ui", async () => {
     activeItem,
     expandedMenus,
     onSelect,
+    onToggleExpand,
     children,
   }: CapturedSidebarProps & { children?: ReactNode }) {
-    sidebarPropsSpy({ activeItem, expandedMenus, onSelect });
+    sidebarPropsSpy({ activeItem, expandedMenus, onSelect, onToggleExpand });
     return <div data-testid="sidebar">{children}</div>;
   }
   MockSidebar.Nav = Passthrough;
@@ -89,6 +96,8 @@ vi.mock("@wso2/oxygen-ui", async () => {
 });
 
 import CsmSideBar from "@components/side-nav-bar/CsmSideBar";
+import { resetFeatureStatesForTests } from "@config/featureFlags";
+import { previewStorageKey } from "@config/featurePreview";
 
 const LAST_SECTION_KEY = "csm.sidebar.lastSection";
 
@@ -269,5 +278,250 @@ describe("CsmSideBar — Operations/Security Center submenu", () => {
     renderAt("/dashboard");
     lastSidebarProps().onSelect?.("engagements");
     expect(navigateMock).not.toHaveBeenCalled();
+  });
+});
+
+// A viewer who is not also a CS engineer/admin gets Customer Health inside a
+// Customers dropdown instead of as its own top-level entry.
+describe("CsmSideBar — Customer Health under Customers for a viewer", () => {
+  beforeEach(() => {
+    currentRoles.value = ["viewer"];
+    sidebarPropsSpy.mockClear();
+    navigateMock.mockClear();
+    sessionStorage.clear();
+  });
+
+  afterEach(() => {
+    currentRoles.value = ["cs_engineer"];
+  });
+
+  it("renders Customers as a dropdown with Accounts, Projects and Customer Health", () => {
+    const { container } = renderAt("/dashboard");
+    const customers = container.querySelector('[data-item-id="customers"]');
+    expect(customers).not.toBeNull();
+    const nested = Array.from(customers!.querySelectorAll("[data-item-id]")).map((el) =>
+      el.getAttribute("data-item-id"),
+    );
+    expect(nested).toEqual(["customers.accounts", "customers.projects", "customers.customer-health"]);
+    expect(customers!.querySelector('[data-item-id="customers.customer-health"] svg')).not.toBeNull();
+  });
+
+  it("drops the top-level Customer Health entry", () => {
+    const { container } = renderAt("/dashboard");
+    expect(container.querySelector('[data-item-id="customer-health"]')).toBeNull();
+    expect(screen.getAllByText("Customer Health")).toHaveLength(1);
+  });
+
+  it("highlights Customer Health in the dropdown, and opens it, on the dashboard and on an account's detail", () => {
+    renderAt("/customer-health");
+    expect(lastActiveItem()).toBe("customers.customer-health");
+    expect(lastSidebarProps().expandedMenus?.customers).toBe(true);
+
+    sidebarPropsSpy.mockClear();
+    renderAt("/customer-health/account/acct-1");
+    expect(lastActiveItem()).toBe("customers.customer-health");
+    expect(lastSidebarProps().expandedMenus?.customers).toBe(true);
+  });
+
+  it("highlights Accounts or Projects in the dropdown on their own pages", () => {
+    renderAt("/customers/accounts");
+    expect(lastActiveItem()).toBe("customers.accounts");
+    sidebarPropsSpy.mockClear();
+    renderAt("/customers/projects/proj-1");
+    expect(lastActiveItem()).toBe("customers.projects");
+  });
+
+  it("remembers Customers, not the dotted child id, as the last section", () => {
+    renderAt("/customer-health");
+    expect(sessionStorage.getItem(LAST_SECTION_KEY)).toBe("customers");
+  });
+
+  it("navigates to each dropdown entry's page when it is selected", () => {
+    renderAt("/dashboard");
+    lastSidebarProps().onSelect?.("customers.customer-health");
+    expect(navigateMock).toHaveBeenLastCalledWith("/customer-health");
+    lastSidebarProps().onSelect?.("customers.accounts");
+    expect(navigateMock).toHaveBeenLastCalledWith("/customers/accounts");
+  });
+
+  it("keeps a CS engineer who also holds viewer on the top-level entry, with Customers as a plain link", () => {
+    currentRoles.value = ["cs_engineer", "viewer"];
+    const { container } = renderAt("/customer-health");
+    expect(container.querySelector('[data-item-id="customer-health"]')).not.toBeNull();
+    expect(container.querySelector('[data-item-id="customers.customer-health"]')).toBeNull();
+    expect(screen.queryByText("Accounts")).not.toBeInTheDocument();
+    expect(lastActiveItem()).toBe("customer-health");
+  });
+});
+
+// The new dropdown-child highlight is only for a section that opens as a
+// dropdown for this user; a CS engineer keeps highlighting the section itself.
+describe("CsmSideBar — route-tab sections for a CS engineer", () => {
+  beforeEach(() => {
+    currentRoles.value = ["cs_engineer"];
+    sidebarPropsSpy.mockClear();
+    sessionStorage.clear();
+  });
+
+  it("highlights Customers, not its tab, on Accounts and Projects pages", () => {
+    renderAt("/customers/accounts");
+    expect(lastActiveItem()).toBe("customers");
+    sidebarPropsSpy.mockClear();
+    renderAt("/customers/projects/proj-1");
+    expect(lastActiveItem()).toBe("customers");
+  });
+
+  it("highlights Settings, not its tab, on a Settings page", () => {
+    renderAt("/admin/user-management");
+    expect(lastActiveItem()).toBe("admin");
+    sidebarPropsSpy.mockClear();
+    renderAt("/admin/user-management/users");
+    expect(lastActiveItem()).toBe("admin");
+  });
+});
+
+describe("CsmSideBar — collapsing a dropdown that opened by itself", () => {
+  const toggleSpy = vi.fn();
+
+  function renderWithToggle(path: string, expandedMenus?: Record<string, boolean>): void {
+    render(
+      <MemoryRouter initialEntries={[path]}>
+        <CsmSideBar collapsed={false} expandedMenus={expandedMenus} onToggleExpand={toggleSpy} />
+      </MemoryRouter>,
+    );
+  }
+
+  beforeEach(() => {
+    currentRoles.value = ["viewer"];
+    sidebarPropsSpy.mockClear();
+    toggleSpy.mockClear();
+    sessionStorage.clear();
+  });
+
+  afterEach(() => {
+    currentRoles.value = ["cs_engineer"];
+  });
+
+  // toggleMenu flips the stored value; for an auto-opened section that is
+  // undefined -> true (no visible change), so it is flipped twice to close.
+  it("closes an auto-opened section on the first click", () => {
+    renderWithToggle("/customer-health", {});
+    lastSidebarProps().onToggleExpand?.("customers");
+    expect(toggleSpy).toHaveBeenCalledTimes(2);
+    expect(toggleSpy).toHaveBeenNthCalledWith(1, "customers");
+    expect(toggleSpy).toHaveBeenNthCalledWith(2, "customers");
+  });
+
+  it("toggles once when the section's state was set explicitly", () => {
+    renderWithToggle("/customer-health", { customers: true });
+    lastSidebarProps().onToggleExpand?.("customers");
+    expect(toggleSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("toggles once when the section is not auto-opened", () => {
+    renderWithToggle("/dashboard", {});
+    lastSidebarProps().onToggleExpand?.("customers");
+    expect(toggleSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+// The shipped config.js.example marks Customers WIP: a viewer must then keep
+// the working top-level Customer Health entry.
+describe("CsmSideBar — viewer when a deployment marks Customers WIP", () => {
+  function setOverrides(value: unknown): void {
+    window.config = {
+      ...window.config,
+      CSM_PORTAL_FEATURE_OVERRIDES: value,
+    } as Window["config"];
+    resetFeatureStatesForTests();
+  }
+
+  beforeEach(() => {
+    currentRoles.value = ["viewer"];
+    sidebarPropsSpy.mockClear();
+    sessionStorage.clear();
+    setOverrides({ customers: "wip" });
+  });
+
+  afterEach(() => {
+    currentRoles.value = ["cs_engineer"];
+    setOverrides(undefined);
+  });
+
+  it("shows the top-level Customer Health entry and no shortcut", () => {
+    const { container } = renderAt("/dashboard");
+    expect(container.querySelector('[data-item-id="customer-health"]')).not.toBeNull();
+    expect(container.querySelector('[data-item-id="customers.customer-health"]')).toBeNull();
+  });
+
+  it("highlights the top-level entry on the Customer Health page", () => {
+    renderAt("/customer-health");
+    expect(lastActiveItem()).toBe("customer-health");
+  });
+});
+
+// An admin's Feature Preview values (featurePreview.ts: browser-local, keyed
+// by user id) reach the sidebar's dropdown and highlight logic, but never
+// make the viewer-only shortcut appear, and do nothing for anyone else.
+describe("CsmSideBar — Feature Preview and the Customers shortcut", () => {
+  function setOverrides(value: unknown): void {
+    window.config = {
+      ...window.config,
+      CSM_PORTAL_FEATURE_OVERRIDES: value,
+    } as Window["config"];
+    resetFeatureStatesForTests();
+  }
+
+  function setPreview(overrides: Record<string, boolean>): void {
+    localStorage.setItem(previewStorageKey(CURRENT_USER_ID), JSON.stringify(overrides));
+  }
+
+  beforeEach(() => {
+    sidebarPropsSpy.mockClear();
+    sessionStorage.clear();
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    currentRoles.value = ["cs_engineer"];
+    setOverrides(undefined);
+    localStorage.clear();
+  });
+
+  it("shows an admin previewing a hidden Customer Health the top-level entry, never the shortcut", () => {
+    currentRoles.value = ["admin"];
+    setOverrides({ "customer-health": "hidden" });
+    setPreview({ "customer-health": true, "customers.customer-health": true });
+    const { container } = renderAt("/customer-health");
+    expect(container.querySelector('[data-item-id="customer-health"]')).not.toBeNull();
+    expect(container.querySelector('[data-item-id="customers.customer-health"]')).toBeNull();
+    // Customers stays a plain link for an admin: no dropdown entries.
+    expect(screen.queryByText("Accounts")).not.toBeInTheDocument();
+    expect(lastActiveItem()).toBe("customer-health");
+  });
+
+  it("ignores preview values stored for a viewer", () => {
+    currentRoles.value = ["viewer"];
+    setOverrides({ customers: "wip" });
+    setPreview({ customers: true, "customers.accounts": true, "customers.customer-health": true });
+    const { container } = renderAt("/customer-health");
+    // Customers is still WIP for the viewer, so they keep the top-level entry.
+    expect(container.querySelector('[data-item-id="customer-health"]')).not.toBeNull();
+    expect(container.querySelector('[data-item-id="customers.customer-health"]')).toBeNull();
+    expect(lastActiveItem()).toBe("customer-health");
+  });
+
+  it("does not surface a hidden Customers for an admin through a preview value for the shortcut", () => {
+    currentRoles.value = ["admin"];
+    setOverrides({ customers: "hidden" });
+    setPreview({ "customers.customer-health": true });
+    const first = renderAt("/dashboard");
+    expect(first.container.querySelector('[data-item-id="customers"]')).toBeNull();
+    first.unmount();
+
+    // Previewing one of its real tabs does surface it.
+    setPreview({ "customers.accounts": true });
+    const second = renderAt("/dashboard");
+    expect(second.container.querySelector('[data-item-id="customers"]')).not.toBeNull();
   });
 });

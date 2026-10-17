@@ -41,9 +41,10 @@ type scimClient interface {
 	UpdateUserPhone(ctx context.Context, userID, mobile string) (*string, error)
 	GetRole(ctx context.Context, roleID string) ([]scim.RoleMember, error)
 	// GetUserByID is used by withPortalRoles to resolve a target user's held
-	// roles by their own Asgardeo ID (see that method's own doc comment for
-	// why -- two distinct roles can share a display name).
-	GetUserByID(ctx context.Context, userID string) ([]scim.RoleAssignment, error)
+	// roles AND group memberships by their own Asgardeo ID (see that method's
+	// own doc comment for why -- two distinct roles, or two distinct groups,
+	// can share a display name).
+	GetUserByID(ctx context.Context, userID string) (scim.UserAssignments, error)
 	// AddRoleMembers grants a role to one or more users by email -- used by
 	// CreateUser to grant each of the caller's requested grantRoles once the
 	// new platform user exists.
