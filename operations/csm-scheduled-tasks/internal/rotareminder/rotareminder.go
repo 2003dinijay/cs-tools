@@ -240,7 +240,8 @@ func announce(ctx context.Context, rota RotaReader, sender EmailSender, cfg Conf
 	if len(errs) == 0 {
 		return nil
 	}
-	err = fmt.Errorf("rotareminder: %d of %d emails failed: %w", len(errs), len(windows), errors.Join(errs...))
+	// Out of the emails tried: a window skipped above was never sent.
+	err = fmt.Errorf("rotareminder: %d of %d emails failed: %w", len(errs), sent+len(errs), errors.Join(errs...))
 	if sent == 0 {
 		return err
 	}

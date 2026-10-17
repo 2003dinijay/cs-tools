@@ -502,6 +502,22 @@ func TestAStartedWindowIsNotSent(t *testing.T) {
 	}
 }
 
+// A late retry counts its failures out of the emails it tried: the Morning
+// window has started and is skipped, so the failed Evening email is 1 of 1.
+func TestAFailureCountsOnlyTheEmailsTried(t *testing.T) {
+	rota := &fakeRota{assignments: []teamschedule.Assignment{
+		assignment("Ann", "ann@example.com", "vega", "CRE_MORNING", "2026-10-16", "2026-10-16 06:00", "2026-10-16 09:00"),
+		assignment("Dee", "dee@example.com", "nova", "CRE_EVENING", "2026-10-16", "2026-10-16 18:00", "2026-10-16 21:00"),
+	}}
+	mail := &fakeEmail{failOn: "Evening"}
+	cfg := config("2026-10-16 07:00", weekdayRotations)
+	cfg.Anchor = func() time.Time { return at("2026-10-15 15:00") }
+	err := WeekdayReminder(rota, mail, cfg)(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "1 of 1 emails failed") {
+		t.Fatalf("err = %v, want 1 of 1 emails failed", err)
+	}
+}
+
 // A rota read that fails fails the run.
 func TestARotaReadFailureFailsTheRun(t *testing.T) {
 	mail := &fakeEmail{}
