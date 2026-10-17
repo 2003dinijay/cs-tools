@@ -7716,6 +7716,47 @@ copy of this schema. This finally gives the previously ServiceNow-only "instance
 `deployed_product_service.go` gained the two metrics methods (previously
 unconditional `ServiceUnavailableError` stubs).
 
+**All five read paths (`InstanceService`'s own five methods, plus
+`DeployedProductService.SearchDeployedProductMetrics`/
+`SearchDeployedProductUsageCounts`) are deliberately always Postgres-backed,
+by explicit product decision, regardless of `DATA_SOURCE` -- including under
+`postgres-servicenow-dual-write`.** A later change had both read paths fall
+back to the previous system under dual-write, reasoning that `deployment_node`
+rows had no real link to a deployment/deployed product anywhere in this
+database -- true only because the underlying rows genuinely weren't linked
+correctly yet (`deployment_node.deployment_number`/`product_version_id` and
+`deployed_product.product_id` have to agree with the real `deployment`/
+`deployed_product` rows for `instanceRefJoins`/`resolveDeployedProductNodes`
+to resolve anything -- see those functions' own doc comments). Once linked
+correctly, Postgres has the real data and must be read from directly; the
+fallback is removed (`routes.go`'s `activeInstanceSvc` wiring, and both
+methods on `deployedProductService` no longer check `s.snMirror`) rather
+than kept as a standing workaround for what is a one-time data-linkage
+problem, not a structural gap. `DATA_SOURCE=servicenow` (no Postgres pool at
+all) is the one real exception for both services -- `activeInstanceSvc` and
+`activeDeployedProductSvc` each still route to the previous system under
+that one `DATA_SOURCE` value, same as every other entity this service backs
+with it.
+
+Also fixed in this same pass: `resolveDeployedProductNodes` (the shared node
+resolution both `deployed_product_service.go` methods above call) resolved
+a deployed product by its deployment and product-version references alone,
+never checking that its product reference was also set -- the same "is this
+a real deployed product" requirement `deployment_repo.go`'s own
+`productCount` subquery already enforces to decide whether a deployment is
+even offered as a choice at all. Without it, a direct request naming a
+deployed product with no product reference could still resolve its nodes
+and return real usage/metrics data, even though that same record is treated
+everywhere else as having no product at all. The resolver's own lookup now
+requires `product_id IS NOT NULL` too.
+
+Two real bugs were also found and fixed in `SearchInstanceMetricsStats`
+while reconciling this against the real upstream aggregation logic it is
+meant to replicate: it summed every `deployment_information` row per day
+instead of only the latest snapshot per node per day (overcounting any node
+that reports more than once a day), and its stats key was `CORES` instead
+of the real `TOTAL_CORES`.
+
 **"Instance" is `deployment_node`.** `Instance.Key` is `node_id`;
 `Instance.Metadata` comes from that node's latest `deployment_information`
 row (by `payload_updated_on`). `CoreCount` is `deployment_information.core_count`,
