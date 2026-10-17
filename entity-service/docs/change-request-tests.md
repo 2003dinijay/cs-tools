@@ -55,7 +55,7 @@ The files below are where each scenario is tested first; most scenarios appear i
 
 ## Appendix A. Go test functions (snapshot)
 
-`entity-service/internal/repository`: 39 files, 391 test functions. Subtests (`t.Run`) are in addition. The 5 test functions whose names carry the previous system's name (the tests of the mirror to it) are counted in their file's total but not listed by name; the `grep` in section 2 lists every one.
+`entity-service/internal/repository`: 39 files, 391 test functions. Subtests (`t.Run`) are in addition. The one test function whose name carries the previous system's name (the test of the mirror to it) is counted in its file's total but not listed by name; the `grep` in section 2 lists every one.
 
 **`change_request_approvals_group_integration_test.go`** (integration, 1)
 - TestChangeRequestFlowIntegration_ApprovalsCarryTheAssignmentGroup
