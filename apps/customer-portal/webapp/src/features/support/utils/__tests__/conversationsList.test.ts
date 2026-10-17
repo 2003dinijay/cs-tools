@@ -19,6 +19,8 @@ import { ConversationListRowAction } from "@features/support/types/conversations
 import {
   resolveConversationListRowAction,
   isConversationResumable,
+  conversationViewPath,
+  getLinkedCaseId,
 } from "@features/support/utils/conversationsList";
 
 describe("resolveConversationListRowAction", () => {
@@ -63,5 +65,36 @@ describe("isConversationResumable", () => {
   it("is false for labels that only contain 'open'/'active' as a substring", () => {
     expect(isConversationResumable("Reopened")).toBe(false);
     expect(isConversationResumable("Inactive")).toBe(false);
+  });
+});
+
+describe("conversationViewPath", () => {
+  it("opens the linked case when the conversation was converted", () => {
+    expect(conversationViewPath("proj-1", "conv-1", "case-9")).toBe(
+      "/projects/proj-1/support/cases/case-9",
+    );
+  });
+
+  it("opens chat history when there is no linked case", () => {
+    expect(conversationViewPath("proj-1", "conv-1")).toBe(
+      "/projects/proj-1/support/conversations/conv-1",
+    );
+    expect(conversationViewPath("proj-1", "conv-1", "  ")).toBe(
+      "/projects/proj-1/support/conversations/conv-1",
+    );
+  });
+});
+
+describe("getLinkedCaseId", () => {
+  it("returns the trimmed id for a valid case id", () => {
+    expect(getLinkedCaseId("case-9")).toBe("case-9");
+    expect(getLinkedCaseId("  case-9 ")).toBe("case-9");
+  });
+
+  it("returns undefined for missing, empty, or whitespace-only ids", () => {
+    expect(getLinkedCaseId()).toBeUndefined();
+    expect(getLinkedCaseId(null)).toBeUndefined();
+    expect(getLinkedCaseId("")).toBeUndefined();
+    expect(getLinkedCaseId("   ")).toBeUndefined();
   });
 });
