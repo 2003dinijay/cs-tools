@@ -3494,6 +3494,8 @@ has neither column, so a hold on one is a 400, never a silent no-op.
 
 ## Change requests
 
+Tests: `entity-service/docs/change-request-tests.md` maps change request scenarios to Go and Playwright tests, lists Vitest coverage, and says how to list and run them.
+
 `change_request` (migration 0043) is a shared-PK extension of `work_item`,
 same pattern as `"case"` (`change_request.id` IS `work_item.id`). `SearchChangeRequests`,
 `AggregateChangeRequests`, `GetChangeRequest`, and `PatchChangeRequest` are
