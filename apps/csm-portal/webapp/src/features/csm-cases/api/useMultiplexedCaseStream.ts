@@ -25,7 +25,6 @@ import {
   invalidateCaseLists,
   invalidateCaseQueries,
   reconnectDelay,
-  usePageVisible,
 } from "@features/csm-cases/api/caseStreamShared";
 
 /** The backend rejects more distinct ids than this with a 400. */
@@ -79,11 +78,9 @@ export function parseCaseUpdatedCaseId(data: unknown): string | undefined {
  * - Ids the caller cannot read are silently dropped server-side, so a requested
  *   id is not guaranteed to be live. Frames for ids that were never requested
  *   are ignored.
- * - While the browser page is hidden the connection is closed (no point holding
- *   a socket nobody is looking at); on return every subscribed case is
- *   invalidated once, because frames emitted meanwhile were not delivered.
- *   `onCaseUpdated` is deliberately NOT called for that catch-up, so returning
- *   to the page does not flag every tab.
+ * - The connection stays open while the browser page is hidden, so a background
+ *   case tab is still flagged when the user is on another browser tab. It is
+ *   still a single connection, so keeping it costs one slot, not one per tab.
  * - A 404/405 means the backend predates this endpoint. Retrying every few
  *   seconds would be pointless, so the hook drops straight to the slow idle
  *   retry (`RECONNECT_IDLE_DELAY_MS`), which still recovers after a deploy.
@@ -100,7 +97,6 @@ export function useMultiplexedCaseStream(
   const queryClient = useQueryClient();
   const getTokens = useAuthTokens();
   const logger = useLogger();
-  const pageVisible = usePageVisible();
 
   // Order-insensitive, so reordering tabs never reconnects.
   const idsKey = [...new Set(caseIds)].sort().join(",");
@@ -114,7 +110,7 @@ export function useMultiplexedCaseStream(
 
   // Read through refs so a new callback/logger/token-getter identity never
   // reconnects the stream: this hook lives in a component that re-renders on
-  // every tab-state change, and only a changed id set or page visibility may
+  // every tab-state change, and only a changed id set may
   // tear the connection down.
   const onCaseUpdatedRef = useRef(onCaseUpdated);
   const getTokensRef = useRef(getTokens);
@@ -125,23 +121,14 @@ export function useMultiplexedCaseStream(
     loggerRef.current = logger;
   });
 
-  // True while the stream is deliberately closed because the page is hidden,
-  // so the run that reopens it knows it missed events.
-  const wasHiddenRef = useRef(false);
+  // Ids of the most recent connection that opened, kept across effect runs
+  // (an id-set change tears one connection down and opens the next).
+  const openedIdsRef = useRef<Set<string> | null>(null);
 
   useEffect(() => {
     if (!settledKey || !apiConfig.streamEnabled || !apiConfig.streamUrl) return;
-    if (!pageVisible) {
-      wasHiddenRef.current = true;
-      return;
-    }
 
     const ids = settledKey.split(",");
-    if (wasHiddenRef.current) {
-      wasHiddenRef.current = false;
-      for (const id of ids) invalidateCaseById(queryClient, id);
-      invalidateCaseLists(queryClient);
-    }
 
     const requested = new Map(ids.map((id) => [id.toLowerCase(), id]));
     let cancelled = false;
@@ -187,6 +174,19 @@ export function useMultiplexedCaseStream(
       // failures should back off.
       current.addEventListener("open", () => {
         attempt = 0;
+        // Frames published between the previous connection closing (error,
+        // or the id set changing) and this one opening were never delivered
+        // and are not replayed, so catch up the cases that were already
+        // subscribed (newly added ids were just loaded) and the case lists.
+        const previous = openedIdsRef.current;
+        if (previous) {
+          const carriedOver = ids.filter((id) => previous.has(id.toLowerCase()));
+          for (const id of carriedOver) invalidateCaseById(queryClient, id);
+          // The lists are shared by every case, so they go stale on any
+          // gap, even when no id carried over.
+          invalidateCaseLists(queryClient);
+        }
+        openedIdsRef.current = new Set(ids.map((id) => id.toLowerCase()));
       });
 
       current.addEventListener("case_updated", (event) => {
@@ -227,5 +227,5 @@ export function useMultiplexedCaseStream(
       clearTimeout(reconnectTimer);
       source?.close();
     };
-  }, [settledKey, pageVisible, queryClient]);
+  }, [settledKey, queryClient]);
 }
