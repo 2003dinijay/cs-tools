@@ -196,6 +196,8 @@ export interface CaseViewDto {
   workState: CaseWorkState;
   type: string | null;
   engagementType: string | null;
+  // Display label (e.g. "Paid", "FOC"), not the paid/foc code. Not populated by every data source.
+  engagementPaymentType?: string | null;
   createdOn?: string;
   updatedOn?: string;
   closedOn: string | null;

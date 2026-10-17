@@ -360,6 +360,10 @@ export interface BeCaseView {
   type?: BeCaseType | null;
   /** Engagement type; only meaningful for `engagement` cases. Null otherwise. */
   engagementType?: string | null;
+  /** Engagement payment type as the data source's display label (e.g. "Paid",
+   * "FOC"), not the {@link BeEngagementPaymentType} code; only meaningful for
+   * `engagement` cases. Not populated by every data source. */
+  engagementPaymentType?: string | null;
   state?: BeCaseState;
   /** Work sub-state; only meaningful while `state` is `work_in_progress`. */
   workState?: BeCaseWorkState | null;
