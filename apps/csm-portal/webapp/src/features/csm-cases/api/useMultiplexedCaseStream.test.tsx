@@ -540,6 +540,24 @@ describe("useMultiplexedCaseStream", () => {
     ]);
   });
 
+  it("still refreshes the case lists when the id set is replaced with no id in common", async () => {
+    const { rerender } = renderStream([ID_A]);
+    await waitFor(() => expect(mockInstances).toHaveLength(1));
+    act(() => {
+      mockInstances[0].dispatchEvent(new Event("open"));
+    });
+
+    rerender({ ids: [ID_B] });
+    await waitFor(() => expect(mockInstances).toHaveLength(2), {
+      timeout: ID_SET_DEBOUNCE_MS * 10,
+    });
+    act(() => {
+      mockInstances[1].dispatchEvent(new Event("open"));
+    });
+
+    expect(invalidatedKeys()).toEqual([["csm-cases"], ["csm-case-children"]]);
+  });
+
   describe("page visibility", () => {
     function setDocumentVisibility(state: "visible" | "hidden") {
       Object.defineProperty(document, "visibilityState", {

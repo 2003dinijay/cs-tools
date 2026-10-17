@@ -177,12 +177,14 @@ export function useMultiplexedCaseStream(
         // Frames published between the previous connection closing (error,
         // or the id set changing) and this one opening were never delivered
         // and are not replayed, so catch up the cases that were already
-        // subscribed. Newly added ids were just loaded and need nothing.
+        // subscribed (newly added ids were just loaded) and the case lists.
         const previous = openedIdsRef.current;
         if (previous) {
           const carriedOver = ids.filter((id) => previous.has(id.toLowerCase()));
           for (const id of carriedOver) invalidateCaseById(queryClient, id);
-          if (carriedOver.length > 0) invalidateCaseLists(queryClient);
+          // The lists are shared by every case, so they go stale on any
+          // gap, even when no id carried over.
+          invalidateCaseLists(queryClient);
         }
         openedIdsRef.current = new Set(ids.map((id) => id.toLowerCase()));
       });
