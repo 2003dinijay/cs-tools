@@ -46,7 +46,7 @@ cre:
     enabled: false
     # Team key (teams.abts, teams.americas) -> the team's mailing list, and the
     # CRE and CS team lists. Left out here (absent, not empty) so this file and
-    # paging-alert.minimal.yaml load alike; a deployment sets them, e.g.
+    # paging-alert.yaml load alike; a deployment sets them, e.g.
     #   teamLists:
     #     atlas: <atlas team list>
     #     americas: <americas team list>
