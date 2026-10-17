@@ -67,6 +67,16 @@ export function resolveConversationListRowAction(
 }
 
 /**
+ * Normalizes a linked case id; blank or whitespace-only ids count as no case.
+ *
+ * @param caseId - Raw linked case id from the conversation.
+ * @returns {string | undefined} Trimmed id, or undefined when there is no case.
+ */
+export function getLinkedCaseId(caseId?: string | null): string | undefined {
+  return caseId?.trim() || undefined;
+}
+
+/**
  * Path for View on a conversation. Converted chats carry a linked case;
  * View should open that case, not the chat-history page.
  *
@@ -80,7 +90,7 @@ export function conversationViewPath(
   conversationId: string,
   caseId?: string | null,
 ): string {
-  const linkedCaseId = caseId?.trim();
+  const linkedCaseId = getLinkedCaseId(caseId);
   if (linkedCaseId) {
     return `/projects/${projectId}/support/cases/${linkedCaseId}`;
   }

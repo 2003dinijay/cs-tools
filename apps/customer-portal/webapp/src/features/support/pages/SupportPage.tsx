@@ -44,7 +44,10 @@ import { isS0Case } from "@features/support/utils/support";
 import { SortOrder } from "@/types/common";
 import { resolveCasesTableDefaultStatusIds } from "@features/dashboard/utils/casesTable";
 import type { ChatHistoryItem } from "@features/support/types/conversations";
-import { conversationViewPath } from "@features/support/utils/conversationsList";
+import {
+  conversationViewPath,
+  getLinkedCaseId,
+} from "@features/support/utils/conversationsList";
 
 /**
  * SupportPage component to display case details for a project.
@@ -281,14 +284,11 @@ export default function SupportPage(): JSX.Element {
                           },
                         );
                       } else {
+                        const caseId = getLinkedCaseId(summary.caseId);
                         navigate(
-                          conversationViewPath(
-                            projectId,
-                            chatId,
-                            summary.caseId,
-                          ),
+                          conversationViewPath(projectId, chatId, caseId),
                           {
-                            state: summary.caseId
+                            state: caseId
                               ? { returnTo: supportPath }
                               : {
                                   conversationSummary: summary,

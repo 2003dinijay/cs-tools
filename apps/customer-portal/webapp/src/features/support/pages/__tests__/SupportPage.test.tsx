@@ -142,6 +142,8 @@ vi.mock("@features/support/components/support-overview-cards/ChatHistoryList", (
       <button onClick={() => onItemAction?.("chat-1", "resume")}>Resume Chat</button>
       <button onClick={() => onItemAction?.("chat-1", "view")}>View Chat</button>
       <button onClick={() => onItemAction?.("chat-2", "view")}>View Converted Chat</button>
+      <button onClick={() => onItemAction?.("chat-3", "view")}>View Blank Case Chat</button>
+      <button onClick={() => onItemAction?.("chat-4", "view")}>View Empty Case Chat</button>
     </>
   ),
 }));
@@ -195,6 +197,26 @@ describe("SupportPage", () => {
             state: { label: "Converted" },
             createdBy: "dev@wso2.com",
             case: { id: "case-99", label: "CS0000099" },
+          },
+          {
+            id: "chat-3",
+            number: "CHAT-3",
+            initialMessage: "Blank case id",
+            createdOn: "2026-05-01T00:00:00Z",
+            messageCount: 1,
+            state: { label: "Open" },
+            createdBy: "dev@wso2.com",
+            case: { id: "   ", label: "" },
+          },
+          {
+            id: "chat-4",
+            number: "CHAT-4",
+            initialMessage: "Empty case id",
+            createdOn: "2026-05-01T00:00:00Z",
+            messageCount: 1,
+            state: { label: "Open" },
+            createdBy: "dev@wso2.com",
+            case: { id: "", label: "" },
           },
         ],
       },
@@ -250,5 +272,25 @@ describe("SupportPage", () => {
       { state: { returnTo: "/projects/project-1/support" } },
     );
   });
+
+  it.each([
+    ["whitespace-only", "View Blank Case Chat", "chat-3"],
+    ["empty", "View Empty Case Chat", "chat-4"],
+  ])(
+    "keeps the conversation summary when the linked case id is %s",
+    (_label, buttonText, chatId) => {
+      render(<SupportPage />);
+      fireEvent.click(screen.getByText(buttonText));
+      expect(mockNavigate).toHaveBeenCalledWith(
+        `/projects/project-1/support/conversations/${chatId}`,
+        {
+          state: {
+            conversationSummary: expect.objectContaining({ chatId }),
+            returnTo: "/projects/project-1/support",
+          },
+        },
+      );
+    },
+  );
 });
 

@@ -126,6 +126,38 @@ vi.mock("@features/support/components/all-conversations/AllConversationsList", (
       >
         Open Converted Conversation
       </button>
+      <button
+        onClick={() =>
+          onConversationClick({
+            id: "conv-3",
+            number: "CHAT-3",
+            initialMessage: "Blank case id",
+            createdOn: "2026-05-01T00:00:00Z",
+            messageCount: 1,
+            state: { label: "Open" },
+            createdBy: "dev@wso2.com",
+            case: { id: "   ", label: "" },
+          })
+        }
+      >
+        Open Blank Case Conversation
+      </button>
+      <button
+        onClick={() =>
+          onConversationClick({
+            id: "conv-4",
+            number: "CHAT-4",
+            initialMessage: "Empty case id",
+            createdOn: "2026-05-01T00:00:00Z",
+            messageCount: 1,
+            state: { label: "Open" },
+            createdBy: "dev@wso2.com",
+            case: { id: "", label: "" },
+          })
+        }
+      >
+        Open Empty Case Conversation
+      </button>
     </>
   ),
 }));
@@ -246,5 +278,31 @@ describe("AllConversationsPage", () => {
       { state: { returnTo: "/projects/project-1/support" } },
     );
   });
+
+  it.each([
+    ["whitespace-only", "Open Blank Case Conversation", "conv-3", "CHAT-3"],
+    ["empty", "Open Empty Case Conversation", "conv-4", "CHAT-4"],
+  ])(
+    "keeps the conversation summary when the linked case id is %s",
+    (_label, buttonText, chatId, chatNumber) => {
+      mockUseSearchConversations.mockReturnValue({
+        data: { conversations: [{ id: chatId }], totalRecords: 1 },
+        isLoading: false,
+        isError: false,
+      });
+
+      render(<AllConversationsPage />);
+      fireEvent.click(screen.getByText(buttonText));
+
+      expect(mockNavigate).toHaveBeenCalledWith(
+        `/projects/project-1/support/conversations/${chatId}`,
+        {
+          state: {
+            conversationSummary: expect.objectContaining({ chatId, chatNumber }),
+          },
+        },
+      );
+    },
+  );
 });
 
