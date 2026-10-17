@@ -123,3 +123,40 @@ func TestSNProjectStatsService_GetProjectCaseStats_RejectsUnknownCaseType(t *tes
 		t.Fatalf("expected *apierror.ValidationError, got %T: %v", err, err)
 	}
 }
+
+func TestServiceNowAverageResponseSource_ReadsOnlyAverageUnfiltered(t *testing.T) {
+	var gotQuery url.Values
+	var gotPath string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/projects/", func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotQuery = r.URL.Path, r.URL.Query()
+		_, _ = w.Write([]byte(`{"totalCount":5,"averageResponseTime":3.5,"stateCount":[],"caseTypes":[]}`))
+	})
+
+	src := NewServiceNowAverageResponseSource(newTestSNClient(t, mux))
+	got, err := src.AverageResponseTime(contextWithUserIDToken("token"), "5aeff120-1b74-c210-2649-97a234bcb54a")
+	if err != nil {
+		t.Fatalf("AverageResponseTime: %v", err)
+	}
+	if got != 3.5 {
+		t.Errorf("hours = %v, want 3.5", got)
+	}
+	if gotPath != "/projects/"+uuidToSysid("5aeff120-1b74-c210-2649-97a234bcb54a")+"/cases/stats" {
+		t.Errorf("path = %q", gotPath)
+	}
+	if len(gotQuery) != 0 {
+		t.Errorf("query = %v, want none (the figure ignores the filters)", gotQuery)
+	}
+}
+
+func TestServiceNowAverageResponseSource_UpstreamErrorPropagates(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/projects/", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusBadGateway)
+	})
+	_, err := NewServiceNowAverageResponseSource(newTestSNClient(t, mux)).
+		AverageResponseTime(contextWithUserIDToken("token"), "5aeff120-1b74-c210-2649-97a234bcb54a")
+	if err == nil {
+		t.Fatal("expected an error from a failing upstream")
+	}
+}

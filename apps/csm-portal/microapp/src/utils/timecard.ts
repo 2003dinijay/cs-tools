@@ -269,6 +269,16 @@ export const DEFAULT_BILLABLE = true;
  */
 export const NON_BILLABLE_SEVERITIES: CaseSeverity[] = ["catastrophic", "critical", "high", "medium"];
 
+/**
+ * Whether an engagement's payment type marks it free of charge. The backend returns the
+ * ServiceNow choice's display label, not the "foc" code, so either wording is matched
+ * case-insensitively (e.g. "FOC", "Free of Charge"). Mirrors the webapp's isFocPaymentType —
+ * time on an FOC engagement is never billable, so the FE billable switch is locked off.
+ */
+export function isFocPaymentType(paymentType: string | null | undefined): boolean {
+  return !!paymentType && /\bfoc\b|free of charge/i.test(paymentType);
+}
+
 /** Character cap mirroring the ServiceNow work-log field. */
 export const WORK_LOG_MAX = 4000;
 

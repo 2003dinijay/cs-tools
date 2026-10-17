@@ -42,8 +42,8 @@ type CommentRow struct {
 	// see CreatedBy's own doc comment in comment_service.go), matched
 	// case-insensitively against "user".email/first_name/last_name/name the
 	// same way case_repo.go's SearchCaseActivities already resolves a
-	// comment's author for the case activity timeline -- see its own doc
-	// comment for the DISTINCT ON reasoning (email has no unique constraint).
+	// comment's author for the case activity timeline (one user per email via
+	// userByEmailJoin, since email has no unique constraint).
 	// Only SearchComments populates this; CreateComment's RETURNing has no
 	// join to resolve it from and leaves it "".
 	CreatedByName string
@@ -205,14 +205,41 @@ func (r *commentRepo) CreateComment(ctx context.Context, referenceID string, ref
 	// binding workItemTypes ([]string) directly to the enum array type has
 	// no encode plan -- same fix as every other enum array bind in this
 	// codebase (e.g. time_card_repo.go's state filter).
+	//
+	// The `touched` CTE stamps the parent work_item's updated_on/updated_by
+	// in that same statement (so the two writes commit or fail together and
+	// cost no extra round trip). A comment is activity on a case: ServiceNow
+	// advances sys_updated_on for any journal entry, and the lists' "Updated"
+	// column, their updated-date filters and the dashboard reminder widgets
+	// all read work_item.updated_on, so leaving it untouched kept a case that
+	// had just been nudged in "Request update" looking untouched. It only
+	// runs when the insert produced a row (EXISTS), and an unreferenced
+	// data-modifying CTE is still executed to completion by Postgres.
+	//
+	// Only for the case-like types ($6: the reference is "case"). A change
+	// request's updated_by is the record of who proposed a time (the last
+	// writer, see change_request_customer_proposal.go) and no comment may
+	// replace it; a conversation's updated_on is what its "resolved in the last
+	// 30 days" count reads; an incident's updated_by is the last updater its
+	// events report. Those keep exactly the behaviour they had.
+	//
+	// `updated_on <= NOW()` keeps updated_on from moving backwards: NOW() is the
+	// transaction's start, so a comment that waited on the row lock behind a
+	// later-stamped write must not overwrite that newer stamp (or its writer).
 	const query = `
-		INSERT INTO comment (id, created_on, created_by, type, work_item_id, content)
-		SELECT gen_random_uuid(), NOW(), $1, $2::comment_type_enum, wi.id, $3
-		FROM work_item wi
-		WHERE wi.id = $4 AND wi.type = ANY($5::text[]::work_item_type_enum[])
-		RETURNING ` + commentColumns
+		WITH created AS (
+			INSERT INTO comment (id, created_on, created_by, type, work_item_id, content)
+			SELECT gen_random_uuid(), NOW(), $1, $2::comment_type_enum, wi.id, $3
+			FROM work_item wi
+			WHERE wi.id = $4 AND wi.type = ANY($5::text[]::work_item_type_enum[])
+			RETURNING ` + commentColumns + `
+		), touched AS (
+			UPDATE work_item SET updated_on = NOW(), updated_by = $1
+			WHERE id = $4 AND $6::boolean AND updated_on <= NOW() AND EXISTS (SELECT 1 FROM created)
+		)
+		SELECT ` + commentColumns + ` FROM created`
 
-	c, err := scanComment(r.db.QueryRow(ctx, query, createdBy, typeEnum, content, referenceID, workItemTypes))
+	c, err := scanComment(r.db.QueryRow(ctx, query, createdBy, typeEnum, content, referenceID, workItemTypes, referenceType == domain.ReferenceTypeCase))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return CommentRow{}, &apierror.NotFoundError{Msg: "no " + string(referenceType) + " found with id " + referenceID}
 	}
@@ -240,7 +267,11 @@ func (r *commentRepo) SearchComments(ctx context.Context, referenceID string, re
 		args = append(args, *typeEnumFilter)
 		where += fmt.Sprintf(" AND c.type = $%d::comment_type_enum", len(args))
 	}
-	if excludeDeleted {
+	// excludeDeleted is the service's token-based customer check; the
+	// caller's resolved identity is a second, independent one, so a customer
+	// the token lookup could not classify (or a staff user browsing through the
+	// customer portal) still never gets a deleted row.
+	if excludeDeleted || hidesDeletedComments(ctx) {
 		where += " AND c.deleted_at IS NULL"
 	}
 
@@ -248,28 +279,20 @@ func (r *commentRepo) SearchComments(ctx context.Context, referenceID string, re
 
 	countQuery := "SELECT COUNT(*) " + fromJoin + " " + where
 	// Resolves the comment author's display name for the response -- see
-	// CommentRow.CreatedByName's own doc comment. The email-match join is
-	// wrapped in its own DISTINCT ON subquery, same as
-	// case_repo.go's SearchCaseActivities: "user".email has no unique
-	// constraint, so two user rows sharing an address would otherwise fan a
-	// single comment row out into more than one result row, while
-	// countQuery above (no "user" join) still counts it once.
+	// CommentRow.CreatedByName's own doc comment. userByEmailJoin picks a
+	// single user per comment, since "user".email has no unique constraint
+	// and a plain join would fan one comment out into several result rows
+	// while countQuery above (no "user" join) still counts it once.
 	dataQuery := fmt.Sprintf(`
 		SELECT c.id, c.work_item_id, c.content, c.type, c.created_by, c.created_on,
-			c.deleted_at, c.deleted_by, c.last_edited_at, c.resolved_name
-		FROM (
-			SELECT DISTINCT ON (c.id)
-				c.id, c.work_item_id, c.content, c.type, c.created_by, c.created_on,
-				c.deleted_at, c.deleted_by, c.last_edited_at,
-				COALESCE(NULLIF(TRIM(u.name), ''), NULLIF(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), ''), '') AS resolved_name
-			%s
-			LEFT JOIN "user" u ON LOWER(u.email) = LOWER(c.created_by)
-			%s
-			ORDER BY c.id, u.id
-		) c
+			c.deleted_at, c.deleted_by, c.last_edited_at,
+			COALESCE(NULLIF(TRIM(u.name), ''), NULLIF(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), ''), '') AS resolved_name
+		%s
+		%s
+		%s
 		ORDER BY c.created_on DESC, c.id
 		LIMIT $%d OFFSET $%d`,
-		fromJoin, where, len(args)+1, len(args)+2)
+		fromJoin, userByEmailJoin("u", "c.created_by"), where, len(args)+1, len(args)+2)
 	dataArgs := append(append([]any{}, args...), pagination.Limit, pagination.Offset)
 
 	var total int

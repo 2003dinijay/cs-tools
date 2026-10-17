@@ -268,6 +268,28 @@ func NewServiceNowProjectStatsService(client *integrationservice.Client) Project
 	return &snProjectStatsService{client: client}
 }
 
+// NewServiceNowAverageResponseSource returns an AverageResponseSource that reads
+// averageResponseTime from the ServiceNow case-stats endpoint. Only that one
+// figure is used: the endpoint ignores the caseTypes and createdBy filters for
+// it, so it is requested without them. The caller's own token is forwarded,
+// as in every other ServiceNow read here.
+func NewServiceNowAverageResponseSource(client *integrationservice.Client) AverageResponseSource {
+	return &snAverageResponseSource{stats: &snProjectStatsService{client: client}}
+}
+
+type snAverageResponseSource struct {
+	stats *snProjectStatsService
+}
+
+// AverageResponseTime implements AverageResponseSource.
+func (a *snAverageResponseSource) AverageResponseTime(ctx context.Context, projectID string) (float64, error) {
+	resp, err := a.stats.GetProjectCaseStats(ctx, projectID, domain.ProjectCaseStatsRequest{})
+	if err != nil {
+		return 0, err
+	}
+	return resp.AverageResponseTime, nil
+}
+
 // GetProjectMetadata implements ProjectStatsService.
 func (s *snProjectStatsService) GetProjectMetadata(ctx context.Context, projectID string) (domain.ProjectMetadataResponse, error) {
 	if err := validateUUIDs("id", []string{projectID}); err != nil {

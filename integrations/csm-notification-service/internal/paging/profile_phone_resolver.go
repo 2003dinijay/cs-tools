@@ -27,11 +27,36 @@ import (
 )
 
 // PhoneLookup returns the mobile number a person set on their own CSM Portal
-// profile, by email. scim.Client.MobileNumber is the real one: the portal
-// stores the number on the person's Asgardeo user, so that is where it is
-// read from. "" with a nil error means nobody set one.
+// profile, by email, from Asgardeo. scim.Client.MobileNumber is the real one.
+// It is the fallback for people entity-service has no number for, until the
+// numbers in CSM ("user".phone) have been filled from Asgardeo. "" with a nil
+// error means nobody set one.
 type PhoneLookup interface {
 	MobileNumber(ctx context.Context, email string) (string, error)
+}
+
+// DialNumber is the number entity-service says to call someone on.
+type DialNumber struct {
+	Number string
+	// Source is DialSourceProfile (the number on their own CSM profile) or
+	// DialSourcePaging (the paging-only number a lead or admin stored). ""
+	// from an entity-service that predates the profile number: Number is then
+	// the paging-only one, which comes after the profile.
+	Source string
+}
+
+// Where a DialNumber comes from.
+const (
+	DialSourceProfile = "profile"
+	DialSourcePaging  = "paging"
+)
+
+// PagingContactLookup returns the number to call for a batch of people, from
+// CSM (entity-service: the profile number, else the paging-only one), keyed by
+// lower-cased email; someone with none is absent. EntityClient.DialNumbers is
+// the real one.
+type PagingContactLookup interface {
+	DialNumbers(ctx context.Context, emails []string) (map[string]DialNumber, error)
 }
 
 // e164 is the format a call can be placed to, and the same rule the CSM Portal
@@ -59,22 +84,32 @@ type profilePhone struct {
 }
 
 // ProfilePhoneResolver fills in the phone number of every recipient the
-// wrapped resolver returns without one, from that person's own CSM Portal
-// profile.
+// wrapped resolver returns without one: the number on that person's own CSM
+// Portal profile, else the paging-only number a lead stored for them.
 //
 // The Team Schedule says who is on duty and who holds which rank, but it holds
 // no phone numbers, and a call-channel plan drops anyone without one
 // (NO_NUMBER). People keep their own number current in the portal, so the
 // ladder reads it from there rather than keeping a second copy that goes
-// stale. A number already on the recipient -- one named in escalation.yaml,
+// stale. A number already on the recipient -- one named in paging-alert.yaml,
 // such as a head -- is an explicit override and is never replaced.
+//
+// CSM answers first, for the whole batch in one request (entity-service: the
+// profile number in "user".phone, else the paging-only number). Asgardeo is
+// asked, one person at a time, only about the people CSM has no number for --
+// a fallback until "user".phone has been filled from Asgardeo, turned off by
+// not configuring SCIM.
 //
 // It never fails a rung: a lookup that errors, times out or returns something
 // that is not E.164 leaves that one person without a number, which the plan
 // reports, and everyone else is still called.
 type ProfilePhoneResolver struct {
-	inner  Resolver
+	inner Resolver
+	// lookup reads the profile number from Asgardeo; nil when SCIM is not
+	// configured.
 	lookup PhoneLookup
+	// paging is the number to call stored in CSM. nil when not configured.
+	paging PagingContactLookup
 	now    func() time.Time
 
 	mu    sync.Mutex
@@ -88,21 +123,97 @@ func NewProfilePhoneResolver(inner Resolver, lookup PhoneLookup) *ProfilePhoneRe
 		cache: map[string]profilePhone{}}
 }
 
+// WithPagingContacts returns p reading the number to call from CSM: the
+// profile number, else the paging-only one. A number named in
+// paging-alert.yaml wins over both. A nil lookup leaves only Asgardeo.
+func (p *ProfilePhoneResolver) WithPagingContacts(l PagingContactLookup) *ProfilePhoneResolver {
+	p.paging = l
+	return p
+}
+
 // Resolve implements Resolver.
 func (p *ProfilePhoneResolver) Resolve(ctx context.Context, level Level, rc RoutingContext) ([]Recipient, error) {
 	recipients, err := p.inner.Resolve(ctx, level, rc)
 	if err != nil || len(recipients) == 0 {
 		return recipients, err
 	}
+	return p.fill(ctx, recipients), nil
+}
+
+// fill gives every recipient without a number one: the number CSM has for
+// them (one lookup for the whole batch), else -- for those CSM has none for --
+// their profile number in Asgardeo.
+func (p *ProfilePhoneResolver) fill(ctx context.Context, recipients []Recipient) []Recipient {
 	out := make([]Recipient, len(recipients))
 	copy(out, recipients)
+	var missing []int
 	for i := range out {
 		if strings.TrimSpace(out[i].Phone) != "" || strings.TrimSpace(out[i].Email) == "" {
 			continue
 		}
-		out[i].Phone = p.number(ctx, out[i].Email, out[i].Name)
+		missing = append(missing, i)
 	}
-	return out, nil
+	if len(missing) == 0 {
+		return out
+	}
+	answers := p.dialNumbers(ctx, out, missing)
+	for _, i := range missing {
+		a := answers[strings.ToLower(strings.TrimSpace(out[i].Email))]
+		if a.Source != "" {
+			if e164.MatchString(a.Number) {
+				out[i].Phone = a.Number
+				slog.DebugContext(ctx, "incident escalation: calling the recipient's number stored in CSM",
+					"recipient", out[i].Name, "source", a.Source)
+				continue
+			}
+			slog.WarnContext(ctx, "incident escalation: recipient's number in CSM is not E.164; not dialling it",
+				"recipient", out[i].Name, "source", a.Source)
+		}
+		// CSM has no number for them, or an older entity-service gave only the
+		// paging-only one, which comes after the profile: ask Asgardeo.
+		if p.lookup != nil {
+			out[i].Phone = p.number(ctx, out[i].Email, out[i].Name)
+		}
+		if out[i].Phone == "" && a.Source == "" && a.Number != "" {
+			if e164.MatchString(a.Number) {
+				out[i].Phone = a.Number
+				slog.InfoContext(ctx, "incident escalation: no profile number; using the recipient's paging number",
+					"recipient", out[i].Name)
+			} else {
+				slog.WarnContext(ctx, "incident escalation: recipient's paging number is not E.164; not dialling it",
+					"recipient", out[i].Name)
+			}
+		}
+	}
+	return out
+}
+
+// dialNumbers is CSM's number for each recipient at missing, by lower-cased
+// email; nil when CSM is not configured or the lookup fails or times out --
+// then everyone is looked up in Asgardeo, as before CSM held the numbers. It
+// never fails the tier. Numbers are never logged.
+func (p *ProfilePhoneResolver) dialNumbers(ctx context.Context, out []Recipient, missing []int) map[string]DialNumber {
+	if p.paging == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	emails := make([]string, 0, len(missing))
+	for _, i := range missing {
+		e := strings.ToLower(strings.TrimSpace(out[i].Email))
+		if !seen[e] {
+			seen[e] = true
+			emails = append(emails, e)
+		}
+	}
+	lctx, cancel := context.WithTimeout(ctx, profilePhoneTimeout)
+	defer cancel()
+	numbers, err := p.paging.DialNumbers(lctx, emails)
+	if err != nil {
+		slog.WarnContext(ctx, "incident escalation: could not read recipients' numbers from CSM; asking Asgardeo where it is configured",
+			"recipients", len(emails), "err", err)
+		return nil
+	}
+	return numbers
 }
 
 // RuleFor passes the wrapped resolver's rule lookup through. BuildPlan asks
@@ -142,6 +253,24 @@ func (p *ProfilePhoneResolver) LadderFor(ctx context.Context, rc RoutingContext)
 	return LadderCRE, nil
 }
 
+// SRERota passes the wrapped resolver's SRE rota through, for the same reason
+// as TeamFamily: hidden, every SRE chain would go unnamed.
+func (p *ProfilePhoneResolver) SRERota(ctx context.Context, rc RoutingContext) (string, error) {
+	if r, ok := p.inner.(SRERotaResolver); ok {
+		return r.SRERota(ctx, rc)
+	}
+	return "", nil
+}
+
+// SaaSSRETeam passes the Special Ops gate through. A wrapped resolver without
+// one gates every handoff out -- it cannot read an SME rota either.
+func (p *ProfilePhoneResolver) SaaSSRETeam(ctx context.Context, group string) (bool, error) {
+	if r, ok := p.inner.(SpecialistResolver); ok {
+		return r.SaaSSRETeam(ctx, group)
+	}
+	return false, nil
+}
+
 // LeadPool implements LeadPoolResolver when the wrapped resolver does, with
 // the pool's numbers filled in the same way a rung's are.
 func (p *ProfilePhoneResolver) LeadPool(ctx context.Context) ([]Recipient, error) {
@@ -153,14 +282,7 @@ func (p *ProfilePhoneResolver) LeadPool(ctx context.Context) ([]Recipient, error
 	if err != nil {
 		return nil, err
 	}
-	out := make([]Recipient, len(pool))
-	copy(out, pool)
-	for i := range out {
-		if strings.TrimSpace(out[i].Phone) == "" && strings.TrimSpace(out[i].Email) != "" {
-			out[i].Phone = p.number(ctx, out[i].Email, out[i].Name)
-		}
-	}
-	return out, nil
+	return p.fill(ctx, pool), nil
 }
 
 // errNoLeadPool: the wrapped resolver cannot name a lead pool.

@@ -208,6 +208,16 @@ describe("TagsWidget", () => {
     const chip = screen.getByText("micro-gw").closest(".MuiChip-root");
     expect(chip?.querySelector(".MuiChip-deleteIcon")).toBeFalsy();
   });
+
+  // Regression: the "+ TAG" button used to render unconditionally regardless
+  // of whether onAdd was even passed -- a read-only caller (onAdd omitted,
+  // e.g. a viewer-role session on CsmCaseDetailPage) saw a seemingly
+  // clickable write affordance that silently no-opped instead of it being
+  // hidden entirely.
+  it("hides the Tag button entirely when onAdd is not provided", () => {
+    render(<TagsWidget tags={TAGS} />);
+    expect(screen.queryByRole("button", { name: /^tag$/i })).not.toBeInTheDocument();
+  });
 });
 
 const ESCALATION_HISTORY: CaseEscalationRecord[] = [
@@ -630,11 +640,25 @@ describe("AttachmentsWidget — preview affordance", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("hides every Preview affordance when no fetcher is supplied", () => {
+  // Regression: the Preview button used to disappear entirely when no
+  // fetcher was supplied (e.g. a viewer-role caller without
+  // canDownloadAttachment), with no indication it was ever available —
+  // inconsistent with Download, which stays visible, disabled, with an
+  // explanatory tooltip. Preview now matches that same treatment.
+  it("disables Preview with a permission tooltip (not hidden) when no fetcher is supplied, for a previewable type", () => {
     renderWithRouter(
       <AttachmentsWidgetHarness attachments={[IMAGE_ATTACHMENT, VIDEO_ATTACHMENT]} />,
     );
-    expect(screen.queryByRole("button", { name: /^preview /i })).not.toBeInTheDocument();
+    const previewButton = screen.getByRole("button", {
+      name: `Preview ${IMAGE_ATTACHMENT.filename}`,
+    });
+    expect(previewButton).toBeInTheDocument();
+    expect(previewButton).toBeDisabled();
+    // A non-previewable type (no preview "kind" at all, independent of
+    // permission) still shows nothing -- that part is unchanged.
+    expect(
+      screen.queryByRole("button", { name: `Preview ${VIDEO_ATTACHMENT.filename}` }),
+    ).not.toBeInTheDocument();
   });
 
   it("opens the preview dialog, fetches content, and renders it as an image", async () => {

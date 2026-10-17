@@ -1274,6 +1274,59 @@ export function collapseCommentSourceWhitespace(content: string): string {
     : collapseHtmlSourceWhitespace(content);
 }
 
+// A tag-shaped substring anywhere in the content -- a far looser test than
+// HTML_STRUCTURE_TAG (block tags only), deliberately: a comment carrying
+// *any* real markup (inline tags like <b>/<span> included) must go through
+// the existing HTML-handling pipeline unchanged, not have its genuine tags
+// escaped into visible text.
+const ANY_HTML_TAG = /<[a-z][\s\S]*>/i;
+
+/**
+ * Converts a plain-text comment body -- one with no HTML markup at all, such
+ * as a ServiceNow system-generated notice ("Please note that this case has
+ * been closed due to inactivity...") -- into safe HTML that actually
+ * preserves its line breaks when rendered.
+ *
+ * {@link collapseHtmlSourceWhitespace}'s own tests document that plain text's
+ * real newlines are deliberately left untouched ("leaves plain text and
+ * editor output alone"), on the assumption they still read as real line
+ * breaks -- true in a `<textarea>` or a `white-space: pre` context, but not
+ * once the string reaches `dangerouslySetInnerHTML`: a bare `\n` inside HTML
+ * source renders as an ordinary space (or nothing), the same fact that
+ * function's own doc comment explains for *laid-out* HTML source, so a
+ * purely plain-text comment collapsed into a single run-on line with no
+ * paragraph breaks at all -- reported live.
+ *
+ * HTML-escapes the whole string first (so a literal `<`/`&` the author typed
+ * — e.g. quoting a tag by hand — shows as text, not markup) and only then
+ * replaces each real newline with `<br>`, after escaping has already turned
+ * any structural character inert.
+ *
+ * A no-op for anything that already looks like real HTML (any tag at all,
+ * not just the block tags collapseHtmlSourceWhitespace cares about) or
+ * carries a ServiceNow `[code]`/`[/code]` marker -- both already go through
+ * the existing HTML/code-block pipeline, which must not be double-processed
+ * here.
+ *
+ * @param content - Raw comment content, already run through
+ *   {@link collapseCommentSourceWhitespace}.
+ * @returns {string} HTML with real line breaks preserved as `<br>`, or the
+ *   input unchanged if it already contains markup.
+ */
+export function plainTextCommentToHtml(content: string): string {
+  if (!content || typeof content !== "string") return "";
+  if (ANY_HTML_TAG.test(content) || /\[\\?\/?code\]/i.test(content)) {
+    return content;
+  }
+  const escaped = content
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+  return escaped.replace(/\r\n|\r|\n/g, "<br>");
+}
+
 /**
  * Removes leading <br>, <br/>, <br /> and whitespace from HTML.
  * Fixes extra blank first line from content like "[code]<br><b>...</b>[/code]".
@@ -1450,11 +1503,23 @@ export function replaceInlineImageSources(
     (_match, before, doubleSrc, singleSrc, bareSrc, after) => {
       const src = (doubleSrc ?? singleSrc ?? bareSrc ?? "") as string;
       const refId = extractInlineImageRefId(src);
-      const attachment = inlineAttachments.find(
-        (a) =>
-          (a.id && (a.id === refId || src.includes(a.id))) ||
-          (a.sys_id && (a.sys_id === refId || src.includes(a.sys_id))),
-      );
+      // extractInlineImageRefId always returns the dashless, lowercase
+      // sys_id form, but comment.inlineAttachments[].id is a dashed UUID
+      // (entity-service converts it before sending) -- compare both sides
+      // in the same dashless form, or a dashed refId can never match and
+      // every inline image falls through to a raw, unconverted fetch that
+      // 404s (see support.ts's own history for the HAR that caught this).
+      const normalizedRefId = refId.replace(/-/g, "").toLowerCase();
+      const attachment = inlineAttachments.find((a) => {
+        const normalizedID = a.id?.replace(/-/g, "").toLowerCase();
+        const normalizedSysID = a.sys_id?.replace(/-/g, "").toLowerCase();
+        return (
+          (normalizedID &&
+            (normalizedID === normalizedRefId || src.includes(a.id!))) ||
+          (normalizedSysID &&
+            (normalizedSysID === normalizedRefId || src.includes(a.sys_id!)))
+        );
+      });
       const quote =
         doubleSrc !== undefined ? '"' : singleSrc !== undefined ? "'" : '"';
 
@@ -1747,7 +1812,39 @@ export function isNoveraOrBotSender(
 ): boolean {
   const by = (createdBy ?? "").trim().toLowerCase();
   const ty = (type ?? "").trim().toLowerCase();
-  return ty === "bot" || by === "novera";
+  // The conversations/{id}/messages API sends an empty createdBy for a
+  // Novera reply rather than the literal name "Novera" -- every real
+  // comment/message in this feed has a non-empty author, so an empty one
+  // is itself the bot signal. Without this, a bot reply that shares its
+  // triggering user message's timestamp (common -- the transcript only
+  // stores whole-second precision) had no tiebreak to fall back on and
+  // could render above the question that caused it.
+  return ty === "bot" || by === "novera" || by === "agent" || by === "";
+}
+
+/** Author label shown for a case comment/activity that has no author. */
+export const SYSTEM_AUTHOR_LABEL = "System";
+
+/**
+ * Display-only: gives a case comment with no author the "System" label so it
+ * never renders blank/"Unknown" or gets treated as a real user. Bot/Novera rows
+ * (see {@link isNoveraOrBotSender}) keep their own labelling and are untouched.
+ *
+ * @param comment - Comment or activity entry from the API.
+ * @returns {T} The same entry, or a copy with `createdBy` set to "System".
+ */
+export function withSystemAuthor<
+  T extends {
+    createdBy?: string | null;
+    createdByFullName?: string | null;
+    type?: string | null;
+  },
+>(comment: T): T {
+  if (comment.createdBy?.trim() || comment.createdByFullName?.trim()) {
+    return comment;
+  }
+  if ((comment.type ?? "").trim().toLowerCase() === "bot") return comment;
+  return { ...comment, createdBy: SYSTEM_AUTHOR_LABEL };
 }
 
 /** Shape accepted by {@link compareByCreatedOnThenId}. */
@@ -1782,6 +1879,79 @@ export function compareByCreatedOnThenId(
   const idA = a.id ?? "";
   const idB = b.id ?? "";
   return idA.localeCompare(idB);
+}
+
+/** Shape accepted by {@link dedupeAdjacentDuplicateMessages}. */
+export type DedupableMessage = CreatedOnSortable & {
+  content?: string | null;
+};
+
+/**
+ * Only the conversation's own opening exchange -- the first kept message and
+ * the first reply to it -- is ever eligible for collapsing. See
+ * {@link dedupeAdjacentDuplicateMessages}'s own doc comment for why this
+ * scope is deliberately narrow, not a tunable "how many messages" knob.
+ */
+const DEDUPE_ELIGIBLE_KEPT_MESSAGE_COUNT = 2;
+
+/**
+ * Drops an exact back-to-back duplicate of the message immediately before it
+ * -- same content, same author and the same createdOn timestamp -- but ONLY
+ * within the conversation's own opening exchange (the first kept message and
+ * the first reply to it). Defends the chat history view against a
+ * conversation whose underlying comment rows were written twice for the same
+ * turn (digiops-cs#3424: both the question and the answer appeared twice,
+ * with identical timestamps, only for the very first exchange of a
+ * brand-new chat). This collapses the duplicate wherever it comes from,
+ * rather than guessing at why the extra row exists.
+ *
+ * Deliberately requires an EXACT match on all three fields, not just
+ * content: two genuinely distinct messages that happen to read the same
+ * (e.g. a user saying "ok" twice, minutes apart) are never affected, since
+ * their createdOn timestamps differ in the common case.
+ *
+ * Why this is scoped to the opening exchange, and not applied throughout a
+ * whole conversation (a CodeRabbit review finding on an earlier version of
+ * this function, verified before acting on it): this API's createdOn is
+ * whole-second resolution (no sub-second component), and no field here
+ * carries a backend-assigned identity that could tell two genuinely
+ * independent messages apart from a true duplicate row -- `id` itself
+ * always differs for a real duplicate (each row gets its own generated
+ * id), confirmed against AuditMetadata's actual field list
+ * (createdOn/updatedOn/createdBy/updatedBy only), so it can never be that
+ * signal. Implementing the finding's literal suggestion -- dedupe only
+ * when a backend-provided duplicate identity confirms it -- would need a
+ * new field on this API's response, a backend contract change out of
+ * scope for this display-layer fix. Rather than accept that risk across an
+ * entire, potentially long conversation, this narrows where the exact-match
+ * check is even consulted to the one place there is confirmed evidence of
+ * the bug: the opening exchange. Once two distinct messages have been kept,
+ * every later message is always kept as-is, however closely it resembles
+ * an earlier one -- a real repeat elsewhere in a long conversation (two
+ * different turns that happen to read the same) is never at risk of being
+ * silently dropped.
+ *
+ * Input must already be sorted (see {@link compareByCreatedOnThenId}), since
+ * this only ever compares a message against the one immediately before it.
+ */
+export function dedupeAdjacentDuplicateMessages<T extends DedupableMessage>(
+  sorted: T[],
+): T[] {
+  const result: T[] = [];
+  for (const msg of sorted) {
+    const prev = result[result.length - 1];
+    const withinOpeningExchange =
+      result.length <= DEDUPE_ELIGIBLE_KEPT_MESSAGE_COUNT;
+    const isDuplicate =
+      withinOpeningExchange &&
+      prev != null &&
+      (msg.content ?? "") === (prev.content ?? "") &&
+      (msg.createdBy ?? "").toLowerCase() ===
+        (prev.createdBy ?? "").toLowerCase() &&
+      (msg.createdOn ?? "") === (prev.createdOn ?? "");
+    if (!isDuplicate) result.push(msg);
+  }
+  return result;
 }
 
 /**
@@ -2087,10 +2257,25 @@ function roundUpToNextFiveMinuteMarkInTimeZone(
 }
 
 /**
+ * The backend's own fallback lead time (minutes) when it has no per-priority
+ * offset to apply (ServiceNow's CallRequestUtils._DEFAULT_TIME_OFFSET). Used
+ * here as the floor's fallback too: entity-service's own
+ * severityBasedAllocationTime is currently always empty (no per-severity
+ * SLA-allocation-time table exists yet), so allocationMinutes is undefined
+ * for every case today, not just an edge case. Falling back to "now + 1
+ * minute" in that situation let the picker accept a time the backend then
+ * rejected for a Catastrophic/P0 case, which actually needs 15 minutes
+ * (CallRequestUtils._PRIORITY_TIME_OFFSETS[14]) -- the picker must never be
+ * MORE permissive than the strictest real rule when it doesn't know which
+ * rule applies, so this uses the backend's own safe upper bound instead.
+ */
+const DEFAULT_CALL_SCHEDULE_LEAD_MINUTES = 300;
+
+/**
  * Like {@link computeMinScheduleDatetimeLocal} but uses the user's IANA zone for civil date/time strings.
  * Ensures datetime-local values align with profile timezone when converting to UTC for the API.
  *
- * @param allocationMinutes - Minutes after now before first slot; null/undefined uses now+1m floor only.
+ * @param allocationMinutes - Minutes after now before first slot; null/undefined/invalid uses the backend's own safe default (DEFAULT_CALL_SCHEDULE_LEAD_MINUTES), not just now+1m.
  * @param profileTimeZone - Profile/filter zone; falls back to browser when omitted/invalid.
  */
 export function computeMinScheduleDatetimeLocalForTimeZone(
@@ -2102,15 +2287,14 @@ export function computeMinScheduleDatetimeLocalForTimeZone(
   const floorMs = Date.now() + 60 * 1000;
   const floorStr = instantToDatetimeLocalStringInZone(floorMs, tz);
 
-  if (
+  const effectiveMinutes =
     allocationMinutes == null ||
     Number.isNaN(allocationMinutes) ||
     allocationMinutes < 0
-  ) {
-    return floorStr;
-  }
+      ? DEFAULT_CALL_SCHEDULE_LEAD_MINUTES
+      : allocationMinutes;
 
-  let targetMs = Date.now() + allocationMinutes * 60 * 1000;
+  let targetMs = Date.now() + effectiveMinutes * 60 * 1000;
   targetMs = roundUpToNextFiveMinuteMarkInTimeZone(targetMs, tz);
   const severityStr = instantToDatetimeLocalStringInZone(targetMs, tz);
   return severityStr > floorStr ? severityStr : floorStr;
@@ -2183,12 +2367,27 @@ export function getLast30DaysUtcRange(): {
 }
 
 /**
- * Replaces bare URLs in an HTML string (not already inside an href attribute)
- * with clickable anchor tags that open in a new tab.
+ * Replaces bare URLs in the text of an HTML string with clickable anchor tags
+ * that open in a new tab. Only text between tags is touched: a URL inside a tag
+ * (an `<img src="https://...">`, an `href`) is an attribute value, and wrapping
+ * it in an anchor would break the tag and spill its markup into the page as
+ * text. Text already inside an `<a>` is left alone too.
  */
 export function linkifyBareUrls(html: string): string {
-  return html.replace(
-    /(?<!href=["'])(https?:\/\/[^\s<>"']+)/g,
-    '<a href="$1" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;word-break:break-all;">$1</a>',
-  );
+  let anchorDepth = 0;
+  return html
+    .split(/(<[^>]*>)/)
+    .map((part) => {
+      if (part.startsWith("<")) {
+        if (/^<a[\s>]/i.test(part)) anchorDepth++;
+        else if (/^<\/a\s*>/i.test(part) && anchorDepth > 0) anchorDepth--;
+        return part;
+      }
+      if (anchorDepth > 0) return part;
+      return part.replace(
+        /(https?:\/\/[^\s<>"']+)/g,
+        '<a href="$1" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;word-break:break-all;">$1</a>',
+      );
+    })
+    .join("");
 }

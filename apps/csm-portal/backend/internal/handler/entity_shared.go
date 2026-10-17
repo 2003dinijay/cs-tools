@@ -70,6 +70,12 @@ type entitySearchCasesRequest struct {
 	Filters    entitySearchCasesFilters `json:"filters"`
 	SortBy     entityCaseSort           `json:"sortBy"`
 	Pagination entityPagination         `json:"pagination"`
+	// CountOnly mirrors entity-service's own SearchCasesRequest.CountOnly: a
+	// caller that only ever reads Total off the response (never Cases) should
+	// set this so entity-service skips building and running the page query
+	// entirely, rather than paying for a full, sorted, RLS-checked page fetch
+	// whose one row is then discarded unread.
+	CountOnly bool `json:"countOnly,omitempty"`
 }
 
 type entitySearchCaseView struct {
@@ -81,6 +87,9 @@ type entitySearchCaseView struct {
 	Subject          *string              `json:"subject"`
 	Description      *string              `json:"description"`
 	State            *string              `json:"state"`
+	Severity         *string              `json:"severity"`
+	Type             string               `json:"type"`
+	EngagementType   *string              `json:"engagementType"`
 	Product          *entityRef           `json:"product"`
 	Project          *entityRef           `json:"project"`
 	ProjectKey       *string              `json:"projectKey"`
@@ -103,6 +112,10 @@ type entityProjectView struct {
 	// ProjectClosureFields) -- project.wso2_closure_state, populated on
 	// both its data sources.
 	ClosureState *string `json:"closureState"`
+	// OnboardingStatus mirrors entity-service's own ProjectView.OnboardingStatus
+	// (project.onboarding_status) -- nil when onboarding isn't tracked for
+	// this project.
+	OnboardingStatus *string `json:"onboardingStatus"`
 }
 
 type entitySearchProjectsRequest struct {
@@ -149,9 +162,9 @@ var caseStateToDisplay = map[string]string{
 	"closed":            "Closed",
 }
 
-// derefStr returns "" for a nil pointer, matching servicenow.CaseDetails's
-// own convention of empty-string-not-omitted for a field ServiceNow itself
-// never leaves absent.
+// derefStr returns "" for a nil pointer: the viewer wire types keep the
+// empty-string-not-omitted convention for fields the webapp always expects
+// to be present.
 func derefStr(s *string) string {
 	if s == nil {
 		return ""

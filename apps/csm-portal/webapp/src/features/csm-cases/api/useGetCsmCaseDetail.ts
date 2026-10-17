@@ -33,7 +33,7 @@ import type { CsmCaseDetail } from "@features/csm-cases/types/csmCases";
  * extra lookups. Side widgets the backend doesn't return yet (tags, time
  * logs, attachments, linked items) default to empty / placeholder values.
  */
-function detailFromBeCase(
+export function detailFromBeCase(
   c: BeCaseView,
   currentUserEmail?: string,
 ): CsmCaseDetail {
@@ -76,6 +76,7 @@ function detailFromBeCase(
     subject: c.subject ?? "(no subject)",
     caseType: c.type ?? undefined,
     engagementType: c.engagementType ?? undefined,
+    engagementPaymentType: c.engagementPaymentType ?? undefined,
     customer,
     accountId: account?.id ?? "",
     projectId: c.project?.id ?? "",
@@ -174,11 +175,11 @@ function detailFromBeCase(
     mostLikelyFixEta: c.mostLikelyFixEta ?? null,
     worstCaseFixEta: c.worstCaseFixEta ?? null,
     resolution:
-      c.resolutionCode || c.cause || c.resolutionNotes
+      c.resolutionCode || c.cause || c.closeNotes || c.resolutionNotes
         ? {
             resolutionCode: c.resolutionCode ?? undefined,
             cause: c.cause ?? undefined,
-            notes: c.resolutionNotes ?? undefined,
+            notes: c.closeNotes ?? c.resolutionNotes ?? undefined,
           }
         : undefined,
   };

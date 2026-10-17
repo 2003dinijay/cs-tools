@@ -35,9 +35,16 @@ import (
 // (DeleteAttachment's own equivalent coverage lives in
 // closed_case_attachments_test.go, TestDeleteAttachment_ClosedCase).
 
-// fakeAttachmentAuthzClient serves GetAttachment/GetAttachmentContent/GetCase/
-// SearchDeployments from canned values and records whether the guarded
-// upstream call (content fetch, or the metadata response itself) was reached.
+// testCommentID stands in for a ServiceNow comment/journal-entry sysid --
+// distinct from testCaseID/testDeploymentID, used by
+// TestGetAttachmentContent_CommentFallback to simulate an attachment whose
+// ReferenceID is a comment, not a case or deployment.
+const testCommentID = "44444444-4444-4444-4444-444444444444"
+
+// fakeAttachmentAuthzClient serves
+// GetAttachment/GetAttachmentContent/GetAttachmentCase/SearchDeployments from
+// canned values and records whether the guarded upstream call (content fetch,
+// or the metadata response itself) was reached.
 type fakeAttachmentAuthzClient struct {
 	entityAttachmentClient
 	referenceID       string
@@ -51,6 +58,17 @@ type fakeAttachmentAuthzClient struct {
 	// DATA_SOURCE=servicenow), which never forwards the ids filter at all.
 	unrelatedDeploymentID string
 	contentReached        bool
+	// hintCaseErr, when set, makes GetCase (the caseHint access check inside
+	// commentAttachmentIsVisible) fail -- distinct from getCaseErr, which
+	// controls GetAttachmentCase instead.
+	hintCaseErr error
+	// commentInlineAttachmentIDs, when non-empty, makes SearchComments return
+	// one comment carrying an InlineAttachment per id listed here.
+	commentInlineAttachmentIDs []string
+	// caseCommentIDs, when non-empty, makes SearchComments return one comment
+	// per id listed here, with no inline attachments at all -- the shape the
+	// Postgres comment read gives, which never fills inlineAttachments.
+	caseCommentIDs []string
 }
 
 func (f *fakeAttachmentAuthzClient) GetAttachment(ctx context.Context, id string) (entity.AttachmentDetails, error) {
@@ -60,7 +78,7 @@ func (f *fakeAttachmentAuthzClient) GetAttachment(ctx context.Context, id string
 	return entity.AttachmentDetails{ID: id, ReferenceID: f.referenceID, Name: "logs.txt"}, nil
 }
 
-func (f *fakeAttachmentAuthzClient) GetCase(ctx context.Context, id string) (entity.CaseView, error) {
+func (f *fakeAttachmentAuthzClient) GetAttachmentCase(ctx context.Context, id string) (entity.CaseView, error) {
 	if f.getCaseErr != nil {
 		return entity.CaseView{}, f.getCaseErr
 	}
@@ -83,6 +101,25 @@ func (f *fakeAttachmentAuthzClient) SearchDeployments(ctx context.Context, req e
 func (f *fakeAttachmentAuthzClient) GetAttachmentContent(ctx context.Context, id string) ([]byte, string, error) {
 	f.contentReached = true
 	return []byte("file bytes"), "text/plain", nil
+}
+
+func (f *fakeAttachmentAuthzClient) GetCase(ctx context.Context, id string) (entity.CaseView, error) {
+	if f.hintCaseErr != nil {
+		return entity.CaseView{}, f.hintCaseErr
+	}
+	return entity.CaseView{ID: id, State: "open"}, nil
+}
+
+func (f *fakeAttachmentAuthzClient) SearchComments(ctx context.Context, req entity.SearchCommentsRequest) (entity.SearchCommentsResponse, error) {
+	var atts []entity.InlineAttachment
+	for _, id := range f.commentInlineAttachmentIDs {
+		atts = append(atts, entity.InlineAttachment{ID: id})
+	}
+	comments := []entity.CommentView{{InlineAttachments: atts}}
+	for _, id := range f.caseCommentIDs {
+		comments = append(comments, entity.CommentView{ID: id})
+	}
+	return entity.SearchCommentsResponse{Comments: comments}, nil
 }
 
 func attachmentAuthzTestCases() map[string]struct {
@@ -112,8 +149,9 @@ func attachmentAuthzTestCases() map[string]struct {
 			client:     fakeAttachmentAuthzClient{getAttachmentErr: &apierror.Error{StatusCode: http.StatusNotFound}},
 			wantStatus: http.StatusNotFound,
 		},
-		// Deployment-referenced attachments are never resolvable via GetCase
-		// (a deployment id is never a real case), so these all set getCaseErr
+		// Deployment-referenced attachments are never resolvable via
+		// GetAttachmentCase (a deployment id is never a real case), so these
+		// all set getCaseErr
 		// to a 404 -- the same 404 entity-service genuinely returns for one
 		// live today (see authorizeAttachmentAccess's own doc comment for why
 		// ReferenceType can't be used to route these directly instead).
@@ -178,6 +216,114 @@ func TestGetAttachmentContent_Authorization(t *testing.T) {
 			mux.HandleFunc("GET /attachments/{id}/content", h.GetAttachmentContent)
 
 			req := authedRequest(http.MethodGet, "/attachments/"+testAttachmentID+"/content", "")
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			if fake.contentReached != tc.wantAllow {
+				t.Errorf("entity GetAttachmentContent reached = %v, want %v", fake.contentReached, tc.wantAllow)
+			}
+		})
+	}
+}
+
+// TestGetAttachmentContent_CommentFallback covers the ?caseId= hint and
+// commentAttachmentIsVisible: an attachment pasted inline into a case comment
+// has ReferenceID set to the comment's id, not the case's, so GetAttachmentCase
+// always 404s for it -- these are only resolvable via the caller-supplied
+// caseId hint plus the caller's own comments actually carrying the attachment
+// as an inline attachment.
+func TestGetAttachmentContent_CommentFallback(t *testing.T) {
+	tests := map[string]struct {
+		client      fakeAttachmentAuthzClient
+		caseIDParam string
+		wantStatus  int
+		wantAllow   bool
+	}{
+		"no caseId hint: denied, unchanged from before this fallback existed": {
+			client:     fakeAttachmentAuthzClient{referenceID: testCommentID, getCaseErr: &apierror.Error{StatusCode: http.StatusNotFound}},
+			wantStatus: http.StatusNotFound,
+		},
+		"caseId hint, caller can see the case, attachment is one of its inline attachments: allowed": {
+			client: fakeAttachmentAuthzClient{
+				referenceID:                testCommentID,
+				getCaseErr:                 &apierror.Error{StatusCode: http.StatusNotFound},
+				commentInlineAttachmentIDs: []string{testAttachmentID},
+			},
+			caseIDParam: testCaseID,
+			wantStatus:  http.StatusOK,
+			wantAllow:   true,
+		},
+		"caseId hint, caller can see the case, but attachment is not among its inline attachments: denied": {
+			client: fakeAttachmentAuthzClient{
+				referenceID:                testCommentID,
+				getCaseErr:                 &apierror.Error{StatusCode: http.StatusNotFound},
+				commentInlineAttachmentIDs: []string{"99999999-9999-9999-9999-999999999999"},
+			},
+			caseIDParam: testCaseID,
+			wantStatus:  http.StatusNotFound,
+		},
+		"caseId hint, one of the case's comments IS the attachment's reference, no inlineAttachments listed (Postgres comment read): allowed": {
+			client: fakeAttachmentAuthzClient{
+				referenceID:    testCommentID,
+				getCaseErr:     &apierror.Error{StatusCode: http.StatusNotFound},
+				caseCommentIDs: []string{"99999999-9999-9999-9999-999999999999", testCommentID},
+			},
+			caseIDParam: testCaseID,
+			wantStatus:  http.StatusOK,
+			wantAllow:   true,
+		},
+		"caseId hint, none of the case's comments is the attachment's reference: denied": {
+			client: fakeAttachmentAuthzClient{
+				referenceID:    testCommentID,
+				getCaseErr:     &apierror.Error{StatusCode: http.StatusNotFound},
+				caseCommentIDs: []string{"99999999-9999-9999-9999-999999999999"},
+			},
+			caseIDParam: testCaseID,
+			wantStatus:  http.StatusNotFound,
+		},
+		"caseId hint, caller cannot see that case, even though a comment id matches: denied": {
+			client: fakeAttachmentAuthzClient{
+				referenceID:    testCommentID,
+				getCaseErr:     &apierror.Error{StatusCode: http.StatusNotFound},
+				hintCaseErr:    &apierror.Error{StatusCode: http.StatusNotFound},
+				caseCommentIDs: []string{testCommentID},
+			},
+			caseIDParam: testCaseID,
+			wantStatus:  http.StatusNotFound,
+		},
+		"caseId hint, but caller cannot see that case at all: denied": {
+			client: fakeAttachmentAuthzClient{
+				referenceID:                testCommentID,
+				getCaseErr:                 &apierror.Error{StatusCode: http.StatusNotFound},
+				hintCaseErr:                &apierror.Error{StatusCode: http.StatusNotFound},
+				commentInlineAttachmentIDs: []string{testAttachmentID},
+			},
+			caseIDParam: testCaseID,
+			wantStatus:  http.StatusNotFound,
+		},
+		"malformed caseId hint: rejected before any lookup": {
+			client:      fakeAttachmentAuthzClient{referenceID: testCommentID},
+			caseIDParam: "not-a-uuid",
+			wantStatus:  http.StatusBadRequest,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			fake := tc.client
+			h := NewAttachmentHandler(&fake)
+
+			mux := http.NewServeMux()
+			mux.HandleFunc("GET /attachments/{id}/content", h.GetAttachmentContent)
+
+			url := "/attachments/" + testAttachmentID + "/content"
+			if tc.caseIDParam != "" {
+				url += "?caseId=" + tc.caseIDParam
+			}
+			req := authedRequest(http.MethodGet, url, "")
 			rec := httptest.NewRecorder()
 			mux.ServeHTTP(rec, req)
 

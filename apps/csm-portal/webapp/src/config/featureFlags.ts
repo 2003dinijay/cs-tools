@@ -40,6 +40,8 @@ import {
   CSM_NAV_ITEMS,
   type CsmNavNode,
   flattenNavNodes,
+  isNavShortcut,
+  navNodeById,
   navNodeForPath,
 } from "@config/csmNavItems";
 import type { ComponentType } from "react";
@@ -122,11 +124,16 @@ function parseOverrides(): Record<string, FeatureState> {
  *    resurrect a page whose section does not exist.
  * 2. Otherwise a node's own override wins.
  * 3. Otherwise it inherits its parent's state, so marking a section `wip`
- *    marks its tabs `wip` without listing each one.
+ *    marks its tabs `wip` without listing each one. A shortcut (see
+ *    `CsmNavNode.shortcutTo`) is the exception: it is not one of its section's
+ *    tabs, so it does not inherit a `wip` section's state (a `hidden` section
+ *    still hides it, rule 1). Whether a WIP section offers its shortcut at all
+ *    is decided per user, see `isShortcutOffered`.
  * 4. Otherwise it is `enabled`.
  * 5. Finally, a `wip` section with at least one `enabled` tab is promoted to
  *    `enabled` — the section has something usable in it, so it must stay
- *    clickable or that tab would be reachable only by deep link.
+ *    clickable or that tab would be reachable only by deep link. A shortcut
+ *    does not count as a tab here either.
  */
 function computeStates(): Map<string, FeatureState> {
   const overrides = parseOverrides();
@@ -134,8 +141,9 @@ function computeStates(): Map<string, FeatureState> {
 
   const inherit = (nodes: readonly CsmNavNode[], parent: FeatureState): void => {
     for (const node of nodes) {
+      const inherited: FeatureState = isNavShortcut(node) ? "enabled" : parent;
       const state: FeatureState =
-        parent === "hidden" ? "hidden" : (overrides[node.id] ?? parent);
+        parent === "hidden" ? "hidden" : (overrides[node.id] ?? inherited);
       states.set(node.id, state);
       if (node.children?.length) inherit(node.children, state);
     }
@@ -147,7 +155,7 @@ function computeStates(): Map<string, FeatureState> {
       if (!node.children?.length) continue;
       promote(node.children);
       const hasUsableChild = node.children.some(
-        (child) => states.get(child.id) === "enabled",
+        (child) => !isNavShortcut(child) && states.get(child.id) === "enabled",
       );
       if (states.get(node.id) === "wip" && hasUsableChild) {
         states.set(node.id, "enabled");
@@ -197,49 +205,268 @@ function requirements(): Map<string, keyof PortalAccess> {
 }
 
 /**
+ * True when some node under (but not including) `node` has an active preview
+ * override. Lets a `hidden`/`wip` ancestor get promoted too when the admin
+ * has only switched on preview for one of its descendants: `listPreviewableFeatures`
+ * offers every restricted node individually, tabs included, so an admin can
+ * (and reasonably would) preview just `"operations.incidents"` without also
+ * previewing its `"operations"` section — but `visibleNavSections`/
+ * `navigableNavNodes` filter a section out of the tree before ever looking at
+ * its children, so a previewed tab under a still-hidden section would
+ * otherwise be enabled in {@link featureState} yet unreachable from anywhere
+ * in the UI. Only promotes the ancestor itself; a sibling tab with no preview
+ * of its own stays exactly as restricted as before.
+ *
+ * A shortcut (see `CsmNavNode.shortcutTo`) does not count, for the same reason
+ * it does not count in `computeStates`' own promotion (rule 5): it is not one
+ * of its section's tabs, and it has no preview toggle of its own (see
+ * {@link listPreviewableFeatures}), so a stray stored value for one must not
+ * surface its section.
+ */
+function hasPreviewedDescendant(
+  node: CsmNavNode | undefined,
+  previewOverrides: Record<string, boolean> | undefined,
+): boolean {
+  if (!node?.children?.length || !previewOverrides) return false;
+  return node.children.some(
+    (child) =>
+      !isNavShortcut(child) &&
+      (previewOverrides[child.id] === true ||
+        hasPreviewedDescendant(child, previewOverrides)),
+  );
+}
+
+/**
  * Effective state of a page. An id that is not in the nav tree resolves to
  * `enabled`: unknown means unrestricted, never accidentally blocked.
  *
  * When `access` is given, a page needing a capability the user lacks resolves
  * to `hidden` for them, whatever the deployment's flags say. Omit it for the
  * deployment-wide state.
+ *
+ * `previewOverrides` (the Feature Preview dialog's per-admin, browser-local
+ * toggles — see `featurePreview.ts`) can PROMOTE a `hidden`/`wip` node to
+ * `enabled` for that one admin, but can never demote anything and can never
+ * bypass a genuine capability failure: a node whose `requires` capability the
+ * caller lacks resolves to `hidden` regardless of any override. Promotion
+ * also requires `access.isAdmin` — this is deliberately not reachable by
+ * anyone else, and never touches the deployment-wide `states()` map itself,
+ * so every other caller (every call site that doesn't pass this third
+ * argument) sees exactly the same result as before this parameter existed.
+ *
+ * A node's own override promotes it directly; failing that, a previewed
+ * descendant (see {@link hasPreviewedDescendant}) promotes it too, so
+ * previewing a tab under a hidden section surfaces the section it needs to
+ * be reached through, not just the tab's own (otherwise unreachable) state.
+ *
+ * A shortcut (see `CsmNavNode.shortcutTo`) resolves to the narrower of its
+ * own state and its owner's. It has no preview toggle of its own (see
+ * {@link listPreviewableFeatures}), so `previewOverrides` reaches it only
+ * through its owner — and, being the narrower of the two, never lifts it past
+ * its own `requires` or deployment state.
  */
-export function featureState(id: string, access?: PortalAccess): FeatureState {
+export function featureState(
+  id: string,
+  access?: PortalAccess,
+  previewOverrides?: Record<string, boolean>,
+): FeatureState {
+  const owner = shortcutOwners().get(id);
+  if (owner === undefined) return ownFeatureState(id, access, previewOverrides);
+  return narrower(ownFeatureState(id, access), ownFeatureState(owner, access, previewOverrides));
+}
+
+/** {@link featureState} for one node, before a shortcut is narrowed to its owner's state. */
+function ownFeatureState(
+  id: string,
+  access?: PortalAccess,
+  previewOverrides?: Record<string, boolean>,
+): FeatureState {
   const state = states().get(id) ?? "enabled";
-  if (state === "hidden" || !access) return state;
   const need = requirements().get(id);
-  return need && !access[need] ? "hidden" : state;
+  const capabilityOk = !access || !need || access[need];
+  if (!capabilityOk) return "hidden";
+  if (state !== "hidden" && state !== "wip") return state;
+  if (!access?.isAdmin) return state;
+  if (previewOverrides?.[id] === true) return "enabled";
+  if (hasPreviewedDescendant(navNodeById(id), previewOverrides)) return "enabled";
+  return state;
+}
+
+const STATE_RANK: Record<FeatureState, number> = { enabled: 0, wip: 1, hidden: 2 };
+
+/** The more restrictive of two states: hidden over wip over enabled. */
+function narrower(a: FeatureState, b: FeatureState): FeatureState {
+  return STATE_RANK[a] >= STATE_RANK[b] ? a : b;
+}
+
+interface ShortcutLinks {
+  /** Shortcut id → the id of the node that owns its page. */
+  owners: Map<string, string>;
+  /** Shortcut id → the id of the section it is listed under. */
+  sections: Map<string, string>;
+}
+
+let cachedShortcutLinks: ShortcutLinks | undefined;
+
+/**
+ * Where each shortcut (see {@link CsmNavNode.shortcutTo}) points and where it
+ * sits. A shortcut is never more visible than its owner: hiding or WIP-ing the
+ * owner through a deployment override, or a role that cannot reach the owner,
+ * applies to the shortcut too.
+ */
+function shortcutLinks(): ShortcutLinks {
+  if (!cachedShortcutLinks) {
+    const links: ShortcutLinks = { owners: new Map(), sections: new Map() };
+    const walk = (nodes: readonly CsmNavNode[], parentId?: string): void => {
+      for (const node of nodes) {
+        if (node.shortcutTo) {
+          links.owners.set(node.id, node.shortcutTo);
+          if (parentId) links.sections.set(node.id, parentId);
+        }
+        if (node.children?.length) walk(node.children, node.id);
+      }
+    };
+    walk(CSM_NAV_ITEMS);
+    cachedShortcutLinks = links;
+  }
+  return cachedShortcutLinks;
+}
+
+function shortcutOwners(): Map<string, string> {
+  return shortcutLinks().owners;
+}
+
+/**
+ * True when `node` is a shortcut this user is actually offered in the
+ * sidebar: it is visible for them, and the section it sits in is `enabled`
+ * for them — a WIP section renders as one disabled entry with no dropdown, so
+ * a shortcut inside it could never be reached, and its owner must keep its own
+ * entry instead.
+ *
+ * `previewOverrides` is passed through to both checks, so for an admin the
+ * section's state here is the same one the sidebar renders it with. It cannot
+ * change anything for anyone else: every preview promotion is admin-only (see
+ * {@link featureState}).
+ */
+function isShortcutOffered(
+  node: CsmNavNode,
+  access: PortalAccess,
+  previewOverrides?: Record<string, boolean>,
+): boolean {
+  if (!isNavShortcut(node) || !isFeatureVisible(node.id, access, previewOverrides)) return false;
+  const sectionId = shortcutLinks().sections.get(node.id);
+  return sectionId === undefined || isFeatureEnabled(sectionId, access, previewOverrides);
+}
+
+/**
+ * The shortcut this user is offered for the page `ownerId` owns, if any — the
+ * entry the sidebar shows (and highlights) in place of the owner's own.
+ */
+export function visibleShortcutTo(
+  ownerId: string,
+  access: PortalAccess,
+  previewOverrides?: Record<string, boolean>,
+): CsmNavNode | undefined {
+  return flattenNavNodes().find(
+    (node) => node.shortcutTo === ownerId && isShortcutOffered(node, access, previewOverrides),
+  );
 }
 
 /** True when the page should appear in navigation at all (enabled or WIP). */
-export function isFeatureVisible(id: string, access?: PortalAccess): boolean {
-  return featureState(id, access) !== "hidden";
+export function isFeatureVisible(
+  id: string,
+  access?: PortalAccess,
+  previewOverrides?: Record<string, boolean>,
+): boolean {
+  return featureState(id, access, previewOverrides) !== "hidden";
 }
 
 /** True when the page is usable, as opposed to hidden or advertised-but-WIP. */
-export function isFeatureEnabled(id: string, access?: PortalAccess): boolean {
-  return featureState(id, access) === "enabled";
+export function isFeatureEnabled(
+  id: string,
+  access?: PortalAccess,
+  previewOverrides?: Record<string, boolean>,
+): boolean {
+  return featureState(id, access, previewOverrides) === "enabled";
 }
 
 /** Effective state of whichever page owns `pathname`. */
-export function featureStateForPath(pathname: string, access?: PortalAccess): FeatureState {
+export function featureStateForPath(
+  pathname: string,
+  access?: PortalAccess,
+  previewOverrides?: Record<string, boolean>,
+): FeatureState {
   const node = navNodeForPath(pathname);
-  return node ? featureState(node.id, access) : "enabled";
+  return node ? featureState(node.id, access, previewOverrides) : "enabled";
 }
 
-/** Top-level sections that should render in the sidebar. */
-export function visibleNavSections(access?: PortalAccess): typeof CSM_NAV_ITEMS {
-  return CSM_NAV_ITEMS.filter((section) => isFeatureVisible(section.id, access));
+/**
+ * Top-level sections that should render in the sidebar. With `access`, a
+ * section this user reaches through a visible shortcut elsewhere in the
+ * sidebar is left out, so the page is offered once (see
+ * {@link CsmNavNode.shortcutTo}).
+ */
+export function visibleNavSections(
+  access?: PortalAccess,
+  previewOverrides?: Record<string, boolean>,
+): typeof CSM_NAV_ITEMS {
+  return CSM_NAV_ITEMS.filter(
+    (section) =>
+      isFeatureVisible(section.id, access, previewOverrides) &&
+      !(access && visibleShortcutTo(section.id, access, previewOverrides)),
+  );
 }
 
-/** A node's tabs that should render in its tab strip. */
-export function visibleNavChildren(node: CsmNavNode, access?: PortalAccess): CsmNavNode[] {
-  return (node.children ?? []).filter((child) => isFeatureVisible(child.id, access));
+/**
+ * A node's tabs that should render in its tab strip. Shortcuts are not tabs:
+ * their page lives outside the section.
+ */
+export function visibleNavChildren(
+  node: CsmNavNode,
+  access?: PortalAccess,
+  previewOverrides?: Record<string, boolean>,
+): CsmNavNode[] {
+  return (node.children ?? []).filter(
+    (child) => !isNavShortcut(child) && isFeatureVisible(child.id, access, previewOverrides),
+  );
 }
 
-/** A node's tabs that are actually usable. */
-export function enabledNavChildren(node: CsmNavNode, access?: PortalAccess): CsmNavNode[] {
-  return (node.children ?? []).filter((child) => isFeatureEnabled(child.id, access));
+/** A node's tabs that are actually usable. Shortcuts are not tabs. */
+export function enabledNavChildren(
+  node: CsmNavNode,
+  access?: PortalAccess,
+  previewOverrides?: Record<string, boolean>,
+): CsmNavNode[] {
+  return (node.children ?? []).filter(
+    (child) => !isNavShortcut(child) && isFeatureEnabled(child.id, access, previewOverrides),
+  );
+}
+
+/**
+ * A section's children as sidebar dropdown entries: its tabs plus any
+ * shortcut this user is offered.
+ */
+export function visibleRailChildren(
+  node: CsmNavNode,
+  access: PortalAccess,
+  previewOverrides?: Record<string, boolean>,
+): CsmNavNode[] {
+  return (node.children ?? []).filter((child) =>
+    isNavShortcut(child)
+      ? isShortcutOffered(child, access, previewOverrides)
+      : isFeatureVisible(child.id, access, previewOverrides),
+  );
+}
+
+/** True when `section` has a shortcut child this user is offered. */
+export function hasVisibleShortcutChild(
+  section: CsmNavNode,
+  access: PortalAccess,
+  previewOverrides?: Record<string, boolean>,
+): boolean {
+  return (section.children ?? []).some((child) =>
+    isShortcutOffered(child, access, previewOverrides),
+  );
 }
 
 /** A page the Quick-nav palette can offer as a destination. */
@@ -262,8 +489,9 @@ function navigableDescendants(
   node: CsmNavNode,
   icon: ComponentType<{ size?: number | string }>,
   access?: PortalAccess,
+  previewOverrides?: Record<string, boolean>,
 ): NavigableNavNode[] {
-  return enabledNavChildren(node, access).flatMap((child) => {
+  return enabledNavChildren(node, access, previewOverrides).flatMap((child) => {
     const self: NavigableNavNode = {
       id: child.id,
       label: child.label,
@@ -271,7 +499,7 @@ function navigableDescendants(
       href: child.href,
       icon: child.icon ?? icon,
     };
-    return [self, ...navigableDescendants(child, self.icon, access)];
+    return [self, ...navigableDescendants(child, self.icon, access, previewOverrides)];
   });
 }
 
@@ -281,16 +509,19 @@ function navigableDescendants(
  * carry its label as a sublabel so "Users" reads as "Users / User management"
  * rather than as a bare word.
  */
-export function navigableNavNodes(access?: PortalAccess): NavigableNavNode[] {
+export function navigableNavNodes(
+  access?: PortalAccess,
+  previewOverrides?: Record<string, boolean>,
+): NavigableNavNode[] {
   return CSM_NAV_ITEMS.flatMap((section) => {
-    if (!isFeatureEnabled(section.id, access)) return [];
+    if (!isFeatureEnabled(section.id, access, previewOverrides)) return [];
     const self: NavigableNavNode = {
       id: section.id,
       label: section.label,
       href: section.href,
       icon: section.icon,
     };
-    return [self, ...navigableDescendants(section, section.icon, access)];
+    return [self, ...navigableDescendants(section, section.icon, access, previewOverrides)];
   });
 }
 
@@ -300,6 +531,45 @@ export function navigableNavNodes(access?: PortalAccess): NavigableNavNode[] {
  * callers must handle that rather than redirect into a page that is itself
  * hidden, which would bounce the router between two hidden paths forever.
  */
-export function firstEnabledDestination(access?: PortalAccess): string | undefined {
-  return navigableNavNodes(access)[0]?.href;
+export function firstEnabledDestination(
+  access?: PortalAccess,
+  previewOverrides?: Record<string, boolean>,
+): string | undefined {
+  return navigableNavNodes(access, previewOverrides)[0]?.href;
+}
+
+/**
+ * Every nav node this deployment's own `CSM_PORTAL_FEATURE_OVERRIDES` map
+ * EXPLICITLY names, and whose resolved state (without any preview override
+ * applied) is still `hidden`/`wip` — the candidate list the Feature Preview
+ * dialog renders as toggle rows.
+ *
+ * Deliberately NOT every node whose state merely ends up `hidden`/`wip`
+ * through inheritance — a `hidden` section forces every one of its tabs
+ * hidden too (rule 1 in `computeStates`' own doc comment), so without this
+ * restriction a deployment that hides a handful of sections would offer a
+ * toggle for every tab underneath each one as well, turning a short,
+ * intentional restriction list into a dialog listing nearly the entire nav
+ * tree. Only the ids a deployment actually chose to name are worth a row;
+ * previewing a tab that's merely swept up by a hidden ancestor still works
+ * (`hasPreviewedDescendant` promotes the ancestor too, see `featureState`),
+ * it's just not separately offered here unless the deployment named it too.
+ *
+ * `access` only narrows by capability (a node a caller can never reach
+ * regardless of deployment state is not worth offering a toggle for); the
+ * admin-only gate on actually USING a toggle lives in `featureState`'s own
+ * promotion check, not here.
+ *
+ * A shortcut (see `CsmNavNode.shortcutTo`) is never offered, even when the
+ * deployment names it: it is a second sidebar entry for its owner's page, and
+ * previewing the owner is the toggle that matters (`featureState` ignores a
+ * shortcut's own preview value).
+ */
+export function listPreviewableFeatures(access?: PortalAccess): CsmNavNode[] {
+  const overrides = parseOverrides();
+  return flattenNavNodes(CSM_NAV_ITEMS).filter((node) => {
+    if (isNavShortcut(node) || !(node.id in overrides)) return false;
+    const state = featureState(node.id, access);
+    return state === "hidden" || state === "wip";
+  });
 }

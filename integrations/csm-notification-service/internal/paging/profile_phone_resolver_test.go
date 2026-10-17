@@ -19,6 +19,8 @@ package paging
 import (
 	"context"
 	"errors"
+	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -151,6 +153,109 @@ func TestProfilePhoneResolver(t *testing.T) {
 		}
 		if got[0].Phone != "" {
 			t.Errorf("a timed-out lookup must leave no number, got %q", got[0].Phone)
+		}
+	})
+}
+
+// fakePagingContacts stands in for entity-service's numbers.
+type fakePagingContacts struct {
+	numbers map[string]DialNumber
+	err     error
+	calls   int
+	asked   []string
+}
+
+func (f *fakePagingContacts) DialNumbers(_ context.Context, emails []string) (map[string]DialNumber, error) {
+	f.calls++
+	f.asked = append(f.asked, emails...)
+	return f.numbers, f.err
+}
+
+// CSM's number comes first, for the whole batch in one lookup; Asgardeo is
+// asked only about people CSM has no number for; a failed CSM lookup falls
+// back to Asgardeo for everyone.
+func TestProfilePhoneResolver_NumbersFromCSM(t *testing.T) {
+	ctx := context.Background()
+	inner := StaticResolver{ByLevel: map[Level][]Recipient{Level0: {
+		{Name: "Profiled", Email: "p@example.com"},
+		{Name: "Paging", Email: "Pg@example.com"},
+		{Name: "Bad", Email: "bad@example.com"},
+		{Name: "Asgardeo", Email: "asg@example.com"},
+		{Name: "Nothing", Email: "n@example.com"},
+		{Name: "Head", Email: "head@example.com", Phone: "+94770000099"},
+	}}}
+	lookup := &fakeLookup{numbers: map[string]string{
+		"p@example.com": "+94770000091", "asg@example.com": "+94770000004", "bad@example.com": "+94770000093",
+	}}
+	contacts := &fakePagingContacts{numbers: map[string]DialNumber{
+		"p@example.com":    {Number: "+94770000001", Source: DialSourceProfile},
+		"pg@example.com":   {Number: "+94770000012", Source: DialSourcePaging},
+		"bad@example.com":  {Number: "0770000013", Source: DialSourcePaging},
+		"head@example.com": {Number: "+94770000014", Source: DialSourceProfile},
+	}}
+
+	got, err := NewProfilePhoneResolver(inner, lookup).WithPagingContacts(contacts).Resolve(ctx, Level0, RoutingContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := phones(got)
+	for email, want := range map[string]string{
+		"p@example.com":    "+94770000001", // CSM's profile number, not Asgardeo's
+		"Pg@example.com":   "+94770000012", // CSM's paging number
+		"bad@example.com":  "+94770000093", // CSM's is not E.164: Asgardeo's
+		"asg@example.com":  "+94770000004", // CSM has none: Asgardeo's
+		"n@example.com":    "",             // neither: NO_NUMBER, as before
+		"head@example.com": "+94770000099", // named in paging-alert.yaml: wins over both
+	} {
+		if p[email] != want {
+			t.Errorf("%s = %q, want %q", email, p[email], want)
+		}
+	}
+	if contacts.calls != 1 {
+		t.Errorf("%d CSM lookups; want one batch", contacts.calls)
+	}
+	if strings.Join(contacts.asked, ",") != "p@example.com,pg@example.com,bad@example.com,asg@example.com,n@example.com" {
+		t.Errorf("CSM asked for %v; want everyone without a number", contacts.asked)
+	}
+	lookup.mu.Lock()
+	var asked []string
+	for e := range lookup.calls {
+		asked = append(asked, e)
+	}
+	lookup.mu.Unlock()
+	sort.Strings(asked)
+	if strings.Join(asked, ",") != "asg@example.com,bad@example.com,n@example.com" {
+		t.Errorf("Asgardeo asked for %v; want only those CSM has no callable number for", asked)
+	}
+
+	t.Run("a failed CSM lookup falls back to Asgardeo", func(t *testing.T) {
+		failing := &fakePagingContacts{err: errors.New("entity-service down")}
+		got, err := NewProfilePhoneResolver(inner, lookup).WithPagingContacts(failing).Resolve(ctx, Level0, RoutingContext{})
+		if err != nil {
+			t.Fatalf("a CSM lookup failure failed the tier: %v", err)
+		}
+		p := phones(got)
+		if p["p@example.com"] != "+94770000091" || p["Pg@example.com"] != "" {
+			t.Errorf("numbers = %v; want Asgardeo's only", p)
+		}
+	})
+
+	t.Run("without Asgardeo, CSM's numbers alone", func(t *testing.T) {
+		got, _ := NewProfilePhoneResolver(inner, nil).WithPagingContacts(contacts).Resolve(ctx, Level0, RoutingContext{})
+		p := phones(got)
+		if p["p@example.com"] != "+94770000001" || p["asg@example.com"] != "" || p["bad@example.com"] != "" {
+			t.Errorf("numbers = %v; want CSM's callable numbers only", p)
+		}
+	})
+
+	t.Run("an older entity-service's paging number still comes after the profile", func(t *testing.T) {
+		legacy := &fakePagingContacts{numbers: map[string]DialNumber{
+			"p@example.com": {Number: "+94770000011"}, "pg@example.com": {Number: "+94770000012"},
+		}}
+		got, _ := NewProfilePhoneResolver(inner, lookup).WithPagingContacts(legacy).Resolve(ctx, Level0, RoutingContext{})
+		p := phones(got)
+		if p["p@example.com"] != "+94770000091" || p["Pg@example.com"] != "+94770000012" {
+			t.Errorf("numbers = %v; want the Asgardeo profile first, then the paging number", p)
 		}
 	})
 }

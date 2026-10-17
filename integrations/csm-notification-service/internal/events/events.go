@@ -91,6 +91,14 @@ const (
 	// calls. Like the other incident.* signals above it belongs to
 	// internal/paging, and dispatch.Handle no-ops on it.
 	TypeIncidentAssigned Type = "incident.assigned"
+	// TypeIncidentSpecialOpsAlert is published by entity-service on the
+	// operations topic (SRE_EVENT_HUB_TOPIC, sre-events) whenever an
+	// incident's assignment group changes to a Special Ops team's group -- in
+	// practice the "Escalate to Special Ops Team" button. dispatch hands it to
+	// the SRE engine's SME page (internal/paging, sme.go), which stops the
+	// SaaS SRE chain and places ONE call to the SME on duty. Only that
+	// dispatcher path acts on it; the paging engines' own consumers ignore it.
+	TypeIncidentSpecialOpsAlert Type = "incident.special_ops_alert"
 
 	// TypeSLATierReached belongs to internal/slaengine, not internal/dispatch
 	// — see SLATierReachedPayload below. Not an email trigger (no
@@ -122,6 +130,12 @@ const (
 	// membership Id — see ProjectContactInvitedPayload.
 	TypeProjectContactInvited Type = "project_contact.invited"
 
+	// TypePagingTestCallRequested is published by entity-service, on the
+	// main shared topic, when a lead or admin presses "Test call" on a
+	// person's paging-only phone number. internal/paging's TestCaller places
+	// one short call and PUTs the outcome back to entity-service.
+	TypePagingTestCallRequested Type = "paging.test_call_requested"
+
 	// TypeProjectContactRegistered is published by entity-service when a
 	// membership moves into REGISTERED; dispatch sends the Welcome email.
 	TypeProjectContactRegistered Type = "project_contact.registered"
@@ -133,6 +147,8 @@ const (
 var KnownTypes = []Type{
 	TypeCaseCreated, TypeCommentAdded, TypeStatusChanged, TypeCaseAssigned, TypeCaseAcknowledged, TypeSeverityChanged, TypeWorkaroundProvided, TypeIncidentCreated,
 	TypeIncidentAcknowledged, TypeIncidentPriorityElevated, TypeIncidentCommentAdded, TypeIncidentAssigned,
+	TypeIncidentSpecialOpsAlert,
+	TypePagingTestCallRequested,
 	TypeSLATierReached,
 	TypeCRApprovalRequested, TypeCRPlanDateNotice,
 	TypeOutageNotificationDue, TypeOutageCommunicationDue, TypeOutageStatusPageDue,
@@ -209,9 +225,24 @@ type CaseCreatedPayload struct {
 	// Team is the case's account's CRE team display name (e.g. "Castor") —
 	// displayed in Chat cards; purely a display value, no routing role
 	// (unlike Product).
-	Team                      string   `json:"team,omitempty"`
-	CreatedAt                 string   `json:"createdAt"`
-	Description               string   `json:"description"`
+	Team        string `json:"team,omitempty"`
+	CreatedAt   string `json:"createdAt"`
+	Description string `json:"description"`
+	// DescriptionTruncated is true when entity-service stripped embedded
+	// base64-encoded inline image(s) out of Description (replacing each with
+	// a plain text placeholder) before publishing, to stay under Event Hub's
+	// own per-message size limit — a case description with a pasted
+	// screenshot can otherwise carry several MB of base64 image data and
+	// silently fail the whole publish. dispatch.handleCaseCreated checks
+	// this flag and, when true, re-fetches the full, untouched description
+	// via entity-service's GET /cases/{id} (outside Kafka's size limit
+	// entirely) before building the notification EMAIL, so the email still
+	// shows the original image(s); the Chat card never read embedded images
+	// from this field anyway and uses Description as sent regardless.
+	// omitempty: false/absent both mean "nothing was stripped," the normal
+	// case, and must read identically for a publisher that hasn't been
+	// updated to send this field yet.
+	DescriptionTruncated      bool     `json:"descriptionTruncated,omitempty"`
 	IncidentImpactDescription string   `json:"incidentImpactDescription,omitempty"`
 	Recipients                []string `json:"recipients"`
 	// ProjectOnboardingStatus/IsEvaluationAccount are deprecated and unused
@@ -247,7 +278,12 @@ type CommentAddedPayload struct {
 	WSO2CaseID  string `json:"wso2CaseId,omitempty"`
 	CaseTitle   string `json:"caseTitle"`
 	CaseComment string `json:"caseComment"`
-	CommentID   string `json:"commentId"`
+	// CaseCommentTruncated — see CaseCreatedPayload.DescriptionTruncated's
+	// own doc comment; identical reasoning and fix, for a comment's body
+	// instead of a case description. dispatch.handleCommentAdded re-fetches
+	// via entity-service's GET /comments/{id} when this is set.
+	CaseCommentTruncated bool   `json:"caseCommentTruncated,omitempty"`
+	CommentID            string `json:"commentId"`
 	// IsInternalNote is true when this comment is an internal note — never
 	// customer-visible, and the publisher is expected to have already
 	// restricted Recipients accordingly (see entity-service's own
@@ -289,6 +325,15 @@ type CommentAddedPayload struct {
 	// with no lookup here at all. See entity-service's own
 	// CommentAddedPayload.IsSupportEngineerResponse doc comment.
 	IsSupportEngineerResponse bool `json:"isSupportEngineerResponse,omitempty"`
+	// CaseType/EngagementType let dispatch.checkFrustration route a
+	// frustration-detection Chat alert to the Migration audience instead of
+	// the usual team/Incident Monitor routing, when the comment landed on a
+	// migration engagement. CaseType is entity-service's uppercase
+	// strings.ToUpper(cv.Type) (e.g. "ENGAGEMENT"); EngagementType is
+	// entity-service's own lowercase value (e.g. "migration"). Both empty
+	// for every non-engagement case-like type.
+	CaseType       string `json:"caseType,omitempty"`
+	EngagementType string `json:"engagementType,omitempty"`
 }
 
 // StatusChangedPayload is TypeStatusChanged's payload. See
@@ -346,6 +391,21 @@ type CaseAcknowledgedPayload struct {
 	// decode-compatibility pair exists.
 	ProjectOnboardingStatus string `json:"projectOnboardingStatus,omitempty"`
 	IsEvaluationAccount     bool   `json:"isEvaluationAccount,omitempty"`
+	// CaseType — see CaseCreatedPayload's own doc comment (the same
+	// strings.ToUpper(req.Type) convention entity-service uses). A
+	// security_report_analysis case never carries a severity, so
+	// handleCaseAcknowledged uses this to pick the dedicated ack card that
+	// omits the severity line, instead of rendering "Unknown".
+	//
+	// This field is new, and decodeStrict rejects any field not declared on
+	// this struct -- deploy this service's build that declares it BEFORE
+	// deploying the entity-service build that starts sending it, same
+	// deployment-order requirement as every other strictly-decoded new field
+	// added to a payload here (e.g. incident.assigned's assignedOn). An
+	// overlapping rollout where entity-service ships first would have every
+	// case.acknowledged event fail this field's unknown-field check, retry,
+	// dead-letter and eventually drop.
+	CaseType string `json:"caseType,omitempty"`
 }
 
 // WorkaroundProvidedPayload is TypeWorkaroundProvided's payload — mirrors
@@ -473,6 +533,12 @@ type IncidentCreatedPayload struct {
 	// a backlogged consumer does not shift the whole ladder later than
 	// section 7.0 intends. Empty falls back to consume time.
 	ReportedAt string `json:"reportedAt,omitempty"`
+
+	// Category, State, Service and Environment fill the "Incident Reported" Chat card; all optional.
+	Category    string `json:"category,omitempty"`
+	State       string `json:"state,omitempty"`
+	Service     string `json:"service,omitempty"`
+	Environment string `json:"environment,omitempty"`
 }
 
 // IncidentCommentAddedPayload is TypeIncidentCommentAdded's payload.
@@ -507,6 +573,67 @@ type IncidentAssignedPayload struct {
 	// AssigneeName is for the execution summary, so the work note says who
 	// took the incident. Optional; a publisher that cannot resolve it omits it.
 	AssigneeName string `json:"assigneeName,omitempty"`
+	// AssignedOn is when the assignee was set, RFC3339. The Special Ops (SME)
+	// page compares an alert's changedOn against it, so an assignment that
+	// arrives before the alert it answers still answers it. Optional: without
+	// it the time the event is handled stands in.
+	AssignedOn string `json:"assignedOn,omitempty"`
+	// Number, Team and UpdatedBy fill the threaded "Incident Acknowledged" Chat reply; all optional.
+	Number    string `json:"number,omitempty"`
+	Team      string `json:"team,omitempty"`
+	UpdatedBy string `json:"updatedBy,omitempty"`
+}
+
+// IncidentSpecialOpsAlertPayload is TypeIncidentSpecialOpsAlert's payload,
+// mirroring entity-service's internal/events/incident_special_ops.go field for
+// field (this package decodes strictly; keep the two in step). The envelope's
+// entityId is the incident id. Incident fields are as they stand when the
+// alert is published; the group fields are the change that raised it.
+type IncidentSpecialOpsAlertPayload struct {
+	IncidentID  string `json:"incidentId"`
+	Number      string `json:"number"`
+	Subject     string `json:"subject"`
+	Description string `json:"description,omitempty"`
+	State       string `json:"state,omitempty"`
+	Priority    string `json:"priority,omitempty"`
+	Impact      string `json:"impact,omitempty"`
+	Urgency     string `json:"urgency,omitempty"`
+	ServiceID   string `json:"serviceId,omitempty"`
+	ServiceName string `json:"serviceName,omitempty"`
+	// Product, TeamKey and TeamLabel name the Special Ops team the new group
+	// belongs to (entity-service's SPECIALIST_HANDOFF_CONFIG).
+	Product   string `json:"product"`
+	TeamKey   string `json:"teamKey"`
+	TeamLabel string `json:"teamLabel"`
+	// AssignmentGroupID/Name is the Special Ops group the incident moved to;
+	// PreviousAssignmentGroupID/Name the group it left -- what decides
+	// whether it was a SaaS SRE incident at all.
+	AssignmentGroupID           string `json:"assignmentGroupId"`
+	AssignmentGroupName         string `json:"assignmentGroupName,omitempty"`
+	PreviousAssignmentGroupID   string `json:"previousAssignmentGroupId,omitempty"`
+	PreviousAssignmentGroupName string `json:"previousAssignmentGroupName,omitempty"`
+	// ChangedBy is who changed the group (an email, or "system"); ChangedOn
+	// when, RFC3339 -- the instant the SME on duty is looked up at.
+	ChangedBy string `json:"changedBy,omitempty"`
+	ChangedOn string `json:"changedOn"`
+	// SMETeam is the rota team key of the SME team to page, when the
+	// publisher's configuration names one; empty falls back to the paging
+	// configuration's sme.teams.
+	SMETeam string `json:"smeTeam,omitempty"`
+}
+
+// PagingTestCallRequestedPayload is TypePagingTestCallRequested's payload,
+// mirroring entity-service's field for field. The envelope's entityId is the
+// person's userId.
+type PagingTestCallRequestedPayload struct {
+	UserID string `json:"userId"`
+	Email  string `json:"email"`
+	// Name is spoken in the call ("a Case Paging test call for <name>").
+	Name string `json:"name"`
+	// Phone is the paging-only number under test, E.164.
+	Phone       string `json:"phone"`
+	RequestedBy string `json:"requestedBy"`
+	RequestedAt string `json:"requestedAt"`
 }
 
 // SLATierReachedPayload is TypeSLATierReached's payload — published by

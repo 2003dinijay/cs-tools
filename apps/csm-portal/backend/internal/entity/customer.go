@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 )
 
 // CreateCase calls POST /cases on the entity service.
@@ -44,6 +45,16 @@ func (c *CustomerEntityClient) SearchAnnouncementRegistryCases(ctx context.Conte
 	return c.do(ctx, http.MethodPost, "/announcements/registry/cases", body)
 }
 
+// SearchAnnouncementRegistryRows calls POST /announcements/registry/rows on the
+// entity service: the announcement registry already grouped (published request
+// batches plus ungrouped cases), ordered and paginated by the database. The
+// body is the /cases/search shape (filters plus pagination over the grouped
+// rows). Entity services that predate the route answer 404; callers fall back
+// to grouping in the BFF.
+func (c *CustomerEntityClient) SearchAnnouncementRegistryRows(ctx context.Context, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, "/announcements/registry/rows", body)
+}
+
 // AggregateCases calls POST /cases/aggregate on the entity service: a
 // server-side aggregation of cases by a single field (e.g. account, state),
 // capped to the top maxGroups buckets with the remainder folded into
@@ -51,6 +62,14 @@ func (c *CustomerEntityClient) SearchAnnouncementRegistryCases(ctx context.Conte
 // deferred.
 func (c *CustomerEntityClient) AggregateCases(ctx context.Context, body []byte) ([]byte, error) {
 	return c.do(ctx, http.MethodPost, "/cases/aggregate", body)
+}
+
+// VolumeTrend calls POST /cases/volume-trend on the entity service: a
+// day-bucketed case-volume trend (opened vs. closed, one point per day over
+// a trailing window), for the Case Summary dashboard's trend chart. Response
+// is returned as raw JSON; typed response structs are deferred.
+func (c *CustomerEntityClient) VolumeTrend(ctx context.Context, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, "/cases/volume-trend", body)
 }
 
 // SearchFeedback calls POST /cases/feedback/search on the entity service:
@@ -110,6 +129,14 @@ func (c *CustomerEntityClient) SearchCaseEscalations(ctx context.Context, caseID
 // as raw JSON; typed response structs are deferred.
 func (c *CustomerEntityClient) CreateCaseEscalation(ctx context.Context, caseID string, body []byte) ([]byte, error) {
 	return c.do(ctx, http.MethodPost, fmt.Sprintf("/cases/%s/escalations", url.PathEscape(caseID)), body)
+}
+
+// SearchEscalations calls POST /escalations/search on the entity service --
+// unlike SearchCaseEscalations above (one case's own history), this is the
+// cross-case search, filtered by an explicit list of case ids. The body is
+// forwarded verbatim and the response is returned as raw JSON.
+func (c *CustomerEntityClient) SearchEscalations(ctx context.Context, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, "/escalations/search", body)
 }
 
 // GetTeamMembers calls GET /teams/{id}/members on the entity service.
@@ -644,6 +671,12 @@ func (c *CustomerEntityClient) GetProductVulnerability(ctx context.Context, id s
 	return c.do(ctx, http.MethodGet, fmt.Sprintf("/products/vulnerabilities/%s", url.PathEscape(id)), nil)
 }
 
+// GetVulnerabilityMeta calls GET /products/vulnerabilities/meta on the entity service.
+// Response is returned as raw JSON.
+func (c *CustomerEntityClient) GetVulnerabilityMeta(ctx context.Context) ([]byte, error) {
+	return c.do(ctx, http.MethodGet, "/products/vulnerabilities/meta", nil)
+}
+
 // CreateCallRequest calls POST /call-requests on the entity service.
 // Response is returned as raw JSON.
 func (c *CustomerEntityClient) CreateCallRequest(ctx context.Context, body []byte) ([]byte, error) {
@@ -756,17 +789,28 @@ func (c *CustomerEntityClient) CreateComment(ctx context.Context, body []byte) (
 	return c.do(ctx, http.MethodPost, "/comments", body)
 }
 
+// GetComment calls GET /comments/{id} on the entity service -- performs no
+// author/role check itself (see entity-service's own comment_service.go,
+// GetComment's doc comment). CommentHandler calls this before UpdateComment/
+// DeleteComment purely to learn the comment's author, since this backend is
+// the one that decides whether this caller may act on it.
+func (c *CustomerEntityClient) GetComment(ctx context.Context, id string) ([]byte, error) {
+	return c.do(ctx, http.MethodGet, fmt.Sprintf("/comments/%s", url.PathEscape(id)), nil)
+}
+
 // UpdateComment calls PATCH /comments/{id} on the entity service — the generic
 // edit path for any comment regardless of the aggregate (case, change request,
-// incident, ...) it belongs to. Author-or-admin gated upstream.
+// incident, ...) it belongs to. Not gated upstream at all: CommentHandler
+// decides whether this caller may edit this comment (via GetComment, above)
+// before ever calling this.
 func (c *CustomerEntityClient) UpdateComment(ctx context.Context, id string, body []byte) ([]byte, error) {
 	return c.do(ctx, http.MethodPatch, fmt.Sprintf("/comments/%s", url.PathEscape(id)), body)
 }
 
 // DeleteComment calls DELETE /comments/{id} on the entity service — a soft
-// delete, same author-or-admin gate as UpdateComment. The entity service
-// returns 204 No Content on success, so the returned byte slice is always
-// empty; the caller only needs the error.
+// delete, same "not gated upstream, CommentHandler decides" posture as
+// UpdateComment. The entity service returns 204 No Content on success, so the
+// returned byte slice is always empty; the caller only needs the error.
 func (c *CustomerEntityClient) DeleteComment(ctx context.Context, id string) ([]byte, error) {
 	return c.do(ctx, http.MethodDelete, fmt.Sprintf("/comments/%s", url.PathEscape(id)), nil)
 }
@@ -1088,6 +1132,120 @@ func (c *CustomerEntityClient) GetScheduleActivity(ctx context.Context, teamKey,
 	q.Set("from", from)
 	q.Set("to", to)
 	return c.do(ctx, http.MethodGet, "/team-schedule/activity?"+q.Encode(), nil)
+}
+
+// GetPagingChain calls GET /team-schedule/paging-chain: who is on each tier of
+// a family's Case Paging chain, and what the caller may change.
+func (c *CustomerEntityClient) GetPagingChain(ctx context.Context, family string) ([]byte, error) {
+	path := "/team-schedule/paging-chain"
+	if family != "" {
+		path += "?family=" + url.QueryEscape(family)
+	}
+	return c.do(ctx, http.MethodGet, path, nil)
+}
+
+// UpdatePagingMember calls PATCH /team-schedule/paging-chain/members/{id}.
+func (c *CustomerEntityClient) UpdatePagingMember(ctx context.Context, id string, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPatch, "/team-schedule/paging-chain/members/"+url.PathEscape(id), body)
+}
+
+// PutPagingContact calls PUT /team-schedule/paging-contacts/{userId}: set the
+// paging-only phone number entity-service keeps for a person.
+func (c *CustomerEntityClient) PutPagingContact(ctx context.Context, userID string, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPut, "/team-schedule/paging-contacts/"+url.PathEscape(userID), body)
+}
+
+// DeletePagingContact calls DELETE /team-schedule/paging-contacts/{userId}.
+func (c *CustomerEntityClient) DeletePagingContact(ctx context.Context, userID string) ([]byte, error) {
+	return c.do(ctx, http.MethodDelete, "/team-schedule/paging-contacts/"+url.PathEscape(userID), nil)
+}
+
+// TestPagingContact calls POST /team-schedule/paging-contacts/{userId}/test:
+// a test call to the person's paging number.
+func (c *CustomerEntityClient) TestPagingContact(ctx context.Context, userID string) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, "/team-schedule/paging-contacts/"+url.PathEscape(userID)+"/test", nil)
+}
+
+// GetPagingReadiness calls GET /team-schedule/paging-readiness: whether each
+// Case Paging chain has someone to page on every day of the next `days`.
+func (c *CustomerEntityClient) GetPagingReadiness(ctx context.Context, days int) ([]byte, error) {
+	q := url.Values{}
+	q.Set("days", strconv.Itoa(days))
+	return c.do(ctx, http.MethodGet, "/team-schedule/paging-readiness?"+q.Encode(), nil)
+}
+
+// GetRotaAccess calls GET /team-schedule/rota-access: who holds a rota admin
+// role or marks a team's rota, and what the caller may change.
+func (c *CustomerEntityClient) GetRotaAccess(ctx context.Context) ([]byte, error) {
+	return c.do(ctx, http.MethodGet, "/team-schedule/rota-access", nil)
+}
+
+// PutRotaAdmin calls PUT /team-schedule/rota-access/admins/{family}/{userId}.
+func (c *CustomerEntityClient) PutRotaAdmin(ctx context.Context, family, userID string) ([]byte, error) {
+	return c.do(ctx, http.MethodPut, "/team-schedule/rota-access/admins/"+url.PathEscape(family)+"/"+url.PathEscape(userID), nil)
+}
+
+// DeleteRotaAdmin calls DELETE /team-schedule/rota-access/admins/{family}/{userId}.
+func (c *CustomerEntityClient) DeleteRotaAdmin(ctx context.Context, family, userID string) ([]byte, error) {
+	return c.do(ctx, http.MethodDelete, "/team-schedule/rota-access/admins/"+url.PathEscape(family)+"/"+url.PathEscape(userID), nil)
+}
+
+// PutRotaMarker calls PUT /team-schedule/rota-access/markers/{teamKey}/{userId}.
+func (c *CustomerEntityClient) PutRotaMarker(ctx context.Context, teamKey, userID string) ([]byte, error) {
+	return c.do(ctx, http.MethodPut, "/team-schedule/rota-access/markers/"+url.PathEscape(teamKey)+"/"+url.PathEscape(userID), nil)
+}
+
+// DeleteRotaMarker calls DELETE /team-schedule/rota-access/markers/{teamKey}/{userId}.
+func (c *CustomerEntityClient) DeleteRotaMarker(ctx context.Context, teamKey, userID string) ([]byte, error) {
+	return c.do(ctx, http.MethodDelete, "/team-schedule/rota-access/markers/"+url.PathEscape(teamKey)+"/"+url.PathEscape(userID), nil)
+}
+
+// GetCaseAlertSettings calls GET /team-schedule/case-alerts/settings: the
+// chat rooms, group routes and ladder values the paging ladders use, what the
+// alert service last reported running, and what the caller may change.
+func (c *CustomerEntityClient) GetCaseAlertSettings(ctx context.Context) ([]byte, error) {
+	return c.do(ctx, http.MethodGet, "/team-schedule/case-alerts/settings", nil)
+}
+
+// PutCaseAlertRoom calls PUT /team-schedule/case-alerts/settings/rooms.
+func (c *CustomerEntityClient) PutCaseAlertRoom(ctx context.Context, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPut, "/team-schedule/case-alerts/settings/rooms", body)
+}
+
+// PutCaseAlertWebhook calls PUT /team-schedule/case-alerts/settings/rooms/{roomId}/webhook.
+// body carries the webhook URL; entity-service seals it and never returns it.
+func (c *CustomerEntityClient) PutCaseAlertWebhook(ctx context.Context, roomID string, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPut, "/team-schedule/case-alerts/settings/rooms/"+url.PathEscape(roomID)+"/webhook", body)
+}
+
+// DeleteCaseAlertRoom calls DELETE /team-schedule/case-alerts/settings/rooms/{roomId}.
+func (c *CustomerEntityClient) DeleteCaseAlertRoom(ctx context.Context, roomID string) ([]byte, error) {
+	return c.do(ctx, http.MethodDelete, "/team-schedule/case-alerts/settings/rooms/"+url.PathEscape(roomID), nil)
+}
+
+// TestCaseAlertRoom calls POST /team-schedule/case-alerts/settings/rooms/{roomId}/test.
+func (c *CustomerEntityClient) TestCaseAlertRoom(ctx context.Context, roomID string) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, "/team-schedule/case-alerts/settings/rooms/"+url.PathEscape(roomID)+"/test", nil)
+}
+
+// PutCaseAlertRoute calls PUT /team-schedule/case-alerts/settings/routes.
+func (c *CustomerEntityClient) PutCaseAlertRoute(ctx context.Context, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPut, "/team-schedule/case-alerts/settings/routes", body)
+}
+
+// DeleteCaseAlertRoute calls DELETE /team-schedule/case-alerts/settings/routes/{routeId}.
+func (c *CustomerEntityClient) DeleteCaseAlertRoute(ctx context.Context, routeID string) ([]byte, error) {
+	return c.do(ctx, http.MethodDelete, "/team-schedule/case-alerts/settings/routes/"+url.PathEscape(routeID), nil)
+}
+
+// PutCaseAlertValues calls PUT /team-schedule/case-alerts/settings/values.
+func (c *CustomerEntityClient) PutCaseAlertValues(ctx context.Context, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPut, "/team-schedule/case-alerts/settings/values", body)
+}
+
+// DeleteCaseAlertValue calls DELETE /team-schedule/case-alerts/settings/values/{valueId}.
+func (c *CustomerEntityClient) DeleteCaseAlertValue(ctx context.Context, valueID string) ([]byte, error) {
+	return c.do(ctx, http.MethodDelete, "/team-schedule/case-alerts/settings/values/"+url.PathEscape(valueID), nil)
 }
 
 // GetMyLeadTeams calls GET /team-schedule/my-lead-teams on the entity service.

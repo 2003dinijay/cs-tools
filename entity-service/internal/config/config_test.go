@@ -27,10 +27,12 @@ import (
 // test only needs to override the field(s) under test.
 func baseValidConfig() Config {
 	return Config{
-		DataSource: DataSourcePostgres,
-		DBUser:     "user",
-		DBPassword: "password",
-		DBName:     "db",
+		DataSource:           DataSourcePostgres,
+		SLADataSource:        SLADataSourcePostgres,
+		AttachmentDataSource: AttachmentDataSourcePostgres,
+		DBUser:               "user",
+		DBPassword:           "password",
+		DBName:               "db",
 		// Both ports carry their real defaults: Load always populates them,
 		// and Validate rejects the two being equal — which a zero-value
 		// Config would be.
@@ -295,6 +297,67 @@ func TestConfig_Validate_ServiceNowRequiresIntegrationServiceFields(t *testing.T
 	}
 }
 
+func TestConfig_Validate_SLADataSource(t *testing.T) {
+	t.Run("invalid value is rejected", func(t *testing.T) {
+		c := baseValidConfig()
+		c.SLADataSource = SLADataSource("bogus")
+		if err := c.Validate(); err == nil {
+			t.Error("Validate() = nil, want an error for an invalid SLA_DATA_SOURCE")
+		}
+	})
+
+	// SLADataSource is independent of DataSource: a plain DATA_SOURCE=postgres
+	// deployment must still be able to require servicenow for SLA reads
+	// specifically, and must then require the same ServiceNow integration
+	// service credentials DATA_SOURCE=servicenow itself requires.
+	t.Run("servicenow requires integration service credentials even under DATA_SOURCE=postgres", func(t *testing.T) {
+		base := func() Config {
+			c := baseValidConfig()
+			c.SLADataSource = SLADataSourceServiceNow
+			c.ServiceNowIntegrationServiceBaseURL = "https://example.com"
+			c.ServiceNowIntegrationServiceTokenURL = "https://example.com/token"
+			c.ServiceNowIntegrationServiceClientID = "client-id"
+			c.ServiceNowIntegrationServiceClientSecret = "client-secret"
+			return c
+		}
+
+		valid := base()
+		if err := valid.Validate(); err != nil {
+			t.Fatalf("unexpected error for DATA_SOURCE=postgres + SLA_DATA_SOURCE=servicenow, fully configured: %v", err)
+		}
+		if valid.DataSource != DataSourcePostgres {
+			t.Fatalf("test setup error: expected DataSource to stay postgres, got %q", valid.DataSource)
+		}
+
+		tests := []struct {
+			name   string
+			mutate func(c *Config)
+		}{
+			{"missing base URL", func(c *Config) { c.ServiceNowIntegrationServiceBaseURL = "" }},
+			{"missing token URL", func(c *Config) { c.ServiceNowIntegrationServiceTokenURL = "" }},
+			{"missing client ID", func(c *Config) { c.ServiceNowIntegrationServiceClientID = "" }},
+			{"missing client secret", func(c *Config) { c.ServiceNowIntegrationServiceClientSecret = "" }},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				c := base()
+				tt.mutate(&c)
+				if err := c.Validate(); err == nil {
+					t.Errorf("Validate() = nil, want an error when %s", tt.name)
+				}
+			})
+		}
+	})
+
+	t.Run("postgres needs no ServiceNow credentials", func(t *testing.T) {
+		c := baseValidConfig()
+		c.SLADataSource = SLADataSourcePostgres
+		if err := c.Validate(); err != nil {
+			t.Errorf("unexpected error for SLA_DATA_SOURCE=postgres with no ServiceNow credentials: %v", err)
+		}
+	})
+}
+
 func TestConfig_Validate_RejectsPortsThatResolveToTheSameNumber(t *testing.T) {
 	// A string comparison would wave "8080"/"08080" through: different
 	// strings, same TCP port, so both listeners race for one port and the
@@ -327,6 +390,8 @@ func TestConfig_Validate_RejectsUnbindablePort(t *testing.T) {
 func baseValidServiceNowConfig() Config {
 	return Config{
 		DataSource:                               DataSourceServiceNow,
+		SLADataSource:                            SLADataSourcePostgres,
+		AttachmentDataSource:                     AttachmentDataSourcePostgres,
 		ServiceNowIntegrationServiceBaseURL:      "https://example.com",
 		ServiceNowIntegrationServiceTokenURL:     "https://example.com/token",
 		ServiceNowIntegrationServiceClientID:     "client-id",
@@ -1136,5 +1201,64 @@ func TestConfig_Validate_CaseEscalationNotices(t *testing.T) {
 	c.CaseEscalationNotices = "yes"
 	if err := c.Validate(); err == nil {
 		t.Error(`"yes": want a startup error`)
+	}
+}
+
+// TestConfig_HasGithubIntegration_RepoTokens: per-repository tokens alone are
+// enough to run the sync -- GITHUB_TOKEN becomes the optional fallback.
+func TestConfig_HasGithubIntegration_RepoTokens(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		token, repoTokens string
+		want              bool
+	}{
+		{"GITHUB_TOKEN only", "pat", "", true},
+		{"GITHUB_REPO_TOKENS only", "", `{"wso2-enterprise/choreo":"pat"}`, true},
+		{"both", "pat", `{"wso2-enterprise/choreo":"pat"}`, true},
+		{"neither", "", "", false},
+		{"GITHUB_REPO_TOKENS set but empty", "", `{}`, false},
+		{"GITHUB_REPO_TOKENS null", "", `null`, false},
+		{"GITHUB_REPO_TOKENS malformed", "", `{"org/ repo":"pat"}`, false},
+	} {
+		c := Config{GithubIntegrationEnabled: true, GithubIntegrationLogin: "csm-bot", GithubToken: tc.token, GithubRepoTokens: tc.repoTokens}
+		if got := c.HasGithubIntegration(); got != tc.want {
+			t.Errorf("%s: HasGithubIntegration = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestConfig_Validate_GithubRepoTokens: a malformed GITHUB_REPO_TOKENS refuses
+// to start rather than leaving repositories without their token.
+func TestConfig_Validate_GithubRepoTokens(t *testing.T) {
+	for _, v := range []string{"", `{"wso2-enterprise/choreo":"pat","asgardeo-org":"pat2"}`} {
+		c := baseValidConfig()
+		c.GithubRepoTokens = v
+		if err := c.Validate(); err != nil {
+			t.Errorf("%q: unexpected error %v", v, err)
+		}
+	}
+	for _, v := range []string{`not json`, `null`, `{"a/b/c":"pat"}`, `{"org/ repo":"pat"}`, `{"wso2-enterprise/choreo":""}`} {
+		c := baseValidConfig()
+		c.GithubRepoTokens = v
+		if err := c.Validate(); err == nil {
+			t.Errorf("%q: want a startup error", v)
+		}
+	}
+}
+
+func TestConfig_GithubServiceNowFirst(t *testing.T) {
+	c := baseValidConfig()
+	c.GithubSRServiceNowFirst = true
+	c.DataSource = DataSourcePostgres
+	if c.GithubServiceNowFirst() {
+		t.Error("on plain postgres: there is no ServiceNow to create in")
+	}
+	c.DataSource = DataSourcePostgresServiceNowDualWrite
+	if !c.GithubServiceNowFirst() {
+		t.Error("off under dual-write with GITHUB_SR_SERVICENOW_FIRST=true")
+	}
+	c.GithubSRServiceNowFirst = false
+	if c.GithubServiceNowFirst() {
+		t.Error("on without GITHUB_SR_SERVICENOW_FIRST")
 	}
 }

@@ -129,6 +129,11 @@ export interface CaseTabsController {
     meta: { label?: string; internalId?: string; subject?: string },
   ) => void;
   setTabDraft: (id: string, hasDraft: boolean) => void;
+  /** Flags the tab for `caseId` (if one is open) as having a live update the
+   * user has not seen, unless it is the tab on screen. `activeTabVisible` is
+   * `false` when the active tab is not actually being looked at (the pinned
+   * current-location tab is the live view). Cleared by activating the tab. */
+  markTabUpdated: (caseId: string, activeTabVisible?: boolean) => void;
   isAtCapacity: boolean;
 }
 
@@ -152,6 +157,7 @@ const NOOP_CASE_TABS_CONTROLLER: CaseTabsController = {
   updateTabPath: () => {},
   setTabMeta: () => {},
   setTabDraft: () => {},
+  markTabUpdated: () => {},
   isAtCapacity: false,
 };
 
@@ -275,6 +281,10 @@ export function CaseTabsProvider({ children }: { children: ReactNode }): JSX.Ele
     dispatch({ type: "SET_DRAFT", id, hasDraft });
   }, []);
 
+  const markTabUpdated = useCallback((caseId: string, activeTabVisible?: boolean) => {
+    dispatch({ type: "MARK_UPDATED", caseId, activeTabVisible });
+  }, []);
+
   const activeTab = state.tabs.find((t) => t.id === state.activeTabId);
 
   const value = useMemo<CaseTabsController>(
@@ -290,6 +300,7 @@ export function CaseTabsProvider({ children }: { children: ReactNode }): JSX.Ele
       updateTabPath,
       setTabMeta,
       setTabDraft,
+      markTabUpdated,
       isAtCapacity: state.tabs.length >= MAX_OPEN_CASE_TABS,
     }),
     [
@@ -304,6 +315,7 @@ export function CaseTabsProvider({ children }: { children: ReactNode }): JSX.Ele
       updateTabPath,
       setTabMeta,
       setTabDraft,
+      markTabUpdated,
     ],
   );
 

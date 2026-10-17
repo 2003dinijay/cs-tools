@@ -1319,21 +1319,24 @@ func publishCaseCreatedEvent(
 	}
 	product := caseProductName(cv)
 
+	description, descriptionTruncated := stripInlineBase64Images(cv.Description)
+
 	payload, err := json.Marshal(events.CaseCreatedPayload{
-		ReporterName: reporterName,
-		ProjectName:  cv.ProjectDetails.Name,
-		ProjectID:    cv.ProjectDetails.ID,
-		CaseID:       caseID,
-		CaseNumber:   cv.Number,
-		WSO2CaseID:   cv.InternalID,
-		CaseTitle:    cv.Subject,
-		CaseType:     strings.ToUpper(req.Type),
-		Priority:     strings.ToUpper(string(derefSeverity(cv.Severity))),
-		Product:      product,
-		Team:         caseTeamName(cv),
-		CreatedAt:    cv.CreatedOn.Format(time.RFC3339),
-		Description:  cv.Description,
-		Recipients:   recipients,
+		ReporterName:         reporterName,
+		ProjectName:          cv.ProjectDetails.Name,
+		ProjectID:            cv.ProjectDetails.ID,
+		CaseID:               caseID,
+		CaseNumber:           cv.Number,
+		WSO2CaseID:           cv.InternalID,
+		CaseTitle:            cv.Subject,
+		CaseType:             strings.ToUpper(req.Type),
+		Priority:             strings.ToUpper(string(derefSeverity(cv.Severity))),
+		Product:              product,
+		Team:                 caseTeamName(cv),
+		CreatedAt:            cv.CreatedOn.Format(time.RFC3339),
+		Description:          description,
+		DescriptionTruncated: descriptionTruncated,
+		Recipients:           recipients,
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "create case: encode case.created payload failed", "caseId", caseID, "error", err)
@@ -1514,6 +1517,8 @@ func publishCommentAddedEvent(ctx context.Context, publisher EventPublisherServi
 		}
 	}
 
+	caseComment, caseCommentTruncated := stripInlineBase64Images(req.Content)
+
 	payload, err := json.Marshal(events.CommentAddedPayload{
 		Name:                      authorName,
 		ProjectID:                 cv.ProjectDetails.ID,
@@ -1521,7 +1526,8 @@ func publishCommentAddedEvent(ctx context.Context, publisher EventPublisherServi
 		CaseNumber:                cv.Number,
 		WSO2CaseID:                cv.InternalID,
 		CaseTitle:                 cv.Subject,
-		CaseComment:               req.Content,
+		CaseComment:               caseComment,
+		CaseCommentTruncated:      caseCommentTruncated,
 		CommentID:                 commentID,
 		IsInternalNote:            req.Type == domain.CommentTypeWorkNote,
 		Recipients:                recipients,
@@ -1531,6 +1537,8 @@ func publishCommentAddedEvent(ctx context.Context, publisher EventPublisherServi
 		IsEvaluationAccount:       isEvaluationAccount,
 		ProjectOnboardingStatus:   onboardingStatus,
 		IsSupportEngineerResponse: isSupportEngineerResponse,
+		CaseType:                  strings.ToUpper(derefString(cv.Type)),
+		EngagementType:            derefString(cv.EngagementType),
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "create comment: encode case.comment_added payload failed", "caseId", req.CaseID, "error", err)
@@ -2065,6 +2073,7 @@ func (s *snCaseService) publishCaseAcknowledged(ctx context.Context, caseID, ack
 		Product:          product,
 		Team:             caseTeamName(cv),
 		AcknowledgerName: acknowledgerName,
+		CaseType:         strings.ToUpper(derefString(cv.Type)),
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "sn update case: encode case.acknowledged payload failed", "caseId", caseID, "error", err)
@@ -2123,6 +2132,23 @@ func (s *snCaseService) GetCaseEtaSharedOn(ctx context.Context, caseID string) (
 		return nil, nil
 	}
 	return s.pgFallback.GetCaseEtaSharedOn(ctx, caseID)
+}
+
+// CaseVolumeTrend implements CaseService. Unlike the pgFallback delegations
+// above, a missing day-bucketed total here has no safe "empty" fallback that
+// wouldn't mislead a dashboard chart into showing a flat zero trend -- so a
+// pure ServiceNow deployment with no Postgres pool (pgFallback nil) gets a
+// ServiceUnavailableError instead, the same posture
+// unavailableFeedbackService takes for the structurally identical
+// case-feedback trend. Day-bucketed case counts have no ServiceNow endpoint
+// to compute them from at all (see CaseRepository.CaseVolumeTrend, which
+// depends on Postgres-native date_trunc SQL), so under
+// DATA_SOURCE=postgres-servicenow-dual-write this simply delegates whole.
+func (s *snCaseService) CaseVolumeTrend(ctx context.Context, req domain.CaseVolumeTrendRequest) (domain.CaseVolumeTrendResponse, error) {
+	if s.pgFallback == nil {
+		return domain.CaseVolumeTrendResponse{}, &apierror.ServiceUnavailableError{Msg: "case volume trend is only supported for the Postgres data source"}
+	}
+	return s.pgFallback.CaseVolumeTrend(ctx, req)
 }
 
 func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.CaseView, error) {
@@ -2684,11 +2710,25 @@ func (s *snCaseService) SearchCaseComments(ctx context.Context, req domain.Searc
 		// whole comment page, so a bad timestamp leaves that entry's CreatedOn zero.
 		var inlineAttachments []domain.InlineAttachment
 		for _, ia := range c.InlineAttachments {
+			convertedID := sysidToUUID(ia.ID)
+			// ia.DownloadURL embeds the same raw sysid as ia.ID (e.g.
+			// "/attachments/<sysid>/content"), but GET /attachments/{id}/content
+			// only ever accepts the UUID form -- confirmed live via a HAR
+			// capture of 404s on the raw-sysid URL for an attachment that
+			// succeeded under its converted id. Replace the sysid substring
+			// with the already-converted UUID rather than reconstruct the
+			// URL from scratch, since this upstream shape isn't otherwise
+			// documented and a guessed rebuild could silently drop a query
+			// string or path segment ia.DownloadURL actually carries.
+			downloadURL := ia.DownloadURL
+			if ia.ID != "" {
+				downloadURL = strings.ReplaceAll(downloadURL, ia.ID, convertedID)
+			}
 			entry := domain.InlineAttachment{
-				ID:          sysidToUUID(ia.ID),
+				ID:          convertedID,
 				FileName:    ia.FileName,
 				ContentType: ia.ContentType,
-				DownloadURL: ia.DownloadURL,
+				DownloadURL: downloadURL,
 				CreatedBy:   ia.CreatedBy,
 			}
 			// Left nil for an empty or unparseable value: a zero time would render as
@@ -3718,7 +3758,7 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 // traffic. At most one of state/severity/workState/markFixIssued is expected
 // non-nil at a time -- this method does not enforce that itself, the caller
 // already has.
-func (s *snCaseService) patchCaseFields(ctx context.Context, caseID string, state *domain.CaseState, severity *domain.CaseSeverity, workState *domain.CaseWorkState, markFixIssued *bool, resolution *caseResolutionFields) (domain.UpdatedCase, error) {
+func (s *snCaseService) patchCaseFields(ctx context.Context, caseID string, state *domain.CaseState, severity *domain.CaseSeverity, workState *domain.CaseWorkState, markFixIssued *bool, resolution *caseResolutionFields, asSystemUser bool) (domain.UpdatedCase, error) {
 	payload := snUpdateCasePayload{}
 	if resolution != nil {
 		if resolution.Code != nil {
@@ -3772,7 +3812,19 @@ func (s *snCaseService) patchCaseFields(ctx context.Context, caseID string, stat
 		payload.MarkFixIssued = markFixIssued
 	}
 
+	// asSystemUser forwards no x-user-id-token at all, rather than this
+	// request's own, when the caller (UpdateCase) has determined ServiceNow
+	// must see this write as the integration's own M2M ServiceNow user, not
+	// as the acting caller -- see snFieldPatcher's own doc comment for why
+	// (ServiceNow has been observed to reject resolutionCode/cause/closeNotes
+	// outright when set under a customer's own identity, "cannot be
+	// provided by this user", even though the values are system-generated
+	// defaults the customer never supplied). This is the exact "no user
+	// token" shape SNGithubCases already relies on for its own M2M writes.
 	token := middleware.UserIDTokenFromContext(ctx)
+	if asSystemUser {
+		token = ""
+	}
 	raw, err := s.client.Patch(ctx, "/cases/"+uuidToSysid(caseID), token, payload)
 	if err != nil {
 		return domain.UpdatedCase{}, err
@@ -4348,10 +4400,48 @@ func (s *snCaseService) SearchCaseActivities(ctx context.Context, req domain.Sea
 	}, nil
 }
 
+// GetCaseAttachmentContent deliberately does NOT forward the caller's own
+// x-user-id-token to the ServiceNow Integration Service (contrast every
+// other snCaseService method, which does). Evidence gathered live: a
+// sys_attachment row whose table_name is sys_journal_field (ServiceNow's own
+// auto-extraction of a base64 <img> embedded in a case comment) 404s here
+// when the forwarded identity is an external customer, but the identical
+// sys_id succeeds through apps/csm-portal/backend, whose forwarded identity
+// is an internal WSO2 staff user -- same entity-service code path, same
+// shared M2M credential for this integration, only the forwarded
+// x-user-id-token differs. ServiceNow's DownloadAttachmentByIdAPI script
+// (AttachmentDownloadUtils) does a bare GlideRecord('sys_attachment').
+// get(id) with no table_name filter at all, so the only remaining mechanism
+// is a ServiceNow ACL on sys_attachment keyed off the caller's own identity
+// -- evidently granting read access to journal/work-note-scoped attachments
+// for internal roles but not external customer roles.
+//
+// This is safe to omit here specifically because the actual authorization
+// boundary for a customer-facing caller is NOT this identity forward -- it
+// is authorizeAttachmentAccess in apps/customer-portal/backend-v2, which
+// independently verifies the caller may see the attachment's own case
+// BEFORE ever reaching this method (see this repo's own CLAUDE.md, "change
+// request attachments" row: "not reachable through the customer portal
+// (authorizeAttachmentAccess forces case / deployment)"). entity-service's
+// own HTTP handler for this route (handler.CaseHandler.GetCaseAttachmentContent)
+// performs no independent case-visibility check of its own -- it trusts the
+// calling BFF to have already done so, exactly as it does here. Omitting the
+// per-customer token therefore does not weaken that boundary; it only stops
+// ServiceNow's own ACL from additionally (and, for this one attachment
+// shape, incorrectly) vetoing a read access-control.go/backend-v2 has
+// already approved.
+//
+// Unverified assumption, flag for whoever deploys this: that the shared M2M
+// credential alone (no x-user-id-token at all) has sufficient ServiceNow
+// read access to sys_attachment regardless of table_name. Every data point
+// gathered so far paired the M2M credential with SOME x-user-id-token
+// (customer or staff) -- never with none -- so this should be verified
+// against a known sys_journal_field-scoped attachment before being trusted
+// in production. If the M2M identity itself lacks this grant, the result
+// changes (e.g. to 401/403) rather than succeeding, and the real fix
+// remains a ServiceNow-side ACL change.
 func (s *snCaseService) GetCaseAttachmentContent(ctx context.Context, attachmentID string) ([]byte, string, error) {
-	token := middleware.UserIDTokenFromContext(ctx)
-
-	resp, err := s.client.GetBinary(ctx, "/attachments/"+uuidToSysid(attachmentID)+"/content", token)
+	resp, err := s.client.GetBinary(ctx, "/attachments/"+uuidToSysid(attachmentID)+"/content", "")
 	if err != nil {
 		return nil, "", err
 	}
@@ -4399,14 +4489,23 @@ type snAttachmentDetails struct {
 	Content     string  `json:"content"`
 }
 
+// GetAttachmentByID deliberately does NOT forward the caller's own
+// x-user-id-token to the ServiceNow Integration Service -- same reasoning
+// and same ServiceNow-side ACL finding as GetCaseAttachmentContent's own doc
+// comment above, which this method gates (backend-v2's GetAttachmentContent
+// handler calls this first, purely to resolve ReferenceID for its own
+// authorizeAttachmentAccess check, before ever reaching content). Revealing
+// an attachment's bare metadata (name, size, which case it belongs to) to a
+// caller who turns out not to own that case is not itself the exposure --
+// authorizeAttachmentAccess's subsequent GetCase(ReferenceID) call, which
+// DOES still forward the caller's own identity and is not touched by this
+// change, is what actually decides whether the request may proceed.
 func (s *snCaseService) GetAttachmentByID(ctx context.Context, id string) (domain.AttachmentDetails, error) {
 	if err := validateUUIDs("id", []string{id}); err != nil {
 		return domain.AttachmentDetails{}, err
 	}
 
-	token := middleware.UserIDTokenFromContext(ctx)
-
-	raw, err := s.client.Get(ctx, "/attachments/"+uuidToSysid(id), token)
+	raw, err := s.client.Get(ctx, "/attachments/"+uuidToSysid(id), "")
 	if err != nil {
 		return domain.AttachmentDetails{}, err
 	}

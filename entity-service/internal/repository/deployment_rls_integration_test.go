@@ -222,6 +222,66 @@ func TestDeploymentRLSIntegration_IDsFilterStaysWithinScope(t *testing.T) {
 	}
 }
 
+// IncludeInactive is additive: omitted/false must reproduce today's exact
+// behavior (an inactive deployment stays invisible to every existing
+// caller), and true must surface it -- added for the CSM portal backend's
+// customer-health EOL-product check, whose real ServiceNow script has no
+// active-only filter at all.
+func TestDeploymentRLSIntegration_IncludeInactive(t *testing.T) {
+	pool := caseStatsPool(t)
+	seedDeploymentRLSFixture(t, pool)
+	ctx := repository.WithSystemIdentity(context.Background())
+	if _, err := pool.Exec(ctx, `UPDATE deployment SET is_active = FALSE WHERE id = $1`, depDeployOne); err != nil {
+		t.Fatalf("seed: deactivate deployment: %v", err)
+	}
+
+	repo := repository.NewDeploymentRepository(repository.NewScoped(pool))
+	scope := repository.SearchScope{ViewerEmail: depMemberOne}
+
+	t.Run("default excludes the inactive deployment", func(t *testing.T) {
+		req := domain.SearchDeploymentsRequest{Pagination: domain.Pagination{Limit: 50}}
+		views, total, err := repo.SearchDeployments(depCtx(scope), req)
+		if err != nil {
+			t.Fatalf("SearchDeployments: %v", err)
+		}
+		if got := depIDs(views); got[depDeployOne] {
+			t.Errorf("inactive deployment %s must not be visible by default, got %v", depDeployOne, got)
+		}
+		if total != len(views) {
+			t.Errorf("total = %d but %d rows returned", total, len(views))
+		}
+	})
+
+	t.Run("includeInactive surfaces it, still scoped to the caller's own project", func(t *testing.T) {
+		req := domain.SearchDeploymentsRequest{Pagination: domain.Pagination{Limit: 50}, IncludeInactive: true}
+		views, total, err := repo.SearchDeployments(depCtx(scope), req)
+		if err != nil {
+			t.Fatalf("SearchDeployments: %v", err)
+		}
+		got := depIDs(views)
+		if !got[depDeployOne] {
+			t.Errorf("want inactive deployment %s visible with includeInactive, got %v", depDeployOne, got)
+		}
+		if got[depDeployTwo] {
+			t.Errorf("deployment %s belongs to a project this caller is not a member of; includeInactive must not bypass project scoping", depDeployTwo)
+		}
+		if total != len(views) {
+			t.Errorf("total = %d but %d rows returned", total, len(views))
+		}
+	})
+
+	t.Run("ids filter with includeInactive still resolves an inactive deployment", func(t *testing.T) {
+		req := domain.SearchDeploymentsRequest{Pagination: domain.Pagination{Limit: 50}, IDs: []string{depDeployOne}, IncludeInactive: true}
+		views, _, err := repo.SearchDeployments(depCtx(scope), req)
+		if err != nil {
+			t.Fatalf("SearchDeployments: %v", err)
+		}
+		if got := depIDs(views); !got[depDeployOne] {
+			t.Errorf("want inactive deployment %s resolvable by id with includeInactive, got %v", depDeployOne, got)
+		}
+	})
+}
+
 func TestDeploymentRLSIntegration_DeployedProductsFollowTheirDeploymentsProject(t *testing.T) {
 	pool := caseStatsPool(t)
 	seedDeploymentRLSFixture(t, pool)
@@ -290,6 +350,45 @@ func TestDeploymentRLSIntegration_OrphanDeploymentIsInternalOnly(t *testing.T) {
 	}
 	if n := count(repository.SearchScope{Unrestricted: true}); n != 1 {
 		t.Errorf("internal caller must see the orphan deployment, got %d rows", n)
+	}
+}
+
+// TestDeploymentRLSIntegration_ProductCountExcludesInactiveProducts pins the
+// fix for a dead-end tab: SearchDeployments' own productCount subquery used
+// to count every deployed_product row under a deployment regardless of
+// `active`, while SearchDeployedProducts (what the products panel actually
+// lists) only ever shows active ones. A deployment whose only product had
+// been soft-deleted (active = FALSE) therefore reported productCount > 0,
+// survived the customer portal's "hide empty deployment tabs" filter, and
+// still showed "No products found" the moment it was opened.
+func TestDeploymentRLSIntegration_ProductCountExcludesInactiveProducts(t *testing.T) {
+	pool := caseStatsPool(t)
+	seedDeploymentRLSFixture(t, pool)
+	scoped := repository.NewScoped(pool)
+	ctx := repository.WithSystemIdentity(context.Background())
+	now := time.Now().UTC()
+
+	inactiveID := "a5000000-0000-0000-0000-00000000009a"
+	if _, err := scoped.Exec(ctx, `INSERT INTO deployed_product (id, created_on, updated_on, created_by, updated_by, number, active, project_id, deployment_id, product_id)
+		VALUES ($1, $2, $2, $3, $3, 'DEPP-INACTIVE', FALSE, $4, $5, $6)`,
+		inactiveID, now, depCreatedBy, depProjectOne, depDeployOrphn, depProductID); err != nil {
+		t.Fatalf("seed inactive deployed_product: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = scoped.Exec(ctx, `DELETE FROM deployed_product WHERE id = $1`, inactiveID)
+	})
+
+	repo := repository.NewDeploymentRepository(scoped)
+	views, _, err := repo.SearchDeployments(depCtx(repository.SearchScope{Unrestricted: true}),
+		domain.SearchDeploymentsRequest{Pagination: domain.Pagination{Limit: 50}, IDs: []string{depDeployOrphn}})
+	if err != nil {
+		t.Fatalf("SearchDeployments: %v", err)
+	}
+	if len(views) != 1 {
+		t.Fatalf("want exactly the orphan deployment, got %d rows", len(views))
+	}
+	if views[0].DeployedProductCount != 0 {
+		t.Errorf("a deployment whose only product is soft-deleted must report productCount 0, got %d", views[0].DeployedProductCount)
 	}
 }
 

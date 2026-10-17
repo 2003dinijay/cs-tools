@@ -162,6 +162,46 @@ func (c *TwilioClient) MakeCall(ctx context.Context, to, message string) (Call, 
 	return c.do(ctx, "Calls.json", form)
 }
 
+// GetCall reads a call's current status back from Twilio
+// (GET /Accounts/{sid}/Calls/{callSid}.json): "queued", "ringing",
+// "in-progress", "completed", "busy", "no-answer", "failed" or "canceled".
+// Only sid and status are kept, as for MakeCall.
+func (c *TwilioClient) GetCall(ctx context.Context, callSID string) (Call, error) {
+	if strings.TrimSpace(callSID) == "" {
+		return Call{}, fmt.Errorf("notifications: call sid is required")
+	}
+	if c.cfg.AccountSID == "" || c.cfg.AuthToken == "" {
+		return Call{}, fmt.Errorf("notifications: twilio is not configured")
+	}
+	endpoint := c.cfg.APIBaseURL + "/Accounts/" + url.PathEscape(c.cfg.AccountSID) + "/Calls/" + url.PathEscape(callSID) + ".json"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return Call{}, fmt.Errorf("notifications: build twilio request: %w", err)
+	}
+	req.SetBasicAuth(c.cfg.AccountSID, c.cfg.AuthToken)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return Call{}, fmt.Errorf("notifications: call twilio: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxCallBody))
+	if err != nil {
+		return Call{}, fmt.Errorf("notifications: read twilio response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		// Same 256-byte excerpt as do()'s error path.
+		if len(body) > 256 {
+			body = body[:256]
+		}
+		return Call{}, &apierror.Error{StatusCode: resp.StatusCode, Body: string(body)}
+	}
+	var got Call
+	if err := json.Unmarshal(body, &got); err != nil {
+		return Call{}, fmt.Errorf("notifications: decode twilio call: %w", err)
+	}
+	return got, nil
+}
+
 // applyRingTimeout sets how long the call may ring, when configured.
 func (c *TwilioClient) applyRingTimeout(form url.Values) {
 	if c.cfg.RingTimeoutSeconds > 0 {

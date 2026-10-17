@@ -26,6 +26,10 @@
  */
 
 import type {
+  PagingChainMember,
+  PagingChainResponse,
+  PagingReadinessChain,
+  PagingReadinessGap,
   ScheduleAbsence,
   ScheduleAbsenceKind,
   ScheduleAssignment,
@@ -270,4 +274,50 @@ export function scopeControls() {
     teams: ["alpha", "bravo"],
     families: ["CRE", "SRE"] as const,
   };
+}
+
+/* ── Case Paging ── */
+
+/** One membership on the paging chain; made-up people, as every fixture. */
+export function pagingMember(over: Partial<PagingChainMember> & { membershipId: string }): PagingChainMember {
+  return {
+    teamKey: "alpha",
+    teamName: "Alpha_abt_cre_team",
+    teamType: "cre-abt",
+    family: "CRE",
+    userId: `u-${over.membershipId}`,
+    name: `Person ${over.membershipId}`,
+    email: `${over.membershipId}@example.com`,
+    role: "engineer",
+    responderRank: 0,
+    ...over,
+  };
+}
+
+/** The CRE chain: Alpha with a lead and one responder of three, and the
+ *  leadership team holding the heads. */
+export function pagingChain(over: Partial<PagingChainResponse> = {}): PagingChainResponse {
+  return {
+    family: "CRE",
+    members: [
+      pagingMember({ membershipId: "a1", name: "Jane Doe", role: "lead" }),
+      pagingMember({ membershipId: "a2", name: "John Roe", responderRank: 1 }),
+      pagingMember({ membershipId: "a3", name: "Ann Poe" }),
+      pagingMember({
+        membershipId: "h1", name: "Head One", role: "cre_head",
+        teamKey: "leadership", teamName: "CRE Leadership", teamType: "leadership",
+      }),
+    ],
+    count: 4,
+    canEdit: { responderTeams: ["alpha"], teamLeadTeams: [], americasTeamLead: false, heads: false },
+    ...over,
+  };
+}
+
+export function readinessGap(over: Partial<PagingReadinessGap> & { code: string }): PagingReadinessGap {
+  return { severity: "error", message: over.code, fix: "data", ...over };
+}
+
+export function readinessChain(over: Partial<PagingReadinessChain> & { chain: PagingReadinessChain["chain"] }): PagingReadinessChain {
+  return { label: over.chain, ready: true, gaps: [], ...over };
 }

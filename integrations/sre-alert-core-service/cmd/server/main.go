@@ -283,7 +283,10 @@ func csmClientFromEnv(logger *slog.Logger, httpTimeout time.Duration) *csm.Clien
 		logger.Error("CSM partially configured, disabling CSM delivery", "missing", missing)
 		return nil
 	}
+	logger.Info("CSM delivery enabled", "endpoint", os.Getenv("CSM_INTEGRATION_BASE_URL"),
+		"token_url", os.Getenv("CSM_INTEGRATION_TOKEN_URL"), "http_timeout", httpTimeout.String())
 	return csm.NewClient(csm.Config{
+		Logger:       logger.With("component", "csm"),
 		BaseURL:      os.Getenv("CSM_INTEGRATION_BASE_URL"),
 		TokenURL:     os.Getenv("CSM_INTEGRATION_TOKEN_URL"),
 		ClientID:     os.Getenv("CSM_INTEGRATION_CLIENT_ID"),

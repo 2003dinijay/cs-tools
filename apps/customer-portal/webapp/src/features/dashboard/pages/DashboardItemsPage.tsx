@@ -67,9 +67,11 @@ interface DashboardItemsPageProps {
 
 /**
  * Combined summary page for Action Required / Outstanding Interactions dashboard cards.
- * Shows Cases, Service Requests, Engagements, and Change Requests in accordion sections,
- * pre-filtered by the relevant statuses for the selected mode. Security Report Analysis is
- * deliberately excluded here too, matching the Dashboard tiles it breaks down.
+ * Shows Cases, Service Requests, Engagements, Security Report Analysis, and Change Requests
+ * in accordion sections, pre-filtered by the relevant statuses for the selected mode --
+ * matching the Dashboard tiles it breaks down (product decision, 2026-10-10: Security Report
+ * Analysis counts are now folded into those tiles, so its own cases need a section here too,
+ * or the per-section totals would no longer sum to the tile's own count).
  *
  * @param {DashboardItemsPageProps} props - Page mode.
  * @returns {JSX.Element} The rendered page.
@@ -153,6 +155,11 @@ export default function DashboardItemsPage({
     !isProjectLoading &&
     hasStatusIds &&
     permissions.hasEngagements;
+  const sraEnabled =
+    !!projectId &&
+    !isProjectLoading &&
+    hasStatusIds &&
+    permissions.hasSecurityReportAnalysis;
   const crEnabled =
     !!projectId &&
     permissions.hasCR &&
@@ -228,6 +235,25 @@ export default function DashboardItemsPage({
   );
 
   const {
+    data: sraQueryData,
+    isLoading: isSraQuerying,
+    isError: isSraError,
+  } = useGetProjectCasesPage(
+    projectId || "",
+    {
+      filters: {
+        caseTypes: [CaseType.SECURITY_REPORT_ANALYSIS],
+        statusIds: apiStatusIds,
+        ...closedLast30dRange,
+      },
+      sortBy: listSortBy,
+    },
+    0,
+    10,
+    { enabled: sraEnabled },
+  );
+
+  const {
     data: crQueryData,
     isLoading: isCrQuerying,
     isError: isCrError,
@@ -266,6 +292,12 @@ export default function DashboardItemsPage({
     permissions.hasEngagements &&
     (!filterMetadataLoaded || (engEnabled && isEngQuerying && !engQueryData));
 
+  const securityReports = sraQueryData?.cases ?? [];
+  const sraTotal = sraQueryData?.totalRecords ?? 0;
+  const isSraLoading =
+    permissions.hasSecurityReportAnalysis &&
+    (!filterMetadataLoaded || (sraEnabled && isSraQuerying && !sraQueryData));
+
   const changeRequests = crQueryData?.changeRequests ?? [];
   const crTotal = crQueryData?.totalRecords ?? 0;
   const isCrLoading =
@@ -274,7 +306,7 @@ export default function DashboardItemsPage({
 
   // --- Accordion state ---
   const [expandedSections, setExpandedSections] = useState<Set<string>>(
-    () => new Set(["cases", "sr", "eng", "cr"]),
+    () => new Set(["cases", "sr", "eng", "sra", "cr"]),
   );
   const toggleSection = useCallback((id: string) => {
     setExpandedSections((prev) => {
@@ -311,6 +343,16 @@ export default function DashboardItemsPage({
       navigateOrOpenNewTab(`../../engagements/${item.id}`, {
         relative: "path",
       });
+    },
+    [navigateOrOpenNewTab],
+  );
+
+  const handleSraClick = useCallback(
+    (item: CaseListItem) => {
+      navigateOrOpenNewTab(
+        `../../security-center/security-report-analysis/${item.id}`,
+        { relative: "path" },
+      );
     },
     [navigateOrOpenNewTab],
   );
@@ -405,6 +447,21 @@ export default function DashboardItemsPage({
       viewAllPath: "../../engagements",
       viewAllLabel: "View all engagements",
       onItemClick: handleEngClick,
+    },
+    {
+      id: "sra",
+      label: "Security Report Analysis",
+      isLoading: isSraLoading,
+      isError: isSraError,
+      total: sraTotal,
+      hasPermission: permissions.hasSecurityReportAnalysis,
+      isCr: false,
+      items: securityReports,
+      hideSeverity: false,
+      entityName: "security reports",
+      viewAllPath: "../../security-center?tab=vulnerabilities",
+      viewAllLabel: "View all security reports",
+      onItemClick: handleSraClick,
     },
     {
       id: "cr",

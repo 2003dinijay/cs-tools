@@ -99,7 +99,7 @@ export interface BackendApi {
   patch<TRequest, TResponse>(path: string, body: TRequest): Promise<TResponse>;
   delete(path: string, body?: unknown): Promise<void>;
   /**
-   * Authenticated PUT. Added for the /spl/customer-health/* endpoints
+   * Authenticated PUT. Added for the /customer-health/* endpoints
    * (risk close, action-item status/update) — the only current callers of
    * a full-replace verb in this app; every other mutation here uses PATCH
    * or POST.
@@ -204,6 +204,9 @@ export function useBackendApi(): BackendApi {
           body: JSON.stringify(body),
         });
         if (!response.ok) throw await readError(response, correlationId);
+        // A PUT that only records a fact (a rota access grant) answers 204
+        // with no body, which response.json() would throw on.
+        if (response.status === 204) return null as TResponse;
         return (await response.json()) as TResponse;
       },
       async postEmpty<TResponse>(path: string): Promise<TResponse> {

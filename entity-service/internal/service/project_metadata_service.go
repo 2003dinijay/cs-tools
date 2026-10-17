@@ -47,6 +47,19 @@ const (
 
 // projectMetadataEnumTypes is every enum EnumLabels is asked for in one
 // round trip by GetProjectMetadata.
+// Project type names (as stored in project_type.name, matched the same way
+// migration 0130 does) whose PDP subscription projects get service request
+// access regardless of the type-level flags.
+const (
+	projectTypeCloudSupport           = "Cloud Support"
+	projectTypeCloudEvaluationSupport = "Cloud Evaluation Support"
+)
+
+var pdpServiceRequestProjectTypes = map[string]bool{
+	projectTypeCloudSupport:           true,
+	projectTypeCloudEvaluationSupport: true,
+}
+
 var projectMetadataEnumTypes = []string{
 	caseStateEnumType, caseSeverityEnumType, caseIssueTypeEnumType,
 	deploymentTypeEnumType, engagementTypeEnumType, engagementPaymentTypeEnumType,
@@ -116,7 +129,9 @@ func resolutionCodeChoices(ctx context.Context, labels []string) []domain.Choice
 // identity (verified against validCaseCause), so the raw label doubles as
 // the id with no lookup table needed.
 //
-// A label with no entry in snCauseKey is skipped and logged: migration 0108
+// A label with no entry in snCauseKey is skipped and logged at DEBUG (this
+// runs on every metadata request and the gap is expected, so WARN would just
+// flood the logs): migration 0108
 // added case_cause_enum's USER_MISTAKE value with no matching ServiceNow
 // picklist entry, so offering it here would let a caller pick a cause the
 // dual-write mirror's own patchCaseFields then rejects with "cause contains
@@ -126,7 +141,7 @@ func causeChoices(ctx context.Context, labels []string) []domain.ChoiceListItem 
 	out := make([]domain.ChoiceListItem, 0, len(labels))
 	for _, l := range labels {
 		if _, ok := snCauseKey[domain.CaseCause(l)]; !ok {
-			slog.WarnContext(ctx, "project metadata: case_cause_enum label has no ServiceNow mapping", "label", l)
+			slog.DebugContext(ctx, "project metadata: case_cause_enum label has no ServiceNow mapping", "label", l)
 			continue
 		}
 		out = append(out, domain.ChoiceListItem{ID: l, Label: humanizeSnakeCase(strings.ToLower(l))})
@@ -198,6 +213,15 @@ func (s *projectMetadataService) GetProjectMetadata(ctx context.Context, project
 		features.AcceptedSeverityValues = severityChoiceItems(ctx, projectType.AcceptedSeverityValues)
 		features.DefaultCaseProductCategories = lowercaseAll(projectType.DefaultCaseProductCategories)
 		features.SrProductCategories = lowercaseAll(projectType.SrProductCategories)
+
+		// Service requests are a per-project entitlement for the cloud support
+		// types: migration 0130 leaves their type-level SR flags FALSE because
+		// the type alone does not decide it, and a PDP subscription project of
+		// these types is entitled to raise and view them.
+		if projectType.IsPdpSubscription && pdpServiceRequestProjectTypes[projectType.Name] {
+			features.HasServiceRequestWriteAccess = true
+			features.HasServiceRequestReadAccess = true
+		}
 	}
 
 	return domain.ProjectMetadataResponse{

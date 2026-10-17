@@ -18,8 +18,10 @@ package paging
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -52,10 +54,11 @@ const (
 	ChannelCall Channel = "call"
 	// ChannelChat posts to the incident's Google Chat space instead.
 	ChannelChat Channel = "chat"
-	// ChannelBoth calls and posts. A failure of either is a failure of the
-	// attempt, so the call is retried and the card may be posted twice —
-	// acceptable, since a duplicate card costs a glance and a missed page
-	// costs an incident.
+	// ChannelBoth calls and posts. The call decides the attempt: a call that
+	// fails is retried and the card may be posted twice — acceptable, since a
+	// duplicate card costs a glance and a missed page costs an incident. A
+	// card that fails once the call has gone out is retried on its own, never
+	// with the call.
 	ChannelBoth Channel = "both"
 	// ChannelLog writes what it would have done and does nothing else.
 	//
@@ -130,7 +133,7 @@ func (logNotifier) Deliver(ctx context.Context, plan Plan, call PlannedCall) (De
 		"incident", plan.Trigger.Number,
 		"priority", plan.Trigger.Priority,
 		"rung", call.Level.String(),
-		"role", call.Level.RoleIn(plan.Trigger.Routing.Ladder),
+		"role", rungRole(call.Level, plan.Trigger.Routing),
 		"attempt", call.Ordinal,
 		"name", call.Recipient.Name,
 		"shift", call.Recipient.ShiftCode,
@@ -196,6 +199,19 @@ func (v voiceNotifier) Deliver(ctx context.Context, plan Plan, call PlannedCall)
 // chatSender abstracts the Google Chat client for testability.
 type chatSender interface {
 	SendEscalationAlert(ctx context.Context, a notifications.EscalationAlert) error
+	// SendEscalationUnanswered posts the closing message of a ladder nobody
+	// acknowledged (sre.unansweredChat).
+	SendEscalationUnanswered(ctx context.Context, u notifications.EscalationUnanswered) error
+	// SendEscalationHandoff tells an SRE space its incident went to the SMEs
+	// (sre.smeHandoffChat).
+	SendEscalationHandoff(ctx context.Context, h notifications.EscalationHandoff) error
+	// SendEscalationStopped replies in a ladder's thread that it stopped
+	// (ackChat).
+	SendEscalationStopped(ctx context.Context, s notifications.EscalationStopped) error
+	// SendIncidentCreatedAlert posts the "Incident Reported" card an SRE incident's rung replies sit under.
+	SendIncidentCreatedAlert(ctx context.Context, audience string, a notifications.IncidentCreatedAlert) error
+	// SendIncidentAssignedAlert posts the "Incident Acknowledged." reply that ends an assigned SRE incident's thread.
+	SendIncidentAssignedAlert(ctx context.Context, audience string, a notifications.IncidentAssignedAlert) error
 	// HasAudienceSpace reports whether GOOGLE_CHAT_SPACES has a room for the
 	// audience. Asked before every rung, because the client itself treats an
 	// unknown audience as a quiet success.
@@ -227,6 +243,8 @@ type chatNotifier struct {
 	// as a struct literal, as tests do -- means "Incident Monitor", so the zero
 	// value routes the same as an unconfigured deployment.
 	audience string
+	// reply posts the rung as a short reply under the incident's card, which only its INCIDENT_CHAT_SPACES space has.
+	reply bool
 }
 
 // roomFor is the audience a card goes to.
@@ -257,6 +275,8 @@ func (n chatNotifier) Deliver(ctx context.Context, plan Plan, call PlannedCall) 
 	}
 
 	t := plan.Trigger
+	// The SRE ladder's own space gets the INCIDENT_CHAT_SPACES design; an incident space (n.reply) already has its card.
+	sreThread := !n.reply && t.sreIncident()
 	nextRung, nextIn := plan.NextRungAfter(call)
 	portal, portalLabel := "", "View incident"
 	if t.isCase() {
@@ -272,8 +292,8 @@ func (n chatNotifier) Deliver(ctx context.Context, plan Plan, call PlannedCall) 
 
 	alert := notifications.EscalationAlert{
 		Audience:      room,
-		Rung:          call.Level.String(),
-		RungRole:      call.Level.RoleIn(t.Routing.Ladder),
+		Rung:          call.Level.Label(),
+		RungRole:      rungRole(call.Level, t.Routing),
 		Attempt:       call.Ordinal,
 		Priority:      t.Priority,
 		IncidentRef:   t.caseRef(),
@@ -289,12 +309,9 @@ func (n chatNotifier) Deliver(ctx context.Context, plan Plan, call PlannedCall) 
 		Elapsed:     elapsedSince(t.At, call.At),
 		NextRung:    nextRung,
 		NextIn:      nextIn,
-		// One thread per incident, so a space shows an escalation unfolding
-		// in one conversation instead of scattering its rungs through
-		// everything else being posted. The incident id is the natural key:
-		// stable, unique, and already the identity every other part of the
-		// ladder is filed under.
-		ThreadKey: "incident-escalation-" + t.IncidentID,
+		// An incident's rungs reply under its "Incident Reported" card, so the space shows the escalation in that one thread.
+		ThreadKey: t.chatThreadKey(),
+		Reply:     n.reply || sreThread,
 		Team:      t.Team,
 		// Both stamps in IST, because every shift boundary this ladder routes
 		// by is expressed in it. Rendering either in the reader's own zone
@@ -305,10 +322,113 @@ func (n chatNotifier) Deliver(ctx context.Context, plan Plan, call PlannedCall) 
 		Rotation:   rotationOf(plan),
 		OnCall:     onCallName(plan),
 	}
+	parent := sreThread && isFirstCall(plan, call) && !slices.Contains(plan.IncidentCards, room)
+	if parent {
+		if err := n.chat.SendIncidentCreatedAlert(ctx, room, incidentCard(t, portal)); err != nil {
+			return Delivery{Channel: ChannelChat}, err
+		}
+	}
 	if err := n.chat.SendEscalationAlert(ctx, alert); err != nil {
+		if parent {
+			// The card is in the room: say so, so the retry posts only the reply.
+			return Delivery{Channel: ChannelChat}, &incidentCardPosted{room: room, err: err}
+		}
 		return Delivery{Channel: ChannelChat}, err
 	}
 	return Delivery{Channel: ChannelChat, Status: "posted to " + room}, nil
+}
+
+// incidentCardPosted is a first rung whose "Incident Reported" card reached room but whose reply did not.
+type incidentCardPosted struct {
+	room string
+	err  error
+}
+
+func (e *incidentCardPosted) Error() string { return e.err.Error() }
+func (e *incidentCardPosted) Unwrap() error { return e.err }
+
+// postedIncidentCards is every room a failed delivery already posted the incident card to.
+func postedIncidentCards(err error) []string {
+	switch e := err.(type) {
+	case nil:
+		return nil
+	case *incidentCardPosted:
+		return []string{e.room}
+	case interface{ Unwrap() []error }:
+		var rooms []string
+		for _, inner := range e.Unwrap() {
+			rooms = append(rooms, postedIncidentCards(inner)...)
+		}
+		return rooms
+	case interface{ Unwrap() error }:
+		return postedIncidentCards(e.Unwrap())
+	}
+	return nil
+}
+
+// isFirstCall reports whether call is the plan's first, the one that opens the SRE space's incident thread.
+func isFirstCall(plan Plan, call PlannedCall) bool {
+	if len(plan.Calls) == 0 {
+		return false
+	}
+	first := plan.Calls[0]
+	return first.Level == call.Level && first.Ordinal == call.Ordinal && first.At.Equal(call.At) &&
+		first.Recipient.Email == call.Recipient.Email && first.Recipient.Name == call.Recipient.Name
+}
+
+// incidentCard is the "Incident Reported" card the SRE space's rung replies sit under, the same card INCIDENT_CHAT_SPACES gets.
+func incidentCard(t Trigger, link string) notifications.IncidentCreatedAlert {
+	return notifications.IncidentCreatedAlert{
+		IncidentID:       t.IncidentID,
+		Number:           t.Number,
+		Team:             t.Team,
+		Priority:         t.Priority,
+		ShortDescription: t.Title,
+		Service:          t.Service,
+		Environment:      t.Environment,
+		Category:         t.Category,
+		State:            t.State,
+		IncidentLink:     link,
+	}
+}
+
+// fanoutChat posts one rung's card to several Chat spaces: an incident with
+// no SRE team of its own goes to every space sre.teamlessChats names. It is
+// one notifier on purpose. A failed card is retried to every space at once,
+// reposting it wherever it landed, so a space that fails while another
+// succeeds counts as delivered (the failure is logged), and only a rung no
+// space took is retried, transient failures first.
+type fanoutChat struct {
+	chats []chatNotifier
+}
+
+func (fanoutChat) Channel() Channel { return ChannelChat }
+
+func (f fanoutChat) Deliver(ctx context.Context, plan Plan, call PlannedCall) (Delivery, error) {
+	var posted []string
+	var permanent, transient error
+	for _, c := range f.chats {
+		d, err := c.Deliver(ctx, plan, call)
+		if err != nil {
+			slog.WarnContext(ctx, "escalation: a Chat space did not take the rung card",
+				"incidentId", plan.Trigger.IncidentID, "level", call.Level.String(), "audience", c.roomFor(), "err", err)
+			if isPermanent(err) {
+				permanent = errors.Join(permanent, err)
+			} else {
+				transient = errors.Join(transient, err)
+			}
+			continue
+		}
+		posted = append(posted, d.Status)
+	}
+	switch {
+	case len(posted) > 0:
+		return Delivery{Channel: ChannelChat, Status: strings.Join(posted, "; ")}, nil
+	case transient != nil:
+		return Delivery{Channel: ChannelChat}, transient
+	default:
+		return Delivery{Channel: ChannelChat}, permanent
+	}
 }
 
 // elapsedSince renders how long an incident has gone unattended, which is the

@@ -77,14 +77,20 @@ func (r *deploymentRepo) SearchDeployments(ctx context.Context, req domain.Searc
 	// Project field) and nullable scan handling, not just a query fix.
 	// is_active = TRUE: "deleting" a deployment (PATCH .../deployments/{id}
 	// {"active": false}) deactivates it, it is never actually removed --
-	// see UpdateDeploymentFields. SearchDeploymentsRequest has no
-	// include-inactive filter in its wire contract at all (nor does the
-	// ServiceNow-backed search expose one), so a deactivated deployment must
-	// simply stop appearing here, permanently, the same as ServiceNow's own
+	// see UpdateDeploymentFields. A deactivated deployment must simply stop
+	// appearing here by default, permanently, the same as ServiceNow's own
 	// listing already does for a deactivated record. Without this, "delete"
 	// silently updated is_active in Postgres but the deployment kept
 	// appearing in every search result exactly as before.
-	where := "WHERE d.project_id IS NOT NULL AND d.is_active = TRUE"
+	// req.IncludeInactive is an explicit, additive opt-out of that filter --
+	// see its own doc comment on SearchDeploymentsRequest -- for a caller
+	// that genuinely needs to see deactivated deployments too (e.g. the CSM
+	// portal backend's customer-health EOL-product check). Every existing
+	// caller leaves it unset/false and sees byte-identical behavior.
+	where := "WHERE d.project_id IS NOT NULL"
+	if !req.IncludeInactive {
+		where += " AND d.is_active = TRUE"
+	}
 
 	if len(req.ProjectIDs) > 0 {
 		// Cast the parameter to uuid[] so the column stays uncast and idx_deployments_project_id is usable.
@@ -121,15 +127,6 @@ func (r *deploymentRepo) SearchDeployments(ctx context.Context, req domain.Searc
 
 	countQuery := "SELECT COUNT(*) FROM deployment d " + where
 
-	// deployment.created_by is a plain VARCHAR audit string (an email, by
-	// this codebase's own convention -- see e.g. commentService writing the
-	// caller's resolved email into comment.created_by), never a UUID FK
-	// into "user". A plain "= u.id" join here would either fail to
-	// type-check or silently match nothing. Resolve it by email instead,
-	// LEFT JOIN so a deployment created by an unrecognized identity still
-	// returns a row -- CreatedBy comes back nil rather than a fabricated
-	// EntityRef with an empty id (see the domain package's own
-	// "empty strings must never appear" convention).
 	// deployedProductCount was never selected at all, so it stayed at its Go
 	// zero value on every row -- the customer portal's Usage Metrics page
 	// filters its deployment tabs on productCount > 0, so every deployment
@@ -137,14 +134,22 @@ func (r *deploymentRepo) SearchDeployments(ctx context.Context, req domain.Searc
 	// deployed_product rows actually existed under it. A correlated
 	// subquery, not a JOIN + GROUP BY, since every other selected column
 	// here is per-deployment and a join would multiply rows.
+	//
+	// The subquery must match SearchDeployedProducts' own WHERE clause
+	// exactly (active IS NULL OR active = TRUE, deployment/product both
+	// set) -- counting every deployed_product row regardless of active
+	// let a deployment whose only products were all soft-deleted keep a
+	// non-zero productCount, survive the tab-hiding filter, and still
+	// dead-end into "No products found" once opened: the very case that
+	// filter exists to eliminate.
 	dataQuery := fmt.Sprintf(
 		`SELECT d.id, d.number, d.name, d.type::TEXT, d.description,
 		        d.created_on, d.updated_on,
-		        u.id, COALESCE(u.name, NULLIF(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), '')),
 		        p.id, p.name,
-		        (SELECT COUNT(*) FROM deployed_product dp WHERE dp.deployment_id = d.id)
+		        (SELECT COUNT(*) FROM deployed_product dp
+		          WHERE dp.deployment_id = d.id AND dp.product_id IS NOT NULL
+		            AND (dp.active IS NULL OR dp.active = TRUE))
 		 FROM deployment d
-		 LEFT JOIN "user" u ON LOWER(u.email) = LOWER(d.created_by)
 		 JOIN project p ON d.project_id = p.id
 		 %s
 		 ORDER BY d.created_on DESC, d.id
@@ -176,11 +181,9 @@ func (r *deploymentRepo) SearchDeployments(ctx context.Context, req domain.Searc
 		for rows.Next() {
 			var d domain.DeploymentView
 			var deploymentType *string
-			var creatorID, creatorName *string
 			if err := rows.Scan(
 				&d.ID, &d.Number, &d.Name, &deploymentType, &d.Description,
 				&d.CreatedOn, &d.UpdatedOn,
-				&creatorID, &creatorName,
 				&d.Project.ID, &d.Project.Name,
 				&d.DeployedProductCount,
 			); err != nil {
@@ -203,13 +206,6 @@ func (r *deploymentRepo) SearchDeployments(ctx context.Context, req domain.Searc
 			// deploymentTypeRef (keyed lowercase) would silently fail to
 			// resolve to a numeric id for.
 			d.Type = domain.DeploymentType(strings.ToLower(stringOrEmpty(deploymentType)))
-			if creatorID != nil {
-				name := ""
-				if creatorName != nil {
-					name = *creatorName
-				}
-				d.CreatedBy = &domain.EntityRef{ID: *creatorID, Name: name}
-			}
 			result = append(result, d)
 		}
 		if err := rows.Err(); err != nil {

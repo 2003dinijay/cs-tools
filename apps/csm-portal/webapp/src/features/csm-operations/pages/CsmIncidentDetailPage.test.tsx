@@ -149,7 +149,9 @@ vi.mock("@api/useSearchUsersByName", () => ({
 
 // Imported after the mocks above so the module picks them up.
 import { BackendApiError } from "@api/backend/client";
-import CsmIncidentDetailPage from "@features/csm-operations/pages/CsmIncidentDetailPage";
+import CsmIncidentDetailPage, {
+  HANDOFF_NEEDS_ASSIGNEE_REASON,
+} from "@features/csm-operations/pages/CsmIncidentDetailPage";
 
 const WATCHER_ID = "00000000-0000-0000-0000-000000000001";
 const NEW_WATCHER_ID = "00000000-0000-0000-0000-000000000002";
@@ -704,9 +706,15 @@ describe("CsmIncidentDetailPage — Escalate to specialist team", () => {
     screen.queryByRole("button", { name: /escalate to specialist team/i });
 
   it("is offered when the backend says the incident can be handed off", () => {
-    mockQueryResult({ data: { ...BASE_INCIDENT, canHandOffToSpecialist: true } });
+    mockQueryResult({
+      data: {
+        ...BASE_INCIDENT,
+        canHandOffToSpecialist: true,
+        assignedTo: { id: "u-1", name: "Jane Doe" },
+      },
+    });
     renderPage();
-    expect(button()).toBeInTheDocument();
+    expect(button()).toBeEnabled();
   });
 
   it("is hidden when the backend says it cannot (not In Progress, unrouted service, or already with Special Ops)", () => {
@@ -719,6 +727,15 @@ describe("CsmIncidentDetailPage — Escalate to specialist team", () => {
     mockQueryResult({ data: BASE_INCIDENT });
     renderPage();
     expect(button()).toBeInTheDocument();
+  });
+
+  it("is disabled, saying why, while nobody is assigned: the assignee answers for the SME page", () => {
+    mockQueryResult({ data: { ...BASE_INCIDENT, canHandOffToSpecialist: true, assignedTo: null } });
+    renderPage();
+    expect(button()).toBeDisabled();
+    expect(
+      screen.getByLabelText(`Escalate to specialist team: ${HANDOFF_NEEDS_ASSIGNEE_REASON}`),
+    ).toBeInTheDocument();
   });
 });
 

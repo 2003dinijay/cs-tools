@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/events"
@@ -116,6 +117,10 @@ func TestPublishIncidentCreated_CarriesTheEscalationFields(t *testing.T) {
 	// incident was reported.
 	if p.ReportedAt != "2026-09-09T04:30:00Z" {
 		t.Errorf("reportedAt = %q, want the incident's openedOn in RFC3339", p.ReportedAt)
+	}
+	// The state fills the consumer's "Incident Reported" Chat card.
+	if p.State == "" {
+		t.Errorf("state is empty, want the incident's state for the Chat card")
 	}
 }
 
@@ -497,6 +502,14 @@ func TestPublishIncidentAssigned_OnANewAssignee(t *testing.T) {
 	}
 	if p.AssigneeID != assignee || p.AssigneeName != "Ana" {
 		t.Errorf("payload = %+v, want the new assignee", p)
+	}
+	// Number and team place the "Incident Acknowledged." reply in the incident's Chat thread.
+	if p.Number != "INC0042" || p.Team != "Apollo" {
+		t.Errorf("number/team = %q/%q, want INC0042/Apollo", p.Number, p.Team)
+	}
+	// When it was set, for the SME page to compare an alert against.
+	if at, err := time.Parse(time.RFC3339, p.AssignedOn); err != nil || time.Since(at) > time.Minute {
+		t.Errorf("assignedOn = %q, want the time of the assignment", p.AssignedOn)
 	}
 }
 

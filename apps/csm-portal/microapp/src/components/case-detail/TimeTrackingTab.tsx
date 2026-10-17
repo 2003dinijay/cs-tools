@@ -19,7 +19,7 @@ import { Box, Button, Divider, Skeleton, Stack, Typography } from "@wso2/oxygen-
 import { Plus } from "@wso2/oxygen-ui-icons-react";
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import { timecards } from "@src/services/timecards";
-import type { CaseSeverity, CreateTimeCardInput, CsmTimeCard } from "@src/types";
+import type { CaseSeverity, CaseType, CreateTimeCardInput, CsmTimeCard } from "@src/types";
 import { cardDateLabel, formatMinutes } from "@utils/timecard";
 import { TimeCardStateChip } from "@components/timecards/TimeCardStateChip";
 import { LogTimeCardDialog } from "./LogTimeCardDialog";
@@ -28,6 +28,8 @@ interface TimeTrackingTabProps {
   caseId: string;
   caseNumber: string;
   caseSeverity: CaseSeverity | null;
+  caseType: CaseType | null;
+  engagementPaymentType: string | null;
   projectId: string;
   projectName: string;
 }
@@ -67,7 +69,15 @@ function TimeCardRow({ card }: { card: CsmTimeCard }) {
  * point to leave for any of the case's own cards, since this tab shows all of
  * them.
  */
-export function TimeTrackingTab({ caseId, caseNumber, caseSeverity, projectId, projectName }: TimeTrackingTabProps) {
+export function TimeTrackingTab({
+  caseId,
+  caseNumber,
+  caseSeverity,
+  caseType,
+  engagementPaymentType,
+  projectId,
+  projectName,
+}: TimeTrackingTabProps) {
   const queryClient = useQueryClient();
   const [logTimeOpen, setLogTimeOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -172,6 +182,8 @@ export function TimeTrackingTab({ caseId, caseNumber, caseSeverity, projectId, p
           caseId={caseId}
           caseNumber={caseNumber}
           caseSeverity={caseSeverity}
+          caseType={caseType}
+          engagementPaymentType={engagementPaymentType}
           projectId={projectId}
           projectName={projectName}
           isSubmitting={isSubmitting}

@@ -54,6 +54,11 @@ type Trigger struct {
 	// before cases were paged is about. IncidentID holds the case id for a
 	// case: it is the ladder's key, not a claim about the entity.
 	Record string `json:",omitempty"`
+	// Service, Environment, Category and State fill the SRE space's "Incident Reported" card; only a created incident carries them.
+	Service     string `json:",omitempty"`
+	Environment string `json:",omitempty"`
+	Category    string `json:",omitempty"`
+	State       string `json:",omitempty"`
 }
 
 // What a ladder pages about. CRE paging starts from customer cases (S0-S4),
@@ -65,6 +70,17 @@ const (
 
 // isCase reports whether the ladder pages about a customer case.
 func (t Trigger) isCase() bool { return t.Record == RecordCase }
+
+// sreIncident reports whether an SRE ladder pages about an incident, whose space gets an "Incident Reported" card with every ladder message as a reply under it.
+func (t Trigger) sreIncident() bool { return t.Routing.Ladder == LadderSRE && !t.isCase() }
+
+// chatThreadKey puts an incident's paging messages under its "Incident Reported" card; a case has no such card.
+func (t Trigger) chatThreadKey() string {
+	if t.isCase() {
+		return "incident-escalation-" + t.IncidentID
+	}
+	return notifications.IncidentThreadKey(t.IncidentID)
+}
 
 // recordKind is the routing input for the record: an empty Record is an
 // incident.
@@ -85,6 +101,9 @@ const (
 	// down: the running chain stops and a new one starts for the new
 	// severity, from the first tier.
 	TriggerSeverityChanged TriggerKind = "Severity Change"
+	// TriggerSpecialOps is an incident escalated to a Special Ops
+	// team: the one-call SME page (sme.go).
+	TriggerSpecialOps TriggerKind = "Special Ops Escalation"
 )
 
 // PlannedCall is one concrete call: who, when, at which level.
@@ -130,6 +149,8 @@ type Plan struct {
 	// pool is not verified with phone numbers yet. A call-only ladder held
 	// this way has nothing left to do and ends without a work note.
 	CallsHeld bool `json:",omitempty"`
+	// IncidentCards are the SRE spaces the "Incident Reported" card already went to, so a retried first rung posts only its reply there.
+	IncidentCards []string `json:",omitempty"`
 }
 
 // BuildPlan expands a trigger into every call the ladder would place, with
@@ -211,7 +232,7 @@ func BuildPlan(ctx context.Context, t Trigger, policies map[string]PriorityPolic
 		// the report instant; its rungs are ranks and rota pairs fixed by
 		// the shift the incident arrived in.
 		rc := t.Routing
-		if rc.Ladder == LadderSRE {
+		if rc.Ladder == LadderSRE || rc.Ladder == LadderSME {
 			rc.At = opensAt
 		}
 		recipients, err := r.Resolve(ctx, level, rc)
@@ -286,7 +307,7 @@ func (p Plan) NextRungAfter(call PlannedCall) (rung, in string) {
 		if c.Level <= call.Level {
 			continue
 		}
-		return c.Level.String(), shortDuration(c.At.Sub(call.At))
+		return c.Level.Label(), shortDuration(c.At.Sub(call.At))
 	}
 	return "", ""
 }
@@ -380,6 +401,22 @@ func (t Trigger) caseRef() string {
 // differ by exactly these two characters, which is why this takes a flag
 // rather than the callers sharing one string.
 func (t Trigger) instruction(quoted bool) string {
+	line := t.stopInstruction(quoted)
+	// Which SRE chain is calling, when the rota is known: SaaS and IaaS SRE
+	// share one engine, and the person answering should know which they are
+	// on call for.
+	if chain := t.Routing.SREChain(); t.Routing.Ladder == LadderSRE && chain != "" {
+		return "Paged by the " + chain + " chain. " + line
+	}
+	return line
+}
+
+// stopInstruction is what stops further calls; see instruction.
+func (t Trigger) stopInstruction(quoted bool) string {
+	// One call, nothing to stop: the SME is told what is being asked of them.
+	if t.Routing.Ladder == LadderSME {
+		return "This incident was escalated to the Special Ops team. Assign it to yourself to take it."
+	}
 	// A customer case stops on the assigned engineer's public comment (the
 	// SRE chain on an S0 case also stops on the assignment itself), so both
 	// ladders ask for the same two things.
@@ -616,6 +653,9 @@ func (p Plan) WorkNote(placed []bool, failed []string, cancelledAt *time.Time, r
 	// Which section 5.0 row selected these recipients, in the permanent
 	// record rather than only in a log line that ages out. "Why did this page
 	// the Americas leads and not ours" is answerable from the incident itself.
+	if chain := p.Trigger.Routing.SREChain(); p.Trigger.Routing.Ladder == LadderSRE && chain != "" {
+		b.WriteString(fmt.Sprintf("Paging chain: %s (rota %s)\n", chain, p.Trigger.Routing.Rota))
+	}
 	b.WriteString(fmt.Sprintf("Notification path: %s (shift %s, product %s, team %s, ABT-eligible %s)\n\n",
 		p.Trigger.Routing.Rule(),
 		orNone(string(p.Trigger.Routing.Shift)),

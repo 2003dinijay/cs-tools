@@ -79,9 +79,12 @@ describe("WIDGET_RESOURCE_CONFIG.case.buildHref", () => {
     // Regression: a case widget filtering by engagementType (e.g. "Engagements
     // In Progress") clicked through to an unfiltered cases list, because this
     // mapping didn't exist at all -- not a translation bug, a missing one.
+    // The list only applies a work state next to the single in-progress state,
+    // so a widget that means one carries both.
     const href = WIDGET_RESOURCE_CONFIG.case.buildHref({
       filters: [
         { field: "engagementType", op: "in", values: ["migration", "onboarding"] },
+        { field: "state", op: "in", values: ["work_in_progress"] },
         { field: "workState", op: "in", values: ["paused"] },
       ],
     });
@@ -89,6 +92,15 @@ describe("WIDGET_RESOURCE_CONFIG.case.buildHref", () => {
     const params = hrefParams(href);
     expect(params.get("engagementTypes")).toBe("migration,onboarding");
     expect(params.get("workStates")).toBe("paused");
+  });
+
+  it("opens the preview page instead when a work state has no single in-progress state beside it, which the list would drop", () => {
+    const href = WIDGET_RESOURCE_CONFIG.case.buildHref(
+      { filters: [{ field: "workState", op: "in", values: ["paused"] }] },
+      { widgetId: "w-1", displayName: "Paused work" },
+    );
+
+    expect(href.startsWith("/dashboard/preview/cases?")).toBe(true);
   });
 
   it("omits engagementTypes/workStates when the DSL entry's values are empty", () => {
@@ -547,6 +559,80 @@ describe("WIDGET_RESOURCE_CONFIG.case_feedback.buildSearchRequestBody", () => {
     }) as { filters: Record<string, unknown> };
 
     expect(body.filters).toEqual({ dateFrom: "2026-08-01", rating: 5 });
+  });
+});
+
+describe("WIDGET_RESOURCE_CONFIG.project.buildSearchRequestBody", () => {
+  // `POST /projects/search` decodes a flat body and rejects unknown top-level
+  // fields, so a `filters` wrapper (even empty) is a 400.
+  const build = WIDGET_RESOURCE_CONFIG.project.buildSearchRequestBody!;
+
+  it("spreads filters flat next to pagination, with no `filters` key", () => {
+    const body = build({
+      filters: { onboardingStatus: ["In-Progress"] },
+      offset: 0,
+      limit: 1,
+    });
+
+    expect(body).toEqual({
+      onboardingStatus: ["In-Progress"],
+      pagination: { offset: 0, limit: 1 },
+    });
+    expect(body).not.toHaveProperty("filters");
+  });
+
+  it("sends only pagination for empty filters, still with no `filters` key", () => {
+    const body = build({ filters: {}, offset: 20, limit: 10 });
+
+    expect(body).toEqual({ pagination: { offset: 20, limit: 10 } });
+    expect(body).not.toHaveProperty("filters");
+  });
+
+  it("flattens a widget's {field, order} endDate sort to plain sortBy/sortOrder strings", () => {
+    const body = build({
+      filters: { onboardingStatus: ["In-Progress"] },
+      offset: 0,
+      limit: 10,
+      sortBy: { field: "endDate", order: "desc" },
+    });
+
+    expect(body).toEqual({
+      onboardingStatus: ["In-Progress"],
+      sortBy: "endDate",
+      sortOrder: "desc",
+      pagination: { offset: 0, limit: 10 },
+    });
+    expect(body).not.toHaveProperty("filters");
+  });
+
+  it("drops a sortBy field the endpoint does not accept, and an invalid order", () => {
+    expect(
+      build({ filters: {}, offset: 0, limit: 10, sortBy: { field: "name", order: "asc" } }),
+    ).toEqual({ pagination: { offset: 0, limit: 10 } });
+    expect(
+      build({ filters: {}, offset: 0, limit: 10, sortBy: { field: "endDate", order: "up" } }),
+    ).toEqual({ sortBy: "endDate", pagination: { offset: 0, limit: 10 } });
+  });
+
+  it("unwraps array-wrapped single-valued filters from the preview URL round trip, keeping list filters as arrays", () => {
+    const body = build({
+      filters: { accountId: ["acc-1"], subRegion: ["APAC"], onboardingStatus: ["In-Progress"] },
+      offset: 0,
+      limit: 10,
+    });
+
+    expect(body).toEqual({
+      accountId: "acc-1",
+      subRegion: "APAC",
+      onboardingStatus: ["In-Progress"],
+      pagination: { offset: 0, limit: 10 },
+    });
+  });
+
+  it("never lets a stray filter key override pagination", () => {
+    const body = build({ filters: { pagination: { offset: 99, limit: 99 } }, offset: 0, limit: 5 });
+
+    expect(body.pagination).toEqual({ offset: 0, limit: 5 });
   });
 });
 

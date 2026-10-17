@@ -78,6 +78,10 @@ type ScheduleShift struct {
 	// "cannot say" rather than "nobody needed".
 	RequiredHeadcount *int16 `json:"requiredHeadcount,omitempty"`
 	CrossesMidnight   bool   `json:"crossesMidnight"`
+	// SharedAcrossTeams is true when each tier of the window is one person
+	// for the whole rota, not one per team (migration 0223): SaaS TZ3, the
+	// night cover for Apollo and Artemis alike.
+	SharedAcrossTeams bool   `json:"sharedAcrossTeams"`
 	ColourToken       string `json:"colourToken"`
 	SortOrder         int    `json:"sortOrder"`
 }
@@ -154,6 +158,10 @@ type ScheduleTeam struct {
 	// DefaultShiftCode is the standing window a member's ordinary weekday is:
 	// Americas cover for the Americas team. Absent means Regular hours.
 	DefaultShiftCode *string `json:"defaultShiftCode,omitempty"`
+	// IsABT says the team is an ABT (its type ends in "abt"): the teams the
+	// CRE rota and its regular hours are run by, as against Americas,
+	// Migration and the like.
+	IsABT bool `json:"isAbt"`
 }
 
 // ScheduleTeamMember is one member of a rota team. Role is the team_member
@@ -273,6 +281,11 @@ type CreateScheduleAbsenceKindRequest struct {
 	Label       string `json:"label"`
 	Bucket      string `json:"bucket"`
 	ColourToken string `json:"colourToken"`
+	// Family is the rota family the kind is for (CRE, SRE or SME). Optional:
+	// a rota admin's kind is for their own family whatever is sent, and this
+	// only picks one for an admin of several families. A team lead who is no
+	// rota admin adds a kind shared by every family, as before.
+	Family string `json:"family,omitempty"`
 }
 
 // ApplyScheduleAbsenceResponse says what the span did to what was already
@@ -346,6 +359,9 @@ type ScheduleAssignment struct {
 	IsOnCall  bool             `json:"isOnCall"`
 	Source    string           `json:"source"`
 	Note      *string          `json:"note,omitempty"`
+	// OnLeave is set only on GET /team-schedule/on-duty?includeOnLeave=true,
+	// on a row whose engineer is away that day.
+	OnLeave bool `json:"onLeave,omitempty"`
 }
 
 // ScheduleAbsence is whole days an engineer is unavailable to the rota.

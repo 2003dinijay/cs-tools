@@ -16,12 +16,13 @@
  * under the License.
  */
 
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import CellPicker, { type CellPickerTarget } from "./CellPicker";
 import type { CellAbsence } from "../types";
-import { ANNUAL_LEAVE, EVENING, LIEU_LEAVE, REGULAR, RND, TZ1, TZ1_L1, TZ2, TZ3, WEEKEND } from "../test/fixtures";
+import type { ScheduleAbsenceKind } from "../types";
+import { ANNUAL_LEAVE, EVENING, LIEU_LEAVE, REGULAR, RND, TZ1, TZ1_L1, TZ2, TZ3, WEEKEND, shift } from "../test/fixtures";
 
 const ANCHOR = { top: 100, left: 100, bottom: 130, right: 144 };
 
@@ -412,6 +413,73 @@ describe("CellPicker: the SRE escalation grid", () => {
   });
 });
 
+describe("CellPicker: a rota of Day and Night (IaaS)", () => {
+  // IaaS's two windows: one per zone, every day, the tier left to the turn.
+  const IAAS_DAY = shift({
+    code: "SRE_IAAS_DAY", shortCode: "Day", label: "IaaS day escalation", family: "SRE",
+    zoneCode: "IAAS_D", dayScope: "ANY", isEscalation: true, sortOrder: 210,
+  });
+  const IAAS_NIGHT = shift({
+    code: "SRE_IAAS_NIGHT", shortCode: "Night", label: "IaaS night escalation", family: "SRE",
+    zoneCode: "IAAS_N", dayScope: "ANY", isEscalation: true, sortOrder: 220,
+  });
+
+  function renderIaas(
+    shifts: ReturnType<typeof shift>[],
+    onApply = vi.fn(),
+    moveKinds: ScheduleAbsenceKind[] = [],
+  ) {
+    render(
+      <CellPicker
+        // A Saturday: the rota is worked every day.
+        target={target({ teamKey: "iaas", zoneCode: "IAAS_D", rotaDate: "2026-09-26" })}
+        shifts={shifts}
+        awayKinds={[ANNUAL_LEAVE, RND]}
+        moveKinds={moveKinds}
+        onApply={onApply}
+        onMarkAway={vi.fn()}
+        onClear={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    return onApply;
+  }
+
+  it("offers L1, L2 and L3 on Day and on Night, weekends included", () => {
+    const onApply = renderIaas([IAAS_DAY, IAAS_NIGHT]);
+    for (const tier of ["L1", "L2", "L3"]) {
+      const both = screen.getAllByRole("button", { name: new RegExp(`^${tier} for `) });
+      expect(both).toHaveLength(2);
+      for (const b of both) expect(b).toBeEnabled();
+    }
+    fireEvent.click(screen.getAllByRole("button", { name: /^L2 for / })[1]);
+    expect(onApply).toHaveBeenCalledWith("SRE_IAAS_NIGHT", "2026-09-26", "2026-09-26", "L2");
+    expect(screen.queryByText(/no rota windows set up/)).not.toBeInTheDocument();
+  });
+
+  it("says so when the rota has no windows, rather than leaving the side blank", () => {
+    // What an IaaS lead got while the windows were switched off: leave on the
+    // right and nothing at all on the left, which read as "not allowed".
+    renderIaas([]);
+    expect(screen.getByText(/no rota windows set up yet/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^L1 for / })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Annual leave/ })).toBeInTheDocument();
+  });
+
+  it("still says so when a move to another team is on offer", () => {
+    // The move buttons alone would fill the side and leave the missing L1-L3
+    // unexplained.
+    const toPaas: ScheduleAbsenceKind = {
+      id: "k-paas", code: "TO_PAAS", shortCode: "PaaS", label: "PaaS", bucket: "ALLOCATION",
+      colourToken: "MIG", sortOrder: 50, movesToTeamKey: "paas",
+    };
+    renderIaas([], vi.fn(), [toPaas]);
+    expect(screen.getByText(/no rota windows set up yet/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Move to paas team/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^L1 for / })).not.toBeInTheDocument();
+  });
+});
+
 describe("CellPicker: deleting a tag a lead added", () => {
   const CUSTOM = { ...RND, id: "k9", code: "TRAINING", shortCode: "Trn", label: "Training", custom: true };
 
@@ -484,5 +552,229 @@ describe("CellPicker: moving somebody back", () => {
     onMoved();
     fireEvent.change(screen.getByLabelText("Mark from"), { target: { value: "2026-10-02" } });
     expect(screen.queryByRole("button", { name: /^Back to/ })).not.toBeInTheDocument();
+  });
+});
+
+describe("CellPicker: a dialog in the middle of the view", () => {
+  it("opens as a modal dialog and takes focus", () => {
+    renderPicker();
+    const dialog = screen.getByRole("dialog", { name: "Change Asela's rota" });
+    expect(dialog).toHaveAttribute("aria-modal", "true");
+    expect(dialog).toHaveFocus();
+  });
+
+  it("grows out of the cell that was clicked", () => {
+    renderPicker();
+    // jsdom lays nothing out, so the dialog sits at 0,0 and the origin is the
+    // cell's own middle.
+    expect(screen.getByRole("dialog")).toHaveStyle({ transformOrigin: "122px 115px" });
+  });
+
+  it("says what the day holds now", () => {
+    renderPicker({ target: target({ shiftCode: EVENING.code }) });
+    const now = screen.getByTitle("What this day holds now");
+    expect(now).toHaveTextContent(EVENING.shortCode);
+    expect(now).toHaveTextContent(EVENING.label);
+  });
+
+  it("closes from the backdrop, after fading out", () => {
+    vi.useFakeTimers();
+    try {
+      const { onClose } = renderPicker();
+      fireEvent.mouseDown(screen.getByRole("dialog"));
+      expect(screen.getByRole("dialog").parentElement).not.toHaveClass("closing");
+      fireEvent.mouseDown(screen.getByRole("dialog").parentElement as HTMLElement);
+      expect(screen.getByRole("dialog").parentElement).toHaveClass("closing");
+      expect(onClose).not.toHaveBeenCalled();
+      act(() => {
+        vi.advanceTimersByTime(200);
+      });
+      expect(onClose).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("closes on Escape once, however often it is pressed", () => {
+    vi.useFakeTimers();
+    try {
+      const { onClose } = renderPicker();
+      fireEvent.keyDown(window, { key: "Escape" });
+      fireEvent.keyDown(window, { key: "Escape" });
+      act(() => {
+        vi.advanceTimersByTime(200);
+      });
+      expect(onClose).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps Tab inside the dialog", () => {
+    renderPicker();
+    const dialog = screen.getByRole("dialog");
+    const close = screen.getByRole("button", { name: "Close" });
+    const clear = screen.getByRole("button", { name: /Clear/ });
+    clear.focus();
+    fireEvent.keyDown(window, { key: "Tab" });
+    expect(close).toHaveFocus();
+    fireEvent.keyDown(window, { key: "Tab", shiftKey: true });
+    expect(clear).toHaveFocus();
+    expect(dialog).toContainElement(document.activeElement as HTMLElement);
+  });
+
+  it("gives focus back to where it was on close", () => {
+    const before = document.createElement("button");
+    document.body.appendChild(before);
+    before.focus();
+    const { unmount } = render(
+      <CellPicker
+        target={target()}
+        shifts={[REGULAR]}
+        awayKinds={[ANNUAL_LEAVE]}
+        onApply={vi.fn()}
+        onMarkAway={vi.fn()}
+        onClear={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(before).not.toHaveFocus();
+    unmount();
+    expect(before).toHaveFocus();
+    before.remove();
+  });
+
+  it("puts the dates with leave and allocations", () => {
+    renderPicker();
+    const away = screen.getByRole("region", { name: "Leave & allocations" });
+    expect(within(away).getByLabelText("Mark from")).toBeInTheDocument();
+    expect(within(away).getByLabelText("Mark until")).toBeInTheDocument();
+    expect(within(away).getByRole("button", { name: /Annual leave/ })).toBeInTheDocument();
+    const rota = screen.getByRole("region", { name: /^Rota/ });
+    expect(within(rota).queryByLabelText("Mark from")).not.toBeInTheDocument();
+    expect(within(rota).getByRole("button", { name: /Evening 6-9pm/ })).toBeInTheDocument();
+  });
+
+  it("says on the rota side which days a pick will set", () => {
+    renderPicker();
+    const rota = screen.getByRole("region", { name: /^Rota/ });
+    expect(within(rota).getByText(/^Wed 23 Sept?$/)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Mark until"), { target: { value: "2026-09-25" } });
+    expect(within(rota).getByText(/23 Sept? – 25 Sept? · 3 days/)).toBeInTheDocument();
+  });
+});
+
+describe("CellPicker: moving somebody to another team", () => {
+  const AMERICAS_COVER = shift({
+    code: "CRE_AMERICAS",
+    shortCode: "NLK",
+    label: "Americas cover",
+    isRotation: false,
+    startMinute: 1260,
+    endMinute: 1800,
+    sortOrder: 95,
+  });
+  const BRAZIL: ScheduleAbsenceKind = {
+    id: "k-br",
+    code: "ALLO_BR",
+    shortCode: "BR",
+    label: "Brazil rotation",
+    bucket: "ALLOCATION",
+    colourToken: "BR",
+    sortOrder: 40,
+    movesToTeamKey: "americas",
+    worksRotaThere: true,
+    showsAsShiftCode: "CRE_AMERICAS",
+  };
+  const MIGRATION: ScheduleAbsenceKind = {
+    id: "k-mig",
+    code: "MIGRATION",
+    shortCode: "Mig",
+    label: "Migration",
+    bucket: "ALLOCATION",
+    colourToken: "MIG",
+    sortOrder: 41,
+    movesToTeamKey: "migration",
+  };
+
+  function renderMoves(teamKey: string, onApply = vi.fn(), onMarkAway = vi.fn()) {
+    render(
+      <CellPicker
+        target={target({ teamKey })}
+        shifts={[REGULAR, EVENING, AMERICAS_COVER]}
+        awayKinds={[ANNUAL_LEAVE]}
+        allKinds={[ANNUAL_LEAVE, BRAZIL, MIGRATION]}
+        moveKinds={[MIGRATION]}
+        onApply={onApply}
+        onMarkAway={onMarkAway}
+        onClear={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    return { onApply, onMarkAway };
+  }
+
+  it("offers Americas cover as a move to the Americas team, not as standing hours", () => {
+    const { onApply } = renderMoves("draco");
+    expect(screen.queryByRole("button", { name: /Americas cover/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Move to Americas Team/ }));
+    // The same pick the window was: the server writes it as the move.
+    expect(onApply).toHaveBeenCalledWith("CRE_AMERICAS", "2026-09-23", "2026-09-23");
+  });
+
+  it("sets a move's months in one click: 3 months from the 23rd runs to the 22nd", () => {
+    const { onApply } = renderMoves("draco");
+    fireEvent.click(screen.getByRole("button", { name: "3 months" }));
+    expect(screen.getByLabelText("Mark until")).toHaveValue("2026-12-22");
+    fireEvent.click(screen.getByRole("button", { name: /Move to Americas Team/ }));
+    expect(onApply).toHaveBeenCalledWith("CRE_AMERICAS", "2026-09-23", "2026-12-22");
+    fireEvent.click(screen.getByRole("button", { name: "6 months" }));
+    expect(screen.getByLabelText("Mark until")).toHaveValue("2027-03-22");
+  });
+
+  it("names the Migration move as a team too", () => {
+    const { onMarkAway } = renderMoves("draco");
+    fireEvent.click(screen.getByRole("button", { name: /Move to Migration Team/ }));
+    expect(onMarkAway).toHaveBeenCalledWith("MIGRATION", "2026-09-23", "2026-09-23");
+  });
+
+  it("sets a span of leave in one click, counting the first day", () => {
+    const { onMarkAway } = renderPicker();
+    const until = screen.getByLabelText("Mark until");
+    fireEvent.click(screen.getByRole("button", { name: "1 week" }));
+    expect(until).toHaveValue("2026-09-29");
+    fireEvent.click(screen.getByRole("button", { name: "2 weeks" }));
+    expect(until).toHaveValue("2026-10-06");
+    fireEvent.click(screen.getByRole("button", { name: "2 months" }));
+    expect(until).toHaveValue("2026-11-22");
+    fireEvent.click(screen.getByRole("button", { name: "1 month" }));
+    expect(until).toHaveValue("2026-10-22");
+    // A length only fills "To": nothing is marked until a tag is picked.
+    expect(onMarkAway).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: /Annual leave/ }));
+    expect(onMarkAway).toHaveBeenCalledWith("ANNUAL_LEAVE", "2026-09-23", "2026-10-22", undefined);
+  });
+
+  it("runs a month from a day the later month lacks to that month's end", () => {
+    renderPicker();
+    fireEvent.change(screen.getByLabelText("Mark from"), { target: { value: "2027-01-31" } });
+    const until = screen.getByLabelText("Mark until");
+    fireEvent.click(screen.getByRole("button", { name: "1 month" }));
+    expect(until).toHaveValue("2027-02-28");
+    fireEvent.click(screen.getByRole("button", { name: "3 months" }));
+    expect(until).toHaveValue("2027-04-30");
+    fireEvent.change(screen.getByLabelText("Mark from"), { target: { value: "2028-01-31" } });
+    fireEvent.click(screen.getByRole("button", { name: "1 month" }));
+    expect(until).toHaveValue("2028-02-29");
+    // A day the later month has still runs to the day before it.
+    fireEvent.change(screen.getByLabelText("Mark from"), { target: { value: "2027-01-15" } });
+    fireEvent.click(screen.getByRole("button", { name: "1 month" }));
+    expect(until).toHaveValue("2027-02-14");
+  });
+
+  it("keeps Americas cover as standing hours for somebody already on Americas", () => {
+    renderMoves("americas");
+    expect(screen.getByRole("button", { name: /Americas cover/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Move to Americas Team/ })).not.toBeInTheDocument();
   });
 });

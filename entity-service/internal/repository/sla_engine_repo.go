@@ -144,7 +144,12 @@ type SLAEngineRepository interface {
 	// CompleteClock marks the source='CSM' clock for (workItemID, target)
 	// ACHIEVED (end_on=now, business_elapsed_percentage set to the clock's
 	// real, uncapped elapsed percentage at completion time, not
-	// unconditionally 100 -- see this method's own implementation comment).
+	// unconditionally 100 -- see this method's own implementation comment),
+	// and sets is_active = FALSE -- a real, reported bug this fixes: is_active
+	// was previously only ever set at RegisterClock's own INSERT and never
+	// cleared again, so GET /sla-status (and csm-notification-service's own
+	// Redis-recovery Reconcile, which reads it) kept reporting a clock as
+	// "currently active" forever after it had genuinely, cleanly completed.
 	// Matches a clock in ANY not-yet-final stage, including BREACHED -- a
 	// clock whose window already ran out is still completable by its own
 	// real finishing event, with whatever real overrun percentage that
@@ -363,7 +368,7 @@ func (r *slaEngineRepo) RegisterClock(ctx context.Context, workItemID string, po
 func (r *slaEngineRepo) CompleteClock(ctx context.Context, workItemID, target string) (bool, error) {
 	const query = `
 		UPDATE sla s
-		SET stage = 'ACHIEVED'::sla_stage_enum, end_on = NOW(),
+		SET stage = 'ACHIEVED'::sla_stage_enum, end_on = NOW(), is_active = FALSE,
 		    business_elapsed_percentage = GREATEST(0,
 		        EXTRACT(EPOCH FROM (NOW() - s.start_on)) / NULLIF(EXTRACT(EPOCH FROM s.duration), 0) * 100
 		    ),
@@ -487,11 +492,14 @@ func (r *slaEngineRepo) RecomputeActive(ctx context.Context) (int, error) {
 // work item, not just the targets in `policies`, so a clock type no longer
 // applicable after a severity DOWNGRADE (e.g. losing "workaround"/
 // "resolution") is still cancelled even though `policies` won't re-register
+// it. Also sets is_active = FALSE on every row it cancels -- see
+// CompleteClock's own doc comment for the is_active bug this is the other
+// half of the fix for.
 // it.
 func (r *slaEngineRepo) ReviseClocks(ctx context.Context, workItemID string, policies []SLAPolicyRef) (int, error) {
 	const cancelQuery = `
 		UPDATE sla s
-		SET stage = 'CANCELLED'::sla_stage_enum,
+		SET stage = 'CANCELLED'::sla_stage_enum, is_active = FALSE,
 		    updated_on = NOW(), updated_by = $2
 		FROM sla_policy sp
 		WHERE s.sla_policy_id = sp.id

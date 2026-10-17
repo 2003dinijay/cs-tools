@@ -43,6 +43,7 @@ import {
   getAttachmentFileCategory,
   getInitials,
   collapseCommentSourceWhitespace,
+  plainTextCommentToHtml,
   hasSingleCodeWrapper,
   stripCodeWrapper,
   stripAllCodeBlocks,
@@ -62,12 +63,20 @@ import { useGetAttachmentContent } from "@api/useGetAttachmentContent";
 import { useAttachmentPreview } from "@api/useAttachmentPreview";
 import { stripLightModeInlineStyles } from "@/utils/common";
 import { stripThinkingBlocks } from "@features/support/utils/chat";
+import { NOVERA_DISPLAY_NAME } from "@features/support/constants/chatConstants";
 
 function commentAuthorDisplayName(comment: CaseComment): string {
   if (comment.createdByFullName?.trim()) {
     return comment.createdByFullName.trim();
   }
-  return comment.createdBy?.trim() || "Unknown";
+  if (comment.createdBy?.trim()) {
+    return comment.createdBy.trim();
+  }
+  // An empty createdBy is how the API represents a Novera/bot message (see
+  // isNoveraOrBotSender) -- never show that as "Unknown".
+  return isNoveraOrBotSender(comment.createdBy, comment.type)
+    ? NOVERA_DISPLAY_NAME
+    : "Unknown";
 }
 
 /**
@@ -83,6 +92,7 @@ export default function CommentBubble({
   onImageClick,
   hideAvatar = false,
   userDetails,
+  caseId,
 }: CommentBubbleProps): import("react").JSX.Element {
   const theme = useTheme();
   const isDarkMode = useDarkMode();
@@ -93,7 +103,9 @@ export default function CommentBubble({
   const isNoveraComment = isNoveraOrBotSender(comment.createdBy, comment.type);
   const rawContent = isNoveraComment
     ? stripThinkingBlocks(comment.content ?? "")
-    : collapseCommentSourceWhitespace(comment.content ?? "");
+    : plainTextCommentToHtml(
+        collapseCommentSourceWhitespace(comment.content ?? ""),
+      );
   const isFullCodeWrap = hasSingleCodeWrapper(rawContent);
   const codeBlockCount = rawContent.match(/\[code\]/gi)?.length ?? 0;
   const afterCode = isFullCodeWrap
@@ -116,7 +128,7 @@ export default function CommentBubble({
     INLINE_COMMENT_HTML_PURIFY,
   );
   const { resolvedHtml: htmlContent, isLoading: isImagesLoading } =
-    useResolvedInlineImageHtml(sanitizedHtml);
+    useResolvedInlineImageHtml(sanitizedHtml, caseId);
   const displayName = useMemo(() => {
     if (isCurrentUser && userDetails) {
       const { firstName, lastName, email } = userDetails;
@@ -161,6 +173,7 @@ export default function CommentBubble({
   const { data: imageDataUrl, isLoading: isImagePreviewLoading } =
     useAttachmentPreview(
       isAttachmentEntry && isPreviewableImage ? comment.id : null,
+      caseId,
     );
 
   const renderAttachmentIcon = () => {

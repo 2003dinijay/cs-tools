@@ -232,7 +232,15 @@ func TestSRStateLabel(t *testing.T) {
 
 type recordingSRNotifier struct {
 	created  []string
+	mirrored []string
 	comments []domain.CommentType
+}
+
+// OnCreatedMirrored records the call and hands mirror the acknowledgement,
+// as SRNoticeService does once it has written it.
+func (r *recordingSRNotifier) OnCreatedMirrored(ctx context.Context, caseID string, mirror srAckMirror) {
+	r.mirrored = append(r.mirrored, caseID)
+	mirror(ctx, srAcknowledgement)
 }
 
 func (r *recordingSRNotifier) OnCreated(_ context.Context, caseID string) {

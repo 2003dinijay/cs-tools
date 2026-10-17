@@ -46,7 +46,7 @@
 #                  chat   a card per rung in the REAL space GOOGLE_CHAT_SPACES names
 #                  call   real Twilio calls -- needs -m, and rings ONLY that number
 #   -m  number     E.164, required with -c call|both. The run's copy of
-#                  escalation.yaml makes the CRE and CS heads you, and limits
+#                  paging-alert.yaml makes the CRE and CS heads you, and limits
 #                  safety.allowedNumbers to this one number, so no other phone
 #                  can ring. Rota members, nominees and team leads have no
 #                  numbers at all ("user" has no phone column), so on a call
@@ -62,7 +62,7 @@
 #   trigger-escalation.sh -c call -m +94770000000          # YOUR phone, at L3/L4
 #   trigger-escalation.sh -c both -m +94770000000          # both of the above
 #
-# A chat or call run mounts its own copy of escalation.yaml for the length of
+# A chat or call run mounts its own copy of paging-alert.yaml for the length of
 # the ladder and puts the service back on the committed file -- channel log,
 # calls off -- when it ends, including on Ctrl-C. Stopping early stops the
 # remaining rungs too, which is the safe direction.
@@ -136,7 +136,7 @@ if [[ -z "${CRE_CHAT_WEBHOOK_URL:-}" && -f "$ENV_FILE" ]]; then
   export CRE_CHAT_WEBHOOK_URL
 fi
 if [[ -n "$uses_chat" && -z "${CRE_CHAT_WEBHOOK_URL:-}" && -z "${GOOGLE_CHAT_SPACES:-}" ]]; then
-  echo "-c $CHANNEL needs CRE_CHAT_WEBHOOK_URL (escalation.yaml chat.webhookUrlEnv) or GOOGLE_CHAT_SPACES: export it, or point ESCALATION_ENV_FILE at the .env that has it." >&2
+  echo "-c $CHANNEL needs CRE_CHAT_WEBHOOK_URL (paging-alert.yaml chat.webhookUrlEnv) or GOOGLE_CHAT_SPACES: export it, or point ESCALATION_ENV_FILE at the .env that has it." >&2
   exit 1
 fi
 
@@ -157,14 +157,14 @@ else
   export CALL_SENDING_ENABLED=false
 fi
 
-# A chat or call run mounts its own copy of escalation.yaml: the committed file
+# A chat or call run mounts its own copy of paging-alert.yaml: the committed file
 # says channel log, and the file wins over INCIDENT_ESCALATION_CHANNEL, so no
 # environment variable could change it. The copy changes the CRE channel and,
 # on a call run, makes both heads you and limits allowedNumbers to your number.
 RUN_CONFIG=""
 if [[ "$CHANNEL" != log ]]; then
   mkdir -p scripts/csm-compose/.run
-  RUN_CONFIG="$PWD/scripts/csm-compose/.run/escalation.yaml"
+  RUN_CONFIG="$PWD/scripts/csm-compose/.run/paging-alert.yaml"
   awk -v ch="$CHANNEL" -v me="$CALL_ME" '
     /^cre:/ { in_cre = 1 }
     /^sre:/ { in_cre = 0 }
@@ -173,7 +173,7 @@ if [[ "$CHANNEL" != log ]]; then
     in_cre && me != "" && /^    cs: +\{name:/ { print "    cs:  {name: \"Escalation test (you)\", email: \"escalation-test@example.invalid\", phone: \"" me "\"}"; next }
     in_cre && me != "" && /^    allowedNumbers:/ { print "    allowedNumbers: [\"" me "\"]"; next }
     { print }
-  ' scripts/csm-compose/escalation.yaml > "$RUN_CONFIG"
+  ' scripts/csm-compose/paging-alert.yaml > "$RUN_CONFIG"
 
   # Fail closed. If the committed file has drifted and a substitution did not
   # land, a call run could reach somebody other than you -- so refuse to start

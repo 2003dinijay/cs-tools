@@ -30,6 +30,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/events"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
@@ -102,6 +103,46 @@ func TestSpecialOpsAlertIntegration(t *testing.T) {
 	}
 	if attempts != 1 {
 		t.Errorf("attempts = %d, want 1", attempts)
+	}
+}
+
+// Two Special Ops teams sharing one group: the alert names the team the
+// handoff's reason note names (read back from the comment table), so the
+// right SME rota is paged.
+func TestSpecialOpsAlertIntegration_SharedGroupFollowsTheHandoffNote(t *testing.T) {
+	pool := incidentReportTestPool(t)
+	cfg, err := ParseSpecialistHandoffConfig(`{"products":[
+		{"name":"Choreo","serviceIds":["` + postResolutionServiceChoreo + `"],"teams":[
+			{"key":"choreo-runtime-team","label":"Choreo Runtime Team","groupId":"` + groupChoreoSpecialOps + `","smeTeam":"choreo-runtime"},
+			{"key":"choreo-cloud-team","label":"Choreo Cloud Team","groupId":"` + groupChoreoSpecialOps + `","smeTeam":"cloud-core"}]}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := &alertPublisher{}
+	d := NewIncidentReportDrainer(
+		repository.NewIncidentReportRepository(repository.NewScoped(pool)),
+		WithSpecialOpsAlerts(NewIncidentReportService(), pub, cfg),
+		time.Second, IncidentReportMaxAttempts)
+	prSeed(t, pool, d)
+	ctx := repository.WithSystemIdentity(context.Background())
+
+	repo := repository.NewIncidentRepository(repository.NewScoped(pool))
+	if _, err := repo.CreateIncidentComment(ctx, prIncidentID, domain.CommentTypeWorkNote,
+		`{"reasonCode":"runbook-not-working","reasonDescription":"Runbook doesn't solve the incident","escalationTeam":"choreo-cloud-team"}`,
+		"jane.doe@wso2.com"); err != nil {
+		t.Fatalf("reason note: %v", err)
+	}
+	irExec(t, pool, `UPDATE work_item SET assignment_group_id = $2, updated_by = $3 WHERE id = $1`, prIncidentID, groupChoreoSpecialOps, "jane.doe@wso2.com")
+	if _, err := d.drainOnce(context.Background()); err != nil {
+		t.Fatalf("drainOnce: %v", err)
+	}
+	if len(pub.sent) != 1 {
+		t.Fatalf("sent %d alerts, want 1", len(pub.sent))
+	}
+	var got events.IncidentSpecialOpsAlertPayload
+	_ = json.Unmarshal(pub.sent[0].Payload, &got)
+	if got.TeamKey != "choreo-cloud-team" || got.SMETeam != "cloud-core" {
+		t.Errorf("team %q smeTeam %q, want the picked choreo-cloud-team / cloud-core", got.TeamKey, got.SMETeam)
 	}
 }
 

@@ -46,7 +46,6 @@ import (
 	plgconfig "github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/plg/config"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/risk"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/scim"
-	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/servicenow"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/sftpgo"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/updates"
 )
@@ -78,6 +77,22 @@ func main() {
 	roleIDsByName, err := directory.ParseRoleIDs(os.Getenv("ASGARDEO_ROLE_IDS"))
 	if err != nil {
 		slog.Error("invalid ASGARDEO_ROLE_IDS", "err", err)
+		os.Exit(1)
+	}
+
+	// Portal-role-key -> identity-provider GROUP display name(s) mapping
+	// (ASGARDEO_ROLE_GROUP_NAMES), a JSON object string, e.g.
+	// {"cs_engineer":["CSM Engineers"]}. Unlike ASGARDEO_ROLE_IDS above, keyed
+	// directly by the portal role's own stable key (not a real Asgardeo role
+	// name), and by the group's own display NAME (not its opaque id) -- see
+	// directory.ParseRoleGroupNames's own doc comment for why. Lets GetUser's
+	// withPortalRoles enrichment grant a portal role from Asgardeo GROUP
+	// membership instead of (or alongside) a role assignment. Optional and
+	// empty by default: a portal role with no entry here simply has no group
+	// that grants it.
+	roleGroupNamesByKey, err := directory.ParseRoleGroupNames(os.Getenv("ASGARDEO_ROLE_GROUP_NAMES"))
+	if err != nil {
+		slog.Error("invalid ASGARDEO_ROLE_GROUP_NAMES", "err", err)
 		os.Exit(1)
 	}
 
@@ -197,7 +212,16 @@ func main() {
 	// it too. accessCfg is also kept (not just the guard built from it) since
 	// grantableRoles below needs the same AUTH_<ROLE>_ROLES lists directly.
 	accessCfg := loadAccessConfig()
-	accessGuard := handler.NewAccessGuard(accessCfg)
+	// WithRoleIDs lets GetUser's withPortalRoles enrichment (see that file's
+	// own doc comment) match a target user's held Asgardeo roles by ID
+	// instead of by display name -- two distinct roles can share a name, but
+	// never an ID. WithGroupNames is the same enrichment's second, independent
+	// source: some portal roles are granted by Asgardeo GROUP membership
+	// instead, configured directly by portal role key against the group's own
+	// display name (ASGARDEO_ROLE_GROUP_NAMES, see
+	// directory.ParseRoleGroupNames). Both are a no-op for RolesFor/GetMe's
+	// own JWT-claim-based path, which is unaffected by either.
+	accessGuard := handler.NewAccessGuard(accessCfg).WithRoleIDs(roleIDsByName).WithGroupNames(roleGroupNamesByKey)
 
 	// Which portal roles CreateUser may grant via SCIM when an admin adds a
 	// new user through the webapp, each already resolved to its real role ID
@@ -207,78 +231,56 @@ func main() {
 	// rejects any grantRoles value as unknown.
 	grantableRoles := handler.ResolveGrantableRoles(accessCfg, roleIDsByName)
 
-	// SupportPortalLite — off by default; see loadViewerConfig. Ported
-	// from digiops-cs/apps/support-portal-lite's Ballerina backend, which is
-	// being retired.
-	viewerEnabled, viewerCfg := loadViewerConfig()
-	var viewerHandlers *viewerHandlerSet
-	if viewerEnabled {
-		salesEntityClient := entity.NewSalesEntityClient(entity.SalesEntityConfig{
-			BaseURL:      viewerCfg.salesEntityBaseURL,
-			TokenURL:     oauth2TokenURL,
-			ClientID:     oauth2ClientID,
-			ClientSecret: oauth2ClientSecret,
-		})
-		snClient := servicenow.NewClient(servicenow.Config{
-			BaseURL:              viewerCfg.snHost,
-			Username:             viewerCfg.snUsername,
-			Password:             viewerCfg.snPassword,
-			EscalationTemplateID: viewerCfg.snEscalationTemplateID,
-			TeamScheduleURL:      viewerCfg.teamScheduleURL,
-		})
-		driveClient := googledrive.NewClient(googledrive.Config{
-			ClientID:     viewerCfg.driveClientID,
-			ClientSecret: viewerCfg.driveClientSecret,
-			RefreshToken: viewerCfg.driveRefreshToken,
-		})
-		// A live DB ping happens here, unlike every other client above —
-		// this backend's standing convention (see loadDashboards,
-		// loadDirectory) is that a broken required integration fails startup
-		// loudly rather than serving traffic it cannot actually handle.
-		// risk.NewClient returns a typed-nil client on a failed ping if this
-		// were ignored, and NewCustomerHealthHandler would then store that
-		// nil client in its risk interface -- Customer Health routes would
-		// dispatch to a nil receiver instead of failing at startup where the
-		// cause is obvious. A 30s deadline bounds the ping so a hung network
-		// doesn't hang startup forever.
-		riskCtx, riskCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		riskClient, err := risk.NewClient(riskCtx, risk.Config{DSN: viewerCfg.riskMySQLDSN})
-		riskCancel()
-		if err != nil {
-			slog.Error("failed to connect to SPL_RISK_MYSQL_DSN", "err", err)
-			os.Exit(1)
-		}
+	// Viewer-audience endpoints (ported from SupportPortalLite's Ballerina
+	// backend) are always registered. Every one of them reads entity-service
+	// through the shared customerEntityClient; only Google Drive (the /files
+	// routes) and the Scan User entity service (Scan User's
+	// lookups) are separate upstreams, and each is independently optional:
+	// unset leaves just its own endpoints failing at call time with a mapped
+	// upstream error -- see loadViewerConfig.
+	viewerCfg := loadViewerConfig()
+	salesEntityClient := entity.NewSalesEntityClient(entity.SalesEntityConfig{
+		BaseURL:      viewerCfg.salesEntityBaseURL,
+		TokenURL:     oauth2TokenURL,
+		ClientID:     oauth2ClientID,
+		ClientSecret: oauth2ClientSecret,
+	})
+	driveClient := googledrive.NewClient(googledrive.Config{
+		ClientID:     viewerCfg.driveClientID,
+		ClientSecret: viewerCfg.driveClientSecret,
+		RefreshToken: viewerCfg.driveRefreshToken,
+	})
+	// Customer-health risk tracking used to be its own standalone MySQL
+	// database (risk.NewClient opened and ping-checked a *sql.DB here);
+	// that database has been migrated into entity-service's own Postgres
+	// (migration 0219), so this is now just a thin wrapper over the
+	// already-constructed, already-shared customerEntityClient -- no
+	// connection of its own to open or fail.
+	riskClient := risk.NewClient(customerEntityClient)
 
-		// Accounts/projects/cases/team-members read/search/comment paths used
-		// to have their own Postgres translation layer here, wrapping
-		// customerEntityClient into a ServiceNow-shaped response for SPL's
-		// frontend. All four merged onto CS Portal's own /accounts,
-		// /projects, /cases, and /teams/{id}/members routes below instead,
-		// now that SPL's data source for them is the exact same
-		// entity-service data those routes already serve raw, with no
-		// ServiceNow-shape translation left to justify a second, parallel
-		// /spl/* contract. Only attachments (no entity-service storage path)
-		// and account escalations (CreateEscalation is an explicit stub on
-		// this data source) remain ServiceNow-backed and SPL-specific.
-		postgresLookups := handler.NewPostgresLookupsClient(customerEntityClient, snClient)
-		postgresReports := handler.NewPostgresReportsClient(customerEntityClient, snClient)
-		postgresUsageMetrics := handler.NewPostgresUsageMetricsClient(customerEntityClient)
+	// Accounts/projects/cases/team-members read/search/comment paths used
+	// to have their own translation layer here for the viewer frontend. All
+	// four merged onto CS Portal's own /accounts, /projects, /cases, and
+	// /teams/{id}/members routes below instead, since the viewer audience
+	// reads the exact same entity-service data those routes already serve.
+	// What's constructed here is only what has no shared-route equivalent.
+	postgresLookups := handler.NewPostgresLookupsClient(customerEntityClient)
+	postgresReports := handler.NewPostgresReportsClient(customerEntityClient)
+	postgresUsageMetrics := handler.NewPostgresUsageMetricsClient(customerEntityClient)
 
-		viewerHandlers = &viewerHandlerSet{
-			cases:          handler.NewViewerCaseHandler(snClient, accessGuard),
-			reports:        handler.NewReportsHandler(postgresReports, accessGuard),
-			schedule:       handler.NewViewerScheduleHandler(snClient, accessGuard, viewerCfg.teamScheduleURL),
-			attachments:    handler.NewAttachmentsHandler(snClient, accessGuard),
-			lookups:        handler.NewLookupsHandler(postgresLookups, accessGuard),
-			usageMetrics:   handler.NewUsageMetricsHandler(postgresUsageMetrics, accessGuard),
-			files:          handler.NewFilesHandler(driveClient, accessGuard),
-			customerHealth: handler.NewCustomerHealthHandler(riskClient, snClient, accessGuard),
-			userInfo:       handler.NewUserInfoHandler(customerEntityClient, accessGuard),
-			userScan:       handler.NewSplUserScanHandler(salesEntityClient, customerEntityClient, accessGuard),
-			accountEsc:     handler.NewViewerAccountHandler(snClient, accessGuard),
-		}
-		slog.Info("SPL_ENABLED is on: SupportPortalLite's /spl/* endpoints are active")
+	viewerHandlers := &viewerHandlerSet{
+		reports:        handler.NewReportsHandler(postgresReports, accessGuard),
+		lookups:        handler.NewLookupsHandler(postgresLookups, accessGuard),
+		usageMetrics:   handler.NewUsageMetricsHandler(postgresUsageMetrics, accessGuard),
+		files:          handler.NewFilesHandler(driveClient, accessGuard),
+		customerHealth: handler.NewCustomerHealthHandler(riskClient, handler.NewPostgresCustomerHealthClient(customerEntityClient), customerEntityClient, accessGuard),
+		userInfo:       handler.NewUserInfoHandler(customerEntityClient, accessGuard),
+		userScan:       handler.NewSplUserScanHandler(salesEntityClient, customerEntityClient, accessGuard),
+		accountEsc:     handler.NewViewerAccountHandler(handler.NewPostgresViewerAccountClient(customerEntityClient), accessGuard),
 	}
+	slog.Info("viewer-access endpoints registered",
+		"googleDriveConfigured", viewerCfg.driveClientID != "",
+		"salesEntityConfigured", viewerCfg.salesEntityBaseURL != "")
 
 	updatesCfg := updates.Config{
 		BaseURL:      mustEnv("UPDATES_BASE_URL"),
@@ -359,6 +361,7 @@ func main() {
 	timeCardHandler = timeCardHandler.WithAccessGuard(accessGuard)
 	incidentHandler = incidentHandler.WithAccessGuard(accessGuard)
 	changeRequestHandler = changeRequestHandler.WithAccessGuard(accessGuard)
+	commentHandler = commentHandler.WithAccessGuard(accessGuard)
 
 	authCfg := middleware.Config{
 		JWKSEndpoint:          mustEnv("AUTH_JWKS_ENDPOINT"),
@@ -405,11 +408,12 @@ func main() {
 	route("POST /cases/{id}/comments/search", handler.PermViewSharedEntity, caseHandler.SearchCaseComments)
 	// Generic comment edit/delete — applies to a comment by id regardless of
 	// which aggregate (case, change request, incident, ...) it was created
-	// under. Case, incident and change-request comments are PermWrite (see
-	// backend CLAUDE.md's Access control section); this is the same
-	// underlying resource.
-	route("PATCH /comments/{id}", handler.PermWrite, commentHandler.UpdateComment)
-	route("DELETE /comments/{id}", handler.PermWrite, commentHandler.DeleteComment)
+	// under. Gated by PermUpdateDeleteComment, not plain PermWrite (see that
+	// permission's own doc comment in access.go): comment_updater, cs_engineer
+	// and admin all reach the handler; entity-service's own author-or-admin
+	// check still decides which specific comment they may actually touch.
+	route("PATCH /comments/{id}", handler.PermUpdateDeleteComment, commentHandler.UpdateComment)
+	route("DELETE /comments/{id}", handler.PermUpdateDeleteComment, commentHandler.DeleteComment)
 	route("POST /cases/{id}/activities/search", handler.PermView, caseHandler.SearchCaseActivities)
 	route("GET /cases/{id}/escalations", handler.PermView, caseHandler.GetCaseEscalations)
 	route("POST /cases/{id}/escalations", handler.PermEscalate, caseHandler.CreateCaseEscalation)
@@ -443,6 +447,7 @@ func main() {
 	route("GET /tags/search", handler.PermView, caseHandler.SearchTagsQuery)
 	route("POST /cases/search", handler.PermViewSharedEntity, caseHandler.SearchCases)
 	route("POST /cases/aggregate", handler.PermView, caseHandler.AggregateCases)
+	route("POST /cases/volume-trend", handler.PermView, caseHandler.VolumeTrend)
 	route("POST /cases/feedback/search", handler.PermView, caseHandler.SearchFeedback)
 	route("POST /cases/feedback/aggregate", handler.PermView, caseHandler.AggregateFeedback)
 	route("GET /dashboards", handler.PermView, dashboardHandler.GetDashboards)
@@ -573,7 +578,15 @@ func main() {
 	// role that can see the portal can see who is on the rota. Editing the
 	// rota is a lead's job and will need a permission of its own when the
 	// write routes land -- see the plan's Phase 2b.
-	scheduleHandler := handler.NewScheduleHandler(customerEntityClient)
+	// One SCIM phone cache for the Case Paging reads: the paging chain and the
+	// readiness strip ask about the same people.
+	// Case Paging reads a person's profile number from entity-service
+	// ("user".phone). Until that column has been filled from Asgardeo for
+	// everyone, people it has no number for are also looked up in SCIM;
+	// PAGING_PHONE_SCIM_FALLBACK=false turns that off.
+	pagingPhones := handler.NewPagingPhoneChecker(scimClient).
+		WithSCIMFallback(strings.TrimSpace(os.Getenv("PAGING_PHONE_SCIM_FALLBACK")) != "false")
+	scheduleHandler := handler.NewScheduleHandler(customerEntityClient).WithPagingPhones(pagingPhones)
 	rotaGenerateHandler := handler.NewRotaGenerateHandler(customerEntityClient)
 	route("GET /team-schedule/catalogue", handler.PermView, scheduleHandler.GetScheduleCatalogue)
 	route("POST /team-schedule/assignments/search", handler.PermView, scheduleHandler.SearchScheduleAssignments)
@@ -589,6 +602,15 @@ func main() {
 	route("GET /team-schedule/activity", handler.PermView, scheduleHandler.GetScheduleActivity)
 	route("GET /team-schedule/edit-markers", handler.PermView, scheduleHandler.GetScheduleEditMarkers)
 	route("GET /team-schedule/my-lead-teams", handler.PermView, scheduleHandler.GetMyLeadTeams)
+	// Case Paging tab: who is on each tier of the paging chain, one change to
+	// it, and whether every chain has someone to page over the coming days.
+	route("GET /team-schedule/paging-chain", handler.PermView, scheduleHandler.GetPagingChain)
+	route("PATCH /team-schedule/paging-chain/members/{id}", handler.PermWrite, scheduleHandler.UpdatePagingMember)
+	pagingReadinessHandler := handler.NewPagingReadinessHandler(customerEntityClient, pagingPhones)
+	route("GET /team-schedule/paging-readiness", handler.PermView, pagingReadinessHandler.GetPagingReadiness)
+	route("PUT /team-schedule/paging-contacts/{userId}", handler.PermWrite, scheduleHandler.PutPagingContact)
+	route("DELETE /team-schedule/paging-contacts/{userId}", handler.PermWrite, scheduleHandler.DeletePagingContact)
+	route("POST /team-schedule/paging-contacts/{userId}/test", handler.PermWrite, scheduleHandler.TestPagingContact)
 	route("POST /team-schedule/assignments/apply", handler.PermWrite, scheduleHandler.ApplyScheduleRange)
 	route("POST /team-schedule/absences/apply", handler.PermWrite, scheduleHandler.ApplyScheduleAbsence)
 	route("DELETE /team-schedule/absences/{id}", handler.PermWrite, scheduleHandler.DeleteScheduleAbsence)
@@ -597,6 +619,32 @@ func main() {
 	// "Generate month": a lead of the SaaS SRE rota works a month out from
 	// the availability marked on it. Who may is entity-service's decision.
 	route("POST /team-schedule/rotas/{code}/generate", handler.PermWrite, rotaGenerateHandler.GenerateRotaMonth)
+	route("GET /team-schedule/rotas/{code}/night-crew", handler.PermView, rotaGenerateHandler.GetRotaNightCrew)
+	// Rota access tab: rota admins (one family each) and each team's rota
+	// marker. Granting rota admin is for the portal's admins, so PermAdmin
+	// keeps the control away from anyone else; a team's marker can also be
+	// named by that family's rota admin, who is no portal admin, so those
+	// routes are PermWrite and entity-service decides.
+	rotaAccessHandler := handler.NewRotaAccessHandler(customerEntityClient)
+	route("GET /team-schedule/rota-access", handler.PermView, rotaAccessHandler.GetRotaAccess)
+	route("PUT /team-schedule/rota-access/admins/{family}/{userId}", handler.PermAdmin, rotaAccessHandler.PutRotaAdmin)
+	route("DELETE /team-schedule/rota-access/admins/{family}/{userId}", handler.PermAdmin, rotaAccessHandler.DeleteRotaAdmin)
+	route("PUT /team-schedule/rota-access/markers/{teamKey}/{userId}", handler.PermWrite, rotaAccessHandler.PutRotaMarker)
+	route("DELETE /team-schedule/rota-access/markers/{teamKey}/{userId}", handler.PermWrite, rotaAccessHandler.DeleteRotaMarker)
+	// Alert Settings tab settings: chat rooms, group routes and ladder values.
+	// entity-service decides who may see or change them; the runtime read with
+	// the webhook URLs opened is for csm-notification-service only and is not
+	// proxied.
+	caseAlertSettingsHandler := handler.NewCaseAlertSettingsHandler(customerEntityClient)
+	route("GET /team-schedule/case-alerts/settings", handler.PermView, caseAlertSettingsHandler.GetCaseAlertSettings)
+	route("PUT /team-schedule/case-alerts/settings/rooms", handler.PermWrite, caseAlertSettingsHandler.PutCaseAlertRoom)
+	route("PUT /team-schedule/case-alerts/settings/rooms/{roomId}/webhook", handler.PermWrite, caseAlertSettingsHandler.PutCaseAlertWebhook)
+	route("DELETE /team-schedule/case-alerts/settings/rooms/{roomId}", handler.PermWrite, caseAlertSettingsHandler.DeleteCaseAlertRoom)
+	route("POST /team-schedule/case-alerts/settings/rooms/{roomId}/test", handler.PermWrite, caseAlertSettingsHandler.TestCaseAlertRoom)
+	route("PUT /team-schedule/case-alerts/settings/routes", handler.PermWrite, caseAlertSettingsHandler.PutCaseAlertRoute)
+	route("DELETE /team-schedule/case-alerts/settings/routes/{routeId}", handler.PermWrite, caseAlertSettingsHandler.DeleteCaseAlertRoute)
+	route("PUT /team-schedule/case-alerts/settings/values", handler.PermWrite, caseAlertSettingsHandler.PutCaseAlertValues)
+	route("DELETE /team-schedule/case-alerts/settings/values/{valueId}", handler.PermWrite, caseAlertSettingsHandler.DeleteCaseAlertValue)
 	route("POST /configuration-items/search", handler.PermView, configurationItemHandler.SearchConfigurationItems)
 	route("POST /time-cards/search", handler.PermTimeCardsAndUpdates, timeCardHandler.SearchTimeCards)
 	route("POST /time-cards", handler.PermTimeCardsAndUpdates, timeCardHandler.CreateTimeCard)
@@ -605,6 +653,7 @@ func main() {
 	route("POST /catalogs/search", handler.PermView, catalogHandler.SearchCatalogs)
 	route("GET /catalogs/{catalogId}/items/{catalogItemId}/variables", handler.PermView, catalogHandler.GetCatalogItemVariables)
 	route("POST /products/vulnerabilities/search", handler.PermViewSecurityCenter, productVulnerabilityHandler.SearchProductVulnerabilities)
+	route("GET /products/vulnerabilities/meta", handler.PermViewSecurityCenter, productVulnerabilityHandler.GetVulnerabilityMeta)
 	route("GET /products/vulnerabilities/{id}", handler.PermViewSecurityCenter, productVulnerabilityHandler.GetProductVulnerability)
 	route("GET /conversations/{id}/messages", handler.PermView, conversationHandler.GetConversationMessages)
 	route("POST /conversations/search", handler.PermView, conversationHandler.SearchConversations)
@@ -652,82 +701,68 @@ func main() {
 	// Called manually today; not yet wired into real incident/case creation.
 	route("POST /notifications/google-chat/alerts", handler.PermWrite, notificationHandler.PostGoogleChatAlert)
 
-	// SupportPortalLite — see viewerHandlers above. Registered only when
-	// SPL_ENABLED is on, so an unconfigured deployment sees no new routes at
-	// all. None of the routes below carry a /spl/ prefix: SPL and
-	// csm-portal are the same backend, so the prefix only ever existed to
-	// avoid colliding with csm-portal's own, differently-shaped
+	// Viewer-audience routes -- see viewerHandlers above. Always registered,
+	// and every one of them is entity-service-backed, except that GET /files
+	// and GET /files/search read Google Drive and POST /scan-user's
+	// Scan User lookups read the Scan User entity service; those two
+	// upstreams are independently optional and fail at call time when
+	// unconfigured. None of the routes below carry a /spl/ prefix: the viewer
+	// audience and csm-portal share one backend, so the prefix only ever
+	// existed to avoid colliding with csm-portal's own, differently-shaped
 	// case-management domain, and none of these routes do. Accounts,
-	// projects, and cases (read/search/comment) used to live under that
-	// prefix for exactly that reason — all three now go through the shared
-	// routes above (/accounts, /projects, /cases) instead, gated by
-	// PermViewSharedEntity like every other caller of those specific routes
-	// now that sales_solutions holds it (see PermViewSharedEntity's own doc
-	// comment) -- unlike GET /teams/{id}/members above, which is a genuinely
-	// unconditional CS Portal route (see teamHandler's own construction) and
-	// so is registered outside this block, not in here. Account escalations
-	// stay unmerged: CreateEscalation is an explicit stub on this data
-	// source (no entity-service equivalent at all, so nothing to merge
-	// onto), and the account-scoped read has no shared route either (CS
-	// Portal's own /cases/{id}/escalations is per-case, not per-account).
-	// Case attachments are unmerged for the same no-entity-service-equivalent
-	// reason.
+	// projects, and cases (read/search/comment) go through the shared routes
+	// above (/accounts, /projects, /cases) instead, gated by
+	// PermViewSharedEntity like every other caller of those routes (see
+	// PermViewSharedEntity's own doc comment) -- unlike GET /teams/{id}/members
+	// above, which is a genuinely unconditional CS Portal route (see
+	// teamHandler's own construction) and so is registered outside this
+	// block. The account-scoped escalation list stays here only because CS
+	// Portal's own /cases/{id}/escalations is per-case, not per-account.
 	//
-	// Every route below is registered with PermViewerAccess, the blanket SPL
-	// audience gate (formerly SPL_ALLOWED_GROUPS's raw-Asgardeo-groups
-	// check -- see PermViewerAccess's own doc comment). EscalateCase,
-	// DownloadAttachment, and every usage-metrics route additionally check
-	// a narrower permission (PermEscalate/PermDownloadAttachment/
-	// PermUsageMetricsViewer) inside the handler itself, the same layered
-	// shape SPL_ADD_ESCALATION_GROUPS/SPL_DOWNLOAD_ATTACHMENT_GROUPS/
-	// SPL_USAGE_METRICS_GROUPS enforced on top of SPL_ALLOWED_GROUPS
-	// before -- see requireViewerPermission's own doc comment for why that
-	// second check couldn't just move to route-level registration like
-	// every other route in this file.
-	if viewerHandlers != nil {
-		route("GET /accounts/{accountId}/escalations", handler.PermViewerAccess, viewerHandlers.accountEsc.GetAccountEscalations)
-		route("POST /accounts/{accountId}/cases/{caseId}/escalate", handler.PermViewerAccess, viewerHandlers.accountEsc.EscalateCase)
-		route("GET /cases/{caseId}/attachments-info", handler.PermViewerAccess, viewerHandlers.cases.GetAttachmentsInfo)
-		route("GET /attachments/{attachmentId}/download", handler.PermViewerAccess, viewerHandlers.attachments.DownloadAttachment)
-		route("GET /products", handler.PermViewerAccess, viewerHandlers.lookups.GetProducts)
-		route("GET /abt-teams", handler.PermViewerAccess, viewerHandlers.lookups.GetABTTeams)
-		route("GET /generate-sla-report", handler.PermViewerAccess, viewerHandlers.reports.GenerateSLAReport)
-		route("GET /report-details", handler.PermViewerAccess, viewerHandlers.reports.GetReportDetails)
-		route("GET /generate-timelogs-breakdown-report", handler.PermViewerAccess, viewerHandlers.reports.GenerateTimelogsBreakdownReport)
-		route("GET /abt-team-schedule", handler.PermViewerAccess, viewerHandlers.schedule.GetABTTeamSchedule)
-		route("GET /user-info", handler.PermViewerAccess, viewerHandlers.userInfo.GetUserInfo)
-		route("POST /scan-user", handler.PermViewerAccess, viewerHandlers.userScan.ScanUser)
-		route("GET /files", handler.PermViewerAccess, viewerHandlers.files.ListFiles)
-		route("GET /files/search", handler.PermViewerAccess, viewerHandlers.files.SearchFolder)
-		route("GET /usage-metrics/projects", handler.PermViewerAccess, viewerHandlers.usageMetrics.GetProjects)
-		route("POST /usage-metrics/instances/metrics/search", handler.PermViewerAccess, viewerHandlers.usageMetrics.SearchInstanceMetrics)
-		route("POST /usage-metrics/instances/metrics/stats", handler.PermViewerAccess, viewerHandlers.usageMetrics.GetInstanceMetricsStats)
-		route("POST /usage-metrics/instances/usages/search", handler.PermViewerAccess, viewerHandlers.usageMetrics.SearchInstanceUsages)
-		route("POST /usage-metrics/instances/usages/stats", handler.PermViewerAccess, viewerHandlers.usageMetrics.GetInstanceUsagesStats)
-		route("POST /usage-metrics/deployments/search", handler.PermViewerAccess, viewerHandlers.usageMetrics.SearchDeployments)
-		route("POST /usage-metrics/projects/search", handler.PermViewerAccess, viewerHandlers.usageMetrics.SearchProjects)
-		route("POST /usage-metrics/deployed-products/search", handler.PermViewerAccess, viewerHandlers.usageMetrics.SearchDeployedProducts)
-		route("POST /usage-metrics/instances/search", handler.PermViewerAccess, viewerHandlers.usageMetrics.SearchInstances)
-		route("POST /usage-metrics/deployed-products/{id}/metrics/search", handler.PermViewerAccess, viewerHandlers.usageMetrics.GetDeployedProductMetrics)
-		route("POST /usage-metrics/deployed-products/{id}/metrics/usage-counts/search", handler.PermViewerAccess, viewerHandlers.usageMetrics.GetDeployedProductUsageCounts)
-		route("POST /customer-health/summary", handler.PermViewerAccess, viewerHandlers.customerHealth.GetSummary)
-		route("POST /customer-health/accounts/{accountSysId}/init-health-tracking", handler.PermViewerAccess, viewerHandlers.customerHealth.InitHealthTracking)
-		route("GET /customer-health/accounts/{accountId}", handler.PermViewerAccess, viewerHandlers.customerHealth.GetAccountDetail)
-		route("POST /customer-health/projects/{projectSysId}/risk", handler.PermViewerAccess, viewerHandlers.customerHealth.OpenRisk)
-		route("PUT /customer-health/risks/{riskId}/close", handler.PermViewerAccess, viewerHandlers.customerHealth.CloseRisk)
-		route("POST /customer-health/projects/{projectSysId}/mark-healthy", handler.PermViewerAccess, viewerHandlers.customerHealth.MarkHealthy)
-		route("POST /customer-health/projects/{projectSysId}/revert-review", handler.PermViewerAccess, viewerHandlers.customerHealth.RevertReview)
-		route("GET /customer-health/accounts/{accountSysId}/health-status", handler.PermViewerAccess, viewerHandlers.customerHealth.GetAccountHealthStatus)
-		route("GET /customer-health/accounts/{accountSysId}/health-summary", handler.PermViewerAccess, viewerHandlers.customerHealth.GetAccountHealthSummary)
-		route("GET /customer-health/projects/{projectSysId}/risk-history", handler.PermViewerAccess, viewerHandlers.customerHealth.GetProjectRiskHistory)
-		route("POST /customer-health/risks/{riskId}/action-items", handler.PermViewerAccess, viewerHandlers.customerHealth.CreateActionItem)
-		route("PUT /customer-health/action-items/{actionItemId}/status", handler.PermViewerAccess, viewerHandlers.customerHealth.UpdateActionItemStatus)
-		route("PUT /customer-health/action-items/{actionItemId}", handler.PermViewerAccess, viewerHandlers.customerHealth.UpdateActionItem)
-		route("GET /customer-health/risks/{riskId}/action-items", handler.PermViewerAccess, viewerHandlers.customerHealth.GetActionItemsByRisk)
-		route("GET /customer-health/accounts/{accountSysId}/action-items", handler.PermViewerAccess, viewerHandlers.customerHealth.GetActionItemsByAccount)
-		route("POST /customer-health/action-items/{actionItemId}/comments", handler.PermViewerAccess, viewerHandlers.customerHealth.CreateActionItemComment)
-		route("GET /customer-health/action-items/{actionItemId}/comments", handler.PermViewerAccess, viewerHandlers.customerHealth.GetActionItemComments)
-	}
+	// Every route below is registered with PermViewerAccess (Viewer only),
+	// EXCEPT the /usage-metrics/* routes further down, which are registered
+	// directly on the broader PermUsageMetricsViewer instead -- see that
+	// permission's own doc comment for why this one domain's audience is
+	// wider than its siblings' -- and the Customer Health routes (/customer-
+	// health/* plus the GET /products and GET /abt-teams lists its filters
+	// read), which use PermViewCustomerHealth so a cs_engineer or admin
+	// reaches them without also holding Viewer.
+	route("GET /accounts/{accountId}/escalations", handler.PermViewerAccess, viewerHandlers.accountEsc.GetAccountEscalations)
+	route("GET /products", handler.PermViewCustomerHealth, viewerHandlers.lookups.GetProducts)
+	route("GET /abt-teams", handler.PermViewCustomerHealth, viewerHandlers.lookups.GetABTTeams)
+	route("GET /generate-timelogs-breakdown-report", handler.PermViewerAccess, viewerHandlers.reports.GenerateTimelogsBreakdownReport)
+	route("GET /user-info", handler.PermViewerAccess, viewerHandlers.userInfo.GetUserInfo)
+	route("POST /scan-user", handler.PermViewerAccess, viewerHandlers.userScan.ScanUser)
+	route("GET /files", handler.PermViewerAccess, viewerHandlers.files.ListFiles)
+	route("GET /files/search", handler.PermViewerAccess, viewerHandlers.files.SearchFolder)
+	route("GET /usage-metrics/projects", handler.PermUsageMetricsViewer, viewerHandlers.usageMetrics.GetProjects)
+	route("POST /usage-metrics/instances/metrics/search", handler.PermUsageMetricsViewer, viewerHandlers.usageMetrics.SearchInstanceMetrics)
+	route("POST /usage-metrics/instances/metrics/stats", handler.PermUsageMetricsViewer, viewerHandlers.usageMetrics.GetInstanceMetricsStats)
+	route("POST /usage-metrics/instances/usages/search", handler.PermUsageMetricsViewer, viewerHandlers.usageMetrics.SearchInstanceUsages)
+	route("POST /usage-metrics/instances/usages/stats", handler.PermUsageMetricsViewer, viewerHandlers.usageMetrics.GetInstanceUsagesStats)
+	route("POST /usage-metrics/deployments/search", handler.PermUsageMetricsViewer, viewerHandlers.usageMetrics.SearchDeployments)
+	route("POST /usage-metrics/projects/search", handler.PermUsageMetricsViewer, viewerHandlers.usageMetrics.SearchProjects)
+	route("POST /usage-metrics/deployed-products/search", handler.PermUsageMetricsViewer, viewerHandlers.usageMetrics.SearchDeployedProducts)
+	route("POST /usage-metrics/instances/search", handler.PermUsageMetricsViewer, viewerHandlers.usageMetrics.SearchInstances)
+	route("POST /usage-metrics/deployed-products/{id}/metrics/search", handler.PermUsageMetricsViewer, viewerHandlers.usageMetrics.GetDeployedProductMetrics)
+	route("POST /usage-metrics/deployed-products/{id}/metrics/usage-counts/search", handler.PermUsageMetricsViewer, viewerHandlers.usageMetrics.GetDeployedProductUsageCounts)
+	route("POST /customer-health/summary", handler.PermViewCustomerHealth, viewerHandlers.customerHealth.GetSummary)
+	route("POST /customer-health/accounts/{accountSysId}/init-health-tracking", handler.PermViewCustomerHealth, viewerHandlers.customerHealth.InitHealthTracking)
+	route("GET /customer-health/accounts/{accountId}", handler.PermViewCustomerHealth, viewerHandlers.customerHealth.GetAccountDetail)
+	route("POST /customer-health/projects/{projectSysId}/risk", handler.PermViewCustomerHealth, viewerHandlers.customerHealth.OpenRisk)
+	route("PUT /customer-health/risks/{riskId}/close", handler.PermViewCustomerHealth, viewerHandlers.customerHealth.CloseRisk)
+	route("POST /customer-health/projects/{projectSysId}/mark-healthy", handler.PermViewCustomerHealth, viewerHandlers.customerHealth.MarkHealthy)
+	route("POST /customer-health/projects/{projectSysId}/revert-review", handler.PermViewCustomerHealth, viewerHandlers.customerHealth.RevertReview)
+	route("GET /customer-health/accounts/{accountSysId}/health-status", handler.PermViewCustomerHealth, viewerHandlers.customerHealth.GetAccountHealthStatus)
+	route("GET /customer-health/accounts/{accountSysId}/health-summary", handler.PermViewCustomerHealth, viewerHandlers.customerHealth.GetAccountHealthSummary)
+	route("GET /customer-health/projects/{projectSysId}/risk-history", handler.PermViewCustomerHealth, viewerHandlers.customerHealth.GetProjectRiskHistory)
+	route("POST /customer-health/risks/{riskId}/action-items", handler.PermViewCustomerHealth, viewerHandlers.customerHealth.CreateActionItem)
+	route("PUT /customer-health/action-items/{actionItemId}/status", handler.PermViewCustomerHealth, viewerHandlers.customerHealth.UpdateActionItemStatus)
+	route("PUT /customer-health/action-items/{actionItemId}", handler.PermViewCustomerHealth, viewerHandlers.customerHealth.UpdateActionItem)
+	route("GET /customer-health/risks/{riskId}/action-items", handler.PermViewCustomerHealth, viewerHandlers.customerHealth.GetActionItemsByRisk)
+	route("GET /customer-health/accounts/{accountSysId}/action-items", handler.PermViewCustomerHealth, viewerHandlers.customerHealth.GetActionItemsByAccount)
+	route("POST /customer-health/action-items/{actionItemId}/comments", handler.PermViewCustomerHealth, viewerHandlers.customerHealth.CreateActionItemComment)
+	route("GET /customer-health/action-items/{actionItemId}/comments", handler.PermViewCustomerHealth, viewerHandlers.customerHealth.GetActionItemComments)
 
 	// Built once and reused on both listeners below: Auth() does a real JWKS
 	// fetch (when TokenValidatorEnabled), so calling it a second time would
@@ -960,7 +995,7 @@ func loadDirectory() *directory.Directory {
 //	AUTH_ATTACHMENT_DOWNLOADER_ROLES, AUTH_USAGE_METRICS_VIEWER_ROLES,
 //	AUTH_SUPPORT_ENGINEER_ROLES, AUTH_ADMIN_ROLES, AUTH_TIMECARD_APPROVER_ROLES,
 //	AUTH_DASHBOARD_DESIGNER_ROLES, AUTH_SALES_SOLUTIONS_ROLES,
-//	AUTH_WORKNOTE_CREATOR_ROLES
+//	AUTH_WORKNOTE_CREATOR_ROLES, AUTH_COMMENT_UPDATER_ROLES, AUTH_SECURITY_TEAM_ROLES
 //	    Each is a comma-separated list of role names; a caller whose token's
 //	    "roles" claim holds any one of them has that role.
 //
@@ -970,15 +1005,17 @@ func loadDirectory() *directory.Directory {
 // nobody, and startup warns naming each one, since with none configured at all
 // nobody can use the portal.
 //
-// AUTH_SALES_SOLUTIONS_ROLES and AUTH_WORKNOTE_CREATOR_ROLES are unlike the
-// rest: leaving either unset does not warn. sales_solutions is a normal,
-// expected unconfigured state (CS Portal alone still works fine) rather than
-// a misconfiguration nobody can use the portal at all without — see
-// AccessConfig.SalesSolutions's own doc comment. worknote_creator is
-// unconfigured-safe for a different reason: CsEngineer/Admin already hold
-// PermCreateWorkNote regardless (see AccessConfig.WorknoteCreator's own doc
-// comment), so leaving it empty is purely "this extra role isn't provisioned
-// yet," never a state that locks anyone out of work notes.
+// AUTH_SALES_SOLUTIONS_ROLES, AUTH_WORKNOTE_CREATOR_ROLES and
+// AUTH_COMMENT_UPDATER_ROLES are unlike the rest: leaving any of them unset
+// does not warn. sales_solutions is a normal, expected unconfigured state (CS
+// Portal alone still works fine) rather than a misconfiguration nobody can
+// use the portal at all without — see AccessConfig.SalesSolutions's own doc
+// comment. worknote_creator and comment_updater are unconfigured-safe for the
+// same reason as each other: CsEngineer/Admin already hold
+// PermCreateWorkNote/PermUpdateDeleteComment regardless (see
+// AccessConfig.WorknoteCreator's/CommentUpdater's own doc comments), so
+// leaving either empty is purely "this extra role isn't provisioned yet,"
+// never a state that locks anyone out.
 func loadAccessConfig() handler.AccessConfig {
 	var unset []string
 	roles := func(name string) []string {
@@ -1003,13 +1040,21 @@ func loadAccessConfig() handler.AccessConfig {
 		// Warns when unset (via roles()) on purpose, unlike the two optional
 		// roles below: unset means only admin can create announcements.
 		AnnouncementCreator: roles("AUTH_ANNOUNCEMENT_CREATOR_ROLES"),
-		// Unlike the roles above, an unset AUTH_SALES_SOLUTIONS_ROLES or
-		// AUTH_WORKNOTE_CREATOR_ROLES is a normal, supported state (see this
-		// function's own doc comment for why each is), so both deliberately
-		// bypass the roles() helper to avoid adding themselves to the
-		// unset-variable warning below.
+		// Warns when unset like every other dedicated role above: unset means
+		// nobody holds security_team, which is a real misconfiguration once
+		// this role is meant to be in use (see handler.AccessConfig.SecurityTeam's
+		// own doc comment) -- unlike SalesSolutions/WorknoteCreator/CommentUpdater
+		// just below, cs_engineer/admin granting nothing it needs does not make an
+		// unset variable here a normal, no-op state.
+		SecurityTeam: roles("AUTH_SECURITY_TEAM_ROLES"),
+		// Unlike the roles above, an unset AUTH_SALES_SOLUTIONS_ROLES,
+		// AUTH_WORKNOTE_CREATOR_ROLES or AUTH_COMMENT_UPDATER_ROLES is a
+		// normal, supported state (see this function's own doc comment for
+		// why each is), so all three deliberately bypass the roles() helper
+		// to avoid adding themselves to the unset-variable warning below.
 		SalesSolutions:  splitComma(os.Getenv("AUTH_SALES_SOLUTIONS_ROLES")),
 		WorknoteCreator: splitComma(os.Getenv("AUTH_WORKNOTE_CREATOR_ROLES")),
+		CommentUpdater:  splitComma(os.Getenv("AUTH_COMMENT_UPDATER_ROLES")),
 	}
 	if len(unset) > 0 {
 		slog.Warn("access-control role variables are unset, so no token role grants them", "variables", unset)
@@ -1364,14 +1409,14 @@ func splitComma(s string) []string {
 	return result
 }
 
-// viewerHandlerSet holds every SupportPortalLite handler, constructed
-// only when SPL_ENABLED is on. See loadViewerConfig for the environment
-// variables backing each field.
+// viewerHandlerSet holds every viewer-audience handler -- always constructed
+// and always registered. All of them read entity-service through the shared
+// customerEntityClient; files (Google Drive) and userScan's Scan User
+// lookups are the only ones with an upstream of their own, and an
+// unconfigured one fails its own calls at request time instead of the route
+// not existing at all (see loadViewerConfig).
 type viewerHandlerSet struct {
-	cases          *handler.ViewerCaseHandler
 	reports        *handler.ReportsHandler
-	schedule       *handler.ViewerScheduleHandler
-	attachments    *handler.AttachmentsHandler
 	lookups        *handler.LookupsHandler
 	usageMetrics   *handler.UsageMetricsHandler
 	files          *handler.FilesHandler
@@ -1381,71 +1426,51 @@ type viewerHandlerSet struct {
 	accountEsc     *handler.ViewerAccountHandler
 }
 
-// viewerConfig holds every environment value SupportPortalLite's /spl/*
-// endpoints need, resolved by loadViewerConfig.
+// viewerConfig holds the environment values behind the viewer-audience
+// endpoints' two optional upstreams (Google Drive and the Scan User entity
+// service), resolved by loadViewerConfig. Everything else those endpoints
+// read comes from entity-service via the shared customerEntityClient.
 type viewerConfig struct {
-	snHost                 string
-	snUsername             string
-	snPassword             string
-	snEscalationTemplateID string
-	teamScheduleURL        string
-	driveClientID          string
-	driveClientSecret      string
-	driveRefreshToken      string
-	riskMySQLDSN           string
-	salesEntityBaseURL     string
+	driveClientID      string
+	driveClientSecret  string
+	driveRefreshToken  string
+	salesEntityBaseURL string
 }
 
-// loadViewerConfig resolves SupportPortalLite's (/spl/*) configuration.
+// loadViewerConfig resolves the viewer-audience endpoints' optional
+// upstream configuration. Every value is independently optional (os.Getenv,
+// not mustEnv): unset Google Drive credentials leave only GET /files and
+// GET /files/search failing at call time, and an unset Scan User entity
+// service URL only Scan User's lookups, each with a normal mapped upstream
+// error (mapUpstreamErrorGeneric) rather than the route being a 404 or the
+// process refusing to start. An explicitly-set value is still validated
+// (optionalHTTPSBaseURL exits on a malformed URL -- that's a real
+// misconfiguration, not "feature absent").
 //
-//	SPL_ENABLED  Any strconv.ParseBool-true value (1, t, T, TRUE, true,
-//	             True). Off by default — unset, empty, or any other value
-//	             keeps every /spl/* route unregistered and every other env
-//	             var below unread, mirroring SFTPGO_ATTACHMENT_STORAGE_ENABLED's
-//	             parsing convention. An unparseable non-empty value is a
-//	             warning, not fatal, and defaults to off.
-//
-// When on, every value below is required (mustEnv) except
-// SERVICENOW_ESCALATION_TEMPLATE_ID and TEAM_SCHEDULE_URL, which are
-// only exercised by the escalation and ABT-team-schedule endpoints
-// respectively and default to empty. SERVICENOW_*, GOOGLE_DRIVE_*, and the
-// entity vars below have no SPL_ prefix even though they're only read when
-// SPL is on: they aren't SPL-specific concepts (ServiceNow, Google Drive,
-// and the sales-side entity service are just this feature's own upstreams)
-// so they follow this file's existing convention of naming a service's own
-// credentials after the service, not the caller -- SPL_RISK_MYSQL_DSN
-// below is the one exception, since "risk" isn't a distinct upstream
-// service name to key on. See .env.example for what each variable
-// configures.
-//
-// Returns (false, zero viewerConfig) when the flag is off, so the caller never
-// touches the returned viewerConfig in that case.
-func loadViewerConfig() (bool, viewerConfig) {
-	enabled := false
-	if raw := strings.TrimSpace(os.Getenv("SPL_ENABLED")); raw != "" {
-		parsed, err := strconv.ParseBool(raw)
-		if err != nil {
-			slog.Warn("SPL_ENABLED is not a boolean; treating it as false",
-				"value", raw, "expected", "1, t, T, TRUE, true, True, 0, f, F, FALSE, false, False")
-		}
-		enabled = parsed
+// GOOGLE_DRIVE_* and the Scan User entity service URL carry no SPL_ prefix: Google
+// Drive and the Scan User entity service are just this feature's own
+// upstreams, so they follow this file's convention of naming a service's
+// credentials after the service, not the caller. See .env.example for what
+// each variable configures.
+func loadViewerConfig() viewerConfig {
+	return viewerConfig{
+		driveClientID:      os.Getenv("GOOGLE_DRIVE_CLIENT_ID"),
+		driveClientSecret:  os.Getenv("GOOGLE_DRIVE_CLIENT_SECRET"),
+		driveRefreshToken:  os.Getenv("GOOGLE_DRIVE_REFRESH_TOKEN"),
+		salesEntityBaseURL: optionalHTTPSBaseURL("SALES_ENTITY_BASE_URL"),
 	}
-	if !enabled {
-		return false, viewerConfig{}
-	}
+}
 
-	return true, viewerConfig{
-		snHost:                 mustHTTPSBaseURL("SERVICENOW_HOST", mustEnv("SERVICENOW_HOST")),
-		snUsername:             mustEnv("SERVICENOW_USERNAME"),
-		snPassword:             mustEnv("SERVICENOW_PASSWORD"),
-		snEscalationTemplateID: os.Getenv("SERVICENOW_ESCALATION_TEMPLATE_ID"),
-		teamScheduleURL:        os.Getenv("TEAM_SCHEDULE_URL"),
-		driveClientID:          mustEnv("GOOGLE_DRIVE_CLIENT_ID"),
-		driveClientSecret:      mustEnv("GOOGLE_DRIVE_CLIENT_SECRET"),
-		driveRefreshToken:      mustEnv("GOOGLE_DRIVE_REFRESH_TOKEN"),
-		riskMySQLDSN:           mustEnv("SPL_RISK_MYSQL_DSN"),
-		salesEntityBaseURL:     mustHTTPSBaseURL("SALES_ENTITY_BASE_URL", mustEnv("SALES_ENTITY_BASE_URL")),
+// optionalHTTPSBaseURL reads key and, if set, validates it exactly like
+// mustHTTPSBaseURL (a configured-but-malformed URL is still a real
+// misconfiguration worth failing startup over). An unset key returns "",
+// leaving the dependent upstream unconfigured rather than failing startup.
+func optionalHTTPSBaseURL(key string) string {
+	v := os.Getenv(key)
+	if v == "" {
+		return ""
 	}
+	return mustHTTPSBaseURL(key, v)
 }
 
 func parseGoogleChatSpaces(raw string) []notifications.GoogleChatSpace {

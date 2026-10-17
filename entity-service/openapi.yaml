@@ -630,6 +630,66 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /sla-status/clock-state:
+    get:
+      summary: >-
+        Return the full, current state of one (work item, clock target) "sla"
+        row, regardless of whether it is currently active — unlike
+        GET /sla-status, which only ever lists active rows. Lets a caller
+        tell a genuinely resolved clock (a real row, in a terminal stage)
+        apart from one that was never registered at all (no row found),
+        which the active-only list can never distinguish between. Used by
+        integrations/csm-notification-service as a final check against this
+        service's own durable record immediately before sending a breach
+        alert for a clock whose Redis-held completion state may have fallen
+        out of sync. Has no ServiceNow equivalent of its own — always backed
+        by Postgres.
+      operationId: getSLAClockState
+      parameters:
+        - name: workItemId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: target
+          in: query
+          required: true
+          description: Case-insensitive. One of response, workaround, resolution.
+          schema:
+            type: string
+            enum: [response, workaround, resolution]
+        - name: source
+          in: query
+          description: >-
+            Optional, same accepted values as GET /sla-status's own "source".
+            Omitted matches a row of either source.
+          schema:
+            type: string
+            enum: [csm, servicenow]
+      responses:
+        "200":
+          description: >-
+            The clock's current state, or an all-zero/false body with
+            found=false when no row exists for this (work item, target,
+            source) at all.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SLAClockState'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /sla-duration-policy:
     get:
       summary: >-
@@ -4428,6 +4488,77 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /announcements/registry/rows:
+    post:
+      summary: One page of the grouped announcement registry.
+      description: >
+        Internal callers only. Backs the CSM announcement registry list. Returns
+        the announcement cases matching the filters collapsed into registry rows:
+        one "batch" row per published announcement request (all of that request's
+        matching cases become a single row) and one "case" row per matching case
+        no published request lists. Grouping, ordering and pagination all run in
+        the database, so there is no cap on how many announcements may match, and
+        this route replaces the capped read of POST /announcements/registry/cases
+        for the registry list. Request shape is POST /cases/search's: filters (state
+        and projectId with op in, and searchQuery) behave exactly as there, type is
+        always announcement whatever the request says, anyOf is rejected, groupBy,
+        skipTotal and countOnly are ignored, and sortBy is validated but does not
+        change the order. pagination applies to the
+        grouped rows (limit defaults to 20 and may not exceed 50; a negative
+        offset is treated as 0). Rows are ordered newest first: a row sits where
+        its most recently updated matching case would sit in an updatedOn
+        descending, id ascending list. total counts rows, not cases. A batch lists
+        every case in its request's published case ids, in that order, whatever the
+        filters were (a filter picks which rows appear, never which members a
+        listed batch shows); ids with no visible announcement case are skipped. A
+        case listed by more than one published request belongs to the oldest of
+        them. Available on the Postgres data source only; on any other data source
+        the route does not exist.
+      operationId: searchAnnouncementRegistryRows
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchCasesRequest'
+      responses:
+        "200":
+          description: One page of grouped registry rows.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchAnnouncementRegistryRowsResponse'
+        "400":
+          description: A filter or the pagination is invalid (for example limit above 50, or anyOf was sent).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: A token is invalid or expired, or neither a user token nor an authorized internal client credential was supplied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller is not an internal caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "503":
+          description: The caller's identity could not be resolved to a scope (for example no verified identity on the request).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /cases/aggregate:
     post:
       summary: >-
@@ -4468,6 +4599,61 @@ paths:
         "503":
           description: >-
             groupBy is only supported for the ServiceNow data source.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /cases/volume-trend:
+    post:
+      summary: Day-bucketed case-volume trend (opened vs. closed), for a dashboard chart.
+      description: >-
+        Returns exactly two series, "Opened" (by created date) and "Closed"
+        (by closed date), one point per UTC calendar day over a trailing
+        window (30 days by default). Deliberately narrow compared to the
+        aggregate operation's open-ended groupBy: this backs exactly one
+        chart, not a platform.
+      operationId: caseVolumeTrend
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CaseVolumeTrendRequest'
+      responses:
+        "200":
+          description: Daily opened/closed case counts for the requested window.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaseVolumeTrendResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Case volume trend is only available to internal users.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "503":
+          description: >-
+            Case volume trend is only supported for the Postgres data source.
           content:
             application/json:
               schema:
@@ -4581,6 +4767,18 @@ paths:
   /cases/{id}/comments:
     post:
       summary: Create a comment on a support case.
+      description: |
+        Writes one comment on the case-like record (a case or a service request alike).
+
+        State side effect of a customer's reply: when a `comment` (customer-visible) is posted
+        by a customer -- an external caller, i.e. a registered portal contact posting through the
+        customer portal -- while the record is `awaiting_info` or `solution_proposed`, the record
+        moves to `waiting_on_wso2` automatically, exactly as a `PATCH /cases/{id}` with
+        `state: waiting_on_wso2` by that caller would (activity-feed entry, `case.status_changed`,
+        SLA effects, dual-write mirror). No other state is touched (a `closed` record stays
+        closed), a `work_note` never triggers it, and neither does a comment from WSO2 staff, the
+        system identity or an M2M client. The move is best-effort and runs after the comment is
+        written: a failed move is logged and the comment is still created.
       operationId: createCaseComment
       parameters:
         - name: id
@@ -4660,7 +4858,13 @@ paths:
 
   /cases/{id}/tags:
     post:
-      summary: Attach a free-text tag to a support case.
+      summary: Attach a free-text tag to a support case or a change request.
+      description: >-
+        The id is a work item id: a case-like work item's, or a change request's (the CSM
+        portal tags change requests through this same route; a change request hidden from a
+        customer caller is 404 here as on every other by-id path). On the dual-write data
+        source a case's tag is mirrored to the previous system; a change request's is not
+        (Postgres-only).
       operationId: addCaseTag
       parameters:
         - name: id
@@ -4669,7 +4873,7 @@ paths:
           schema:
             type: string
             format: uuid
-          description: Case UUID.
+          description: Work item UUID (a case-like work item or a change request).
       requestBody:
         required: true
         content:
@@ -4710,7 +4914,11 @@ paths:
 
   /cases/{id}/tags/{tagId}:
     delete:
-      summary: Detach a tag from a support case.
+      summary: Detach a tag from a support case or a change request.
+      description: >-
+        The id is a work item id: a case-like work item's or a change request's, as for
+        POST /cases/{id}/tags. A change request's tag removal is never mirrored to the
+        previous system.
       operationId: removeCaseTag
       parameters:
         - name: id
@@ -4719,7 +4927,7 @@ paths:
           schema:
             type: string
             format: uuid
-          description: Case UUID.
+          description: Work item UUID (a case-like work item or a change request).
         - name: tagId
           in: path
           required: true
@@ -4804,12 +5012,75 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
 
   /comments/{id}:
+    get:
+      summary: Get a single comment by id.
+      description: >-
+        Internal callers only (403 otherwise) -- no customer-facing caller needs this.
+        Performs no author/role check beyond that: any internal caller may fetch any
+        comment this way, the same exposure POST /comments/search already allows (row-level
+        security -- project membership, work-note visibility -- is unaffected). Exists for
+        csm-portal-backend to learn a comment's author before deciding whether to allow an
+        edit or delete; that decision is made entirely on the BFF side, not here.
+      operationId: getComment
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Comment UUID.
+      responses:
+        "200":
+          description: The comment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Comment'
+        "400":
+          description: Malformed comment UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Caller is not internal.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Comment not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "503":
+          description: Not supported by the configured data source.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     patch:
       summary: Edit an existing comment's content.
       description: >-
-        Postgres data source only (returns 503 on ServiceNow -- its journal entries are
-        append-only). Only the comment's original author or a caller holding the admin role
-        may edit it. The pre-edit content is preserved as a comment_edit_history row for audit;
+        Internal callers only (403 otherwise). Postgres data source only (returns 503 on
+        ServiceNow -- its journal entries are append-only). Performs no author/role check
+        beyond that: csm-portal-backend, the sole caller of this route, decides whether
+        this caller may edit this particular comment before ever calling it. The pre-edit
+        content is preserved as a comment_edit_history row for audit;
         GET /comments/{id}/history lists them.
       operationId: updateComment
       parameters:
@@ -4846,7 +5117,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         "403":
-          description: Caller is neither the comment's author nor an admin.
+          description: Caller is not internal.
           content:
             application/json:
               schema:
@@ -4866,11 +5137,13 @@ paths:
     delete:
       summary: Soft-delete a comment.
       description: >-
-        Postgres data source only (returns 503 on ServiceNow). Content is retained in the
-        database but hidden from non-admin visibility: excluded entirely from a customer
-        caller's results, shown as "[deleted]" to a non-admin internal caller, and shown
-        unredacted to an admin caller. Only the comment's original author or an admin may
-        delete it.
+        Internal callers only (403 otherwise). Postgres data source only (returns 503 on
+        ServiceNow). Content is retained in the database but hidden from non-admin
+        visibility: excluded entirely from a customer caller's results, shown as
+        "[deleted]" to a non-admin internal caller, and shown unredacted to an admin
+        caller. Performs no author/role check beyond that, same as PATCH on this comment
+        -- csm-portal-backend decides whether this caller may delete this particular
+        comment before ever calling it.
       operationId: deleteComment
       parameters:
         - name: id
@@ -4890,7 +5163,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         "403":
-          description: Caller is neither the comment's author nor an admin.
+          description: Caller is not internal.
           content:
             application/json:
               schema:
@@ -4918,10 +5191,11 @@ paths:
     get:
       summary: List a comment's edit history.
       description: >-
-        Postgres data source only (returns 503 on ServiceNow). Newest first. Only the comment's
-        original author or a caller holding the admin role may view its edit history -- the same
-        restriction as PATCH/DELETE on this comment, since a prior comment body can carry the
-        same sensitive content the current body does.
+        Internal callers only (403 otherwise). Postgres data source only (returns 503 on
+        ServiceNow). Newest first. Performs no author/role check beyond that --
+        csm-portal-backend currently has no UI consumer for this route at all, but like
+        PATCH/DELETE on this comment, if it ever does, that decision belongs there, not
+        here.
       operationId: getCommentEditHistory
       parameters:
         - name: id
@@ -4945,7 +5219,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         "403":
-          description: Caller is neither the comment's author nor an admin.
+          description: Caller is not internal.
           content:
             application/json:
               schema:
@@ -5432,6 +5706,70 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "404":
           description: Attachment not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /attachments/{id}/case:
+    get:
+      summary: Get the case an attachment belongs to, sourced consistently with ATTACHMENT_DATA_SOURCE.
+      description: >
+        Resolves an attachment to its own parent case: looks the attachment up (the same
+        way GET /attachments/{id} does), then its referenceId (the same way GET
+        /cases/{id} does), both through whichever CaseService backs attachment reads (see
+        ATTACHMENT_DATA_SOURCE) rather than the general DATA_SOURCE-selected one. Intended
+        for a caller's own attachment-authorization check, so the attachment and its case
+        are always resolved from the same data source as each other. Exists because
+        ATTACHMENT_DATA_SOURCE=servicenow attachments can have a parent case that only
+        exists in ServiceNow, never synced to Postgres -- looking that case up via the
+        plain GET /cases/{id} (always DATA_SOURCE-scoped) would 404 even though the
+        attachment's own content is reachable. id here is an attachment UUID, matching
+        every other /attachments/{id}... route.
+
+
+        An attachment pasted inline into a comment has that comment's id as its
+        referenceId, not a case id. When the referenceId is not a case, it is resolved as a
+        comment (Postgres comment table, read through the caller's own scope) and that
+        comment's case is returned -- but only if the comment is visible to the caller, not
+        deleted, a customer-visible comment (never a work note or activity entry), and its
+        own case is visible to the caller. Otherwise the response is the original 404.
+      operationId: getAttachmentParentCase
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Attachment UUID.
+      responses:
+        "200":
+          description: The case the attachment belongs to.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaseView'
+        "400":
+          description: Bad request — id is not a valid UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Attachment not found, or its parent case not found/not visible under the active attachment data source.
           content:
             application/json:
               schema:
@@ -6825,7 +7163,9 @@ paths:
         whatever that engineer held, because the roster is one slot per person
         per day. A day the window is not worked on — a weekday rotation landing
         on a Saturday — is skipped rather than refused, and reported back in
-        `skippedDates`. The whole range is one transaction.
+        `skippedDates`. The whole range is one transaction. It replaces only
+        that engineer's own rows: an SRE tier somebody else holds is refused
+        with 409, never taken from them.
       operationId: applyScheduleRange
       requestBody:
         required: true
@@ -6860,6 +7200,17 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "404":
           description: Not found — the schedule routes register only with a database pool.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: >
+            Nothing was applied. Either a day clashes with a turn of another
+            team, or somebody else already holds the SRE tier being set (the
+            same zone, tier and day -- per team, or across every team of the
+            rota on a window shared across teams, such as SaaS TZ3, the night
+            cover). The message names the holder; take them off it first.
           content:
             application/json:
               schema:
@@ -7180,6 +7531,75 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /team-schedule/rotas/{code}/night-crew:
+    get:
+      summary: The TZ3 people each month of a rota was generated with.
+      description: >
+        The people a lead chose for TZ3 (the SaaS night cover, one crew for
+        Apollo and Artemis) in "Generate month", as each month's last real
+        generation recorded them. The Month roster lists them under the night
+        cover instead of under their team. Every month from..to is listed; a
+        month with nobody chosen has an empty crew. Only SRE_SAAS has one. At
+        most 12 months at once. Internal staff only.
+      operationId: getRotaNightCrew
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema:
+            type: string
+            example: SRE_SAAS
+        - name: from
+          in: query
+          required: true
+          schema:
+            type: string
+            example: "2026-10"
+          description: First month, YYYY-MM.
+        - name: to
+          in: query
+          required: true
+          schema:
+            type: string
+            example: "2026-12"
+          description: Last month, YYYY-MM; not before from.
+      responses:
+        "200":
+          description: The chosen TZ3 people, month by month.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RotaNightCrewResponse'
+        "400":
+          description: A bad from or to, to before from, or more than 12 months.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthenticated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not internal staff.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: A rota with no night crew (anything but SRE_SAAS).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /team-schedule/absences/apply:
     post:
       summary: Mark one engineer away across a span, or bring them back over it.
@@ -7355,22 +7775,21 @@ paths:
     get:
       summary: Which teams the caller may edit.
       description: >
-        The registry keys of every team this caller leads. An empty list is a
-        valid answer for somebody who leads nothing; the portal uses it to decide
-        which rows to offer an edit control on.
+        The registry keys of every team this caller may edit: teams they lead,
+        every team in a family they are rota admin for, and teams they are the
+        rota marker for. An empty list is a valid answer for somebody who may
+        edit nothing; the portal uses it to decide which rows to offer an edit
+        control on. markerOnlyTeamKeys are the teams held only as rota marker:
+        the caller may mark their days but may not generate the rota or change
+        the shared tags.
       operationId: getMyLeadTeams
       responses:
         "200":
-          description: The caller's lead teams.
+          description: The caller's editable teams.
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  teamKeys:
-                    type: array
-                    items:
-                      type: string
+                $ref: '#/components/schemas/RotaEditTeams'
         "401":
           description: Unauthenticated.
           content:
@@ -7385,6 +7804,270 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "404":
           description: Not found — the schedule routes register only with a database pool.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /team-schedule/rota-access:
+    get:
+      summary: Who may change the rotas beyond the team leads.
+      description: >
+        The Team Schedule's Rota access tab: every rota admin (cre_rota_admin,
+        sre_rota_admin, sme_rota_admin) and the rota markers of the families
+        the caller may manage, with what the caller may change. A CSM Portal
+        admin -- a token role listed in AUTH_ADMIN_ROLES, the same setting the
+        portal uses -- manages everything; a rota admin manages their own family's
+        markers. Anybody else internal gets an empty answer (200), which is how
+        the portal decides not to show the tab. Needs a user token.
+      operationId: getRotaAccess
+      responses:
+        "200":
+          description: The grants the caller may see, and what they may change.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RotaAccess'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller, or no user token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found — the schedule routes register only with a database pool.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /team-schedule/rota-access/admins/{family}/{userId}:
+    put:
+      summary: Make somebody a rota admin for one family.
+      description: >
+        Grants the family's rota admin role: the holder may edit every team in
+        that family. CSM admin only. The person must be active internal staff --
+        a rota role never makes anyone internal. Audited.
+      operationId: grantRotaAdmin
+      parameters:
+        - name: family
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [CRE, SRE, SME]
+          description: The rota family (case-insensitive).
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The person ("user" id).
+      responses:
+        "204":
+          description: Done. Granting what is already held, or removing what is not, changes nothing and is not an error.
+        "400":
+          description: Bad request — not CRE, SRE or SME, the user id is not a UUID, or the person is not active internal staff.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not a CSM admin.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found — the schedule routes register only with a database pool.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      summary: Take a family's rota admin role away.
+      description: >
+        Removes every copy of the role from the person. CSM admin only. Audited.
+      operationId: revokeRotaAdmin
+      parameters:
+        - name: family
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [CRE, SRE, SME]
+          description: The rota family (case-insensitive).
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The person ("user" id).
+      responses:
+        "204":
+          description: Done. Granting what is already held, or removing what is not, changes nothing and is not an error.
+        "400":
+          description: Bad request — not CRE, SRE or SME, or the user id is not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not a CSM admin.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found — the schedule routes register only with a database pool.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /team-schedule/rota-access/markers/{teamKey}/{userId}:
+    put:
+      summary: Make somebody a team's rota marker.
+      description: >
+        A rota marker may mark the team's rota -- rotations, leave and
+        allocations -- and nothing else: not the shared tags, not Generate month,
+        not the paging chain. A CSM admin may name any team's marker, a rota
+        admin their own family's. The person must be active internal staff and a
+        member of the team; the grant stops counting when they leave it. Audited.
+      operationId: grantRotaMarker
+      parameters:
+        - name: teamKey
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The team's registry key.
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The person ("user" id).
+      responses:
+        "204":
+          description: Done. Granting what is already held, or removing what is not, changes nothing and is not an error.
+        "400":
+          description: Bad request — the user id is not a UUID, or the person is not active internal staff on the team.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Neither a CSM admin nor the rota admin for the team's family.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: The team is not on the schedule, or the schedule routes are not registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      summary: Take a team's rota marker away.
+      description: >
+        Same permission as granting. The person need not still be on the team. Audited.
+      operationId: revokeRotaMarker
+      parameters:
+        - name: teamKey
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The team's registry key.
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The person ("user" id).
+      responses:
+        "204":
+          description: Done. Granting what is already held, or removing what is not, changes nothing and is not an error.
+        "400":
+          description: Bad request — the user id is not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Neither a CSM admin nor the rota admin for the team's family.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: The team is not on the schedule, or the schedule routes are not registered.
           content:
             application/json:
               schema:
@@ -7471,6 +8154,14 @@ paths:
             type: string
             format: date-time
           description: RFC3339 instant. Defaults to now.
+        - name: includeOnLeave
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+          description: >-
+            Also return the people away that day, marked onLeave, after the
+            ones available. Without it they are left out. Case Paging asks for
+            them when a ladder's onLeave is call.
       responses:
         "200":
           description: Everyone whose window covers that instant.
@@ -7592,6 +8283,1053 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /team-schedule/paging-chain:
+    get:
+      summary: Who is on each tier of a family's Case Paging chain, and what the caller may change.
+      description: >
+        Case Paging pages people about an incident tier by tier until someone
+        acknowledges. This lists the memberships behind those tiers for one
+        family (CRE or SRE): each team's 1st-3rd responders (Tier 1), its Team
+        leads, the America lead (americas_team_lead) and the CRE and CS heads.
+        `canEdit` says which of those the calling user may change; a service
+        credential with no user may read but gets no edit rights. The SRE side
+        is read-only: its tiers come from the rota. Internal callers only;
+        PostgreSQL data source only.
+      operationId: getPagingChain
+      parameters:
+        - name: family
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [CRE, SRE]
+            default: CRE
+      responses:
+        "200":
+          description: The family's paging chain memberships.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PagingChainResponse'
+        "400":
+          description: Bad request — family is not CRE or SRE.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller is not internal staff.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not available on this data source (no database).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /team-schedule/paging-chain/members/{membershipId}:
+    patch:
+      summary: Change one membership's place on the Case Paging chain.
+      description: >
+        Exactly one of `responderRank` or `role`. Making someone a team's 2nd
+        responder takes that slot off whoever held it; a new America lead, CRE
+        head or CS head replaces the previous one. Who may make each change is
+        checked on the write: a team's responders by its Team lead (or its
+        America lead, where it has one) or a CRE rota admin; a team's Team leads
+        by the CRE head or CS head (or the team's America lead) or a CRE rota
+        admin; the America lead and the CRE and CS heads by a CRE rota admin or
+        a portal admin. The SRE side cannot be changed here. Needs a user token.
+      operationId: updatePagingMember
+      parameters:
+        - name: membershipId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The membership (team_member) id.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePagingMemberRequest'
+      responses:
+        "200":
+          description: The membership as it now stands.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PagingChainMember'
+        "400":
+          description: Bad request — not exactly one change, a rank outside 0-3, an unknown role, or a lead as a responder.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller may not make this change, it is on the read-only SRE side, or there is no user token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: No such membership, or not available on this data source.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: Someone else changed the same team at the same time.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /team-schedule/paging-readiness:
+    get:
+      summary: Whether each Case Paging chain would reach someone over the next days.
+      description: >
+        Checks, from today (the rota's own clock, Asia/Colombo) for `days`
+        days: the CRE chain's standing positions (each CRE ABT's and the
+        Americas team's T1-T3 responders, each ABT's Team lead, the America
+        lead, the CRE head and CS head); that every zone the SaaS and IaaS SRE
+        rotas work each day has an L1, an L2 and an L3 rostered; that every
+        window of every SME rota team is rostered each day; and that every
+        specialist handoff dialog team names an existing SME team. People away
+        on a day are not counted as rostered. Read-only, computed on each
+        call. Internal callers only; PostgreSQL data source only.
+      operationId: getPagingReadiness
+      parameters:
+        - name: days
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 14
+            default: 7
+      responses:
+        "200":
+          description: One entry per chain, in the order CRE, SRE_SAAS, SRE_IAAS, SME.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PagingReadinessResponse'
+        "400":
+          description: Bad request — days is not a whole number from 1 to 14.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller is not internal staff.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not available on this data source (no database).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /team-schedule/paging-contacts:
+    get:
+      summary: Stored paging-only phone numbers, by email.
+      description: >
+        The paging-only numbers stored for the people with the given emails
+        (case-insensitive; an email two users share yields both), in full.
+        For csm-notification-service, which calls one when the person's
+        Asgardeo profile has no number, and for internal staff. A person with
+        no stored number is simply absent. Internal callers only (a service
+        credential is enough); PostgreSQL data source only.
+      operationId: listPagingContacts
+      parameters:
+        - name: emails
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Comma-separated emails, at most 200. None returns an empty list.
+      responses:
+        "200":
+          description: The stored numbers.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PagingContactsResponse'
+        "400":
+          description: Bad request — more than 200 emails.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller is not internal.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not available on this data source (no database).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /team-schedule/paging-contacts/{userId}:
+    put:
+      summary: Store a person's paging-only phone number.
+      description: >
+        Stores the number paging calls when the person's Asgardeo profile has
+        none. Never written to Asgardeo; every change is audited. Changing the
+        number clears its last test. Allowed for a lead (lead or
+        americas_team_lead) of a team the person is on, the rota admin of a
+        family one of their teams is in (cre_rota_admin, sre_rota_admin,
+        sme_rota_admin), the CRE head or CS head, or a portal admin. Needs a
+        user token.
+      operationId: setPagingPhone
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The person ("user" id).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetPagingPhoneRequest'
+      responses:
+        "200":
+          description: The number as stored, in full.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PagingPhone'
+        "400":
+          description: Bad request — not an E.164 number, or the user id is not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller may not set this person's number, or there is no user token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: No such user, or not available on this data source.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      summary: Remove a person's paging-only phone number.
+      description: Same permission as setting it. Removing a number that is not there is not an error.
+      operationId: deletePagingPhone
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The person ("user" id).
+      responses:
+        "204":
+          description: Removed.
+        "400":
+          description: Bad request — the user id is not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller may not change this person's number, or there is no user token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: No such user, or not available on this data source.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /team-schedule/paging-contacts/{userId}/test:
+    post:
+      summary: Ask for a test call to a person's paging-only number.
+      description: >
+        Marks the test pending and publishes paging.test_call_requested on the
+        main event topic; csm-notification-service places the call and
+        reports the outcome (PUT .../test-result). Same permission as setting
+        the number. At most one test every two minutes per person.
+      operationId: requestPagingTestCall
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The person ("user" id).
+      responses:
+        "202":
+          description: The test call was requested.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PagingTestCallResponse'
+        "400":
+          description: Bad request — the user id is not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller may not test this person's number, or there is no user token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: No such user, or not available on this data source.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: The person has no paging number.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "429":
+          description: A test call was asked for less than two minutes ago.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "503":
+          description: Event publishing is not configured, or the request could not be published (the test is then recorded as failed).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /team-schedule/paging-contacts/{userId}/test-result:
+    put:
+      summary: Report the outcome of a test call.
+      description: >
+        For the service that placed the call (csm-notification-service): a
+        service credential only, never a person's token.
+      operationId: recordPagingTestResult
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The person ("user" id).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PagingTestResultRequest'
+      responses:
+        "204":
+          description: Recorded.
+        "400":
+          description: Bad request — unknown status, testedAt not RFC3339, or the user id is not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal service credential.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: The person has no paging number, or not available on this data source.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /team-schedule/case-alerts/settings:
+    get:
+      summary: The Case Alerts chat rooms, group routes and ladder values.
+      description: >
+        The settings section of the Team Schedule's Alert Settings tab: the chat
+        rooms, the ServiceNow group routes and the other ladder values the
+        paging ladders use, the saved and running revision, what the alert
+        service reported it runs with, and what the caller may change.
+        Webhook URLs are never returned, only a hint. Each family's settings
+        are sent only to those who may change them: CRE's to the CRE rota
+        admin and the CRE and CS heads, SRE's to the SRE rota admin, SME's to
+        the SME rota admin, all three to a CSM admin (AUTH_ADMIN_ROLES) or
+        portal admin. Anybody else internal gets an empty answer (200,
+        canManage.view false), which is how the portal decides not to show the
+        section. Needs a user token. csm-notification-service uses everything
+        saved unless PAGING_CONFIG_SOURCE is off.
+      operationId: getCaseAlertSettings
+      responses:
+        "200":
+          description: The settings, and what the caller may change.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaseAlertSettings'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller, or no user token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found — the schedule routes register only with a database pool.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /team-schedule/case-alerts/settings/rooms:
+    put:
+      summary: Create or change a chat room.
+      description: >
+        A ladder's shared room (no teamKey) or an SRE team's own room; one room
+        per scope, so saving a scope again changes it. Audited.
+      operationId: saveCaseAlertRoom
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SaveCaseAlertRoomRequest'
+      responses:
+        "200":
+          description: The room as saved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaseAlertChatRoom'
+        "400":
+          description: Bad request — not CRE or SRE, no label, a team room that is not an SRE team of the Team Schedule, or teamless on a shared room.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller, no user token, or not allowed to change this ladder's settings (a CSM admin or portal admin may change both ladders; the CRE or SRE rota admin their own).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found — the schedule routes register only with a database pool.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /team-schedule/case-alerts/settings/rooms/{roomId}:
+    delete:
+      summary: Remove a chat room.
+      description: >
+        Removes the room and its webhook URL; the ladder then uses the file
+        mount's room again. Audited.
+      operationId: deleteCaseAlertRoom
+      parameters:
+        - name: roomId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The room.
+      responses:
+        "204":
+          description: Removed.
+        "400":
+          description: Bad request — the room id is not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller, no user token, or not allowed to change this ladder's settings (a CSM admin or portal admin may change both ladders; the CRE or SRE rota admin their own).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: No such room.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /team-schedule/case-alerts/settings/rooms/{roomId}/webhook:
+    put:
+      summary: Set a chat room's webhook URL.
+      description: >
+        Write-only: the URL is stored as saved (no key needed), never audited
+        and never returned; the room shows a hint instead. It must be a Google Chat incoming webhook
+        (https://chat.googleapis.com/v1/spaces/{space}/messages with key and
+        token). Replacing it clears the last test card.
+      operationId: setCaseAlertWebhook
+      parameters:
+        - name: roomId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The room.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetCaseAlertWebhookRequest'
+      responses:
+        "200":
+          description: The room, with its new hint.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaseAlertChatRoom'
+        "400":
+          description: Bad request — not a Google Chat webhook URL, or the room id is not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller, no user token, or not allowed to change this ladder's settings (a CSM admin or portal admin may change both ladders; the CRE or SRE rota admin their own).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: No such room.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /team-schedule/case-alerts/settings/rooms/{roomId}/test:
+    post:
+      summary: Send a test card to a chat room.
+      description: >
+        Posts a short card to the room's saved webhook URL now and records
+        whether Google Chat took it (delivered or failed). One test per room
+        every two minutes.
+      operationId: sendCaseAlertTestCard
+      parameters:
+        - name: roomId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The room.
+      responses:
+        "200":
+          description: The test's outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaseAlertTestCardResponse'
+        "400":
+          description: Bad request — the room id is not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller, no user token, or not allowed to change this ladder's settings (a CSM admin or portal admin may change both ladders; the CRE or SRE rota admin their own).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: No such room.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: The room has no URL saved here, or its URL was saved under another key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "429":
+          description: A test card was sent less than two minutes ago.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /team-schedule/case-alerts/settings/routes:
+    put:
+      summary: Create or change a group route.
+      description: >
+        Sends a ServiceNow group's alerts to a team of the ladder's family, or
+        (SRE only) to a default rota. One route per group and ladder, so saving
+        a group again changes it. Audited.
+      operationId: saveCaseAlertRoute
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SaveCaseAlertRouteRequest'
+      responses:
+        "200":
+          description: The route as saved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaseAlertGroupRoute'
+        "400":
+          description: Bad request — not CRE or SRE, no group name, not exactly one of teamKey and rotaCode, a team of another family, or a rota that is not an active SRE rota.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller, no user token, or not allowed to change this ladder's settings (a CSM admin or portal admin may change both ladders; the CRE or SRE rota admin their own).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found — the schedule routes register only with a database pool.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /team-schedule/case-alerts/settings/routes/{routeId}:
+    delete:
+      summary: Remove a group route.
+      description: The group is routed by the file mount again. Audited.
+      operationId: deleteCaseAlertRoute
+      parameters:
+        - name: routeId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The route.
+      responses:
+        "204":
+          description: Removed.
+        "400":
+          description: Bad request — the route id is not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller, no user token, or not allowed to change this ladder's settings (a CSM admin or portal admin may change both ladders; the CRE or SRE rota admin their own).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: No such route.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /team-schedule/case-alerts/settings/values:
+    put:
+      summary: Save ladder values.
+      description: >
+        Saves one or more values of one ladder at once. Each key is a key of
+        csm-notification-service's paging file under cre or sre (teams.abts,
+        timing.interval, heads.cre, ...) and its value is in the file's shape.
+        Every value is checked against its key's limits first, then all are
+        saved together, so a refusal saves none. The switches, channel, safety
+        caps, phones.source and test calls are not among the keys: they stay
+        in the file. A saved value replaces that key of the file when the alert
+        service runs with PAGING_CONFIG_SOURCE=db. Audited.
+      operationId: saveCaseAlertValues
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SaveCaseAlertValuesRequest'
+      responses:
+        "200":
+          description: The ladder's saved values.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaseAlertValuesResponse'
+        "400":
+          description: Bad request — not CRE or SRE, no values or more than 50, a key that cannot be saved here or is the other ladder's, or a value outside its limits. The message names the key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller, no user token, or not allowed to change this ladder's settings (a CSM admin or portal admin may change both ladders; the CRE or SRE rota admin their own).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found — the schedule routes register only with a database pool.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /team-schedule/case-alerts/settings/values/{valueId}:
+    delete:
+      summary: Remove a saved ladder value.
+      description: The ladder uses the file's value for that key again. Audited.
+      operationId: deleteCaseAlertValue
+      parameters:
+        - name: valueId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The saved value.
+      responses:
+        "204":
+          description: Removed.
+        "400":
+          description: Bad request — the value id is not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller, no user token, or not allowed to change this ladder's settings (a CSM admin or portal admin may change both ladders; the CRE or SRE rota admin their own).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: No such saved value.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /team-schedule/case-alerts/settings/runtime:
+    get:
+      summary: The Case Alerts settings with webhook URLs, for csm-notification-service.
+      description: >
+        The enabled rooms with their URL, and the enabled routes. For an
+        internal service client (csm-notification-service's; only those
+        CASE_ALERTS_RUNTIME_CLIENT_IDS names, when set), never a person's
+        token. A room whose URL cannot be read (sealed before 0237 under a key
+        this deployment does not have) is left out, so the ladder keeps the
+        file's room.
+      operationId: getCaseAlertRuntimeSettings
+      responses:
+        "200":
+          description: What the ladders use.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaseAlertRuntimeSettings'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: "A person's token, or a client CASE_ALERTS_RUNTIME_CLIENT_IDS (when set) does not list."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found — the schedule routes register only with a database pool.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /team-schedule/case-alerts/settings/applied:
+    put:
+      summary: Report what csm-notification-service loaded.
+      description: >
+        Sent by csm-notification-service after start-up: the revision it
+        loaded, its PAGING_CONFIG_SOURCE mode, and a summary without URLs. The
+        Alert Settings tab shows it as the running revision.
+      operationId: recordCaseAlertSettingsApplied
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CaseAlertAppliedReport'
+      responses:
+        "204":
+          description: Recorded.
+        "400":
+          description: Bad request — mode not off, shadow or db, a negative revision, or a summary over 32 KiB.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: "A person's token, or a client CASE_ALERTS_RUNTIME_CLIENT_IDS (when set) does not list."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found — the schedule routes register only with a database pool.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /groups/search:
     post:
       summary: Search groups.
@@ -8715,8 +10453,13 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
 
     patch:
-      summary: Partially update an incident (ServiceNow data source only).
+      summary: Partially update an incident.
       description: >-
+        Accepts the same fields on every data source. On postgres-servicenow-dual-write the
+        change is written to Postgres and mirrored to ServiceNow. A change to impact or
+        urgency recomputes priority (ServiceNow's impact x urgency lookup); a new category
+        that does not hold the current subcategory clears it; watchList replaces the whole
+        list. A field sent as null is ignored, except environment, which null clears.
         On postgres-servicenow-dual-write, moving the incident to CLOSED also moves each of
         its open incident tasks to CLOSED_INCOMPLETE, and moving it to CANCELED moves them
         to CLOSED_SKIPPED, each with ServiceNow's work note ("Incident Task is Closed
@@ -8905,7 +10648,9 @@ paths:
         "409":
           description: >-
             Incident not eligible for a specialist handoff (wrong business service, not in
-            progress, or already with the specialist group for this service).
+            progress, or already with the specialist group for this service), or assigned to
+            nobody (errorCode `incident_handoff_needs_assignee`: the assignee answers for the
+            page to the SME on duty).
           content:
             application/json:
               schema:
@@ -10629,6 +12374,751 @@ paths:
           description: >-
             The case cannot move: ESCALATE on a case already at EL5, or DEESCALATE on a
             case already at EL0. DEESCALATE always returns the case to EL0.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /projects/{id}/risk:
+    post:
+      summary: Open a new risk record for a project, setting its health status to AT_RISK.
+      operationId: openProjectRisk
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OpenProjectRiskRequest'
+      responses:
+        "201":
+          description: Risk opened successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectRisk'
+        "400":
+          description: Bad request — missing comment, or other invalid field.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Missing or invalid x-user-id-token header.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: The project already has an open risk.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /risks/{id}/close:
+    put:
+      summary: Close an open risk and reset the project's health status to TO_BE_REVIEWED.
+      operationId: closeProjectRisk
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CloseProjectRiskRequest'
+      responses:
+        "200":
+          description: Risk closed successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectRisk'
+        "400":
+          description: Bad request — missing comment, or other invalid field.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Missing or invalid x-user-id-token header.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Risk not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: The risk is not open, or still has open/in-progress action items.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /projects/{id}/mark-healthy:
+    post:
+      summary: Mark a project healthy and record a closed risk entry for audit history.
+      operationId: markProjectHealthy
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MarkProjectHealthyRequest'
+      responses:
+        "200":
+          description: Project marked healthy successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectHealthStatus'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Missing or invalid x-user-id-token header.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /projects/{id}/revert-health:
+    post:
+      summary: Revert a project's health status back to TO_BE_REVIEWED.
+      operationId: revertProjectHealth
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Project health reverted successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectHealthStatus'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Project has no health status record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /projects/{id}/risk-history:
+    get:
+      summary: Return a project's full risk history, newest first, each with its action items.
+      operationId: getProjectRiskHistory
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The project's risk history.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetProjectRiskHistoryResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /accounts/{id}/project-health-statuses:
+    get:
+      summary: Return the health status of every project under an account, each with its currently open risk.
+      operationId: getAccountProjectHealthStatuses
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The account's project health statuses.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetAccountProjectHealthStatusesResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /accounts/{id}/health-summary:
+    get:
+      summary: Return an account's aggregated overall health status.
+      operationId: getAccountHealthSummary
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The account's overall health status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountHealthSummary'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /accounts/{id}/health-detail:
+    get:
+      summary: Return the per-project customer-health breakdown of an account.
+      description: >-
+        For every project of the account (newest first): recent cases grouped by
+        priority, open migration engagements that are delayed or abandoned, deployed
+        products past their support end date, the active deployments, the escalations
+        on the project's work items, and the go-live status. Windows and rules are those
+        of the health summary on POST /accounts/search (recent cases 180 days; delayed and
+        abandoned migrations 60 and 180 days; a work item is a case unless it is an
+        announcement, except for escalations, which count on announcements too).
+        Computed in a fixed number of statements however many projects and cases the
+        account has. Internal callers only. Postgres data source only; the other data
+        source answers 400.
+      operationId: getAccountHealthDetail
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The account's health detail.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountHealthDetail'
+        "400":
+          description: Malformed account id, or the data source does not support it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: No account with this id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /accounts/health-summaries/search:
+    post:
+      summary: Return GetAccountHealthSummary for many accounts in one query, keyed by account id.
+      operationId: getBatchAccountHealthSummaries
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchAccountHealthSummariesRequest'
+      responses:
+        "200":
+          description: Overall health status per requested account id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchAccountHealthSummariesResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /accounts/by-health-status/search:
+    post:
+      summary: Return the ids of accounts matching the given overall health status.
+      operationId: getAccountsByHealthStatus
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountsByHealthStatusRequest'
+      responses:
+        "200":
+          description: Account ids matching the requested status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountsByHealthStatusResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /accounts/{id}/init-health-tracking:
+    post:
+      summary: Seed a TO_BE_REVIEWED health-status row for every listed project id that doesn't already have one.
+      operationId: initProjectHealthTracking
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InitProjectHealthTrackingRequest'
+      responses:
+        "204":
+          description: Health tracking initialized successfully.
+        "400":
+          description: Bad request — a project id doesn't belong to the account, or other invalid field.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /risks/{id}/action-items:
+    post:
+      summary: Create a new action item on a risk.
+      operationId: createRiskActionItem
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRiskActionItemRequest'
+      responses:
+        "201":
+          description: Action item created successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RiskActionItem'
+        "400":
+          description: Bad request — missing title, invalid priority or due date, or other invalid field.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Missing or invalid x-user-id-token header.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Risk not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: Action items can only be added to open risks.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    get:
+      summary: Return a risk's action items, newest first, each enriched with its comment count.
+      operationId: getActionItemsByRisk
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/RiskActionItemStatus'
+      responses:
+        "200":
+          description: The risk's action items.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetRiskActionItemsResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /action-items/{id}/status:
+    put:
+      summary: Update an action item's status.
+      operationId: updateRiskActionItemStatus
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateRiskActionItemStatusRequest'
+      responses:
+        "200":
+          description: Action item status updated successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RiskActionItem'
+        "400":
+          description: >-
+            Bad request — resolutionComment is required when status is RESOLVED or
+            CANCELLED, invalid status, or other invalid field.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Missing or invalid x-user-id-token header.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Action item not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: Reopening this action item would leave an active item on a risk that isn't open.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /action-items/{id}:
+    put:
+      summary: Update an action item's details.
+      operationId: updateRiskActionItem
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateRiskActionItemRequest'
+      responses:
+        "200":
+          description: Action item updated successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RiskActionItem'
+        "400":
+          description: Bad request — missing title, invalid priority or due date, or other invalid field.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Action item not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: Only OPEN or IN_PROGRESS items can be edited.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /accounts/{id}/action-items:
+    get:
+      summary: Return the action items belonging to open risks under an account, newest first.
+      operationId: getActionItemsByAccount
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: projectId
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/RiskActionItemStatus'
+      responses:
+        "200":
+          description: The account's open-risk action items.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetRiskActionItemsResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /action-items/{id}/comments:
+    post:
+      summary: Post a comment on an action item.
+      operationId: createActionItemComment
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateActionItemCommentRequest'
+      responses:
+        "201":
+          description: Comment posted successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActionItemComment'
+        "400":
+          description: Bad request — blank comment, or other invalid field.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Missing or invalid x-user-id-token header.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Action item not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    get:
+      summary: Return an action item's comments, oldest first.
+      operationId: getActionItemComments
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The action item's comments.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetActionItemCommentsResponse'
+        "400":
+          description: Bad request.
           content:
             application/json:
               schema:
@@ -12684,15 +15174,44 @@ components:
         nightCrew:
           type: object
           description: >
-            Team key -> the people chosen to work that team's TZ3 for the month.
-            Their TZ3 L1, L2 and L3 go round them night by night (weekends
-            included) and they work no other zone; a night they are short is
-            filled from the team and warned about. A team left out keeps the
-            usual nights. Each id must be a member of that team (400 otherwise).
+            Team key -> the people chosen to work TZ3 for the month. TZ3 is one
+            crew for the whole rota (the night cover for every team): every
+            team's choices together are that crew, and the rota's single TZ3
+            L1, L2 and L3 go round them night by night (weekends included).
+            They work no other zone, and nobody else is put on TZ3: a tier they
+            cannot cover on a night is left empty and warned about. With nobody
+            chosen, nights are drawn as usual. Each id must be a member of the
+            team it is listed under (400 otherwise). A real (not dryRun) run
+            records the choice for the month, replacing the month's earlier one
+            (see GET /team-schedule/rotas/{code}/night-crew).
           additionalProperties:
             type: array
             items: {type: string, format: uuid}
           example: {apollo: ["6ed08bc9-1b20-6690-182c-0dc5604bcb6b"]}
+    RotaNightCrewResponse:
+      type: object
+      required: [rotaCode, months]
+      properties:
+        rotaCode:
+          type: string
+          example: SRE_SAAS
+        months:
+          type: array
+          items:
+            type: object
+            required: [month, crew]
+            properties:
+              month:
+                type: string
+                example: "2026-11"
+              crew:
+                type: array
+                items:
+                  type: object
+                  required: [userId, teamKey]
+                  properties:
+                    userId: {type: string, format: uuid}
+                    teamKey: {type: string, example: apollo}
     GeneratedRotaTurn:
       type: object
       properties:
@@ -13521,6 +16040,299 @@ components:
         classification:
           type: string
           description: Filter by account classification (e.g. enterprise).
+        ownerEmail:
+          type: string
+          description: >-
+            Keep accounts where this email is the technical owner, account manager or
+            renewal account manager (any of the three), case-insensitive exact match.
+            Postgres data source only.
+        lifeCycle:
+          type: string
+          description: >-
+            Exact match on the account life cycle (e.g. Customer, Partner, Prospect).
+            Postgres data source only.
+        hasProject:
+          type: boolean
+          description: When true, only accounts with at least one project. Postgres data source only.
+        risks:
+          type: array
+          items:
+            type: string
+            enum:
+              - hasNoGoLive
+              - hasGoneLive
+              - hasRecentCases
+              - noSupportCases6mo
+              - hasEolProduct
+              - hasAbandonedMigrations
+              - hasMigrationDelays
+              - hasRecentEscalations
+          description: >-
+            Customer-health risk filter, OR semantics: keep accounts exhibiting any listed
+            key. An unrecognized key matches nothing; blank entries are ignored. Applied
+            before pagination, so total counts only the matching accounts. Postgres data
+            source only; the ServiceNow data source answers 400.
+            hasNoGoLive: some project has no go-live date, the account was activated on or
+            after 2024-01-01 and at least 6 whole months (days / 30.4375) have passed.
+            hasGoneLive: every project has a go-live date or the account was activated
+            before 2024-01-01 (projects pending a go-live decision are neither).
+            hasRecentCases: a case, service request, engagement or security report analysis
+            created in the last 180 days. noSupportCases6mo: the negation of hasRecentCases.
+            hasEolProduct: a deployed product (not deactivated) on any deployment of any
+            project, deployment active or not, whose product version support end date has
+            passed. hasAbandonedMigrations / hasMigrationDelays: a migration engagement not
+            closed and created at least 180 / 60 days ago. hasRecentEscalations: an
+            escalation created in the last 90 days on one of the account's work items.
+        subRegion:
+          type: array
+          items:
+            type: string
+          description: >-
+            Keep accounts whose sub-region (not region) equals any listed value, exact
+            match. Postgres data source only.
+        product:
+          type: string
+          description: >-
+            Keep accounts with a deployed product of this name (case-insensitive) on any
+            deployment of any project, deployment active or not; a deactivated deployed
+            product does not count. Postgres data source only.
+        abtTeam:
+          type: string
+          description: >-
+            Keep accounts whose CRE or SRE team name equals this value, case-insensitive.
+            Postgres data source only.
+        healthStatus:
+          type: string
+          description: >-
+            Keep accounts whose aggregated project health status is this value. Any other
+            value matches nothing. An account with no project health rows matches none of
+            the three values. Postgres data source only.
+          enum:
+            - at_risk
+            - healthy
+            - to_be_reviewed
+        includeHealthSummary:
+          type: boolean
+          description: >-
+            When true, every returned account carries healthSummary. When false or absent
+            the response is unchanged. Postgres data source only.
+
+    AccountSearchHealthSummary:
+      type: object
+      description: >-
+        Customer-health flags and overall health status of one account. Present only when
+        the search set includeHealthSummary.
+      required:
+        - goLiveStatus
+        - hasRecentCases
+        - hasEolProduct
+        - hasAbandonedMigrations
+        - hasMigrationDelays
+        - hasRecentEscalations
+        - noSupportCases6mo
+        - healthStatus
+      properties:
+        goLiveStatus:
+          type: object
+          required: [status, isRisk, state]
+          properties:
+            status:
+              type: string
+              description: Display text, e.g. "Has Gone Live" or "Hasn't Gone Live Since 3 months".
+            isRisk:
+              type: boolean
+              description: True only when state is failure.
+            state:
+              type: string
+              enum: [success, pending, failure]
+        hasRecentCases:
+          type: boolean
+        hasEolProduct:
+          type: boolean
+        hasAbandonedMigrations:
+          type: boolean
+        hasMigrationDelays:
+          type: boolean
+        hasRecentEscalations:
+          type: boolean
+        noSupportCases6mo:
+          type: boolean
+        healthStatus:
+          type: string
+          enum: [at_risk, healthy, to_be_reviewed]
+          description: at_risk if any project is, else healthy if every project row is, else to_be_reviewed (also when the account has no health rows).
+
+    AccountHealthDetail:
+      type: object
+      description: Per-project customer-health breakdown of one account.
+      required: [accountName, customerProjects]
+      properties:
+        accountName:
+          type: string
+        customerProjects:
+          type: array
+          description: Every project of the account, newest first.
+          items:
+            $ref: '#/components/schemas/ProjectHealthDetail'
+
+    ProjectHealthDetail:
+      type: object
+      description: One project's health flags and the items behind them. Every array is present, empty when nothing qualifies.
+      required:
+        - id
+        - name
+        - hasRecentCases
+        - detailedRecentCases
+        - totalRecentCases
+        - hasAbandonedCases
+        - detailedAbandonedCases
+        - isUsingEolProduct
+        - softwareModel
+        - deployments
+        - hasMigrationDelays
+        - detailedMigrationDelays
+        - hasEscalatedCases
+        - detailedEscalatedCases
+        - goLiveStatus
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        hasRecentCases:
+          type: boolean
+        detailedRecentCases:
+          type: array
+          description: >-
+            Case-like work items (never announcements) created in the last 180 days,
+            grouped by priority in the order each priority first appears, newest case first.
+          items:
+            $ref: '#/components/schemas/HealthCasePriorityGroup'
+        totalRecentCases:
+          type: integer
+        hasAbandonedCases:
+          type: boolean
+        detailedAbandonedCases:
+          type: array
+          description: Open migration engagements created at least 180 days ago, newest first.
+          items:
+            $ref: '#/components/schemas/HealthCaseLink'
+        isUsingEolProduct:
+          type: boolean
+        softwareModel:
+          type: array
+          description: >-
+            Deployed products (deactivated ones excluded) past their support end date, on
+            any deployment of the project, active or not; one entry per product version.
+          items:
+            $ref: '#/components/schemas/HealthEolProduct'
+        deployments:
+          type: array
+          description: The project's active deployments, newest first.
+          items:
+            $ref: '#/components/schemas/HealthDeploymentRef'
+        hasMigrationDelays:
+          type: boolean
+        detailedMigrationDelays:
+          type: array
+          description: Open migration engagements created at least 60 days ago, newest first (includes the abandoned ones).
+          items:
+            $ref: '#/components/schemas/HealthCaseLink'
+        hasEscalatedCases:
+          type: boolean
+        detailedEscalatedCases:
+          type: array
+          description: Every escalation on a work item of the project, newest first.
+          items:
+            $ref: '#/components/schemas/HealthCaseLink'
+        goLiveStatus:
+          $ref: '#/components/schemas/AccountGoLiveStatus'
+
+    AccountGoLiveStatus:
+      type: object
+      required: [status, isRisk, state]
+      properties:
+        status:
+          type: string
+          description: Display text, e.g. "Has Gone Live" or "Hasn't Gone Live Since 3 months".
+        isRisk:
+          type: boolean
+          description: True only when state is failure.
+        state:
+          type: string
+          enum: [success, pending, failure]
+
+    HealthCasePriorityGroup:
+      type: object
+      required: [priority, count, cases]
+      properties:
+        priority:
+          type: string
+          description: The case severity (catastrophic, critical, high, medium, low), or "Unspecified" when there is none.
+        count:
+          type: integer
+        cases:
+          type: array
+          items:
+            $ref: '#/components/schemas/HealthCaseInfo'
+
+    HealthCaseInfo:
+      type: object
+      required: [id, number]
+      properties:
+        id:
+          type: string
+          format: uuid
+        number:
+          type: string
+
+    HealthCaseLink:
+      type: object
+      description: >-
+        A case (id, number), or an escalation and the case it is on (escalationId,
+        escalationNumber, number). A field that does not apply is omitted.
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The case id.
+        number:
+          type: string
+          description: The case number.
+        escalationId:
+          type: string
+          format: uuid
+        escalationNumber:
+          type: string
+          description: Repeats the case number; an escalation has no number of its own.
+
+    HealthEolProduct:
+      type: object
+      required: [name, eolDate, deployments]
+      properties:
+        name:
+          type: string
+          description: Product name and version.
+        eolDate:
+          type: string
+          format: date-time
+          description: Support end date, midnight UTC.
+        deployments:
+          type: array
+          description: The distinct deployments running this product version.
+          items:
+            $ref: '#/components/schemas/HealthDeploymentRef'
+
+    HealthDeploymentRef:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
 
     AccountView:
       type: object
@@ -13542,6 +16354,13 @@ components:
         region:
           type: string
           nullable: true
+        subRegion:
+          type: string
+          nullable: true
+          description: >
+            A finer-grained geography than region (e.g. "ASIA"/"NA - WEST"
+            under region "APAC"/"NA") -- account.sub_region, a distinct
+            column, not derived from region.
         supportTier:
           type: string
           nullable: true
@@ -13590,6 +16409,10 @@ components:
           description: >-
             Whether this account has a primary partner account set. Postgres approximates
             this as having any partner in account_relationship.
+        healthSummary:
+          description: Present only when the search set filters.includeHealthSummary.
+          allOf:
+            - $ref: '#/components/schemas/AccountSearchHealthSummary'
 
     SNSupportTierRef:
       type: object
@@ -14035,6 +16858,20 @@ components:
           type: string
           nullable: true
           description: Hyphenated Title Case, e.g. "In-Progress".
+        onboardingOwner:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/PersonRef'
+          description: >
+            The person assigned to run this project's onboarding. Null when no
+            owner is assigned.
+        goLiveDate:
+          type: string
+          format: date-time
+          nullable: true
+          description: >
+            project.onboarding_go_live_date. Null when the project hasn't
+            gone live (or the date isn't tracked).
         closureState:
           type: string
           nullable: true
@@ -14185,6 +17022,9 @@ components:
           type: string
         notificationsEnabled:
           type: boolean
+        isCsIntegrationUser:
+          type: boolean
+          description: True for a system-to-system integration user that never signs in.
         roles:
           type: array
           items:
@@ -14563,6 +17403,12 @@ components:
             type: string
             format: uuid
           description: Filter by the deployment's own UUID. Postgres data source only.
+        includeInactive:
+          type: boolean
+          description: >
+            Additive: when true, also includes deployments with
+            is_active = FALSE. Omitted/false reproduces the default
+            (active-only) behavior exactly. Postgres data source only.
 
     DeploymentView:
       type: object
@@ -14585,10 +17431,6 @@ components:
         description:
           type: string
           nullable: true
-        createdBy:
-          nullable: true
-          allOf:
-            - $ref: '#/components/schemas/EntityRef'
         project:
           $ref: '#/components/schemas/EntityRef'
         createdOn:
@@ -15876,6 +18718,58 @@ components:
             remainder is folded into AggregateResponse.othersCount. Optional; a
             default is applied when omitted.
 
+    CaseVolumeTrendRequest:
+      type: object
+      properties:
+        filters:
+          $ref: '#/components/schemas/SearchCasesFilters'
+        days:
+          type: integer
+          description: >-
+            Size of the trailing window, ending today (UTC). Optional;
+            defaults to 30 when omitted. Must be between 1 and 90.
+
+    CaseVolumeTrendPoint:
+      type: object
+      required: [date, count]
+      properties:
+        date:
+          type: string
+          format: date
+          description: UTC calendar day (YYYY-MM-DD).
+        count:
+          type: integer
+
+    CaseVolumeTrendSeries:
+      type: object
+      required: [label, points]
+      properties:
+        label:
+          type: string
+          description: '"Opened" or "Closed".'
+        points:
+          type: array
+          items:
+            $ref: '#/components/schemas/CaseVolumeTrendPoint'
+          description: >-
+            One point per day in the requested window, oldest first. A day
+            with no matching cases is still present, with count 0.
+
+    CaseVolumeTrendResponse:
+      type: object
+      required: [days, series]
+      description: >-
+        The result of a day-bucketed case-volume trend query: always exactly
+        two series, "Opened" (by created date) and "Closed" (by closed date).
+      properties:
+        days:
+          type: integer
+          description: The size of the window actually returned.
+        series:
+          type: array
+          items:
+            $ref: '#/components/schemas/CaseVolumeTrendSeries'
+
     UserReference:
       type: object
       nullable: true
@@ -16754,6 +19648,27 @@ components:
         content:
           type: string
 
+    InlineAttachment:
+      type: object
+      description: An image embedded in a comment body.
+      properties:
+        id:
+          type: string
+          format: uuid
+        fileName:
+          type: string
+        contentType:
+          type: string
+        downloadUrl:
+          type: string
+        createdOn:
+          type: string
+          format: date-time
+          nullable: true
+          description: Null when the upstream supplied no parseable timestamp.
+        createdBy:
+          type: string
+
     CaseComment:
       type: object
       properties:
@@ -16771,6 +19686,12 @@ components:
         createdOn:
           type: string
           format: date-time
+        hasInlineAttachments:
+          type: boolean
+        inlineAttachments:
+          type: array
+          items:
+            $ref: '#/components/schemas/InlineAttachment'
 
     SearchCaseCommentsRequest:
       type: object
@@ -17661,6 +20582,20 @@ components:
               type: array
               items:
                 type: string
+            tags:
+              type: array
+              nullable: true
+              items:
+                $ref: '#/components/schemas/Tag'
+              description: >-
+                The tags attached to the change request's work item -- the same work_item_tag
+                rows, read the same way, as a case's `tags`, and managed through the same
+                POST /cases/{id}/tags, DELETE /cases/{id}/tags/{tagId} and POST /tags/search,
+                which take a work item id and accept a change request's. Internal bookkeeping:
+                an array (empty when none) for an internal (unrestricted) caller on the
+                PostgreSQL data source; null for a customer's read, on the ServiceNow data
+                source, and when the lookup failed (the rest of the detail is still valid then).
+                A tag added to a change request is never mirrored to the previous system.
             deployments:
               type: array
               items:
@@ -19341,7 +22276,7 @@ components:
           description: Issue-type label to apply on GitHub (e.g. "Type/Patch", "Type/Incident").
         priorityLevel:
           type: string
-          description: Priority label to apply when issueTypeLabel is "Type/Incident".
+          description: GitHub priority label for a Discussion. CSM maps this to Priority/Critical(P1), Priority/High(P2), or Priority/Medium(P3) and also applies Type/Incident.
 
     CaseGithubIssueDetail:
       type: object
@@ -19733,6 +22668,14 @@ components:
             How many people this window is meant to carry, where a target has
             been agreed. Null where none has -- every SRE window today.
         crossesMidnight: { type: boolean }
+        sharedAcrossTeams:
+          type: boolean
+          description: >-
+            True when each tier of this window is held by one person for the
+            whole rota rather than one per team -- SaaS TZ3, the night cover
+            for every SaaS team. Saving the roster (POST
+            /team-schedule/assignments/apply) refuses a second holder of a
+            tier (409); assignment create and update do not check it yet.
         colourToken: { type: string }
         sortOrder: { type: integer }
     ScheduleTeam:
@@ -19755,6 +22698,12 @@ components:
           type: string
           example: SRE_SAAS
           description: The rota the team's type belongs to; absent for a team on no named rota.
+        isAbt:
+          type: boolean
+          description: >-
+            Whether the team is an ABT (its type ends in "abt"): the teams the
+            CRE rota and its regular hours are run by, as against Americas,
+            Migration and the like.
     CreateScheduleAbsenceKindRequest:
       type: object
       required: [shortCode, label, bucket, colourToken]
@@ -20064,6 +23013,9 @@ components:
         isOnCall: { type: boolean }
         source: { type: string, enum: [GENERATED, MANUAL, SWAP, IMPORTED] }
         note: { type: string }
+        onLeave:
+          type: boolean
+          description: Set only on GET /team-schedule/on-duty?includeOnLeave=true, on a row whose engineer is away that day.
     ScheduleAbsence:
       type: object
       properties:
@@ -20159,6 +23111,585 @@ components:
         email:
           type: string
           description: Empty when the user row carries no address.
+    PagingChainMember:
+      type: object
+      required: [membershipId, teamKey, teamName, teamType, family, userId, name, email, role, responderRank, canEditPhone, pagingPhone]
+      properties:
+        membershipId: { type: string, format: uuid }
+        teamKey: { type: string, example: vega }
+        teamName: { type: string, example: Vega }
+        teamType: { type: string, example: cre-abt }
+        family: { type: string, enum: [CRE, SRE] }
+        userId: { type: string, format: uuid }
+        name: { type: string }
+        email: { type: string }
+        role:
+          type: string
+          description: The raw membership role (engineer, sub_lead, lead, americas_team_lead, cre_head, cs_head).
+          example: engineer
+        responderRank:
+          type: integer
+          minimum: 0
+          maximum: 3
+          description: 1, 2 or 3 for the team's 1st, 2nd or 3rd responder (Tier 1); 0 for none.
+        canEditPhone:
+          type: boolean
+          description: Whether the caller may set this person's paging-only number.
+        pagingPhone:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/PagingPhone'
+          description: The person's paging-only number; null when none is stored.
+        hasProfilePhone:
+          type: boolean
+          description: Whether the person has a callable (E.164) number on their own profile ("user".phone), which paging calls ahead of the paging-only number. Absent when paging numbers are not configured.
+    PagingChainPermissions:
+      type: object
+      required: [responderTeams, teamLeadTeams, americasTeamLead, heads]
+      properties:
+        responderTeams:
+          type: array
+          items: { type: string }
+          description: Teams whose 1st-3rd responders the caller may pick.
+        teamLeadTeams:
+          type: array
+          items: { type: string }
+          description: Teams whose Team leads the caller may set.
+        americasTeamLead: { type: boolean, description: Whether the caller may set the America lead. }
+        heads: { type: boolean, description: Whether the caller may set the CRE head and CS head. }
+    PagingChainResponse:
+      type: object
+      required: [family, members, count, canEdit]
+      properties:
+        family: { type: string, enum: [CRE, SRE] }
+        members:
+          type: array
+          items: { $ref: '#/components/schemas/PagingChainMember' }
+        count: { type: integer }
+        canEdit: { $ref: '#/components/schemas/PagingChainPermissions' }
+    UpdatePagingMemberRequest:
+      type: object
+      description: Exactly one of the two.
+      properties:
+        responderRank:
+          type: integer
+          minimum: 0
+          maximum: 3
+          description: Make this person that responder of their team's Tier 1 (0 clears).
+        role:
+          type: string
+          enum: [lead, engineer, americas_team_lead, cre_head, cs_head]
+          description: >
+            A new America lead (americas_team_lead), CRE head or CS head
+            replaces the previous one, who steps back to lead or engineer.
+    PagingReadinessResponse:
+      type: object
+      required: [generatedAt, from, to, chains]
+      properties:
+        generatedAt: { type: string, format: date-time }
+        from: { type: string, format: date, description: The first rota date checked. }
+        to: { type: string, format: date, description: The last rota date checked. }
+        chains:
+          type: array
+          items: { $ref: '#/components/schemas/PagingReadinessChain' }
+    PagingReadinessChain:
+      type: object
+      required: [chain, label, ready, gaps, people]
+      properties:
+        chain: { type: string, enum: [CRE, SRE_SAAS, SRE_IAAS, SME] }
+        label: { type: string, enum: [CRE chain, SaaS SRE chain, IaaS SRE chain, SME page] }
+        ready:
+          type: boolean
+          description: True when the chain has no gap of severity error; a warning does not make it unready.
+        gaps:
+          type: array
+          items: { $ref: '#/components/schemas/PagingReadinessGap' }
+        people:
+          type: array
+          items: { $ref: '#/components/schemas/PagingReadinessPerson' }
+    PagingReadinessGap:
+      type: object
+      required: [code, severity, message, fix]
+      properties:
+        code:
+          type: string
+          description: >
+            Stable, for a client to branch on: MISSING_RESPONDER,
+            MISSING_TEAM_LEAD, MISSING_AMERICAS_LEAD, MISSING_HEAD, ON_LEAVE
+            (someone holding a position is away: an error for a responder, a
+            warning for a lead or head; teamKey and date set),
+            ACCOUNT_TEAM_NOT_ABT (CRE); ROTA_INACTIVE, TIER_UNCOVERED (SRE);
+            TIER_UNCOVERED (SME: an SME window with no L1 -- an error -- or no
+            L2 / L3 -- a warning; someone rostered with no tier counts as L1;
+            teamKey, date, shiftCode and tier set), HANDOFF_TEAM_UNMAPPED (SME).
+            SHIFT_UNCOVERED, the SME check before its windows had tiers, is no
+            longer sent.
+          example: TIER_UNCOVERED
+        severity: { type: string, enum: [error, warning] }
+        message: { type: string, description: One sentence for a person; wording may change. }
+        fix:
+          type: string
+          enum: [responders, rota, profile, config, data]
+          description: >
+            Where it is fixed: responders (the Case Paging tab), rota (the
+            Team Schedule roster), profile, config (deployment configuration)
+            or data (records synced from elsewhere).
+        teamKey: { type: string, description: "The team concerned, where there is one." }
+        date: { type: string, format: date }
+        zoneCode: { type: string, example: TZ2 }
+        tier: { type: string, description: "T1-T3 for a CRE responder, L1-L3 for an SRE tier." }
+        shiftCode: { type: string, example: SME_ASG_NIGHT }
+    PagingReadinessPerson:
+      type: object
+      required: [userId, email, name, role, hasPagingPhone]
+      properties:
+        userId: { type: string, format: uuid }
+        hasPagingPhone:
+          type: boolean
+          description: Whether a paging-only number is stored for them. The number is never part of readiness.
+        hasProfilePhone:
+          type: boolean
+          description: Whether they have a callable (E.164) number on their own profile ("user".phone). The number is never part of readiness.
+        pagingPhoneLastTestStatus:
+          type: string
+          enum: [pending, completed, no-answer, busy, failed]
+          description: The last test call's outcome; absent when never tested or no number.
+        pagingTier:
+          type: integer
+          minimum: 1
+          maximum: 5
+          description: >-
+            The Case Paging tier at which the chain first calls this person (1 = first called):
+            CRE responders 1, Team leads 2, America Team lead 3, CRE head 4, CS head 5; an SRE
+            person's earliest of L1 = 1, L2 = 2, L3 = 3; the SME on duty 1. Absent when unknown.
+        phoneOptional:
+          type: boolean
+          description: >-
+            True when a missing number does not stop the tier from reaching someone: the 2nd and
+            3rd responders, called together with the 1st. Absent (false) for every other
+            position, where a number is required.
+        email: { type: string }
+        name: { type: string }
+        role:
+          type: string
+          description: >
+            Why they are paged, for display: a CRE position ("T1 responder ·
+            Vega", "Team lead · Vega", "America lead", "CRE head"), the SRE
+            tiers held in the range ("L1, L2"), or the SME teams rostered on.
+    RotaEditTeams:
+      type: object
+      description: Which teams the caller may edit, and which of those only as the team's rota marker.
+      required: [teamKeys, markerOnlyTeamKeys]
+      properties:
+        teamKeys:
+          type: array
+          items:
+            type: string
+        markerOnlyTeamKeys:
+          type: array
+          items:
+            type: string
+    RotaAccess:
+      type: object
+      required: [canManage, rotaAdmins, markers]
+      properties:
+        canManage:
+          $ref: '#/components/schemas/RotaAccessRights'
+        rotaAdmins:
+          type: array
+          items:
+            $ref: '#/components/schemas/RotaAdminGrant'
+        markers:
+          type: array
+          items:
+            $ref: '#/components/schemas/RotaMarkerGrant'
+    RotaAccessRights:
+      type: object
+      required: [rotaAdmins, markerFamilies]
+      properties:
+        rotaAdmins:
+          type: boolean
+          description: True for a CSM admin, who alone grants and removes rota admin.
+        markerFamilies:
+          type: array
+          description: The families whose teams' markers the caller may change.
+          items:
+            type: string
+            enum: [CRE, SRE, SME]
+    RotaAdminGrant:
+      type: object
+      required: [family, userId, name, email, grantedBy, grantedOn, active]
+      properties:
+        family:
+          type: string
+          enum: [CRE, SRE, SME]
+        userId:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email:
+          type: string
+        grantedBy:
+          type: string
+          description: Who granted it, as recorded on the grant (empty when unknown).
+        grantedOn:
+          type: string
+          format: date-time
+        active:
+          type: boolean
+          description: False when the holder is not internal staff; such a grant does nothing.
+    RotaMarkerGrant:
+      type: object
+      required: [teamKey, family, userId, name, email, grantedBy, grantedOn, active]
+      properties:
+        teamKey:
+          type: string
+        family:
+          type: string
+          enum: [CRE, SRE, SME]
+        userId:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email:
+          type: string
+        grantedBy:
+          type: string
+        grantedOn:
+          type: string
+          format: date-time
+        active:
+          type: boolean
+          description: False once the holder has left the team or is not internal staff; the grant then does nothing.
+    PagingPhone:
+      type: object
+      required: [masked, setBy, setAt]
+      description: >
+        A paging-only phone number: called by paging when the person's
+        Asgardeo profile has none. Never written to Asgardeo.
+      properties:
+        masked:
+          type: string
+          example: "+94•••••123"
+          description: The country code and the last three digits; always present.
+        phone:
+          type: string
+          example: "+94771234123"
+          description: The full E.164 number; only for a caller who may edit it.
+        setBy: { type: string, description: Email of who last set it. }
+        setAt: { type: string, format: date-time }
+        lastTestAt: { type: string, format: date-time }
+        lastTestStatus: { type: string, enum: [pending, completed, no-answer, busy, failed] }
+    SetPagingPhoneRequest:
+      type: object
+      required: [phone]
+      properties:
+        phone:
+          type: string
+          pattern: '^\+[1-9][0-9]{6,14}$'
+          example: "+94771234123"
+    PagingTestCallResponse:
+      type: object
+      required: [lastTestStatus]
+      properties:
+        lastTestStatus: { type: string, enum: [pending] }
+    CaseAlertSettings:
+      type: object
+      required: [canManage, environment, webhooksEnabled, revision, rooms, routes, values]
+      properties:
+        canManage:
+          $ref: '#/components/schemas/CaseAlertSettingsRights'
+        environment:
+          type: string
+          description: CASE_ALERTS_ENVIRONMENT, e.g. staging or production; empty when unset.
+        webhooksEnabled:
+          type: boolean
+          description: Always true since 0237 (URLs are stored as saved); kept for older pages.
+        revision:
+          $ref: '#/components/schemas/CaseAlertRevision'
+        rooms:
+          type: array
+          items: { $ref: '#/components/schemas/CaseAlertChatRoom' }
+        routes:
+          type: array
+          items: { $ref: '#/components/schemas/CaseAlertGroupRoute' }
+        values:
+          type: array
+          items: { $ref: '#/components/schemas/CaseAlertLadderValue' }
+        running:
+          $ref: '#/components/schemas/CaseAlertRunning'
+        routeOptions:
+          $ref: '#/components/schemas/CaseAlertRouteOptions'
+    CaseAlertRouteOptions:
+      type: object
+      required: [groups, teams, rotas]
+      description: >
+        What a group route can be made of, so the tab offers lists instead of
+        free text: the CSM Portal teams a route can be for (a route matches the
+        assignment group by its name), the Team Schedule teams it can send the
+        alert to, and the active SRE rotas. Absent for somebody who may see
+        nothing.
+      properties:
+        groups:
+          type: array
+          items: { $ref: '#/components/schemas/CaseAlertTeamOption' }
+        teams:
+          type: array
+          items: { $ref: '#/components/schemas/CaseAlertTeamOption' }
+        rotas:
+          type: array
+          items: { $ref: '#/components/schemas/CaseAlertRotaOption' }
+    CaseAlertTeamOption:
+      type: object
+      required: [key, name, family]
+      description: A team by key, name and family.
+      properties:
+        key: { type: string, example: apollo }
+        name: { type: string, example: Apollo }
+        family: { type: string, enum: [CRE, SRE, SME] }
+    CaseAlertRotaOption:
+      type: object
+      required: [code, label]
+      description: An active SRE rota.
+      properties:
+        code: { type: string, example: SRE_SAAS }
+        label: { type: string, example: "SaaS · Apollo & Artemis" }
+    CaseAlertLadderValue:
+      type: object
+      required: [id, ladder, key, value, updatedBy, updatedOn]
+      properties:
+        id: { type: string, format: uuid }
+        ladder: { type: string, enum: [CRE, SRE, SME] }
+        key: { type: string, example: teams.abts, description: "A key of the paging file under cre or sre." }
+        value: { description: "The value in the file's shape: a list, a number, true or false, text, or a head's name and email." }
+        updatedBy: { type: string }
+        updatedOn: { type: string, format: date-time }
+    SaveCaseAlertValuesRequest:
+      type: object
+      required: [ladder, values]
+      properties:
+        ladder: { type: string, enum: [CRE, SRE, SME] }
+        values:
+          type: object
+          additionalProperties: true
+          minProperties: 1
+          maxProperties: 50
+          example: { "teams.abts": ["atlas", "vega"], "timing.interval": "5m" }
+          description: >
+            Key to value. CRE and SRE: trigger.priorities, trigger.teams,
+            trigger.excludeTeams, trigger.shifts, trigger.requireKnownTeam,
+            onLeave, teams.abtType, teams.abts. CRE: teams.americas,
+            teams.leadership, teams.teamLeadsToCall, teams.teamLeads,
+            teams.rotaMembersToCall, teams.americasWeekendRotaShifts,
+            teams.rotaTeams, teams.unassignedTeamLead,
+            teams.unassignedTeamLeadCount, heads.cre, heads.cs (name and email
+            only), alertDuty.tiers, alertDuty.perTeam,
+            acknowledgement.requireBoth. SRE: teams.defaultRota,
+            timing.initialWait (0s to 30m), timing.interval (1m to 30m),
+            timing.includeL4, unansweredChat, smeHandoffChat. SME:
+            timing.initialWait (0s to 30m), timing.interval (1m to 30m),
+            onLeave, unansweredChat, teams (Special Ops team key to SME team
+            key).
+    CaseAlertValuesResponse:
+      type: object
+      required: [values]
+      properties:
+        values:
+          type: array
+          items: { $ref: '#/components/schemas/CaseAlertLadderValue' }
+    CaseAlertRunning:
+      type: object
+      required: [ladders]
+      description: What csm-notification-service reported it runs with at its last start in shadow or db mode. Absent after a start in off mode.
+      properties:
+        reportedAt: { type: string, format: date-time }
+        mode: { type: string, enum: [shadow, db] }
+        ladders:
+          type: object
+          description: Ladder (CRE, SRE) to key to its value and source. A key the file leaves unset is absent.
+          additionalProperties:
+            type: object
+            additionalProperties:
+              type: object
+              required: [value, source]
+              properties:
+                value: { description: "The value in the file's shape." }
+                source: { type: string, enum: [file, saved] }
+        fileOnly:
+          type: object
+          description: >
+            Ladder (CRE, SRE) to what only the file sets, shown read-only:
+            enabled, channel, safety.maxCallsPerLadder, safety.maxLevel (absent
+            when there is no cap), safety.allowedNumbers (a count, never the
+            numbers), safety.callWithoutVerifiedLeads,
+            safety.callHeadsWithoutLowerTiers, phones.source.
+          additionalProperties:
+            type: object
+            additionalProperties: true
+    CaseAlertSettingsRights:
+      type: object
+      required: [view, roomLadders, routeLadders]
+      properties:
+        view: { type: boolean }
+        roomLadders:
+          type: array
+          description: >
+            The ladders whose rooms and values the caller may see and change: CRE for the CRE
+            rota admin and the CRE and CS heads, SRE for the SRE rota admin, SME for the SME
+            rota admin, all three for a CSM or portal admin. Another ladder's rooms, routes,
+            values and running settings are never sent.
+          items: { type: string, enum: [CRE, SRE, SME] }
+        routeLadders:
+          type: array
+          items: { type: string, enum: [CRE, SRE] }
+    CaseAlertRevision:
+      type: object
+      required: [saved]
+      properties:
+        saved: { type: integer, format: int64, description: "Moves on with every change to a room, its URL, a route or a ladder value." }
+        changedAt: { type: string, format: date-time }
+        applied: { type: integer, format: int64, description: "The revision csm-notification-service last reported it loaded." }
+        appliedAt: { type: string, format: date-time }
+        appliedMode: { type: string, enum: [off, shadow, db] }
+    CaseAlertChatRoom:
+      type: object
+      required: [id, ladder, label, enabled, teamless, hasWebhook, updatedBy, updatedOn]
+      properties:
+        id: { type: string, format: uuid }
+        ladder: { type: string, enum: [CRE, SRE, SME] }
+        teamKey: { type: string, description: "The SRE or SME team whose room it is; absent for the ladder's shared room (CRE, SRE). An SME room is always a team's." }
+        label: { type: string }
+        enabled: { type: boolean }
+        teamless: { type: boolean, description: "Also gets the cards of an incident with no SRE team of its own." }
+        channel: { type: string, enum: [log, chat, call, both], description: "A team room only: how this team's alerts go out. Absent is the ladder's channel (the alert service's file); a team never does more than its ladder." }
+        hasWebhook: { type: boolean }
+        webhookHint: { type: string, example: "spaces/AAAAabcdefg · …wxyz", description: "The space id and the last characters of the URL's token. The URL itself is never returned." }
+        webhookSetAt: { type: string, format: date-time }
+        webhookSetBy: { type: string }
+        lastTestAt: { type: string, format: date-time }
+        lastTestStatus: { type: string, enum: [delivered, failed] }
+        updatedBy: { type: string }
+        updatedOn: { type: string, format: date-time }
+    CaseAlertGroupRoute:
+      type: object
+      required: [id, ladder, groupName, enabled, updatedBy, updatedOn]
+      properties:
+        id: { type: string, format: uuid }
+        ladder: { type: string, enum: [CRE, SRE] }
+        groupName: { type: string, description: "Lower-cased, as the case or incident carries it." }
+        teamKey: { type: string }
+        rotaCode: { type: string }
+        enabled: { type: boolean }
+        updatedBy: { type: string }
+        updatedOn: { type: string, format: date-time }
+    SaveCaseAlertRoomRequest:
+      type: object
+      required: [ladder, label]
+      properties:
+        ladder: { type: string, enum: [CRE, SRE, SME] }
+        teamKey: { type: string, description: "An SRE or SME team of the Team Schedule (required for SME); omit for the ladder's shared room." }
+        label: { type: string, maxLength: 100 }
+        enabled: { type: boolean, default: true }
+        teamless: { type: boolean, default: false, description: "SRE team rooms only." }
+        channel: { type: string, enum: ["", log, chat, call, both], description: "An SRE team room only: chat, call, both or log; an empty string goes back to the ladder's. Refused on a ladder's shared room and on an SME room." }
+    SetCaseAlertWebhookRequest:
+      type: object
+      required: [url]
+      properties:
+        url: { type: string, maxLength: 2048, description: "A Google Chat incoming webhook URL. Write-only." }
+    SaveCaseAlertRouteRequest:
+      type: object
+      required: [ladder, groupName]
+      properties:
+        ladder: { type: string, enum: [CRE, SRE] }
+        groupName: { type: string, maxLength: 255 }
+        teamKey: { type: string }
+        rotaCode: { type: string, description: "SRE only. An active SRE rota, e.g. SRE_SAAS." }
+        enabled: { type: boolean, default: true }
+    CaseAlertTestCardResponse:
+      type: object
+      required: [lastTestStatus, lastTestAt]
+      properties:
+        lastTestStatus: { type: string, enum: [delivered, failed] }
+        lastTestAt: { type: string, format: date-time }
+    CaseAlertRuntimeSettings:
+      type: object
+      required: [revision, rooms, routes, values]
+      properties:
+        revision: { type: integer, format: int64 }
+        rooms:
+          type: array
+          items: { $ref: '#/components/schemas/CaseAlertRuntimeRoom' }
+        routes:
+          type: array
+          items: { $ref: '#/components/schemas/CaseAlertGroupRoute' }
+        values:
+          type: array
+          items:
+            type: object
+            required: [ladder, key, value]
+            properties:
+              ladder: { type: string, enum: [CRE, SRE, SME] }
+              key: { type: string }
+              value: { description: "The value in the file's shape." }
+    CaseAlertRuntimeRoom:
+      type: object
+      required: [ladder, label, teamless, webhookUrl]
+      properties:
+        ladder: { type: string, enum: [CRE, SRE, SME] }
+        teamKey: { type: string }
+        label: { type: string }
+        teamless: { type: boolean }
+        webhookUrl: { type: string, description: "The opened webhook URL, or empty for a team room saved only for its channel. Returned only on this service-only route." }
+        channel: { type: string, enum: [log, chat, call, both], description: "A team room's own channel; absent is the ladder's." }
+    CaseAlertAppliedReport:
+      type: object
+      required: [revision, mode]
+      properties:
+        revision: { type: integer, format: int64 }
+        mode: { type: string, enum: [off, shadow, db] }
+        summary: { type: object, additionalProperties: true, description: "What was used, by name and source, at most 32 KiB. Never a URL. Its running entry ({ladders: {CRE: {key: {value, source}}}}) is shown on the tab as what is in use." }
+    PagingTestResultRequest:
+      type: object
+      required: [status, testedAt]
+      properties:
+        status: { type: string, enum: [completed, no-answer, busy, failed] }
+        testedAt: { type: string, format: date-time }
+    PagingContact:
+      type: object
+      description: One person's numbers. A person with neither a profile number nor a paging-only number is not listed.
+      required: [userId, email, dialPhone, dialSource, phone]
+      properties:
+        userId: { type: string, format: uuid }
+        email: { type: string }
+        dialPhone:
+          type: string
+          example: "+94771234123"
+          description: The number to call. The profile number when it is a callable E.164 number, else the paging-only number; empty when neither.
+        dialSource:
+          type: string
+          enum: [profile, paging, ""]
+          description: Where dialPhone comes from; empty when there is no number to call.
+        profilePhone:
+          type: string
+          description: The number on the person's own profile ("user".phone), as stored. Omitted when blank.
+        phone:
+          type: string
+          example: "+94771234123"
+          description: The paging-only number; empty when none is stored. setBy, setAt and the test fields describe it and are omitted with it.
+        setBy: { type: string }
+        setAt: { type: string, format: date-time }
+        lastTestAt: { type: string, format: date-time }
+        lastTestStatus: { type: string, enum: [pending, completed, no-answer, busy, failed] }
+    PagingContactsResponse:
+      type: object
+      required: [contacts]
+      properties:
+        contacts:
+          type: array
+          items: { $ref: '#/components/schemas/PagingContact' }
     ScheduleAssignmentsResponse:
       type: object
       properties:
@@ -20491,6 +24022,12 @@ components:
             True once the comment has been soft-deleted via DELETE /comments/{id}. Content is
             "[deleted]" for a non-admin internal caller and the real content for an admin caller;
             a customer caller never receives a deleted comment at all.
+        hasInlineAttachments:
+          type: boolean
+        inlineAttachments:
+          type: array
+          items:
+            $ref: '#/components/schemas/InlineAttachment'
 
     UpdateCommentRequest:
       type: object
@@ -20738,7 +24275,9 @@ components:
             request's project, its own creator, a user who may not decide an internal
             stage, or a field a customer may not set), and, on POST /incidents,
             `incident_assignment_group_not_allowed` (400: an assignmentGroupId that is
-            not an active support group of any service; nothing created). The list grows, so this is
+            not an active support group of any service; nothing created), and, on POST
+            /incidents/{id}/specialist-handoffs, `incident_handoff_needs_assignee` (409:
+            the incident is assigned to nobody). The list grows, so this is
             deliberately not a closed enum: a value not listed here is a newer server's.
           example: change_request_on_hold
 
@@ -21253,7 +24792,12 @@ components:
           `incident_state` is a distinct field that exists independently on
           the same incident row. Kept only for exact parity with SN's native
           incident dashboards; prefer state for general-purpose state
-          filtering.
+          filtering. The PostgreSQL data source has no separate
+          `incident_state` column, so it applies the keys to `state`
+          (1 New, 2 In Progress, 3 On Hold, 6 Resolved, 7 Closed,
+          8 Canceled) and ANDs them with any state filter; a key with no
+          state (4, 5, ...) is a 400, and so is a state filter that shares no
+          state with the keys.
 
     SearchIncidentsRequest:
       type: object
@@ -21584,6 +25128,9 @@ components:
               type: string
             createdBy:
               type: string
+            priority:
+              type: string
+              description: Derived from impact x urgency (CRITICAL, HIGH, MODERATE, LOW, PLANNING).
 
     AlertView:
       type: object
@@ -21936,7 +25483,13 @@ components:
           default: true
           description: >-
             Whether to also file an internal issue for the receiving team. Set false to
-            suppress it, e.g. on a re-handoff or when one already exists.
+            suppress it, e.g. on a re-handoff or when one already exists. The issue is
+            titled "[INC…] [P1] <subject>". Its body is a table of the incident and the
+            handoff (link to the incident, priority, service, environment, category, team,
+            reason, who escalated, runbook task, times), the incident's description (for an
+            alert-born incident with none, the alert's creation work note), its latest three
+            work notes, and a footer. Labels come from the product's github.labels in
+            SPECIALIST_HANDOFF_CONFIG.
 
     HandOffIncidentToSpecialistResponse:
       type: object
@@ -24558,6 +28111,362 @@ components:
         escalation:
           $ref: '#/components/schemas/CreatedEscalation'
 
+    ProjectHealthStatusValue:
+      type: string
+      description: A project's health-review status.
+      enum: [TO_BE_REVIEWED, HEALTHY, AT_RISK]
+
+    ProjectRiskStatus:
+      type: string
+      description: A project risk record's lifecycle state.
+      enum: [OPEN, CLOSED]
+
+    RiskActionItemPriority:
+      type: string
+      description: A risk action item's priority.
+      enum: [HIGH, MEDIUM, LOW]
+
+    RiskActionItemStatus:
+      type: string
+      description: A risk action item's lifecycle state.
+      enum: [OPEN, IN_PROGRESS, RESOLVED, CANCELLED]
+
+    ProjectHealthStatus:
+      type: object
+      description: A project's current health-review status.
+      required: [id, projectId, accountId, status, reviewedByEmail, reviewedOn]
+      properties:
+        id:
+          type: string
+          format: uuid
+        projectId:
+          type: string
+          format: uuid
+        accountId:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/ProjectHealthStatusValue'
+        reviewedByEmail:
+          type: string
+          nullable: true
+        reviewedOn:
+          type: string
+          nullable: true
+
+    RiskActionItem:
+      type: object
+      description: An action item attached to a project risk.
+      required:
+        - id
+        - riskId
+        - projectId
+        - accountId
+        - title
+        - description
+        - priority
+        - status
+        - assignedToEmail
+        - dueDate
+        - resolutionComment
+        - resolvedByEmail
+        - resolvedOn
+        - createdByEmail
+        - createdOn
+        - updatedOn
+        - commentCount
+      properties:
+        id:
+          type: string
+          format: uuid
+        riskId:
+          type: string
+          format: uuid
+        projectId:
+          type: string
+          format: uuid
+        accountId:
+          type: string
+          format: uuid
+        title:
+          type: string
+        description:
+          type: string
+          nullable: true
+        priority:
+          $ref: '#/components/schemas/RiskActionItemPriority'
+        status:
+          $ref: '#/components/schemas/RiskActionItemStatus'
+        assignedToEmail:
+          type: string
+          nullable: true
+        dueDate:
+          type: string
+          nullable: true
+        resolutionComment:
+          type: string
+          nullable: true
+        resolvedByEmail:
+          type: string
+          nullable: true
+        resolvedOn:
+          type: string
+          nullable: true
+        createdByEmail:
+          type: string
+        createdOn:
+          type: string
+        updatedOn:
+          type: string
+        commentCount:
+          type: integer
+
+    ProjectRisk:
+      type: object
+      description: A project's risk record, open or closed, together with its action items.
+      required:
+        - id
+        - projectId
+        - accountId
+        - status
+        - openedComment
+        - openedByEmail
+        - openedOn
+        - closedComment
+        - closedByEmail
+        - closedOn
+        - actionItems
+      properties:
+        id:
+          type: string
+          format: uuid
+        projectId:
+          type: string
+          format: uuid
+        accountId:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/ProjectRiskStatus'
+        openedComment:
+          type: string
+        openedByEmail:
+          type: string
+        openedOn:
+          type: string
+        closedComment:
+          type: string
+          nullable: true
+        closedByEmail:
+          type: string
+          nullable: true
+        closedOn:
+          type: string
+          nullable: true
+        actionItems:
+          type: array
+          items:
+            $ref: '#/components/schemas/RiskActionItem'
+
+    ProjectHealthWithOpenRisk:
+      type: object
+      description: A project's health status paired with its currently open risk, if any.
+      required: [projectId, healthStatus, openRisk]
+      properties:
+        projectId:
+          type: string
+          format: uuid
+        healthStatus:
+          $ref: '#/components/schemas/ProjectHealthStatus'
+        openRisk:
+          $ref: '#/components/schemas/ProjectRisk'
+          nullable: true
+
+    AccountHealthSummary:
+      type: object
+      description: An account's aggregated overall health status, derived from its projects' individual health statuses.
+      required: [accountId, overallStatus]
+      properties:
+        accountId:
+          type: string
+          format: uuid
+        overallStatus:
+          $ref: '#/components/schemas/ProjectHealthStatusValue'
+
+    ActionItemComment:
+      type: object
+      description: A comment posted on a risk action item.
+      required: [id, actionItemId, comment, createdByEmail, createdOn]
+      properties:
+        id:
+          type: string
+          format: uuid
+        actionItemId:
+          type: string
+          format: uuid
+        comment:
+          type: string
+        createdByEmail:
+          type: string
+        createdOn:
+          type: string
+
+    OpenProjectRiskRequest:
+      type: object
+      required: [comment]
+      properties:
+        comment:
+          type: string
+          minLength: 1
+
+    CloseProjectRiskRequest:
+      type: object
+      required: [comment]
+      properties:
+        comment:
+          type: string
+          minLength: 1
+
+    MarkProjectHealthyRequest:
+      type: object
+      properties:
+        comment:
+          type: string
+
+    CreateRiskActionItemRequest:
+      type: object
+      required: [title, priority, dueDate]
+      properties:
+        title:
+          type: string
+          minLength: 1
+        description:
+          type: string
+        priority:
+          $ref: '#/components/schemas/RiskActionItemPriority'
+        assignedToEmail:
+          type: string
+        dueDate:
+          type: string
+          description: YYYY-MM-DD. May be blank.
+
+    UpdateRiskActionItemStatusRequest:
+      type: object
+      required: [status]
+      properties:
+        status:
+          $ref: '#/components/schemas/RiskActionItemStatus'
+        resolutionComment:
+          type: string
+          description: Required when status is RESOLVED or CANCELLED.
+
+    UpdateRiskActionItemRequest:
+      type: object
+      required: [title, priority]
+      properties:
+        title:
+          type: string
+          minLength: 1
+        description:
+          type: string
+        priority:
+          $ref: '#/components/schemas/RiskActionItemPriority'
+        assignedToEmail:
+          type: string
+        dueDate:
+          type: string
+          description: YYYY-MM-DD.
+
+    CreateActionItemCommentRequest:
+      type: object
+      required: [comment]
+      properties:
+        comment:
+          type: string
+          minLength: 1
+
+    InitProjectHealthTrackingRequest:
+      type: object
+      required: [projectIds]
+      properties:
+        projectIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+
+    BatchAccountHealthSummariesRequest:
+      type: object
+      required: [accountIds]
+      properties:
+        accountIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+
+    BatchAccountHealthSummariesResponse:
+      type: object
+      required: [summaries]
+      properties:
+        summaries:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/ProjectHealthStatusValue'
+
+    AccountsByHealthStatusRequest:
+      type: object
+      required: [status]
+      properties:
+        status:
+          $ref: '#/components/schemas/ProjectHealthStatusValue'
+
+    AccountsByHealthStatusResponse:
+      type: object
+      required: [accountIds]
+      properties:
+        accountIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+
+    GetAccountProjectHealthStatusesResponse:
+      type: object
+      required: [projects]
+      properties:
+        projects:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectHealthWithOpenRisk'
+
+    GetProjectRiskHistoryResponse:
+      type: object
+      required: [risks]
+      properties:
+        risks:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectRisk'
+
+    GetRiskActionItemsResponse:
+      type: object
+      required: [actionItems]
+      properties:
+        actionItems:
+          type: array
+          items:
+            $ref: '#/components/schemas/RiskActionItem'
+
+    GetActionItemCommentsResponse:
+      type: object
+      required: [comments]
+      properties:
+        comments:
+          type: array
+          items:
+            $ref: '#/components/schemas/ActionItemComment'
+
     CaseTimeCardBillingInfo:
       type: object
       required: [totalTime, count]
@@ -25130,6 +29039,26 @@ components:
           type: integer
         offset:
           type: integer
+
+    SLAClockState:
+      type: object
+      description: >-
+        The full, current state of one (work item, clock target) "sla" row,
+        regardless of whether it is currently active. All fields except
+        found are at their zero value when found is false.
+      properties:
+        found:
+          type: boolean
+        isActive:
+          type: boolean
+        stage:
+          type: string
+        hasBreached:
+          type: boolean
+        startedOn:
+          type: string
+          format: date-time
+          nullable: true
 
     SLADurationPolicyItem:
       type: object
@@ -25867,6 +29796,105 @@ components:
             $ref: '#/components/schemas/AnnouncementRequest'
         total:
           type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+        hasMore:
+          type: boolean
+
+    AnnouncementRegistryCaseMember:
+      type: object
+      description: One case within a batch row.
+      required: [caseId, caseNumber, wso2CaseId, projectName]
+      properties:
+        caseId:
+          type: string
+          format: uuid
+        caseNumber:
+          type: string
+        wso2CaseId:
+          type: string
+          description: The case's internal WSO2 reference; empty when it has none.
+        projectName:
+          type: string
+          description: Empty when the case has no project.
+
+    AnnouncementRegistryRow:
+      type: object
+      description: >
+        One registry row. kind "batch" is one published announcement request and
+        carries announcementRequestId, projectCount, isSecurityAnnouncement and
+        cases; kind "case" is one announcement case no published request lists and
+        carries caseId, caseNumber, wso2CaseId, state and projectName. Fields that
+        do not apply to the row's kind, and empty values, are omitted.
+      required: [kind, subject]
+      properties:
+        kind:
+          type: string
+          enum: [batch, case]
+        subject:
+          type: string
+        createdBy:
+          type: string
+          description: >-
+            Batch: the request's creator email, or its creator id when no email
+            was recorded. Case: the creator's name, or email when there is no name.
+        createdOn:
+          type: string
+          format: date-time
+          description: Batch rows carry the request's timestamp, case rows the case's. RFC 3339, UTC.
+        updatedOn:
+          type: string
+          format: date-time
+          description: Batch rows carry the request's timestamp, case rows the case's. RFC 3339, UTC.
+        announcementRequestId:
+          type: string
+          format: uuid
+          description: Batch only.
+        projectCount:
+          type: integer
+          description: >-
+            Batch only. The request's resolved project count when set, else the
+            number of case ids it published. Omitted when zero.
+        isSecurityAnnouncement:
+          type: boolean
+          description: Batch only. Omitted when false.
+        cases:
+          type: array
+          description: >-
+            Batch only. Every case the request published, in published order,
+            regardless of the search filters. Omitted when empty.
+          items:
+            $ref: '#/components/schemas/AnnouncementRegistryCaseMember'
+        caseId:
+          type: string
+          format: uuid
+          description: Case only.
+        caseNumber:
+          type: string
+          description: Case only.
+        wso2CaseId:
+          type: string
+          description: Case only. Omitted when empty.
+        state:
+          type: string
+          description: Case only. The case state in lower case, for example open or closed.
+        projectName:
+          type: string
+          description: Case only. Omitted when empty.
+
+    SearchAnnouncementRegistryRowsResponse:
+      type: object
+      required: [rows, total, limit, offset, hasMore]
+      properties:
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/AnnouncementRegistryRow'
+        total:
+          type: integer
+          description: Number of grouped rows matching the filters, not the number of cases.
         limit:
           type: integer
         offset:

@@ -27,7 +27,7 @@ import (
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 )
 
-// mockUsageMetricsClient is a test double for usageMetricsServiceNowClient.
+// mockUsageMetricsClient is a test double for usageMetricsClient.
 type mockUsageMetricsClient struct {
 	response []byte
 	err      error
@@ -97,10 +97,9 @@ func TestUsageMetricsHandler_GetProjects_RequiresAuth(t *testing.T) {
 func TestUsageMetricsHandler_GetProjects_RequiresUsageMetricsPermission(t *testing.T) {
 	h := NewUsageMetricsHandler(&mockUsageMetricsClient{}, viewerAccessGuard)
 
-	// SPL access (sales_solutions) but no usage_metrics_viewer/cs_engineer/
-	// admin — passes PermViewerAccess, fails the additional
-	// PermUsageMetricsViewer check.
-	req := httptest.NewRequest(http.MethodGet, "/spl/usage-metrics/projects", nil)
+	// sales_solutions holds none of viewer/usage_metrics_viewer/cs_engineer/
+	// admin, so it fails the direct PermUsageMetricsViewer check.
+	req := httptest.NewRequest(http.MethodGet, "/usage-metrics/projects", nil)
 	req = req.WithContext(middleware.WithUserInfo(req.Context(), &middleware.UserInfo{
 		Email: "sales@example.com", UserID: "u-sales", Roles: []string{"test-sales-solutions"},
 	}))
@@ -108,6 +107,61 @@ func TestUsageMetricsHandler_GetProjects_RequiresUsageMetricsPermission(t *testi
 	h.GetProjects(w, req)
 
 	assertStatus(t, w, http.StatusForbidden)
+}
+
+// Regression: Usage Metrics used to be reachable only by a caller who ALSO
+// held the viewer role (PermViewerAccess layered underneath), regardless of
+// also being cs_engineer/admin/usage_metrics_viewer -- reported live once
+// Support Portal Lite's separate app/nav was folded into the main portal, a
+// plain cs_engineer (no viewer role at all) could not open this page. Fixed
+// by registering these routes directly on PermUsageMetricsViewer instead of
+// layering on PermViewerAccess.
+func TestUsageMetricsHandler_GetProjects_CsEngineerWithoutViewerCanReach(t *testing.T) {
+	client := &mockUsageMetricsClient{response: []byte(`[]`)}
+	h := NewUsageMetricsHandler(client, viewerAccessGuard)
+
+	req := httptest.NewRequest(http.MethodGet, "/usage-metrics/projects", nil)
+	req = req.WithContext(middleware.WithUserInfo(req.Context(), &middleware.UserInfo{
+		Email: "engineer@example.com", UserID: "u-eng", Roles: []string{"test-cs-engineer"},
+	}))
+	w := httptest.NewRecorder()
+	h.GetProjects(w, req)
+
+	assertStatus(t, w, http.StatusOK)
+}
+
+// A plain viewer (no cs_engineer/admin/usage_metrics_viewer) must NOT reach
+// this domain at all -- confirmed live, correcting an earlier pass that
+// mistakenly granted Viewer this permission. Unlike its ex-SPL siblings
+// (Customer Health, User Scan), Usage Metrics is not part of what a
+// Viewer-only account gets.
+func TestUsageMetricsHandler_GetProjects_PlainViewerIsDenied(t *testing.T) {
+	h := NewUsageMetricsHandler(&mockUsageMetricsClient{}, viewerAccessGuard)
+
+	req := httptest.NewRequest(http.MethodGet, "/usage-metrics/projects", nil)
+	req = req.WithContext(middleware.WithUserInfo(req.Context(), &middleware.UserInfo{
+		Email: "viewer@example.com", UserID: "u-viewer", Roles: []string{"test-viewer"},
+	}))
+	w := httptest.NewRecorder()
+	h.GetProjects(w, req)
+
+	assertStatus(t, w, http.StatusForbidden)
+}
+
+// A viewer who ALSO holds usage_metrics_viewer, cs_engineer or admin does
+// reach it, same as holding that role alone.
+func TestUsageMetricsHandler_GetProjects_ViewerWithQualifyingRoleHasAccess(t *testing.T) {
+	client := &mockUsageMetricsClient{response: []byte(`[]`)}
+	h := NewUsageMetricsHandler(client, viewerAccessGuard)
+
+	req := httptest.NewRequest(http.MethodGet, "/usage-metrics/projects", nil)
+	req = req.WithContext(middleware.WithUserInfo(req.Context(), &middleware.UserInfo{
+		Email: "viewer@example.com", UserID: "u-viewer", Roles: []string{"test-viewer", "test-usage-metrics-viewer"},
+	}))
+	w := httptest.NewRecorder()
+	h.GetProjects(w, req)
+
+	assertStatus(t, w, http.StatusOK)
 }
 
 func TestUsageMetricsHandler_GetProjects_Success(t *testing.T) {
@@ -212,4 +266,28 @@ func TestUsageMetricsHandler_GetDeployedProductMetrics_RequiresID(t *testing.T) 
 	h.GetDeployedProductMetrics(w, req)
 
 	assertStatus(t, w, http.StatusBadRequest)
+}
+
+func TestValidateMetricsDateRange(t *testing.T) {
+	tests := []struct {
+		name      string
+		startDate string
+		endDate   string
+		wantErr   bool
+	}{
+		{"valid same-day range", "2026-01-01", "2026-01-01", false},
+		{"valid range within limit", "2026-01-01", "2026-06-01", false},
+		{"end before start", "2026-06-01", "2026-01-01", true},
+		{"malformed start date", "not-a-date", "2026-01-01", true},
+		{"malformed end date", "2026-01-01", "not-a-date", true},
+		{"range exceeds 366 days", "2025-01-01", "2026-06-01", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateMetricsDateRange(tt.startDate, tt.endDate)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateMetricsDateRange(%q, %q) error = %v, wantErr %v", tt.startDate, tt.endDate, err, tt.wantErr)
+			}
+		})
+	}
 }

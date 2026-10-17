@@ -163,7 +163,7 @@ export default function MyWeekStrip({
               role="button"
               tabIndex={0}
               aria-label={
-                onShowDay ? `${d.toDateString()}: open in Who is on today` : d.toDateString()
+                onShowDay ? `${d.toDateString()}: open in Today` : d.toDateString()
               }
               onMouseEnter={() => hoverOpen(iso)}
               onMouseLeave={cancelHover}
@@ -257,7 +257,7 @@ export default function MyWeekStrip({
           <span>
             <b>See who's on rotation with you.</b>{" "}
             {onShowDay
-              ? "Hover over a day above, or tap Who's on, to list everyone rostered that day. Click a day to open it in Who is on today."
+              ? "Hover over a day above, or tap Who's on, to list everyone rostered that day. Click a day to open it in Today."
               : "Hover over a day above, or tap it, to list everyone rostered that day."}
           </span>
         </div>
@@ -270,7 +270,7 @@ export default function MyWeekStrip({
         {openDay ? (
           <span className="grp hint">
             {onShowDay
-              ? "Who's on again, or ×, to close it · click a day to open it in Who is on today"
+              ? "Who's on again, or ×, to close it · click a day to open it in Today"
               : "Click the open day again, or ×, to close it"}
           </span>
         ) : null}

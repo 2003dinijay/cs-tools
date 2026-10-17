@@ -26,7 +26,8 @@
 --   CRE weekend   three engineers from any ABT, plus one from Americas
 --   Americas      the whole team on night cover each weekday -- that is when
 --                 they work, not a rotation they take turns at
---   SRE weekday   two L1 and two L2 per zone, one of each from both SRE teams
+--   SRE weekday   an L1 and an L2 per day zone (TZ1, TZ2) from each SRE team
+--   SRE night     TZ3 is one crew for both teams, L1, L2 and L3, every night
 --
 -- The real allocator, with leave awareness and swap handling, belongs in
 -- entity-service.
@@ -437,7 +438,7 @@ CROSS JOIN LATERAL _seed_span(d.d, 'CRE_WEEKEND_NIGHT') sp
 WHERE d.is_weekend
 ON CONFLICT DO NOTHING;
 
--- ── SRE: two L1 and two L2 per zone per weekday, one of each per team ─────
+-- ── SRE: by day, an L1 and an L2 per zone per weekday from each team ──────
 CREATE TEMP TABLE _sre (id UUID, team_key TEXT, rn INT, total INT) ON COMMIT DROP;
 INSERT INTO _sre
 SELECT e.id, e.team_key,
@@ -452,8 +453,7 @@ SELECT s.id, md5('seed-team-'||s.team_key)::uuid, s.team_key, sp.shift_id, sp.zo
 FROM _day d
 CROSS JOIN (VALUES
       ('SRE_TZ1_L1','L1',0), ('SRE_TZ1','L2',1),
-      ('SRE_TZ2_L1','L1',2), ('SRE_TZ2','L2',3),
-      ('SRE_TZ3',   'L1',4), ('SRE_TZ3','L2',5)
+      ('SRE_TZ2_L1','L1',2), ('SRE_TZ2','L2',3)
   ) AS v(code, tier, slot)
 CROSS JOIN (VALUES ('apollo'),('artemis')) AS tm(team_key)
 JOIN _sre s ON s.team_key = tm.team_key AND s.rn = ((d.n * 6 + v.slot) % s.total) + 1
@@ -461,17 +461,35 @@ CROSS JOIN LATERAL _seed_span(d.d, v.code) sp
 WHERE NOT d.is_weekend
 ON CONFLICT DO NOTHING;
 
--- the weekend runs two crews: TZ1 and TZ2 as one by day, TZ3 by night
+-- the weekend runs TZ1 and TZ2 as one by day, an L1 from each team
 INSERT INTO team_schedule_assignment
   (user_id, team_id, team_key, shift_id, zone_id, tier, rota_date, starts_at, ends_at, is_on_call, source, created_by, updated_by)
 SELECT s.id, md5('seed-team-'||s.team_key)::uuid, s.team_key, sp.shift_id, sp.zone_id,
        'L1'::team_schedule_tier_enum, d.d, sp.starts_at, sp.ends_at, FALSE, 'GENERATED', 'seed', 'seed'
 FROM _day d
-CROSS JOIN (VALUES ('SRE_WE_TZ1',0),('SRE_TZ3',1)) AS v(code, slot)
 CROSS JOIN (VALUES ('apollo'),('artemis')) AS tm(team_key)
-JOIN _sre s ON s.team_key = tm.team_key AND s.rn = ((d.n * 2 + v.slot) % s.total) + 1
-CROSS JOIN LATERAL _seed_span(d.d, v.code) sp
+JOIN _sre s ON s.team_key = tm.team_key AND s.rn = ((d.n * 2) % s.total) + 1
+CROSS JOIN LATERAL _seed_span(d.d, 'SRE_WE_TZ1') sp
 WHERE d.is_weekend
+ON CONFLICT DO NOTHING;
+
+-- TZ3 is the night cover: one crew for both teams every night, weekends
+-- included -- an L1, an L2 and an L3, as Generate month writes it. The team
+-- that leads alternates by day: it gives the L1 and the L3, the other team
+-- the L2. Each pick comes from a slot that day's day turns do not use, so
+-- nobody works the day and the night.
+INSERT INTO team_schedule_assignment
+  (user_id, team_id, team_key, shift_id, zone_id, tier, rota_date, starts_at, ends_at, is_on_call, source, created_by, updated_by)
+SELECT s.id, md5('seed-team-'||s.team_key)::uuid, s.team_key, sp.shift_id, sp.zone_id,
+       v.tier::team_schedule_tier_enum, d.d, sp.starts_at, sp.ends_at, FALSE, 'GENERATED', 'seed', 'seed'
+FROM _day d
+-- lead: the night's leading team (1) or the other (0); extra: its second pick
+CROSS JOIN (VALUES ('L1', 1, 0), ('L2', 0, 0), ('L3', 1, 1)) AS v(tier, lead, extra)
+JOIN _sre s
+  ON s.team_key = CASE WHEN (d.n % 2 = 0) = (v.lead = 1) THEN 'apollo' ELSE 'artemis' END
+ AND s.rn = CASE WHEN d.is_weekend THEN ((d.n * 2 + 1 + v.extra) % s.total) + 1
+                 ELSE ((d.n * 6 + 4 + v.extra) % s.total) + 1 END
+CROSS JOIN LATERAL _seed_span(d.d, 'SRE_TZ3') sp
 ON CONFLICT DO NOTHING;
 
 -- ── leave ─────────────────────────────────────────────────────────────────
@@ -512,6 +530,39 @@ WHERE NOT d.is_weekend
   AND NOT EXISTS (SELECT 1 FROM team_schedule_assignment a
                    WHERE a.user_id = e.id AND a.rota_date = d.d AND a.created_by = 'seed')
 ON CONFLICT DO NOTHING;
+
+-- ── moves to another team: Migration, and the Brazil rotation ─────────────
+-- Migration 0202 links these two tags to the team a span moves somebody to,
+-- by finding that team by name. On a fresh local database the migrations run
+-- before this seed has created the Americas and Migration teams, so the link
+-- was never made: the picker then offered Migration and Brazil as plain
+-- allocations, with no "Move to Migration" and no Americas cover move, and
+-- Migration spans stayed on the engineer's own team. Same rule as 0202, so
+-- it is a no-op wherever the migration already linked them.
+UPDATE team_schedule_absence_kind k
+   SET moves_to_team_key = v.team_key,
+       works_rota_there = v.works_rota_there,
+       updated_on = now(),
+       updated_by = 'seed'
+  FROM (VALUES ('ALLO_BR', 'americas', TRUE), ('MIGRATION', 'migration', FALSE))
+       AS v(code, team_key, works_rota_there)
+ WHERE k.code = v.code
+   AND k.moves_to_team_key IS NULL
+   AND EXISTS (SELECT 1 FROM team t WHERE t.key = v.team_key);
+
+-- A span of a move is filed under the team it moves somebody to, their own
+-- team kept beside it -- what 0202 does to spans that already existed. The
+-- standing Migration allocations above are inserted under the engineer's own
+-- team, so they need it every run.
+UPDATE team_schedule_absence ab
+   SET home_team_key = ab.team_key,
+       team_key = k.moves_to_team_key,
+       updated_on = now(),
+       updated_by = 'seed'
+  FROM team_schedule_absence_kind k
+ WHERE k.id = ab.kind_id
+   AND k.moves_to_team_key IS NOT NULL
+   AND lower(ab.team_key) <> lower(k.moves_to_team_key);
 
 DROP FUNCTION IF EXISTS _seed_span(DATE, TEXT);
 

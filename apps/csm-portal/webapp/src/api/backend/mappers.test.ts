@@ -147,7 +147,7 @@ describe("uiCommentFromBe", () => {
     expect(ui.bodyHtml).toBe('<p>a &amp; b</p><img src=x onerror="alert(1)">');
   });
 
-  it("falls back from name to email, then Unknown when createdBy is null", () => {
+  it("falls back from name to email, then System when createdBy is null", () => {
     expect(
       uiCommentFromBe({
         ...base,
@@ -156,7 +156,19 @@ describe("uiCommentFromBe", () => {
     ).toBe("x@wso2.com");
     expect(
       uiCommentFromBe({ ...base, createdBy: null }).authorName,
-    ).toBe("Unknown");
+    ).toBe("System");
+  });
+
+  it("shows System, with no email or user ref, when createdBy has neither name nor email", () => {
+    const ui = uiCommentFromBe({
+      ...base,
+      createdBy: { id: null, email: "  ", name: "" },
+    });
+    expect(ui.authorName).toBe("System");
+    expect(ui.authorEmail).toBeUndefined();
+    const none = uiCommentFromBe({ ...base, createdBy: null });
+    expect(none.authorEmail).toBeUndefined();
+    expect(none.authorUser).toBeUndefined();
   });
 });
 
@@ -194,6 +206,30 @@ describe("uiCommentFromBe — /comments/search shape and chat", () => {
     expect(ui.authorRole).toBe("chatbot");
   });
 
+  // Regression: the REAL GET /conversations/{id}/messages response sends
+  // Novera as createdBy: { name: "", email: "Novera" } -- the sentinel in
+  // email, name empty -- not { name: "Novera", ... } as the fixture above
+  // assumes. Confirmed live (a HAR capture of the real staging backend):
+  // name-only detection silently left every real Novera message as
+  // authorRole "customer", which broke the chatbot-after-human timestamp
+  // tie-break (both sides compare as non-bot) and left <thinking> reasoning
+  // unstripped.
+  it("detects Novera as a chatbot via the nested createdBy.email (the real backend shape)", () => {
+    const ui = uiCommentFromBe(
+      { ...msg, createdBy: { id: null, email: "Novera", name: "" } },
+      { context: "conversation" },
+    );
+    expect(ui.authorRole).toBe("chatbot");
+  });
+
+  it("does not flag a real person whose email merely contains 'novera' as a domain/local-part", () => {
+    const ui = uiCommentFromBe(
+      { ...msg, createdBy: { id: null, email: "novera@wso2.com", name: "" } },
+      { context: "conversation" },
+    );
+    expect(ui.authorRole).toBe("customer");
+  });
+
   it("drops Novera's <thinking> reasoning but never edits a person's message", () => {
     const withThinking = "<thinking>internal notes</thinking>\n\nWhich environment?";
     const bot = uiCommentFromBe(
@@ -223,11 +259,11 @@ describe("uiCommentFromBe — /comments/search shape and chat", () => {
     expect(ui.authorRole).toBe("wso2_engineer");
   });
 
-  it("falls back to Unknown when createdBy is null", () => {
+  it("falls back to System when createdBy is null", () => {
     const ui = uiCommentFromBe(
       { ...msg, createdBy: null },
       { context: "case" },
     );
-    expect(ui.authorName).toBe("Unknown");
+    expect(ui.authorName).toBe("System");
   });
 });

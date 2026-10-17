@@ -19,7 +19,6 @@ import {
   Box,
   Button,
   Chip,
-  CircularProgress,
   Dialog,
   DialogActions,
   DialogContent,
@@ -29,6 +28,7 @@ import {
   Menu,
   MenuItem,
   Paper,
+  Skeleton,
   Table,
   TableBody,
   TableCell,
@@ -200,12 +200,16 @@ export default function DeploymentsTab({ projectId }: DeploymentsTabProps): JSX.
               </TableRow>
             </TableHead>
             <TableBody>
-              {isLoading || isFetching ? (
-                <TableRow>
-                  <TableCell colSpan={COLUMN_COUNT} align="center" sx={{ py: 4 }}>
-                    <CircularProgress size={24} />
-                  </TableCell>
-                </TableRow>
+              {isLoading ? (
+                Array.from({ length: 3 }).map((_, i) => (
+                  <TableRow key={i}>
+                    {Array.from({ length: COLUMN_COUNT }).map((__, c) => (
+                      <TableCell key={c}>
+                        <Skeleton variant="rounded" width="70%" height={18} />
+                      </TableCell>
+                    ))}
+                  </TableRow>
+                ))
               ) : isError ? (
                 <TableRow>
                   <TableCell colSpan={COLUMN_COUNT} align="center">

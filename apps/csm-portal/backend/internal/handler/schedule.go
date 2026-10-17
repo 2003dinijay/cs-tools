@@ -23,10 +23,11 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
+	"strings"
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
-	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/servicenow"
 )
 
 // entityScheduleClient abstracts the entity service Team Schedule operations.
@@ -49,17 +50,40 @@ type entityScheduleClient interface {
 	CreateScheduleAbsenceKind(ctx context.Context, body []byte) ([]byte, error)
 	DeleteScheduleAbsenceKind(ctx context.Context, code string) ([]byte, error)
 	GetScheduleEditMarkers(ctx context.Context, from, to string) ([]byte, error)
+
+	// Case Paging: who is on each tier of the paging chain, and one change to
+	// it. entity-service decides who may change what.
+	GetPagingChain(ctx context.Context, family string) ([]byte, error)
+	UpdatePagingMember(ctx context.Context, id string, body []byte) ([]byte, error)
+
+	// A paging-only phone number for a person with none on their profile,
+	// kept by entity-service and never written to Asgardeo, and a test call
+	// to it.
+	PutPagingContact(ctx context.Context, userID string, body []byte) ([]byte, error)
+	DeletePagingContact(ctx context.Context, userID string) ([]byte, error)
+	TestPagingContact(ctx context.Context, userID string) ([]byte, error)
 }
 
 // ScheduleHandler handles the Team Schedule reads: who is working, when, and
 // who is out of the rota.
 type ScheduleHandler struct {
 	entity entityScheduleClient
+	// phones adds "hasProfilePhone" to the paging chain's members; nil leaves
+	// the chain as entity-service sent it.
+	phones *PagingPhoneChecker
 }
 
 // NewScheduleHandler creates a ScheduleHandler backed by the given entity client.
 func NewScheduleHandler(entity entityScheduleClient) *ScheduleHandler {
 	return &ScheduleHandler{entity: entity}
+}
+
+// WithPagingPhones makes GET /team-schedule/paging-chain say, per member,
+// whether they have a mobile number on their profile: entity-service's answer
+// where it gives one, else the same SCIM cache the readiness strip reads.
+func (h *ScheduleHandler) WithPagingPhones(phones *PagingPhoneChecker) *ScheduleHandler {
+	h.phones = phones
+	return h
 }
 
 // readScheduleBody authenticates the caller and returns the request body,
@@ -238,6 +262,328 @@ func (h *ScheduleHandler) GetScheduleActivity(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, result)
 }
 
+// pagingFamilies is the closed set of families the Case Paging chain is
+// asked for by; anything else is refused here rather than forwarded.
+var pagingFamilies = map[string]bool{"": true, "CRE": true, "SRE": true}
+
+// GetPagingChain handles GET /team-schedule/paging-chain -- the Case Paging
+// tab's read: who is on each tier, and what this user may change. The entity
+// service decides the permissions; this only passes them through.
+func (h *ScheduleHandler) GetPagingChain(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserInfoFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
+		return
+	}
+
+	family := r.URL.Query().Get("family")
+	if !pagingFamilies[family] {
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+
+	result, err := h.entity.GetPagingChain(r.Context(), family)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity GetPagingChain failed", "err", err)
+		mapUpstreamErrorGeneric(w, err, "Failed to load the paging chain.")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, h.withProfilePhones(r.Context(), result))
+}
+
+// withProfilePhones sets "hasProfilePhone" on each member of a paging-chain
+// response, leaving every other field as entity-service sent it.
+// entity-service's own answer stands where it says true, and where it says
+// false once the SCIM fallback is off; SCIM answers the rest. Best effort: a
+// member whose lookup failed keeps what entity-service sent (no field from an
+// older one), and a response that cannot be read is returned unchanged.
+func (h *ScheduleHandler) withProfilePhones(ctx context.Context, raw []byte) []byte {
+	if h.phones == nil {
+		return raw
+	}
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &top); err != nil {
+		return raw
+	}
+	var members []map[string]json.RawMessage
+	if err := json.Unmarshal(top["members"], &members); err != nil || len(members) == 0 {
+		return raw
+	}
+
+	emailOf := func(m map[string]json.RawMessage) string {
+		var e string
+		_ = json.Unmarshal(m["email"], &e)
+		return normalizeEmail(e)
+	}
+	seen := make(map[string]bool)
+	entityAnswer := make(map[string]bool)
+	var emails []string
+	for _, m := range members {
+		e := emailOf(m)
+		if e == "" {
+			continue
+		}
+		if !seen[e] {
+			seen[e] = true
+			emails = append(emails, e)
+		}
+		var has bool
+		if raw, ok := m["hasProfilePhone"]; ok && json.Unmarshal(raw, &has) == nil {
+			entityAnswer[e] = entityAnswer[e] || has
+		}
+	}
+	hasPhone, failed := h.phones.profilePhones(ctx, emails, entityAnswer)
+	if len(failed) > 0 {
+		slog.WarnContext(ctx, "paging chain: profile phone check unavailable for some people", "count", len(failed))
+	}
+
+	for _, m := range members {
+		e := emailOf(m)
+		if e == "" || failed[e] {
+			continue
+		}
+		if hasPhone[e] {
+			m["hasProfilePhone"] = json.RawMessage("true")
+		} else {
+			m["hasProfilePhone"] = json.RawMessage("false")
+		}
+	}
+	enc, err := json.Marshal(members)
+	if err != nil {
+		return raw
+	}
+	top["members"] = enc
+	out, err := json.Marshal(top)
+	if err != nil {
+		return raw
+	}
+	return out
+}
+
+// UpdatePagingMember handles PATCH /team-schedule/paging-chain/members/{id}:
+// one change to who is on the Case Paging chain. The entity service checks who
+// may make it, against the membership being changed; its refusal reason is
+// kept, the same as a lead's edit to the rota.
+func (h *ScheduleHandler) UpdatePagingMember(w http.ResponseWriter, r *http.Request) {
+	if middleware.UserInfoFromContext(r.Context()) == nil {
+		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" || !uuidRe.MatchString(id) {
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+
+	body, userID, ok := readScheduleBody(w, r)
+	if !ok {
+		return
+	}
+
+	if status, msg := h.responderPhoneRefusal(r.Context(), id, body); status != 0 {
+		writeErrorCode(w, status, msg, errCodeResponderNeedsProfilePhone)
+		return
+	}
+
+	result, err := h.entity.UpdatePagingMember(r.Context(), id, body)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity UpdatePagingMember failed", "userID", userID, "err", err)
+		mapScheduleWriteError(w, err, "Failed to change the paging chain.")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+// errCodeResponderNeedsProfilePhone names the refusal of a 1st, 2nd or 3rd
+// responder with no phone number on their CSM Profile.
+const errCodeResponderNeedsProfilePhone = "paging_responder_needs_profile_phone"
+
+// pagingChainFamilies are the chains a membership is looked up in.
+var pagingChainFamilies = []string{"CRE", "SRE"}
+
+// responderPhoneRefusal decides whether a change that makes someone a 1st,
+// 2nd or 3rd responder (Level 0, the people paged first) must be refused
+// because they have no phone number on their CSM Profile: a responder nobody
+// can call leaves the chain's first level empty in practice. It returns the
+// status and message to answer with, or status 0 to let the change through.
+//
+// "Has a number" is the same answer the chain's own read gives (entity-
+// service's "user".phone, then the SCIM fallback), so the page and this
+// check never disagree. Clearing a responder (rank 0), every other change,
+// and a membership the chains do not list are left to entity-service. An
+// answer that cannot be had just now refuses the change rather than letting
+// an unreachable responder in.
+func (h *ScheduleHandler) responderPhoneRefusal(ctx context.Context, membershipID string, body []byte) (int, string) {
+	var req struct {
+		ResponderRank *int `json:"responderRank"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil || req.ResponderRank == nil || *req.ResponderRank < 1 || *req.ResponderRank > 3 {
+		return 0, ""
+	}
+
+	type chainMember struct {
+		MembershipID    string `json:"membershipId"`
+		Name            string `json:"name"`
+		Email           string `json:"email"`
+		HasProfilePhone *bool  `json:"hasProfilePhone"`
+	}
+	var member *chainMember
+	for _, family := range pagingChainFamilies {
+		raw, err := h.entity.GetPagingChain(ctx, family)
+		if err != nil {
+			slog.WarnContext(ctx, "paging responder check: could not read the chain", "family", family, "err", err)
+			continue
+		}
+		var chain struct {
+			Members []chainMember `json:"members"`
+		}
+		if json.Unmarshal(raw, &chain) != nil {
+			continue
+		}
+		for i := range chain.Members {
+			if strings.EqualFold(chain.Members[i].MembershipID, membershipID) {
+				member = &chain.Members[i]
+				break
+			}
+		}
+		if member != nil {
+			break
+		}
+	}
+	if member == nil {
+		return 0, ""
+	}
+
+	name := strings.TrimSpace(member.Name)
+	if name == "" {
+		name = member.Email
+	}
+	has := member.HasProfilePhone != nil && *member.HasProfilePhone
+	email := normalizeEmail(member.Email)
+	if !has && h.phones != nil && email != "" {
+		entityAnswer := map[string]bool{}
+		if member.HasProfilePhone != nil {
+			entityAnswer[email] = *member.HasProfilePhone
+		}
+		hasPhone, failed := h.phones.profilePhones(ctx, []string{email}, entityAnswer)
+		if failed[email] {
+			return http.StatusServiceUnavailable, "Could not check whether " + name + " has a phone number on their CSM Profile just now. Try again."
+		}
+		has = hasPhone[email]
+	} else if !has && member.HasProfilePhone == nil {
+		// Nobody can say either way: entity-service is left to decide.
+		return 0, ""
+	}
+	if has {
+		return 0, ""
+	}
+	return http.StatusConflict, name + " can't be added to Level 0: a phone number should be included in their CSM Profile (avatar › Profile)"
+}
+
+// e164Re is a phone number in E.164: a +, a country code that does not start
+// with 0, and 7 to 15 digits in all.
+var e164Re = regexp.MustCompile(`^\+[1-9][0-9]{6,14}$`)
+
+// pagingContactUserID authenticates the caller and returns the {userId} path
+// value, having checked it is a UUID. Returns ok=false when it has already
+// written the response.
+func pagingContactUserID(w http.ResponseWriter, r *http.Request) (userID, callerID string, ok bool) {
+	user := middleware.UserInfoFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
+		return "", "", false
+	}
+	id := r.PathValue("userId")
+	if id == "" || !uuidRe.MatchString(id) {
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return "", "", false
+	}
+	return id, user.UserID, true
+}
+
+// mapPagingContactError is mapScheduleWriteError, plus the test call's "too
+// soon": a 429 is kept as a 429, with a fixed message, so the page can say to
+// wait rather than that something broke.
+func mapPagingContactError(w http.ResponseWriter, err error, fallbackMsg string) {
+	var apiErr *apierror.Error
+	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusTooManyRequests {
+		writeError(w, http.StatusTooManyRequests, "This number was tested less than 2 minutes ago. Try again shortly.")
+		return
+	}
+	mapScheduleWriteError(w, err, fallbackMsg)
+}
+
+// PutPagingContact handles PUT /team-schedule/paging-contacts/{userId}: set a
+// person's paging-only number. The number must be E.164; it is never logged.
+func (h *ScheduleHandler) PutPagingContact(w http.ResponseWriter, r *http.Request) {
+	userID, _, ok := pagingContactUserID(w, r)
+	if !ok {
+		return
+	}
+	body, callerID, ok := readScheduleBody(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Phone *string `json:"phone"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil || req.Phone == nil || !e164Re.MatchString(*req.Phone) {
+		writeError(w, http.StatusBadRequest, "phone must be a number in E.164 form, e.g. +94771234567")
+		return
+	}
+	// Rebuilt rather than forwarded, so nothing but the number reaches
+	// entity-service.
+	fwd, err := json.Marshal(map[string]string{"phone": *req.Phone})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to save the paging number.")
+		return
+	}
+
+	result, err := h.entity.PutPagingContact(r.Context(), userID, fwd)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity PutPagingContact failed", "userID", callerID, "err", err)
+		mapPagingContactError(w, err, "Failed to save the paging number.")
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// DeletePagingContact handles DELETE /team-schedule/paging-contacts/{userId}.
+func (h *ScheduleHandler) DeletePagingContact(w http.ResponseWriter, r *http.Request) {
+	userID, callerID, ok := pagingContactUserID(w, r)
+	if !ok {
+		return
+	}
+	if _, err := h.entity.DeletePagingContact(r.Context(), userID); err != nil {
+		slog.ErrorContext(r.Context(), "entity DeletePagingContact failed", "userID", callerID, "err", err)
+		mapPagingContactError(w, err, "Failed to remove the paging number.")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// TestPagingContact handles POST /team-schedule/paging-contacts/{userId}/test:
+// a test call to the person's paging number. 202 while the call is placed; the
+// result lands on the paging chain's member as lastTestStatus.
+func (h *ScheduleHandler) TestPagingContact(w http.ResponseWriter, r *http.Request) {
+	userID, callerID, ok := pagingContactUserID(w, r)
+	if !ok {
+		return
+	}
+	result, err := h.entity.TestPagingContact(r.Context(), userID)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity TestPagingContact failed", "userID", callerID, "err", err)
+		mapPagingContactError(w, err, "Failed to start the test call.")
+		return
+	}
+	if len(result) == 0 {
+		result = []byte(`{"lastTestStatus":"pending"}`)
+	}
+	writeJSON(w, http.StatusAccepted, result)
+}
+
 // GetMyLeadTeams handles GET /team-schedule/my-lead-teams.
 func (h *ScheduleHandler) GetMyLeadTeams(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserInfoFromContext(r.Context())
@@ -377,54 +723,4 @@ func (h *ScheduleHandler) GetScheduleEditMarkers(w http.ResponseWriter, r *http.
 	}
 
 	writeJSON(w, http.StatusOK, result)
-}
-
-// viewerScheduleClient abstracts the ServiceNow ABT team schedule operation
-// used by ViewerScheduleHandler.
-type viewerScheduleClient interface {
-	GetABTTeamSchedule(ctx context.Context, from, duration, teamID, eventType, teamScheduleURL string) (servicenow.ABTTeamScheduleData, error)
-}
-
-// ViewerScheduleHandler handles HTTP requests for the ABT team schedule,
-// delegating to the ServiceNow service.
-type ViewerScheduleHandler struct {
-	servicenow      viewerScheduleClient
-	accessGuard     *AccessGuard
-	teamScheduleURL string
-}
-
-// NewViewerScheduleHandler creates a ViewerScheduleHandler backed by the given
-// ServiceNow client. accessGuard enforces PermViewerAccess, SupportPortalLite's
-// blanket audience gate; teamScheduleURL is the static URL echoed back in
-// every response (TEAM_SCHEDULE_URL).
-func NewViewerScheduleHandler(sn viewerScheduleClient, accessGuard *AccessGuard, teamScheduleURL string) *ViewerScheduleHandler {
-	return &ViewerScheduleHandler{servicenow: sn, accessGuard: accessGuard, teamScheduleURL: teamScheduleURL}
-}
-
-// GetABTTeamSchedule handles GET /abt-team-schedule. All query
-// parameters are optional, mirroring the Ballerina resource function's
-// `string?` parameters.
-func (h *ViewerScheduleHandler) GetABTTeamSchedule(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireViewerAccess(w, r, h.accessGuard)
-	if !ok {
-		return
-	}
-
-	q := r.URL.Query()
-	from, duration, teamID, eventType := q.Get("from"), q.Get("duration"), q.Get("teamId"), q.Get("eventType")
-	if teamID != "" {
-		if err := servicenow.SanitizeQueryValue(teamID); err != nil {
-			writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
-			return
-		}
-	}
-
-	schedule, err := h.servicenow.GetABTTeamSchedule(r.Context(), from, duration, teamID, eventType, h.teamScheduleURL)
-	if err != nil {
-		slog.ErrorContext(r.Context(), "servicenow GetABTTeamSchedule failed", "userID", user.UserID, "err", err)
-		mapUpstreamErrorGeneric(w, err, "Failed to retrieve team schedule.")
-		return
-	}
-
-	writeJSONValue(w, http.StatusOK, schedule)
 }

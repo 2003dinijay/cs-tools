@@ -16,17 +16,20 @@
 
 package risk
 
-import (
-	"database/sql"
-	"time"
-)
-
-// ----- request payloads (mirror Ballerina modules/risk/types.bal) -----
+// ----- request payloads -----
+//
+// AccountSysID used to be required on OpenRiskRequest/MarkHealthyRequest/
+// RevertHealthRequest/CreateActionItemRequest because the old MySQL tables
+// had no foreign key to derive it from the project/risk row itself -- the
+// caller had to supply it independently, with nothing enforcing it actually
+// matched the project's real account. entity-service derives it server-side
+// instead (project -> account, risk -> project -> account), so these fields
+// are gone; a caller that still sends accountSysId in the request body is
+// harmless (it's simply ignored by the JSON decoder).
 
 // OpenRiskRequest is the payload for opening a new risk on a project.
 type OpenRiskRequest struct {
-	AccountSysID string `json:"accountSysId"`
-	Comment      string `json:"comment"`
+	Comment string `json:"comment"`
 }
 
 // CloseRiskRequest is the payload for closing an open risk.
@@ -36,15 +39,14 @@ type CloseRiskRequest struct {
 
 // MarkHealthyRequest is the payload for marking a project healthy.
 type MarkHealthyRequest struct {
-	AccountSysID string  `json:"accountSysId"`
-	Comment      *string `json:"comment"`
+	Comment *string `json:"comment"`
 }
 
 // RevertHealthRequest is the payload for reverting a project's health
-// status back to "to_be_reviewed".
-type RevertHealthRequest struct {
-	AccountSysID string `json:"accountSysId"`
-}
+// status back to "to_be_reviewed". It carries no fields any more (see the
+// package doc comment above) but is kept as a named type since the handler
+// still decodes the request body into it.
+type RevertHealthRequest struct{}
 
 // CreateActionItemRequest is the payload for creating a new action item on
 // an open risk.
@@ -54,8 +56,6 @@ type CreateActionItemRequest struct {
 	Priority        string  `json:"priority"`
 	AssignedToEmail *string `json:"assignedToEmail"`
 	DueDate         string  `json:"dueDate"`
-	ProjectSysID    string  `json:"projectSysId"`
-	AccountSysID    string  `json:"accountSysId"`
 }
 
 // UpdateActionItemStatusRequest is the payload for updating an action
@@ -87,12 +87,23 @@ type InitHealthTrackingRequest struct {
 	ProjectSysIDs []string `json:"projectSysIds"`
 }
 
-// ----- API response types (mirror Ballerina modules/risk/types.bal) -----
+// ----- API response types -----
+//
+// ID/RiskID/ActionItemID are now UUID strings, not auto-increment ints: the
+// old MySQL tables generated sequential integer primary keys, but
+// entity-service's project_risk/risk_action_item/action_item_comment tables
+// (migration 0219, entity-service repo) use gen_random_uuid() like every
+// other table in that schema. ProjectSysID/AccountSysID stay in their
+// original upstream-sys_id (32-char hex, no dashes) shape -- see
+// sysIDToUUID/uuidToSysID in client.go -- since those identify rows
+// entity-service already has a sys_id for (project, account), unlike the
+// risk/action-item/comment rows themselves, which are new resources with no
+// upstream equivalent and so no sys_id to preserve.
 
 // RiskActionItem is an action item attached to a project risk.
 type RiskActionItem struct {
-	ID                int     `json:"id"`
-	RiskID            int     `json:"riskId"`
+	ID                string  `json:"id"`
+	RiskID            string  `json:"riskId"`
 	ProjectSysID      string  `json:"projectSysId"`
 	AccountSysID      string  `json:"accountSysId"`
 	Title             string  `json:"title"`
@@ -113,7 +124,7 @@ type RiskActionItem struct {
 // ProjectRisk is a project's risk record, open or closed, together with its
 // action items.
 type ProjectRisk struct {
-	ID            int              `json:"id"`
+	ID            string           `json:"id"`
 	ProjectSysID  string           `json:"projectSysId"`
 	AccountSysID  string           `json:"accountSysId"`
 	Status        string           `json:"status"`
@@ -128,7 +139,7 @@ type ProjectRisk struct {
 
 // HealthStatusRecord is a project's current health-review status.
 type HealthStatusRecord struct {
-	ID              int     `json:"id"`
+	ID              string  `json:"id"`
 	ProjectSysID    string  `json:"projectSysId"`
 	AccountSysID    string  `json:"accountSysId"`
 	Status          string  `json:"status"`
@@ -153,60 +164,9 @@ type HealthSummary struct {
 
 // ActionItemComment is a comment posted on an action item.
 type ActionItemComment struct {
-	ID             int    `json:"id"`
-	ActionItemID   int    `json:"actionItemId"`
+	ID             string `json:"id"`
+	ActionItemID   string `json:"actionItemId"`
 	Comment        string `json:"comment"`
 	CreatedByEmail string `json:"createdByEmail"`
 	CreatedOn      string `json:"createdOn"`
-}
-
-// ----- internal DB row shapes (unexported: mirror the Ballerina *Row types) -----
-
-type projectRiskRow struct {
-	ID            int
-	ProjectSysID  string
-	AccountSysID  string
-	Status        string
-	OpenedComment string
-	OpenedByEmail string
-	OpenedOn      time.Time
-	ClosedComment sql.NullString
-	ClosedByEmail sql.NullString
-	ClosedOn      sql.NullTime
-}
-
-type healthStatusRow struct {
-	ID              int
-	ProjectSysID    string
-	AccountSysID    string
-	Status          string
-	ReviewedByEmail sql.NullString
-	ReviewedOn      sql.NullTime
-}
-
-type actionItemRow struct {
-	ID                int
-	RiskID            int
-	ProjectSysID      string
-	AccountSysID      string
-	Title             string
-	Description       sql.NullString
-	Priority          string
-	Status            string
-	AssignedToEmail   sql.NullString
-	DueDate           sql.NullTime
-	ResolutionComment sql.NullString
-	ResolvedByEmail   sql.NullString
-	ResolvedOn        sql.NullTime
-	CreatedByEmail    string
-	CreatedOn         time.Time
-	UpdatedOn         time.Time
-}
-
-type actionItemCommentRow struct {
-	ID             int
-	ActionItemID   int
-	Comment        string
-	CreatedByEmail string
-	CreatedOn      time.Time
 }

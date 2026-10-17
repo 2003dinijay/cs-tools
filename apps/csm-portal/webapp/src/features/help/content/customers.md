@@ -3,6 +3,10 @@
 Customers is where you look up an account or a project directly, rather than arriving at one
 through a case or dashboard widget. It has two tabs: **Accounts** and **Projects**.
 
+If you hold the viewer role and aren't a CS engineer or admin, **Customers** in the sidebar opens a
+dropdown with **Accounts**, **Projects** and **Customer Health**, the account health dashboard.
+Everyone else finds Customer Health as its own entry near the bottom of the sidebar.
+
 ## Accounts
 
 The Accounts tab lists every customer account, searchable by account name or Salesforce ID.
@@ -36,7 +40,7 @@ Opening a project takes you to its detail page, with four tabs:
 - **Work items**: cases, service requests, and other work items filed against this project.
 
 From a project's detail page, the **Create** menu lets you file a new case, service request
-(managed-cloud projects only), engagement, or security report already scoped to this project,
+(managed-cloud and Cloud Support projects), engagement, or security report already scoped to this project,
 so it can't end up filed against the wrong one.
 
 ### Deployments

@@ -164,6 +164,57 @@ func TestGetGroupSendsGetToGroupsID(t *testing.T) {
 	}
 }
 
+// TestGetCommentSendsGetToCommentsID pins the entity-service call shape
+// CommentHandler relies on to learn a comment's author before deciding
+// whether to allow an edit/delete (see comments.go's authorizeCommentActor):
+// a GET to /comments/{id} with no body and the id escaped into the path.
+func TestGetCommentSendsGetToCommentsID(t *testing.T) {
+	t.Parallel()
+
+	const id = "33333333-3333-4333-8333-333333333333"
+	var gotMethod, gotPath string
+	var gotBody []byte
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/token", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"test-token","token_type":"Bearer","expires_in":3600}`))
+	})
+	mux.HandleFunc("/comments/", func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"` + id + `","createdBy":{"email":"jane.doe@example.com"}}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := NewCustomerEntityClient(CustomerEntityConfig{
+		BaseURL:      srv.URL,
+		TokenURL:     srv.URL + "/token",
+		ClientID:     "test-client",
+		ClientSecret: "test-secret",
+	})
+
+	raw, err := client.GetComment(context.Background(), id)
+	if err != nil {
+		t.Fatalf("GetComment: %v", err)
+	}
+	if gotMethod != http.MethodGet {
+		t.Errorf("method = %q, want GET", gotMethod)
+	}
+	if gotPath != "/comments/"+id {
+		t.Errorf("path = %q, want /comments/%s", gotPath, id)
+	}
+	if len(gotBody) != 0 {
+		t.Errorf("body = %q, want none", gotBody)
+	}
+	if string(raw) == "" {
+		t.Error("empty response")
+	}
+}
+
 func TestNewCustomerEntityClientTimeout(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -178,5 +229,52 @@ func TestNewCustomerEntityClientTimeout(t *testing.T) {
 		if c.http.Timeout != tc.want {
 			t.Errorf("%s: client timeout = %v, want %v", tc.name, c.http.Timeout, tc.want)
 		}
+	}
+}
+
+// TestCreateCaseForwardsBodyAndUserIDToken pins that POST /cases reaches the
+// entity service with the caller's x-user-id-token (which it uses to decide
+// whether the caller is internal) and with the watchList in the body intact.
+func TestCreateCaseForwardsBodyAndUserIDToken(t *testing.T) {
+	t.Parallel()
+
+	const reqBody = `{"type":"case","watchList":["jane.doe@example.com"]}`
+
+	var gotPath, gotToken string
+	var gotBody []byte
+	mux := http.NewServeMux()
+	mux.HandleFunc("/token", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"test-token","token_type":"Bearer","expires_in":3600}`))
+	})
+	mux.HandleFunc("/cases", func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotToken = r.Header.Get("x-user-id-token")
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"case-1"}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := NewCustomerEntityClient(CustomerEntityConfig{
+		BaseURL:      srv.URL,
+		TokenURL:     srv.URL + "/token",
+		ClientID:     "test-client",
+		ClientSecret: "test-secret",
+	})
+
+	ctx := WithUserIDToken(context.Background(), "user-id-token-value")
+	if _, err := client.CreateCase(ctx, []byte(reqBody)); err != nil {
+		t.Fatalf("CreateCase: %v", err)
+	}
+	if gotPath != "/cases" {
+		t.Errorf("path = %q, want /cases", gotPath)
+	}
+	if gotToken != "user-id-token-value" {
+		t.Errorf("x-user-id-token = %q, want user-id-token-value", gotToken)
+	}
+	if string(gotBody) != reqBody {
+		t.Errorf("body = %s, want %s", gotBody, reqBody)
 	}
 }

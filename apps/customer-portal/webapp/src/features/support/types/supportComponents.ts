@@ -218,6 +218,12 @@ export type CommentBubbleProps = {
     firstName?: string;
     lastName?: string;
   } | null;
+  /**
+   * The case this comment belongs to. Forwarded to the backend as an
+   * authorization hint when resolving inline/attachment images — see
+   * useResolvedInlineImageHtml's own doc comment for why it's needed.
+   */
+  caseId?: string | null;
 };
 
 export type CaseDetailsActivityPanelProps = {
@@ -248,6 +254,8 @@ export type ActivityContentProps = {
     lastName?: string;
   } | null;
   onImageClick?: (src: string) => void;
+  /** Forwarded to each CommentBubble — see CommentBubbleProps.caseId. */
+  caseId?: string | null;
 };
 
 export type UploadAttachmentModalProps = {

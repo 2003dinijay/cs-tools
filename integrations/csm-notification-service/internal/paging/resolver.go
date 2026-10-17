@@ -135,6 +135,17 @@ type RoutingContext struct {
 	// SRE. Set by the engine from a LadderClassifier before the plan is
 	// built; see sre.go.
 	Ladder Ladder
+	// Rota is the SRE rota (SRE_SAAS, SRE_IAAS) an SRE ladder pages: the
+	// incident's own SRE team's, or sre.teams.defaultRota for one with no SRE
+	// team. Empty when the catalogue names no rotas, which reads every SRE
+	// window as before. Stamped by the engine; see SRERotaResolver.
+	Rota string `json:",omitempty"`
+	// SMETeam is the Special Ops team an SME page reaches (LadderSME only).
+	SMETeam string `json:",omitempty"`
+	// CallOnLeave is the ladder's onLeave: true rings someone on leave who
+	// holds a rung (after anyone available on the same tier); false leaves
+	// them out. Stamped by the engine from the file.
+	CallOnLeave bool `json:",omitempty"`
 }
 
 // HasNotificationLevel reports whether LEVEL_0 exists for this incident.
@@ -160,7 +171,8 @@ type RoutingContext struct {
 func (rc RoutingContext) HasNotificationLevel() bool {
 	// The SRE ladder's LEVEL_0 is L1 support, the first responder on every
 	// shift, not a rotation-only notification level.
-	if rc.Ladder == LadderSRE {
+	if rc.Ladder == LadderSRE || rc.Ladder == LadderSME {
+		// The SME ladder's LEVEL_0 is the L1 of the SME team's window.
 		return true
 	}
 	if !rc.Shift.IsRotation() {
@@ -235,6 +247,9 @@ func (rc RoutingContext) Rule() string {
 	// is worse than reporting none, so a known id always wins.
 	if rc.RuleID != "" {
 		return rc.RuleID
+	}
+	if rc.Ladder == LadderSME {
+		return "SME_HANDOFF"
 	}
 	// Section 5.0's table is the CRE ladder's. An SRE incident routes by
 	// on-call tier, which has one path and so one name.

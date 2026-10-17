@@ -53,6 +53,19 @@ func TestGetProducts_Success(t *testing.T) {
 	}
 }
 
+func TestLookups_AllowCsEngineerWithoutViewerRole(t *testing.T) {
+	h := NewLookupsHandler(&mockLookupsClient{products: []string{"A"}, teams: []string{"T"}}, viewerAccessGuard)
+	for name, call := range map[string]http.HandlerFunc{"products": h.GetProducts, "abt-teams": h.GetABTTeams} {
+		req := httptest.NewRequest(http.MethodGet, "/"+name, nil)
+		req = req.WithContext(middleware.WithUserInfo(req.Context(), &middleware.UserInfo{Email: "staff@example.com", UserID: "u-staff", Roles: []string{"test-cs-engineer"}}))
+		w := httptest.NewRecorder()
+		call(w, req)
+		if w.Code != http.StatusOK {
+			t.Errorf("%s: status = %d, want 200", name, w.Code)
+		}
+	}
+}
+
 func TestGetABTTeams_RejectsMissingSPLAccess(t *testing.T) {
 	h := NewLookupsHandler(&mockLookupsClient{}, viewerAccessGuard)
 	req := httptest.NewRequest(http.MethodGet, "/spl/abt-teams", nil)

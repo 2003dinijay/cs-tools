@@ -117,6 +117,9 @@ func TestSpecialistHandoff_WritesAndReadsBack(t *testing.T) {
 	if seen.State != "IN_PROGRESS" || seen.ServiceID == nil || *seen.ServiceID != icServiceID || seen.Number == "" {
 		t.Errorf("snapshot %+v, want the In Progress incident on %s", seen, icServiceID)
 	}
+	if seen.AssignedToID == nil || *seen.AssignedToID == "" {
+		t.Errorf("snapshot has no assignee; the handoff's needs-an-assignee rule could never pass")
+	}
 	if written.GroupName != "Test Sub Special Ops" || !strings.HasPrefix(written.TaskNumber, "TASK1") {
 		t.Errorf("written %+v", written)
 	}
@@ -162,6 +165,70 @@ func TestSpecialistHandoff_WritesAndReadsBack(t *testing.T) {
 	if s.AssignmentGroup.ID != hoSubGroup || s.Task.Number != written.TaskNumber || s.Task.Subject != hoTaskSubject ||
 		s.Task.StateLabel == nil || *s.Task.StateLabel != "Open" {
 		t.Errorf("summary group/task: %+v / %+v", s.AssignmentGroup, s.Task)
+	}
+}
+
+// TestSpecialistHandoff_SnapshotCarriesAlertNote: the snapshot carries the
+// earliest work note sre-alert-core-service creates an incident with, and no
+// other note; an incident without one carries none.
+func TestSpecialistHandoff_SnapshotCarriesAlertNote(t *testing.T) {
+	pool := handoffPool(t)
+	ctx := repository.WithSystemIdentity(context.Background())
+	repo := repository.NewIncidentRepository(repository.NewScoped(pool))
+	snapshot := func(incID string) repository.SpecialistHandoffSnapshot {
+		t.Helper()
+		var seen repository.SpecialistHandoffSnapshot
+		refused := errors.New("refused: read only")
+		_, err := repo.ApplySpecialistHandoff(ctx, incID, hoActor, func(s repository.SpecialistHandoffSnapshot) (repository.SpecialistHandoffPlan, error) {
+			seen = s
+			return repository.SpecialistHandoffPlan{}, refused
+		})
+		if !errors.Is(err, refused) {
+			t.Fatalf("ApplySpecialistHandoff: %v", err)
+		}
+		return seen
+	}
+
+	plain := inProgressIncident(t, pool)
+	if _, err := repo.CreateIncidentComment(ctx, plain, domain.CommentTypeWorkNote, "Looking into it.", hoActor); err != nil {
+		t.Fatalf("note: %v", err)
+	}
+	if s := snapshot(plain); s.AlertNote != nil {
+		t.Errorf("incident with no alert note: AlertNote %q, want nil", *s.AlertNote)
+	}
+
+	alerted := inProgressIncident(t, pool)
+	first := repository.AlertCreationNotePrefix + " ALT000000001</p><table><tr><td>service</td><td>Choreo</td></tr></table>"
+	for _, n := range []string{"Looking into it.", first, repository.AlertCreationNotePrefix + " ALT000000002</p>"} {
+		if _, err := repo.CreateIncidentComment(ctx, alerted, domain.CommentTypeWorkNote, n, hoActor); err != nil {
+			t.Fatalf("note: %v", err)
+		}
+	}
+	s := snapshot(alerted)
+	if s.AlertNote == nil || *s.AlertNote != first {
+		t.Errorf("AlertNote %v, want the earliest alert note %q", s.AlertNote, first)
+	}
+	// The issue's fields: the incident's priority and service, and its latest
+	// work notes without the alert notes, newest first.
+	if s.Priority == nil || *s.Priority == "" || s.ServiceName == nil || *s.ServiceName == "" || s.OpenedOn.IsZero() {
+		t.Errorf("snapshot priority %v service %v opened %v, want them set", s.Priority, s.ServiceName, s.OpenedOn)
+	}
+	if len(s.RecentWorkNotes) == 0 {
+		t.Fatal("RecentWorkNotes empty, want the incident's own notes")
+	}
+	for i, n := range s.RecentWorkNotes {
+		if strings.HasPrefix(n.Content, repository.AlertCreationNotePrefix) || strings.HasPrefix(n.Content, `{"reasonCode":`) {
+			t.Errorf("RecentWorkNotes[%d] is an alert or reason note: %q", i, n.Content)
+		}
+		if n.Author == "" || n.CreatedOn.IsZero() {
+			t.Errorf("RecentWorkNotes[%d] = %+v, want an author and a time", i, n)
+		}
+		if i > 0 && n.CreatedOn.After(s.RecentWorkNotes[i-1].CreatedOn) {
+			t.Errorf("RecentWorkNotes not newest first: %+v", s.RecentWorkNotes)
+		}
+	}
+	if len(s.RecentWorkNotes) > repository.SpecialistHandoffRecentNotes {
+		t.Errorf("%d notes, want at most %d", len(s.RecentWorkNotes), repository.SpecialistHandoffRecentNotes)
 	}
 }
 

@@ -56,9 +56,9 @@ describe("top-level nav order", () => {
     below("engagements", "announcements");
   });
 
-  it("puts Customers directly below Security Center, and PLG directly below Customers", () => {
+  it("puts Customers directly below Security Center, and Knowledge directly below Customers", () => {
     below("security-center", "customers");
-    below("customers", "plg");
+    below("customers", "kb-articles");
   });
 
   it("puts Team Schedule directly below Time cards", () => {
@@ -66,7 +66,7 @@ describe("top-level nav order", () => {
   });
 
   it("keeps the remaining sections in their existing relative order", () => {
-    expect(ids.filter((id) => id !== "viewer")).toEqual([
+    expect(ids).toEqual([
       "dashboard",
       "support",
       "operations",
@@ -74,10 +74,14 @@ describe("top-level nav order", () => {
       "announcements",
       "security-center",
       "customers",
+      "kb-articles",
       "plg",
       "updates",
       "time-cards",
       "team-schedule",
+      "customer-health",
+      "usage-metrics",
+      "user-scan",
       "admin",
       "help",
     ]);
@@ -140,10 +144,10 @@ describe("navNodeMatchForPath", () => {
     expect(navNodeMatchForPath("/nothing-here")).toBeUndefined();
   });
 
-  it("prefers a child over its parent on an equal-length prefix tie (viewer's href aliases viewer.cases')", () => {
-    expect(navNodeMatchForPath("/spl/cases")).toMatchObject({
-      node: { id: "viewer.cases" },
-      prefix: "/spl/cases",
+  it("prefers a child over its parent on an equal-length prefix tie (plg's href aliases plg.dashboard's)", () => {
+    expect(navNodeMatchForPath("/plg/dashboard")).toMatchObject({
+      node: { id: "plg.dashboard" },
+      prefix: "/plg/dashboard",
     });
   });
 });

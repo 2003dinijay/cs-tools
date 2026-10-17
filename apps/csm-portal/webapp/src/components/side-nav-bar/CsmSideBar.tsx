@@ -26,11 +26,14 @@ import {
 } from "@config/csmNavItems";
 import {
   featureState,
-  visibleNavChildren,
+  hasVisibleShortcutChild,
   visibleNavSections,
+  visibleRailChildren,
+  visibleShortcutTo,
 } from "@config/featureFlags";
-import { usePortalAccess } from "@context/current-user/usePortalAccess";
-import { usePortalView } from "@context/current-user/usePortalView";
+import { useFeaturePreviewOverrides } from "@config/featurePreview";
+import type { PortalAccess } from "@context/current-user/portalAccess";
+import { usePortalAccess, useSafeCurrentUserId } from "@context/current-user/usePortalAccess";
 import { useNavTransition } from "@hooks/useNavTransition";
 
 /** Tooltip for a disabled WIP item. Includes the label so the collapsed rail
@@ -87,12 +90,30 @@ interface CsmSideBarProps {
  * structural marker for this — see `CsmNavNode.tab`'s doc comment — so this
  * stays correct if another section adopts the same pattern later, with no
  * hardcoded id list to keep in sync.
+ *
+ * A route-tab section also opens as a dropdown for a user who sees one of its
+ * shortcut children (e.g. Customer Health under Customers for a viewer — see
+ * `CsmNavNode.shortcutTo`): a shortcut is not part of the in-page tab strip,
+ * so the rail is the only place it can be offered. Its route tabs then appear
+ * in the dropdown too, since the dropdown's parent no longer navigates.
  */
-function isSubmenuSection(section: CsmNavSection): boolean {
-  return Boolean(section.children?.length) && (section.children ?? []).every((child) => Boolean(child.tab));
+function isSubmenuSection(
+  section: CsmNavSection,
+  access: PortalAccess,
+  previewOverrides?: Record<string, boolean>,
+): boolean {
+  if (!section.children?.length) return false;
+  return (
+    section.children.every((child) => Boolean(child.tab)) ||
+    hasVisibleShortcutChild(section, access, previewOverrides)
+  );
 }
 
-function pickActiveId(pathname: string): string {
+function pickActiveId(
+  pathname: string,
+  access: PortalAccess,
+  previewOverrides?: Record<string, boolean>,
+): string {
   if (pathname === "/" || pathname === "") return "dashboard";
   // A submenu section's own child (e.g. `operations.incidents`) gets its own
   // rail entry, so highlight *that* rather than the section — this is what
@@ -104,19 +125,28 @@ function pickActiveId(pathname: string): string {
   // section was last active instead of hard-jumping to Dashboard.
   const match = navNodeMatchForPath(pathname);
   if (match?.node.tab !== undefined) return match.node.id;
-  return navSectionForPath(pathname)?.id ?? getLastSectionId();
-}
-
-/**
- * Active id for the Sales/SA view's flat nav (see the "sales-sa" branch
- * below): the matched `viewer.*` node, or "viewer.cases" (that view's own
- * landing page — see RootLanding in App.tsx) for any route this nav has no
- * entry for, e.g. /spl/projects/:id/sla-report/:sysId or the bare "/"
- * redirect, which would otherwise leave the rail with nothing highlighted.
- */
-function pickViewerActiveId(pathname: string): string {
-  const match = navNodeMatchForPath(pathname);
-  return match?.node.id.startsWith("viewer.") ? match.node.id : "viewer.cases";
+  // A page this user reaches through a shortcut (Customer Health under
+  // Customers, for a viewer) lights up the shortcut: the owner's own entry is
+  // not in their rail at all.
+  if (match) {
+    const shortcut = visibleShortcutTo(match.node.id, access, previewOverrides);
+    if (shortcut) return shortcut.id;
+  }
+  const section = navSectionForPath(pathname);
+  // A route-tab section that opens as a dropdown for this user (see
+  // isSubmenuSection) highlights the child in the dropdown, like Operations.
+  // Everyone else keeps highlighting the section itself on its child routes
+  // (e.g. a CS engineer on /customers/accounts), as before.
+  if (
+    section &&
+    match &&
+    match.node !== section &&
+    section.children?.includes(match.node) &&
+    isSubmenuSection(section, access, previewOverrides)
+  ) {
+    return match.node.id;
+  }
+  return section?.id ?? getLastSectionId();
 }
 
 export default function CsmSideBar({
@@ -126,22 +156,15 @@ export default function CsmSideBar({
   onToggleExpand,
 }: CsmSideBarProps): JSX.Element {
   const access = usePortalAccess();
+  // An admin's own Feature Preview toggles (browser-local, see
+  // featurePreview.ts) can promote a hidden/WIP nav entry to visible/usable
+  // for them alone -- never for any other caller, and never touching the
+  // deployment-wide config itself.
+  const { overrides: previewOverrides } = useFeaturePreviewOverrides(useSafeCurrentUserId());
   const location = useLocation();
   const navigate = useNavTransition();
-  // Which entire nav this render shows — see usePortalView's own doc
-  // comment. Everything below branches on it, but every hook here still
-  // runs unconditionally on every render (rules of hooks): only the derived
-  // values and the final JSX are conditional.
-  const view = usePortalView();
-  const activeItem =
-    view === "sales-sa" ? pickViewerActiveId(location.pathname) : pickActiveId(location.pathname);
+  const activeItem = pickActiveId(location.pathname, access, previewOverrides);
   useEffect(() => {
-    // Last-section persistence is CS-nav-only bookkeeping (see
-    // `pickActiveId`'s doc comment) — the Sales/SA view never falls back to
-    // it (`pickViewerActiveId` always resolves to a real `viewer.*` id or
-    // its own default), and persisting a `viewer.*` id here would corrupt
-    // that fallback for the CS view the next time this session renders it.
-    if (view === "sales-sa") return;
     // The persisted id is the fallback used for routes with no owning section
     // (see `pickActiveId`'s doc comment) -- it must stay a *section* id.
     // `activeItem` can be a submenu child's own dotted id (e.g.
@@ -152,7 +175,7 @@ export default function CsmSideBar({
       ? activeItem.slice(0, activeItem.indexOf("."))
       : activeItem;
     setLastSectionId(owningSectionId);
-  }, [view, activeItem]);
+  }, [activeItem]);
 
   // A submenu child (e.g. `operations.incidents`, rendered without its own
   // navigating `Link` — see below) reaches here through Oxygen's own
@@ -166,13 +189,13 @@ export default function CsmSideBar({
   // wrapped in a disabling `Box`/`Tooltip` the way a top-level WIP section is.
   const handleSelect = useCallback(
     (id: string): void => {
-      if (id.includes(".") && featureState(id) !== "wip") {
+      if (id.includes(".") && featureState(id, access, previewOverrides) !== "wip") {
         const node = navNodeById(id);
         if (node) navigate(navNodeHref(node));
       }
       onSelect?.(id);
     },
-    [navigate, onSelect],
+    [navigate, onSelect, access, previewOverrides],
   );
 
   // A submenu section auto-expands the very first time one of its own
@@ -195,15 +218,23 @@ export default function CsmSideBar({
     return { ...expandedMenus, [sectionId]: true };
   }, [expandedMenus, activeItem]);
 
-  // Sales/SA view — SPL's own flat nav (this node's children, no nesting),
-  // entirely replacing the CS section list below rather than merging into
-  // it. featureState/visibleNavChildren still apply (a deployment can still
-  // WIP/hide an individual viewer.* page via CSM_PORTAL_FEATURE_OVERRIDES),
-  // but there is no per-user PortalAccess capability gating here — SPL's own
-  // access model is the separate useAccess audience gate (see
-  // usePortalView.ts), not this app's `requires` mechanism.
-  const viewerNode = view === "sales-sa" ? navNodeById("viewer") : undefined;
-  const viewerItems = viewerNode ? visibleNavChildren(viewerNode, access) : [];
+  // The layout's toggle (Oxygen's useAppShell.toggleMenu) flips the stored
+  // value, and for a section that is open only because of the auto-expand
+  // above that stored value is still `undefined`: flipping it writes `true`,
+  // which changes nothing on screen, so the first click on an auto-opened
+  // section used to do nothing and only the second one closed it. Toggle
+  // against what is actually shown instead: when the section is auto-open,
+  // flip twice (undefined -> true -> false) so the first click closes it.
+  // toggleMenu is a functional state update, so both flips apply in order.
+  const handleToggleExpand = useCallback(
+    (id: string): void => {
+      if (!onToggleExpand) return;
+      const autoOpened = expandedMenus?.[id] === undefined && effectiveExpandedMenus?.[id] === true;
+      onToggleExpand(id);
+      if (autoOpened) onToggleExpand(id);
+    },
+    [onToggleExpand, expandedMenus, effectiveExpandedMenus],
+  );
 
   return (
     <Sidebar
@@ -216,58 +247,14 @@ export default function CsmSideBar({
       activeItem={activeItem}
       expandedMenus={effectiveExpandedMenus}
       onSelect={handleSelect}
-      onToggleExpand={onToggleExpand}
+      onToggleExpand={handleToggleExpand}
     >
       <Sidebar.Nav>
         <Sidebar.Category>
-          {view === "sales-sa" ? (
-            // No category label here, matching the CS-ABT branch below: a
-            // viewer with the "viewer" role is just a CSM Portal user whose
-            // nav happens to be this set of sections, not someone using a
-            // separate "Support Portal Lite" product -- see usePortalView.ts.
-            <>
-              {viewerItems.map((item) => {
-                const itemContent = (
-                  <Sidebar.Item id={item.id}>
-                    {item.icon && (
-                      <Sidebar.ItemIcon>
-                        <item.icon size={20} />
-                      </Sidebar.ItemIcon>
-                    )}
-                    <Sidebar.ItemLabel>{item.label}</Sidebar.ItemLabel>
-                  </Sidebar.Item>
-                );
-
-                if (featureState(item.id) === "wip") {
-                  return (
-                    <Tooltip key={item.id} title={wipTooltip(item.label)} placement="right">
-                      <Box aria-disabled tabIndex={0} sx={{ display: "block", cursor: "not-allowed" }}>
-                        <Box sx={{ opacity: 0.45, pointerEvents: "none" }}>{itemContent}</Box>
-                      </Box>
-                    </Tooltip>
-                  );
-                }
-
-                return (
-                  <Link
-                    key={item.id}
-                    component={NavigateLink}
-                    to={item.href}
-                    color="inherit"
-                    underline="none"
-                  >
-                    {itemContent}
-                  </Link>
-                );
-              })}
-            </>
-          ) : (
+          {
             /* `hidden` sections are filtered out entirely; `wip` ones stay
-               rendered but disabled below. "viewer" itself is excluded here —
-               it renders as its own exclusive view above, not merged into
-               this list (see usePortalView.ts). */
-            visibleNavSections(access)
-              .filter((item) => item.id !== "viewer")
+               rendered but disabled below. */
+            visibleNavSections(access, previewOverrides)
               .map((item) => {
                 const itemContent = (
                   <Sidebar.Item id={item.id}>
@@ -288,7 +275,7 @@ export default function CsmSideBar({
                 // reach it and reveal the "work in progress" tooltip, which fires on
                 // both hover and focus. Their routes render the coming-soon page
                 // (see App.tsx's WipRouteGuard).
-                if (featureState(item.id) === "wip") {
+                if (featureState(item.id, access, previewOverrides) === "wip") {
                   return (
                     <Tooltip
                       key={item.id}
@@ -316,7 +303,9 @@ export default function CsmSideBar({
                 // children (below) navigate. A section whose config has hidden
                 // every one of its children falls through to the plain flat item
                 // instead of rendering an entry with nothing to expand.
-                const children = isSubmenuSection(item) ? visibleNavChildren(item, access) : [];
+                const children = isSubmenuSection(item, access, previewOverrides)
+                  ? visibleRailChildren(item, access, previewOverrides)
+                  : [];
                 if (children.length > 0) {
                   return (
                     <Sidebar.Item id={item.id} key={item.id}>
@@ -325,7 +314,8 @@ export default function CsmSideBar({
                       </Sidebar.ItemIcon>
                       <Sidebar.ItemLabel>{item.label}</Sidebar.ItemLabel>
                       {children.map((child) => {
-                        const childWip = featureState(child.id) === "wip";
+                        const childWip =
+                          featureState(child.id, access, previewOverrides) === "wip";
                         return (
                           <Sidebar.Item id={child.id} key={child.id}>
                             {child.icon && (
@@ -356,7 +346,7 @@ export default function CsmSideBar({
                   </Link>
                 );
               })
-          )}
+          }
         </Sidebar.Category>
       </Sidebar.Nav>
 

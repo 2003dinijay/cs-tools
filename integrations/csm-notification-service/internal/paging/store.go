@@ -67,15 +67,24 @@ type LadderState struct {
 	// reason call i was given up on rather than retried. Only a PERMANENT
 	// failure lands here — the call provider rejecting the request itself
 	// (a 4xx: an invalid or unverified number, a malformed document). A
-	// transient failure (network, 5xx) is not recorded at all; its wake entry
+	// transient failure (network, 5xx, 429) is not recorded; its wake entry
 	// stays and the next tick retries it. Without this a single bad number on
 	// a roster was retried every tick for the ladder's whole life, and since
 	// that call was never "placed", the ladder could never complete.
 	Failed []string `json:"failed,omitempty"`
+	// CardPending is parallel to Plan.Calls too, and set only on a rung that
+	// both rang and posted: CardPending[i] is true once call i has its outcome
+	// (placed, or given up on) while its chat card failed transiently and is
+	// still owed. The wake entry stays and the next tick posts the card alone:
+	// re-dialling somebody because a webhook blinked is the wrong way round.
+	// Absent, as on every ladder stored before it existed, nothing is owed.
+	CardPending []bool `json:"cardPending,omitempty"`
 	// Cancelled is set when an acknowledgement arrived, before the remaining
 	// wake entries are dropped, so a retry of the cancellation knows the
 	// dropping half already happened.
 	Cancelled *time.Time `json:"cancelled,omitempty"`
+	// AssigneeName is who the stopping incident.assigned named, for the SRE space's "Incident Acknowledged." card.
+	AssigneeName string `json:"assigneeName,omitempty"`
 	// SawStateChange and SawPublicComment remember which acknowledgement
 	// gestures have arrived so far.
 	//
@@ -105,12 +114,38 @@ type LadderState struct {
 // AllSettled reports whether every call in the plan has reached an outcome —
 // dialled, or given up on. It is what decides the ladder has run its course.
 func (s LadderState) AllSettled() bool {
-	for i, done := range s.Placed {
-		if !done && s.failure(i) == "" {
+	for i := range s.Placed {
+		if s.owed(i) {
 			return false
 		}
 	}
 	return true
+}
+
+// owed reports whether call i still has something to deliver: the call
+// itself, or the card it is owed (CardPending).
+func (s LadderState) owed(i int) bool {
+	return (!s.Placed[i] && s.failure(i) == "") || s.cardPending(i)
+}
+
+// cardPending reports whether call i is still owed its chat card.
+func (s LadderState) cardPending(i int) bool {
+	return i < len(s.CardPending) && s.CardPending[i]
+}
+
+// setCardPending records whether call i is still owed its card. Clearing one
+// never recorded writes nothing, so a ladder that never owed a card stores
+// exactly what it did before CardPending existed.
+func (s *LadderState) setCardPending(i int, owed bool) {
+	if !owed && i >= len(s.CardPending) {
+		return
+	}
+	if len(s.CardPending) < len(s.Placed) {
+		grown := make([]bool, len(s.Placed))
+		copy(grown, s.CardPending)
+		s.CardPending = grown
+	}
+	s.CardPending[i] = owed
 }
 
 // failure is the recorded permanent-failure reason for call i, or "".
@@ -370,4 +405,134 @@ func (s *Store) LastCalled(ctx context.Context, emails []string) (map[string]tim
 		out[emails[i]] = t
 	}
 	return out, nil
+}
+
+// The Special Ops (SME) page's keys (sme.go). Shared by nothing else, and not
+// per ladder: only the SRE engine places an SME page.
+const (
+	// smePagePrefix + "<incidentId>:<smeTeam>" is one open SME page, SETNX'd
+	// so a second alert for the same team while it is open is ignored. The
+	// value is the alert's changedOn.
+	smePagePrefix = "incident:escalation:sme:page:"
+	// smeOpenPrefix + "<incidentId>" is the set of SME teams with an open
+	// page on the incident, so an assignment can close them all.
+	smeOpenPrefix = "incident:escalation:sme:open:"
+	// smeClosedPrefix + "<incidentId>" is when the latest assignment was
+	// made (or the latest changedOn among the pages it closed, if later). An
+	// alert timed at or before it has been answered, whichever was handled
+	// first.
+	smeClosedPrefix = "incident:escalation:sme:closed:"
+	// smeClosedTTL outlives any redelivery or dead-letter retry.
+	smeClosedTTL = 7 * 24 * time.Hour
+)
+
+func smePageKey(incidentID, team string) string { return smePagePrefix + incidentID + ":" + team }
+
+// OpenSMEPage opens the incident's page for one SME team, reporting false when
+// one is already open.
+func (s *Store) OpenSMEPage(ctx context.Context, incidentID, team string, changedOn time.Time, ttl time.Duration) (bool, error) {
+	opened, err := s.rdb.SetNX(ctx, smePageKey(incidentID, team), changedOn.UTC().Format(time.RFC3339Nano), ttl).Result()
+	if err != nil || !opened {
+		return opened, err
+	}
+	open := smeOpenPrefix + incidentID
+	if err := s.rdb.SAdd(ctx, open, team).Err(); err != nil {
+		return true, err
+	}
+	return true, s.rdb.Expire(ctx, open, ttl).Err()
+}
+
+// CloseSMEPage drops one team's page, for an alert that paged nobody.
+func (s *Store) CloseSMEPage(ctx context.Context, incidentID, team string) error {
+	if err := s.rdb.Del(ctx, smePageKey(incidentID, team)).Err(); err != nil {
+		return err
+	}
+	return s.rdb.SRem(ctx, smeOpenPrefix+incidentID, team).Err()
+}
+
+// CloseSMEPages records an assignment made at answeredAt: the SME pages on
+// the incident raised at or before it are answered. It closes those open now,
+// keeping any raised after it (an escalation after this assignment), and
+// remembers the time, so an alert raised before it but handled after it --
+// or a replay of a closed one -- pages nobody. Reports the SME teams whose
+// pages it closed, so their ladders can be stopped.
+func (s *Store) CloseSMEPages(ctx context.Context, incidentID string, answeredAt time.Time) ([]string, error) {
+	latest, err := s.SMEClosedThrough(ctx, incidentID)
+	if err != nil {
+		return nil, err
+	}
+	if answeredAt.After(latest) {
+		latest = answeredAt
+	}
+	open := smeOpenPrefix + incidentID
+	teams, err := s.rdb.SMembers(ctx, open).Result()
+	if err != nil {
+		return nil, err
+	}
+	var keys, closedTeams, answered []string
+	for _, team := range teams {
+		key := smePageKey(incidentID, team)
+		raw, err := s.rdb.Get(ctx, key).Result()
+		if errors.Is(err, redis.Nil) {
+			closedTeams = append(closedTeams, team)
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if at, perr := time.Parse(time.RFC3339Nano, raw); perr == nil && at.After(answeredAt) {
+			continue // raised after this assignment: still open
+		}
+		keys = append(keys, key)
+		closedTeams = append(closedTeams, team)
+		answered = append(answered, team)
+	}
+	if !latest.IsZero() {
+		if err := s.rdb.Set(ctx, smeClosedPrefix+incidentID, latest.UTC().Format(time.RFC3339Nano), smeClosedTTL).Err(); err != nil {
+			return nil, err
+		}
+	}
+	if len(keys) > 0 {
+		if err := s.rdb.Del(ctx, keys...).Err(); err != nil {
+			return nil, err
+		}
+	}
+	if len(closedTeams) > 0 {
+		members := make([]any, len(closedTeams))
+		for i, t := range closedTeams {
+			members[i] = t
+		}
+		if err := s.rdb.SRem(ctx, open, members...).Err(); err != nil {
+			return nil, err
+		}
+	}
+	return answered, nil
+}
+
+// SMEClosedThrough is the time through which the incident's SME alerts have
+// been answered by an assignment, zero when none.
+func (s *Store) SMEClosedThrough(ctx context.Context, incidentID string) (time.Time, error) {
+	raw, err := s.rdb.Get(ctx, smeClosedPrefix+incidentID).Result()
+	if errors.Is(err, redis.Nil) {
+		return time.Time{}, nil
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+	at, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		// Unreadable is treated as absent: a later alert still pages.
+		return time.Time{}, nil
+	}
+	return at, nil
+}
+
+// testCallClaimPrefix + "<userId>" holds one paging-number test call per
+// person at a time (testcall.go).
+const testCallClaimPrefix = "paging:testcall:"
+
+// ClaimTestCall takes the person's test-call slot for ttl, reporting false
+// while a recent one still holds it.
+func (s *Store) ClaimTestCall(ctx context.Context, userID string, ttl time.Duration) (bool, error) {
+	return s.rdb.SetNX(ctx, testCallClaimPrefix+userID, "1", ttl).Result()
 }

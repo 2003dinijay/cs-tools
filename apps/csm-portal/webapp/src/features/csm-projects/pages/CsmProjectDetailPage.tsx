@@ -41,6 +41,7 @@ import {
   endDateLabel,
   startDateLabel,
 } from "@features/csm-projects/utils/projectLifecycle";
+import { canRaiseServiceRequests } from "@features/csm-projects/utils/subscriptionType";
 import { useNavTransition } from "@hooks/useNavTransition";
 import { useQueryParamTabs } from "@hooks/useSectionTabs";
 
@@ -68,8 +69,9 @@ function formatDate(value?: string | null): string {
       });
 }
 
+/** "managed_cloud_subscription" -> "Managed Cloud Subscription". */
 function formatSubscriptionType(value: string): string {
-  return value.replace(/_/g, " ");
+  return value.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 function MetaCell({
@@ -150,7 +152,10 @@ export default function CsmProjectDetailPage(): JSX.Element {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavTransition();
   const location = useLocation();
-  const { canWrite } = usePortalAccess();
+  // isSplAudience is unused while the Time report button below is
+  // temporarily disabled — restore it to the destructure above when
+  // re-enabling it.
+  const { canWrite, canViewWorkItemsStaffView } = usePortalAccess();
   // Prefer wherever the caller came from (e.g. a case's Overview panel) over
   // the hardcoded projects list, so Back returns to that page instead of
   // skipping past it — same convention as CsmCaseDetailPage's own back path.
@@ -159,8 +164,8 @@ export default function CsmProjectDetailPage(): JSX.Element {
   const { data, isLoading, isError } = useGetProject(id);
   // Only used to gate the "Create service request" menu item below — fail
   // open (show the item) while metadata is loading or failed, since
-  // `subscriptionType === managed_cloud_subscription` already narrows to
-  // projects where SR is normally offered; an explicit `false` once loaded
+  // `canRaiseServiceRequests` (managed-cloud and Cloud Support) already
+  // narrows to projects where SR is normally offered; an explicit `false` once loaded
   // is what actually hides it. The create page itself is the authoritative,
   // fail-closed gate (see CreateServiceRequestPage.tsx's hasNoSrReadAccess).
   const projectMetadata = useProjectMetadata(id);
@@ -245,11 +250,32 @@ export default function CsmProjectDetailPage(): JSX.Element {
             variant="outlined"
           />
         </Box>
-        {/* File any issue type already scoped to this project — every create
-            form below locks the project field, so it can't be filed against
-            the wrong one. */}
-        {canWrite && (
-          <>
+        <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap", flexShrink: 0 }}>
+          {/* The Time report has no modern equivalent and is limited to the
+              viewer audience (a caller holding the viewer role, regardless of
+              what else they hold). See isSplAudience's own doc comment.
+              Outlined, not contained: the single contained CTA on this page
+              is Create, below.
+
+              Temporarily disabled: removed from view for the moment.
+              Re-enable by uncommenting this block and restoring
+              isSplAudience to the usePortalAccess() destructure above. */}
+          {/* {isSplAudience && (
+            <Button
+              variant="outlined"
+              size="small"
+              className="csm-print-hide"
+              component={RouterLink}
+              to={`/customers/projects/${p.id}/timelogs-report`}
+            >
+              Time Report
+            </Button>
+          )} */}
+          {/* File any issue type already scoped to this project — every create
+              form below locks the project field, so it can't be filed against
+              the wrong one. */}
+          {canWrite && (
+            <>
             <Button
               variant="contained"
               className="csm-print-hide"
@@ -275,7 +301,7 @@ export default function CsmProjectDetailPage(): JSX.Element {
               >
                 Create case
               </MenuItem>
-              {p.subscriptionType === "managed_cloud_subscription" && !hasNoSrReadAccess && (
+              {canRaiseServiceRequests(p.subscriptionType) && !hasNoSrReadAccess && (
                 <MenuItem
                   onClick={() => {
                     setCreateMenuAnchor(null);
@@ -310,8 +336,9 @@ export default function CsmProjectDetailPage(): JSX.Element {
                 Create security report
               </MenuItem>
             </Menu>
-          </>
-        )}
+            </>
+          )}
+        </Box>
       </Box>
 
       <Box className="csm-print-hide" sx={{ borderBottom: 1, borderColor: "divider" }}>
@@ -319,7 +346,10 @@ export default function CsmProjectDetailPage(): JSX.Element {
           <Tab value="overview" label="Overview" />
           <Tab value="deployments" label="Deployments" />
           <Tab value="contacts" label="Project contacts" />
-          <Tab value="workItems" label="Work items" />
+          {/* A caller without the staff view never sees Chats inside this tab
+              (see WorkItemsTab's own canViewWorkItemsStaffView gate), so for
+              them it's just the case list -- labelled accordingly. */}
+          <Tab value="workItems" label={canViewWorkItemsStaffView ? "Work items" : "Cases"} />
         </Tabs>
       </Box>
 

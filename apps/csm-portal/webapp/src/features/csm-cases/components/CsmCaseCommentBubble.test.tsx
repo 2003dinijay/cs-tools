@@ -582,6 +582,23 @@ describe("CsmCaseCommentBubble", () => {
       ).not.toBeInTheDocument();
     });
 
+    it("shows the comment-actions menu for a comment_updater who isn't the author", () => {
+      mockCurrentUser.mockReturnValue({
+        email: "updater@example.com",
+        roles: ["comment_updater"],
+      });
+      renderWithProviders(
+        <CsmCaseCommentBubble
+          comment={makeComment({ authorEmail: "jane.doe@example.com" })}
+          onEditComment={vi.fn()}
+          onDeleteComment={vi.fn()}
+        />,
+      );
+      expect(
+        screen.getByRole("button", { name: "Comment actions" }),
+      ).toBeInTheDocument();
+    });
+
     it("hides the comment-actions menu when no signed-in user is available", () => {
       mockCurrentUser.mockReturnValue(undefined);
       renderWithProviders(

@@ -14,20 +14,26 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   collapseCodeBlockWhitespace,
   collapseCommentSourceWhitespace,
   collapseHtmlSourceWhitespace,
   compareByCreatedOnThenId,
+  computeMinScheduleDatetimeLocalForTimeZone,
   convertCodeTagsToHtml,
+  dedupeAdjacentDuplicateMessages,
   deriveFilterLabels,
   extractInlineImageRefId,
   isInlineImageRefSrc,
+  isNoveraOrBotSender,
+  withSystemAuthor,
+  SYSTEM_AUTHOR_LABEL,
   hasSingleCodeWrapper,
   hasSubmittableEditorContent,
   linkifyBareUrls,
   normalizeCaseTypeOptions,
+  plainTextCommentToHtml,
   replaceInlineImageSources,
   stripCodeWrapper,
   toUtcEndOfDay,
@@ -57,6 +63,24 @@ describe("replaceInlineImageSources", () => {
 
     expect(output).toContain('src="data:image/png;base64,AAA"');
     expect(output).toContain('src="/no-match.iix"');
+  });
+
+  it("matches a dashless .iix reference against a dashed attachment id (HAR regression)", () => {
+    // comment.inlineAttachments[].id is a dashed UUID (entity-service converts
+    // the ServiceNow sys_id before sending it), but a .iix src always carries
+    // the dashless 32-char form -- a real case had this comparison fail for
+    // every inline image, falling through to an unconverted fetch that 404'd.
+    const html = '<img src="/9eee0466eb378750fcf5f5dabad0cd32.iix" />';
+    const output = replaceInlineImageSources(html, [
+      {
+        id: "9eee0466-eb37-8750-fcf5-f5dabad0cd32",
+        downloadUrl: "https://example.test/attachments/9eee0466-eb37-8750-fcf5-f5dabad0cd32/content",
+      },
+    ]);
+
+    expect(output).toContain(
+      'src="https://example.test/attachments/9eee0466-eb37-8750-fcf5-f5dabad0cd32/content"',
+    );
   });
 });
 
@@ -100,6 +124,30 @@ describe("normalizeCaseTypeOptions", () => {
   });
 });
 
+describe("isNoveraOrBotSender", () => {
+  it("still recognizes the literal name 'Novera'", () => {
+    expect(isNoveraOrBotSender("Novera", "comment")).toBe(true);
+  });
+
+  it("still recognizes an explicit bot type", () => {
+    expect(isNoveraOrBotSender("", "bot")).toBe(true);
+  });
+
+  // Regression: the real GET /conversations/{id}/messages response sends
+  // createdBy: "" for a Novera reply, not the literal name "Novera" -- every
+  // real human message in this feed has a non-empty createdBy, so an empty
+  // one is itself the bot signal.
+  it("treats an empty createdBy as Novera, even with an ordinary 'comment' type", () => {
+    expect(isNoveraOrBotSender("", "comment")).toBe(true);
+    expect(isNoveraOrBotSender(null, "comment")).toBe(true);
+    expect(isNoveraOrBotSender(undefined, undefined)).toBe(true);
+  });
+
+  it("does not flag a real person's message", () => {
+    expect(isNoveraOrBotSender("Alice", "comment")).toBe(false);
+  });
+});
+
 describe("compareByCreatedOnThenId", () => {
   it("orders human comment before bot when timestamps tie", () => {
     const rows = [
@@ -109,6 +157,114 @@ describe("compareByCreatedOnThenId", () => {
     rows.sort(compareByCreatedOnThenId);
 
     expect(rows.map((r) => r.id)).toEqual(["1", "2"]);
+  });
+
+  // Regression: the real conversation transcript stores a Novera reply with
+  // createdBy: "" (not the name "Novera") and only whole-second timestamp
+  // precision, so a user's question and Novera's answer often share an
+  // identical createdOn -- without isNoveraOrBotSender recognizing the empty
+  // createdBy, this tie fell through to an effectively arbitrary id compare,
+  // and the bot's reply could render above the question that caused it.
+  it("orders the user's question before Novera's empty-createdBy reply when timestamps tie", () => {
+    const rows = [
+      { id: "reply-1", createdOn: "2026-06-24T16:19:34Z", createdBy: "", type: "comment" },
+      {
+        id: "question-1",
+        createdOn: "2026-06-24T16:19:34Z",
+        createdBy: "Jane Doe",
+        type: "comment",
+      },
+    ];
+    rows.sort(compareByCreatedOnThenId);
+
+    expect(rows.map((r) => r.id)).toEqual(["question-1", "reply-1"]);
+  });
+});
+
+// Regression: digiops-cs#3424 — a chat's history showed the same question
+// and answer twice, with identical timestamps, for the first exchange of a
+// new conversation. Fixed at the display layer: collapse a message that
+// exactly repeats the one immediately before it (same content, author and
+// createdOn), regardless of why the duplicate row exists.
+describe("dedupeAdjacentDuplicateMessages", () => {
+  it("collapses a back-to-back exact duplicate (same content/author/createdOn)", () => {
+    const rows = [
+      { id: "1", content: "First question", createdBy: "customer@example.test", createdOn: "2026-10-11 08:19:00" },
+      { id: "2", content: "First question", createdBy: "customer@example.test", createdOn: "2026-10-11 08:19:00" },
+      { id: "3", content: "First answer", createdBy: "Novera", createdOn: "2026-10-11 08:19:05" },
+      { id: "4", content: "First answer", createdBy: "Novera", createdOn: "2026-10-11 08:19:05" },
+    ];
+
+    expect(dedupeAdjacentDuplicateMessages(rows).map((m) => m.id)).toEqual([
+      "1",
+      "3",
+    ]);
+  });
+
+  it("keeps two messages with identical text sent at genuinely different times", () => {
+    const rows = [
+      { id: "1", content: "ok", createdBy: "customer@example.test", createdOn: "2026-10-11 08:19:00" },
+      { id: "2", content: "ok", createdBy: "customer@example.test", createdOn: "2026-10-11 08:25:00" },
+    ];
+
+    expect(dedupeAdjacentDuplicateMessages(rows).map((m) => m.id)).toEqual([
+      "1",
+      "2",
+    ]);
+  });
+
+  it("keeps two different authors' messages even if content and timestamp coincide", () => {
+    const rows = [
+      { id: "1", content: "test", createdBy: "customer@example.test", createdOn: "2026-10-11 08:19:00" },
+      { id: "2", content: "test", createdBy: "Novera", createdOn: "2026-10-11 08:19:00" },
+    ];
+
+    expect(dedupeAdjacentDuplicateMessages(rows).map((m) => m.id)).toEqual([
+      "1",
+      "2",
+    ]);
+  });
+
+  it("does not collapse a non-adjacent repeat (e.g. the same question asked again later)", () => {
+    const rows = [
+      { id: "1", content: "test", createdBy: "customer@example.test", createdOn: "2026-10-11 08:19:00" },
+      { id: "2", content: "Hi there!", createdBy: "Novera", createdOn: "2026-10-11 08:19:05" },
+      { id: "3", content: "test", createdBy: "customer@example.test", createdOn: "2026-10-11 08:20:00" },
+    ];
+
+    expect(dedupeAdjacentDuplicateMessages(rows).map((m) => m.id)).toEqual([
+      "1",
+      "2",
+      "3",
+    ]);
+  });
+
+  it("returns an empty array unchanged", () => {
+    expect(dedupeAdjacentDuplicateMessages([])).toEqual([]);
+  });
+
+  // Regression for a CodeRabbit finding on an earlier version of this
+  // function (verified before acting on it): since createdOn here is only
+  // whole-second resolution, an exact-match check with no scope limit could
+  // have silently dropped a real, independent repeat anywhere in a long
+  // conversation if it coincidentally landed in the same second as an
+  // earlier turn. Scoping collapsing to the opening exchange closes that —
+  // this asserts a later, genuinely-adjacent exact match past the opening
+  // exchange survives untouched.
+  it("keeps an exact adjacent match past the opening exchange (not eligible for collapsing there)", () => {
+    const rows = [
+      { id: "1", content: "question one", createdBy: "customer@example.test", createdOn: "2026-10-11 08:19:00" },
+      { id: "2", content: "answer one", createdBy: "Novera", createdOn: "2026-10-11 08:19:05" },
+      { id: "3", content: "question two", createdBy: "customer@example.test", createdOn: "2026-10-11 08:25:00" },
+      { id: "4", content: "question two", createdBy: "customer@example.test", createdOn: "2026-10-11 08:25:00" },
+    ];
+
+    expect(dedupeAdjacentDuplicateMessages(rows).map((m) => m.id)).toEqual([
+      "1",
+      "2",
+      "3",
+      "4",
+    ]);
   });
 });
 
@@ -121,6 +277,21 @@ describe("linkifyBareUrls", () => {
     expect(output).toContain(
       '<a href="https://wso2.com/docs" target="_blank" rel="noopener noreferrer"',
     );
+  });
+
+  it("never rewrites a url inside a tag attribute (img src)", () => {
+    const html =
+      '<p><img src="https://wso2.service-now.com/d29f3f669773c350182338f11153af3f.iix"></p>';
+
+    expect(linkifyBareUrls(html)).toBe(html);
+  });
+
+  it("does not wrap text that is already inside an anchor", () => {
+    const html = '<a href="https://wso2.com">https://wso2.com</a> and https://wso2.com/x';
+    const output = linkifyBareUrls(html);
+
+    expect(output.startsWith('<a href="https://wso2.com">https://wso2.com</a> and ')).toBe(true);
+    expect(output.match(/<a /g)).toHaveLength(2);
   });
 });
 
@@ -143,6 +314,76 @@ describe("toUtcStartOfDay", () => {
   it("formats a normal 4-digit year unchanged", () => {
     const date = new Date(2026, 0, 10);
     expect(toUtcStartOfDay(date)).toBe("2026-01-10T00:00:00Z");
+  });
+});
+
+// Regression test: a picker that doesn't know the real per-priority lead
+// time must never be MORE permissive than the strictest real rule. Reported
+// live: entity-service's severityBasedAllocationTime is currently always
+// empty (no per-severity SLA-allocation-time table exists yet), so
+// allocationMinutes is undefined for every case -- including a
+// Catastrophic/P0 case, which ServiceNow's own CallRequestUtils requires at
+// least 15 minutes' lead time for. The old "now + 1 minute" fallback let the
+// picker accept a time the backend then rejected.
+describe("computeMinScheduleDatetimeLocalForTimeZone", () => {
+  const UTC = "UTC";
+
+  it("falls back to the backend's own safe default (300 minutes) when allocationMinutes is undefined", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-11T09:00:00.000Z"));
+    try {
+      const result = computeMinScheduleDatetimeLocalForTimeZone(
+        undefined,
+        UTC,
+      );
+      // 09:00 + 300 minutes = 14:00, rounded up to the next 5-minute mark
+      // (already on one).
+      expect(result).toBe("2026-10-11T14:00");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("falls back to the same safe default for null/NaN/negative allocationMinutes", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-11T09:00:00.000Z"));
+    try {
+      const expected = "2026-10-11T14:00";
+      expect(computeMinScheduleDatetimeLocalForTimeZone(null, UTC)).toBe(
+        expected,
+      );
+      expect(computeMinScheduleDatetimeLocalForTimeZone(NaN, UTC)).toBe(
+        expected,
+      );
+      expect(computeMinScheduleDatetimeLocalForTimeZone(-5, UTC)).toBe(
+        expected,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("uses the real allocation when one is actually known", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-11T09:00:00.000Z"));
+    try {
+      // ServiceNow's own Catastrophic/P0 offset.
+      const result = computeMinScheduleDatetimeLocalForTimeZone(15, UTC);
+      expect(result).toBe("2026-10-11T09:15");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never returns a time earlier than now + 1 minute, even with a real allocation", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-11T09:00:00.000Z"));
+    try {
+      const result = computeMinScheduleDatetimeLocalForTimeZone(0, UTC);
+      expect(result >= "2026-10-11T09:01").toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -308,6 +549,44 @@ describe("collapseHtmlSourceWhitespace", () => {
   });
 });
 
+describe("plainTextCommentToHtml", () => {
+  it("converts a plain-text comment's real line breaks into <br>", () => {
+    expect(
+      plainTextCommentToHtml(
+        "Hello,\n\nPlease let us know whether you need further support for this case. Please note that if you are unable to respond, the case will be closed off after one week.\n\nThanks,\nWSO2 Team",
+      ),
+    ).toBe(
+      "Hello,<br><br>Please let us know whether you need further support for this case. Please note that if you are unable to respond, the case will be closed off after one week.<br><br>Thanks,<br>WSO2 Team",
+    );
+  });
+
+  it("handles \\r\\n the same as \\n", () => {
+    expect(plainTextCommentToHtml("Line one\r\nLine two")).toBe("Line one<br>Line two");
+  });
+
+  it("HTML-escapes a literal <, >, &, quote the author typed as plain text", () => {
+    expect(plainTextCommentToHtml("Use < and > and & and \"quotes\" and it's")).toBe(
+      "Use &lt; and &gt; and &amp; and &quot;quotes&quot; and it&#39;s",
+    );
+  });
+
+  it("is a no-op for content that already contains real HTML markup", () => {
+    const html = "<p>Already HTML\nwith a newline</p>";
+    expect(plainTextCommentToHtml(html)).toBe(html);
+  });
+
+  it("is a no-op for content carrying a ServiceNow [code] marker, even with no HTML tags", () => {
+    const withCode = "Intro\n[code]raw markup[/code]\nTail";
+    expect(plainTextCommentToHtml(withCode)).toBe(withCode);
+  });
+
+  it("returns an empty string for empty/non-string input", () => {
+    expect(plainTextCommentToHtml("")).toBe("");
+    // @ts-expect-error -- exercising the runtime guard for non-string input
+    expect(plainTextCommentToHtml(null)).toBe("");
+  });
+});
+
 describe("collapseCodeBlockWhitespace / collapseCommentSourceWhitespace", () => {
   it("collapses only inside the [code] block and leaves the text around it alone", () => {
     const source =
@@ -362,5 +641,32 @@ describe("collapseCodeBlockWhitespace / collapseCommentSourceWhitespace", () => 
     );
     expect(collapseCommentSourceWhitespace("<p>a</p>\n<p>b</p>")).toBe("<p>a</p><p>b</p>");
     expect(collapseCommentSourceWhitespace("")).toBe("");
+  });
+});
+
+describe("withSystemAuthor", () => {
+  it("labels an author-less comment as System", () => {
+    expect(withSystemAuthor({ createdBy: null }).createdBy).toBe(
+      SYSTEM_AUTHOR_LABEL,
+    );
+    expect(withSystemAuthor({ createdBy: "  " }).createdBy).toBe(
+      "System",
+    );
+    expect(withSystemAuthor<{ createdBy?: string | null }>({}).createdBy).toBe("System");
+  });
+
+  it("keeps real authors, full names and bot rows untouched", () => {
+    const real = { createdBy: "jane.doe@example.com" };
+    expect(withSystemAuthor(real)).toBe(real);
+    const named = { createdBy: null, createdByFullName: "Jane Doe" };
+    expect(withSystemAuthor(named)).toBe(named);
+    const bot = { createdBy: "", type: "bot" };
+    expect(withSystemAuthor(bot)).toBe(bot);
+  });
+
+  it("does not mutate its input", () => {
+    const input = { createdBy: null };
+    withSystemAuthor(input);
+    expect(input.createdBy).toBeNull();
   });
 });

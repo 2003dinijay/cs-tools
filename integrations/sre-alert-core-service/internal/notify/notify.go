@@ -117,7 +117,7 @@ func CorrelationTag(fingerprint string, firstSeen time.Time) string {
 func (n *Notifier) NotifyCSM(ctx context.Context, inc model.Incident, creationNote string) (incidentID, incidentNumber string, ok bool, permanent bool) {
 	svc, err := n.resolveService(ctx, inc.Service)
 	if err != nil {
-		n.logger.Error("service id resolution failed, will retry", "incident_number", inc.IncidentNumber, "service", inc.Service, "error", err)
+		n.logger.Error("service id resolution failed, will retry", append([]any{"incident_number", inc.IncidentNumber, "service", inc.Service}, csm.ErrorAttrs(err)...)...)
 		return "", "", false, false
 	}
 
@@ -127,7 +127,7 @@ func (n *Notifier) NotifyCSM(ctx context.Context, inc model.Incident, creationNo
 	if err != nil {
 		var apiErr *csm.Error
 		perm := errors.As(err, &apiErr) && apiErr.StatusCode >= 400 && apiErr.StatusCode < 500 && apiErr.StatusCode != http.StatusTooManyRequests
-		n.logger.Error("csm create incident failed", "incident_number", inc.IncidentNumber, "permanent", perm, "error", err)
+		n.logger.Error("csm create incident failed", append([]any{"incident_number", inc.IncidentNumber, "permanent", perm}, csm.ErrorAttrs(err)...)...)
 		return "", "", false, perm
 	}
 

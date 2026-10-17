@@ -31,6 +31,7 @@ import (
 type caseFieldSet struct {
 	Types            []string
 	ProjectIDs       []string
+	AccountIDs       []string
 	DeploymentIDs    []string
 	AssignedUserIDs  []string
 	States           []domain.CaseState
@@ -104,12 +105,31 @@ func escalationEnumLabels(ids []string) ([]string, error) {
 // this function exists to
 // avoid, to compensate for a sync-side bug that belongs in the data, not in
 // every case search query from here on.
+//
+// The four enum-typed branches compare the state column itself, not
+// state::TEXT: casting the column hides it from its index (idx_case_state),
+// so `state::TEXT = ANY(...)` was a sequential scan of "case" (measured on
+// production-size data: 10.5 ms seq scan against 1.6 ms index-only scan).
+// The bound list stays text[] and is turned into the table's own enum by
+// keeping only the labels that enum has (caseLikeEnumStateList), so a label
+// the enum does not know matches nothing, as the text comparison did, rather
+// than failing the whole query the way a direct ::case_state_enum[] cast
+// would. Announcement keeps the text comparison: its CLOSE->CLOSED
+// normalization needs it, and it has no state index to lose.
 var caseLikeStateLookupTables = map[string]string{
-	"case":                     `SELECT id FROM "case" WHERE state::TEXT = ANY(%[1]s)`,
-	"engagement":               `SELECT id FROM engagement WHERE state::TEXT = ANY(%[1]s)`,
-	"service_request":          `SELECT id FROM service_request WHERE state::TEXT = ANY(%[1]s)`,
-	"security_report_analysis": `SELECT id FROM security_report_analysis WHERE state::TEXT = ANY(%[1]s)`,
+	"case":                     `SELECT id FROM "case" WHERE state = ANY(` + caseLikeEnumStateList("case_state_enum") + `)`,
+	"engagement":               `SELECT id FROM engagement WHERE state = ANY(` + caseLikeEnumStateList("engagement_state_enum") + `)`,
+	"service_request":          `SELECT id FROM service_request WHERE state = ANY(` + caseLikeEnumStateList("service_request_state_enum") + `)`,
+	"security_report_analysis": `SELECT id FROM security_report_analysis WHERE state = ANY(` + caseLikeEnumStateList("security_report_analysis_state_enum") + `)`,
 	"announcement":             `SELECT id FROM announcement WHERE (CASE WHEN state::TEXT = 'CLOSE' THEN 'CLOSED' ELSE state::TEXT END) = ANY(%[1]s)`,
+}
+
+// caseLikeEnumStateList returns the SQL for an array of enumType holding the
+// labels of the bound text[] (the %[1]s placeholder) that enumType has, in
+// enum order. Unknown labels are dropped instead of raising "invalid input
+// value for enum".
+func caseLikeEnumStateList(enumType string) string {
+	return `ARRAY(SELECT s FROM unnest(enum_range(NULL::` + enumType + `)) s WHERE s::TEXT = ANY(%[1]s))`
 }
 
 // caseLikeStateLookupAllTypes is every type caseLikeStateLookupTables covers,
@@ -118,8 +138,8 @@ var caseLikeStateLookupTables = map[string]string{
 // caseLikeStateColumn's COALESCE always implicitly covers (any of the five).
 var caseLikeStateLookupAllTypes = []string{"case", "engagement", "service_request", "security_report_analysis", "announcement"}
 
-// caseLikeStateLookupClause renders a "wi.id = ANY(ARRAY(...))" (or
-// "wi.id <> ALL(ARRAY(...))" when negate) predicate equivalent to filtering
+// caseLikeStateLookupClause renders a "wi.id = ANY(ARRAY(...))" (or, when
+// negate, a "NOT EXISTS (... WHERE excluded.id = wi.id)") predicate equivalent to filtering
 // caseLikeStateColumn against the bound parameter at placeholder (e.g.
 // "$3::text[]"), as a UNION ALL of per-type id lookups scoped to types --
 // every case-like type when types is empty (the DefaultTypes case, or an
@@ -140,10 +160,20 @@ var caseLikeStateLookupAllTypes = []string{"case", "engagement", "service_reques
 // while a bare IN/NOT IN subquery here is prone to being planned as a join
 // against the subquery's result set instead -- which, combined with this
 // schema's row-level-security predicates layered onto every table, measured
-// meaningfully slower than the ARRAY form for the same result. ids are
-// always non-NULL (each branch selects a primary key), so "<> ALL" is an
-// exact negation of "= ANY" here, with no three-valued-logic subtlety to
-// account for.
+// meaningfully slower than the ARRAY form for the same result.
+//
+// The negated form (the ExcludeStates / notIn filter) is deliberately NOT the
+// ARRAY form. "wi.id <> ALL(ARRAY(...))" cannot be served by an index or a
+// hash: PostgreSQL compares every candidate row with every element of the
+// array in turn, so its cost is rows x excluded ids. For "state notIn closed"
+// the array holds every closed case-like id -- ~115,000 on production-volume
+// data -- and the search took tens of seconds (past the 10 s request timeout,
+// so the case list came back empty). NOT EXISTS over the same UNION ALL is
+// planned as a hash anti-join and checks each row once: measured on
+// production-size data at 27-70 ms against 5.5-32.5 s, with identical
+// results. ids are always non-NULL (each branch selects a primary key), so
+// the anti-join is an exact negation of "= ANY" here, with no
+// three-valued-logic subtlety to account for.
 func caseLikeStateLookupClause(types []string, placeholder string, negate bool) string {
 	scope := types
 	if len(scope) == 0 {
@@ -165,7 +195,7 @@ func caseLikeStateLookupClause(types []string, placeholder string, negate bool) 
 	}
 	union := strings.Join(branches, " UNION ALL ")
 	if negate {
-		return fmt.Sprintf("wi.id <> ALL(ARRAY(%s))", union)
+		return fmt.Sprintf("NOT EXISTS (SELECT 1 FROM (%s) excluded WHERE excluded.id = wi.id)", union)
 	}
 	return fmt.Sprintf("wi.id = ANY(ARRAY(%s))", union)
 }
@@ -206,6 +236,9 @@ func caseFieldPredicates(f caseFieldSet, argIdx int) ([]string, []any, int, erro
 	}
 	if len(f.ProjectIDs) > 0 {
 		add("wi.project_id = ANY($%d::uuid[])", f.ProjectIDs)
+	}
+	if len(f.AccountIDs) > 0 {
+		add("wi.account_id = ANY($%d::uuid[])", f.AccountIDs)
 	}
 	if len(f.DeploymentIDs) > 0 {
 		add("wi.deployment_id = ANY($%d::uuid[])", f.DeploymentIDs)

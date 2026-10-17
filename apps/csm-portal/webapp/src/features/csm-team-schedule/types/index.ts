@@ -69,6 +69,10 @@ export interface ScheduleShift {
    *  or the Americas night -- rather than a turn on the rota. */
   isRotation: boolean;
   crossesMidnight: boolean;
+  /** Each tier of this window is one person for the whole rota, not one per
+   *  team: SaaS TZ3, the night cover for Apollo and Artemis alike. Absent
+   *  from an older entity-service, which reads as false. */
+  sharedAcrossTeams?: boolean;
   colourToken: string;
   sortOrder: number;
 }
@@ -120,6 +124,9 @@ export interface ScheduleTeam {
   /** The standing window a member's ordinary weekday is (Americas cover for
    *  the Americas team). Absent means Regular hours. */
   defaultShiftCode?: string;
+  /** An ABT: the teams the CRE rota and its regular hours are run by, as
+   *  against Americas, Migration and the like. Older servers do not send it. */
+  isAbt?: boolean;
 }
 
 /** One member of a rota team. role is as stored: engineer (or member), lead,
@@ -266,4 +273,294 @@ export interface ScheduleEditMarker {
 export interface ScheduleEditMarkersResponse {
   markers: ScheduleEditMarker[];
   count: number;
+}
+
+/* ── Case Paging ────────────────────────────────────────────────────────────
+ * The system pages people about an incident tier by tier until someone
+ * acknowledges. Every person on a tier is an existing team membership. */
+
+/** How a paging number's last test call went. */
+export type PagingTestStatus =
+  "pending" | "completed" | "no-answer" | "busy" | "failed";
+
+/** A person's paging-only phone number: kept by entity-service, used only
+ *  when their profile has none, never written to their profile. */
+export interface PagingPhone {
+  /** "+94•••••123" -- the only form the page shows. */
+  masked: string;
+  /** The full number, sent only to a reader who may edit it (to prefill). */
+  phone?: string;
+  setBy: string;
+  setAt: string;
+  lastTestAt?: string;
+  lastTestStatus?: PagingTestStatus;
+}
+
+/** One membership as the Case Paging tab shows it. */
+export interface PagingChainMember {
+  membershipId: string;
+  teamKey: string;
+  teamName: string;
+  teamType: string;
+  family: string;
+  userId: string;
+  name: string;
+  email: string;
+  /** engineer, lead, americas_team_lead (the America lead), cre_head or cs_head. */
+  role: string;
+  /** 1, 2 or 3 for the team's 1st, 2nd or 3rd responder (Tier 1); 0 for none. */
+  responderRank: number;
+  /** Whether the reader may add, change, remove or test this person's paging number. */
+  canEditPhone?: boolean;
+  pagingPhone?: PagingPhone | null;
+  /** Whether their profile has a mobile number; absent when it could not be checked. */
+  hasProfilePhone?: boolean;
+}
+
+/** What the reader may change; the server checks every edit again. */
+export interface PagingChainPermissions {
+  responderTeams: string[];
+  teamLeadTeams: string[];
+  americasTeamLead: boolean;
+  heads: boolean;
+}
+
+export interface PagingChainResponse {
+  family: string;
+  members: PagingChainMember[];
+  count: number;
+  canEdit: PagingChainPermissions;
+}
+
+/** The roles a paging change may give a membership. */
+export type PagingRole =
+  "lead" | "engineer" | "americas_team_lead" | "cre_head" | "cs_head";
+
+/** Exactly one change to one membership. */
+export type PagingMemberChange =
+  | { membershipId: string; responderRank: number }
+  | { membershipId: string; role: PagingRole };
+
+/** The paging chains the readiness check answers for. */
+export type PagingChainCode = "CRE" | "SRE_SAAS" | "SRE_IAAS" | "SME";
+
+/** What it takes to close a readiness gap, which decides the action offered. */
+export type PagingGapFix =
+  "responders" | "rota" | "profile" | "config" | "data";
+
+/** One thing standing between a chain and being ready. */
+export interface PagingReadinessGap {
+  code: string;
+  severity: "error" | "warning";
+  message: string;
+  fix: PagingGapFix;
+  teamKey?: string;
+  /** The day the gap is on, YYYY-MM-DD, where it is on one. */
+  date?: string;
+  zoneCode?: string;
+  tier?: string;
+  shiftCode?: string;
+  /** The person a phone gap (NO_PHONE, PHONE_UNTESTED, PHONE_TEST_FAILED) is about. */
+  userId?: string;
+  /** On a phone gap: the Case Paging tier that first calls the person
+   *  (1 = first). The server lists phone gaps in this order. */
+  pagingTier?: number;
+}
+
+export interface PagingReadinessChain {
+  chain: PagingChainCode;
+  label: string;
+  ready: boolean;
+  gaps: PagingReadinessGap[];
+}
+
+export interface PagingReadinessResponse {
+  generatedAt: string;
+  from: string;
+  to: string;
+  chains: PagingReadinessChain[];
+}
+
+/**
+ * The Rota access tab: who may change the rotas beyond the team leads.
+ *
+ * A rota admin edits every team in one family. A rota marker edits one team's
+ * rota -- rotations, leave and allocations -- and nothing else. canManage is
+ * what the reader may change: rota admins for a CSM admin, and the markers of
+ * markerFamilies (every family for a CSM admin, their own for a rota admin).
+ * Somebody who may change nothing gets empty lists, and the tab is not shown.
+ */
+export interface RotaAccess {
+  canManage: { rotaAdmins: boolean; markerFamilies: RotaFamily[] };
+  rotaAdmins: RotaAdminGrant[];
+  markers: RotaMarkerGrant[];
+}
+
+interface RotaGrant {
+  userId: string;
+  name: string;
+  email: string;
+  grantedBy: string;
+  grantedOn: string;
+  /** False when the grant does nothing: the holder is not internal staff,
+   *  or (a marker) has left the team. Listed so it can be removed. */
+  active: boolean;
+}
+
+export interface RotaAdminGrant extends RotaGrant {
+  family: RotaFamily;
+}
+
+export interface RotaMarkerGrant extends RotaGrant {
+  teamKey: string;
+  family: RotaFamily;
+}
+
+/**
+ * The settings section of the Alert Settings tab: the chat rooms, ServiceNow
+ * group routes and ladder values the paging ladders use. Changed here instead
+ * of a Choreo secret and csm-notification-service's file mount; the alert
+ * service uses them only once it runs with PAGING_CONFIG_SOURCE set, and only
+ * after a restart.
+ * canManage.view is false for anybody who may not see them, and the section is
+ * not shown.
+ */
+export type CaseAlertLadder = "CRE" | "SRE";
+
+/** A ladder with chat rooms: CRE's and SRE's, and SME's, which has only its
+ *  teams' rooms here (no shared room, routes or ladder values). */
+export type CaseAlertRoomLadder = CaseAlertLadder | "SME";
+
+export interface CaseAlertSettings {
+  canManage: {
+    view: boolean;
+    roomLadders: CaseAlertRoomLadder[];
+    routeLadders: CaseAlertLadder[];
+  };
+  /** e.g. "staging" or "production"; "" when the server has no label. */
+  environment: string;
+  /** False only from a server older than 0237 with no encryption key. */
+  webhooksEnabled: boolean;
+  revision: {
+    saved: number;
+    changedAt?: string;
+    /** What the alert service last reported it loaded. */
+    applied?: number;
+    appliedAt?: string;
+    appliedMode?: "off" | "shadow" | "db";
+  };
+  rooms: CaseAlertChatRoom[];
+  routes: CaseAlertGroupRoute[];
+  /** The ladder values saved here: the rest of the paging file's keys. */
+  values: CaseAlertLadderValue[];
+  /** What the alert service last reported it runs with. Absent until it has
+   *  started in shadow or db mode; off never reports. */
+  running?: CaseAlertRunning;
+  /** The lists a group route is made from; absent for somebody who may see nothing. */
+  routeOptions?: CaseAlertRouteOptions;
+}
+
+/** A team as a route option: CRE, SRE or SME. */
+export interface CaseAlertTeamOption {
+  key: string;
+  name: string;
+  family: "CRE" | "SRE" | "SME";
+}
+
+/**
+ * What a group route is made of: the CSM Portal teams a case or incident can
+ * be assigned to (matched by name), the Team Schedule teams a route can send
+ * it to, and the active SRE rotas.
+ */
+export interface CaseAlertRouteOptions {
+  groups: CaseAlertTeamOption[];
+  teams: CaseAlertTeamOption[];
+  rotas: { code: string; label: string }[];
+}
+
+/** A chat room: a ladder's shared room (no teamKey) or an SRE or SME team's
+ *  own. The webhook URL itself never reaches the page, only a hint. */
+export interface CaseAlertChatRoom {
+  id: string;
+  ladder: CaseAlertRoomLadder;
+  teamKey?: string;
+  label: string;
+  enabled: boolean;
+  /** Also gets the cards of an incident with no SRE team. */
+  teamless: boolean;
+  /** A team room's own channel. Absent: the same as the ladder's. The shared
+   *  room never has one. */
+  channel?: CaseAlertChannel;
+  hasWebhook: boolean;
+  webhookHint?: string;
+  webhookSetAt?: string;
+  webhookSetBy?: string;
+  lastTestAt?: string;
+  lastTestStatus?: "delivered" | "failed";
+  updatedBy: string;
+  updatedOn: string;
+}
+
+/** How a ladder, or one team on it, is alerted. A team can do less than its
+ *  ladder, never more: under chat, only chat or log. */
+export type CaseAlertChannel = "log" | "chat" | "call" | "both";
+
+/** A ServiceNow group's alerts go to a team, or (SRE) to a default rota. */
+export interface CaseAlertGroupRoute {
+  id: string;
+  ladder: CaseAlertLadder;
+  groupName: string;
+  teamKey?: string;
+  rotaCode?: string;
+  enabled: boolean;
+  updatedBy: string;
+  updatedOn: string;
+}
+
+/** One key of the paging file's cre: or sre: section, saved here. A saved
+ *  value replaces that key of the file; removing it goes back to the file. The
+ *  value is the file's own shape for the key: a list, a number, a head's name
+ *  and email, and so on. */
+export interface CaseAlertLadderValue {
+  id: string;
+  ladder: CaseAlertRoomLadder;
+  key: string;
+  value: unknown;
+  updatedBy: string;
+  updatedOn: string;
+}
+
+/** Where a running value came from: the file, or a value saved here. */
+export type CaseAlertValueSource = "file" | "saved";
+
+export interface CaseAlertRunningValue {
+  value: unknown;
+  source: CaseAlertValueSource;
+}
+
+export interface CaseAlertRunning {
+  reportedAt: string;
+  mode: "off" | "shadow" | "db";
+  /** Per ladder, each key's value in use. */
+  ladders: Partial<
+    Record<CaseAlertRoomLadder, Record<string, CaseAlertRunningValue>>
+  >;
+  /** Per ladder, the settings only the file can set. Absent from an alert
+   *  service that doesn't report them yet. */
+  fileOnly?: Partial<Record<CaseAlertRoomLadder, CaseAlertFileOnly>>;
+}
+
+/** What decides whether a ladder pages and what it may cost: read here, set
+ *  only in the alert service's file. */
+export interface CaseAlertFileOnly {
+  enabled?: boolean;
+  channel?: string;
+  "safety.maxCallsPerLadder"?: number;
+  /** Absent when there is no cap. */
+  "safety.maxLevel"?: number;
+  /** How many numbers are allowed; the numbers themselves are never sent. */
+  "safety.allowedNumbers"?: number;
+  "safety.callWithoutVerifiedLeads"?: boolean;
+  "safety.callHeadsWithoutLowerTiers"?: boolean;
+  "phones.source"?: string;
 }

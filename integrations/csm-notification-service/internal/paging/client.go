@@ -225,6 +225,8 @@ type onDutyAssignment struct {
 	} `json:"engineer"`
 	TeamKey   string `json:"teamKey"`
 	ShiftCode string `json:"shiftCode"`
+	// OnLeave marks someone away that day, returned only with includeOnLeave.
+	OnLeave bool `json:"onLeave,omitempty"`
 	// Tier is the on-call tier the assignment holds (L1, L2, L3), or nil for
 	// someone working the window without one -- in which case the window's
 	// own tier, if it has one, is the answer. The SRE ladder reads it.
@@ -243,10 +245,20 @@ type onDutyResponse struct {
 // both: rank lives on the membership and changes rarely, the rota changes
 // daily, and folding rank into the rota response would widen a shape the Team
 // Schedule page already renders.
-func (c *EntityClient) OnDutyAt(ctx context.Context, at time.Time) ([]onDutyAssignment, error) {
-	path := "/team-schedule/on-duty"
+//
+// includeOnLeave also returns the people away that day, marked OnLeave, for a
+// ladder whose onLeave is call; without it entity-service leaves them out.
+func (c *EntityClient) OnDutyAt(ctx context.Context, at time.Time, includeOnLeave bool) ([]onDutyAssignment, error) {
+	q := url.Values{}
 	if !at.IsZero() {
-		path += "?at=" + url.QueryEscape(at.UTC().Format(time.RFC3339))
+		q.Set("at", at.UTC().Format(time.RFC3339))
+	}
+	if includeOnLeave {
+		q.Set("includeOnLeave", "true")
+	}
+	path := "/team-schedule/on-duty"
+	if len(q) > 0 {
+		path += "?" + q.Encode()
 	}
 	raw, err := c.do(ctx, http.MethodGet, path, nil)
 	if err != nil {
@@ -259,20 +271,115 @@ func (c *EntityClient) OnDutyAt(ctx context.Context, at time.Time) ([]onDutyAssi
 	return resp.Assignments, nil
 }
 
+// absence is one row of POST /team-schedule/absences/search, as the ladders
+// read it: whose, and whether it moves them to another team for its span
+// (a Brazil-rotation or Migration span is work on that team, not leave).
+type absence struct {
+	Engineer struct {
+		Email string `json:"email"`
+	} `json:"engineer"`
+	HomeTeamKey *string `json:"homeTeamKey,omitempty"`
+}
+
+type absencesResponse struct {
+	Absences []absence `json:"absences"`
+}
+
+// AwayOn returns the lower-cased emails of everyone on leave on day
+// (YYYY-MM-DD) -- every absence kind but a span that moves them to another
+// team, the same rule the on-duty read applies.
+func (c *EntityClient) AwayOn(ctx context.Context, day string) (map[string]bool, error) {
+	body, err := json.Marshal(map[string]string{"from": day, "to": day})
+	if err != nil {
+		return nil, err
+	}
+	raw, err := c.do(ctx, http.MethodPost, "/team-schedule/absences/search", body)
+	if err != nil {
+		return nil, err
+	}
+	var resp absencesResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return nil, fmt.Errorf("escalation: decode absences: %w", err)
+	}
+	away := map[string]bool{}
+	for _, a := range resp.Absences {
+		if a.HomeTeamKey != nil && strings.TrimSpace(*a.HomeTeamKey) != "" {
+			continue // moved to another team for the span: working, not away
+		}
+		if e := strings.ToLower(strings.TrimSpace(a.Engineer.Email)); e != "" {
+			away[e] = true
+		}
+	}
+	return away, nil
+}
+
 // scheduleCatalogue is the part of GET /team-schedule/catalogue the resolver
-// reads: which family each team and each window belongs to.
+// reads: which family each team and each window belongs to, and which rota
+// (SRE_SAAS, SRE_IAAS, SME_...) each team and each zone is on.
 type scheduleCatalogue struct {
-	Teams []struct {
-		Key    string `json:"key"`
-		Name   string `json:"name"`
-		Family string `json:"family"`
-	} `json:"teams"`
-	Shifts []struct {
-		Code     string  `json:"code"`
-		Family   string  `json:"family"`
-		ZoneCode *string `json:"zoneCode,omitempty"`
-		Tier     *string `json:"tier,omitempty"`
-	} `json:"shifts"`
+	Teams  []catalogueTeam  `json:"teams"`
+	Shifts []catalogueShift `json:"shifts"`
+	Zones  []catalogueZone  `json:"zones"`
+}
+
+type catalogueTeam struct {
+	Key    string `json:"key"`
+	Name   string `json:"name"`
+	Family string `json:"family"`
+	// RotaCode is the rota the team's type belongs to; nil for a team on no
+	// named rota (every CRE team), and on an entity-service that predates
+	// rotas.
+	RotaCode *string `json:"rotaCode,omitempty"`
+}
+
+type catalogueShift struct {
+	Code     string  `json:"code"`
+	Family   string  `json:"family"`
+	ZoneCode *string `json:"zoneCode,omitempty"`
+	Tier     *string `json:"tier,omitempty"`
+}
+
+type catalogueZone struct {
+	Code string `json:"code"`
+	// RotaCode is the rota the zone belongs to (TZ1-TZ3 are SRE_SAAS,
+	// IAAS_D/IAAS_N are SRE_IAAS).
+	RotaCode *string `json:"rotaCode,omitempty"`
+}
+
+// hasRotas reports whether the catalogue names any rota at all. Without one
+// (an entity-service from before rotas) the SRE ladder cannot tell SaaS from
+// IaaS and reads every SRE window, as it always did.
+func (c scheduleCatalogue) hasRotas() bool {
+	for _, t := range c.Teams {
+		if deref(t.RotaCode) != "" {
+			return true
+		}
+	}
+	for _, z := range c.Zones {
+		if deref(z.RotaCode) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// teamRota is the rota a team key is on, "" when the catalogue does not say.
+func (c scheduleCatalogue) teamRota(key string) string {
+	for _, t := range c.Teams {
+		if strings.EqualFold(t.Key, key) {
+			return deref(t.RotaCode)
+		}
+	}
+	return ""
+}
+
+// zoneRotas maps each zone code to its rota.
+func (c scheduleCatalogue) zoneRotas() map[string]string {
+	out := make(map[string]string, len(c.Zones))
+	for _, z := range c.Zones {
+		out[z.Code] = deref(z.RotaCode)
+	}
+	return out
 }
 
 // ScheduleCatalogue returns the rota's teams and windows. It changes by
@@ -287,6 +394,82 @@ func (c *EntityClient) ScheduleCatalogue(ctx context.Context) (scheduleCatalogue
 		return scheduleCatalogue{}, fmt.Errorf("escalation: decode catalogue: %w", err)
 	}
 	return cat, nil
+}
+
+// pagingContact is one row of GET /team-schedule/paging-contacts: a person's
+// numbers. Only what paging reads is decoded.
+type pagingContact struct {
+	UserID string `json:"userId"`
+	Email  string `json:"email"`
+	// DialPhone and DialSource are the number to call and where it comes
+	// from ("profile" or "paging"); absent from an entity-service that
+	// predates the profile number, which sends only Phone.
+	DialPhone  string  `json:"dialPhone"`
+	DialSource *string `json:"dialSource"`
+	// Phone is the paging-only number.
+	Phone string `json:"phone"`
+}
+
+type pagingContactsResponse struct {
+	Contacts []pagingContact `json:"contacts"`
+}
+
+// DialNumbers returns, keyed by lower-cased email, the number entity-service
+// says to call each of these people on: the one on their own CSM profile,
+// else their paging-only number. One request for the whole batch; someone
+// with no number is simply absent. From an entity-service that predates the
+// profile number the answer is the paging-only number, with no Source.
+func (c *EntityClient) DialNumbers(ctx context.Context, emails []string) (map[string]DialNumber, error) {
+	if len(emails) == 0 {
+		return nil, nil
+	}
+	q := url.Values{}
+	q.Set("emails", strings.Join(emails, ","))
+	raw, err := c.do(ctx, http.MethodGet, "/team-schedule/paging-contacts?"+q.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp pagingContactsResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return nil, fmt.Errorf("escalation: decode paging contacts: %w", err)
+	}
+	out := make(map[string]DialNumber, len(resp.Contacts))
+	for _, pc := range resp.Contacts {
+		e := strings.ToLower(strings.TrimSpace(pc.Email))
+		if e == "" {
+			continue
+		}
+		var d DialNumber
+		if pc.DialSource != nil {
+			d = DialNumber{Number: strings.TrimSpace(pc.DialPhone), Source: strings.TrimSpace(*pc.DialSource)}
+		} else {
+			d = DialNumber{Number: strings.TrimSpace(pc.Phone)}
+		}
+		if d.Number != "" {
+			out[e] = d
+		}
+	}
+	return out, nil
+}
+
+// pagingTestResultRequest is PUT /team-schedule/paging-contacts/{userId}/test-result.
+type pagingTestResultRequest struct {
+	Status   string `json:"status"`
+	TestedAt string `json:"testedAt"`
+}
+
+// PutPagingTestResult records how a paging-number test call ended:
+// completed, no-answer, busy or failed.
+func (c *EntityClient) PutPagingTestResult(ctx context.Context, userID, status string, testedAt time.Time) error {
+	if strings.TrimSpace(userID) == "" {
+		return fmt.Errorf("escalation: userId is required")
+	}
+	body, err := json.Marshal(pagingTestResultRequest{Status: status, TestedAt: testedAt.UTC().Format(time.RFC3339)})
+	if err != nil {
+		return fmt.Errorf("escalation: encode test result: %w", err)
+	}
+	_, err = c.do(ctx, http.MethodPut, "/team-schedule/paging-contacts/"+url.PathEscape(userID)+"/test-result", body)
+	return err
 }
 
 // do executes an authenticated HTTP request against entity-service and returns

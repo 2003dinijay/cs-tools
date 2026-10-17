@@ -36,7 +36,10 @@ const (
 	// PermViewOperations is reading the Operations area: incidents, change
 	// requests, problems, incident tasks, outages and their alerts. Narrower than
 	// PermView on purpose: a view-only role sees cases and customers but not
-	// operations, which support-portal-lite never exposed to them.
+	// operations, which support-portal-lite never exposed to them. Held by
+	// cs_engineer, admin, and security_team (read-only -- see
+	// AccessConfig.SecurityTeam's own doc comment); every other role, Viewer
+	// included, is denied.
 	PermViewOperations
 	// PermTimeCardsAndUpdates is the Time Cards and Updates areas: every time-card
 	// route (search, create, update, delete) and the update-level lookups. Held by
@@ -78,15 +81,42 @@ const (
 	// cs_engineer also holds. Reserved for actions no non-admin staff
 	// role should ever reach, such as creating a new platform user.
 	PermAdmin
-	// PermViewSecurityCenter is the Security Center area: security-report
-	// cases (POST /cases/search and GET /cases/{id}, type-checked inside
-	// CaseHandler itself — see its own doc comment for why a route-level
-	// permission alone can't express this) and both /products/vulnerabilities
-	// routes. Admin and cs_engineer only — every other role, including plain
-	// viewer/escalator/attachment_downloader, is denied even though they hold
-	// PermView, since this is deliberately narrower than the general case/
-	// product-data access PermView otherwise grants.
+	// PermViewSecurityCenter is the Security Center area: both
+	// /products/vulnerabilities routes. Admin, cs_engineer, comment_updater
+	// and security_team only — every other role, including plain
+	// viewer/escalator/attachment_downloader, is denied even though they
+	// hold PermView, since this is deliberately narrower than the general
+	// case/product-data access PermView otherwise grants. comment_updater
+	// holds it because that role is also used for staff who triage
+	// security reports but don't otherwise hold cs_engineer. security_team
+	// is the dedicated read-only role for the security team itself (see
+	// AccessConfig.SecurityTeam's own doc comment) — it holds this and
+	// PermViewOperations but never PermWrite, so Security Center and
+	// Operations render for it, read-only.
+	//
+	// Security-report-analysis CASE search (POST /cases/search,
+	// type-checked inside CaseHandler itself — see its own doc comment for
+	// why a route-level permission alone can't express this) is gated by
+	// PermViewSecurityReportCases below, NOT this one — the two were split
+	// apart deliberately so Viewer could be granted read access to
+	// security-report (and service-request) cases without also opening the
+	// Vulnerabilities tab/routes, which stay restricted to this permission
+	// alone.
 	PermViewSecurityCenter
+	// PermViewSecurityReportCases is viewing security-report-analysis cases
+	// through POST /cases/search (CaseHandler.SearchCases' own in-handler
+	// caseSearchTargetsSecurityReports check — see WithAccessGuard's doc
+	// comment). Deliberately its own permission, not PermViewSecurityCenter:
+	// Viewer needed read access to these cases (an API-only change, no
+	// webapp/nav change alongside it) without also gaining
+	// /products/vulnerabilities access, which PermViewSecurityCenter still
+	// gates alone. Also held by security_team, which could already reach
+	// this case search via PermViewSecurityCenter before the two
+	// permissions were split apart — this keeps that role's existing
+	// access unchanged. service_request cases have no equivalent gate at
+	// all — SearchCases/GetCase never restrict that type by role, so every
+	// PermView holder (Viewer included) can already search/fetch them.
+	PermViewSecurityReportCases
 	// PermViewerAccess is the blanket audience gate for every SupportPortalLite
 	// (Sales/Solutions-Architecture) route — replacing the old
 	// SPL_ALLOWED_GROUPS raw-Asgardeo-groups check (internal/splauth,
@@ -106,14 +136,38 @@ const (
 	// from it by default in the webapp's own nav. See usePortalView.ts and
 	// useAccess.ts for the matching frontend halves of this split;
 	// keep all three in sync on which role each one checks.
+	//
+	// Customer Health is the one viewer-audience domain that is NOT on this
+	// permission any more: see PermViewCustomerHealth, which cs_engineer and
+	// admin hold as well as Viewer.
 	PermViewerAccess
-	// PermUsageMetricsViewer is the SPL Usage Metrics domain
-	// (/usage-metrics/*), layered on top of PermViewerAccess the same way
-	// PermEscalate/PermDownloadAttachment layer on top of PermView —
-	// replacing the old SPL_USAGE_METRICS_GROUPS sub-group check. Unlike
-	// AccessConfig.UsageMetricsViewer's original CS-Portal-side grant (View
-	// only, since this backend had no usage-metrics route of its own before
-	// SPL), this is the real permission those SPL routes now check.
+	// PermViewCustomerHealth is the Customer Health dashboard: its summary,
+	// account detail, risk and action-item routes (/customer-health/*) and the
+	// two filter lists it reads (GET /products, GET /abt-teams).
+	//
+	// Held by Viewer, the audience the dashboard was built for, and also by
+	// cs_engineer and admin, who work the same accounts and need the same
+	// view -- so unlike PermViewerAccess it does not require the Viewer role:
+	// a cs_engineer or admin reaches it without separately holding Viewer.
+	// Every other route in the viewer-audience block (User Scan, Time report,
+	// the account escalation list, Drive files) stays on PermViewerAccess.
+	// Keep the webapp's canViewCustomerHealth (portalAccess.ts) in sync with
+	// this set.
+	PermViewCustomerHealth
+	// PermUsageMetricsViewer is the Usage Metrics domain (/usage-metrics/*).
+	// Unlike the ex-"Support Portal Lite" domains still gated by
+	// PermViewerAccess (Viewer only: User Scan, the Time project report),
+	// and unlike Customer Health (PermViewCustomerHealth, which cs_engineer
+	// and admin hold too), Usage Metrics is registered directly
+	// on THIS permission at the route level, not layered on top of
+	// PermViewerAccess: it was reported live as needing a broader audience
+	// than "holds the Viewer role" once Support Portal Lite's separate
+	// app/nav was folded into the main portal — a cs_engineer, admin or
+	// dedicated usage_metrics_viewer holder must reach it even without
+	// separately holding Viewer too. Viewer itself does NOT hold this
+	// (confirmed live, correcting an earlier pass that added it): a
+	// Viewer-only caller must not see Usage Metrics at all, unlike its ex-SPL
+	// siblings.
 	PermUsageMetricsViewer
 	// PermViewSharedEntity is read access to exactly the routes SupportPortalLite's
 	// merged accounts/projects/cases/team-members screens call: GET /accounts/{id},
@@ -199,6 +253,41 @@ const (
 	// that step only records a decision taken over email, outside this portal,
 	// and may be recorded by someone other than the creator.
 	PermCreateAnnouncement
+	// PermUpdateDeleteComment is the route-level floor for PATCH/DELETE
+	// /comments/{id} -- CommentUpdater ∪ CsEngineer ∪ Admin, the same
+	// "specialised role, or a CS Portal role that already dominates it"
+	// shape as PermCreateWorkNote, not PermCreateAnnouncement's narrowing
+	// shape: a comment_updater-only caller must be able to reach the
+	// handler at all (today only cs_engineer/admin can), and cs_engineer
+	// must keep its existing ability to edit/delete its own comments.
+	//
+	// This permission only decides who may REACH the handler, not which
+	// specific comment they may act on -- entity-service performs NO
+	// authorization check of its own for this path any more (it has no way
+	// to see this backend's Asgardeo role vocabulary, and its own separate
+	// Postgres "admin" role was dropped as redundant and confusing). The
+	// finer-grained decision -- author, or PermUpdateDeleteAnyComment below
+	// -- is made entirely in CommentHandler itself (see its
+	// authorizeCommentActor), which calls entity-service's GetComment first
+	// purely to learn the comment's author. A plain cs_engineer holds this
+	// permission (reaches the handler) but not PermUpdateDeleteAnyComment,
+	// so they can still only successfully edit/delete a comment THEY
+	// authored.
+	PermUpdateDeleteComment
+	// PermUpdateDeleteAnyComment is held by Admin and CommentUpdater ONLY --
+	// deliberately NOT CsEngineer, unlike PermUpdateDeleteComment above. It
+	// does not gate a route directly: CommentHandler.authorizeCommentActor
+	// checks it in-handler (mirroring PermCreateAnnouncement/
+	// PermViewSecurityCenter's own in-handler-check shape), alongside an
+	// explicit author check against the comment it fetches via GetComment,
+	// to decide whether THIS caller may act on THIS comment -- a decision
+	// made entirely here, not forwarded to or re-checked by entity-service
+	// in any way. A cs_engineer must NOT hold this permission:
+	// PermUpdateDeleteComment above already lets them reach the handler for
+	// their OWN comment, and authorizeCommentActor's own author check is
+	// what keeps that scoped to authorship -- granting this one too would
+	// let them act on EVERY comment, erasing that distinction.
+	PermUpdateDeleteAnyComment
 )
 
 // AccessConfig names, per portal role, the role names on the token that grant
@@ -243,6 +332,26 @@ type AccessConfig struct {
 	// not an "everyone" or a "nobody-can-use-the-portal" state: it means only
 	// admin can create announcements, so deploy it with the variable set.
 	AnnouncementCreator []string
+	// CommentUpdater grants PermUpdateDeleteComment (see that permission's
+	// own doc comment) -- reaching PATCH/DELETE /comments/{id} at all, on
+	// top of cs_engineer/admin's own existing access. Unlike most roles
+	// here an unset variable is not a lockout: cs_engineer/admin already
+	// hold this permission regardless (same "unconfigured is a normal
+	// state" reasoning as WorknoteCreator's own doc comment).
+	CommentUpdater []string
+	// SecurityTeam grants PermView, PermViewOperations,
+	// PermViewSecurityCenter and PermViewSecurityReportCases -- the
+	// dedicated role for security-team staff who need to see the Operations
+	// area and Security Center (security reports + vulnerabilities) but
+	// hold no write access of any kind: it never grants PermWrite,
+	// PermEscalate, PermApproveTimeCard or any other state-changing
+	// permission, so both sections render read-only for a holder with no
+	// other role. Deliberately separate from comment_updater (which also
+	// holds PermViewSecurityCenter and PermViewSecurityReportCases, for
+	// staff who triage security reports while also handling comments) and
+	// from cs_engineer/admin (full access) -- this role's whole purpose is
+	// "read-only, Operations and Security Center only."
+	SecurityTeam []string
 }
 
 // AccessGuard authorises a request from the roles on the caller's validated
@@ -256,11 +365,24 @@ type AccessGuard struct {
 	portalRoles []portalRole
 }
 
-// portalRole is one portal role: its stable key (what the frontend sees) and
-// the configured token role names that grant it.
+// portalRole is one portal role: its stable key (what the frontend sees),
+// the configured token role names that grant it, -- once WithRoleIDs has
+// run -- the real Asgardeo role IDs that resolve to those same names, and --
+// once WithGroupNames has run -- the real Asgardeo group display names
+// configured directly against this role's own key.
 type portalRole struct {
 	key   string
 	names map[string]struct{}
+	// ids is nil until WithRoleIDs runs; RolesForIDs then treats a nil map
+	// the same as an empty one (no match), so calling it before WithRoleIDs
+	// is a safe, silent no-op rather than a nil-map panic.
+	ids map[string]struct{}
+	// groupNames is nil until WithGroupNames runs; RolesForGroupNames and
+	// RolesForIDsAndGroupNames treat a nil map the same way ids is treated
+	// above -- a safe, silent no-op, never a nil-map panic. Matched
+	// case-sensitively, the same exact-match convention AUTH_<ROLE>_ROLES
+	// itself uses for role names.
+	groupNames map[string]struct{}
 }
 
 // NewAccessGuard builds a guard from cfg. Admin satisfies every permission.
@@ -283,7 +405,10 @@ type portalRole struct {
 // readable. PermViewSecurityCenter is the one further exception to "every
 // role implies View covers it": plain viewer/escalator/attachment_downloader/
 // usage_metrics_viewer/timecard_approver/dashboard_designer all hold PermView
-// but not this. PermUsePlg is narrower the same way — CS engineer and admin
+// but not this — Viewer's read access to security-report case search comes
+// from the separate, narrower PermViewSecurityReportCases instead (see that
+// permission's own doc comment), not from holding PermViewSecurityCenter.
+// PermUsePlg is narrower the same way — CS engineer and admin
 // only — and PermManagePlaybooks narrower again, admin alone.
 // sales_solutions is a separate exception again: it implies
 // PermViewSharedEntity (only) rather than being implied BY it — see
@@ -296,7 +421,19 @@ type portalRole struct {
 // only -- see that permission's own doc comment. announcement_creator is
 // narrower in a different way: it implies nothing, not even View, and
 // PermCreateAnnouncement is only ever checked alongside PermWrite, so it
-// removes an ability from cs_engineer rather than adding one.
+// removes an ability from cs_engineer rather than adding one. comment_updater
+// is the same added-floor shape as worknote_creator for PermUpdateDeleteComment
+// (cs_engineer/admin keep holding that permission too), but ALSO implies
+// PermUpdateDeleteAnyComment alongside admin only -- cs_engineer deliberately
+// does not hold that second one -- and PermViewSecurityCenter, which
+// cs_engineer and admin both already hold anyway. See
+// PermUpdateDeleteComment's and PermUpdateDeleteAnyComment's own doc comments
+// for what each actually controls. security_team is narrower still, and in a
+// different direction from every role above: it implies View, PermViewOperations,
+// PermViewSecurityCenter and PermViewSecurityReportCases and nothing else -- not
+// PermWrite, not PermEscalate, not any other state-changing permission -- so both
+// areas it can see render read-only for a holder with no other role. See
+// AccessConfig.SecurityTeam's own doc comment.
 func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 	build := func(lists ...[]string) map[string]struct{} {
 		set := make(map[string]struct{})
@@ -309,33 +446,45 @@ func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 	}
 	return &AccessGuard{
 		portalRoles: []portalRole{
-			{"viewer", build(cfg.Viewer)},
-			{"escalator", build(cfg.Escalator)},
-			{"attachment_downloader", build(cfg.AttachmentDownloader)},
-			{"cs_engineer", build(cfg.CsEngineer)},
-			{"usage_metrics_viewer", build(cfg.UsageMetricsViewer)},
-			{"timecard_approver", build(cfg.TimecardApprover)},
-			{"dashboard_designer", build(cfg.DashboardDesigner)},
-			{"admin", build(cfg.Admin)},
-			{"sales_solutions", build(cfg.SalesSolutions)},
-			{"worknote_creator", build(cfg.WorknoteCreator)},
-			{"announcement_creator", build(cfg.AnnouncementCreator)},
+			{key: "viewer", names: build(cfg.Viewer)},
+			{key: "escalator", names: build(cfg.Escalator)},
+			{key: "attachment_downloader", names: build(cfg.AttachmentDownloader)},
+			{key: "cs_engineer", names: build(cfg.CsEngineer)},
+			{key: "usage_metrics_viewer", names: build(cfg.UsageMetricsViewer)},
+			{key: "timecard_approver", names: build(cfg.TimecardApprover)},
+			{key: "dashboard_designer", names: build(cfg.DashboardDesigner)},
+			{key: "admin", names: build(cfg.Admin)},
+			{key: "sales_solutions", names: build(cfg.SalesSolutions)},
+			{key: "worknote_creator", names: build(cfg.WorknoteCreator)},
+			{key: "announcement_creator", names: build(cfg.AnnouncementCreator)},
+			{key: "comment_updater", names: build(cfg.CommentUpdater)},
+			{key: "security_team", names: build(cfg.SecurityTeam)},
 		},
 		allowed: map[Permission]map[string]struct{}{
 			PermView: build(cfg.Viewer, cfg.Escalator, cfg.AttachmentDownloader,
-				cfg.UsageMetricsViewer, cfg.CsEngineer, cfg.Admin, cfg.TimecardApprover, cfg.DashboardDesigner),
-			PermViewOperations:      build(cfg.CsEngineer, cfg.Admin),
+				cfg.UsageMetricsViewer, cfg.CsEngineer, cfg.Admin, cfg.TimecardApprover, cfg.DashboardDesigner,
+				cfg.SecurityTeam),
+			PermViewOperations:      build(cfg.CsEngineer, cfg.Admin, cfg.SecurityTeam),
 			PermTimeCardsAndUpdates: build(cfg.CsEngineer, cfg.Admin, cfg.TimecardApprover),
 			PermEscalate:            build(cfg.Escalator, cfg.CsEngineer, cfg.Admin),
 			PermDownloadAttachment:  build(cfg.AttachmentDownloader, cfg.CsEngineer, cfg.Admin),
 			PermWrite:               build(cfg.CsEngineer, cfg.Admin),
 			PermViewAllDashboards:   build(cfg.CsEngineer, cfg.Admin),
 			PermAdmin:               build(cfg.Admin),
-			PermViewSecurityCenter:  build(cfg.CsEngineer, cfg.Admin),
-			PermApproveTimeCard:     build(cfg.TimecardApprover, cfg.Admin),
+			PermViewSecurityCenter:  build(cfg.CsEngineer, cfg.Admin, cfg.CommentUpdater, cfg.SecurityTeam),
+			// Everyone PermViewSecurityCenter already covers, plus Viewer —
+			// see that permission's own doc comment for why this is a
+			// separate permission rather than adding cfg.Viewer to
+			// PermViewSecurityCenter directly (that would also open
+			// /products/vulnerabilities to Viewer, which is out of scope).
+			PermViewSecurityReportCases: build(cfg.Viewer, cfg.CsEngineer, cfg.Admin, cfg.CommentUpdater, cfg.SecurityTeam),
+			PermApproveTimeCard:         build(cfg.TimecardApprover, cfg.Admin),
 			// Viewer, unconditionally (no cs_engineer exclusion) -- see
 			// PermViewerAccess's own doc comment for why.
 			PermViewerAccess: build(cfg.Viewer),
+			// Viewer plus the staff roles that hold full access -- see
+			// PermViewCustomerHealth's own doc comment.
+			PermViewCustomerHealth: build(cfg.Viewer, cfg.CsEngineer, cfg.Admin),
 			// Every existing PermView holder, so nothing they could already
 			// read stops being readable, plus SalesSolutions for exactly the
 			// routes this permission is registered on -- see
@@ -343,11 +492,11 @@ func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 			// just PermView with SalesSolutions folded in.
 			PermViewSharedEntity: build(cfg.Viewer, cfg.Escalator, cfg.AttachmentDownloader,
 				cfg.UsageMetricsViewer, cfg.CsEngineer, cfg.Admin, cfg.TimecardApprover, cfg.DashboardDesigner,
-				cfg.SalesSolutions),
-			// Same population as PermEscalate/PermDownloadAttachment's own
-			// "the specialised role, or a CS Portal role that already
-			// dominates it" shape -- see PermUsageMetricsViewer's own doc
-			// comment.
+				cfg.SalesSolutions, cfg.SecurityTeam),
+			// CsEngineer, Admin, and the dedicated role grant this directly
+			// (no separate PermViewerAccess layer, and Viewer itself is
+			// deliberately NOT included) -- see PermUsageMetricsViewer's own
+			// doc comment.
 			PermUsageMetricsViewer: build(cfg.UsageMetricsViewer, cfg.CsEngineer, cfg.Admin),
 			PermUsePlg:             build(cfg.CsEngineer, cfg.Admin),
 			PermManagePlaybooks:    build(cfg.Admin),
@@ -360,6 +509,16 @@ func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 			// does NOT hold it, which is the whole point of the role. Always
 			// checked together with PermWrite (see its doc comment).
 			PermCreateAnnouncement: build(cfg.AnnouncementCreator, cfg.Admin),
+			// The route-level floor for PATCH/DELETE /comments/{id} -- see
+			// PermUpdateDeleteComment's own doc comment for why cs_engineer
+			// stays in this set (unlike PermCreateAnnouncement's) and for
+			// what entity-service still separately enforces per comment.
+			PermUpdateDeleteComment: build(cfg.CommentUpdater, cfg.CsEngineer, cfg.Admin),
+			// Deliberately excludes cs_engineer -- see
+			// PermUpdateDeleteAnyComment's own doc comment for why granting
+			// it to them would erase entity-service's authorship scoping
+			// rather than just widen who can reach the handler.
+			PermUpdateDeleteAnyComment: build(cfg.CommentUpdater, cfg.Admin),
 		},
 	}
 }
@@ -375,6 +534,151 @@ func (g *AccessGuard) RolesFor(tokenRoles []string) []string {
 				keys = append(keys, r.key)
 				break
 			}
+		}
+	}
+	return keys
+}
+
+// WithRoleIDs cross-references each portal role's configured real role
+// name(s) against idsByRoleName (ASGARDEO_ROLE_IDS, see
+// directory.ParseRoleIDs) to resolve the real Asgardeo role ID(s) that grant
+// each portal role, enabling RolesForIDs below. A name with no configured ID
+// simply contributes nothing -- the same "no entry means not wired up here"
+// posture ASGARDEO_ROLE_IDS itself documents; RolesForIDs answers empty for
+// every portal role until this has been called, rather than panicking on a
+// nil map. Returns g for chaining, the same post-construction wiring shape
+// as handler.UsersHandler.WithAccessGuard/WithGrantableRoles.
+func (g *AccessGuard) WithRoleIDs(idsByRoleName map[string]string) *AccessGuard {
+	for i, r := range g.portalRoles {
+		ids := make(map[string]struct{}, len(r.names))
+		for name := range r.names {
+			if id, ok := idsByRoleName[name]; ok {
+				ids[id] = struct{}{}
+			}
+		}
+		g.portalRoles[i].ids = ids
+	}
+	return g
+}
+
+// RolesForIDs is RolesFor's counterpart for a caller that knows which real
+// roles a user holds by their own Asgardeo role ID (e.g. a SCIM GET-by-ID
+// response's "value" field for each role in its "roles" array), not by
+// name -- needed because two distinct Asgardeo roles can share the same
+// display ("name"), which RolesFor's name-based matching cannot tell apart,
+// while a role's ID is always unique. Same fixed GET /users/me-reporting
+// order as RolesFor, and the same "always a non-nil, possibly empty slice"
+// contract. Answers empty for every role until WithRoleIDs has been called.
+func (g *AccessGuard) RolesForIDs(roleIDs []string) []string {
+	keys := make([]string, 0, len(g.portalRoles))
+	for _, r := range g.portalRoles {
+		for _, id := range roleIDs {
+			if _, ok := r.ids[id]; ok {
+				keys = append(keys, r.key)
+				break
+			}
+		}
+	}
+	return keys
+}
+
+// WithGroupNames wires ASGARDEO_ROLE_GROUP_NAMES -- a portal-role-key ->
+// Asgardeo-group-display-name(s) mapping (see directory.ParseRoleGroupNames)
+// -- enabling RolesForGroupNames/RolesForIDsAndGroupNames below. Unlike
+// WithRoleIDs, which cross-references a portal role's configured real role
+// NAMES against ASGARDEO_ROLE_IDS, this matches directly on the portal
+// role's own stable KEY: a group has no equivalent of a role's "real name"
+// on the token to cross-reference against AUTH_<ROLE>_ROLES, so the
+// deployment names the portal role being granted directly (e.g.
+// "cs_engineer") and lists the group display name(s) that should grant it
+// -- matched against a group's SCIM "display" value (the same name visible
+// in the Asgardeo console), not its opaque id. A portal role key with no
+// entry here simply never matches by group membership -- the same "no entry
+// means not wired up here" posture WithRoleIDs already has for role names.
+//
+// Unlike a real Asgardeo role name (an open-ended, deployment-specific
+// string ASGARDEO_ROLE_IDS has no fixed vocabulary to check against), a
+// portal role key IS a closed, known set -- exactly g.portalRoles' own keys,
+// fixed by NewAccessGuard above. A key in groupNamesByRoleKey that matches
+// none of them is therefore always a configuration mistake (a typo like
+// "cs_enginer"), not a legitimate "not relevant to this deployment yet"
+// case, and would otherwise grant nothing with no signal anywhere that it
+// silently failed to wire up. Logged as a startup warning naming the
+// offending key(s) -- not a hard failure, matching this guard's existing
+// posture elsewhere (an unset/misconfigured AUTH_<ROLE>_ROLES also only
+// warns, never exits) rather than taking down the whole backend over one
+// bad entry in an otherwise-optional, purely additive feature.
+// Returns g for chaining.
+func (g *AccessGuard) WithGroupNames(groupNamesByRoleKey map[string][]string) *AccessGuard {
+	known := make(map[string]struct{}, len(g.portalRoles))
+	for _, r := range g.portalRoles {
+		known[r.key] = struct{}{}
+	}
+	for key := range groupNamesByRoleKey {
+		if _, ok := known[key]; !ok {
+			slog.Warn("ASGARDEO_ROLE_GROUP_NAMES names an unknown portal role; its configured group(s) grant nothing", "key", key)
+		}
+	}
+
+	for i, r := range g.portalRoles {
+		names := make(map[string]struct{}, len(groupNamesByRoleKey[r.key]))
+		for _, name := range groupNamesByRoleKey[r.key] {
+			names[name] = struct{}{}
+		}
+		g.portalRoles[i].groupNames = names
+	}
+	return g
+}
+
+// RolesForGroupNames is RolesForIDs' counterpart for matching by Asgardeo
+// group membership instead of role assignment: some portal roles are
+// granted by placing a user in a specific Asgardeo group rather than
+// assigning them a role, configured via WithGroupNames. Matches on each
+// group's display name, case-sensitively -- the same exact-match convention
+// AUTH_<ROLE>_ROLES itself uses for role names. Same fixed order and
+// non-nil-slice contract as RolesFor/RolesForIDs. Answers empty for every
+// role until WithGroupNames has been called.
+func (g *AccessGuard) RolesForGroupNames(groupNames []string) []string {
+	keys := make([]string, 0, len(g.portalRoles))
+	for _, r := range g.portalRoles {
+		for _, name := range groupNames {
+			if _, ok := r.groupNames[name]; ok {
+				keys = append(keys, r.key)
+				break
+			}
+		}
+	}
+	return keys
+}
+
+// RolesForIDsAndGroupNames merges RolesForIDs and RolesForGroupNames into one
+// fixed-order, deduplicated list: a portal role granted by EITHER a held
+// role ID or group membership appears exactly once, in GET /users/me's usual
+// order, never twice (and never out of order) the way separately computing
+// and concatenating the two slices could produce. This is what
+// withPortalRoles actually calls -- a user can reach the same portal role
+// through a role assignment, a group membership, or both, and the caller
+// should not have to merge/dedupe two independently-ordered slices itself.
+func (g *AccessGuard) RolesForIDsAndGroupNames(roleIDs, groupNames []string) []string {
+	keys := make([]string, 0, len(g.portalRoles))
+	for _, r := range g.portalRoles {
+		matched := false
+		for _, id := range roleIDs {
+			if _, ok := r.ids[id]; ok {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			for _, name := range groupNames {
+				if _, ok := r.groupNames[name]; ok {
+					matched = true
+					break
+				}
+			}
+		}
+		if matched {
+			keys = append(keys, r.key)
 		}
 	}
 	return keys

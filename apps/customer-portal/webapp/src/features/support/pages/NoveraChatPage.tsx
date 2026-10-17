@@ -81,6 +81,7 @@ import {
 import {
   compareByCreatedOnThenId,
   dateFromApiCreatedOn,
+  dedupeAdjacentDuplicateMessages,
 } from "@features/support/utils/support";
 
 // Max time (ms) to wait for the conversation id (delivered asynchronously over
@@ -237,38 +238,37 @@ export default function NoveraChatPage(): JSX.Element {
       (page) => page.comments,
     );
 
-    const convertedMessages: Message[] = allMessages
-      .slice()
-      .sort(compareByCreatedOnThenId)
-      .map((msg, index) => {
-        const isBot =
-          msg.type?.toLowerCase() === "bot" ||
-          msg.createdBy?.toLowerCase() === "novera";
-        const messageCreatorEmail = msg.createdBy?.toLowerCase() ?? "";
-        const isCurrentUserMessage =
-          !isBot &&
-          (currentUserEmail.length > 0
-            ? messageCreatorEmail.length > 0 &&
-              messageCreatorEmail === currentUserEmail
-            : true);
-        const createdByDisplayName = [
-          msg.createdByFirstName,
-          msg.createdByLastName,
-        ]
-          .filter((name) => Boolean(name && name.trim()))
-          .join(" ")
-          .trim();
+    const sortedMessages = allMessages.slice().sort(compareByCreatedOnThenId);
+    const dedupedMessages = dedupeAdjacentDuplicateMessages(sortedMessages);
+    const convertedMessages: Message[] = dedupedMessages.map((msg, index) => {
+      const isBot =
+        msg.type?.toLowerCase() === "bot" ||
+        msg.createdBy?.toLowerCase() === "novera";
+      const messageCreatorEmail = msg.createdBy?.toLowerCase() ?? "";
+      const isCurrentUserMessage =
+        !isBot &&
+        (currentUserEmail.length > 0
+          ? messageCreatorEmail.length > 0 &&
+            messageCreatorEmail === currentUserEmail
+          : true);
+      const createdByDisplayName = [
+        msg.createdByFirstName,
+        msg.createdByLastName,
+      ]
+        .filter((name) => Boolean(name && name.trim()))
+        .join(" ")
+        .trim();
 
-        return {
-          id: msg.id || `msg-${index}`,
-          text: displayTextFromConversationContent(msg.content || "", isBot),
-          sender: isBot ? ChatSender.BOT : ChatSender.USER,
-          isCurrentUser: isBot ? false : isCurrentUserMessage,
-          timestamp: dateFromApiCreatedOn(msg.createdOn),
-          createdBy: createdByDisplayName || msg.createdBy || undefined,
-          showCreateCaseAction: false,
-        };
-      });
+      return {
+        id: msg.id || `msg-${index}`,
+        text: displayTextFromConversationContent(msg.content || "", isBot),
+        sender: isBot ? ChatSender.BOT : ChatSender.USER,
+        isCurrentUser: isBot ? false : isCurrentUserMessage,
+        timestamp: dateFromApiCreatedOn(msg.createdOn),
+        createdBy: createdByDisplayName || msg.createdBy || undefined,
+        showCreateCaseAction: false,
+      };
+    });
 
     setMessages((prev) => {
       // Keep optimistic/nav-state messages when history API returns empty.

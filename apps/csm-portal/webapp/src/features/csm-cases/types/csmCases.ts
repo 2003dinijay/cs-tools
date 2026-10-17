@@ -90,6 +90,12 @@ export interface CsmCaseRow {
    */
   engagementType?: string;
   /**
+   * Engagement payment type display label (e.g. "Paid", "FOC"), only
+   * meaningful when `caseType` is `"engagement"`. Carried through unmodified
+   * from the backend, like `engagementType`; see `isFocPaymentType`.
+   */
+  engagementPaymentType?: string;
+  /**
    * Work sub-state of an in-progress case (`ongoing` / `paused`); `null` when
    * the case is not `work_in_progress`. Drives the comment gate and the paused
    * indicator. See {@link commentGateReason}.

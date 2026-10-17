@@ -416,6 +416,171 @@ type SearchAccountsFilters struct {
 	// caller holds. Case-insensitive exact match.
 	OwnerEmail     string `json:"ownerEmail,omitempty"`
 	Classification string `json:"classification,omitempty"`
+	// LifeCycle filters on account.life_cycle (e.g. "Customer", "Partner",
+	// "Prospect", "Lost Customer", "Lost Prospect") -- exact match. This is
+	// a distinct dimension from Classification (account.classification,
+	// "Enterprise"/"Partner"/"Cloud"/"OEM", a business-segment axis) --
+	// confirmed against the legacy system's own account-scoping rule for
+	// this feature, whose "life cycle = Customer" base condition is what
+	// account.life_cycle mirrors. Do not confuse the two.
+	LifeCycle string `json:"lifeCycle,omitempty"`
+	// HasProject, when true, additionally requires the account to have at
+	// least one row in project -- an existence filter with no columns read
+	// from project, matching the legacy rule's own join-existence check
+	// against the account's projects, used purely to require a match
+	// rather than to select anything from the join.
+	HasProject bool `json:"hasProject,omitempty"`
+
+	// The fields below serve the customer-health account list. All are
+	// additive and absent by default: a request that sets none of them is
+	// answered exactly as before. Postgres data source only; the ServiceNow
+	// data source rejects a request that sets any of them.
+
+	// Risks keeps accounts exhibiting ANY of the listed risk keys (OR). Keys:
+	// hasNoGoLive, hasGoneLive, hasRecentCases, noSupportCases6mo,
+	// hasEolProduct, hasAbandonedMigrations, hasMigrationDelays,
+	// hasRecentEscalations. An unrecognized key matches nothing. Blank
+	// entries are ignored; a list with only blank entries is no filter.
+	Risks []string `json:"risks,omitempty"`
+	// SubRegion keeps accounts whose account.sub_region (not region) equals
+	// any listed value, exact match.
+	SubRegion []string `json:"subRegion,omitempty"`
+	// Product keeps accounts with a deployed product of this name under any of
+	// their projects' deployments, active or deactivated deployment alike
+	// (a deactivated deployed product does not count). Case-insensitive.
+	Product string `json:"product,omitempty"`
+	// AbtTeam keeps accounts whose CRE or SRE team name equals this value,
+	// case-insensitive.
+	AbtTeam string `json:"abtTeam,omitempty"`
+	// HealthStatus keeps accounts whose aggregated project health status is
+	// this value: at_risk, healthy or to_be_reviewed. Any other value matches
+	// nothing. An account with no project health rows matches none of the
+	// three, though it is reported as to_be_reviewed when its row carries a
+	// health summary.
+	HealthStatus string `json:"healthStatus,omitempty"`
+	// IncludeHealthSummary adds a HealthSummary to every returned row.
+	IncludeHealthSummary bool `json:"includeHealthSummary,omitempty"`
+}
+
+// Account health summary risk keys accepted by SearchAccountsFilters.Risks.
+const (
+	AccountRiskNoGoLive             = "hasNoGoLive"
+	AccountRiskGoneLive             = "hasGoneLive"
+	AccountRiskRecentCases          = "hasRecentCases"
+	AccountRiskNoSupportCases6mo    = "noSupportCases6mo"
+	AccountRiskEolProduct           = "hasEolProduct"
+	AccountRiskAbandonedMigrations  = "hasAbandonedMigrations"
+	AccountRiskMigrationDelays      = "hasMigrationDelays"
+	AccountRiskRecentEscalations    = "hasRecentEscalations"
+	AccountHealthStatusAtRisk       = "at_risk"
+	AccountHealthStatusHealthy      = "healthy"
+	AccountHealthStatusToBeReviewed = "to_be_reviewed"
+)
+
+// AccountGoLiveStatus is an account's aggregated go-live state across its
+// projects. State is "success", "pending" or "failure"; IsRisk is true only
+// for "failure".
+type AccountGoLiveStatus struct {
+	Status string `json:"status"`
+	IsRisk bool   `json:"isRisk"`
+	State  string `json:"state"`
+}
+
+// AccountSearchHealthSummary carries an account's customer-health flags and overall
+// health status. Present on a search row only when the request set
+// includeHealthSummary.
+type AccountSearchHealthSummary struct {
+	GoLiveStatus           AccountGoLiveStatus `json:"goLiveStatus"`
+	HasRecentCases         bool                `json:"hasRecentCases"`
+	HasEolProduct          bool                `json:"hasEolProduct"`
+	HasAbandonedMigrations bool                `json:"hasAbandonedMigrations"`
+	HasMigrationDelays     bool                `json:"hasMigrationDelays"`
+	HasRecentEscalations   bool                `json:"hasRecentEscalations"`
+	NoSupportCases6mo      bool                `json:"noSupportCases6mo"`
+	// HealthStatus is at_risk, healthy or to_be_reviewed.
+	HealthStatus string `json:"healthStatus"`
+}
+
+// AccountHealthDetail is the per-project customer-health breakdown of one
+// account: the same flags the account health summary reports, computed per
+// project, with the items behind each flag. Returned by
+// GET /accounts/{id}/health-detail.
+type AccountHealthDetail struct {
+	AccountName string `json:"accountName"`
+	// CustomerProjects holds every project of the account, newest first.
+	CustomerProjects []ProjectHealthDetail `json:"customerProjects"`
+}
+
+// ProjectHealthDetail is one project's row of an AccountHealthDetail. Every
+// list is a non-nil array, empty when nothing qualifies.
+type ProjectHealthDetail struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// HasRecentCases/TotalRecentCases/DetailedRecentCases: case-like work items
+	// (not announcements) created in the last 180 days, grouped by priority in
+	// the order each priority first appears, newest case first.
+	HasRecentCases      bool                      `json:"hasRecentCases"`
+	DetailedRecentCases []HealthCasePriorityGroup `json:"detailedRecentCases"`
+	TotalRecentCases    int                       `json:"totalRecentCases"`
+	// HasAbandonedCases/DetailedAbandonedCases: open migration engagements
+	// created at least 180 days ago.
+	HasAbandonedCases      bool             `json:"hasAbandonedCases"`
+	DetailedAbandonedCases []HealthCaseLink `json:"detailedAbandonedCases"`
+	// IsUsingEolProduct/SoftwareModel: deployed products past their support end
+	// date, one entry per product version.
+	IsUsingEolProduct bool                  `json:"isUsingEolProduct"`
+	SoftwareModel     []HealthEolProduct    `json:"softwareModel"`
+	Deployments       []HealthDeploymentRef `json:"deployments"`
+	// HasMigrationDelays/DetailedMigrationDelays: open migration engagements
+	// created at least 60 days ago (a superset of the abandoned ones).
+	HasMigrationDelays      bool             `json:"hasMigrationDelays"`
+	DetailedMigrationDelays []HealthCaseLink `json:"detailedMigrationDelays"`
+	// HasEscalatedCases/DetailedEscalatedCases: every escalation on a work item
+	// of the project, newest first.
+	HasEscalatedCases      bool                `json:"hasEscalatedCases"`
+	DetailedEscalatedCases []HealthCaseLink    `json:"detailedEscalatedCases"`
+	GoLiveStatus           AccountGoLiveStatus `json:"goLiveStatus"`
+}
+
+// HealthCasePriorityGroup is the recent cases of one priority.
+type HealthCasePriorityGroup struct {
+	// Priority is the case severity (catastrophic, critical, high, medium,
+	// low) or "Unspecified" when the work item has none.
+	Priority string           `json:"priority"`
+	Count    int              `json:"count"`
+	Cases    []HealthCaseInfo `json:"cases"`
+}
+
+// HealthCaseInfo is a minimal case reference.
+type HealthCaseInfo struct {
+	ID     string `json:"id"`
+	Number string `json:"number"`
+}
+
+// HealthCaseLink is a case, or an escalation and the case it is on. ID and
+// Number name the case, EscalationID and EscalationNumber the escalation; a
+// field that does not apply is omitted. EscalationNumber repeats the case
+// number: an escalation has no number of its own.
+type HealthCaseLink struct {
+	ID               string `json:"id,omitempty"`
+	Number           string `json:"number,omitempty"`
+	EscalationID     string `json:"escalationId,omitempty"`
+	EscalationNumber string `json:"escalationNumber,omitempty"`
+}
+
+// HealthEolProduct is one end-of-life product version and the deployments
+// running it. EolDate is the support end date as an RFC 3339 timestamp at
+// midnight UTC.
+type HealthEolProduct struct {
+	Name        string                `json:"name"`
+	EolDate     string                `json:"eolDate"`
+	Deployments []HealthDeploymentRef `json:"deployments"`
+}
+
+// HealthDeploymentRef is a minimal deployment reference.
+type HealthDeploymentRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 // SearchAccountsRequest is the input for an account search operation.
@@ -440,8 +605,16 @@ type AccountView struct {
 	Pod            *string `json:"pod"`
 	SfID           *string `json:"sfId"`
 	Region         *string `json:"region"`
-	Country        *string `json:"country"`
-	City           *string `json:"city"`
+	// SubRegion (account.sub_region) is a finer-grained geography than
+	// Region -- a distinct column, not derived from it (e.g. Region "APAC"
+	// pairs with SubRegion values like "ASIA"/"SAARC"). Previously selected
+	// nowhere on this search response even though the column has long been
+	// read elsewhere (the Salesforce account upsert, project search's own
+	// account ref) -- added for a caller that filters accounts by this
+	// finer region, which Region alone cannot express.
+	SubRegion *string `json:"subRegion"`
+	Country   *string `json:"country"`
+	City      *string `json:"city"`
 	// DriveLocation is a free-text Google Drive folder reference — present
 	// on the Postgres data source (account.drive_location).
 	DriveLocation          *string    `json:"driveLocation"`
@@ -472,6 +645,9 @@ type AccountView struct {
 	// HasPrimaryPartner is whether this account has a primary partner account set. On
 	// Postgres it approximates this as "has any partner in account_relationship".
 	HasPrimaryPartner *bool `json:"hasPrimaryPartner"`
+	// HealthSummary is set only when the search asked for it
+	// (filters.includeHealthSummary); omitted otherwise.
+	HealthSummary *AccountSearchHealthSummary `json:"healthSummary,omitempty"`
 }
 
 // SearchAccountsResponse is the paginated result of an account search, unified
@@ -1181,6 +1357,16 @@ type Project struct {
 	Account          *ProjectSearchAccountRef `json:"account"`
 	ActiveCasesCount int                      `json:"activeCasesCount"`
 	OnboardingStatus *string                  `json:"onboardingStatus"`
+	// OnboardingOwner is the person assigned to run this project's onboarding,
+	// nil when none is assigned.
+	OnboardingOwner *PersonRef `json:"onboardingOwner"`
+	// GoLiveDate mirrors ProjectDetailsView/ProjectEngagementFields' own
+	// GoLiveDate (project.onboarding_go_live_date) -- previously selected
+	// only by GetProjectByID, not SearchProjects, even though callers that
+	// need to know whether a project has actually gone live (e.g. the CSM
+	// portal backend's customer-health risk flags) search by account rather
+	// than fetching one project at a time.
+	GoLiveDate *time.Time `json:"goLiveDate"`
 }
 
 // ProjectAccountRef is the embedded account summary returned in project detail responses.
@@ -1278,8 +1464,7 @@ type ProjectDetailsView struct {
 	ProjectClosureFields
 	// OnboardingOwner is the person assigned to run this project's
 	// onboarding. Nil when no owner is assigned — most projects, since only
-	// onboarding-enabled projects have one. Currently populated only from
-	// the ServiceNow data source.
+	// onboarding-enabled projects have one. Populated by every data source.
 	OnboardingOwner *PersonRef `json:"onboardingOwner"`
 }
 
@@ -1434,8 +1619,14 @@ type ProjectView struct {
 	OnboardingStatus *string `json:"onboardingStatus"`
 	// OnboardingOwner is the person assigned to run this project's
 	// onboarding. Nil when no owner is assigned — most projects, since only
-	// onboarding-enabled projects have one (ServiceNow data source only).
+	// onboarding-enabled projects have one.
 	OnboardingOwner *PersonRef `json:"onboardingOwner"`
+	// GoLiveDate mirrors ProjectDetailsView/ProjectEngagementFields' own
+	// GoLiveDate (project.onboarding_go_live_date) -- nil when the project
+	// hasn't gone live (or the date isn't tracked). Previously only
+	// populated on GetProjectByID; added here so an account-scoped search
+	// doesn't need one GetProjectByID call per project just to know this.
+	GoLiveDate *time.Time `json:"goLiveDate"`
 }
 
 // SearchProjectsResponse is the paginated result of a project search.
@@ -1884,7 +2075,7 @@ type Deployment struct {
 }
 
 // DeploymentView is the enriched search result for a deployment. It embeds
-// project and createdBy as named refs and uses createdOn/updatedOn naming.
+// project as a named ref and uses createdOn/updatedOn naming.
 type DeploymentView struct {
 	ID          string         `json:"id"`
 	Number      string         `json:"number"`
@@ -1892,7 +2083,6 @@ type DeploymentView struct {
 	Type        DeploymentType `json:"type"`
 	Description *string        `json:"description"`
 	URL         *string        `json:"url"`
-	CreatedBy   *EntityRef     `json:"createdBy"`
 	Project     EntityRef      `json:"project"`
 	CreatedOn   time.Time      `json:"createdOn"`
 	UpdatedOn   time.Time      `json:"updatedOn"`
@@ -1919,6 +2109,14 @@ type SearchDeploymentsRequest struct {
 	ProjectIDs      []string         `json:"projectIds"`
 	DeploymentTypes []DeploymentType `json:"deploymentTypes"`
 	IDs             []string         `json:"ids"`
+	// IncludeInactive additively widens the result to also include deployments
+	// with is_active = FALSE -- omitted/false reproduces today's exact
+	// behavior for every existing caller (the permanent is_active = TRUE
+	// filter in SearchDeployments's SQL). Added for the CSM portal backend's
+	// customer-health EOL-product check, whose real ServiceNow script has no
+	// such filter at all -- a deactivated deployment can still carry real EOL
+	// product history that must count toward the risk flag.
+	IncludeInactive bool `json:"includeInactive,omitempty"`
 }
 
 // SearchDeploymentsResponse is the paginated result of a deployment search.
@@ -2815,8 +3013,11 @@ type ParsedCaseFilters struct {
 	ResolutionNotesEmpty bool
 	// TaskSLAFilter filters cases by Task SLA businessElapsedPercent range (optional).
 	// Populated from the "taskSLABusinessElapsedPercent" filter field's gte/lte bounds.
-	// Requires ServiceNow data source (not available via PostgreSQL-only path).
-	// Filtering logic is confined to the SN adapter per vendor-neutral boundary.
+	// Implemented on both data sources: an EXISTS over sla_live on Postgres
+	// (case_repo.go), forwarded to ServiceNow's own CaseUtils on that data
+	// source. When config.SLADataSource is servicenow, a plain-Postgres
+	// caseService forwards the whole search to a ServiceNow delegate instead
+	// of running the Postgres query itself -- see WithSLASearchDelegate.
 	TaskSLAFilter *TaskSLAFilter
 	// EscalationLevels filters cases to one of these escalation level ids ("0"-"5"),
 	// from the "escalationLevel" filter field's in values (optional).
@@ -2828,7 +3029,9 @@ type ParsedCaseFilters struct {
 	// HasBreachedSLA filters cases to those with a currently-breached SLA
 	// against the 10 named SLA definitions, from the "slaBreached" filter
 	// field's eq value (optional; nil means no filter on this field). Wire
-	// field on the SN payload: "slaBreached". Requires ServiceNow data source.
+	// field on the SN payload: "slaBreached". Implemented on both data
+	// sources -- same EXISTS-over-sla_live/forwarded-to-ServiceNow and
+	// SLADataSource-driven delegation as TaskSLAFilter above.
 	HasBreachedSLA *bool
 	// HasActiveAccountEscalation filters cases to those whose parent ACCOUNT
 	// has an active escalation (active_account_escalation.state IN 100,101),
@@ -2964,6 +3167,56 @@ type AggregateResponse struct {
 	TotalRecords int               `json:"totalRecords"`
 }
 
+// CaseVolumeTrendRequest is the input for POST /cases/volume-trend: a
+// day-bucketed count of cases opened and closed per day, for dashboard
+// widgets. Deliberately narrow (no bucket-unit/series config, unlike
+// AggregateCasesRequest's open-ended groupBy): this backs exactly one chart,
+// not a platform, so the two series (opened, closed) are fixed.
+type CaseVolumeTrendRequest struct {
+	Filters SearchCasesFilters `json:"filters"`
+	// Days is the size of the trailing window, ending today (UTC). Optional;
+	// the service applies a default (30) when omitted and rejects a value
+	// outside 1-90.
+	Days int `json:"days,omitempty"`
+}
+
+// CaseVolumeTrendPoint is one day's count in a CaseVolumeTrendSeries. Date is
+// a plain YYYY-MM-DD (UTC calendar day), matching this codebase's other
+// date-only wire fields.
+type CaseVolumeTrendPoint struct {
+	Date  string `json:"date"`
+	Count int    `json:"count"`
+}
+
+// CaseVolumeTrendSeries is one named line in a CaseVolumeTrendResponse
+// ("Opened" or "Closed"), with one point per day in the requested window,
+// in chronological order. A day with no matching cases is still present,
+// with Count 0 -- the chart draws a continuous line.
+type CaseVolumeTrendSeries struct {
+	Label  string                 `json:"label"`
+	Points []CaseVolumeTrendPoint `json:"points"`
+}
+
+// CaseVolumeTrendResponse is the result of a case-volume trend query: always
+// exactly two series, "Opened" (by created date) and "Closed" (by closed
+// date, own-type only -- see caseLikeOwnClosedOnColumn's doc comment).
+type CaseVolumeTrendResponse struct {
+	Days   int                     `json:"days"`
+	Series []CaseVolumeTrendSeries `json:"series"`
+}
+
+// CaseVolumeDayCount is the opened/closed count for one UTC calendar day --
+// the unit CaseVolumeTrend computes and the Redis-backed cache in front of
+// it stores. Lives in domain (not repository) specifically so internal/cache
+// can share it without importing internal/repository, the same layering
+// every other cached type (e.g. UserDetail) already follows. Not a wire
+// type of its own; the service assembles CaseVolumeTrendResponse's two
+// named series from a map of these, keyed by day.
+type CaseVolumeDayCount struct {
+	Opened int `json:"opened"`
+	Closed int `json:"closed"`
+}
+
 // SearchCaseView is the unified case representation returned in search results.
 // Fields absent for a given data source are nil.
 type SearchCaseView struct {
@@ -3010,19 +3263,22 @@ type SearchCaseView struct {
 	// (Type). Populated for the ServiceNow data source only; null otherwise.
 	AccountDetails *AccountRef `json:"account"`
 	// BestCaseFixEta is the internal-only best-case fix-commitment date, as a
-	// date-only "YYYY-MM-DD" string. Populated for the ServiceNow data source
-	// only; null otherwise. CSM-engineer-facing only, never shared with the
-	// customer.
+	// date-only "YYYY-MM-DD" string. Populated on both data sources -- on
+	// Postgres, read from work_item.best_case_eta the same way GetCaseByID
+	// already does; null when unset. CSM-engineer-facing only, never shared
+	// with the customer.
 	BestCaseFixEta *string `json:"bestCaseFixEta"`
 	// MostLikelyFixEta is the internal-only most-likely fix-commitment date, as
-	// a date-only "YYYY-MM-DD" string. Populated for the ServiceNow data source
-	// only; null otherwise. CSM-engineer-facing only, never shared with the
-	// customer.
+	// a date-only "YYYY-MM-DD" string. Populated on both data sources -- on
+	// Postgres, read from work_item.most_likely_eta the same way GetCaseByID
+	// already does; null when unset. CSM-engineer-facing only, never shared
+	// with the customer.
 	MostLikelyFixEta *string `json:"mostLikelyFixEta"`
 	// WorstCaseFixEta is the internal-only worst-case fix-commitment date, as a
-	// date-only "YYYY-MM-DD" string. Populated for the ServiceNow data source
-	// only; null otherwise. CSM-engineer-facing only, never shared with the
-	// customer.
+	// date-only "YYYY-MM-DD" string. Populated on both data sources -- on
+	// Postgres, read from work_item.worst_case_eta the same way GetCaseByID
+	// already does; null when unset. CSM-engineer-facing only, never shared
+	// with the customer.
 	WorstCaseFixEta *string `json:"worstCaseFixEta"`
 	// EscalationLevel is the case's current escalation level -- see
 	// CaseView.EscalationLevel's doc comment.
@@ -3356,8 +3612,13 @@ type CreateCaseRequest struct {
 	CatalogItemID string     `json:"catalogItemId"`
 	Variables     []Variable `json:"variables"`
 	// Optional fields
-	RelatedCaseID  string `json:"relatedCaseId"`
-	ConversationID string `json:"conversationId"`
+	RelatedCaseID string `json:"relatedCaseId"`
+	// ResolvedRelatedCaseID is the related-case id already checked against
+	// Postgres, set by the dual-write create path before ServiceNow is called.
+	// CreateCaseFromServiceNow binds it and does not look RelatedCaseID up
+	// again. Nil binds NULL: the id was empty, or the target is not mirrored yet.
+	ResolvedRelatedCaseID *string `json:"-"`
+	ConversationID        string  `json:"conversationId"`
 	// WatchList is watcher emails (Customer Portal / Ballerina). Platform user
 	// UUIDs are still accepted and resolved to emails for CSM callers.
 	WatchList []string `json:"watchList"`
@@ -3645,6 +3906,14 @@ type Comment struct {
 	// admin, and never returned at all to a customer caller (the row itself
 	// is omitted from that caller's results).
 	IsDeleted bool `json:"isDeleted,omitempty"`
+	// HasInlineAttachments / InlineAttachments describe images embedded in the
+	// comment body, the same shape as CaseComment's own fields above --
+	// previously decoded only for the case-nested comment search
+	// (SearchCaseComments), not this generic one, which silently dropped the
+	// data ServiceNow already sends. InlineAttachments is nil (not empty)
+	// when there are none.
+	HasInlineAttachments bool               `json:"hasInlineAttachments,omitempty"`
+	InlineAttachments    []InlineAttachment `json:"inlineAttachments,omitempty"`
 }
 
 // UpdateCommentRequest is the input for PATCH /comments/{id}. ID is populated
@@ -4384,6 +4653,7 @@ type ProjectContact struct {
 	Email                string   `json:"email"`
 	RegistrationState    string   `json:"registrationState"`
 	NotificationsEnabled bool     `json:"notificationsEnabled"`
+	IsCsIntegrationUser  bool     `json:"isCsIntegrationUser"`
 	Roles                []string `json:"roles"`
 	// AccountRoles are this person's account-level roles (role.name), a
 	// SEPARATE list from Roles and never merged into it: Roles is what they
@@ -4946,6 +5216,18 @@ type ChangeRequest struct {
 	// Read-only -- they are the customer's approvers at Customer Approval /
 	// Customer Review.
 	CustomerContacts []ChangeRequestCustomerContact `json:"customerContacts"`
+
+	// Tags are the labels attached to the change request's work_item through
+	// work_item_tag -- the same rows, read by the same helper (fetchCaseTags),
+	// as CaseView.Tags, and managed through the same POST /cases/{id}/tags,
+	// DELETE /cases/{id}/tags/{tagId} and POST /tags/search, which take a work
+	// item id and accept a change request's. Tags are internal bookkeeping:
+	// an array (empty when none) for an Unrestricted (staff) caller on the
+	// PostgreSQL data source, and null for every other read -- a customer
+	// (restricted) caller, the ServiceNow data source, or a lookup that failed
+	// (best-effort, like the case read). A tag added to a change request is
+	// never mirrored to the previous system (unlike a case's).
+	Tags []Tag `json:"tags"`
 
 	// Group C2 -- carried for parity, read-through only; no write path is
 	// exposed for any of these seven.
@@ -5911,7 +6193,10 @@ type SearchIncidentsFilters struct {
 	//     `incident_state` is a distinct field that exists independently on
 	//     the same incident row. Kept only for exact parity with SN's native
 	//     incident dashboards; prefer "state" for general-purpose state
-	//     filtering.
+	//     filtering. On the Postgres data source there is no such separate
+	//     column, so the keys (1 New, 2 In Progress, 3 On Hold, 6 Resolved,
+	//     7 Closed, 8 Canceled) are applied to `state`, ANDed with any "state"
+	//     filter; a key with no state is a 400.
 	// See service.ParseIncidentFieldFilters.
 	Filters []IncidentFieldFilter `json:"filters,omitempty"`
 }
@@ -6161,6 +6446,8 @@ type CreateIncidentResponse struct {
 		Number    string `json:"number"`
 		CreatedOn string `json:"createdOn"`
 		CreatedBy string `json:"createdBy"`
+		// Priority is derived from impact x urgency (ServiceNow's priority lookup), e.g. CRITICAL.
+		Priority string `json:"priority,omitempty"`
 	} `json:"incident"`
 }
 
@@ -8037,6 +8324,32 @@ type SearchSLAStatusResponse struct {
 	Offset   int         `json:"offset"`
 }
 
+// SLAClockState is GET /sla-status/clock-state's response — the full,
+// current state of exactly one (work item, clock target) "sla" row,
+// regardless of whether it is currently "active" (unlike SLAStatus/
+// SearchSLAStatusResponse, which only ever lists active rows at all).
+// Added for csm-notification-service's own pre-alert verification: its
+// Redis-held completion state for a clock can fall out of sync with this
+// service's own durable record (see repository.SLAStatusRepository.
+// GetClockState's own doc comment for the full reasoning), and an
+// active-only list can't tell "this clock genuinely, cleanly finished" apart
+// from "this clock was never registered here at all" or "a newer
+// incarnation of this clock now exists" — both of which also come back as
+// "not in the active list." This type carries enough to make all three
+// distinguishable: Found (a row exists at all), IsActive/Stage/HasBreached
+// (its current disposition), and StartedOn (the clock's own start instant,
+// compared against csm-notification-service's own Redis-held value to tell
+// one incarnation of a clock apart from another after a severity revision).
+type SLAClockState struct {
+	// Found is false, with every other field at its zero value, when no
+	// "sla" row exists at all for the requested (work item, target, source).
+	Found       bool       `json:"found"`
+	IsActive    bool       `json:"isActive"`
+	Stage       string     `json:"stage"`
+	HasBreached bool       `json:"hasBreached"`
+	StartedOn   *time.Time `json:"startedOn"`
+}
+
 // SLADurationPolicyItem is one (severity, clockType) duration row from the
 // sla_duration_policy table (migration 0192) — a small, static reference
 // table seeded directly from WSO2's own published Enterprise Support Policy,
@@ -8380,6 +8693,58 @@ type SearchAnnouncementRequestsResponse struct {
 	Limit    int                   `json:"limit"`
 	Offset   int                   `json:"offset"`
 	HasMore  bool                  `json:"hasMore"`
+}
+
+// AnnouncementRegistryRow kinds.
+const (
+	// AnnouncementRegistryRowKindBatch is one published announcement request,
+	// standing for every case it delivered.
+	AnnouncementRegistryRowKindBatch = "batch"
+	// AnnouncementRegistryRowKindCase is an announcement case that no
+	// published request owns (sent before requests existed, or by another path).
+	AnnouncementRegistryRowKindCase = "case"
+)
+
+// AnnouncementRegistryCaseMember is one case within a batch row.
+type AnnouncementRegistryCaseMember struct {
+	CaseID      string `json:"caseId"`
+	CaseNumber  string `json:"caseNumber"`
+	WSO2CaseID  string `json:"wso2CaseId"`
+	ProjectName string `json:"projectName"`
+}
+
+// AnnouncementRegistryRow is one row of the grouped announcement registry:
+// either a "batch" or a "case" (see the Kind constants). Kind says which of
+// the per-kind fields are populated; the others are omitted from the JSON.
+type AnnouncementRegistryRow struct {
+	Kind      string `json:"kind"`
+	Subject   string `json:"subject"`
+	CreatedBy string `json:"createdBy,omitempty"`
+	CreatedOn string `json:"createdOn,omitempty"`
+	UpdatedOn string `json:"updatedOn,omitempty"`
+
+	// Batch-only.
+	AnnouncementRequestID  string                           `json:"announcementRequestId,omitempty"`
+	ProjectCount           int                              `json:"projectCount,omitempty"`
+	Cases                  []AnnouncementRegistryCaseMember `json:"cases,omitempty"`
+	IsSecurityAnnouncement bool                             `json:"isSecurityAnnouncement,omitempty"`
+
+	// Case-only.
+	CaseID      string `json:"caseId,omitempty"`
+	CaseNumber  string `json:"caseNumber,omitempty"`
+	WSO2CaseID  string `json:"wso2CaseId,omitempty"`
+	State       string `json:"state,omitempty"`
+	ProjectName string `json:"projectName,omitempty"`
+}
+
+// SearchAnnouncementRegistryRowsResponse is the response for POST
+// /announcements/registry/rows. Total counts grouped rows, not cases.
+type SearchAnnouncementRegistryRowsResponse struct {
+	Rows    []AnnouncementRegistryRow `json:"rows"`
+	Total   int                       `json:"total"`
+	Limit   int                       `json:"limit"`
+	Offset  int                       `json:"offset"`
+	HasMore bool                      `json:"hasMore"`
 }
 
 // AnnouncementRequestDeliveryStatus is the outcome of one project's attempt
@@ -8862,4 +9227,230 @@ type TeamMember struct {
 // GetTeamMembersResponse is the response for GET /teams/{id}/members.
 type GetTeamMembersResponse struct {
 	Members []TeamMember `json:"members"`
+}
+
+// --- customer health risk tracking ---
+//
+// Migrated off a standalone MySQL database (apps/csm-portal/backend's own
+// internal/risk package) -- see migrations/0219_customer_health_risk_tables.sql.
+// project_id/account_id are real foreign keys into project(id)/account(id),
+// resolved server-side from the project/risk record itself rather than
+// accepted from the caller, unlike the old MySQL version's request bodies
+// (which carried an independently-supplied account identifier since the two
+// systems had no real join available).
+
+// ProjectHealthStatusValue enumerates a project's health-review status.
+type ProjectHealthStatusValue string
+
+const (
+	ProjectHealthStatusToBeReviewed ProjectHealthStatusValue = "TO_BE_REVIEWED"
+	ProjectHealthStatusHealthy      ProjectHealthStatusValue = "HEALTHY"
+	ProjectHealthStatusAtRisk       ProjectHealthStatusValue = "AT_RISK"
+)
+
+// ProjectRiskStatus enumerates a project risk record's lifecycle state.
+type ProjectRiskStatus string
+
+const (
+	ProjectRiskStatusOpen   ProjectRiskStatus = "OPEN"
+	ProjectRiskStatusClosed ProjectRiskStatus = "CLOSED"
+)
+
+// RiskActionItemPriority enumerates a risk action item's priority.
+type RiskActionItemPriority string
+
+const (
+	RiskActionItemPriorityHigh   RiskActionItemPriority = "HIGH"
+	RiskActionItemPriorityMedium RiskActionItemPriority = "MEDIUM"
+	RiskActionItemPriorityLow    RiskActionItemPriority = "LOW"
+)
+
+// RiskActionItemStatus enumerates a risk action item's lifecycle state.
+type RiskActionItemStatus string
+
+const (
+	RiskActionItemStatusOpen       RiskActionItemStatus = "OPEN"
+	RiskActionItemStatusInProgress RiskActionItemStatus = "IN_PROGRESS"
+	RiskActionItemStatusResolved   RiskActionItemStatus = "RESOLVED"
+	RiskActionItemStatusCancelled  RiskActionItemStatus = "CANCELLED"
+)
+
+// ProjectHealthStatus is a project's current health-review status (table
+// project_health_status, one row per project).
+type ProjectHealthStatus struct {
+	ID              string                   `json:"id"`
+	ProjectID       string                   `json:"projectId"`
+	AccountID       string                   `json:"accountId"`
+	Status          ProjectHealthStatusValue `json:"status"`
+	ReviewedByEmail *string                  `json:"reviewedByEmail"`
+	ReviewedOn      *string                  `json:"reviewedOn"`
+}
+
+// ProjectRisk is a project's risk record, open or closed, together with its
+// action items (table project_risk).
+type ProjectRisk struct {
+	ID            string            `json:"id"`
+	ProjectID     string            `json:"projectId"`
+	AccountID     string            `json:"accountId"`
+	Status        ProjectRiskStatus `json:"status"`
+	OpenedComment string            `json:"openedComment"`
+	OpenedByEmail string            `json:"openedByEmail"`
+	OpenedOn      string            `json:"openedOn"`
+	ClosedComment *string           `json:"closedComment"`
+	ClosedByEmail *string           `json:"closedByEmail"`
+	ClosedOn      *string           `json:"closedOn"`
+	ActionItems   []RiskActionItem  `json:"actionItems"`
+}
+
+// ProjectHealthWithOpenRisk pairs a project's health status with its
+// currently open risk, if any -- the shape GET
+// /accounts/{id}/project-health-statuses returns one of per project.
+type ProjectHealthWithOpenRisk struct {
+	ProjectID    string              `json:"projectId"`
+	HealthStatus ProjectHealthStatus `json:"healthStatus"`
+	OpenRisk     *ProjectRisk        `json:"openRisk"`
+}
+
+// AccountHealthSummary is an account's aggregated overall health status,
+// derived from its projects' individual health statuses.
+type AccountHealthSummary struct {
+	AccountID     string                   `json:"accountId"`
+	OverallStatus ProjectHealthStatusValue `json:"overallStatus"`
+}
+
+// RiskActionItem is an action item attached to a project risk (table
+// risk_action_item).
+type RiskActionItem struct {
+	ID                string                 `json:"id"`
+	RiskID            string                 `json:"riskId"`
+	ProjectID         string                 `json:"projectId"`
+	AccountID         string                 `json:"accountId"`
+	Title             string                 `json:"title"`
+	Description       *string                `json:"description"`
+	Priority          RiskActionItemPriority `json:"priority"`
+	Status            RiskActionItemStatus   `json:"status"`
+	AssignedToEmail   *string                `json:"assignedToEmail"`
+	DueDate           *string                `json:"dueDate"`
+	ResolutionComment *string                `json:"resolutionComment"`
+	ResolvedByEmail   *string                `json:"resolvedByEmail"`
+	ResolvedOn        *string                `json:"resolvedOn"`
+	CreatedByEmail    string                 `json:"createdByEmail"`
+	CreatedOn         string                 `json:"createdOn"`
+	UpdatedOn         string                 `json:"updatedOn"`
+	CommentCount      int                    `json:"commentCount"`
+}
+
+// ActionItemComment is a comment posted on a risk action item (table
+// action_item_comment).
+type ActionItemComment struct {
+	ID             string `json:"id"`
+	ActionItemID   string `json:"actionItemId"`
+	Comment        string `json:"comment"`
+	CreatedByEmail string `json:"createdByEmail"`
+	CreatedOn      string `json:"createdOn"`
+}
+
+// OpenProjectRiskRequest is the request body for POST /projects/{id}/risk.
+type OpenProjectRiskRequest struct {
+	Comment string `json:"comment"`
+}
+
+// CloseProjectRiskRequest is the request body for PUT /risks/{id}/close.
+type CloseProjectRiskRequest struct {
+	Comment string `json:"comment"`
+}
+
+// MarkProjectHealthyRequest is the request body for POST
+// /projects/{id}/mark-healthy.
+type MarkProjectHealthyRequest struct {
+	Comment *string `json:"comment,omitempty"`
+}
+
+// CreateRiskActionItemRequest is the request body for POST
+// /risks/{id}/action-items. The item's project/account are taken from the
+// risk record itself, not accepted from the caller.
+type CreateRiskActionItemRequest struct {
+	Title           string                 `json:"title"`
+	Description     *string                `json:"description,omitempty"`
+	Priority        RiskActionItemPriority `json:"priority"`
+	AssignedToEmail *string                `json:"assignedToEmail,omitempty"`
+	DueDate         string                 `json:"dueDate"`
+}
+
+// UpdateRiskActionItemStatusRequest is the request body for PUT
+// /action-items/{id}/status.
+type UpdateRiskActionItemStatusRequest struct {
+	Status            RiskActionItemStatus `json:"status"`
+	ResolutionComment *string              `json:"resolutionComment,omitempty"`
+}
+
+// UpdateRiskActionItemRequest is the request body for PUT /action-items/{id}.
+type UpdateRiskActionItemRequest struct {
+	Title           string                 `json:"title"`
+	Description     *string                `json:"description,omitempty"`
+	Priority        RiskActionItemPriority `json:"priority"`
+	AssignedToEmail *string                `json:"assignedToEmail,omitempty"`
+	DueDate         *string                `json:"dueDate,omitempty"`
+}
+
+// CreateActionItemCommentRequest is the request body for POST
+// /action-items/{id}/comments.
+type CreateActionItemCommentRequest struct {
+	Comment string `json:"comment"`
+}
+
+// InitProjectHealthTrackingRequest is the request body for POST
+// /accounts/{id}/init-health-tracking. Seeds a TO_BE_REVIEWED health-status
+// row for every listed project id that doesn't already have one; existing
+// rows are left untouched.
+type InitProjectHealthTrackingRequest struct {
+	ProjectIDs []string `json:"projectIds"`
+}
+
+// BatchAccountHealthSummariesRequest is the request body for POST
+// /accounts/health-summaries/search.
+type BatchAccountHealthSummariesRequest struct {
+	AccountIDs []string `json:"accountIds"`
+}
+
+// BatchAccountHealthSummariesResponse maps each requested account id to its
+// overall health status.
+type BatchAccountHealthSummariesResponse struct {
+	Summaries map[string]ProjectHealthStatusValue `json:"summaries"`
+}
+
+// AccountsByHealthStatusRequest is the request body for POST
+// /accounts/by-health-status/search.
+type AccountsByHealthStatusRequest struct {
+	Status ProjectHealthStatusValue `json:"status"`
+}
+
+// AccountsByHealthStatusResponse lists the account ids matching the
+// requested health status.
+type AccountsByHealthStatusResponse struct {
+	AccountIDs []string `json:"accountIds"`
+}
+
+// GetAccountProjectHealthStatusesResponse is the response for GET
+// /accounts/{id}/project-health-statuses.
+type GetAccountProjectHealthStatusesResponse struct {
+	Projects []ProjectHealthWithOpenRisk `json:"projects"`
+}
+
+// GetProjectRiskHistoryResponse is the response for GET
+// /projects/{id}/risk-history.
+type GetProjectRiskHistoryResponse struct {
+	Risks []ProjectRisk `json:"risks"`
+}
+
+// GetRiskActionItemsResponse is the response for GET
+// /risks/{id}/action-items and GET /accounts/{id}/action-items.
+type GetRiskActionItemsResponse struct {
+	ActionItems []RiskActionItem `json:"actionItems"`
+}
+
+// GetActionItemCommentsResponse is the response for GET
+// /action-items/{id}/comments.
+type GetActionItemCommentsResponse struct {
+	Comments []ActionItemComment `json:"comments"`
 }

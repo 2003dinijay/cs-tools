@@ -39,7 +39,7 @@ import SemanticChip from "@components/SemanticChip";
 import UserRefLink from "@components/UserRefLink";
 import EditorWithSourceToggle from "@components/rich-text-editor/EditorWithSourceToggle";
 import { useCurrentUser } from "@context/current-user/CurrentUserContext";
-import { PORTAL_ROLE } from "@context/current-user/portalAccess";
+import { usePortalAccess } from "@context/current-user/usePortalAccess";
 import { pickAccessibleText } from "@utils/contrastText";
 import { sanitizeRichTextHtml, stripLightModeInlineStyles } from "@utils/sanitizeHtml";
 import { useDarkMode } from "@utils/useDarkMode";
@@ -130,6 +130,7 @@ export default function CsmCaseCommentBubble({
   const isDarkMode = useDarkMode();
   const contentRef = useRef<HTMLDivElement>(null);
   const { user: currentUser } = useCurrentUser();
+  const portalAccess = usePortalAccess();
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState(comment.bodyHtml);
@@ -284,20 +285,22 @@ export default function CsmCaseCommentBubble({
 
   const isSystem = comment.authorRole === "system";
 
-  // Author-or-admin check — UI convenience only, the backend re-enforces the
-  // exact same rule on PATCH/DELETE and is the real gate. Case-insensitive to
-  // match how the backend compares the author email. A synthetic (client-
-  // fabricated) or system entry never has a real backend comment id behind
-  // it, so neither can ever be edited/deleted regardless of role.
+  // Author-or-(admin/comment_updater) check — UI convenience only, the
+  // backend re-enforces the exact same rule on PATCH/DELETE and is the real
+  // gate (entity-service's own author-or-admin check, unaffected by the
+  // comment_updater role — see canUpdateDeleteAnyComment's own doc comment).
+  // Case-insensitive to match how the backend compares the author email. A
+  // synthetic (client-fabricated) or system entry never has a real backend
+  // comment id behind it, so neither can ever be edited/deleted regardless
+  // of role.
   const isAuthor =
     !!comment.authorEmail &&
     !!currentUser?.email &&
     comment.authorEmail.toLowerCase() === currentUser.email.toLowerCase();
-  const isAdmin = !!currentUser?.roles?.some(
-    (role) => role.toLowerCase() === PORTAL_ROLE.admin,
-  );
   const canModify =
-    !comment.synthetic && !isSystem && (isAuthor || isAdmin);
+    !comment.synthetic &&
+    !isSystem &&
+    (isAuthor || portalAccess.canUpdateDeleteAnyComment);
   const showEditAffordance =
     canModify && !!onEditComment && !comment.isDeleted;
   const showDeleteAffordance =

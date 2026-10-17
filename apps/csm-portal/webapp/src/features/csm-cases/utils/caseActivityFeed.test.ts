@@ -16,7 +16,15 @@
 
 import { describe, expect, it } from "vitest";
 import type { CaseAuditEntry, CsmCaseComment } from "@features/csm-cases/types/csmCases";
-import { compareFeedEntries, describeAuditEntry, type FeedEntry } from "./caseActivityFeed";
+import {
+  ACTIVITY_PAGE_SIZE,
+  activityLimitToReveal,
+  compareCommentsChronologically,
+  compareFeedEntries,
+  describeAuditEntry,
+  nextActivityLimit,
+  type FeedEntry,
+} from "./caseActivityFeed";
 
 function commentEntry(
   id: string,
@@ -73,6 +81,52 @@ describe("compareFeedEntries", () => {
     const b = commentEntry("b", ts, "customer");
     expect(compareFeedEntries(a, b)).toBeLessThan(0);
     expect(compareFeedEntries(b, a)).toBeGreaterThan(0);
+  });
+});
+
+describe("compareCommentsChronologically", () => {
+  function comment(
+    id: string,
+    createdAt: string,
+    role: CsmCaseComment["authorRole"],
+  ): CsmCaseComment {
+    return {
+      id,
+      caseId: "c",
+      authorName: role === "chatbot" ? "Novera" : "Someone",
+      authorRole: role,
+      bodyHtml: "",
+      createdAt,
+    };
+  }
+
+  it("orders by timestamp ascending", () => {
+    const older = comment("a", "2026-07-01T00:00:00Z", "customer");
+    const newer = comment("b", "2026-07-01T00:05:00Z", "chatbot");
+    expect(compareCommentsChronologically(older, newer)).toBeLessThan(0);
+    expect(compareCommentsChronologically(newer, older)).toBeGreaterThan(0);
+  });
+
+  // Regression: entity-service returns conversation messages `created_on
+  // DESC` with a random-UUID tie-break, so the standalone conversation
+  // transcript pages (which consume this flat CsmCaseComment[] directly,
+  // never through the case activity feed's FeedEntry merge) need their own
+  // sort to guarantee the user's question renders before Novera's reply
+  // when both share a whole-second timestamp.
+  it("puts the human question before the bot answer on a timestamp tie", () => {
+    const ts = "2026-07-01T00:51:54Z";
+    const question = comment("q", ts, "customer");
+    const answer = comment("a", ts, "chatbot");
+    expect(compareCommentsChronologically(question, answer)).toBeLessThan(0);
+    expect(compareCommentsChronologically(answer, question)).toBeGreaterThan(0);
+  });
+
+  it("is deterministic for two non-bot entries at the same time (by id)", () => {
+    const ts = "2026-07-01T00:51:54Z";
+    const a = comment("a", ts, "customer");
+    const b = comment("b", ts, "customer");
+    expect(compareCommentsChronologically(a, b)).toBeLessThan(0);
+    expect(compareCommentsChronologically(b, a)).toBeGreaterThan(0);
   });
 });
 
@@ -159,5 +213,25 @@ describe("describeAuditEntry", () => {
     const described = describeAuditEntry(entry);
     expect(described).not.toContain("2026-07-01T00:00:00Z");
     expect(described.startsWith("SLA breach:")).toBe(true);
+  });
+});
+
+describe("activity window helpers", () => {
+  it("steps the window by one page and leaves 'all' unbounded", () => {
+    expect(ACTIVITY_PAGE_SIZE).toBe(50);
+    expect(nextActivityLimit(50)).toBe(100);
+    expect(nextActivityLimit(Infinity)).toBe(Infinity);
+  });
+
+  it("keeps the window when the entry is already inside it or missing", () => {
+    expect(activityLimitToReveal(49, 50)).toBe(50);
+    expect(activityLimitToReveal(0, 50)).toBe(50);
+    expect(activityLimitToReveal(-1, 50)).toBe(50);
+  });
+
+  it("grows the window to the page boundary that includes the entry", () => {
+    expect(activityLimitToReveal(50, 50)).toBe(100);
+    expect(activityLimitToReveal(99, 50)).toBe(100);
+    expect(activityLimitToReveal(100, 50)).toBe(150);
   });
 });

@@ -21,20 +21,19 @@ import {
   Briefcase,
   BookOpen,
   Bug,
+  Building,
   Building2,
-  CalendarClock,
   CalendarDays,
   ChartColumn,
   Clock,
   ClipboardList,
   Cog,
   FileWarning,
-  FolderKanban,
+  FolderOpen,
   GitPullRequest,
   Headset,
   HeartPulse,
   KeyRound,
-  Layers,
   LifeBuoy,
   Megaphone,
   RefreshCw,
@@ -93,6 +92,18 @@ export interface CsmNavNode {
    * "coming soon" fallback, which would be a downgrade.
    */
   rendersOwnWipPage?: boolean;
+  /**
+   * Marks this node as a second sidebar entry for a page another node owns:
+   * the id of that owning node. A shortcut owns no routes (the route guard,
+   * the active-item highlight, Recent and Pin all keep resolving the page to
+   * its owner), is never a tab in its section's in-page tab strip, and is left
+   * out of Quick-nav (the owner is already listed there). In the sidebar it is
+   * a child of its section, which then opens as a dropdown; when it is shown,
+   * the owner's own top-level entry is dropped so the page is offered once.
+   * Its visibility is the narrower of its own (`requires`, deployment
+   * overrides) and its owner's.
+   */
+  shortcutTo?: string;
   icon?: ComponentType<{ size?: number | string }>;
   children?: CsmNavNode[];
 }
@@ -222,11 +233,29 @@ export const CSM_NAV_ITEMS: CsmNavSection[] = [
         id: "customers.accounts",
         label: "Accounts",
         href: "/customers/accounts",
+        // Shown only where Customers opens as a sidebar dropdown (and in
+        // Quick-nav); the in-page tab strip draws no icons. Same icons Recent
+        // uses for an account and a project (csm-recent/kindMeta.tsx).
+        icon: Building,
       },
       {
         id: "customers.projects",
         label: "Projects",
         href: "/customers/projects",
+        icon: FolderOpen,
+      },
+      {
+        // Viewers reach Customer Health from the Customers dropdown instead
+        // of from its own top-level entry -- see
+        // showCustomerHealthUnderCustomers's own doc comment. The page itself
+        // still belongs to the top-level "customer-health" node (see
+        // CsmNavNode.shortcutTo).
+        id: "customers.customer-health",
+        label: "Customer Health",
+        href: "/customer-health",
+        shortcutTo: "customer-health",
+        requires: "showCustomerHealthUnderCustomers",
+        icon: HeartPulse,
       },
     ],
   },
@@ -234,6 +263,8 @@ export const CSM_NAV_ITEMS: CsmNavSection[] = [
     id: "kb-articles",
     label: "Knowledge",
     href: "/knowledge",
+    // Staff-only -- see canViewStaffSections's own doc comment.
+    requires: "canViewStaffSections",
     icon: BookOpen,
     children: [
       {
@@ -281,15 +312,51 @@ export const CSM_NAV_ITEMS: CsmNavSection[] = [
     id: "team-schedule",
     label: "Team Schedule",
     href: "/team-schedule",
-    // No `requires`: the rota is readable by everyone who can open the portal.
-    // Editing it is a lead's job and will gate on its own flag when the write
-    // routes land.
+    // An explicit allow-list (cs_engineer/admin/comment_updater), not just
+    // "not a plain viewer" -- see canViewTeamSchedule's own doc comment.
+    // Editing it is a lead's job and will gate on its own flag when the
+    // write routes land.
+    requires: "canViewTeamSchedule",
     icon: CalendarDays,
+  },
+  {
+    id: "customer-health",
+    label: "Customer Health",
+    href: "/customer-health",
+    // Ex-Support Portal Lite section with no modern/entity-service-backed
+    // equivalent. Its audience is the viewer role plus cs_engineer and admin
+    // (PermViewCustomerHealth server-side) -- see canViewCustomerHealth's own
+    // doc comment. Like Usage Metrics below, it sits just above User Scan and
+    // Help at the end of the sidebar -- except for a viewer, who gets it under
+    // Customers instead (the "customers.customer-health" shortcut). This node
+    // still owns the page and its routes for every role.
+    requires: "canViewCustomerHealth",
+    icon: HeartPulse,
+  },
+  {
+    id: "usage-metrics",
+    label: "Usage Metrics",
+    href: "/usage-metrics",
+    // Reported live: unlike its ex-Support-Portal-Lite siblings, a plain
+    // viewer must NOT see this one -- only cs_engineer/admin and the
+    // dedicated usage_metrics_viewer role do. See canViewUsageMetrics's own
+    // doc comment.
+    requires: "canViewUsageMetrics",
+    icon: BarChart3,
+  },
+  {
+    id: "user-scan",
+    label: "User Scan",
+    href: "/user-scan",
+    requires: "isSplAudience",
+    icon: UserSearch,
   },
   {
     id: "admin",
     label: "Settings",
     href: "/admin",
+    // cs_engineer/admin only -- see canViewSettings's own doc comment.
+    requires: "canViewSettings",
     icon: Settings,
     children: [
       {
@@ -403,56 +470,13 @@ export const CSM_NAV_ITEMS: CsmNavSection[] = [
         label: "People & project access",
         href: "/help#people-access",
       },
-      { id: "help.settings", label: "Settings", href: "/help#settings" },
-    ],
-  },
-  // Support Portal Lite — Sales/Solutions-Architecture staff only, ported
-  // from the former standalone apps/support-portal-lite/webapp. Rendered as
-  // its OWN exclusive left nav (this node's children, flattened, replacing
-  // the CS nav entirely) rather than merged into the CS section list above —
-  // see usePortalView.ts and CsmSideBar.tsx. Route access is still gated by
-  // useAccess (client-side Asgardeo groups), NOT this app's usual
-  // per-page feature-flag/roles mechanism — see App.tsx's RouteGuard for
-  // where that check actually happens; this section still exists in the
-  // tree unconditionally so CSM_PORTAL_FEATURE_OVERRIDES' WIP/hidden
-  // mechanism works on it too, on top of the audience gate.
-  {
-    id: "viewer",
-    label: "Sales / Solutions Architecture",
-    href: "/spl/cases",
-    icon: Layers,
-    children: [
-      { id: "viewer.cases", label: "Cases", href: "/spl/cases", icon: Layers },
       {
-        id: "viewer.accounts",
-        label: "Accounts",
-        href: "/spl/accounts",
-        icon: Building2,
-        // /spl/my-accounts is the same feature (an in-page My/All toggle on
-        // AccountsPage, no nav entry of its own — see App.tsx) so it must
-        // roll up to this node too, or landing there would fall through to
-        // no active nav highlight at all.
-        routes: ["/spl/my-accounts"],
-      },
-      { id: "viewer.projects", label: "Projects", href: "/spl/projects", icon: FolderKanban },
-      {
-        id: "viewer.team-schedule",
-        label: "Team schedule",
-        href: "/spl/team-schedule",
-        icon: CalendarClock,
-      },
-      { id: "viewer.user-scan", label: "User scan", href: "/spl/user-scan", icon: UserSearch },
-      {
-        id: "viewer.usage-metrics",
-        label: "Usage metrics",
-        href: "/spl/usage-metrics",
-        icon: BarChart3,
-      },
-      {
-        id: "viewer.customer-health",
-        label: "Customer health",
-        href: "/spl/customer-health",
-        icon: HeartPulse,
+        id: "help.settings",
+        label: "Settings",
+        href: "/help#settings",
+        // Help topics follow the page they document -- see canViewSettings's
+        // own doc comment on why Settings itself is cs_engineer/admin-only.
+        requires: "canViewSettings",
       },
     ],
   },
@@ -484,6 +508,11 @@ function isAnchorHref(node: CsmNavNode): boolean {
   return node.href.includes("#");
 }
 
+/** True when `node` is a second sidebar entry for a page another node owns. */
+export function isNavShortcut(node: CsmNavNode): boolean {
+  return Boolean(node.shortcutTo);
+}
+
 /**
  * Route path prefixes a node owns. A query-param tab (`tab` set) or an
  * in-page anchor (`href` with a `#` fragment) owns only its explicit
@@ -492,6 +521,9 @@ function isAnchorHref(node: CsmNavNode): boolean {
  * longest-prefix match in {@link navNodeForPath} ambiguous.
  */
 export function navNodeRoutes(node: CsmNavNode): string[] {
+  // A shortcut points at a page its owner already claims; claiming it too
+  // would make two nodes tie for the same prefix.
+  if (node.shortcutTo) return [];
   const extra = node.routes ?? [];
   return node.tab || isAnchorHref(node) ? extra : [navNodePath(node), ...extra];
 }
@@ -534,11 +566,11 @@ export interface CsmNavMatch {
  *
  * On a length tie, the later match wins (`>=`, not `>`) — `flattenNavNodes`
  * yields parents before their children, and a section whose `href` is just an
- * alias for its own landing child (e.g. "viewer"'s href and "viewer.cases"'s
- * href are both "/spl/cases", since the section has no dedicated landing page of
- * its own) would otherwise have the parent win a same-length tie against the
- * more specific child it's aliasing — surfacing as the child never being the
- * one reported active for its own path.
+ * alias for its own landing child (e.g. "plg"'s href and "plg.dashboard"'s
+ * href are both "/plg/dashboard", since the section has no dedicated landing
+ * page of its own) would otherwise have the parent win a same-length tie
+ * against the more specific child it's aliasing — surfacing as the child
+ * never being the one reported active for its own path.
  */
 export function navNodeMatchForPath(pathname: string): CsmNavMatch | undefined {
   let best: CsmNavMatch | undefined;

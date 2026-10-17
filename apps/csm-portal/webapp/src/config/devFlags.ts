@@ -14,18 +14,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// TEMPORARY / LOCAL DEV ONLY flags — see the CSM_PORTAL_DEV_BYPASS_ACCESS_CHECK
-// and CSM_PORTAL_DEV_VIEW_OVERRIDE declarations on Window.config in
-// authConfig.ts for the full explanation of each. Deliberately its OWN
-// module, separate from authConfig.ts: that file's `authConfig` export calls
-// getAuthConfig(), which throws synchronously (at module-evaluation time,
-// for EVERY importer) when window.config lacks the real OIDC fields — true
-// in every unit test, which stub only the handful of config keys each test
-// actually needs. These two flags must stay importable from a plain
-// component/hook test with no OIDC config stubbed at all, so they read
-// window.config directly here rather than living behind that throw.
+// TEMPORARY / LOCAL DEV ONLY flag — see the CSM_PORTAL_DEV_BYPASS_ACCESS_CHECK
+// declaration on Window.config in authConfig.ts for the full explanation.
+// Deliberately its OWN module, separate from authConfig.ts: that file's
+// `authConfig` export calls getAuthConfig(), which throws synchronously (at
+// module-evaluation time, for EVERY importer) when window.config lacks the
+// real OIDC fields — true in every unit test, which stub only the handful of
+// config keys each test actually needs. This flag must stay importable from
+// a plain component/hook test with no OIDC config stubbed at all, so it
+// reads window.config directly here rather than living behind that throw.
 export const devBypassAccessCheck: boolean =
   window.config?.CSM_PORTAL_DEV_BYPASS_ACCESS_CHECK === true;
-
-export const devViewOverride: "cs-abt" | "sales-sa" | undefined =
-  window.config?.CSM_PORTAL_DEV_VIEW_OVERRIDE;

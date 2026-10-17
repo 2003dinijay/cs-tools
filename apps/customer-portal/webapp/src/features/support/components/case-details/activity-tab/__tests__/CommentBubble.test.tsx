@@ -133,6 +133,23 @@ describe("CommentBubble", () => {
     });
   });
 
+  describe("plain-text comment (no HTML markup at all)", () => {
+    it("renders a system-generated notice's real line breaks instead of one run-on line", () => {
+      const { container } = renderBubble({
+        comment: {
+          ...mockComment,
+          id: "plain-text-1",
+          createdBy: "system",
+          content:
+            "Hello,\n\nPlease let us know whether you need further support for this case. Please note that if you are unable to respond, the case will be closed off after one week.\n\nThanks,\nWSO2 Team",
+        },
+      });
+      expect(container.querySelectorAll("br").length).toBe(5);
+      expect(screen.getByText(/Thanks,/)).toBeInTheDocument();
+      expect(screen.getByText(/WSO2 Team/)).toBeInTheDocument();
+    });
+  });
+
   it("should render comment content", () => {
     renderBubble();
     expect(
@@ -143,6 +160,18 @@ describe("CommentBubble", () => {
   it("should show display name for non-current-user comment", () => {
     renderBubble({ isCurrentUser: false });
     expect(screen.getByText("support-engineer@wso2.com")).toBeInTheDocument();
+  });
+
+  // Regression: the real GET /conversations/{id}/messages response sends
+  // createdBy: "" for a Novera reply, which used to fall through
+  // commentAuthorDisplayName's final `|| "Unknown"` and render the literal
+  // word "Unknown" as the author name instead of identifying it as Novera.
+  it("shows 'Novera' rather than 'Unknown' for a comment with no createdBy", () => {
+    renderBubble({
+      comment: { ...mockComment, id: "novera-empty-createdby", createdBy: "" },
+    });
+    expect(screen.getByText("Novera")).toBeInTheDocument();
+    expect(screen.queryByText("Unknown")).not.toBeInTheDocument();
   });
 
   it("should render formatted date", () => {

@@ -132,14 +132,25 @@ export function commentTypeFromInternal(
   return internal ? "work_note" : "comment";
 }
 
-/** Best display name off a {@link BeUserReference}, falling back to email. */
-function authorDisplayName(author: BeUserReference): string {
-  return author.name?.trim() || author.email?.trim() || "Unknown";
+/**
+ * Display name for an entry the platform itself wrote (automation, a
+ * server-side transition): the backend sends no `createdBy`, or one with
+ * neither a name nor an email. Not a real user: it carries no email/id, so
+ * nothing links to a profile or matches the signed-in user.
+ */
+export const SYSTEM_AUTHOR_NAME = "System";
+
+/** Best display name off a {@link BeUserReference}, falling back to email,
+ * then to {@link SYSTEM_AUTHOR_NAME} when the reference identifies no one. */
+function authorDisplayName(
+  author: BeUserReference | null | undefined,
+): string {
+  return author?.name?.trim() || author?.email?.trim() || SYSTEM_AUTHOR_NAME;
 }
 
 /** Best display name from a {@link BeComment}'s canonical `createdBy` reference. */
 function commentAuthorName(comment: BeComment): string {
-  return comment.createdBy ? authorDisplayName(comment.createdBy) : "Unknown";
+  return authorDisplayName(comment.createdBy);
 }
 
 /**
@@ -147,7 +158,7 @@ function commentAuthorName(comment: BeComment): string {
  * author name to their profile page.
  */
 function commentAuthorEmail(comment: BeComment): string | undefined {
-  return comment.createdBy?.email || undefined;
+  return comment.createdBy?.email?.trim() || undefined;
 }
 
 /**
@@ -156,11 +167,25 @@ function commentAuthorEmail(comment: BeComment): string | undefined {
  * normalizes `type` to `comment`/`work_note`/`activity` (a `bot` type never
  * survives), so the bot is identified by the author's `name` equalling
  * `"Novera"`. The `type === "bot"` check is a defensive fallback.
+ *
+ * The REAL `GET /conversations/{id}/messages` response (confirmed live via a
+ * HAR capture against the staging backend, not just a synthetic fixture)
+ * sends Novera as `createdBy: { name: "", email: "Novera" }` -- the literal
+ * sentinel lands in `email`, with `name` empty, not the other way around.
+ * `name === "novera"` alone never matched this, so Novera's `authorRole`
+ * silently stayed the default ("customer" in a conversation) instead of
+ * "chatbot" -- which broke the chatbot-sorts-after-human timestamp tie-break
+ * (`compareFeedEntries` / `compareCommentsChronologically`, both keyed on
+ * `authorRole === "chatbot"`) and left a bot reply's `<thinking>` reasoning
+ * unstripped. `email === "novera"` is an exact match, not a substring/domain
+ * match, so a real person's `x@wso2.com`-shaped address is never caught by
+ * it -- only the bare sentinel with no `@` is.
  */
 function isBotSender(comment: BeComment): boolean {
   const name = (comment.createdBy?.name ?? "").trim().toLowerCase();
+  const email = (comment.createdBy?.email ?? "").trim().toLowerCase();
   const ty = (comment.type ?? "").trim().toLowerCase();
-  return ty === "bot" || name === "novera";
+  return ty === "bot" || name === "novera" || email === "novera";
 }
 
 // The backend normalizes `type` to the singular enum (`work_note`/`comment`/

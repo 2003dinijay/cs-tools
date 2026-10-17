@@ -61,7 +61,7 @@ import {
 } from "@features/csm-cases/utils/caseSearchPayload";
 import { useDirectoryUsers } from "@api/useDirectoryUsers";
 import { BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
-import { ALL_CASE_TYPES } from "@features/csm-cases/utils/caseType";
+import { visibleCaseTypes } from "@features/csm-cases/utils/caseType";
 import {
   DEFAULT_CASES_FILTERS,
   readCasesFiltersFromUrl,
@@ -80,6 +80,46 @@ import type { CsmCaseRow } from "@features/csm-cases/types/csmCases";
 
 const DEFAULT_ROWS_PER_PAGE = 20;
 const ROWS_PER_PAGE_OPTIONS = [10, DEFAULT_ROWS_PER_PAGE, BE_MAX_PAGE_LIMIT];
+// 1-based in the URL (`?page=2` is the second page) so a missing param is
+// the first page. `perPage` is omitted at the default of 20; a chosen size
+// is also stored per user so a later visit with a clean URL keeps it.
+const PAGE_PARAM = "page";
+const PER_PAGE_PARAM = "perPage";
+
+function rowsPerPageStorageKey(viewId: string, userKey: string): string {
+  return `csm:${userKey}:${viewId}:rowsPerPage`;
+}
+
+function readPageParam(raw: string | null): number {
+  if (raw == null || raw === "") return 0;
+  const n = Number(raw);
+  // URL is 1-based. Anything that isn't a positive integer is the first page.
+  if (!Number.isInteger(n) || n <= 1) return 0;
+  return n - 1;
+}
+
+function readRowsPerPage(raw: string | null): number | null {
+  if (raw == null || raw === "") return null;
+  const n = Number(raw);
+  return ROWS_PER_PAGE_OPTIONS.includes(n) ? n : null;
+}
+
+function loadStoredRowsPerPage(key: string): number | null {
+  try {
+    return readRowsPerPage(window.localStorage.getItem(key));
+  } catch {
+    return null;
+  }
+}
+
+function saveStoredRowsPerPage(key: string, rowsPerPage: number): void {
+  try {
+    window.localStorage.setItem(key, String(rowsPerPage));
+  } catch {
+    // Storage full or blocked — the choice still holds for this visit via
+    // the URL write below.
+  }
+}
 
 // URL params owned by the filter state; cleared/rewritten on change while any
 // other params (e.g. a `tab` selection) are preserved. Must cover every key
@@ -287,8 +327,42 @@ export default function CsmIssuesView({
   // button to the same destination.
   const backTo = (location.state as { from?: string } | null)?.from;
 
-  const [page, setPage] = useState(0);
-  const [rowsPerPage, setRowsPerPage] = useState(DEFAULT_ROWS_PER_PAGE);
+  const currentUser = useCurrentUser().user;
+  const currentUserEmail = useIdTokenClaims()?.email;
+  const currentUserId = currentUser?.id;
+  const paginationUserKey = getColumnPreferencesUserKey({
+    id: currentUserId,
+    email: currentUserEmail,
+  });
+  // Same view id the column picker uses, so each list (cases, service
+  // requests, a project's work items) remembers its own page size.
+  const rowsStorageKey = rowsPerPageStorageKey(
+    columnsViewId ?? entityNoun,
+    paginationUserKey,
+  );
+
+  // Hydrate once from the URL (back from a case, or a reloaded list tab)
+  // and, for the page size only, from the last size this user chose.
+  const [page, setPage] = useState(() => readPageParam(searchParams.get(PAGE_PARAM)));
+  const [rowsPerPage, setRowsPerPage] = useState(
+    () =>
+      readRowsPerPage(searchParams.get(PER_PAGE_PARAM)) ??
+      loadStoredRowsPerPage(rowsStorageKey) ??
+      DEFAULT_ROWS_PER_PAGE,
+  );
+  // The storage key is "anonymous" until the signed-in user resolves. When
+  // it changes, pick up that user's saved page size — unless this visit's
+  // URL already names one, which wins for the link they actually opened.
+  const [prevRowsStorageKey, setPrevRowsStorageKey] = useState(rowsStorageKey);
+  if (prevRowsStorageKey !== rowsStorageKey) {
+    setPrevRowsStorageKey(rowsStorageKey);
+    if (readRowsPerPage(searchParams.get(PER_PAGE_PARAM)) == null) {
+      // No saved size for this identity means the default, not whatever the
+      // previous (often anonymous) identity had on screen. Otherwise the
+      // effect below would store that inherited size under the new key.
+      setRowsPerPage(loadStoredRowsPerPage(rowsStorageKey) ?? DEFAULT_ROWS_PER_PAGE);
+    }
+  }
   // Bulk row selection, backing the "Export selected" action — see
   // digiops-cs#3388's "Export Selected Cases" ask: a user ticks specific rows
   // (possibly across more than one page) and exports only those, rather than
@@ -330,17 +404,60 @@ export default function CsmIssuesView({
     DEFAULT_CASES_SORT.order,
   );
 
+  // Writes `page` / `perPage` onto the current query string. Called from the
+  // pagination and sort handlers, not from an effect: an effect races any
+  // filter update that also calls `setSearchParams` in the same turn, and
+  // the later navigate drops the filter. `replace` keeps a single history
+  // entry for the list, which is what Back from a case returns to.
+  const writePaginationToUrl = useCallback(
+    (nextPage: number, nextRows: number) => {
+      const next = new URLSearchParams(searchParams);
+      if (nextPage <= 0) next.delete(PAGE_PARAM);
+      else next.set(PAGE_PARAM, String(nextPage + 1));
+      if (nextRows === DEFAULT_ROWS_PER_PAGE) next.delete(PER_PAGE_PARAM);
+      else next.set(PER_PAGE_PARAM, String(nextRows));
+      if (next.toString() !== searchParams.toString()) {
+        setSearchParams(next, { replace: true });
+      }
+    },
+    [searchParams, setSearchParams],
+  );
+
   const setFilters = useCallback(
     (next: CasesFilters) => {
       setPage(0);
-      // Preserve any non-filter params (e.g. the active project-detail tab).
+      // Preserve any non-filter params (e.g. the active project-detail tab
+      // and the chosen page size). A new filter starts back at the first page.
       const merged = new URLSearchParams(searchParams);
       FILTER_PARAM_KEYS.forEach((k) => merged.delete(k));
+      merged.delete(PAGE_PARAM);
       writeCasesFiltersToUrl(next).forEach((v, k) => merged.set(k, v));
       setSearchParams(merged, { replace: true });
     },
     [searchParams, setSearchParams],
   );
+
+  // Remember the page size for the next visit that arrives without `perPage`.
+  useEffect(() => {
+    saveStoredRowsPerPage(rowsStorageKey, rowsPerPage);
+  }, [rowsStorageKey, rowsPerPage]);
+
+  // Set during render when the loaded result no longer contains `page`.
+  // The URL write happens in an effect so it is not a navigate during
+  // render, and only for this clamp — a general pagination effect races
+  // filter updates that also call `setSearchParams`.
+  const clampedPageRef = useRef<number | null>(null);
+  useEffect(() => {
+    const clamped = clampedPageRef.current;
+    if (clamped == null) return;
+    clampedPageRef.current = null;
+    writePaginationToUrl(clamped, rowsPerPage);
+  }, [page, rowsPerPage, writePaginationToUrl]);
+
+  const { canWrite, canUseSecurityCenter, canUpdateDeleteAnyComment } = usePortalAccess();
+  // See visibleCaseTypes's own doc comment: must mirror PermViewSecurityCenter
+  // exactly, which comment_updater also holds.
+  const canSeeSecurityReports = canUseSecurityCenter || canUpdateDeleteAnyComment;
 
   // Severity (S1-S4) is a support-case concept, so the severity filter is by
   // default only shown on the support-cases list — i.e. when the surrounding
@@ -392,13 +509,23 @@ export default function CsmIssuesView({
       // filter to support cases only (`default_case`) rather than "no
       // restriction" — so an omitted filter silently narrows the result to
       // one type instead of returning all of them. Send every known type
-      // explicitly in that case so the BE default can't kick in.
+      // explicitly in that case so the BE default can't kick in. Narrowed to
+      // this caller's visible types (see visibleCaseTypes's own doc comment)
+      // so a caller without security-report access doesn't get the whole
+      // search 403'd by asking for a type they can't see.
       if (merged.caseTypes.length === 0) {
-        merged.caseTypes = ALL_CASE_TYPES;
+        merged.caseTypes = visibleCaseTypes(canSeeSecurityReports);
       }
       return merged;
     },
-    [filters, debouncedSearch, showSeverityFilter, lockedFilters, hideTypeFilter],
+    [
+      filters,
+      debouncedSearch,
+      showSeverityFilter,
+      lockedFilters,
+      hideTypeFilter,
+      canSeeSecurityReports,
+    ],
   );
 
   const {
@@ -414,11 +541,13 @@ export default function CsmIssuesView({
   const handleSortFieldChange = (field: CasesSortField): void => {
     setSortField(field);
     setPage(0);
+    writePaginationToUrl(0, rowsPerPage);
   };
 
   const handleSortOrderChange = (order: CasesSortOrder): void => {
     setSortOrder(order);
     setPage(0);
+    writePaginationToUrl(0, rowsPerPage);
   };
 
   const { data: directoryUsers } = useDirectoryUsers();
@@ -432,9 +561,6 @@ export default function CsmIssuesView({
   // set, not whatever page happens to be on screen. See
   // `useFilteredCsvExport`/`fetchAllPages` for the paging + truncation logic.
   const api = useBackendApi();
-  const currentUserEmail = useIdTokenClaims()?.email;
-  const currentUserId = useCurrentUser().user?.id;
-  const { canWrite } = usePortalAccess();
   const [isFiltersOpen, setIsFiltersOpen] = useFilterBarCollapsed(
     "cases",
     getColumnPreferencesUserKey({ id: currentUserId, email: currentUserEmail }),
@@ -597,13 +723,16 @@ export default function CsmIssuesView({
   // setState in effects); React re-renders before committing, so it's not a
   // user-visible extra paint.
   if (data !== undefined && !data.hasMore && page > lastPage) {
+    clampedPageRef.current = lastPage;
     setPage(lastPage);
   }
   const paginationCount = data === undefined || data.hasMore ? -1 : total;
 
   const handleChangeRowsPerPage = (e: ChangeEvent<HTMLInputElement>): void => {
-    setRowsPerPage(parseInt(e.target.value, 10));
+    const nextRows = parseInt(e.target.value, 10);
+    setRowsPerPage(nextRows);
     setPage(0);
+    writePaginationToUrl(0, nextRows);
   };
 
   const breachedCount = cases.filter(
@@ -712,7 +841,12 @@ export default function CsmIssuesView({
 
       <CasesList
         cases={cases}
-        isLoading={isLoading || isFetching}
+        // `isFetching` stays true for a background refetch (manual Refresh,
+        // a new filter, or the next page arriving). The rows already on
+        // screen stay put and the list draws a progress bar; only the first
+        // load, when there is nothing to show, uses the skeleton.
+        isLoading={isLoading && data == null}
+        isFetching={isFetching}
         skeletonCount={rowsPerPage}
         detailBasePath={detailBasePath}
         hideSeverityColumn={isServiceRequestOnly || hideSeverityColumn}
@@ -748,7 +882,10 @@ export default function CsmIssuesView({
         component="div"
         count={paginationCount}
         page={page}
-        onPageChange={(_, newPage) => setPage(newPage)}
+        onPageChange={(_, newPage) => {
+          setPage(newPage);
+          writePaginationToUrl(newPage, rowsPerPage);
+        }}
         rowsPerPage={rowsPerPage}
         onRowsPerPageChange={handleChangeRowsPerPage}
         rowsPerPageOptions={ROWS_PER_PAGE_OPTIONS}

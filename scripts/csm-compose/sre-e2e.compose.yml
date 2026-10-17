@@ -30,7 +30,7 @@ services:
       CUSTOMER_ENTITY_BASE_URL: http://entity-gateway-shim:8080
       # The base stack's "false" stops the engine before it reaches any
       # channel, so the log channel never says who it would have called. Safe
-      # to turn on here: escalation.yaml runs both ladders on the log channel,
+      # to turn on here: paging-alert.yaml runs both ladders on the log channel,
       # which reaches nobody, and INCIDENT_DEFAULT_CALL_TO is unset, so the
       # dispatcher's own one-off incident call skips itself too.
       CALL_SENDING_ENABLED: "true"

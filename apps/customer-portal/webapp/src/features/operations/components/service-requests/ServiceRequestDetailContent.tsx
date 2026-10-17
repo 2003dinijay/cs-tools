@@ -57,10 +57,12 @@ import {
   formatRelativeTime,
   getAssignedEngineerLabel,
   getInitials,
+  SYSTEM_AUTHOR_LABEL,
   getStatusColor,
   resolveColorFromTheme,
   hasSubmittableEditorContent,
   collapseCommentSourceWhitespace,
+  plainTextCommentToHtml,
   hasSingleCodeWrapper,
   stripCodeWrapper,
   stripAllCodeBlocks,
@@ -217,7 +219,7 @@ export default function ServiceRequestDetailContent({
         type: "comment",
         label: "Comment Added",
         date: c.createdOn ?? "",
-        actor: c.createdBy ?? "Unknown",
+        actor: c.createdBy?.trim() || SYSTEM_AUTHOR_LABEL,
         desc: "",
       });
     });
@@ -532,9 +534,11 @@ export default function ServiceRequestDetailContent({
               ) : (
                 <>
                 {commentsToShow.map((comment: CaseComment) => {
+                  const authorLabel =
+                    comment.createdBy?.trim() || SYSTEM_AUTHOR_LABEL;
                   const isCurrentUser =
-                    (comment.createdBy?.toLowerCase() ?? "") ===
-                    currentUserEmail;
+                    !!comment.createdBy?.trim() &&
+                    comment.createdBy.toLowerCase() === currentUserEmail;
                   const avatarBg = isCurrentUser
                     ? alpha(
                         theme.palette.info?.light ?? theme.palette.info?.main,
@@ -566,7 +570,7 @@ export default function ServiceRequestDetailContent({
                           flexShrink: 0,
                         }}
                       >
-                        {getInitials(comment.createdBy)}
+                        {getInitials(authorLabel)}
                       </Avatar>
                       <Box sx={{ flex: 1, minWidth: 0 }}>
                         <Typography
@@ -574,7 +578,7 @@ export default function ServiceRequestDetailContent({
                           color="text.secondary"
                           sx={{ display: "block" }}
                         >
-                          {comment.createdBy} •{" "}
+                          {authorLabel} •{" "}
                           {formatRelativeTime(comment.createdOn ?? "")}
                         </Typography>
                         {isPlainTextComment(comment.content ?? "") ? (
@@ -607,8 +611,10 @@ export default function ServiceRequestDetailContent({
                             }}
                             dangerouslySetInnerHTML={{
                               __html: (() => {
-                                const raw = collapseCommentSourceWhitespace(
-                                  comment.content ?? "",
+                                const raw = plainTextCommentToHtml(
+                                  collapseCommentSourceWhitespace(
+                                    comment.content ?? "",
+                                  ),
                                 );
                                 const isFullCodeWrap =
                                   hasSingleCodeWrapper(raw);

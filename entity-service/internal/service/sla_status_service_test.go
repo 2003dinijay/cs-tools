@@ -26,11 +26,16 @@ import (
 )
 
 type stubSLAStatusRepo struct {
-	search func(ctx context.Context, p domain.Pagination, source string) ([]domain.SLAStatus, int, error)
+	search     func(ctx context.Context, p domain.Pagination, source string) ([]domain.SLAStatus, int, error)
+	clockState func(ctx context.Context, workItemID, target, source string) (domain.SLAClockState, error)
 }
 
 func (s stubSLAStatusRepo) SearchActiveSLAStatuses(ctx context.Context, p domain.Pagination, source string) ([]domain.SLAStatus, int, error) {
 	return s.search(ctx, p, source)
+}
+
+func (s stubSLAStatusRepo) GetClockState(ctx context.Context, workItemID, target, source string) (domain.SLAClockState, error) {
+	return s.clockState(ctx, workItemID, target, source)
 }
 
 // restrictedAccess is an AccessService stub whose scope is never Unrestricted
@@ -150,6 +155,102 @@ func TestSLAStatusService_SearchActiveSLAStatuses(t *testing.T) {
 		}
 		if resp.Total != 7 || resp.Limit != 10 || resp.Offset != 20 || len(resp.Statuses) != 1 || resp.Statuses[0].CaseID != "c1" {
 			t.Errorf("resp = %+v", resp)
+		}
+	})
+}
+
+const slaClockStateTestWorkItemID = "11111111-1111-1111-1111-111111111111"
+
+// TestSLAStatusService_GetClockState_RequiresInternalCaller mirrors
+// SearchActiveSLAStatuses's own scoping requirement -- see that test's own
+// doc comment for why. GetClockState has the identical "no narrower scope
+// to fall back to" shape.
+func TestSLAStatusService_GetClockState_RequiresInternalCaller(t *testing.T) {
+	repo := stubSLAStatusRepo{clockState: func(context.Context, string, string, string) (domain.SLAClockState, error) {
+		t.Fatal("repository must not be reached for a non-internal caller")
+		return domain.SLAClockState{}, nil
+	}}
+	_, err := NewSLAStatusService(repo, restrictedAccess{}).GetClockState(context.Background(), slaClockStateTestWorkItemID, "response", "")
+	var fe *apierror.ForbiddenError
+	if !errors.As(err, &fe) {
+		t.Fatalf("err = %v, want *apierror.ForbiddenError", err)
+	}
+}
+
+func TestSLAStatusService_GetClockState(t *testing.T) {
+	t.Run("a malformed workItemId is rejected before reaching the repository", func(t *testing.T) {
+		repo := stubSLAStatusRepo{clockState: func(context.Context, string, string, string) (domain.SLAClockState, error) {
+			t.Fatal("repository must not be reached for an invalid workItemId")
+			return domain.SLAClockState{}, nil
+		}}
+		_, err := NewSLAStatusService(repo, alwaysUnrestrictedAccess{}).GetClockState(context.Background(), "not-a-uuid", "response", "")
+		var ve *apierror.ValidationError
+		if !asValidationError(err, &ve) {
+			t.Fatalf("err = %v, want *apierror.ValidationError", err)
+		}
+	})
+
+	t.Run("an unrecognized target is rejected before reaching the repository", func(t *testing.T) {
+		repo := stubSLAStatusRepo{clockState: func(context.Context, string, string, string) (domain.SLAClockState, error) {
+			t.Fatal("repository must not be reached for an invalid target")
+			return domain.SLAClockState{}, nil
+		}}
+		_, err := NewSLAStatusService(repo, alwaysUnrestrictedAccess{}).GetClockState(context.Background(), slaClockStateTestWorkItemID, "bogus", "")
+		var ve *apierror.ValidationError
+		if !asValidationError(err, &ve) {
+			t.Fatalf("err = %v, want *apierror.ValidationError", err)
+		}
+	})
+
+	t.Run("an empty target is rejected -- unlike source, it has no 'no filter' meaning here", func(t *testing.T) {
+		repo := stubSLAStatusRepo{clockState: func(context.Context, string, string, string) (domain.SLAClockState, error) {
+			t.Fatal("repository must not be reached for an empty target")
+			return domain.SLAClockState{}, nil
+		}}
+		_, err := NewSLAStatusService(repo, alwaysUnrestrictedAccess{}).GetClockState(context.Background(), slaClockStateTestWorkItemID, "", "")
+		var ve *apierror.ValidationError
+		if !asValidationError(err, &ve) {
+			t.Fatalf("err = %v, want *apierror.ValidationError", err)
+		}
+	})
+
+	t.Run("an unrecognized source is rejected before reaching the repository", func(t *testing.T) {
+		repo := stubSLAStatusRepo{clockState: func(context.Context, string, string, string) (domain.SLAClockState, error) {
+			t.Fatal("repository must not be reached for an invalid source")
+			return domain.SLAClockState{}, nil
+		}}
+		_, err := NewSLAStatusService(repo, alwaysUnrestrictedAccess{}).GetClockState(context.Background(), slaClockStateTestWorkItemID, "response", "bogus")
+		var ve *apierror.ValidationError
+		if !asValidationError(err, &ve) {
+			t.Fatalf("err = %v, want *apierror.ValidationError", err)
+		}
+	})
+
+	t.Run("target is normalized to the real enum label and reaches the repository", func(t *testing.T) {
+		var gotTarget string
+		repo := stubSLAStatusRepo{clockState: func(_ context.Context, _, target, _ string) (domain.SLAClockState, error) {
+			gotTarget = target
+			return domain.SLAClockState{}, nil
+		}}
+		if _, err := NewSLAStatusService(repo, alwaysUnrestrictedAccess{}).GetClockState(context.Background(), slaClockStateTestWorkItemID, "Response", ""); err != nil {
+			t.Fatal(err)
+		}
+		if gotTarget != "RESPONSE" {
+			t.Errorf("target reaching repository = %q, want %q", gotTarget, "RESPONSE")
+		}
+	})
+
+	t.Run("result is passed through unchanged", func(t *testing.T) {
+		want := domain.SLAClockState{Found: true, IsActive: true, Stage: "IN_PROGRESS"}
+		repo := stubSLAStatusRepo{clockState: func(context.Context, string, string, string) (domain.SLAClockState, error) {
+			return want, nil
+		}}
+		got, err := NewSLAStatusService(repo, alwaysUnrestrictedAccess{}).GetClockState(context.Background(), slaClockStateTestWorkItemID, "response", "csm")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Errorf("got = %+v, want %+v", got, want)
 		}
 	})
 }

@@ -19,6 +19,7 @@ import {
   Checkbox,
   Chip,
   IconButton,
+  LinearProgress,
   Skeleton,
   TableSortLabel,
   Tooltip,
@@ -56,6 +57,9 @@ import {
 interface CasesListProps {
   cases: CsmCaseRow[];
   isLoading: boolean;
+  /** A later page or a new filter is in flight. Rows already on screen stay;
+   * this draws a thin progress bar so those rows are not read as the new result. */
+  isFetching?: boolean;
   /** Number of skeleton rows to show while loading. Defaults to 6. */
   skeletonCount?: number;
   /** Base path for detail links. Omit to have each row route to its own
@@ -224,6 +228,7 @@ const UPDATED_TRACK = "minmax(90px, 1fr)";
 export default function CasesList({
   cases,
   isLoading,
+  isFetching = false,
   skeletonCount = 6,
   detailBasePath,
   hideSeverityColumn = false,
@@ -331,6 +336,9 @@ export default function CasesList({
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
+      {isFetching && !isLoading && (
+        <LinearProgress aria-label="Updating the list" sx={{ height: 2 }} />
+      )}
       {columnCustomizer && (
         <Box sx={{ display: "flex", justifyContent: "flex-end" }}>{columnCustomizer}</Box>
       )}
