@@ -236,6 +236,23 @@ func TestCatalog_SearchDeployments(t *testing.T) {
 	}
 }
 
+func TestCatalog_ResolveProjectIDsPagesUntilNoMore(t *testing.T) {
+	m := &mockCatalogClient{projects: func(b []byte) ([]byte, error) {
+		var req struct {
+			Pagination struct{ Limit, Offset int } `json:"pagination"`
+		}
+		_ = json.Unmarshal(b, &req)
+		if req.Pagination.Offset == 0 {
+			return []byte(`{"projects":[{"id":"p1"},{"id":"p2"}],"hasMore":true}`), nil
+		}
+		return []byte(`{"projects":[{"id":"p3"}],"hasMore":false}`), nil
+	}}
+	ids, err := NewCatalogHandler(m).resolveProjectIDs(context.Background(), []string{"SF001"})
+	if err != nil || len(ids) != 3 || ids[2] != "p3" {
+		t.Errorf("ids = %v, err = %v; want all 3 projects across pages for one sfId", ids, err)
+	}
+}
+
 func TestCatalog_UnknownSfIDsGiveEmptyNotUnfiltered(t *testing.T) {
 	m := &mockCatalogClient{projects: projectsJSON(t)} // deployments func nil: must not be called
 	for _, path := range []string{"/deployments/search", "/deployed-products/search"} {

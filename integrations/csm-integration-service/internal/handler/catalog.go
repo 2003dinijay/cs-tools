@@ -221,8 +221,10 @@ type entityProjectsPage struct {
 
 // resolveProjectIDs maps Salesforce ids to project UUIDs using entity-service's
 // sfIds project filter; ids matching no project are simply absent from the result.
+// It pages until entity-service reports no more, since one id can match several
+// projects (bounded by maxCatalogScan).
 func (h *CatalogHandler) resolveProjectIDs(ctx context.Context, sfIDs []string) ([]string, error) {
-	ids, _, err := fetchWindow(len(sfIDs), 0, func(n, o int) (page[string], error) {
+	ids, _, err := fetchWindow(maxCatalogScan, 0, func(n, o int) (page[string], error) {
 		body, _ := json.Marshal(map[string]any{
 			"sfIds":      sfIDs,
 			"pagination": map[string]int{"limit": n, "offset": o},
