@@ -1600,15 +1600,18 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	switch cfg.DataSource {
 	case config.DataSourceServiceNow:
 		activeInstanceSvc = service.NewServiceNowInstanceService(serviceNowIntegrationServiceClient)
-	case config.DataSourcePostgresServiceNowDualWrite:
-		// Read-only fallback to ServiceNow, same reasoning as
-		// deploymentService/deployedProductService under this data source
-		// (see instanceService.snMirror's own doc comment): Postgres's
-		// instance/usage-tracking tables were never backfilled with
-		// ServiceNow's existing history.
-		snInstanceMirrorSvc := service.NewServiceNowInstanceService(serviceNowIntegrationServiceClient)
-		activeInstanceSvc = service.NewInstanceServiceWithSNFallback(instanceRepo, snInstanceMirrorSvc)
 	default:
+		// Deliberately always Postgres here, regardless of DATA_SOURCE --
+		// by explicit product decision, instance/usage-tracking data must
+		// be served from Postgres directly, not mirrored from elsewhere the
+		// way deploymentService/deployedProductService's write paths still
+		// are. This used to fall back to a different read path under
+		// config.DataSourcePostgresServiceNowDualWrite (see
+		// service.NewInstanceServiceWithSNFallback's own doc comment for
+		// the backfill gap it existed to paper over); that fallback is no
+		// longer wired up here on purpose. DataSourceServiceNow is the one
+		// true exception, since that mode may run with no Postgres pool at
+		// all.
 		activeInstanceSvc = service.NewInstanceService(instanceRepo)
 	}
 	instanceHandler := handler.NewInstanceHandler(activeInstanceSvc)

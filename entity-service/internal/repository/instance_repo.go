@@ -457,6 +457,15 @@ func (r *instanceRepo) SearchInstanceUsage(ctx context.Context, filters domain.I
 // daily_usage_summary does), so the caller (instance_service.go) rejects a
 // non-nil DataSource filter before this is ever called rather than silently
 // ignoring it.
+//
+// Takes only the LATEST deployment_information row per node per calendar
+// day before summing across nodes into that day's TOTAL_CORES -- a node
+// that reports more than once a day must not have every one of those
+// snapshots counted, only its final one. An earlier version of this query
+// summed every row unconditionally, overcounting any day with more than one
+// snapshot per node. DISTINCT ON (dn.id, day) picks that latest row per
+// (node, day),
+// ordered by payload_updated_on DESC within each group.
 func (r *instanceRepo) SearchInstanceMetricsStats(ctx context.Context, filters domain.InstanceDateRangeFilters) (domain.InstanceMetricsStatsResponse, error) {
 	where := "WHERE di.payload_updated_on::date BETWEEN $1::date AND $2::date"
 	args := []any{filters.StartDate, filters.EndDate}
@@ -465,10 +474,12 @@ func (r *instanceRepo) SearchInstanceMetricsStats(ctx context.Context, filters d
 	args = append(args, clauseArgs...)
 
 	query := fmt.Sprintf(
-		`SELECT di.payload_updated_on::date, dn.id, di.core_count
+		`SELECT DISTINCT ON (dn.id, di.payload_updated_on::date)
+		        di.payload_updated_on::date AS day, dn.id, di.core_count
 		 FROM deployment_node dn
 		 JOIN deployment_information di ON di.node_id = dn.node_id
-		 %s %s`,
+		 %s %s
+		 ORDER BY dn.id, di.payload_updated_on::date, di.payload_updated_on DESC`,
 		instanceRefJoins, where,
 	)
 
@@ -509,7 +520,10 @@ func (r *instanceRepo) SearchInstanceMetricsStats(ctx context.Context, filters d
 		min, max, sum := dailyTotal[dates[0]], dailyTotal[dates[0]], 0
 		for _, d := range dates {
 			v := dailyTotal[d]
-			stats[d] = map[string]int{"CORES": v}
+			// "TOTAL_CORES" matches the real response contract -- a prior
+			// "CORES" key here didn't match what a caller built against
+			// that contract would read.
+			stats[d] = map[string]int{"TOTAL_CORES": v}
 			if v < min {
 				min = v
 			}
