@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Limits of the ServiceNow-shaped API this file reproduces, versus entity-service's.
@@ -142,6 +143,52 @@ func fetchWindow[T any](limit, offset int, fetch func(limit, offset int) (page[T
 		}
 	}
 	return items, total, nil
+}
+
+// dateTimeLayout is the "YYYY-MM-DD HH:MM:SS" layout the API returns for createdOn/updatedOn.
+const dateTimeLayout = "2006-01-02 15:04:05"
+
+// formatDateTime re-renders an entity-service RFC 3339 timestamp in dateTimeLayout (UTC).
+// A value that doesn't parse is returned unchanged.
+func formatDateTime(v *string) *string {
+	if v == nil {
+		return nil
+	}
+	t, err := time.Parse(time.RFC3339Nano, *v)
+	if err != nil {
+		return v
+	}
+	out := t.UTC().Format(dateTimeLayout)
+	return &out
+}
+
+// formatDate reduces an entity-service timestamp to the date-only "YYYY-MM-DD"
+// used for release / end-of-life dates.
+func formatDate(v *string) *string {
+	if v == nil {
+		return nil
+	}
+	if t, err := time.Parse(time.RFC3339Nano, *v); err == nil {
+		out := t.UTC().Format(time.DateOnly)
+		return &out
+	}
+	if len(*v) >= len(time.DateOnly) {
+		out := (*v)[:len(time.DateOnly)]
+		return &out
+	}
+	return v
+}
+
+// truncToInt cuts a decimal toward zero; an absent or null value stays null.
+func truncToInt(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 || string(raw) == "null" {
+		return json.RawMessage("null")
+	}
+	f, err := strconv.ParseFloat(string(raw), 64)
+	if err != nil {
+		return json.RawMessage("null")
+	}
+	return json.RawMessage(strconv.FormatInt(int64(f), 10))
 }
 
 func writeEnvelope(w http.ResponseWriter, data any) {
@@ -373,11 +420,17 @@ var deploymentTypes = map[string]deploymentTypeView{
 	"primary_production": {6, "Primary Production"},
 }
 
-func (h *CatalogHandler) fetchDeployments(ctx context.Context, projectIDs []string, limit, offset int) ([]deploymentView, int, error) {
+// fetchDeployments pages through entity-service deployments. includeInactive
+// is for scoping only: the deployments listing hides inactive ones, but a
+// deployed product's own scope (and its deployment type) must not.
+func (h *CatalogHandler) fetchDeployments(ctx context.Context, projectIDs []string, includeInactive bool, limit, offset int) ([]deploymentView, int, error) {
 	return fetchWindow(limit, offset, func(n, o int) (page[deploymentView], error) {
 		req := map[string]any{"pagination": map[string]int{"limit": n, "offset": o}}
 		if projectIDs != nil {
 			req["projectIds"] = projectIDs
+		}
+		if includeInactive {
+			req["includeInactive"] = true
 		}
 		body, _ := json.Marshal(req)
 		var p entityDeploymentsPage
@@ -388,7 +441,7 @@ func (h *CatalogHandler) fetchDeployments(ctx context.Context, projectIDs []stri
 		for _, d := range p.Deployments {
 			v := deploymentView{
 				ID: d.ID, Number: d.Number, Name: d.Name, Description: d.Description, URL: d.URL,
-				CreatedOn: d.CreatedOn, UpdatedOn: d.UpdatedOn,
+				CreatedOn: formatDateTime(d.CreatedOn), UpdatedOn: formatDateTime(d.UpdatedOn),
 			}
 			if d.Project != nil {
 				v.Project = &productRefView{ID: d.Project.ID, Name: d.Project.Name}
@@ -433,7 +486,7 @@ func (h *CatalogHandler) SearchDeployments(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	items, total, err := h.fetchDeployments(r.Context(), projectIDs, limit, offset)
+	items, total, err := h.fetchDeployments(r.Context(), projectIDs, false, limit, offset)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity SearchDeployments failed", "err", summarizeErr(err))
 		mapUpstreamError(w, err, "Failed to search deployments.")
@@ -444,44 +497,91 @@ func (h *CatalogHandler) SearchDeployments(w http.ResponseWriter, r *http.Reques
 
 // ----- GET /deployed-products/search -----
 
+type entityDeployedProduct struct {
+	ID         string `json:"id"`
+	Deployment *struct {
+		ID   string  `json:"id"`
+		Name *string `json:"name"`
+	} `json:"deployment"`
+	Product *struct {
+		ID           string  `json:"id"`
+		Name         *string `json:"name"`
+		Abbreviation *string `json:"abbreviation"`
+	} `json:"product"`
+	Version *struct {
+		ID           string  `json:"id"`
+		Name         *string `json:"name"`
+		ReleasedDate *string `json:"releasedDate"`
+		SupportEoL   *string `json:"supportEoLDate"`
+	} `json:"version"`
+	Cores       json.RawMessage `json:"cores"`
+	TPS         json.RawMessage `json:"tps"`
+	Description *string         `json:"description"`
+	Updates     []struct {
+		UpdateLevel json.Number `json:"updateLevel"`
+		Date        *string     `json:"date"`
+		Details     *string     `json:"details"`
+	} `json:"updates"`
+	CreatedOn *string `json:"createdOn"`
+	UpdatedOn *string `json:"updatedOn"`
+}
+
 type entityDeployedProductsPage struct {
-	DeployedProducts []struct {
-		ID         string `json:"id"`
-		Deployment *struct {
-			ID   string  `json:"id"`
-			Name *string `json:"name"`
-		} `json:"deployment"`
-		Product *struct {
-			ID           string  `json:"id"`
-			Name         *string `json:"name"`
-			Abbreviation *string `json:"abbreviation"`
-		} `json:"product"`
-		Version *struct {
-			ID           string  `json:"id"`
-			Name         *string `json:"name"`
-			ReleasedDate *string `json:"releasedDate"`
-			SupportEoL   *string `json:"supportEoLDate"`
-		} `json:"version"`
-		Cores       json.RawMessage `json:"cores"`
-		TPS         json.RawMessage `json:"tps"`
-		Category    json.RawMessage `json:"category"`
-		Description *string         `json:"description"`
-		Updates     []struct {
-			UpdateLevel json.Number `json:"updateLevel"`
-			Date        *string     `json:"date"`
-			Details     *string     `json:"details"`
-		} `json:"updates"`
-		CreatedOn *string `json:"createdOn"`
-		UpdatedOn *string `json:"updatedOn"`
-	} `json:"deployedProducts"`
-	Total   int  `json:"total"`
-	HasMore bool `json:"hasMore"`
+	DeployedProducts []entityDeployedProduct `json:"deployedProducts"`
+	Total            int                     `json:"total"`
+	HasMore          bool                    `json:"hasMore"`
+}
+
+// deploymentTypeLabels resolves the type label of each distinct deployment on a
+// page of deployed products (entity-service's deployed-product rows carry only
+// the deployment's id and name). A deployment with no known type is absent.
+func (h *CatalogHandler) deploymentTypeLabels(ctx context.Context, dps []entityDeployedProduct) (map[string]string, error) {
+	seen := map[string]struct{}{}
+	var ids []string
+	for _, d := range dps {
+		if d.Deployment == nil {
+			continue
+		}
+		if _, dup := seen[d.Deployment.ID]; dup {
+			continue
+		}
+		seen[d.Deployment.ID] = struct{}{}
+		ids = append(ids, d.Deployment.ID)
+	}
+	labels := map[string]string{}
+	if len(ids) == 0 {
+		return labels, nil
+	}
+	body, _ := json.Marshal(map[string]any{
+		"ids":             ids,
+		"includeInactive": true,
+		"pagination":      map[string]int{"limit": len(ids), "offset": 0},
+	})
+	var p entityDeploymentsPage
+	if err := h.call(ctx, func() ([]byte, error) { return h.entity.SearchDeployments(ctx, body) }, &p); err != nil {
+		return nil, err
+	}
+	for _, d := range p.Deployments {
+		if t, ok := deploymentTypes[d.Type]; ok {
+			labels[d.ID] = t.Label
+		}
+	}
+	return labels, nil
 }
 
 type productUpdateView struct {
 	UpdateLevel *string `json:"updateLevel"`
 	Date        *string `json:"date"`
 	Details     *string `json:"details"`
+}
+
+// deployedProductDeploymentView is the deployment ref on a deployed product;
+// type is the deployment type's display label (a plain string, unlike the
+// {id,label} object on a deployment itself).
+type deployedProductDeploymentView struct {
+	ID   string  `json:"id"`
+	Name *string `json:"name"`
+	Type *string `json:"type"`
 }
 
 type deployedProductView struct {
@@ -491,20 +591,21 @@ type deployedProductView struct {
 		ID   string  `json:"id"`
 		Name *string `json:"name"`
 	} `json:"version"`
-	Cores       json.RawMessage     `json:"cores"`
-	TPS         json.RawMessage     `json:"tps"`
-	ReleasedOn  *string             `json:"releasedOn"`
-	EndOfLifeOn *string             `json:"endOfLifeOn"`
-	Updates     []productUpdateView `json:"updates"`
-	CreatedOn   *string             `json:"createdOn"`
-	UpdatedOn   *string             `json:"updatedOn"`
-	Deployment  *productRefView     `json:"deployment"`
+	Cores       json.RawMessage                `json:"cores"`
+	TPS         json.RawMessage                `json:"tps"`
+	ReleasedOn  *string                        `json:"releasedOn"`
+	EndOfLifeOn *string                        `json:"endOfLifeOn"`
+	Updates     []productUpdateView            `json:"updates"`
+	CreatedOn   *string                        `json:"createdOn"`
+	UpdatedOn   *string                        `json:"updatedOn"`
+	Deployment  *deployedProductDeploymentView `json:"deployment"`
 	Product     *struct {
 		ID           string  `json:"id"`
 		Name         *string `json:"name"`
 		Abbreviation *string `json:"abbreviation"`
 	} `json:"product"`
-	Category json.RawMessage `json:"category"`
+	// Category is always null: the scripted API hard-coded it.
+	Category *string `json:"category"`
 }
 
 func nullIfAbsent(raw json.RawMessage) json.RawMessage {
@@ -538,7 +639,7 @@ func (h *CatalogHandler) SearchDeployedProducts(w http.ResponseWriter, r *http.R
 			return
 		}
 		if len(projectIDs) > 0 {
-			deps, _, err := h.fetchDeployments(r.Context(), projectIDs, maxSfScopedDeployments, 0)
+			deps, _, err := h.fetchDeployments(r.Context(), projectIDs, true, maxSfScopedDeployments, 0)
 			if err != nil {
 				slog.ErrorContext(r.Context(), "entity SearchDeployments failed", "err", summarizeErr(err))
 				mapUpstreamError(w, err, "Failed to search deployed products.")
@@ -564,22 +665,29 @@ func (h *CatalogHandler) SearchDeployedProducts(w http.ResponseWriter, r *http.R
 		if err := h.call(r.Context(), func() ([]byte, error) { return h.entity.SearchDeployedProducts(r.Context(), body) }, &p); err != nil {
 			return page[deployedProductView]{}, err
 		}
+		typeLabels, err := h.deploymentTypeLabels(r.Context(), p.DeployedProducts)
+		if err != nil {
+			return page[deployedProductView]{}, err
+		}
 		out := make([]deployedProductView, 0, len(p.DeployedProducts))
 		for _, d := range p.DeployedProducts {
 			v := deployedProductView{
-				ID: d.ID, Description: d.Description, Cores: nullIfAbsent(d.Cores), TPS: nullIfAbsent(d.TPS),
-				Category: nullIfAbsent(d.Category), CreatedOn: d.CreatedOn, UpdatedOn: d.UpdatedOn,
+				ID: d.ID, Description: d.Description, Cores: nullIfAbsent(d.Cores), TPS: truncToInt(d.TPS),
+				CreatedOn: formatDateTime(d.CreatedOn), UpdatedOn: formatDateTime(d.UpdatedOn),
 				Product: d.Product,
 			}
 			if d.Deployment != nil {
-				v.Deployment = &productRefView{ID: d.Deployment.ID, Name: d.Deployment.Name}
+				v.Deployment = &deployedProductDeploymentView{ID: d.Deployment.ID, Name: d.Deployment.Name}
+				if l, ok := typeLabels[d.Deployment.ID]; ok {
+					v.Deployment.Type = &l
+				}
 			}
 			if d.Version != nil {
 				v.Version = &struct {
 					ID   string  `json:"id"`
 					Name *string `json:"name"`
 				}{d.Version.ID, d.Version.Name}
-				v.ReleasedOn, v.EndOfLifeOn = d.Version.ReleasedDate, d.Version.SupportEoL
+				v.ReleasedOn, v.EndOfLifeOn = formatDate(d.Version.ReleasedDate), formatDate(d.Version.SupportEoL)
 			}
 			if d.Updates != nil {
 				v.Updates = make([]productUpdateView, 0, len(d.Updates))

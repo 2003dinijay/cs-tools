@@ -223,6 +223,15 @@ does not pass bytes through** — entity-service stays unchanged. Consequences:
   `deployment.type.id` is ServiceNow's type key (1–6) and `label` is derived
   from the enum — an inference, not read from ServiceNow.
 - Errors use this service's usual `{"message"}` body, not the sample's `{success:false,error}`.
+- Value formats follow the scripted API, not entity-service: `createdOn`/`updatedOn`
+  are `YYYY-MM-DD HH:MM:SS` (ServiceNow's display layout, rendered in **UTC** — the
+  instance's own display timezone is not known here, so verify against a live
+  response), `releasedOn`/`endOfLifeOn` are `YYYY-MM-DD`, `tps` is truncated to an
+  integer, and a deployed product's `category` is always null.
+- A deployed product's `deployment.type` is the type *label* string; entity-service
+  does not return it, so each page makes one extra `POST /deployments/search` by ids
+  (`includeInactive`). The sfIds scoping step also passes `includeInactive`, since
+  the scripted API filtered deployed products by project, not by deployment state.
 
 ## Middleware chain
 

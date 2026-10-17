@@ -165,7 +165,7 @@ func TestCatalog_SearchDeployments(t *testing.T) {
 		projects: projectsJSON(t),
 		deployments: func(b []byte) ([]byte, error) {
 			_ = json.Unmarshal(b, &got)
-			return []byte(`{"deployments":[{"id":"d1","number":"DEP1","name":"Prod","type":"primary_production","description":null,"url":null,"project":{"id":"p1","name":"Proj"},"createdOn":"c","updatedOn":"u","deployedProductCount":2}],"total":1,"hasMore":false}`), nil
+			return []byte(`{"deployments":[{"id":"d1","number":"DEP1","name":"Prod","type":"primary_production","description":null,"url":null,"project":{"id":"p1","name":"Proj"},"createdOn":"2025-03-04T05:06:07Z","updatedOn":"2025-03-04T05:06:08.5Z","deployedProductCount":2}],"total":1,"hasMore":false}`), nil
 		},
 	}
 	w := serveCatalog(t, m, "", "/deployments/search?sfIds=SF001,SF001,UNKNOWN")
@@ -185,6 +185,12 @@ func TestCatalog_SearchDeployments(t *testing.T) {
 	if _, has := d["deployedProductCount"]; has {
 		t.Errorf("deployedProductCount leaked: %v", d)
 	}
+	if d["createdOn"] != "2025-03-04 05:06:07" || d["updatedOn"] != "2025-03-04 05:06:08" {
+		t.Errorf("dates not in ServiceNow display layout: %v / %v", d["createdOn"], d["updatedOn"])
+	}
+	if got["includeInactive"] != nil {
+		t.Errorf("deployments listing must hide inactive: %v", got)
+	}
 }
 
 func TestCatalog_UnknownSfIDsGiveEmptyNotUnfiltered(t *testing.T) {
@@ -201,14 +207,18 @@ func TestCatalog_UnknownSfIDsGiveEmptyNotUnfiltered(t *testing.T) {
 
 func TestCatalog_SearchDeployedProducts(t *testing.T) {
 	var got map[string]any
+	var depReqs []map[string]any
 	m := &mockCatalogClient{
 		projects: projectsJSON(t),
-		deployments: func([]byte) ([]byte, error) {
+		deployments: func(b []byte) ([]byte, error) {
+			var req map[string]any
+			_ = json.Unmarshal(b, &req)
+			depReqs = append(depReqs, req)
 			return []byte(`{"deployments":[{"id":"d1","type":"qa"},{"id":"d2","type":"uat"}],"total":2,"hasMore":false}`), nil
 		},
 		deployedProducts: func(b []byte) ([]byte, error) {
 			_ = json.Unmarshal(b, &got)
-			return []byte(`{"deployedProducts":[{"id":"dp1","deployment":{"id":"d1","name":"QA"},"product":{"id":"pr","name":"APIM","abbreviation":"wso2am"},"version":{"id":"v","name":"4.0.0","releasedDate":"2024-01-01","supportEoLDate":"2027-01-01"},"cores":4,"tps":12.5,"category":"pdp","description":null,"updates":[{"updateLevel":12,"date":"2025-01-01","details":null}],"createdOn":"c","updatedOn":"u"}],"total":1,"hasMore":false}`), nil
+			return []byte(`{"deployedProducts":[{"id":"dp1","deployment":{"id":"d1","name":"QA"},"product":{"id":"pr","name":"APIM","abbreviation":"wso2am"},"version":{"id":"v","name":"4.0.0","releasedDate":"2024-01-01T00:00:00Z","supportEoLDate":"2027-01-01T00:00:00Z"},"cores":4,"tps":12.9,"category":"pdp","description":null,"updates":[{"updateLevel":12,"date":"2025-01-01","details":null}],"createdOn":"2025-03-04T05:06:07Z","updatedOn":"2025-03-04T05:06:07Z"}],"total":1,"hasMore":false}`), nil
 		},
 	}
 	w := serveCatalog(t, m, "", "/deployed-products/search?sfIds=SF001")
@@ -216,12 +226,15 @@ func TestCatalog_SearchDeployedProducts(t *testing.T) {
 	if ids, _ := got["deploymentIds"].([]any); len(ids) != 2 {
 		t.Errorf("deploymentIds = %v", got["deploymentIds"])
 	}
+	if len(depReqs) != 2 || depReqs[0]["includeInactive"] != true || depReqs[1]["includeInactive"] != true {
+		t.Errorf("deployment lookups must include inactive deployments: %v", depReqs)
+	}
 	data := decodeJSON[map[string]any](t, w)["data"].(map[string]any)
 	d := data["deployedProducts"].([]any)[0].(map[string]any)
 	up := d["updates"].([]any)[0].(map[string]any)
-	if d["releasedOn"] != "2024-01-01" || d["endOfLifeOn"] != "2027-01-01" || d["cores"].(float64) != 4 || d["tps"].(float64) != 12.5 ||
-		d["category"] != "pdp" || up["updateLevel"] != "12" || d["version"].(map[string]any)["name"] != "4.0.0" ||
-		d["product"].(map[string]any)["abbreviation"] != "wso2am" || d["deployment"].(map[string]any)["name"] != "QA" {
+	if d["releasedOn"] != "2024-01-01" || d["endOfLifeOn"] != "2027-01-01" || d["cores"].(float64) != 4 || d["tps"].(float64) != 12 ||
+		d["category"] != nil || d["createdOn"] != "2025-03-04 05:06:07" || up["updateLevel"] != "12" || d["version"].(map[string]any)["name"] != "4.0.0" ||
+		d["product"].(map[string]any)["abbreviation"] != "wso2am" || d["deployment"].(map[string]any)["name"] != "QA" || d["deployment"].(map[string]any)["type"] != "QA" {
 		t.Errorf("unexpected deployed product: %v", d)
 	}
 	if _, has := d["version"].(map[string]any)["releasedDate"]; has {

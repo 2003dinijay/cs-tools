@@ -2010,8 +2010,8 @@ components:
         description: {type: string, nullable: true}
         url: {type: string, nullable: true}
         version: {type: string, nullable: true, description: Always null.}
-        createdOn: {type: string, nullable: true}
-        updatedOn: {type: string, nullable: true}
+        createdOn: {type: string, nullable: true, description: 'ServiceNow display layout, "YYYY-MM-DD HH:MM:SS" (UTC).'}
+        updatedOn: {type: string, nullable: true, description: 'ServiceNow display layout, "YYYY-MM-DD HH:MM:SS" (UTC).'}
         project: {$ref: '#/components/schemas/CatalogRef'}
         type:
           type: object
@@ -2044,9 +2044,9 @@ components:
             id: {type: string}
             name: {type: string, nullable: true}
         cores: {type: integer, nullable: true}
-        tps: {type: number, nullable: true}
-        releasedOn: {type: string, nullable: true}
-        endOfLifeOn: {type: string, nullable: true}
+        tps: {type: integer, nullable: true, description: Truncated to a whole number.}
+        releasedOn: {type: string, nullable: true, description: 'Date only, "YYYY-MM-DD".'}
+        endOfLifeOn: {type: string, nullable: true, description: 'Date only, "YYYY-MM-DD".'}
         updates:
           type: array
           nullable: true
@@ -2056,9 +2056,15 @@ components:
               updateLevel: {type: string, nullable: true}
               date: {type: string, nullable: true}
               details: {type: string, nullable: true}
-        createdOn: {type: string, nullable: true}
-        updatedOn: {type: string, nullable: true}
-        deployment: {$ref: '#/components/schemas/CatalogRef'}
+        createdOn: {type: string, nullable: true, description: 'ServiceNow display layout, "YYYY-MM-DD HH:MM:SS" (UTC).'}
+        updatedOn: {type: string, nullable: true, description: 'ServiceNow display layout, "YYYY-MM-DD HH:MM:SS" (UTC).'}
+        deployment:
+          type: object
+          nullable: true
+          properties:
+            id: {type: string}
+            name: {type: string, nullable: true}
+            type: {type: string, nullable: true, description: 'Deployment type label, e.g. "Primary Production".'}
         product:
           type: object
           nullable: true
@@ -2066,7 +2072,7 @@ components:
             id: {type: string}
             name: {type: string, nullable: true}
             abbreviation: {type: string, nullable: true}
-        category: {type: string, nullable: true}
+        category: {type: string, nullable: true, description: Always null.}
     DeployedProductSearchResponse:
       type: object
       properties:
