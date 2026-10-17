@@ -54,6 +54,11 @@ type Trigger struct {
 	// before cases were paged is about. IncidentID holds the case id for a
 	// case: it is the ladder's key, not a claim about the entity.
 	Record string `json:",omitempty"`
+	// Service, Environment, Category and State fill the SRE space's "Incident Reported" card; only a created incident carries them.
+	Service     string `json:",omitempty"`
+	Environment string `json:",omitempty"`
+	Category    string `json:",omitempty"`
+	State       string `json:",omitempty"`
 }
 
 // What a ladder pages about. CRE paging starts from customer cases (S0-S4),
@@ -65,6 +70,9 @@ const (
 
 // isCase reports whether the ladder pages about a customer case.
 func (t Trigger) isCase() bool { return t.Record == RecordCase }
+
+// sreIncident reports whether an SRE ladder pages about an incident, whose space gets an "Incident Reported" card with every ladder message as a reply under it.
+func (t Trigger) sreIncident() bool { return t.Routing.Ladder == LadderSRE && !t.isCase() }
 
 // chatThreadKey puts an incident's paging messages under its "Incident Reported" card; a case has no such card.
 func (t Trigger) chatThreadKey() string {
@@ -141,6 +149,8 @@ type Plan struct {
 	// pool is not verified with phone numbers yet. A call-only ladder held
 	// this way has nothing left to do and ends without a work note.
 	CallsHeld bool `json:",omitempty"`
+	// IncidentCards are the SRE spaces the "Incident Reported" card already went to, so a retried first rung posts only its reply there.
+	IncidentCards []string `json:",omitempty"`
 }
 
 // BuildPlan expands a trigger into every call the ladder would place, with

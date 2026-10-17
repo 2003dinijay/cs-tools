@@ -258,7 +258,8 @@ func (e *Engine) postSMEHandoffTo(ctx context.Context, target chatRoom, pr speci
 		PortalURL:   e.links.IncidentLink(pr.IncidentID),
 		PortalLabel: "View incident",
 		ThreadKey:   notifications.IncidentThreadKey(pr.IncidentID),
-		Reply:       target.reply,
+		// Always an SRE incident, so a reply under its "Incident Reported" card wherever the ladder posted one.
+		Reply: target.reply || e.sreReplies(Trigger{Team: pr.PreviousGroup, Routing: RoutingContext{Ladder: LadderSRE}}),
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "escalation: the SME handoff message was not posted", "incidentId", pr.IncidentID, "audience", target.room, "err", err)
