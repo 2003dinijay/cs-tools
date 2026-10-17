@@ -363,13 +363,12 @@ export default function CsmIssuesView({
       setRowsPerPage(loadStoredRowsPerPage(rowsStorageKey) ?? DEFAULT_ROWS_PER_PAGE);
     }
   }
-  // Bulk row selection, backing the "Export selected" action — see
-  // digiops-cs#3388's "Export Selected Cases" ask: a user ticks specific rows
-  // (possibly across more than one page) and exports only those, rather than
-  // the whole current filter. Keyed by row id -> the row itself (not just a
-  // `Set<string>` of ids), since a selected row may scroll off the current
-  // page as the user pages/sorts/re-filters — holding the row data itself is
-  // what lets "Export selected" build a CSV with no extra fetch, from
+  // Bulk row selection, backing the "Export selected" action: a user ticks
+  // specific rows (possibly across more than one page) and exports only those,
+  // rather than the whole current filter. Keyed by row id -> the row itself
+  // (not just a `Set<string>` of ids), since a selected row may scroll off the
+  // current page as the user pages/sorts/re-filters — holding the row data
+  // itself is what lets "Export selected" build a CSV with no extra fetch, from
   // whatever page(s) each selected row was actually seen on. Deliberately not
   // cleared on filter/sort/page changes; only the explicit "Clear selection"
   // action resets it, so selecting across several pages of the same filter

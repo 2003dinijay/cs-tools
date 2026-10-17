@@ -466,7 +466,7 @@ describe("CasesList optional columns", () => {
   });
 });
 
-// Regression/coverage for the "Export selected" feature (digiops-cs#3388):
+// Regression/coverage for the "Export selected" feature:
 // a leading checkbox column, off by default, that a caller opts into via
 // `selectable` + the three selection props.
 describe("CasesList row selection", () => {
