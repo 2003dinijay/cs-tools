@@ -20,6 +20,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The number to call, first match wins: TEST_CALL_TO (fixed), the CSM profile
@@ -90,5 +91,29 @@ func TestResolveSRE_OnlyTestCallToIsFixed(t *testing.T) {
 	got, err = book.Resolve(context.Background(), Level0, rc)
 	if err != nil || len(got) != 1 || got[0].Phone != "+94770000001" || got[0].PhoneFixed {
 		t.Fatalf("phone book: got %+v, %v; want its number, not fixed", got, err)
+	}
+}
+
+// TEST_CALL_TO replaces even a number written in paging-alert.yaml, and the
+// profile lookup leaves it alone: a test environment never rings a head's
+// real phone.
+func TestTestCallTo_OverridesConfiguredHeadNumber(t *testing.T) {
+	r := testResolver(&stubScheduleReader{}).WithHeads(Heads{
+		CRE: Person{Name: "CRE Head", Email: "cre.head@example.com", Phone: "+94770000001"},
+	}).WithPhoneBook(PhoneBook{TestCallTo: "+94770000000"})
+	contacts := &fakePagingContacts{numbers: map[string]DialNumber{
+		"cre.head@example.com": {Number: "+94770000002", Source: DialSourceProfile},
+	}}
+	rc := RoutingContext{Shift: ShiftLK, AssignedCRETeam: "vega", At: time.Now()}
+
+	got, err := NewProfilePhoneResolver(r, nil).WithPagingContacts(contacts).Resolve(context.Background(), Level3, rc)
+	if err != nil || len(got) != 1 {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+	if got[0].Phone != "+94770000000" || !got[0].PhoneFixed {
+		t.Errorf("head = %q fixed=%v; want TEST_CALL_TO, fixed", got[0].Phone, got[0].PhoneFixed)
+	}
+	if len(contacts.asked) != 0 {
+		t.Errorf("CSM asked about %v under TEST_CALL_TO", contacts.asked)
 	}
 }
