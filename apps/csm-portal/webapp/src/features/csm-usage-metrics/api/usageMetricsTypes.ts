@@ -54,12 +54,9 @@ export interface SnInstance {
   environmentType?: string;
   createdOn: string;
   updatedOn: string;
-  // Nullable on the wire: entity-service's Instance.Metadata is a pointer
-  // with no omitempty, so it serializes as JSON null whenever the node has
-  // no matching deployment_information row yet synced -- the common case,
-  // not an edge case (see entity-service's own CLAUDE.md, "Instances and
-  // usage tracking", on the node_id format mismatch that currently leaves
-  // every instance in staging with no matched metadata row).
+  // Nullable on the wire: the backend returns null whenever an instance has
+  // no matched metadata record yet -- the common case today, not an edge
+  // case, so every reader must handle it rather than assume an object.
   metadata: SnInstanceMetadata | null;
 }
 
