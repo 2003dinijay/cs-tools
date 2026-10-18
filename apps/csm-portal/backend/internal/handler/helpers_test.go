@@ -520,6 +520,14 @@ type mockEntityUserClient struct {
 	deleteSavedFilterViewFn  func(ctx context.Context, listKey, name string) ([]byte, error)
 	reorderSavedFilterViewFn func(ctx context.Context, body []byte) ([]byte, error)
 	createUserFn             func(ctx context.Context, body []byte) ([]byte, error)
+	updateUserFn             func(ctx context.Context, id string, body []byte) ([]byte, error)
+}
+
+func (m *mockEntityUserClient) UpdateUser(ctx context.Context, id string, body []byte) ([]byte, error) {
+	if m.updateUserFn != nil {
+		return m.updateUserFn(ctx, id, body)
+	}
+	return []byte(`{"message":"User updated successfully","user":{"id":"` + id + `"}}`), nil
 }
 
 func (m *mockEntityUserClient) CreateUser(ctx context.Context, body []byte) ([]byte, error) {

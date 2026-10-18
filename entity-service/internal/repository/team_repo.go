@@ -18,10 +18,13 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 )
 
@@ -47,6 +50,34 @@ type TeamRepository interface {
 	// SearchTeams returns a name-filtered, paginated slice of the team table
 	// together with the total count of matching rows before pagination.
 	SearchTeams(ctx context.Context, searchQuery string, limit, offset int) ([]domain.Team, int, error)
+	// ListChatWebhooks returns every team that has a configured
+	// chat_webhook_url (migration 0240), name order. A team with none is
+	// left out entirely -- there is nothing for a caller to route to.
+	ListChatWebhooks(ctx context.Context) ([]domain.TeamChatWebhook, error)
+	// GetTeamDetail returns the one team's own id/name/type plus its
+	// chat_webhook_url (nil when unset). A NotFoundError is returned when no
+	// team has this id. Backs the generic GET /teams/{id}.
+	GetTeamDetail(ctx context.Context, teamID string) (domain.TeamDetail, error)
+	// SetChatWebhookURL sets (or, with url nil, clears) the team's own
+	// chat_webhook_url. A NotFoundError is returned when no team has this id.
+	// Backs the generic PATCH /teams/{id} (the one field it accepts today).
+	SetChatWebhookURL(ctx context.Context, teamID string, url *string) error
+	// AssignTeamLead makes userID this team's one 'lead' (team_member.role,
+	// migration 0170) -- the same role csm-notification-service's incident
+	// call-escalation ladder reads to decide who it pages for this team, see
+	// that service's own CLAUDE.md. Demotes any other current lead of this
+	// team back to 'engineer' (the role's own default) in the same
+	// transaction, and adds userID to the roster (role 'lead') if they are
+	// not already a member -- so a caller may assign a lead from the full
+	// user directory, not only from the team's existing roster. The team row
+	// is locked (SELECT ... FOR UPDATE) for the duration of the transaction,
+	// serializing two concurrent calls for the same team so they can never
+	// both leave a 'lead' row behind -- without it, two assignments to
+	// different users racing under READ COMMITTED could each demote-then-
+	// promote without ever seeing the other's uncommitted write. A
+	// NotFoundError is returned when no team has this id; a ValidationError
+	// when no user has userID.
+	AssignTeamLead(ctx context.Context, teamID, userID string) error
 }
 
 type teamRepo struct {
@@ -136,4 +167,133 @@ func (r *teamRepo) SearchTeams(ctx context.Context, searchQuery string, limit, o
 		return nil, 0, fmt.Errorf("iterate teams: %w", err)
 	}
 	return teams, total, nil
+}
+
+// ListChatWebhooks implements TeamRepository.
+func (r *teamRepo) ListChatWebhooks(ctx context.Context) ([]domain.TeamChatWebhook, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT name, chat_webhook_url FROM team
+		 WHERE chat_webhook_url IS NOT NULL AND chat_webhook_url <> ''
+		 ORDER BY name`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query team chat webhooks: %w", err)
+	}
+	defer rows.Close()
+
+	webhooks := []domain.TeamChatWebhook{}
+	for rows.Next() {
+		var w domain.TeamChatWebhook
+		if err := rows.Scan(&w.Name, &w.ChatWebhookURL); err != nil {
+			return nil, fmt.Errorf("scan team chat webhook: %w", err)
+		}
+		webhooks = append(webhooks, w)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate team chat webhooks: %w", err)
+	}
+	return webhooks, nil
+}
+
+// GetTeamDetail implements TeamRepository.
+func (r *teamRepo) GetTeamDetail(ctx context.Context, teamID string) (domain.TeamDetail, error) {
+	var d domain.TeamDetail
+	err := r.db.QueryRow(ctx, `SELECT id, name, type, chat_webhook_url FROM team WHERE id = $1::uuid`, teamID).
+		Scan(&d.ID, &d.Name, &d.Type, &d.ChatWebhookURL)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.TeamDetail{}, &apierror.NotFoundError{Msg: "team not found"}
+	}
+	if err != nil {
+		return domain.TeamDetail{}, fmt.Errorf("get team detail: %w", err)
+	}
+	return d, nil
+}
+
+// SetChatWebhookURL implements TeamRepository.
+func (r *teamRepo) SetChatWebhookURL(ctx context.Context, teamID string, url *string) error {
+	tag, err := r.db.Exec(ctx, `UPDATE team SET chat_webhook_url = $1, updated_on = NOW() WHERE id = $2::uuid`, url, teamID)
+	if err != nil {
+		return fmt.Errorf("set team chat webhook url: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return &apierror.NotFoundError{Msg: "team not found"}
+	}
+	return nil
+}
+
+// AssignTeamLead implements TeamRepository.
+func (r *teamRepo) AssignTeamLead(ctx context.Context, teamID, userID string) error {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("assign team lead: begin: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op once Commit has succeeded
+
+	// Locks the team row for the rest of this transaction, serializing two
+	// concurrent assignments for the same team -- without this, two calls
+	// for different users could each demote-then-promote under READ
+	// COMMITTED without ever seeing the other's uncommitted write, leaving
+	// the team with two 'lead' rows (the escalation ladder's "one lead per
+	// team" contract broken). A plain existence check has no such effect.
+	var lockedID string
+	err = tx.QueryRow(ctx, `SELECT id::text FROM team WHERE id = $1::uuid FOR UPDATE`, teamID).Scan(&lockedID)
+	switch {
+	case err == nil:
+	case errors.Is(err, pgx.ErrNoRows):
+		return &apierror.NotFoundError{Msg: "team not found"}
+	default:
+		return fmt.Errorf("assign team lead: lock team: %w", err)
+	}
+
+	var userExists bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM "user" WHERE id = $1::uuid)`, userID).Scan(&userExists); err != nil {
+		return fmt.Errorf("assign team lead: check user exists: %w", err)
+	}
+	if !userExists {
+		return &apierror.ValidationError{Msg: "userId does not refer to an existing user"}
+	}
+
+	// Demote whoever else currently holds 'lead' on this team -- never
+	// touches userID's own row, which the next step either updates or
+	// inserts as the new lead.
+	if _, err := tx.Exec(ctx,
+		`UPDATE team_member SET role = 'engineer', updated_on = NOW()
+		 WHERE team_id = $1::uuid AND role = 'lead' AND user_id <> $2::uuid`,
+		teamID, userID,
+	); err != nil {
+		return fmt.Errorf("assign team lead: demote previous lead: %w", err)
+	}
+
+	var existingMemberID string
+	err = tx.QueryRow(ctx,
+		`SELECT id FROM team_member WHERE team_id = $1::uuid AND user_id = $2::uuid LIMIT 1`,
+		teamID, userID,
+	).Scan(&existingMemberID)
+	switch {
+	case err == nil:
+		if _, err := tx.Exec(ctx,
+			`UPDATE team_member SET role = 'lead', updated_on = NOW() WHERE id = $1::uuid`,
+			existingMemberID,
+		); err != nil {
+			return fmt.Errorf("assign team lead: promote existing member: %w", err)
+		}
+	case errors.Is(err, pgx.ErrNoRows):
+		// userID is not yet on this team's roster at all -- add them as its
+		// lead rather than refusing, since the caller may legitimately pick
+		// anyone from the full user directory, not only the existing roster.
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO team_member (id, team_id, user_id, role, created_on, updated_on)
+			 VALUES (gen_random_uuid(), $1::uuid, $2::uuid, 'lead', NOW(), NOW())`,
+			teamID, userID,
+		); err != nil {
+			return fmt.Errorf("assign team lead: insert new member: %w", err)
+		}
+	default:
+		return fmt.Errorf("assign team lead: check existing membership: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("assign team lead: commit: %w", err)
+	}
+	return nil
 }

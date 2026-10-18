@@ -7170,7 +7170,87 @@ read the curated `team` registry, whose ids `GET /groups/{id}` could not resolve
 beside `GET /teams/{id}/members`) lists the `team` table — `{id, name, type}`,
 ordered by name, with an optional case-insensitive substring `searchQuery` on the
 name. The CSM portal backend calls it for its own `POST /teams/search` and enriches
-rows from its configured registry.
+rows from its configured registry. **Deliberately never includes
+`chat_webhook_url`** (see the next paragraph) — a webhook URL is a bearer
+credential, and this route has no caller restriction beyond `auth.Middleware`
+letting any validated token through.
+
+**`GET /teams/chat-webhooks`** (`team_repo.go` `ListChatWebhooks`, migration `0240`)
+is the replacement for configuring a team's own Chat space by hand in
+`integrations/csm-notification-service`'s `GOOGLE_CHAT_SPACES` env var:
+`team.chat_webhook_url` (nullable TEXT, never written by the ServiceNow sync —
+same "platform-owned config, not synced vocabulary" posture as `team.key`/
+`group_email`) holds the team's own incoming-webhook URL, set directly by
+platform operators. The endpoint returns `{teams: [{name, chatWebhookUrl}]}` for
+every team that has one set — a team with none is left out, same as today's
+"not in `GOOGLE_CHAT_SPACES`" case. **Internal-caller-only**
+(`TeamService.ListChatWebhooks` → `RequireInternalCaller`, the identical gate
+`GET /sla-duration-policy` uses) — a webhook URL lets anyone holding it post
+into that team's Chat space, so this is reference data for a backend service
+(fetched periodically, not once at startup, since operators can add a team's
+webhook while this service keeps running — see that repo's own `CLAUDE.md`),
+never something a portal caller should reach. Standing audiences that aren't
+teams at all ("Incident Monitor", "Onboarding", "Americas", "Evaluation") stay
+config-driven on that service's own side — this table only ever holds a real
+team's own space.
+
+**`GET`/`PATCH /teams/{id}`** (`team_repo.go`'s `GetTeamDetail`/
+`SetChatWebhookURL`, the latter against the same `team.chat_webhook_url`
+column) is the single-team counterpart to the bulk `GET /teams/chat-webhooks`
+above — added so `apps/csm-portal/backend` can let a team manage its own Chat
+space without handing out every other team's webhook URL in the same
+response. **A single generic team resource (id/name/type/chatWebhookUrl),
+mirroring `GET`/`PATCH /users/{id}`, rather than a dedicated
+`/teams/{id}/chat-webhook` route** — `chatWebhookUrl` is the only settable
+field today, but a second one later is a new field on `UpdateTeamRequest`,
+not a new route; `POST /teams/search` still never includes it (a webhook URL
+is a bearer credential). **Internal-caller-only**, identical gate.
+`UpdateTeam` (`team_service.go`) requires at least one field (today, only
+`chatWebhookUrl`, so omitting it is a 400) and validates: a non-empty
+`chatWebhookUrl` must parse as a well-formed URL whose scheme is `https`,
+whose hostname (case-folded, trailing dot stripped) is exactly
+`chat.googleapis.com`, and which carries no embedded userinfo
+(`https://chat.googleapis.com@evil.example/...`) — a plain `strings.HasPrefix(
+..., "https://")` check used to be the whole validation, which would have let
+this endpoint's caller point `csm-notification-service` at an arbitrary
+internal host (SSRF: that service fetches and unattendedly POSTs to whatever
+URL is stored here) or a cloud metadata endpoint; empty clears the stored
+value. **Fine-grained authorization — an Asgardeo admin, or that specific
+team's own lead, may call the PATCH — is enforced entirely by the caller**
+(`apps/csm-portal/backend`), never here: this route's only gate is "internal
+service", same as every other route in this section.
+
+**`POST /teams/{id}/lead`** (`team_repo.go`'s `AssignTeamLead`, a single
+transaction: check team exists, check user exists, demote any other current
+`'lead'` to `'engineer'`, then upsert the chosen user's `team_member` row to
+`'lead'`) reassigns a team's one lead. **This writes the real,
+paging-connected `team_member.role` column** — not a cosmetic label;
+`csm-notification-service`'s incident call-escalation ladder reads this exact
+column to decide who gets paged at its LEVEL_2 rung for this team, so
+reassigning it changes who gets called during an incident, immediately.
+Internal-caller-only here too; **fine-grained authorization (Asgardeo admin
+only) is the caller's job**, same posture as the chat-webhook PATCH above. The
+chosen user does not need to already be a member of the team — a user with no
+existing `team_member` row is inserted with role `'lead'` directly.
+
+**`PATCH /users/{id}`** (`user_service.go`'s `UpdateUser`, `user_repo.go`'s
+`UpdateUserProfile`, reusing the same write path `PATCH /users/me` already
+uses) is the admin-settable counterpart to `PATCH /users/me`: that route
+always resolves the caller's own id from `x-user-id-token`, so there was
+previously no way to update *someone else's* profile. Needed once a team's
+lead can be reassigned through `POST /teams/{id}/lead` above: the incident
+call-escalation ladder dials `"user".phone` (migration 0141) for whoever
+holds `'lead'`, so a newly assigned lead with no phone on file is a silent
+paging gap until this is set here. Both `timeZone` and `phone` are optional
+pointers (unlike `PATCH /users/me`'s own `timeZone`, which can never be
+cleared), but at least one must be present; `phone` has the identical
+trim/length/clear rules as `PATCH /users/me`'s own field. Internal-caller-only;
+a malformed id, neither field present, or an over-`maxPhoneLen`-character
+phone is a `ValidationError`. No fine-grained authorization of its own beyond
+"internal service" — `apps/csm-portal/backend` restricts this to its
+`cs_engineer`/admin roles (the same two roles its own `PermWrite` holds), a
+looser bar than `POST /teams/{id}/lead`'s own admin-only gate, since recording
+a phone number is a lower-stakes action than reassigning who gets paged.
 
 `POST /users/search` keeps the two id spaces apart: `filters.groupIds` are `"group"`
 ids matched against `group_member`, `filters.teamIds` are `team` ids matched against

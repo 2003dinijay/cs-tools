@@ -1791,6 +1791,67 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
+    patch:
+      summary: Update another user's profile (timezone and/or phone).
+      description: >
+        Restricted to cs_engineer or admin. Lets one of those roles update
+        someone else's profile — unlike PATCH /users/me, which only ever
+        resolves the caller's own id from their token. Both fields are
+        optional but at least one must be present. Needed when reassigning a
+        team's lead (POST /teams/{id}/lead): the incident call-escalation
+        ladder dials the lead's own phone number, so a newly assigned lead
+        with none on file is a silent paging gap until this is set here.
+      operationId: updateUser
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BeUpdateUserRequest'
+      responses:
+        "200":
+          description: The user's profile after the update.
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: Bad request (malformed id, neither field present, or phone too long).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden (cs_engineer or admin only).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: User not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
 
   /roles/search:
     post:
@@ -1993,6 +2054,191 @@ paths:
                 $ref: '#/components/schemas/ErrorPayload'
         "404":
           description: Team not found, or has no members.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
+  /teams/{id}:
+    get:
+      summary: Get a team's own id/name/type and its configured Chat space link.
+      description: >
+        Backed by entity-service. Restricted to an Asgardeo admin or this
+        specific team's own lead — every other caller holding the route's own
+        view permission gets 403, since a Chat webhook URL is a bearer
+        credential once set. A single generic team resource (mirroring
+        GET /users/{id}) rather than a dedicated /teams/{id}/chat-webhook
+        route.
+      operationId: getTeam
+      parameters:
+        - name: id
+          in: path
+          description: UUID of the team (backing CRE/SRE group).
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The team's own details.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TeamDetail'
+        "400":
+          description: Bad request (e.g. malformed UUID).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden (not an admin or this team's own lead).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: Team not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+    patch:
+      summary: Update a team — today, only its Google Chat space link.
+      description: >
+        Backed by entity-service. Restricted to an Asgardeo admin or this
+        specific team's own lead. chatWebhookUrl is the only settable field
+        today and is required; an empty value clears the team's webhook,
+        and a non-empty value must be a well-formed
+        https://chat.googleapis.com/... URL (any other host, or a non-https
+        scheme, is rejected and entity-service's reason is echoed verbatim).
+      operationId: updateTeam
+      parameters:
+        - name: id
+          in: path
+          description: UUID of the team (backing CRE/SRE group).
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTeamRequest'
+      responses:
+        "200":
+          description: The team's own details after the update.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TeamDetail'
+        "400":
+          description: >-
+            Bad request (malformed UUID, or chatWebhookUrl is not a
+            well-formed https://chat.googleapis.com/... URL).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden (not an admin or this team's own lead).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: Team not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
+  /teams/{id}/lead:
+    post:
+      summary: Assign a user as the team's one lead.
+      description: >
+        Backed by entity-service. Admin-only. Reassigns the team's real,
+        paging-connected 'lead' role — entity-service's incident
+        call-escalation ladder reads this exact column to decide who gets
+        paged for this team, so this changes who is called during an
+        incident, immediately.
+      operationId: assignTeamLead
+      parameters:
+        - name: id
+          in: path
+          description: UUID of the team (backing CRE/SRE group).
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId]
+              properties:
+                userId:
+                  type: string
+                  format: uuid
+      responses:
+        "204":
+          description: The team's lead was reassigned.
+        "400":
+          description: >-
+            Bad request (malformed team id or userId, or userId does not
+            refer to an existing user).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden (admin only).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: Team not found.
           content:
             application/json:
               schema:
@@ -17488,6 +17734,47 @@ components:
           type: string
         role:
           type: string
+
+    TeamDetail:
+      type: object
+      required: [id, name, type]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        type:
+          type: string
+        chatWebhookUrl:
+          type: string
+          nullable: true
+
+    UpdateTeamRequest:
+      type: object
+      required: [chatWebhookUrl]
+      properties:
+        chatWebhookUrl:
+          type: string
+          description: >-
+            The only settable field today. Empty string clears the webhook;
+            a non-empty value must be a well-formed
+            https://chat.googleapis.com/... URL.
+
+    BeUpdateUserRequest:
+      type: object
+      description: At least one of timeZone or phone is required.
+      anyOf:
+        - required: [timeZone]
+        - required: [phone]
+      properties:
+        timeZone:
+          type: string
+        phone:
+          type: string
+          description: >-
+            Trimmed. At most 32 characters after trimming (400 otherwise).
+            Empty (after trimming) clears the stored phone.
 
     UserGroupRef:
       type: object

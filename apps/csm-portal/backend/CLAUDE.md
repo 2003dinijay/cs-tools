@@ -19,7 +19,7 @@ Go HTTP server (`net/http`, Go 1.26+) that acts as a backend-for-frontend (BFF) 
 
 - **Per-role config.** Each role has an `AUTH_<ROLE>_ROLES` env var (comma-separated role names, any one grants the role), read once at startup by `loadAccessConfig` in `cmd/server/main.go`. There is deliberately **no default** (role names are organisation vocabulary and must not be committed, same as `CSM_TEAM_REGISTRY`): an unset/empty variable means nobody holds that role, and startup warns naming each one. Tests use dummy names via `testAccessConfig()` in `access_test.go`, never real ones. Matching is exact and case-sensitive. Adding a role means a new `AccessConfig` field, its env var, and its place in `NewAccessGuard`.
 - **The `roles` claim is a string for one role and an array for several** (Asgardeo does this). `middleware.stringList` accepts both; a plain `[]string` would reject a single-role user's whole token with a 401. Any other shape fails the token.
-- **Every route goes through `route(pattern, perm, handler)` in `cmd/server/main.go`.** `perm` is a required argument with no default — pick `PermView` for reads/searches/aggregates, `PermViewOperations` for reads under the Operations area (incidents, change requests, problems, incident tasks, outages, alerts), `PermTimeCardsAndUpdates` for every time-card route and the update-level lookups (CS engineer, admin and time-card approver — viewing/managing, not approving, see `PermApproveTimeCard` below), `PermWrite` for other state changes, `PermAdmin` for the handful of actions reserved for admin alone (currently just `POST /users`, creating a new platform user), `PermViewSecurityCenter` for Security Center (both `/products/vulnerabilities/*` routes; see "Security Center access" below for how `/cases/*` is handled), `PermViewCustomerHealth` for the Customer Health dashboard (`/customer-health/*` plus the `GET /products` and `GET /abt-teams` lists its filters read; Viewer, `cs_engineer` and `admin` — see its own note below), or one of the narrower ones (`PermEscalate`, `PermDownloadAttachment`). `PermApproveTimeCard` is not a route-level permission at all — see its own note below. Creating a case, incident or change-request comment is `PermWrite` (or `PermCreateWorkNote` for a work note — see below); editing or deleting one by id (`PATCH`/`DELETE /comments/{id}`) is `PermUpdateDeleteComment` — see its own note below. `PermAuthenticated` (no role needed) is only for the caller's own `/users/me`. `/health` is the only route registered directly on the mux.
+- **Every route goes through `route(pattern, perm, handler)` in `cmd/server/main.go`.** `perm` is a required argument with no default — pick `PermView` for reads/searches/aggregates, `PermViewOperations` for reads under the Operations area (incidents, change requests, problems, incident tasks, outages, alerts), `PermTimeCardsAndUpdates` for every time-card route and the update-level lookups (CS engineer, admin and time-card approver — viewing/managing, not approving, see `PermApproveTimeCard` below), `PermWrite` for other state changes, `PermAdmin` for the handful of actions reserved for admin alone (`POST /users`, creating a new platform user, and `POST /teams/{id}/lead`, reassigning a team's lead), `PermViewSecurityCenter` for Security Center (both `/products/vulnerabilities/*` routes; see "Security Center access" below for how `/cases/*` is handled), `PermViewCustomerHealth` for the Customer Health dashboard (`/customer-health/*` plus the `GET /products` and `GET /abt-teams` lists its filters read; Viewer, `cs_engineer` and `admin` — see its own note below), or one of the narrower ones (`PermEscalate`, `PermDownloadAttachment`). `PermApproveTimeCard` is not a route-level permission at all — see its own note below. Creating a case, incident or change-request comment is `PermWrite` (or `PermCreateWorkNote` for a work note — see below); editing or deleting one by id (`PATCH`/`DELETE /comments/{id}`) is `PermUpdateDeleteComment` — see its own note below. `PermAuthenticated` (no role needed) is only for the caller's own `/users/me`. `/health` is the only route registered directly on the mux.
 - **The policy is `NewAccessGuard`.** `admin` satisfies every permission, including `PermAdmin`; `cs_engineer` satisfies every other route permission (view, download, write, including comments, security center, time cards and updates) but **not** `PermAdmin`, `PermEscalate`, or `PermApproveTimeCard` — escalating a case and approving a time card are each a dedicated responsibility, held only by their own role (`escalator` / `timecard-approver`) plus admin, the same way `PermAdmin` is admin-only; `escalator`/`attachment-downloader` grant only their one ability plus view (so a view-only role cannot read Operations — `PermViewOperations` is CS engineer and admin only, matching the frontend's `canUseOperations`); `timecard-approver` grants view plus `PermTimeCardsAndUpdates` plus `PermApproveTimeCard`; `usage-metrics-viewer` also grants `PermUsageMetricsViewer` (the Usage Metrics domain, `/usage-metrics/*` — see that permission's own doc comment in `access.go` for why it's gated directly rather than layered on `PermViewerAccess` like its Viewer-only ex-"Support Portal Lite" siblings (User Scan, the Time report), and why plain `viewer` deliberately does NOT hold it); `dashboard-designer` grants only view here (no backend route for that feature); the frontend gates it. Every role implies view, **except** `PermViewSecurityCenter` — a plain viewer/escalator/attachment_downloader/usage_metrics_viewer/timecard_approver/dashboard_designer holds `PermView` but not this.
 - **Customer Health has its own audience: `PermViewCustomerHealth` (Viewer, `cs_engineer`, `admin`).** The dashboard was built for the viewer audience, but CS engineers and admins work the same accounts, so every `/customer-health/*` route, plus the `GET /products` and `GET /abt-teams` lists its filters read, is registered on this permission and the same handlers check it themselves (`requireCustomerHealthAccess`, a sibling of `requireViewerAccess` over one shared `requirePermission`). It is deliberately **not** a widening of `PermViewerAccess`: User Scan, the Time report, the account escalation list and Drive files stay Viewer-only, and `access_test.go` pins both directions. The webapp's `canViewCustomerHealth` (`portalAccess.ts`) must stay in step with this set.
 - **`PermApproveTimeCard` gates a state transition inside a shared route, not a route of its own.** `PATCH /time-cards/{id}` carries EITHER a plain field edit OR an approve/reject transition (`state: "approved"`/`"rejected"`, entity-service's `UpdateTimeCardRequest`) — the same shared-endpoint problem Security Center's `POST /cases/search` has, solved the identical way: `TimeCardHandler` (wired with `WithAccessGuard`, same pattern as `CaseHandler`) inspects the request body itself (`timeCardUpdateTargetsStateTransition`, checking for a non-nil `state`) and additionally requires `PermApproveTimeCard` only when it's present. A CS engineer without `timecard-approver`/`admin` can still search/create/edit their own time cards (`PermTimeCardsAndUpdates`), just not approve/reject one.
@@ -80,6 +80,46 @@ the request with 400 regardless of email, mirroring entity-service's own identic
 check. The Add User form's type selector disables its "External" option for the same reason rather
 than offering a choice the backend will reject. All three layers (here, entity-service, the webapp)
 are meant to come out together once external-type creation is ready.
+
+## Updating another user's profile (PATCH /users/{id})
+
+Restricted to `cs_engineer` or `admin` (`PermWrite`, held by exactly those two roles — see "Access
+control" above). Unlike `PATCH /users/me`, which always resolves the caller's own id from their
+token, this lets one of those roles update someone else's profile by id — `timeZone`/`phone`, both
+optional pointers, at least one required (`UsersHandler.UpdateUser` forwards whatever was sent
+straight to entity-service's own `PATCH /users/{id}`, which applies the identical trim/length/clear
+rules `PATCH /users/me` already has for `phone`). Added for the team-lead reassignment feature
+below: the incident call-escalation ladder dials the lead's own phone number (`"user".phone`), so a
+newly assigned lead with none on file is a silent paging gap until this is set here.
+
+## A team's own Chat space link and lead (GET/PATCH /teams/{id}, POST /teams/{id}/lead)
+
+Two routes on `TeamHandler`, all backed by entity-service's own `team.chat_webhook_url`/
+`team_member.role` columns (see that repo's own `CLAUDE.md`):
+
+- **`GET`/`PATCH /teams/{id}`** — view or change the team's own id/name/type and Google Chat space
+  link. A single generic team resource (mirroring `GET`/`PATCH /users/{id}`) rather than a dedicated
+  `/teams/{id}/chat-webhook` route — `chatWebhookUrl` is the only settable field today, but a second
+  one later is a new field on the existing request/response shape, not a new route. The route-level
+  floor is `PermViewSharedEntity` (same as `GET /teams/{id}/members`), but
+  `TeamHandler.authorizeChatWebhookActor` narrows it further, in-handler: only an Asgardeo admin
+  (`AccessGuard.Permits(PermAdmin, ...)`) or **this specific team's own lead**
+  (`TeamHandler.callerIsTeamLead`, which fetches the team's roster via the existing
+  `GET /teams/{id}/members` client call and matches the caller's email, case-insensitively, against
+  whichever member holds `role: "lead"`) may reach either verb — everyone else gets 403, since a Chat
+  webhook URL is a bearer credential once set (anyone holding it can post into that space).
+  entity-service itself validates the URL on PATCH (must be a well-formed
+  `https://chat.googleapis.com/...` URL, or empty to clear) and its refusal reason is echoed
+  verbatim (`mapUpstreamError`).
+- **`POST /teams/{id}/lead`** — reassign the team's one lead. Admin-only via the route's own
+  `PermAdmin` (same posture as `POST /users`: the handler does not re-check the caller's role
+  itself — unlike `PATCH /users/{id}`, which is `PermWrite`, i.e. `cs_engineer` or admin, not
+  admin-only). **This writes the real, paging-connected `team_member.role` column** — not a
+  cosmetic label; entity-service's own incident call-escalation ladder reads this exact column to
+  decide who gets paged for this team, so reassigning it changes who gets called during an incident,
+  immediately. The UI must make this consequence obvious when offering this control, and should
+  prompt to set the new lead's phone number in the same flow (`PATCH /users/{id}` above) if none is
+  on file.
 
 ## Listing time card approvers via SCIM (GET /users/time-card-approvers)
 

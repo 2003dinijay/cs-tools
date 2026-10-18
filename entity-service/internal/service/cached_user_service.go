@@ -23,9 +23,9 @@ import (
 )
 
 // cachedUserService puts a cache-aside UserCache in front of a UserService:
-// GetUser and GetMe read the cache first and fill it on a miss, and the two
-// writes (PatchMe, CreateUser) invalidate the user they changed. Everything
-// else passes straight through.
+// GetUser and GetMe read the cache first and fill it on a miss, and the
+// three writes (PatchMe, UpdateUser, CreateUser) invalidate the user they
+// changed. Everything else passes straight through.
 //
 // Only successful responses are cached. An error, NotFoundError included, is
 // returned uncached, so a user created a moment later is found at once.
@@ -90,6 +90,22 @@ func (s *cachedUserService) PatchMe(ctx context.Context, req domain.PatchUserMeR
 	// empty email would still invalidate by id.
 	email, _ := callerEmail(ctx)
 	s.cache.InvalidateUser(ctx, resp.User.ID, email)
+	return resp, nil
+}
+
+// UpdateUser implements UserService. Unlike PatchMe, the target user is
+// named by the caller (an admin acting on someone else's profile), not
+// resolved from the caller's own token -- so the only identity available to
+// invalidate by is the given userID, not an email. InvalidateUser accepts an
+// empty email (see its own doc comment: "either may be empty"), and clears
+// both the detail:{id} and me:{id} cache entries by id alone, which is
+// exactly what a later GET /users/{id}/GET /users/me-as-that-user needs.
+func (s *cachedUserService) UpdateUser(ctx context.Context, userID string, req domain.UpdateUserRequest) (domain.PatchUserMeResponse, error) {
+	resp, err := s.UserService.UpdateUser(ctx, userID, req)
+	if err != nil {
+		return resp, err
+	}
+	s.cache.InvalidateUser(ctx, userID, "")
 	return resp, nil
 }
 

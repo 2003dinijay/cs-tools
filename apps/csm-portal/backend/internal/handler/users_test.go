@@ -730,6 +730,102 @@ func TestPatchMe(t *testing.T) {
 	})
 }
 
+// ----- UpdateUser -----
+
+func TestUpdateUser(t *testing.T) {
+	const targetID = "11111111-1111-1111-1111-111111111111"
+
+	t.Run("requires authenticated user", func(t *testing.T) {
+		h := NewUsersHandler(&mockSCIMClient{}, &mockEntityUserClient{}, testDirectory(t), false, nil)
+		r := httptest.NewRequest(http.MethodPatch, "/users/"+targetID, strings.NewReader(`{"phone":"+1"}`))
+		r.SetPathValue("id", targetID)
+		w := httptest.NewRecorder()
+		h.UpdateUser(w, r)
+		assertStatus(t, w, http.StatusUnauthorized)
+	})
+
+	t.Run("rejects a non-UUID id", func(t *testing.T) {
+		h := NewUsersHandler(&mockSCIMClient{}, &mockEntityUserClient{}, testDirectory(t), false, nil)
+		r := withUser(httptest.NewRequest(http.MethodPatch, "/users/not-a-uuid", strings.NewReader(`{"phone":"+1"}`)))
+		r.SetPathValue("id", "not-a-uuid")
+		w := httptest.NewRecorder()
+		h.UpdateUser(w, r)
+		assertStatus(t, w, http.StatusBadRequest)
+	})
+
+	t.Run("rejects a body with neither field", func(t *testing.T) {
+		entity := &mockEntityUserClient{}
+		h := NewUsersHandler(&mockSCIMClient{}, entity, testDirectory(t), false, nil)
+		r := withUser(httptest.NewRequest(http.MethodPatch, "/users/"+targetID, strings.NewReader(`{}`)))
+		r.SetPathValue("id", targetID)
+		w := httptest.NewRecorder()
+		h.UpdateUser(w, r)
+		assertStatus(t, w, http.StatusBadRequest)
+		assertErrorMessage(t, w, "At least one field must be provided for update.")
+	})
+
+	t.Run("forwards the given id and phone to entity, not the caller's own id", func(t *testing.T) {
+		var capturedID string
+		var capturedBody []byte
+		entity := &mockEntityUserClient{
+			updateUserFn: func(_ context.Context, id string, body []byte) ([]byte, error) {
+				capturedID = id
+				capturedBody = body
+				return []byte(`{"message":"User updated successfully","user":{"id":"` + id + `"}}`), nil
+			},
+		}
+		h := NewUsersHandler(&mockSCIMClient{}, entity, testDirectory(t), false, nil)
+		r := withUser(httptest.NewRequest(http.MethodPatch, "/users/"+targetID, strings.NewReader(`{"phone":"+94777654321"}`)))
+		r.SetPathValue("id", targetID)
+		w := httptest.NewRecorder()
+		h.UpdateUser(w, r)
+		assertStatus(t, w, http.StatusOK)
+		if capturedID != targetID {
+			t.Errorf("entity called with id %q, want %q (the path id, not the caller's own)", capturedID, targetID)
+		}
+		if !strings.Contains(string(capturedBody), "+94777654321") {
+			t.Errorf("body = %s, want it to carry the phone number", capturedBody)
+		}
+	})
+
+	t.Run("forwards timeZone alongside or instead of phone", func(t *testing.T) {
+		var capturedBody []byte
+		entity := &mockEntityUserClient{
+			updateUserFn: func(_ context.Context, id string, body []byte) ([]byte, error) {
+				capturedBody = body
+				return []byte(`{"message":"User updated successfully","user":{"id":"` + id + `"}}`), nil
+			},
+		}
+		h := NewUsersHandler(&mockSCIMClient{}, entity, testDirectory(t), false, nil)
+		r := withUser(httptest.NewRequest(http.MethodPatch, "/users/"+targetID, strings.NewReader(`{"timeZone":"Asia/Colombo"}`)))
+		r.SetPathValue("id", targetID)
+		w := httptest.NewRecorder()
+		h.UpdateUser(w, r)
+		assertStatus(t, w, http.StatusOK)
+		if !strings.Contains(string(capturedBody), "Asia/Colombo") {
+			t.Errorf("body = %s, want it to carry the time zone", capturedBody)
+		}
+		if strings.Contains(string(capturedBody), "phone") {
+			t.Errorf("body = %s, want no phone key when none was sent", capturedBody)
+		}
+	})
+
+	t.Run("surfaces an upstream validation error", func(t *testing.T) {
+		entity := &mockEntityUserClient{
+			updateUserFn: func(context.Context, string, []byte) ([]byte, error) {
+				return nil, &apierror.Error{StatusCode: http.StatusBadRequest, Body: `{"message":"phone must be at most 32 characters"}`}
+			},
+		}
+		h := NewUsersHandler(&mockSCIMClient{}, entity, testDirectory(t), false, nil)
+		r := withUser(httptest.NewRequest(http.MethodPatch, "/users/"+targetID, strings.NewReader(`{"phone":"`+strings.Repeat("1", 40)+`"}`)))
+		r.SetPathValue("id", targetID)
+		w := httptest.NewRecorder()
+		h.UpdateUser(w, r)
+		assertStatus(t, w, http.StatusBadRequest)
+		assertErrorMessage(t, w, "phone must be at most 32 characters")
+	})
+}
+
 // ----- SearchUsers -----
 
 func TestSearchUsers(t *testing.T) {

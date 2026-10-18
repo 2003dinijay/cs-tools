@@ -452,6 +452,45 @@ func TestGoogleChatClient_HasAudienceSpace(t *testing.T) {
 	}
 }
 
+// TestGoogleChatClient_SetTeamAudienceSpaces pins the team-sourced routing
+// path (entity-service's team.chat_webhook_url, refreshed periodically —
+// see cmd/server/main.go) alongside the static, config-sourced one: a team
+// with no static GOOGLE_CHAT_SPACES entry resolves once its webhook is set
+// dynamically, a later call fully replaces the set (not merges into it), and
+// a static entry wins over a same-named dynamic one.
+func TestGoogleChatClient_SetTeamAudienceSpaces(t *testing.T) {
+	c := NewGoogleChatClient(GoogleChatConfig{AudienceSpaces: []GoogleChatAudienceSpace{
+		{Audience: "Incident Monitor", WebhookURL: "https://example.com/incident-monitor"},
+		{Audience: "Apollo", WebhookURL: "https://example.com/apollo-static"},
+	}})
+
+	if c.HasAudienceSpace("Castor") {
+		t.Fatal("HasAudienceSpace(\"Castor\") = true before any team-sourced space was set")
+	}
+
+	c.SetTeamAudienceSpaces(map[string]string{
+		"Castor": "https://example.com/castor-dynamic",
+		"Apollo": "https://example.com/apollo-dynamic",
+	})
+
+	if !c.HasAudienceSpace("Castor") {
+		t.Error("HasAudienceSpace(\"Castor\") = false after SetTeamAudienceSpaces added it")
+	}
+	if url, _ := c.webhookURLFor("Apollo"); url != "https://example.com/apollo-static" {
+		t.Errorf("a static GOOGLE_CHAT_SPACES entry should win over a same-named dynamic one, got %q", url)
+	}
+	if !c.HasAudienceSpace("Incident Monitor") {
+		t.Error("the standing, config-sourced audience must stay routable alongside team-sourced ones")
+	}
+
+	// A later call replaces, it does not merge: Castor must disappear once a
+	// refresh no longer reports it (e.g. the operator cleared the webhook).
+	c.SetTeamAudienceSpaces(map[string]string{"Apollo": "https://example.com/apollo-dynamic"})
+	if c.HasAudienceSpace("Castor") {
+		t.Error("HasAudienceSpace(\"Castor\") = true after a refresh that no longer reports it")
+	}
+}
+
 // TestTeamPart pins the team line: bold, one color for every team (there is
 // no per-ABT palette any more — see teamTextColor), the name HTML-escaped, and
 // nothing at all for a blank team so callers can skip it without a blank line.

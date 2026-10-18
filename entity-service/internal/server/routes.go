@@ -61,8 +61,27 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// when it matters.
 		logCRVisibility(cfg)
 	}
+	// accessSvc resolves the caller's AccessScope from the validated identity
+	// auth.Middleware attaches to every request (see AccessService's own doc
+	// comment for the full decision table). Constructed once and shared by
+	// every Postgres-backed service that scopes its reads by it. It only takes
+	// effect on the Postgres data source: in ServiceNow mode the project/case
+	// reads go to ServiceNow itself with the forwarded x-user-id-token, so
+	// scoping there is ServiceNow's own (snProjectService/snCaseService hold a
+	// pgFallback but do not route GetProjectByID/GetCaseByID through it).
+	//
+	// Constructed before userSvc (moved up from its original spot further
+	// down) specifically so NewUserService can take it directly, gating
+	// UpdateUser to internal callers -- see that method's own doc comment.
+	accessSvc := service.NewAccessService(repository.NewAccessRepository(db), service.AccessClientConfig{
+		M2MClientIDs:                  cfg.M2MClientIDs,
+		CSMPortalBackendClientID:      cfg.CSMPortalBackendClientID,
+		CSMPortalUserDomain:           cfg.CSMPortalUserDomain,
+		CustomerPortalBackendClientID: cfg.CustomerPortalBackendClientID,
+	})
+
 	userRepo := repository.NewUserRepository(db)
-	userSvc := service.NewUserService(userRepo)
+	userSvc := service.NewUserService(userRepo, accessSvc)
 
 	// The case-volume-trend cache behind POST /cases/volume-trend is a
 	// plain per-pod in-memory map -- deliberately not Redis-backed, even
@@ -98,21 +117,6 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		log.Printf("user cache enabled (ttl %s)", cfg.UserCacheTTL)
 	}
 	userHandler := handler.NewUserHandler(userSvc)
-
-	// accessSvc resolves the caller's AccessScope from the validated identity
-	// auth.Middleware attaches to every request (see AccessService's own doc
-	// comment for the full decision table). Constructed once and shared by
-	// every Postgres-backed service that scopes its reads by it. It only takes
-	// effect on the Postgres data source: in ServiceNow mode the project/case
-	// reads go to ServiceNow itself with the forwarded x-user-id-token, so
-	// scoping there is ServiceNow's own (snProjectService/snCaseService hold a
-	// pgFallback but do not route GetProjectByID/GetCaseByID through it).
-	accessSvc := service.NewAccessService(repository.NewAccessRepository(db), service.AccessClientConfig{
-		M2MClientIDs:                  cfg.M2MClientIDs,
-		CSMPortalBackendClientID:      cfg.CSMPortalBackendClientID,
-		CSMPortalUserDomain:           cfg.CSMPortalUserDomain,
-		CustomerPortalBackendClientID: cfg.CustomerPortalBackendClientID,
-	})
 
 	var savedFilterViewHandler *handler.SavedFilterViewHandler
 	if db != nil {
@@ -321,7 +325,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	var teamHandler *handler.TeamHandler
 	if db != nil {
 		teamRepo := repository.NewTeamRepository(db)
-		teamHandler = handler.NewTeamHandler(service.NewTeamService(teamRepo))
+		teamHandler = handler.NewTeamHandler(service.NewTeamService(teamRepo, accessSvc))
 	}
 
 	// groupDetailHandler (GET /groups/{id}: one group and its members, opened
@@ -1906,6 +1910,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("POST /users/search", userHandler.SearchUsers)
 		mux.HandleFunc("POST /users/by-ids", userHandler.GetUsersByIDs)
 		mux.HandleFunc("POST /users", userHandler.CreateUser)
+		mux.HandleFunc("PATCH /users/{id}", userHandler.UpdateUser)
 	}
 	if snAccountHandler != nil {
 		mux.HandleFunc("GET /accounts/{id}", internalOnly(accessSvc, snAccountHandler.GetAccount))
@@ -1920,6 +1925,10 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	if teamHandler != nil {
 		mux.HandleFunc("GET /teams/{id}/members", teamHandler.GetTeamMembers)
 		mux.HandleFunc("POST /teams/search", teamHandler.SearchTeams)
+		mux.HandleFunc("GET /teams/chat-webhooks", teamHandler.ListChatWebhooks)
+		mux.HandleFunc("GET /teams/{id}", teamHandler.GetTeam)
+		mux.HandleFunc("PATCH /teams/{id}", teamHandler.UpdateTeam)
+		mux.HandleFunc("POST /teams/{id}/lead", teamHandler.AssignLead)
 	}
 	mux.HandleFunc("POST /accounts/{id}/contacts/search", internalOnly(accessSvc, accountContactHandler.SearchAccountContacts))
 	if opportunityHandler != nil {
