@@ -207,14 +207,14 @@ export function ProductBreakdownRow({
 
   const instances = useMemo(() => {
     return (instancesData?.instances ?? []).map((inst) => {
-      const dm = inst.metadata.deploymentMetadata;
+      const dm = inst.metadata?.deploymentMetadata;
       const keyDisplay = inst.key.length > 20 ? inst.key.slice(0, 12) + "…" : inst.key;
       const os = dm?.os ? (dm.osVersion ? `${dm.os} ${dm.osVersion}` : dm.os) : "—";
       return {
         instanceId: inst.id,
         keyDisplay,
         os,
-        jdkVersion: cleanJdkVersion(inst.metadata.jdkVersion ?? dm?.jdkVersion) || "—",
+        jdkVersion: cleanJdkVersion(inst.metadata?.jdkVersion ?? dm?.jdkVersion) || "—",
         u2Level: dm?.updateLevel || "—",
       };
     });
