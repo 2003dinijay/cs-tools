@@ -152,6 +152,26 @@ func (c *CustomerEntityClient) SearchTeams(ctx context.Context, body []byte) ([]
 	return c.do(ctx, http.MethodPost, "/teams/search", body)
 }
 
+// GetTeamChatWebhook calls GET /teams/{id}/chat-webhook on the entity
+// service. Response is returned as raw JSON.
+func (c *CustomerEntityClient) GetTeamChatWebhook(ctx context.Context, teamID string) ([]byte, error) {
+	return c.do(ctx, http.MethodGet, fmt.Sprintf("/teams/%s/chat-webhook", url.PathEscape(teamID)), nil)
+}
+
+// UpdateTeamChatWebhook calls PATCH /teams/{id}/chat-webhook on the entity
+// service. The body is forwarded verbatim and the response is returned as raw
+// JSON.
+func (c *CustomerEntityClient) UpdateTeamChatWebhook(ctx context.Context, teamID string, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPatch, fmt.Sprintf("/teams/%s/chat-webhook", url.PathEscape(teamID)), body)
+}
+
+// AssignTeamLead calls POST /teams/{id}/lead on the entity service. The body
+// is forwarded verbatim; entity service returns 204 No Content on success, so
+// the []byte result is always empty -- callers care only about the error.
+func (c *CustomerEntityClient) AssignTeamLead(ctx context.Context, teamID string, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, fmt.Sprintf("/teams/%s/lead", url.PathEscape(teamID)), body)
+}
+
 // SearchCaseActivities calls POST /cases/{id}/activities/search on the entity service.
 // The path-scoped body is forwarded verbatim and the response is returned as raw JSON;
 // typed response structs are deferred.
@@ -236,6 +256,14 @@ func (c *CustomerEntityClient) ResendProjectContactInvitation(ctx context.Contex
 // Response is returned as raw JSON.
 func (c *CustomerEntityClient) GetUser(ctx context.Context, id string) ([]byte, error) {
 	return c.do(ctx, http.MethodGet, fmt.Sprintf("/users/%s", url.PathEscape(id)), nil)
+}
+
+// UpdateUser calls PATCH /users/{id} on the entity service -- the
+// admin-targeted counterpart to PatchUserMe, for updating someone else's
+// profile by id. The body is forwarded verbatim and the response is
+// returned as raw JSON.
+func (c *CustomerEntityClient) UpdateUser(ctx context.Context, id string, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPatch, fmt.Sprintf("/users/%s", url.PathEscape(id)), body)
 }
 
 // GetAccount calls GET /accounts/{id} on the entity service.

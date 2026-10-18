@@ -32,6 +32,9 @@ import (
 // this file needs.
 type entityTeamsClient interface {
 	GetTeamMembers(ctx context.Context, teamID string) ([]byte, error)
+	GetTeamChatWebhook(ctx context.Context, teamID string) ([]byte, error)
+	UpdateTeamChatWebhook(ctx context.Context, teamID string, body []byte) ([]byte, error)
+	AssignTeamLead(ctx context.Context, teamID string, body []byte) ([]byte, error)
 }
 
 type entityTeamMember struct {
@@ -52,6 +55,27 @@ type TeamMemberView struct {
 	Role  string `json:"role"`
 }
 
+// entityTeamChatWebhookDetail mirrors entity-service's
+// domain.TeamChatWebhookDetail.
+type entityTeamChatWebhookDetail struct {
+	ChatWebhookURL *string `json:"chatWebhookUrl"`
+}
+
+// TeamChatWebhookView is the GET/PATCH /teams/{id}/chat-webhook response.
+type TeamChatWebhookView struct {
+	ChatWebhookURL *string `json:"chatWebhookUrl"`
+}
+
+// updateTeamChatWebhookRequest is the body of PATCH /teams/{id}/chat-webhook.
+type updateTeamChatWebhookRequest struct {
+	ChatWebhookURL *string `json:"chatWebhookUrl"`
+}
+
+// assignTeamLeadRequest is the body of POST /teams/{id}/lead.
+type assignTeamLeadRequest struct {
+	UserID *string `json:"userId"`
+}
+
 // TeamHandler handles HTTP requests for a team's member roster (an
 // account's CRE/SRE team, not the internal WSO2-staff team registry
 // csm-admin's own /teams/search already covers), backed by entity-service
@@ -62,11 +86,24 @@ type TeamMemberView struct {
 // second, parallel /spl/* contract for it.
 type TeamHandler struct {
 	entity entityTeamsClient
+	// access gates GetChatWebhook/UpdateChatWebhook to an Asgardeo admin or
+	// this specific team's own lead (see authorizeChatWebhookActor below). A
+	// nil access denies -- never grants -- same posture as CommentHandler's
+	// own access field. Set with WithAccessGuard.
+	access *AccessGuard
 }
 
 // NewTeamHandler creates a TeamHandler backed by the given entity client.
 func NewTeamHandler(entity entityTeamsClient) *TeamHandler {
 	return &TeamHandler{entity: entity}
+}
+
+// WithAccessGuard sets the AccessGuard GetChatWebhook/UpdateChatWebhook use to
+// recognize an Asgardeo admin. Returns the receiver so it chains onto
+// NewTeamHandler at the construction site in cmd/server/main.go.
+func (h *TeamHandler) WithAccessGuard(g *AccessGuard) *TeamHandler {
+	h.access = g
+	return h
 }
 
 var hex32Pattern = regexp.MustCompile(`^[0-9a-fA-F]{32}$`)
@@ -135,4 +172,190 @@ func (h *TeamHandler) GetTeamMembers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSONValue(w, http.StatusOK, views)
+}
+
+// callerIsTeamLead reports whether user currently holds role "lead" on the
+// given team, by fetching the team's own roster and matching on email
+// (case-insensitively) -- the roster already carries each member's email, so
+// unlike CaseHandler.callerIsCaseTeamLead this needs no separate GetUserMe
+// call to resolve the caller's own platform id first. Fails closed (false) on
+// any upstream or parse error, or when the team has no such member: an
+// authorization check must never silently grant on a failure it can't
+// explain.
+func (h *TeamHandler) callerIsTeamLead(r *http.Request, teamID string, user *middleware.UserInfo) bool {
+	if user.Email == "" {
+		return false
+	}
+	raw, err := h.entity.GetTeamMembers(r.Context(), teamID)
+	if err != nil {
+		return false
+	}
+	var resp entityGetTeamMembersResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return false
+	}
+	for _, m := range resp.Members {
+		if m.Role == nil || !strings.EqualFold(*m.Role, "lead") {
+			continue
+		}
+		if m.Email != nil && strings.EqualFold(*m.Email, user.Email) {
+			return true
+		}
+	}
+	return false
+}
+
+// authorizeChatWebhookActor writes a 403 and returns false unless the caller
+// is an Asgardeo admin or this specific team's own lead -- the only two
+// audiences allowed to view or change a team's Chat space configuration (a
+// bearer credential once set). Fails closed when no AccessGuard is wired.
+func (h *TeamHandler) authorizeChatWebhookActor(w http.ResponseWriter, r *http.Request, user *middleware.UserInfo, teamID string) bool {
+	isAdmin := h.access != nil && h.access.Permits(PermAdmin, user.Roles)
+	if isAdmin || h.callerIsTeamLead(r, teamID, user) {
+		return true
+	}
+	writeError(w, http.StatusForbidden, ErrMsgForbidden)
+	return false
+}
+
+// GetChatWebhook handles GET /teams/{id}/chat-webhook -- an Asgardeo admin or
+// this specific team's own lead only (authorizeChatWebhookActor); every other
+// caller holding the route's own PermViewSharedEntity floor gets 403.
+func (h *TeamHandler) GetChatWebhook(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserInfoFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
+		return
+	}
+
+	teamID := r.PathValue("id")
+	if teamID == "" || !uuidRe.MatchString(normalizeToUUID(teamID)) {
+		writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
+		return
+	}
+
+	if !h.authorizeChatWebhookActor(w, r, user, normalizeToUUID(teamID)) {
+		return
+	}
+
+	ctx := r.Context()
+	raw, err := h.entity.GetTeamChatWebhook(ctx, normalizeToUUID(teamID))
+	if err != nil {
+		slog.ErrorContext(ctx, "entity GetTeamChatWebhook failed", "userID", user.UserID, "teamID", teamID, "err", err)
+		mapUpstreamErrorGeneric(w, err, "Failed to retrieve the team's Chat space.")
+		return
+	}
+	var detail entityTeamChatWebhookDetail
+	if err := json.Unmarshal(raw, &detail); err != nil {
+		slog.ErrorContext(ctx, "unmarshal entity-service chat-webhook response failed", "userID", user.UserID, "teamID", teamID, "err", err)
+		writeError(w, http.StatusInternalServerError, ErrMsgInternal)
+		return
+	}
+	writeJSONValue(w, http.StatusOK, TeamChatWebhookView{ChatWebhookURL: detail.ChatWebhookURL})
+}
+
+// UpdateChatWebhook handles PATCH /teams/{id}/chat-webhook -- an Asgardeo
+// admin or this specific team's own lead only (authorizeChatWebhookActor).
+// entity-service itself validates the URL (well-formed
+// https://chat.googleapis.com/... or empty to clear); its 400 reason is
+// echoed verbatim (mapUpstreamError) so the form can show it.
+func (h *TeamHandler) UpdateChatWebhook(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserInfoFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
+		return
+	}
+
+	teamID := r.PathValue("id")
+	if teamID == "" || !uuidRe.MatchString(normalizeToUUID(teamID)) {
+		writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
+		return
+	}
+	teamID = normalizeToUUID(teamID)
+
+	if !h.authorizeChatWebhookActor(w, r, user, teamID) {
+		return
+	}
+
+	body, ok := readJSONBody(w, r)
+	if !ok {
+		return
+	}
+	var payload updateTeamChatWebhookRequest
+	if err := json.Unmarshal(body, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+	url := ""
+	if payload.ChatWebhookURL != nil {
+		url = strings.TrimSpace(*payload.ChatWebhookURL)
+	}
+	entityBody, err := json.Marshal(map[string]string{"chatWebhookUrl": url})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, ErrMsgInternal)
+		return
+	}
+
+	ctx := r.Context()
+	raw, err := h.entity.UpdateTeamChatWebhook(ctx, teamID, entityBody)
+	if err != nil {
+		slog.ErrorContext(ctx, "entity UpdateTeamChatWebhook failed", "userID", user.UserID, "teamID", teamID, "err", err)
+		mapUpstreamError(w, err, "Failed to update the team's Chat space.")
+		return
+	}
+	var detail entityTeamChatWebhookDetail
+	if err := json.Unmarshal(raw, &detail); err != nil {
+		slog.ErrorContext(ctx, "unmarshal entity-service chat-webhook response failed", "userID", user.UserID, "teamID", teamID, "err", err)
+		writeError(w, http.StatusInternalServerError, ErrMsgInternal)
+		return
+	}
+	writeJSONValue(w, http.StatusOK, TeamChatWebhookView{ChatWebhookURL: detail.ChatWebhookURL})
+}
+
+// AssignLead handles POST /teams/{id}/lead -- restricted to admin via the
+// route's PermAdmin permission (cmd/server/main.go), same posture as
+// CreateUser: this handler does not re-check the caller's role itself.
+// Reassigns the team's real, paging-connected 'lead' role -- see
+// entity-service's own CLAUDE.md for what that touches beyond this feature.
+func (h *TeamHandler) AssignLead(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserInfoFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
+		return
+	}
+
+	teamID := r.PathValue("id")
+	if teamID == "" || !uuidRe.MatchString(normalizeToUUID(teamID)) {
+		writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
+		return
+	}
+	teamID = normalizeToUUID(teamID)
+
+	body, ok := readJSONBody(w, r)
+	if !ok {
+		return
+	}
+	var payload assignTeamLeadRequest
+	if err := json.Unmarshal(body, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+	if payload.UserID == nil || !uuidRe.MatchString(*payload.UserID) {
+		writeError(w, http.StatusBadRequest, "userId must be a valid UUID.")
+		return
+	}
+
+	entityBody, err := json.Marshal(map[string]string{"userId": *payload.UserID})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, ErrMsgInternal)
+		return
+	}
+
+	ctx := r.Context()
+	if _, err := h.entity.AssignTeamLead(ctx, teamID, entityBody); err != nil {
+		slog.ErrorContext(ctx, "entity AssignTeamLead failed", "userID", user.UserID, "teamID", teamID, "err", err)
+		mapUpstreamError(w, err, "Failed to assign the team lead.")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

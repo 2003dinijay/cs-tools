@@ -3266,6 +3266,36 @@ export interface BeTeamSearchPayload {
   pagination?: BePagination;
 }
 
+/** One row of `GET /teams/{id}/members` — the team's real CRE/SRE roster
+ * (role "lead"/"member"), not the registry entry `BeTeam` above describes. */
+export interface BeTeamMember {
+  name: string;
+  email: string;
+  role: string;
+}
+
+/** `GET`/`PATCH /teams/{id}/chat-webhook` response — the team's own
+ * configured Google Chat space link, `null` when unset. */
+export interface BeTeamChatWebhook {
+  chatWebhookUrl: string | null;
+}
+
+export interface BeUpdateTeamChatWebhookPayload {
+  chatWebhookUrl: string;
+}
+
+export interface BeAssignTeamLeadPayload {
+  userId: string;
+}
+
+/** `PATCH /users/{id}` request body — both fields optional, at least one
+ * required. See `apps/csm-portal/backend`'s own CLAUDE.md: restricted to
+ * cs_engineer/admin, for updating someone else's profile by id. */
+export interface BeUpdateUserPayload {
+  timeZone?: string;
+  phone?: string;
+}
+
 export interface BeTeamSearchResponse {
   teams: BeTeam[];
   total: number;

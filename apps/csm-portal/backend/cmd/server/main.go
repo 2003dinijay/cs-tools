@@ -362,6 +362,7 @@ func main() {
 	incidentHandler = incidentHandler.WithAccessGuard(accessGuard)
 	changeRequestHandler = changeRequestHandler.WithAccessGuard(accessGuard)
 	commentHandler = commentHandler.WithAccessGuard(accessGuard)
+	teamHandler = teamHandler.WithAccessGuard(accessGuard)
 
 	authCfg := middleware.Config{
 		JWKSEndpoint:          mustEnv("AUTH_JWKS_ENDPOINT"),
@@ -472,6 +473,11 @@ func main() {
 	route("POST /users/by-ids", handler.PermView, usersHandler.GetUsersByIDs)
 	route("GET /users/{id}", handler.PermView, usersHandler.GetUser)
 	route("POST /users", handler.PermAdmin, usersHandler.CreateUser)
+	// cs_engineer or admin (PermWrite is held by exactly those two roles):
+	// lets one of them update someone else's profile (timezone and/or
+	// phone) -- needed when reassigning a team lead who has no phone on
+	// file yet (see the /teams/{id}/lead comment above).
+	route("PATCH /users/{id}", handler.PermWrite, usersHandler.UpdateUser)
 	// Registered unconditionally, even when timecardApproverRoleIDs is empty:
 	// GetTimeCardApprovers itself returns 404 when disabled. Registering it
 	// only when configured would instead let the request fall through to the
@@ -484,6 +490,17 @@ func main() {
 	route("GET /roles/grantable", handler.PermAdmin, grantableRolesHandler.GetGrantableRoles)
 	route("POST /teams/search", handler.PermView, referenceHandler.SearchTeams)
 	route("GET /teams/{id}/members", handler.PermViewSharedEntity, teamHandler.GetTeamMembers)
+	// The route-level floor is the same as GetTeamMembers; the handler itself
+	// narrows further to an Asgardeo admin or this specific team's own lead
+	// (TeamHandler.authorizeChatWebhookActor) -- a Chat webhook URL is a
+	// bearer credential once set, so "any staff member who can view a team's
+	// roster" is deliberately not enough here.
+	route("GET /teams/{id}/chat-webhook", handler.PermViewSharedEntity, teamHandler.GetChatWebhook)
+	route("PATCH /teams/{id}/chat-webhook", handler.PermViewSharedEntity, teamHandler.UpdateChatWebhook)
+	// Admin-only: reassigning a team's lead also reassigns who entity-service's
+	// incident call-escalation ladder pages for this team -- see that repo's
+	// own CLAUDE.md.
+	route("POST /teams/{id}/lead", handler.PermAdmin, teamHandler.AssignLead)
 	route("GET /accounts/{id}", handler.PermViewSharedEntity, accountHandler.GetAccount)
 	// Admin-only: CRE/SRE team is a temporary override of ServiceNow's own
 	// value (see AccountService.UpdateAccountTeams's doc comment) — no other

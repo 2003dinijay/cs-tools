@@ -307,7 +307,11 @@ type UserDetail struct {
 	Active    bool      `json:"active"`
 	CreatedOn time.Time `json:"createdOn"`
 	UpdatedOn time.Time `json:"updatedOn"`
-	Roles     []string  `json:"roles"`
+	// Phone is "user".phone (migration 0141) -- the number the incident
+	// call-escalation ladder (integrations/csm-notification-service) dials.
+	// Omitted when unset, same convention as ProjectAccess below.
+	Phone *string  `json:"phone,omitempty"`
+	Roles []string `json:"roles"`
 	// Groups are the teams the user belongs to (team_member). Which of them are
 	// registry teams is the caller's determination.
 	Groups []UserGroupRef `json:"groups"`
@@ -378,6 +382,18 @@ type GetUserMeResponse struct {
 // ignores Phone (a phone-only request is a no-op there).
 type PatchUserMeRequest struct {
 	TimeZone string  `json:"timeZone"`
+	Phone    *string `json:"phone"`
+}
+
+// UpdateUserRequest is the request body for PATCH /users/{id} -- the
+// admin-targeted counterpart to PatchUserMeRequest, for a caller acting on
+// someone else's profile rather than their own (see UserService.UpdateUser's
+// own doc comment). Both fields are optional pointers (unlike
+// PatchUserMeRequest.TimeZone, which is a plain string since it can never be
+// cleared), but at least one must be present. Phone has the same
+// trim/length/clear rules as PatchUserMeRequest.Phone.
+type UpdateUserRequest struct {
+	TimeZone *string `json:"timeZone"`
 	Phone    *string `json:"phone"`
 }
 
@@ -5663,6 +5679,45 @@ type SearchTeamsResponse struct {
 	Total  int    `json:"total"`
 	Offset int    `json:"offset"`
 	Limit  int    `json:"limit"`
+}
+
+// TeamChatWebhook is one team's own Google Chat incoming-webhook URL
+// (team.chat_webhook_url, migration 0240) -- the replacement for a team's
+// entry in csm-notification-service's own GOOGLE_CHAT_SPACES config. Only
+// teams with a configured URL are ever included (see
+// GET /teams/chat-webhooks); a team with none has nowhere specific to route
+// a Chat alert, same as a team missing from that config today.
+type TeamChatWebhook struct {
+	Name           string `json:"name"`
+	ChatWebhookURL string `json:"chatWebhookUrl"`
+}
+
+// ListTeamChatWebhooksResponse is the response for GET /teams/chat-webhooks
+// -- internal-caller-only (see TeamService.ListChatWebhooks), since a
+// webhook URL is itself a bearer credential: anyone holding it can post into
+// that team's Chat space.
+type ListTeamChatWebhooksResponse struct {
+	Teams []TeamChatWebhook `json:"teams"`
+}
+
+// TeamChatWebhookDetail is the response for GET/PATCH
+// /teams/{id}/chat-webhook -- one team's own configured Chat webhook URL,
+// nil when unset. Internal-caller-only, same reasoning as
+// ListTeamChatWebhooksResponse.
+type TeamChatWebhookDetail struct {
+	ChatWebhookURL *string `json:"chatWebhookUrl"`
+}
+
+// UpdateTeamChatWebhookRequest is the body of PATCH /teams/{id}/chat-webhook.
+// An empty ChatWebhookURL clears the team's own webhook; a non-empty one
+// must be a well-formed https:// URL.
+type UpdateTeamChatWebhookRequest struct {
+	ChatWebhookURL string `json:"chatWebhookUrl"`
+}
+
+// AssignTeamLeadRequest is the body of POST /teams/{id}/lead.
+type AssignTeamLeadRequest struct {
+	UserID string `json:"userId"`
 }
 
 // ServiceOfferingServiceRef is the parent service reference within a service offering.

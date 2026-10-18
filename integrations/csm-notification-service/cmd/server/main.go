@@ -651,6 +651,51 @@ func main() {
 		}
 	}
 
+	// Team-sourced Chat spaces: entity-service's "team" table
+	// (team.chat_webhook_url, migration 0240) is now the source of truth for
+	// a team's own Chat space, replacing hand-listing it in GOOGLE_CHAT_SPACES.
+	// Unlike the SLA duration policy fetch above (fetched once, since that
+	// data essentially never changes), this is refreshed on a ticker: an
+	// operator can add or change a team's webhook URL in the database at any
+	// time, and this service should pick it up without a restart. Gated on
+	// CUSTOMER_ENTITY_BASE_URL like every other optional entity-service
+	// feature — without it, a team simply has no Chat space unless one is
+	// still listed in GOOGLE_CHAT_SPACES.
+	if os.Getenv("CUSTOMER_ENTITY_BASE_URL") != "" {
+		refreshTeamAudienceSpaces := func(ctx context.Context) {
+			fetchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			defer cancel()
+			webhooks, err := customerEntityClient.GetTeamChatWebhooks(fetchCtx)
+			if err != nil {
+				// Logged, not fatal: this client keeps whatever it already
+				// had (nil on the very first failed fetch, same as a team
+				// simply having no configured space yet) rather than
+				// crash-looping the whole service over a reachability blip.
+				slog.Error("notifications: failed to refresh team chat webhooks from entity-service; keeping the previous set", "err", err)
+				return
+			}
+			googleChatClient.SetTeamAudienceSpaces(webhooks)
+		}
+		// One synchronous fetch before consumers start, so the very first
+		// case/SLA/frustration alert this process handles already has
+		// team-sourced routing available, not just whatever GOOGLE_CHAT_SPACES
+		// still lists.
+		refreshTeamAudienceSpaces(ctx)
+		teamChatSpacesInterval := envDuration("TEAM_CHAT_SPACES_REFRESH_INTERVAL", 5*time.Minute)
+		go func() {
+			ticker := time.NewTicker(teamChatSpacesInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					refreshTeamAudienceSpaces(ctx)
+				}
+			}
+		}()
+	}
+
 	// Paging-number test calls (paging.test_call_requested, on this main
 	// topic). Wired before the main consumer starts, like WithSLAEngine. Needs
 	// Redis (one test call per person at a time) and entity-service (where

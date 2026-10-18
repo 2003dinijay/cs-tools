@@ -61,3 +61,66 @@ func (h *TeamHandler) SearchTeams(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
 }
+
+// ListChatWebhooks handles GET /teams/chat-webhooks -- a plain GET with no
+// query params or pagination, like GET /sla-duration-policy: internal
+// callers only (TeamService.ListChatWebhooks enforces this), and the result
+// set is bounded by how many teams exist, not large enough to need paging.
+func (h *TeamHandler) ListChatWebhooks(w http.ResponseWriter, r *http.Request) {
+	resp, err := h.svc.ListChatWebhooks(r.Context())
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// GetChatWebhook handles GET /teams/{id}/chat-webhook -- internal callers
+// only (TeamService.GetChatWebhook enforces this).
+func (h *TeamHandler) GetChatWebhook(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	resp, err := h.svc.GetChatWebhook(r.Context(), id)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// UpdateChatWebhook handles PATCH /teams/{id}/chat-webhook -- internal
+// callers only (TeamService.SetChatWebhook enforces this); fine-grained
+// per-team authorization (admin, or that team's own lead) is this route's
+// caller's job -- see apps/csm-portal/backend's own CLAUDE.md.
+func (h *TeamHandler) UpdateChatWebhook(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var req domain.UpdateTeamChatWebhookRequest
+	if !decodeRequest(w, r, &req) {
+		return
+	}
+	resp, err := h.svc.SetChatWebhook(r.Context(), id, req.ChatWebhookURL)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// AssignLead handles POST /teams/{id}/lead -- internal callers only
+// (TeamService.AssignTeamLead enforces this); fine-grained authorization
+// (Asgardeo admin only) is this route's caller's job -- see
+// apps/csm-portal/backend's own CLAUDE.md.
+func (h *TeamHandler) AssignLead(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var req domain.AssignTeamLeadRequest
+	if !decodeRequest(w, r, &req) {
+		return
+	}
+	if err := h.svc.AssignTeamLead(r.Context(), id, req.UserID); err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}

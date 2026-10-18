@@ -81,6 +81,42 @@ check. The Add User form's type selector disables its "External" option for the 
 than offering a choice the backend will reject. All three layers (here, entity-service, the webapp)
 are meant to come out together once external-type creation is ready.
 
+## Updating another user's profile (PATCH /users/{id})
+
+Restricted to `cs_engineer` or `admin` (`PermWrite`, held by exactly those two roles — see "Access
+control" above). Unlike `PATCH /users/me`, which always resolves the caller's own id from their
+token, this lets one of those roles update someone else's profile by id — `timeZone`/`phone`, both
+optional pointers, at least one required (`UsersHandler.UpdateUser` forwards whatever was sent
+straight to entity-service's own `PATCH /users/{id}`, which applies the identical trim/length/clear
+rules `PATCH /users/me` already has for `phone`). Added for the team-lead reassignment feature
+below: the incident call-escalation ladder dials the lead's own phone number (`"user".phone`), so a
+newly assigned lead with none on file is a silent paging gap until this is set here.
+
+## A team's own Chat space link and lead (GET/PATCH /teams/{id}/chat-webhook, POST /teams/{id}/lead)
+
+Three routes on `TeamHandler`, all backed by entity-service's own `team.chat_webhook_url`/
+`team_member.role` columns (see that repo's own `CLAUDE.md`):
+
+- **`GET`/`PATCH /teams/{id}/chat-webhook`** — view or change the team's own Google Chat space
+  link. The route-level floor is `PermViewSharedEntity` (same as `GET /teams/{id}/members`), but
+  `TeamHandler.authorizeChatWebhookActor` narrows it further, in-handler: only an Asgardeo admin
+  (`AccessGuard.Permits(PermAdmin, ...)`) or **this specific team's own lead**
+  (`TeamHandler.callerIsTeamLead`, which fetches the team's roster via the existing
+  `GET /teams/{id}/members` client call and matches the caller's email, case-insensitively, against
+  whichever member holds `role: "lead"`) may reach either verb — everyone else gets 403, since a Chat
+  webhook URL is a bearer credential once set (anyone holding it can post into that space).
+  entity-service itself validates the URL on PATCH (must be a well-formed
+  `https://chat.googleapis.com/...` URL, or empty to clear) and its refusal reason is echoed
+  verbatim (`mapUpstreamError`).
+- **`POST /teams/{id}/lead`** — reassign the team's one lead. Admin-only via the route's own
+  `PermAdmin` (same posture as `POST /users`/`PATCH /users/{id}`: the handler does not re-check the
+  caller's role itself). **This writes the real, paging-connected `team_member.role` column** — not
+  a cosmetic label; entity-service's own incident call-escalation ladder reads this exact column to
+  decide who gets paged for this team, so reassigning it changes who gets called during an incident,
+  immediately. The UI must make this consequence obvious when offering this control, and should
+  prompt to set the new lead's phone number in the same flow (`PATCH /users/{id}` above) if none is
+  on file.
+
 ## Listing time card approvers via SCIM (GET /users/time-card-approvers)
 
 Who may approve a time card is granted by real Asgardeo role membership (see `AUTH_TIMECARD_APPROVER_ROLES`

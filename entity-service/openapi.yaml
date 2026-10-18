@@ -2479,6 +2479,70 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+    patch:
+      summary: Update another user's profile (timezone and/or phone).
+      description: >-
+        Internal callers only — unlike PATCH /users/me, the id comes from the
+        path, not the caller's own token, so a trusted caller (e.g. an
+        Asgardeo admin acting through apps/csm-portal/backend, when
+        reassigning a team lead whose paging number needs to be set) can
+        update someone else's profile. Both fields are optional but at least
+        one must be present; phone has the same trim/length/clear rules as
+        PATCH /users/me. The incident call-escalation ladder dials this
+        number for a team's lead, so fine-grained authorization beyond
+        "internal service" (e.g. admin-only) is the caller's own job.
+      operationId: updateUser
+      tags: [Users]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                timeZone:
+                  type: string
+                phone:
+                  type: string
+                  description: Empty (after trimming) clears the stored phone.
+      responses:
+        '200':
+          description: The user's profile after the update.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PatchUserMeResponse'
+        '400':
+          description: Bad request (malformed id, neither field present, or phone too long).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Caller is not an internal service.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: User not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /users/search:
     post:
@@ -2669,6 +2733,192 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "404":
           description: Team not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /teams/{id}/chat-webhook:
+    get:
+      summary: Get one team's own configured Google Chat incoming-webhook URL.
+      description: >-
+        Internal callers only — a webhook URL is itself a bearer credential,
+        so this is never exposed through POST /teams/search. `chatWebhookUrl`
+        is null when the team has none configured.
+      operationId: getTeamChatWebhook
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The team's own configured Chat webhook URL (null when unset).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TeamChatWebhookDetail'
+        "400":
+          description: Bad request (e.g. malformed UUID).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Caller is not an internal service.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Team not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    patch:
+      summary: Set or clear one team's own Google Chat incoming-webhook URL.
+      description: >-
+        Internal callers only. An empty chatWebhookUrl clears the team's
+        webhook; a non-empty value must be a well-formed
+        https://chat.googleapis.com/... URL (any other host, or a non-https
+        scheme, is rejected). Fine-grained authorization (an Asgardeo admin,
+        or that specific team's own lead) is enforced by the caller
+        (apps/csm-portal/backend), not here — this route only guards that the
+        caller is an internal service at all.
+      operationId: updateTeamChatWebhook
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTeamChatWebhookRequest'
+      responses:
+        "200":
+          description: The team's chat webhook URL after the update.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TeamChatWebhookDetail'
+        "400":
+          description: Bad request (malformed UUID, or chatWebhookUrl is not a well-formed https://chat.googleapis.com/... URL).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Caller is not an internal service.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Team not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /teams/{id}/lead:
+    post:
+      summary: Assign a user as the team's one 'lead'.
+      description: >-
+        Internal callers only. Demotes any other current lead of this team to
+        'engineer' and promotes (or adds) userId to 'lead' in the same
+        transaction — `team_member.role` is read directly by
+        csm-notification-service's incident call-escalation ladder, so this
+        changes who is paged for this team, not just a cosmetic label.
+        Fine-grained authorization (Asgardeo admin only) is enforced by the
+        caller (apps/csm-portal/backend), not here.
+      operationId: assignTeamLead
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssignTeamLeadRequest'
+      responses:
+        "204":
+          description: The team's lead was reassigned.
+        "400":
+          description: Bad request (malformed id or userId, or userId does not refer to an existing user).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Caller is not an internal service.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Team not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /teams/chat-webhooks:
+    get:
+      summary: >-
+        List every team's own configured Google Chat incoming-webhook URL
+        (team.chat_webhook_url, migration 0240). Internal callers only — a
+        webhook URL is itself a bearer credential, so this is reference data
+        for a backend service (integrations/csm-notification-service, fetched
+        periodically to resolve a team's own Chat space), not something any
+        portal caller has a legitimate use for. A team with no configured URL
+        is left out entirely.
+      operationId: listTeamChatWebhooks
+      responses:
+        "200":
+          description: Every team with a configured chat_webhook_url.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListTeamChatWebhooksResponse'
+        "403":
+          description: Caller is not an internal service.
           content:
             application/json:
               schema:
@@ -23786,6 +24036,45 @@ components:
           type: integer
         limit:
           type: integer
+
+    TeamChatWebhook:
+      type: object
+      properties:
+        name:
+          type: string
+        chatWebhookUrl:
+          type: string
+
+    ListTeamChatWebhooksResponse:
+      type: object
+      properties:
+        teams:
+          type: array
+          items:
+            $ref: '#/components/schemas/TeamChatWebhook'
+
+    TeamChatWebhookDetail:
+      type: object
+      properties:
+        chatWebhookUrl:
+          type: string
+          nullable: true
+
+    UpdateTeamChatWebhookRequest:
+      type: object
+      required: [chatWebhookUrl]
+      properties:
+        chatWebhookUrl:
+          type: string
+          description: Empty string clears the webhook.
+
+    AssignTeamLeadRequest:
+      type: object
+      required: [userId]
+      properties:
+        userId:
+          type: string
+          format: uuid
 
     GroupManagerRef:
       type: object
