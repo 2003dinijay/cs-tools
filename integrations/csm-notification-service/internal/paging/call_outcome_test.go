@@ -55,10 +55,34 @@ func (s *scriptedStatuses) GetCall(_ context.Context, sid string) (notifications
 	return notifications.Call{SID: sid, Status: s.script[i].status}, nil
 }
 
-// quickWatcher asks at once and then every millisecond, for at most four reads.
+// tickingReads moves a fake clock on by a millisecond at every status read,
+// so how many reads fit in GiveUpAfter does not depend on the scheduler.
+type tickingReads struct {
+	calls callStatusReader
+	mu    sync.Mutex
+	clock time.Time
+}
+
+func (t *tickingReads) GetCall(ctx context.Context, sid string) (notifications.Call, error) {
+	t.mu.Lock()
+	t.clock = t.clock.Add(time.Millisecond)
+	t.mu.Unlock()
+	return t.calls.GetCall(ctx, sid)
+}
+
+func (t *tickingReads) now() time.Time {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.clock
+}
+
+// quickWatcher asks at once and then every millisecond, on a clock that moves
+// only when Twilio is read: exactly three reads fit in GiveUpAfter.
 func quickWatcher(ctx context.Context, calls callStatusReader) *CallOutcomeWatcher {
-	w := newCallOutcomeWatcher(ctx, calls)
+	ticking := &tickingReads{calls: calls, clock: time.Date(2026, 10, 17, 10, 0, 0, 0, time.UTC)}
+	w := newCallOutcomeWatcher(ctx, ticking)
 	w.FirstCheck, w.PollEvery, w.GiveUpAfter = 0, time.Millisecond, 3*time.Millisecond
+	w.now = ticking.now
 	return w
 }
 
