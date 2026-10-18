@@ -422,6 +422,9 @@ func (r TeamScheduleResolver) Resolve(ctx context.Context, level Level, rc Routi
 	for i := range out {
 		if out[i].Phone == "" {
 			out[i].Phone = r.phones.NumberFor(out[i].Email)
+			// TEST_CALL_TO routes every call to one tester: nothing may
+			// replace it, not even the person's own profile number.
+			out[i].PhoneFixed = r.phones.TestCallTo != "" && out[i].Phone != ""
 		}
 	}
 	return out, err

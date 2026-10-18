@@ -877,10 +877,11 @@ func main() {
 					slog.Error("INCIDENT_ESCALATION_RESOLVER=team-schedule needs CUSTOMER_ENTITY_BASE_URL; " +
 						"falling back to the configured roster")
 				} else {
-					// The rota holds no phone numbers: they come from
-					// INCIDENT_ESCALATION_PHONES (e-mail -> E.164), or every
-					// call goes to INCIDENT_ESCALATION_TEST_CALL_TO. A chat-only
-					// ladder needs neither.
+					// The rota holds no phone numbers. INCIDENT_ESCALATION_PHONES
+					// (e-mail -> E.164) is a fallback behind the CSM profile
+					// number (ProfilePhoneResolver, below); every call goes to
+					// INCIDENT_ESCALATION_TEST_CALL_TO when it is set. A
+					// chat-only ladder needs neither.
 					phones, perr := paging.ParsePhoneBook(os.Getenv("INCIDENT_ESCALATION_PHONES"), os.Getenv("INCIDENT_ESCALATION_TEST_CALL_TO"))
 					if perr != nil {
 						// Not logging perr: the decode error can quote numbers.

@@ -669,7 +669,8 @@ an error -- its lead would still be called on every CRE ladder's
 **Numbers**: the rota holds none. `INCIDENT_ESCALATION_PHONES` (JSON, e-mail ->
 E.164) or `INCIDENT_ESCALATION_TEST_CALL_TO` (every call to one number) fill
 them through `TeamScheduleResolver.WithPhoneBook`. A chat-only ladder needs
-neither.
+neither. The phone book is a fallback: a valid CSM profile number replaces its
+entry (`ProfilePhoneResolver`); `TEST_CALL_TO` is never replaced.
 
 **Where alert-born incidents come from.** `sre-alert-core-service` creates the
 CSM incident (`engine.deliverAndPersist` -> `notify.NotifyCSM` -> `POST
@@ -731,9 +732,12 @@ lookup; it exists until `"user".phone` has been filled from Asgardeo, and
 Asgardeo; the onboarding flow keeps its own use of `SCIM_BASE_URL`). The CSM
 portal backend reads the same variable for the Case Paging readiness strip. A CSM lookup that fails falls back to Asgardeo for
 everyone. An older entity-service sends only the paging-only number (no
-`dialSource`); it is then used after the Asgardeo profile, as before. Order: a
-number in `paging-alert.yaml`, then the phone book, then CSM's number, then
-Asgardeo's. A lookup that fails, times out or is not E.164 leaves that one
+`dialSource`); it is then used after the Asgardeo profile, as before. Order
+(first match wins): `INCIDENT_ESCALATION_TEST_CALL_TO` (`Recipient.PhoneFixed`,
+never replaced), then the person's **CSM profile number**, then a number they
+already carry (the phone book, `paging-alert.yaml`, the roster), then their
+alert-only number in CSM, then Asgardeo's. Until 2026-10-18 the configured
+number came first and an old phone-book entry beat a corrected profile. A lookup that fails, times out or is not E.164 leaves that one
 person `NO_NUMBER` and never fails the tier. `phones.source: none` turns it all
 off. Applies to the CRE and SRE ladders and the SME page alike. Nothing is
 persisted outside the plan, and the number is never logged.
