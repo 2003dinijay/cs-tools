@@ -3199,3 +3199,12 @@
 @media (prefers-reduced-motion: reduce) {
   .csm-ts .sk, .csm-ts .sk-bar, .csm-ts .sk-spin { animation: none; }
 }
+
+/* Where the Sri Lankan day and the Americas day are both on: a small link on
+   the edge the LK and US columns share, as tall as the overlap. It sits in
+   the first US column, centred on the 6px gap, so it joins the two cards
+   without lying across either one's hours or names; an opened card covers
+   it. The time is in its tooltip. */
+.csm-ts .ladder .lane .lhand { position: absolute; left: -13px; width: 20px; min-height: 20px; z-index: 3; box-sizing: border-box; display: flex; align-items: center; justify-content: center; border-radius: 9px; background: var(--accent); color: #fff; box-shadow: 0 0 0 2px var(--surface-solid), 0 1px 3px rgba(0,0,0,.25); cursor: default; }
+.csm-ts .ladder .lane .lhand i { font-style: normal; font-size: 12px; font-weight: 800; line-height: 1; }
+.csm-ts .ladder .lax .laxhand { position: absolute; right: 0; width: 3px; border-radius: 2px; background: var(--accent); }
