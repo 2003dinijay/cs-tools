@@ -52,10 +52,10 @@ func serveCatalog(t *testing.T, m *mockCatalogClient, pattern, target string) *h
 	t.Helper()
 	mux := http.NewServeMux()
 	h := NewCatalogHandler(m)
-	mux.HandleFunc("GET /products/search", h.SearchProducts)
-	mux.HandleFunc("GET /products/{id}/versions/search", h.SearchProductVersions)
-	mux.HandleFunc("GET /deployments/search", h.SearchDeployments)
-	mux.HandleFunc("GET /deployed-products/search", h.SearchDeployedProducts)
+	mux.HandleFunc("GET /products", h.SearchProducts)
+	mux.HandleFunc("GET /products/{id}/versions", h.SearchProductVersions)
+	mux.HandleFunc("GET /deployments", h.SearchDeployments)
+	mux.HandleFunc("GET /deployed-products", h.SearchDeployedProducts)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, target, nil))
 	return w
@@ -80,11 +80,11 @@ func projectsJSON(t *testing.T) func([]byte) ([]byte, error) {
 func TestCatalog_InvalidParams(t *testing.T) {
 	m := &mockCatalogClient{}
 	for _, tc := range []struct{ target, msg string }{
-		{"/products/search?limit=0", errMsgInvalidLimit},
-		{"/products/search?limit=101", errMsgInvalidLimit},
-		{"/deployments/search?limit=abc", errMsgInvalidLimit},
-		{"/deployments/search?offset=-1", errMsgInvalidOffset},
-		{"/products/not-a-uuid/versions/search", ErrMsgInvalidUUID},
+		{"/products?limit=0", errMsgInvalidLimit},
+		{"/products?limit=101", errMsgInvalidLimit},
+		{"/deployments?limit=abc", errMsgInvalidLimit},
+		{"/deployments?offset=-1", errMsgInvalidOffset},
+		{"/products/not-a-uuid/versions", ErrMsgInvalidUUID},
 	} {
 		w := serveCatalog(t, m, "", tc.target)
 		assertStatus(t, w, http.StatusBadRequest)
@@ -98,7 +98,7 @@ func TestCatalog_SearchProducts(t *testing.T) {
 		_ = json.Unmarshal(b, &got)
 		return []byte(`{"products":[{"id":"b","name":"Zeta","class":"software","createdOn":"x"},{"id":"a","name":"apim","class":"software"},{"id":"c","name":"Mid","class":"software"}],"total":3,"hasMore":false}`), nil
 	}}
-	w := serveCatalog(t, m, "", "/products/search?class=software_model&limit=2&offset=1")
+	w := serveCatalog(t, m, "", "/products?class=software_model&limit=2&offset=1")
 	assertStatus(t, w, http.StatusOK)
 	if got["class"] != "software" {
 		t.Errorf("class not mapped to entity category: %v", got)
@@ -128,7 +128,7 @@ func TestCatalog_UnknownClassIsIgnored(t *testing.T) {
 		_ = json.Unmarshal(b, &got)
 		return []byte(`{"products":[],"total":0,"hasMore":false}`), nil
 	}}
-	assertStatus(t, serveCatalog(t, m, "", "/products/search?class=bogus"), http.StatusOK)
+	assertStatus(t, serveCatalog(t, m, "", "/products?class=bogus"), http.StatusOK)
 	if _, has := got["class"]; has {
 		t.Errorf("unknown class must not filter: %v", got)
 	}
@@ -148,7 +148,7 @@ func TestCatalog_LimitAbovePageCapUsesSeveralCalls(t *testing.T) {
 		}
 		return []byte(`{"deployments":[` + strings.Join(items, ",") + `],"total":500,"hasMore":true}`), nil
 	}}
-	w := serveCatalog(t, m, "", "/deployments/search?limit=100")
+	w := serveCatalog(t, m, "", "/deployments?limit=100")
 	assertStatus(t, w, http.StatusOK)
 	if len(calls) != 2 || calls[0] != 50 || calls[1] != 50 {
 		t.Errorf("upstream page sizes = %v, want [50 50]", calls)
@@ -172,7 +172,7 @@ func TestCatalog_SearchProductVersions(t *testing.T) {
 				`],"total":3,"hasMore":false}`), nil
 		},
 	}
-	w := serveCatalog(t, m, "", "/products/"+catalogUUID+"/versions/search?limit=2&offset=0")
+	w := serveCatalog(t, m, "", "/products/"+catalogUUID+"/versions?limit=2&offset=0")
 	assertStatus(t, w, http.StatusOK)
 	data := decodeJSON[map[string]any](t, w)["data"].(map[string]any)
 	vs := data["versions"].([]any)
@@ -196,7 +196,7 @@ func TestCatalog_VersionsSurviveProductLookupFailure(t *testing.T) {
 			return []byte(`{"productVersions":[{"id":"v1","version":"4.0.0"}],"total":1,"hasMore":false}`), nil
 		},
 	}
-	w := serveCatalog(t, m, "", "/products/"+catalogUUID+"/versions/search")
+	w := serveCatalog(t, m, "", "/products/"+catalogUUID+"/versions")
 	assertStatus(t, w, http.StatusOK)
 	data := decodeJSON[map[string]any](t, w)["data"].(map[string]any)
 	prod := data["versions"].([]any)[0].(map[string]any)["product"].(map[string]any)
@@ -228,7 +228,7 @@ func TestCatalog_SearchDeployments(t *testing.T) {
 			return []byte(`{"deployments":[{"id":"d1","number":"DEP1","name":"Prod","type":"primary_production","description":null,"url":null,"project":{"id":"p1","name":"Proj"},"createdOn":"2025-03-04T05:06:07Z","updatedOn":"2025-03-04T05:06:08.5Z","deployedProductCount":2}],"total":1,"hasMore":false}`), nil
 		},
 	}
-	w := serveCatalog(t, m, "", "/deployments/search?sfIds=SF001,SF001,UNKNOWN")
+	w := serveCatalog(t, m, "", "/deployments?sfIds=SF001,SF001,UNKNOWN")
 	assertStatus(t, w, http.StatusOK)
 	if ids, _ := got["projectIds"].([]any); len(ids) != 1 || ids[0] != "p1" {
 		t.Errorf("projectIds = %v, want [p1]", got["projectIds"])
@@ -272,7 +272,7 @@ func TestCatalog_ResolveProjectIDsPagesUntilNoMore(t *testing.T) {
 
 func TestCatalog_UnknownSfIDsGiveEmptyNotUnfiltered(t *testing.T) {
 	m := &mockCatalogClient{projects: projectsJSON(t)} // deployments func nil: must not be called
-	for _, path := range []string{"/deployments/search", "/deployed-products/search"} {
+	for _, path := range []string{"/deployments", "/deployed-products"} {
 		w := serveCatalog(t, m, "", path+"?sfIds=NOPE")
 		assertStatus(t, w, http.StatusOK)
 		data := decodeJSON[map[string]any](t, w)["data"].(map[string]any)
@@ -298,7 +298,7 @@ func TestCatalog_SearchDeployedProducts(t *testing.T) {
 			return []byte(`{"deployedProducts":[{"id":"dp1","deployment":{"id":"d1","name":"QA"},"product":{"id":"pr","name":"APIM","abbreviation":"wso2am"},"version":{"id":"v","name":"4.0.0","releasedDate":"2024-01-01T00:00:00Z","supportEoLDate":"2027-01-01T00:00:00Z"},"cores":4,"tps":12.9,"category":"pdp","description":null,"updates":[{"updateLevel":12,"date":"2025-01-01","details":null}],"createdOn":"2025-03-04T05:06:07Z","updatedOn":"2025-03-04T05:06:07Z"}],"total":1,"hasMore":false}`), nil
 		},
 	}
-	w := serveCatalog(t, m, "", "/deployed-products/search?sfIds=SF001")
+	w := serveCatalog(t, m, "", "/deployed-products?sfIds=SF001")
 	assertStatus(t, w, http.StatusOK)
 	if ids, _ := got["deploymentIds"].([]any); len(ids) != 2 {
 		t.Errorf("deploymentIds = %v", got["deploymentIds"])
@@ -323,11 +323,11 @@ func TestCatalog_UpstreamErrors(t *testing.T) {
 	for _, tc := range upstreamErrors("Failed to search products.") {
 		t.Run(tc.name, func(t *testing.T) {
 			m := &mockCatalogClient{products: func([]byte) ([]byte, error) { return nil, tc.err }}
-			w := serveCatalog(t, m, "", "/products/search")
+			w := serveCatalog(t, m, "", "/products")
 			assertStatus(t, w, tc.wantCode)
 			assertErrorMessage(t, w, tc.wantMsg)
 		})
 	}
 	m := &mockCatalogClient{products: func([]byte) ([]byte, error) { return []byte(`not json`), nil }}
-	assertStatus(t, serveCatalog(t, m, "", "/products/search"), http.StatusInternalServerError)
+	assertStatus(t, serveCatalog(t, m, "", "/products"), http.StatusInternalServerError)
 }

@@ -206,8 +206,8 @@ Contacts search and opportunity/invoice/link reads work over M2M only if this se
 
 ## Catalog reads (`/products`, `/deployments`, `/deployed-products`) reshape on purpose
 
-`GET /products/search`, `GET /products/{id}/versions/search`, `GET /deployments/search`
-and `GET /deployed-products/search` (`internal/handler/catalog.go`) are a
+`GET /products`, `GET /products/{id}/versions`, `GET /deployments`
+and `GET /deployed-products` (`internal/handler/catalog.go`) are a
 compatibility facade for the ServiceNow "SF WSO2 Product & Deployment API":
 same `{success, data}` envelope and field names, built from entity-service's
 `POST .../search` responses. **This is the one place besides cloud-status that

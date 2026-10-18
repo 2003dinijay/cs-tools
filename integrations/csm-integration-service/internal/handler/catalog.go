@@ -242,7 +242,7 @@ func (h *CatalogHandler) resolveProjectIDs(ctx context.Context, sfIDs []string) 
 	return ids, err
 }
 
-// ----- GET /products/search -----
+// ----- GET /products -----
 
 type entityProductsPage struct {
 	Products []struct {
@@ -315,7 +315,7 @@ func window[T any](items []T, limit, offset int) []T {
 	return items[offset:min(offset+limit, len(items))]
 }
 
-// SearchProducts handles GET /products/search. An unrecognised ?class is ignored
+// SearchProducts handles GET /products. An unrecognised ?class is ignored
 // (no class filter), as it always was.
 func (h *CatalogHandler) SearchProducts(w http.ResponseWriter, r *http.Request) {
 	limit, offset, msg := parseLimitOffset(r)
@@ -338,7 +338,7 @@ func (h *CatalogHandler) SearchProducts(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-// ----- GET /products/{id}/versions/search -----
+// ----- GET /products/{id}/versions -----
 
 type entityVersionsPage struct {
 	ProductVersions []struct {
@@ -410,7 +410,7 @@ func leadingDigits(s string) string {
 	return s[:i]
 }
 
-// SearchProductVersions handles GET /products/{id}/versions/search. Versions are
+// SearchProductVersions handles GET /products/{id}/versions. Versions are
 // ordered newest first across the whole product and then windowed, so every
 // version is read before paging.
 func (h *CatalogHandler) SearchProductVersions(w http.ResponseWriter, r *http.Request) {
@@ -479,7 +479,7 @@ func deref(s *string) string {
 	return *s
 }
 
-// ----- GET /deployments/search -----
+// ----- GET /deployments -----
 
 type entityDeploymentsPage struct {
 	Deployments []struct {
@@ -567,7 +567,7 @@ func writeEmptyList(w http.ResponseWriter, key string, totalKey string, limit, o
 	writeEnvelope(w, map[string]any{key: []any{}, totalKey: 0, "offset": offset, "limit": limit})
 }
 
-// SearchDeployments handles GET /deployments/search.
+// SearchDeployments handles GET /deployments.
 func (h *CatalogHandler) SearchDeployments(w http.ResponseWriter, r *http.Request) {
 	limit, offset, msg := parseLimitOffset(r)
 	if msg != "" {
@@ -603,7 +603,7 @@ func (h *CatalogHandler) SearchDeployments(w http.ResponseWriter, r *http.Reques
 	writeEnvelope(w, map[string]any{"deployments": items, "totalRecords": total, "offset": offset, "limit": limit})
 }
 
-// ----- GET /deployed-products/search -----
+// ----- GET /deployed-products -----
 
 type entityDeployedProduct struct {
 	ID         string `json:"id"`
@@ -723,7 +723,7 @@ func nullIfAbsent(raw json.RawMessage) json.RawMessage {
 	return raw
 }
 
-// SearchDeployedProducts handles GET /deployed-products/search.
+// SearchDeployedProducts handles GET /deployed-products.
 func (h *CatalogHandler) SearchDeployedProducts(w http.ResponseWriter, r *http.Request) {
 	limit, offset, msg := parseLimitOffset(r)
 	if msg != "" {
