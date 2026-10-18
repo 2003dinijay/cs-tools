@@ -24092,6 +24092,7 @@ components:
 
     UpdateTeamRequest:
       type: object
+      required: [chatWebhookUrl]
       properties:
         chatWebhookUrl:
           type: string
