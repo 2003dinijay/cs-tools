@@ -96,12 +96,18 @@ func TestCatalog_ForwardsBodyAndReturnsResponseVerbatim(t *testing.T) {
 	}
 }
 
-func TestCatalog_EmptyBodyIsForwarded(t *testing.T) {
-	var got []byte
-	for _, tc := range catalogCases(&got, `{}`, nil) {
-		t.Run(tc.name, func(t *testing.T) {
-			assertStatus(t, serveCatalog(tc.mock, tc.target, ""), http.StatusOK)
-		})
+func TestCatalog_EmptyBodyBecomesEmptyObject(t *testing.T) {
+	for _, body := range []string{"", "  \n"} {
+		var got []byte
+		for _, tc := range catalogCases(&got, `{}`, nil) {
+			t.Run(tc.name, func(t *testing.T) {
+				got = nil
+				assertStatus(t, serveCatalog(tc.mock, tc.target, body), http.StatusOK)
+				if string(got) != `{}` {
+					t.Errorf("upstream body = %q for input %q, want {}", got, body)
+				}
+			})
+		}
 	}
 }
 

@@ -17,6 +17,7 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -34,7 +35,7 @@ type entityCatalogClient interface {
 
 // CatalogHandler handles the product, product-version, deployment and
 // deployed-product searches. Each request body is forwarded to the entity
-// service as-is and its response is returned verbatim.
+// service as-is (an empty one as {}) and its response is returned verbatim.
 type CatalogHandler struct {
 	entity entityCatalogClient
 }
@@ -45,8 +46,8 @@ func NewCatalogHandler(entity entityCatalogClient) *CatalogHandler {
 }
 
 // readSearchBody caps and reads the request body and checks it is JSON. An empty
-// body is allowed and forwarded empty. On failure it writes the error response
-// and returns false.
+// (or whitespace-only) body becomes "{}", since entity-service rejects a body
+// with no JSON object. On failure it writes the error response and returns false.
 func readSearchBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	body, err := io.ReadAll(r.Body)
@@ -58,7 +59,10 @@ func readSearchBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
 		writeError(w, http.StatusBadRequest, errMsgReadBody)
 		return nil, false
 	}
-	if len(body) > 0 && !json.Valid(body) {
+	if len(bytes.TrimSpace(body)) == 0 {
+		return []byte("{}"), true
+	}
+	if !json.Valid(body) {
 		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
 		return nil, false
 	}

@@ -960,7 +960,7 @@ paths:
     post:
       summary: Search deployed products
       operationId: searchDeployedProducts
-      description: The payload is forwarded to the entity service and its response is returned unchanged.
+      description: The payload is forwarded to the entity service and its response is returned unchanged. An empty body is treated as {}.
       requestBody:
         required: false
         content:
@@ -1010,12 +1010,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        "503":
+          description: ServiceUnavailable (the upstream entity service is unavailable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /deployments/search:
     post:
       summary: Search deployments
       operationId: searchDeployments
-      description: The payload is forwarded to the entity service and its response is returned unchanged.
+      description: The payload is forwarded to the entity service and its response is returned unchanged. An empty body is treated as {}.
       requestBody:
         required: false
         content:
@@ -1065,12 +1071,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        "503":
+          description: ServiceUnavailable (the upstream entity service is unavailable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /products/search:
     post:
       summary: Search products
       operationId: searchProducts
-      description: The payload is forwarded to the entity service and its response is returned unchanged.
+      description: The payload is forwarded to the entity service and its response is returned unchanged. An empty body is treated as {}.
       requestBody:
         required: false
         content:
@@ -1120,12 +1132,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        "503":
+          description: ServiceUnavailable (the upstream entity service is unavailable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /products/{id}/versions/search:
     post:
       summary: Search versions of a product
       operationId: searchProductVersions
-      description: The payload is forwarded to the entity service and its response is returned unchanged.
+      description: The payload is forwarded to the entity service and its response is returned unchanged. An empty body is treated as {}.
       parameters:
         - name: id
           in: path
@@ -1178,6 +1196,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "500":
           description: InternalServerError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "503":
+          description: ServiceUnavailable (the upstream entity service is unavailable)
           content:
             application/json:
               schema:
