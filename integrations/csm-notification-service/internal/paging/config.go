@@ -607,7 +607,7 @@ func DefaultConfig() Config {
 // somebody has just edited it, believes they have changed the behaviour, and
 // would otherwise get the old behaviour with no indication.
 func LoadConfig(path string) (Config, error) {
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path) // #nosec G304 -- path is always the operator-set INCIDENT_ESCALATION_CONFIG deployment env var, read once at startup, never request/user input
 	if err != nil {
 		return DefaultConfig(), fmt.Errorf("escalation: read config %s: %w", path, err)
 	}
