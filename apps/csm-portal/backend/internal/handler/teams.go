@@ -32,8 +32,8 @@ import (
 // this file needs.
 type entityTeamsClient interface {
 	GetTeamMembers(ctx context.Context, teamID string) ([]byte, error)
-	GetTeamChatWebhook(ctx context.Context, teamID string) ([]byte, error)
-	UpdateTeamChatWebhook(ctx context.Context, teamID string, body []byte) ([]byte, error)
+	GetTeam(ctx context.Context, teamID string) ([]byte, error)
+	UpdateTeam(ctx context.Context, teamID string, body []byte) ([]byte, error)
 	AssignTeamLead(ctx context.Context, teamID string, body []byte) ([]byte, error)
 }
 
@@ -55,19 +55,25 @@ type TeamMemberView struct {
 	Role  string `json:"role"`
 }
 
-// entityTeamChatWebhookDetail mirrors entity-service's
-// domain.TeamChatWebhookDetail.
-type entityTeamChatWebhookDetail struct {
+// entityTeamDetail mirrors entity-service's domain.TeamDetail.
+type entityTeamDetail struct {
+	ID             string  `json:"id"`
+	Name           string  `json:"name"`
+	Type           string  `json:"type"`
 	ChatWebhookURL *string `json:"chatWebhookUrl"`
 }
 
-// TeamChatWebhookView is the GET/PATCH /teams/{id}/chat-webhook response.
-type TeamChatWebhookView struct {
+// TeamDetailView is the GET/PATCH /teams/{id} response.
+type TeamDetailView struct {
+	ID             string  `json:"id"`
+	Name           string  `json:"name"`
+	Type           string  `json:"type"`
 	ChatWebhookURL *string `json:"chatWebhookUrl"`
 }
 
-// updateTeamChatWebhookRequest is the body of PATCH /teams/{id}/chat-webhook.
-type updateTeamChatWebhookRequest struct {
+// updateTeamRequest is the body of PATCH /teams/{id}. chatWebhookUrl is the
+// only settable field today.
+type updateTeamRequest struct {
 	ChatWebhookURL *string `json:"chatWebhookUrl"`
 }
 
@@ -218,10 +224,12 @@ func (h *TeamHandler) authorizeChatWebhookActor(w http.ResponseWriter, r *http.R
 	return false
 }
 
-// GetChatWebhook handles GET /teams/{id}/chat-webhook -- an Asgardeo admin or
-// this specific team's own lead only (authorizeChatWebhookActor); every other
-// caller holding the route's own PermViewSharedEntity floor gets 403.
-func (h *TeamHandler) GetChatWebhook(w http.ResponseWriter, r *http.Request) {
+// GetTeam handles GET /teams/{id} -- an Asgardeo admin or this specific
+// team's own lead only (authorizeChatWebhookActor); every other caller
+// holding the route's own PermViewSharedEntity floor gets 403. A single
+// generic team resource (mirroring GET /users/{id}) rather than a
+// dedicated /teams/{id}/chat-webhook route.
+func (h *TeamHandler) GetTeam(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserInfoFromContext(r.Context())
 	if user == nil {
 		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
@@ -239,27 +247,27 @@ func (h *TeamHandler) GetChatWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	raw, err := h.entity.GetTeamChatWebhook(ctx, normalizeToUUID(teamID))
+	raw, err := h.entity.GetTeam(ctx, normalizeToUUID(teamID))
 	if err != nil {
-		slog.ErrorContext(ctx, "entity GetTeamChatWebhook failed", "userID", user.UserID, "teamID", teamID, "err", err)
-		mapUpstreamErrorGeneric(w, err, "Failed to retrieve the team's Chat space.")
+		slog.ErrorContext(ctx, "entity GetTeam failed", "userID", user.UserID, "teamID", teamID, "err", err)
+		mapUpstreamErrorGeneric(w, err, "Failed to retrieve the team.")
 		return
 	}
-	var detail entityTeamChatWebhookDetail
+	var detail entityTeamDetail
 	if err := json.Unmarshal(raw, &detail); err != nil {
-		slog.ErrorContext(ctx, "unmarshal entity-service chat-webhook response failed", "userID", user.UserID, "teamID", teamID, "err", err)
+		slog.ErrorContext(ctx, "unmarshal entity-service team response failed", "userID", user.UserID, "teamID", teamID, "err", err)
 		writeError(w, http.StatusInternalServerError, ErrMsgInternal)
 		return
 	}
-	writeJSONValue(w, http.StatusOK, TeamChatWebhookView{ChatWebhookURL: detail.ChatWebhookURL})
+	writeJSONValue(w, http.StatusOK, TeamDetailView(detail))
 }
 
-// UpdateChatWebhook handles PATCH /teams/{id}/chat-webhook -- an Asgardeo
-// admin or this specific team's own lead only (authorizeChatWebhookActor).
-// entity-service itself validates the URL (well-formed
-// https://chat.googleapis.com/... or empty to clear); its 400 reason is
+// UpdateTeam handles PATCH /teams/{id} -- an Asgardeo admin or this specific
+// team's own lead only (authorizeChatWebhookActor). chatWebhookUrl is the
+// only settable field today; entity-service itself validates it (well-formed
+// https://chat.googleapis.com/... or empty to clear), and its 400 reason is
 // echoed verbatim (mapUpstreamError) so the form can show it.
-func (h *TeamHandler) UpdateChatWebhook(w http.ResponseWriter, r *http.Request) {
+func (h *TeamHandler) UpdateTeam(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserInfoFromContext(r.Context())
 	if user == nil {
 		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
@@ -281,15 +289,16 @@ func (h *TeamHandler) UpdateChatWebhook(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	var payload updateTeamChatWebhookRequest
+	var payload updateTeamRequest
 	if err := json.Unmarshal(body, &payload); err != nil {
 		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
 		return
 	}
-	url := ""
-	if payload.ChatWebhookURL != nil {
-		url = strings.TrimSpace(*payload.ChatWebhookURL)
+	if payload.ChatWebhookURL == nil {
+		writeError(w, http.StatusBadRequest, "At least one field must be provided for update.")
+		return
 	}
+	url := strings.TrimSpace(*payload.ChatWebhookURL)
 	entityBody, err := json.Marshal(map[string]string{"chatWebhookUrl": url})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, ErrMsgInternal)
@@ -297,19 +306,19 @@ func (h *TeamHandler) UpdateChatWebhook(w http.ResponseWriter, r *http.Request) 
 	}
 
 	ctx := r.Context()
-	raw, err := h.entity.UpdateTeamChatWebhook(ctx, teamID, entityBody)
+	raw, err := h.entity.UpdateTeam(ctx, teamID, entityBody)
 	if err != nil {
-		slog.ErrorContext(ctx, "entity UpdateTeamChatWebhook failed", "userID", user.UserID, "teamID", teamID, "err", err)
+		slog.ErrorContext(ctx, "entity UpdateTeam failed", "userID", user.UserID, "teamID", teamID, "err", err)
 		mapUpstreamError(w, err, "Failed to update the team's Chat space.")
 		return
 	}
-	var detail entityTeamChatWebhookDetail
+	var detail entityTeamDetail
 	if err := json.Unmarshal(raw, &detail); err != nil {
-		slog.ErrorContext(ctx, "unmarshal entity-service chat-webhook response failed", "userID", user.UserID, "teamID", teamID, "err", err)
+		slog.ErrorContext(ctx, "unmarshal entity-service team response failed", "userID", user.UserID, "teamID", teamID, "err", err)
 		writeError(w, http.StatusInternalServerError, ErrMsgInternal)
 		return
 	}
-	writeJSONValue(w, http.StatusOK, TeamChatWebhookView{ChatWebhookURL: detail.ChatWebhookURL})
+	writeJSONValue(w, http.StatusOK, TeamDetailView(detail))
 }
 
 // AssignLead handles POST /teams/{id}/lead -- restricted to admin via the

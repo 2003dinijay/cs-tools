@@ -28,10 +28,10 @@ import (
 
 type mockEntityTeamsClient struct {
 	fn                    func(ctx context.Context, teamID string) ([]byte, error)
-	getChatWebhookFn      func(ctx context.Context, teamID string) ([]byte, error)
-	updateChatWebhookFn   func(ctx context.Context, teamID string, body []byte) ([]byte, error)
+	getTeamFn             func(ctx context.Context, teamID string) ([]byte, error)
+	updateTeamFn          func(ctx context.Context, teamID string, body []byte) ([]byte, error)
 	assignTeamLeadFn      func(ctx context.Context, teamID string, body []byte) ([]byte, error)
-	gotUpdateChatWebhook  bool
+	gotUpdateTeamCall     bool
 	gotAssignTeamLeadCall bool
 }
 
@@ -39,19 +39,19 @@ func (m *mockEntityTeamsClient) GetTeamMembers(ctx context.Context, teamID strin
 	return m.fn(ctx, teamID)
 }
 
-func (m *mockEntityTeamsClient) GetTeamChatWebhook(ctx context.Context, teamID string) ([]byte, error) {
-	if m.getChatWebhookFn != nil {
-		return m.getChatWebhookFn(ctx, teamID)
+func (m *mockEntityTeamsClient) GetTeam(ctx context.Context, teamID string) ([]byte, error) {
+	if m.getTeamFn != nil {
+		return m.getTeamFn(ctx, teamID)
 	}
-	return []byte(`{"chatWebhookUrl":null}`), nil
+	return []byte(`{"id":"` + teamID + `","name":"Apollo","type":"cre","chatWebhookUrl":null}`), nil
 }
 
-func (m *mockEntityTeamsClient) UpdateTeamChatWebhook(ctx context.Context, teamID string, body []byte) ([]byte, error) {
-	m.gotUpdateChatWebhook = true
-	if m.updateChatWebhookFn != nil {
-		return m.updateChatWebhookFn(ctx, teamID, body)
+func (m *mockEntityTeamsClient) UpdateTeam(ctx context.Context, teamID string, body []byte) ([]byte, error) {
+	m.gotUpdateTeamCall = true
+	if m.updateTeamFn != nil {
+		return m.updateTeamFn(ctx, teamID, body)
 	}
-	return []byte(`{"chatWebhookUrl":null}`), nil
+	return []byte(`{"id":"` + teamID + `","name":"Apollo","type":"cre","chatWebhookUrl":null}`), nil
 }
 
 func (m *mockEntityTeamsClient) AssignTeamLead(ctx context.Context, teamID string, body []byte) ([]byte, error) {
@@ -159,32 +159,32 @@ func rosterWithLead(leadEmail string) func(ctx context.Context, teamID string) (
 	}
 }
 
-func TestGetChatWebhook(t *testing.T) {
+func TestGetTeam(t *testing.T) {
 	t.Run("requires authenticated user", func(t *testing.T) {
 		h := NewTeamHandler(&mockEntityTeamsClient{}).WithAccessGuard(viewerAccessGuard)
-		r := httptest.NewRequest(http.MethodGet, "/teams/"+testTeamUUID+"/chat-webhook", nil)
+		r := httptest.NewRequest(http.MethodGet, "/teams/"+testTeamUUID, nil)
 		r.SetPathValue("id", testTeamUUID)
 		w := httptest.NewRecorder()
-		h.GetChatWebhook(w, r)
+		h.GetTeam(w, r)
 		assertStatus(t, w, http.StatusUnauthorized)
 	})
 
 	t.Run("rejects a non-UUID id", func(t *testing.T) {
 		h := NewTeamHandler(&mockEntityTeamsClient{}).WithAccessGuard(viewerAccessGuard)
-		r := withUser(httptest.NewRequest(http.MethodGet, "/teams/not-a-uuid/chat-webhook", nil))
+		r := withUser(httptest.NewRequest(http.MethodGet, "/teams/not-a-uuid", nil))
 		r.SetPathValue("id", "not-a-uuid")
 		w := httptest.NewRecorder()
-		h.GetChatWebhook(w, r)
+		h.GetTeam(w, r)
 		assertStatus(t, w, http.StatusBadRequest)
 	})
 
 	t.Run("forbidden for a caller who is neither admin nor this team's lead", func(t *testing.T) {
 		entity := &mockEntityTeamsClient{fn: rosterWithLead(testTeamLeadUser.Email)}
 		h := NewTeamHandler(entity).WithAccessGuard(viewerAccessGuard)
-		r := withUser(httptest.NewRequest(http.MethodGet, "/teams/"+testTeamUUID+"/chat-webhook", nil))
+		r := withUser(httptest.NewRequest(http.MethodGet, "/teams/"+testTeamUUID, nil))
 		r.SetPathValue("id", testTeamUUID)
 		w := httptest.NewRecorder()
-		h.GetChatWebhook(w, r)
+		h.GetTeam(w, r)
 		assertStatus(t, w, http.StatusForbidden)
 	})
 
@@ -192,18 +192,18 @@ func TestGetChatWebhook(t *testing.T) {
 		url := "https://chat.googleapis.com/v1/spaces/apollo"
 		entity := &mockEntityTeamsClient{
 			fn: rosterWithLead(testTeamLeadUser.Email),
-			getChatWebhookFn: func(ctx context.Context, teamID string) ([]byte, error) {
-				return []byte(`{"chatWebhookUrl":"` + url + `"}`), nil
+			getTeamFn: func(ctx context.Context, teamID string) ([]byte, error) {
+				return []byte(`{"id":"` + teamID + `","name":"Apollo","type":"cre","chatWebhookUrl":"` + url + `"}`), nil
 			},
 		}
 		h := NewTeamHandler(entity).WithAccessGuard(viewerAccessGuard)
-		r := httptest.NewRequest(http.MethodGet, "/teams/"+testTeamUUID+"/chat-webhook", nil)
+		r := httptest.NewRequest(http.MethodGet, "/teams/"+testTeamUUID, nil)
 		r.SetPathValue("id", testTeamUUID)
 		r = r.WithContext(middleware.WithUserInfo(r.Context(), testAdminUser))
 		w := httptest.NewRecorder()
-		h.GetChatWebhook(w, r)
+		h.GetTeam(w, r)
 		assertStatus(t, w, http.StatusOK)
-		view := decodeJSON[TeamChatWebhookView](t, w)
+		view := decodeJSON[TeamDetailView](t, w)
 		if view.ChatWebhookURL == nil || *view.ChatWebhookURL != url {
 			t.Errorf("ChatWebhookURL = %v, want %q", view.ChatWebhookURL, url)
 		}
@@ -212,27 +212,41 @@ func TestGetChatWebhook(t *testing.T) {
 	t.Run("allowed for this team's own lead", func(t *testing.T) {
 		entity := &mockEntityTeamsClient{fn: rosterWithLead(testTeamLeadUser.Email)}
 		h := NewTeamHandler(entity).WithAccessGuard(viewerAccessGuard)
-		r := httptest.NewRequest(http.MethodGet, "/teams/"+testTeamUUID+"/chat-webhook", nil)
+		r := httptest.NewRequest(http.MethodGet, "/teams/"+testTeamUUID, nil)
 		r.SetPathValue("id", testTeamUUID)
 		r = r.WithContext(middleware.WithUserInfo(r.Context(), testTeamLeadUser))
 		w := httptest.NewRecorder()
-		h.GetChatWebhook(w, r)
+		h.GetTeam(w, r)
 		assertStatus(t, w, http.StatusOK)
 	})
 }
 
-func TestUpdateChatWebhook(t *testing.T) {
+func TestUpdateTeam(t *testing.T) {
 	t.Run("forbidden for a caller who is neither admin nor this team's lead -- entity is never called", func(t *testing.T) {
 		entity := &mockEntityTeamsClient{fn: rosterWithLead(testTeamLeadUser.Email)}
 		h := NewTeamHandler(entity).WithAccessGuard(viewerAccessGuard)
 		body := strings.NewReader(`{"chatWebhookUrl":"https://chat.googleapis.com/v1/spaces/apollo"}`)
-		r := withUser(httptest.NewRequest(http.MethodPatch, "/teams/"+testTeamUUID+"/chat-webhook", body))
+		r := withUser(httptest.NewRequest(http.MethodPatch, "/teams/"+testTeamUUID, body))
 		r.SetPathValue("id", testTeamUUID)
 		w := httptest.NewRecorder()
-		h.UpdateChatWebhook(w, r)
+		h.UpdateTeam(w, r)
 		assertStatus(t, w, http.StatusForbidden)
-		if entity.gotUpdateChatWebhook {
-			t.Error("entity.UpdateTeamChatWebhook should not have been called")
+		if entity.gotUpdateTeamCall {
+			t.Error("entity.UpdateTeam should not have been called")
+		}
+	})
+
+	t.Run("rejects a body with no chatWebhookUrl field, for a caller allowed to update", func(t *testing.T) {
+		entity := &mockEntityTeamsClient{fn: rosterWithLead(testTeamLeadUser.Email)}
+		h := NewTeamHandler(entity).WithAccessGuard(viewerAccessGuard)
+		r := httptest.NewRequest(http.MethodPatch, "/teams/"+testTeamUUID, strings.NewReader(`{}`))
+		r.SetPathValue("id", testTeamUUID)
+		r = r.WithContext(middleware.WithUserInfo(r.Context(), testTeamLeadUser))
+		w := httptest.NewRecorder()
+		h.UpdateTeam(w, r)
+		assertStatus(t, w, http.StatusBadRequest)
+		if entity.gotUpdateTeamCall {
+			t.Error("entity.UpdateTeam should not have been called")
 		}
 	})
 
@@ -240,23 +254,23 @@ func TestUpdateChatWebhook(t *testing.T) {
 		url := "https://chat.googleapis.com/v1/spaces/apollo"
 		entity := &mockEntityTeamsClient{
 			fn: rosterWithLead(testTeamLeadUser.Email),
-			updateChatWebhookFn: func(ctx context.Context, teamID string, body []byte) ([]byte, error) {
+			updateTeamFn: func(ctx context.Context, teamID string, body []byte) ([]byte, error) {
 				if !strings.Contains(string(body), url) {
 					t.Errorf("body = %s, want it to carry %q", body, url)
 				}
-				return []byte(`{"chatWebhookUrl":"` + url + `"}`), nil
+				return []byte(`{"id":"` + teamID + `","name":"Apollo","type":"cre","chatWebhookUrl":"` + url + `"}`), nil
 			},
 		}
 		h := NewTeamHandler(entity).WithAccessGuard(viewerAccessGuard)
 		body := strings.NewReader(`{"chatWebhookUrl":"` + url + `"}`)
-		r := httptest.NewRequest(http.MethodPatch, "/teams/"+testTeamUUID+"/chat-webhook", body)
+		r := httptest.NewRequest(http.MethodPatch, "/teams/"+testTeamUUID, body)
 		r.SetPathValue("id", testTeamUUID)
 		r = r.WithContext(middleware.WithUserInfo(r.Context(), testTeamLeadUser))
 		w := httptest.NewRecorder()
-		h.UpdateChatWebhook(w, r)
+		h.UpdateTeam(w, r)
 		assertStatus(t, w, http.StatusOK)
-		if !entity.gotUpdateChatWebhook {
-			t.Error("entity.UpdateTeamChatWebhook should have been called")
+		if !entity.gotUpdateTeamCall {
+			t.Error("entity.UpdateTeam should have been called")
 		}
 	})
 }

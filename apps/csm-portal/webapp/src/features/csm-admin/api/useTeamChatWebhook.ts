@@ -23,59 +23,57 @@ import {
 } from "@tanstack/react-query";
 import { ApiQueryKeys } from "@constants/apiConstants";
 import { useBackendApi } from "@api/backend/client";
-import type {
-  BeTeamChatWebhook,
-  BeUpdateTeamChatWebhookPayload,
-} from "@api/backend/types";
+import type { BeTeamDetail, BeUpdateTeamPayload } from "@api/backend/types";
 
 /**
- * A team's own configured Google Chat space link via
- * `GET /teams/{id}/chat-webhook`. Restricted server-side to an Asgardeo admin
- * or this specific team's own lead (403 for everyone else) — `id` is the same
- * real backing UUID `useGetTeamMembers` takes, never the registry key.
+ * A team's own id/name/type and configured Google Chat space link via
+ * `GET /teams/{id}`. Restricted server-side to an Asgardeo admin or this
+ * specific team's own lead (403 for everyone else) — `id` is the same real
+ * backing UUID `useGetTeamMembers` takes, never the registry key. A single
+ * generic team resource (mirroring `GET /users/{id}`) rather than a
+ * dedicated `/teams/{id}/chat-webhook` endpoint.
  */
-export function useGetTeamChatWebhook(
+export function useGetTeam(
   teamId: string | undefined,
   options: { enabled?: boolean } = {},
-): UseQueryResult<BeTeamChatWebhook | null, Error> {
+): UseQueryResult<BeTeamDetail | null, Error> {
   const api = useBackendApi();
 
-  return useQuery<BeTeamChatWebhook | null, Error>({
-    queryKey: [ApiQueryKeys.CSM_ADMIN_TEAM_CHAT_WEBHOOK, teamId ?? ""],
-    queryFn: (): Promise<BeTeamChatWebhook | null> =>
-      api.get<BeTeamChatWebhook>(
-        `/teams/${encodeURIComponent(teamId as string)}/chat-webhook`,
-      ),
+  return useQuery<BeTeamDetail | null, Error>({
+    queryKey: [ApiQueryKeys.CSM_ADMIN_TEAM_DETAIL, teamId ?? ""],
+    queryFn: (): Promise<BeTeamDetail | null> =>
+      api.get<BeTeamDetail>(`/teams/${encodeURIComponent(teamId as string)}`),
     enabled: !!teamId && (options.enabled ?? true),
     staleTime: 30_000,
   });
 }
 
 /**
- * Sets or clears a team's own Chat space link via
- * `PATCH /teams/{id}/chat-webhook`. An empty `chatWebhookUrl` clears it; a
- * non-empty value must be a well-formed `https://chat.googleapis.com/...`
- * URL (the backend's own refusal reason is echoed back through `error`).
+ * Sets or clears a team's own Chat space link via `PATCH /teams/{id}` —
+ * `chatWebhookUrl` is the only settable field today. An empty value clears
+ * it; a non-empty value must be a well-formed
+ * `https://chat.googleapis.com/...` URL (the backend's own refusal reason is
+ * echoed back through `error`).
  */
-export function useUpdateTeamChatWebhook(
+export function useUpdateTeam(
   teamId: string | undefined,
-): UseMutationResult<BeTeamChatWebhook, Error, string> {
+): UseMutationResult<BeTeamDetail, Error, string> {
   const api = useBackendApi();
   const queryClient = useQueryClient();
 
-  return useMutation<BeTeamChatWebhook, Error, string>({
-    mutationFn: async (chatWebhookUrl): Promise<BeTeamChatWebhook> => {
+  return useMutation<BeTeamDetail, Error, string>({
+    mutationFn: async (chatWebhookUrl): Promise<BeTeamDetail> => {
       if (!teamId) {
         throw new Error("Cannot update a team's Chat space without a team id.");
       }
-      return api.patch<BeUpdateTeamChatWebhookPayload, BeTeamChatWebhook>(
-        `/teams/${encodeURIComponent(teamId)}/chat-webhook`,
+      return api.patch<BeUpdateTeamPayload, BeTeamDetail>(
+        `/teams/${encodeURIComponent(teamId)}`,
         { chatWebhookUrl },
       );
     },
     onSuccess: () => {
       queryClient.invalidateQueries({
-        queryKey: [ApiQueryKeys.CSM_ADMIN_TEAM_CHAT_WEBHOOK, teamId ?? ""],
+        queryKey: [ApiQueryKeys.CSM_ADMIN_TEAM_DETAIL, teamId ?? ""],
       });
     },
   });

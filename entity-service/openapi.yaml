@@ -2505,13 +2505,7 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                timeZone:
-                  type: string
-                phone:
-                  type: string
-                  description: Empty (after trimming) clears the stored phone.
+              $ref: '#/components/schemas/UpdateUserRequest'
       responses:
         '200':
           description: The user's profile after the update.
@@ -2744,14 +2738,17 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
-  /teams/{id}/chat-webhook:
+  /teams/{id}:
     get:
-      summary: Get one team's own configured Google Chat incoming-webhook URL.
+      summary: Get one team's own id/name/type and its configured Chat webhook URL.
       description: >-
         Internal callers only — a webhook URL is itself a bearer credential,
         so this is never exposed through POST /teams/search. `chatWebhookUrl`
-        is null when the team has none configured.
-      operationId: getTeamChatWebhook
+        is null when the team has none configured. A single generic team
+        resource (mirroring GET /users/{id}) rather than a dedicated
+        /teams/{id}/chat-webhook route, so a second settable team field later
+        is a new response/request field, not a new route.
+      operationId: getTeam
       parameters:
         - name: id
           in: path
@@ -2761,11 +2758,11 @@ paths:
             format: uuid
       responses:
         "200":
-          description: The team's own configured Chat webhook URL (null when unset).
+          description: The team's own details.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TeamChatWebhookDetail'
+                $ref: '#/components/schemas/TeamDetail'
         "400":
           description: Bad request (e.g. malformed UUID).
           content:
@@ -2791,16 +2788,18 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
     patch:
-      summary: Set or clear one team's own Google Chat incoming-webhook URL.
+      summary: Update a team — today, only its Google Chat incoming-webhook URL.
       description: >-
-        Internal callers only. An empty chatWebhookUrl clears the team's
-        webhook; a non-empty value must be a well-formed
-        https://chat.googleapis.com/... URL (any other host, or a non-https
-        scheme, is rejected). Fine-grained authorization (an Asgardeo admin,
-        or that specific team's own lead) is enforced by the caller
-        (apps/csm-portal/backend), not here — this route only guards that the
-        caller is an internal service at all.
-      operationId: updateTeamChatWebhook
+        Internal callers only. `chatWebhookUrl` is the only settable field
+        today: omitting it is a 400 ("at least one field must be provided"),
+        an empty value clears the team's webhook, and a non-empty value must
+        be a well-formed https://chat.googleapis.com/... URL (any other
+        host, or a non-https scheme, is rejected). Fine-grained
+        authorization for that field (an Asgardeo admin, or that specific
+        team's own lead) is enforced by the caller
+        (apps/csm-portal/backend), not here — this route only guards that
+        the caller is an internal service at all.
+      operationId: updateTeam
       parameters:
         - name: id
           in: path
@@ -2813,16 +2812,16 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/UpdateTeamChatWebhookRequest'
+              $ref: '#/components/schemas/UpdateTeamRequest'
       responses:
         "200":
-          description: The team's chat webhook URL after the update.
+          description: The team's own details after the update.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TeamChatWebhookDetail'
+                $ref: '#/components/schemas/TeamDetail'
         "400":
-          description: Bad request (malformed UUID, or chatWebhookUrl is not a well-formed https://chat.googleapis.com/... URL).
+          description: Bad request (malformed UUID, no field given, or chatWebhookUrl is not a well-formed https://chat.googleapis.com/... URL).
           content:
             application/json:
               schema:
@@ -15828,6 +15827,29 @@ components:
             phone:
               nullable: false
 
+    UpdateUserRequest:
+      type: object
+      description: >
+        The admin-targeted counterpart to PatchUserMeRequest, for
+        PATCH /users/{id} -- updating someone else's profile by id rather
+        than the caller's own. Both fields are optional pointers (unlike
+        PatchUserMeRequest.timeZone, which can never be cleared), but at
+        least one must be present.
+      properties:
+        timeZone:
+          type: string
+          nullable: true
+          description: Trimmed; a blank (after trimming) value is treated as absent.
+        phone:
+          type: string
+          nullable: true
+          description: >
+            Trimmed. At most 32 characters after trimming (400 otherwise). An
+            empty (or whitespace-only) value clears it.
+      anyOf:
+        - required: [timeZone]
+        - required: [phone]
+
     PatchUserMeUpdated:
       type: object
       required: [id, updatedBy, updatedOn]
@@ -24053,20 +24075,30 @@ components:
           items:
             $ref: '#/components/schemas/TeamChatWebhook'
 
-    TeamChatWebhookDetail:
+    TeamDetail:
       type: object
+      required: [id, name, type]
       properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        type:
+          type: string
         chatWebhookUrl:
           type: string
           nullable: true
 
-    UpdateTeamChatWebhookRequest:
+    UpdateTeamRequest:
       type: object
-      required: [chatWebhookUrl]
       properties:
         chatWebhookUrl:
           type: string
-          description: Empty string clears the webhook.
+          description: >-
+            The only settable field today. Empty string clears the webhook;
+            omitting the field entirely is a 400 (at least one field must be
+            provided).
 
     AssignTeamLeadRequest:
       type: object

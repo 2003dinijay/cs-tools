@@ -1814,12 +1814,7 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                timeZone:
-                  type: string
-                phone:
-                  type: string
+              $ref: '#/components/schemas/BeUpdateUserRequest'
       responses:
         "200":
           description: The user's profile after the update.
@@ -2070,15 +2065,17 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /teams/{id}/chat-webhook:
+  /teams/{id}:
     get:
-      summary: Get a team's own configured Google Chat space link.
+      summary: Get a team's own id/name/type and its configured Chat space link.
       description: >
         Backed by entity-service. Restricted to an Asgardeo admin or this
         specific team's own lead — every other caller holding the route's own
         view permission gets 403, since a Chat webhook URL is a bearer
-        credential once set.
-      operationId: getTeamChatWebhook
+        credential once set. A single generic team resource (mirroring
+        GET /users/{id}) rather than a dedicated /teams/{id}/chat-webhook
+        route.
+      operationId: getTeam
       parameters:
         - name: id
           in: path
@@ -2089,11 +2086,11 @@ paths:
             format: uuid
       responses:
         "200":
-          description: The team's own configured Chat webhook URL (null when unset).
+          description: The team's own details.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TeamChatWebhook'
+                $ref: '#/components/schemas/TeamDetail'
         "400":
           description: Bad request (e.g. malformed UUID).
           content:
@@ -2125,14 +2122,15 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
     patch:
-      summary: Set or clear a team's own Google Chat space link.
+      summary: Update a team — today, only its Google Chat space link.
       description: >
         Backed by entity-service. Restricted to an Asgardeo admin or this
-        specific team's own lead. An empty chatWebhookUrl clears the team's
-        webhook; a non-empty value must be a well-formed
+        specific team's own lead. chatWebhookUrl is the only settable field
+        today and is required; an empty value clears the team's webhook,
+        and a non-empty value must be a well-formed
         https://chat.googleapis.com/... URL (any other host, or a non-https
         scheme, is rejected and entity-service's reason is echoed verbatim).
-      operationId: updateTeamChatWebhook
+      operationId: updateTeam
       parameters:
         - name: id
           in: path
@@ -2146,19 +2144,14 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              required: [chatWebhookUrl]
-              properties:
-                chatWebhookUrl:
-                  type: string
-                  description: Empty string clears the webhook.
+              $ref: '#/components/schemas/UpdateTeamRequest'
       responses:
         "200":
-          description: The team's chat webhook URL after the update.
+          description: The team's own details after the update.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TeamChatWebhook'
+                $ref: '#/components/schemas/TeamDetail'
         "400":
           description: >-
             Bad request (malformed UUID, or chatWebhookUrl is not a
@@ -17742,12 +17735,46 @@ components:
         role:
           type: string
 
-    TeamChatWebhook:
+    TeamDetail:
       type: object
+      required: [id, name, type]
       properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        type:
+          type: string
         chatWebhookUrl:
           type: string
           nullable: true
+
+    UpdateTeamRequest:
+      type: object
+      required: [chatWebhookUrl]
+      properties:
+        chatWebhookUrl:
+          type: string
+          description: >-
+            The only settable field today. Empty string clears the webhook;
+            a non-empty value must be a well-formed
+            https://chat.googleapis.com/... URL.
+
+    BeUpdateUserRequest:
+      type: object
+      description: At least one of timeZone or phone is required.
+      anyOf:
+        - required: [timeZone]
+        - required: [phone]
+      properties:
+        timeZone:
+          type: string
+        phone:
+          type: string
+          description: >-
+            Trimmed. At most 32 characters after trimming (400 otherwise).
+            Empty (after trimming) clears the stored phone.
 
     UserGroupRef:
       type: object

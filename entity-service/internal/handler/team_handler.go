@@ -76,11 +76,13 @@ func (h *TeamHandler) ListChatWebhooks(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
-// GetChatWebhook handles GET /teams/{id}/chat-webhook -- internal callers
-// only (TeamService.GetChatWebhook enforces this).
-func (h *TeamHandler) GetChatWebhook(w http.ResponseWriter, r *http.Request) {
+// GetTeam handles GET /teams/{id} -- internal callers only
+// (TeamService.GetTeam enforces this). A single generic team resource
+// (id/name/type/chatWebhookUrl) rather than a dedicated
+// /teams/{id}/chat-webhook route.
+func (h *TeamHandler) GetTeam(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	resp, err := h.svc.GetChatWebhook(r.Context(), id)
+	resp, err := h.svc.GetTeam(r.Context(), id)
 	if err != nil {
 		writeServiceError(w, r, err)
 		return
@@ -89,17 +91,18 @@ func (h *TeamHandler) GetChatWebhook(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
-// UpdateChatWebhook handles PATCH /teams/{id}/chat-webhook -- internal
-// callers only (TeamService.SetChatWebhook enforces this); fine-grained
-// per-team authorization (admin, or that team's own lead) is this route's
-// caller's job -- see apps/csm-portal/backend's own CLAUDE.md.
-func (h *TeamHandler) UpdateChatWebhook(w http.ResponseWriter, r *http.Request) {
+// UpdateTeam handles PATCH /teams/{id} -- internal callers only
+// (TeamService.UpdateTeam enforces this); fine-grained per-team
+// authorization for its one settable field today, chatWebhookUrl (admin, or
+// that team's own lead) is this route's caller's job -- see
+// apps/csm-portal/backend's own CLAUDE.md.
+func (h *TeamHandler) UpdateTeam(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	var req domain.UpdateTeamChatWebhookRequest
+	var req domain.UpdateTeamRequest
 	if !decodeRequest(w, r, &req) {
 		return
 	}
-	resp, err := h.svc.SetChatWebhook(r.Context(), id, req.ChatWebhookURL)
+	resp, err := h.svc.UpdateTeam(r.Context(), id, req)
 	if err != nil {
 		writeServiceError(w, r, err)
 		return

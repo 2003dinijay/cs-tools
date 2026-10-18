@@ -494,9 +494,11 @@ func main() {
 	// narrows further to an Asgardeo admin or this specific team's own lead
 	// (TeamHandler.authorizeChatWebhookActor) -- a Chat webhook URL is a
 	// bearer credential once set, so "any staff member who can view a team's
-	// roster" is deliberately not enough here.
-	route("GET /teams/{id}/chat-webhook", handler.PermViewSharedEntity, teamHandler.GetChatWebhook)
-	route("PATCH /teams/{id}/chat-webhook", handler.PermViewSharedEntity, teamHandler.UpdateChatWebhook)
+	// roster" is deliberately not enough here. A single generic team
+	// resource (mirroring GET/PATCH /users/{id}) rather than a dedicated
+	// /teams/{id}/chat-webhook route.
+	route("GET /teams/{id}", handler.PermViewSharedEntity, teamHandler.GetTeam)
+	route("PATCH /teams/{id}", handler.PermViewSharedEntity, teamHandler.UpdateTeam)
 	// Admin-only: reassigning a team's lead also reassigns who entity-service's
 	// incident call-escalation ladder pages for this team -- see that repo's
 	// own CLAUDE.md.

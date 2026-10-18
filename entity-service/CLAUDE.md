@@ -7194,15 +7194,22 @@ teams at all ("Incident Monitor", "Onboarding", "Americas", "Evaluation") stay
 config-driven on that service's own side — this table only ever holds a real
 team's own space.
 
-**`GET`/`PATCH /teams/{id}/chat-webhook`** (`team_repo.go`'s `GetChatWebhookURL`/
-`SetChatWebhookURL`, same `team.chat_webhook_url` column) are the single-team
-counterpart to the bulk `GET /teams/chat-webhooks` above — added so
-`apps/csm-portal/backend` can let a team manage its own Chat space without
-handing out every other team's webhook URL in the same response.
-**Internal-caller-only**, identical gate. `SetChatWebhook` (`team_service.go`)
-validates: a non-empty `chatWebhookUrl` must parse as a well-formed URL whose
-scheme is `https`, whose hostname (case-folded, trailing dot stripped) is
-exactly `chat.googleapis.com`, and which carries no embedded userinfo
+**`GET`/`PATCH /teams/{id}`** (`team_repo.go`'s `GetTeamDetail`/
+`SetChatWebhookURL`, the latter against the same `team.chat_webhook_url`
+column) is the single-team counterpart to the bulk `GET /teams/chat-webhooks`
+above — added so `apps/csm-portal/backend` can let a team manage its own Chat
+space without handing out every other team's webhook URL in the same
+response. **A single generic team resource (id/name/type/chatWebhookUrl),
+mirroring `GET`/`PATCH /users/{id}`, rather than a dedicated
+`/teams/{id}/chat-webhook` route** — `chatWebhookUrl` is the only settable
+field today, but a second one later is a new field on `UpdateTeamRequest`,
+not a new route; `POST /teams/search` still never includes it (a webhook URL
+is a bearer credential). **Internal-caller-only**, identical gate.
+`UpdateTeam` (`team_service.go`) requires at least one field (today, only
+`chatWebhookUrl`, so omitting it is a 400) and validates: a non-empty
+`chatWebhookUrl` must parse as a well-formed URL whose scheme is `https`,
+whose hostname (case-folded, trailing dot stripped) is exactly
+`chat.googleapis.com`, and which carries no embedded userinfo
 (`https://chat.googleapis.com@evil.example/...`) — a plain `strings.HasPrefix(
 ..., "https://")` check used to be the whole validation, which would have let
 this endpoint's caller point `csm-notification-service` at an arbitrary

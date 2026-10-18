@@ -42,8 +42,9 @@ type fakeTeamRepo struct {
 	chatWebhooks    []domain.TeamChatWebhook
 	chatWebhooksErr error
 
-	chatWebhookURL    *string
-	getWebhookErr     error
+	teamDetail domain.TeamDetail
+	getTeamErr error
+
 	setWebhookErr     error
 	gotSetWebhookURL  *string
 	gotSetWebhookCall bool
@@ -70,8 +71,18 @@ func (f *fakeTeamRepo) ListChatWebhooks(context.Context) ([]domain.TeamChatWebho
 	return f.chatWebhooks, f.chatWebhooksErr
 }
 
-func (f *fakeTeamRepo) GetChatWebhookURL(context.Context, string) (*string, error) {
-	return f.chatWebhookURL, f.getWebhookErr
+func (f *fakeTeamRepo) GetTeamDetail(context.Context, string) (domain.TeamDetail, error) {
+	if f.getTeamErr != nil {
+		return domain.TeamDetail{}, f.getTeamErr
+	}
+	d := f.teamDetail
+	// Reflects a prior SetChatWebhookURL call, mirroring the real repo's
+	// read-your-writes behavior -- UpdateTeam re-reads via GetTeamDetail
+	// after writing.
+	if f.gotSetWebhookCall {
+		d.ChatWebhookURL = f.gotSetWebhookURL
+	}
+	return d, nil
 }
 
 func (f *fakeTeamRepo) SetChatWebhookURL(_ context.Context, _ string, url *string) error {
@@ -197,10 +208,10 @@ func TestTeamService_ListChatWebhooks_RepoError(t *testing.T) {
 	}
 }
 
-func TestTeamService_GetChatWebhook_RequiresInternalCaller(t *testing.T) {
+func TestTeamService_GetTeam_RequiresInternalCaller(t *testing.T) {
 	svc := NewTeamService(&fakeTeamRepo{}, restrictedAccess{})
 
-	_, err := svc.GetChatWebhook(context.Background(), testTeamID)
+	_, err := svc.GetTeam(context.Background(), testTeamID)
 
 	var fe *apierror.ForbiddenError
 	if !errors.As(err, &fe) {
@@ -208,10 +219,10 @@ func TestTeamService_GetChatWebhook_RequiresInternalCaller(t *testing.T) {
 	}
 }
 
-func TestTeamService_GetChatWebhook_RejectsMalformedID(t *testing.T) {
+func TestTeamService_GetTeam_RejectsMalformedID(t *testing.T) {
 	svc := NewTeamService(&fakeTeamRepo{}, alwaysUnrestrictedAccess{})
 
-	_, err := svc.GetChatWebhook(context.Background(), "not-a-uuid")
+	_, err := svc.GetTeam(context.Background(), "not-a-uuid")
 
 	var ve *apierror.ValidationError
 	if !errors.As(err, &ve) {
@@ -219,23 +230,30 @@ func TestTeamService_GetChatWebhook_RejectsMalformedID(t *testing.T) {
 	}
 }
 
-func TestTeamService_GetChatWebhook_ReturnsStoredValue(t *testing.T) {
+func TestTeamService_GetTeam_ReturnsStoredValue(t *testing.T) {
 	url := "https://chat.googleapis.com/v1/spaces/apollo"
-	svc := NewTeamService(&fakeTeamRepo{chatWebhookURL: &url}, alwaysUnrestrictedAccess{})
+	repo := &fakeTeamRepo{teamDetail: domain.TeamDetail{
+		ID: testTeamID, Name: "Apollo", Type: "cre", ChatWebhookURL: &url,
+	}}
+	svc := NewTeamService(repo, alwaysUnrestrictedAccess{})
 
-	resp, err := svc.GetChatWebhook(context.Background(), testTeamID)
+	resp, err := svc.GetTeam(context.Background(), testTeamID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.ID != testTeamID || resp.Name != "Apollo" {
+		t.Fatalf("unexpected response: %+v", resp)
 	}
 	if resp.ChatWebhookURL == nil || *resp.ChatWebhookURL != url {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
 }
 
-func TestTeamService_SetChatWebhook_RequiresInternalCaller(t *testing.T) {
+func TestTeamService_UpdateTeam_RequiresInternalCaller(t *testing.T) {
 	svc := NewTeamService(&fakeTeamRepo{}, restrictedAccess{})
 
-	_, err := svc.SetChatWebhook(context.Background(), testTeamID, "https://chat.googleapis.com/v1/spaces/apollo")
+	url := "https://chat.googleapis.com/v1/spaces/apollo"
+	_, err := svc.UpdateTeam(context.Background(), testTeamID, domain.UpdateTeamRequest{ChatWebhookURL: &url})
 
 	var fe *apierror.ForbiddenError
 	if !errors.As(err, &fe) {
@@ -243,11 +261,23 @@ func TestTeamService_SetChatWebhook_RequiresInternalCaller(t *testing.T) {
 	}
 }
 
-func TestTeamService_SetChatWebhook_RejectsNonHTTPSURL(t *testing.T) {
+func TestTeamService_UpdateTeam_RejectsWhenNoFieldGiven(t *testing.T) {
+	svc := NewTeamService(&fakeTeamRepo{}, alwaysUnrestrictedAccess{})
+
+	_, err := svc.UpdateTeam(context.Background(), testTeamID, domain.UpdateTeamRequest{})
+
+	var ve *apierror.ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected ValidationError when no field is given, got %v", err)
+	}
+}
+
+func TestTeamService_UpdateTeam_RejectsNonHTTPSURL(t *testing.T) {
 	repo := &fakeTeamRepo{}
 	svc := NewTeamService(repo, alwaysUnrestrictedAccess{})
 
-	_, err := svc.SetChatWebhook(context.Background(), testTeamID, "http://example.com/webhook")
+	bad := "http://example.com/webhook"
+	_, err := svc.UpdateTeam(context.Background(), testTeamID, domain.UpdateTeamRequest{ChatWebhookURL: &bad})
 
 	var ve *apierror.ValidationError
 	if !errors.As(err, &ve) {
@@ -258,7 +288,7 @@ func TestTeamService_SetChatWebhook_RejectsNonHTTPSURL(t *testing.T) {
 	}
 }
 
-func TestTeamService_SetChatWebhook_RejectsNonChatGoogleapisHost(t *testing.T) {
+func TestTeamService_UpdateTeam_RejectsNonChatGoogleapisHost(t *testing.T) {
 	repo := &fakeTeamRepo{}
 	svc := NewTeamService(repo, alwaysUnrestrictedAccess{})
 
@@ -269,7 +299,8 @@ func TestTeamService_SetChatWebhook_RejectsNonChatGoogleapisHost(t *testing.T) {
 		"https://169.254.169.254/latest/meta-data",
 	} {
 		t.Run(bad, func(t *testing.T) {
-			_, err := svc.SetChatWebhook(context.Background(), testTeamID, bad)
+			bad := bad
+			_, err := svc.UpdateTeam(context.Background(), testTeamID, domain.UpdateTeamRequest{ChatWebhookURL: &bad})
 			var ve *apierror.ValidationError
 			if !errors.As(err, &ve) {
 				t.Fatalf("expected ValidationError for %q, got %v", bad, err)
@@ -281,11 +312,12 @@ func TestTeamService_SetChatWebhook_RejectsNonChatGoogleapisHost(t *testing.T) {
 	}
 }
 
-func TestTeamService_SetChatWebhook_ClearsOnEmptyString(t *testing.T) {
-	repo := &fakeTeamRepo{}
+func TestTeamService_UpdateTeam_ClearsOnEmptyString(t *testing.T) {
+	repo := &fakeTeamRepo{teamDetail: domain.TeamDetail{ID: testTeamID, Name: "Apollo", Type: "cre"}}
 	svc := NewTeamService(repo, alwaysUnrestrictedAccess{})
 
-	resp, err := svc.SetChatWebhook(context.Background(), testTeamID, "   ")
+	blank := "   "
+	resp, err := svc.UpdateTeam(context.Background(), testTeamID, domain.UpdateTeamRequest{ChatWebhookURL: &blank})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -297,11 +329,12 @@ func TestTeamService_SetChatWebhook_ClearsOnEmptyString(t *testing.T) {
 	}
 }
 
-func TestTeamService_SetChatWebhook_StoresTrimmedHTTPSURL(t *testing.T) {
-	repo := &fakeTeamRepo{}
+func TestTeamService_UpdateTeam_StoresTrimmedHTTPSURL(t *testing.T) {
+	repo := &fakeTeamRepo{teamDetail: domain.TeamDetail{ID: testTeamID, Name: "Apollo", Type: "cre"}}
 	svc := NewTeamService(repo, alwaysUnrestrictedAccess{})
 
-	resp, err := svc.SetChatWebhook(context.Background(), testTeamID, "  https://chat.googleapis.com/v1/spaces/apollo  ")
+	padded := "  https://chat.googleapis.com/v1/spaces/apollo  "
+	resp, err := svc.UpdateTeam(context.Background(), testTeamID, domain.UpdateTeamRequest{ChatWebhookURL: &padded})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

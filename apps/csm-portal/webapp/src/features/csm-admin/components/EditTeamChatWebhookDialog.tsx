@@ -77,8 +77,9 @@ export default function EditTeamChatWebhookDialog({
             fullWidth
             error={touched && !!fieldError}
             helperText={
-              (touched && fieldError) ??
-              "Leave blank to remove this team's Chat space link."
+              touched && fieldError
+                ? fieldError
+                : "Leave blank to remove this team's Chat space link."
             }
           />
 

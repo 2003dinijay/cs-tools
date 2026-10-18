@@ -5700,19 +5700,29 @@ type ListTeamChatWebhooksResponse struct {
 	Teams []TeamChatWebhook `json:"teams"`
 }
 
-// TeamChatWebhookDetail is the response for GET/PATCH
-// /teams/{id}/chat-webhook -- one team's own configured Chat webhook URL,
-// nil when unset. Internal-caller-only, same reasoning as
-// ListTeamChatWebhooksResponse.
-type TeamChatWebhookDetail struct {
+// TeamDetail is the response for GET /teams/{id} -- the same id/name/type
+// POST /teams/search already returns for a row, plus ChatWebhookURL (nil
+// when unset), the one field PATCH /teams/{id} accepts today. A single
+// generic team resource (mirroring GET/PATCH /users/{id}) rather than a
+// dedicated /teams/{id}/chat-webhook pair, so a second settable team field
+// later is a new optional field on UpdateTeamRequest, not a new route.
+// Internal-caller-only -- a webhook URL is itself a bearer credential, so
+// this is never exposed through POST /teams/search.
+type TeamDetail struct {
+	ID             string  `json:"id"`
+	Name           string  `json:"name"`
+	Type           string  `json:"type"`
 	ChatWebhookURL *string `json:"chatWebhookUrl"`
 }
 
-// UpdateTeamChatWebhookRequest is the body of PATCH /teams/{id}/chat-webhook.
-// An empty ChatWebhookURL clears the team's own webhook; a non-empty one
-// must be a well-formed https:// URL.
-type UpdateTeamChatWebhookRequest struct {
-	ChatWebhookURL string `json:"chatWebhookUrl"`
+// UpdateTeamRequest is the body of PATCH /teams/{id}. ChatWebhookURL is the
+// only settable field today: an empty value clears the team's own webhook, a
+// non-empty one must be a well-formed https://chat.googleapis.com/... URL,
+// and omitting it entirely leaves the stored value untouched -- "at least
+// one field must be present" the same contract PATCH /users/{id}'s own
+// UpdateUserRequest has.
+type UpdateTeamRequest struct {
+	ChatWebhookURL *string `json:"chatWebhookUrl"`
 }
 
 // AssignTeamLeadRequest is the body of POST /teams/{id}/lead.

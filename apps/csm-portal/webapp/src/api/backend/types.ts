@@ -3274,13 +3274,21 @@ export interface BeTeamMember {
   role: string;
 }
 
-/** `GET`/`PATCH /teams/{id}/chat-webhook` response — the team's own
- * configured Google Chat space link, `null` when unset. */
-export interface BeTeamChatWebhook {
+/** `GET`/`PATCH /teams/{id}` response — the team's own id/name/type plus its
+ * configured Google Chat space link, `null` when unset. A single generic
+ * team resource (mirroring `BeSnUserDetail`/`GET /users/{id}`) rather than a
+ * dedicated `/teams/{id}/chat-webhook` shape — `chatWebhookUrl` is the only
+ * settable field today. */
+export interface BeTeamDetail {
+  id: string;
+  name: string;
+  type: string;
   chatWebhookUrl: string | null;
 }
 
-export interface BeUpdateTeamChatWebhookPayload {
+/** `PATCH /teams/{id}` request body. `chatWebhookUrl` is the only settable
+ * field today and is required. */
+export interface BeUpdateTeamPayload {
   chatWebhookUrl: string;
 }
 

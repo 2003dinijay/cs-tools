@@ -47,15 +47,20 @@ type TeamService interface {
 	// fetched periodically), not something any portal caller has a
 	// legitimate use for -- same reasoning as SLADurationPolicyService.
 	ListChatWebhooks(ctx context.Context) (domain.ListTeamChatWebhooksResponse, error)
-	// GetChatWebhook returns one team's own configured Chat webhook URL (nil
-	// when unset) -- internal-caller-only, same reasoning as ListChatWebhooks.
-	// A NotFoundError is returned when no team has this id.
-	GetChatWebhook(ctx context.Context, teamID string) (domain.TeamChatWebhookDetail, error)
-	// SetChatWebhook sets (non-empty url) or clears (empty url) the team's
-	// own Chat webhook URL -- internal-caller-only. A ValidationError is
-	// returned for a malformed id or a non-empty url that is not a
-	// well-formed https:// URL; a NotFoundError when no team has this id.
-	SetChatWebhook(ctx context.Context, teamID, url string) (domain.TeamChatWebhookDetail, error)
+	// GetTeam returns one team's own id/name/type plus its configured Chat
+	// webhook URL (nil when unset) -- internal-caller-only, same reasoning
+	// as ListChatWebhooks: the webhook URL is a bearer credential, so this
+	// is never exposed through SearchTeams. A NotFoundError is returned when
+	// no team has this id. A single generic team resource (mirroring
+	// GetUser/UpdateUser) rather than a dedicated chat-webhook-only route.
+	GetTeam(ctx context.Context, teamID string) (domain.TeamDetail, error)
+	// UpdateTeam applies req to the given team -- today, only
+	// req.ChatWebhookURL (non-nil, non-empty sets it; non-nil, empty clears
+	// it; nil leaves it untouched) -- internal-caller-only. A ValidationError
+	// is returned for a malformed id, no field present, or a non-empty url
+	// that is not a well-formed https://chat.googleapis.com/... URL; a
+	// NotFoundError when no team has this id.
+	UpdateTeam(ctx context.Context, teamID string, req domain.UpdateTeamRequest) (domain.TeamDetail, error)
 	// AssignTeamLead makes userID the given team's one 'lead' -- see
 	// repository.TeamRepository.AssignTeamLead's own doc comment for what
 	// this does and why it matters beyond this feature (the incident
@@ -145,18 +150,14 @@ func (s *teamService) ListChatWebhooks(ctx context.Context) (domain.ListTeamChat
 	return domain.ListTeamChatWebhooksResponse{Teams: webhooks}, nil
 }
 
-func (s *teamService) GetChatWebhook(ctx context.Context, teamID string) (domain.TeamChatWebhookDetail, error) {
-	if err := RequireInternalCaller(ctx, s.access, "team chat webhooks are only available to internal services"); err != nil {
-		return domain.TeamChatWebhookDetail{}, err
+func (s *teamService) GetTeam(ctx context.Context, teamID string) (domain.TeamDetail, error) {
+	if err := RequireInternalCaller(ctx, s.access, "team details are only available to internal services"); err != nil {
+		return domain.TeamDetail{}, err
 	}
 	if err := validateUUIDs("id", []string{teamID}); err != nil {
-		return domain.TeamChatWebhookDetail{}, err
+		return domain.TeamDetail{}, err
 	}
-	url, err := s.repo.GetChatWebhookURL(ctx, teamID)
-	if err != nil {
-		return domain.TeamChatWebhookDetail{}, err
-	}
-	return domain.TeamChatWebhookDetail{ChatWebhookURL: url}, nil
+	return s.repo.GetTeamDetail(ctx, teamID)
 }
 
 // maxChatWebhookURLLen bounds team.chat_webhook_url (migration 0240, a plain
@@ -194,28 +195,31 @@ func validateChatWebhookURL(trimmed string) error {
 	return nil
 }
 
-func (s *teamService) SetChatWebhook(ctx context.Context, teamID, url string) (domain.TeamChatWebhookDetail, error) {
-	if err := RequireInternalCaller(ctx, s.access, "team chat webhooks are only available to internal services"); err != nil {
-		return domain.TeamChatWebhookDetail{}, err
+func (s *teamService) UpdateTeam(ctx context.Context, teamID string, req domain.UpdateTeamRequest) (domain.TeamDetail, error) {
+	if err := RequireInternalCaller(ctx, s.access, "updating a team is only available to internal services"); err != nil {
+		return domain.TeamDetail{}, err
 	}
 	if err := validateUUIDs("id", []string{teamID}); err != nil {
-		return domain.TeamChatWebhookDetail{}, err
+		return domain.TeamDetail{}, err
 	}
-	trimmed := strings.TrimSpace(url)
+	if req.ChatWebhookURL == nil {
+		return domain.TeamDetail{}, &apierror.ValidationError{Msg: "at least one field must be provided for update"}
+	}
+	trimmed := strings.TrimSpace(*req.ChatWebhookURL)
 	var toStore *string
 	if trimmed != "" {
 		if len(trimmed) > maxChatWebhookURLLen {
-			return domain.TeamChatWebhookDetail{}, &apierror.ValidationError{Msg: "chatWebhookUrl is too long"}
+			return domain.TeamDetail{}, &apierror.ValidationError{Msg: "chatWebhookUrl is too long"}
 		}
 		if err := validateChatWebhookURL(trimmed); err != nil {
-			return domain.TeamChatWebhookDetail{}, err
+			return domain.TeamDetail{}, err
 		}
 		toStore = &trimmed
 	}
 	if err := s.repo.SetChatWebhookURL(ctx, teamID, toStore); err != nil {
-		return domain.TeamChatWebhookDetail{}, err
+		return domain.TeamDetail{}, err
 	}
-	return domain.TeamChatWebhookDetail{ChatWebhookURL: toStore}, nil
+	return s.repo.GetTeamDetail(ctx, teamID)
 }
 
 func (s *teamService) AssignTeamLead(ctx context.Context, teamID, userID string) error {

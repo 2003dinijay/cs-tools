@@ -17,10 +17,7 @@
 import { Box, Card, IconButton, Skeleton, Typography } from "@wso2/oxygen-ui";
 import { Pencil } from "@wso2/oxygen-ui-icons-react";
 import { useState, type JSX } from "react";
-import {
-  useGetTeamChatWebhook,
-  useUpdateTeamChatWebhook,
-} from "@features/csm-admin/api/useTeamChatWebhook";
+import { useGetTeam, useUpdateTeam } from "@features/csm-admin/api/useTeamChatWebhook";
 import EditTeamChatWebhookDialog from "@features/csm-admin/components/EditTeamChatWebhookDialog";
 
 interface TeamChatSpaceCardProps {
@@ -44,10 +41,10 @@ export default function TeamChatSpaceCard({
   canManage,
 }: TeamChatSpaceCardProps): JSX.Element | null {
   const [editOpen, setEditOpen] = useState(false);
-  const { data, isLoading, isError } = useGetTeamChatWebhook(teamEntityId, {
+  const { data, isLoading, isError } = useGetTeam(teamEntityId, {
     enabled: canManage,
   });
-  const update = useUpdateTeamChatWebhook(teamEntityId);
+  const update = useUpdateTeam(teamEntityId);
 
   if (!canManage) return null;
 

@@ -152,17 +152,17 @@ func (c *CustomerEntityClient) SearchTeams(ctx context.Context, body []byte) ([]
 	return c.do(ctx, http.MethodPost, "/teams/search", body)
 }
 
-// GetTeamChatWebhook calls GET /teams/{id}/chat-webhook on the entity
-// service. Response is returned as raw JSON.
-func (c *CustomerEntityClient) GetTeamChatWebhook(ctx context.Context, teamID string) ([]byte, error) {
-	return c.do(ctx, http.MethodGet, fmt.Sprintf("/teams/%s/chat-webhook", url.PathEscape(teamID)), nil)
+// GetTeam calls GET /teams/{id} on the entity service -- the team's own
+// id/name/type plus its configured Chat webhook URL. Response is returned
+// as raw JSON.
+func (c *CustomerEntityClient) GetTeam(ctx context.Context, teamID string) ([]byte, error) {
+	return c.do(ctx, http.MethodGet, fmt.Sprintf("/teams/%s", url.PathEscape(teamID)), nil)
 }
 
-// UpdateTeamChatWebhook calls PATCH /teams/{id}/chat-webhook on the entity
-// service. The body is forwarded verbatim and the response is returned as raw
-// JSON.
-func (c *CustomerEntityClient) UpdateTeamChatWebhook(ctx context.Context, teamID string, body []byte) ([]byte, error) {
-	return c.do(ctx, http.MethodPatch, fmt.Sprintf("/teams/%s/chat-webhook", url.PathEscape(teamID)), body)
+// UpdateTeam calls PATCH /teams/{id} on the entity service. The body is
+// forwarded verbatim and the response is returned as raw JSON.
+func (c *CustomerEntityClient) UpdateTeam(ctx context.Context, teamID string, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPatch, fmt.Sprintf("/teams/%s", url.PathEscape(teamID)), body)
 }
 
 // AssignTeamLead calls POST /teams/{id}/lead on the entity service. The body
