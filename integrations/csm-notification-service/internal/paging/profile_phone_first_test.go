@@ -117,3 +117,31 @@ func TestTestCallTo_OverridesConfiguredHeadNumber(t *testing.T) {
 		t.Errorf("CSM asked about %v under TEST_CALL_TO", contacts.asked)
 	}
 }
+
+// Roster mode too: TEST_CALL_TO rings every roster recipient on one number,
+// fixed, and leaves the roster itself untouched. Without it, a valid CSM
+// profile number replaces the roster's.
+func TestRosterResolver_TestCallToIsFixed(t *testing.T) {
+	roster := Roster{Default: LevelRoster{Level0.String(): {{Name: "Ana", Email: "ana@example.com", Phone: "+94770000001"}}}}
+	contacts := &fakePagingContacts{numbers: map[string]DialNumber{
+		"ana@example.com": {Number: "+94770000002", Source: DialSourceProfile},
+	}}
+	resolve := func(r Resolver) Recipient {
+		t.Helper()
+		got, err := NewProfilePhoneResolver(r, nil).WithPagingContacts(contacts).Resolve(context.Background(), Level0, RoutingContext{})
+		if err != nil || len(got) != 1 {
+			t.Fatalf("got %+v, %v", got, err)
+		}
+		return got[0]
+	}
+
+	if got := resolve(NewRosterResolver(roster).WithTestCallTo(" +94770000000 ")); got.Phone != "+94770000000" || !got.PhoneFixed {
+		t.Errorf("TEST_CALL_TO: %q fixed=%v; want the test number, fixed", got.Phone, got.PhoneFixed)
+	}
+	if roster.Default[Level0.String()][0].Phone != "+94770000001" {
+		t.Errorf("the roster itself was changed: %+v", roster.Default)
+	}
+	if got := resolve(NewRosterResolver(roster)); got.Phone != "+94770000002" || got.PhoneFixed {
+		t.Errorf("no TEST_CALL_TO: %q fixed=%v; want the CSM profile number", got.Phone, got.PhoneFixed)
+	}
+}

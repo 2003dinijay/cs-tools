@@ -871,7 +871,10 @@ func main() {
 			// Off by default: the rung model the schedule resolver implements
 			// is still an assumption awaiting confirmation, and a deployment
 			// should opt into it knowingly rather than inherit it on upgrade.
-			var escalationResolver paging.Resolver = paging.NewRosterResolver(roster)
+			// INCIDENT_ESCALATION_TEST_CALL_TO rings every roster recipient on
+			// one number, fixed, so a rehearsal never reaches a real phone.
+			var escalationResolver paging.Resolver = paging.NewRosterResolver(roster).
+				WithTestCallTo(os.Getenv("INCIDENT_ESCALATION_TEST_CALL_TO"))
 			if os.Getenv("INCIDENT_ESCALATION_RESOLVER") == "team-schedule" {
 				if escalationNotes == nil {
 					slog.Error("INCIDENT_ESCALATION_RESOLVER=team-schedule needs CUSTOMER_ENTITY_BASE_URL; " +

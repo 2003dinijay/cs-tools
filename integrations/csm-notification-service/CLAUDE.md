@@ -670,7 +670,8 @@ an error -- its lead would still be called on every CRE ladder's
 E.164) or `INCIDENT_ESCALATION_TEST_CALL_TO` (every call to one number) fill
 them through `TeamScheduleResolver.WithPhoneBook`. A chat-only ladder needs
 neither. The phone book is a fallback: a valid CSM profile number replaces its
-entry (`ProfilePhoneResolver`); `TEST_CALL_TO` is never replaced.
+entry (`ProfilePhoneResolver`); `TEST_CALL_TO` is never replaced, and the
+roster resolver applies it too (`RosterResolver.WithTestCallTo`).
 
 **Where alert-born incidents come from.** `sre-alert-core-service` creates the
 CSM incident (`engine.deliverAndPersist` -> `notify.NotifyCSM` -> `POST
