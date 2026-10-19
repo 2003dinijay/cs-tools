@@ -1983,6 +1983,10 @@ components:
         searchQuery:
           type: string
           description: Case-insensitive match against version string.
+        deploymentProfile:
+          type: string
+          default: All In One
+          description: Only versions with this deployment profile, matched case-insensitively. Defaults to "All In One" when omitted; send an empty string to return every profile.
 
     SearchProductVersionsResponse:
       type: object

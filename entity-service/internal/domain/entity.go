@@ -1893,7 +1893,16 @@ type SearchProductVersionsRequest struct {
 	Pagination  Pagination `json:"pagination"`
 	ProductID   string     `json:"-"`
 	SearchQuery string     `json:"searchQuery"`
+	// DeploymentProfile restricts results to versions with this deployment
+	// profile (product_version.deployment_profile), matched case-insensitively.
+	// Omitted means DefaultDeploymentProfile; an explicit empty string turns the
+	// filter off and returns every profile. Postgres data source only.
+	DeploymentProfile *string `json:"deploymentProfile,omitempty"`
 }
+
+// DefaultDeploymentProfile is the deployment profile a product version search
+// is scoped to when the request does not name one.
+const DefaultDeploymentProfile = "All In One"
 
 // SearchProductVersionsResponse is the paginated result of a product version search.
 // HasMore is true when additional pages are available beyond the current offset.
