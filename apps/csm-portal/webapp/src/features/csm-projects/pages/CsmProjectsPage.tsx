@@ -29,21 +29,86 @@ import {
   Typography,
 } from "@wso2/oxygen-ui";
 import { ArrowLeft } from "@wso2/oxygen-ui-icons-react";
-import { useEffect, useMemo, useState, type ChangeEvent, type JSX, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useState, type ChangeEvent, type JSX, type KeyboardEvent, type ReactNode } from "react";
 import { useLocation, useSearchParams } from "react-router";
+import ColumnCustomizerButton from "@components/column-customizer/ColumnCustomizerButton";
 import QueryErrorState from "@components/QueryErrorState";
 import MultiSelectField from "@components/MultiSelectField";
+import UserRefLink from "@components/UserRefLink";
+import { useCurrentUser } from "@context/current-user/CurrentUserContext";
 import { useDebouncedValue } from "@hooks/useDebouncedValue";
+import { useIdTokenClaims } from "@hooks/useIdTokenClaims";
+import {
+  getColumnPreferencesUserKey,
+  useColumnPreferences,
+  type ColumnOption,
+} from "@hooks/useColumnPreferences";
 import { useNavTransition } from "@hooks/useNavTransition";
 import { useSearchProjects } from "@features/csm-projects/api/useSearchProjects";
 import ClosureStateChip from "@features/csm-projects/components/ClosureStateChip";
+import ProjectOnboardingStatusChip from "@features/csm-projects/components/ProjectOnboardingStatusChip";
 import RefreshButton from "@components/RefreshButton";
-import type { SearchProjectsRequest } from "@features/csm-projects/types/csmProjects";
+import type { Project, SearchProjectsRequest } from "@features/csm-projects/types/csmProjects";
 import { BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
 
 const DEFAULT_ROWS_PER_PAGE = 20;
 // Top option is the backend's max page limit; larger requests are rejected.
 const ROWS_PER_PAGE_OPTIONS = [10, 20, BE_MAX_PAGE_LIMIT];
+
+type ProjectColumnId = "name" | "key" | "closureState" | "startDate" | "endDate" | "onboardingStatus" | "onboardingOwner";
+
+const PROJECT_COLUMNS: { id: ProjectColumnId; label: string }[] = [
+  { id: "name", label: "Name" },
+  { id: "key", label: "Project key" },
+  { id: "closureState", label: "State" },
+  { id: "startDate", label: "Start" },
+  { id: "endDate", label: "End" },
+  { id: "onboardingStatus", label: "Onboarding status" },
+  { id: "onboardingOwner", label: "Onboarding owner" },
+];
+
+// Matches the table's original, always-shown set. Onboarding status/owner are
+// opt-in, same as the accounts table's own account manager/technical owner/CRE
+// team columns — most projects have no onboarding engagement at all, so they'd
+// show as a bare dash for the common case.
+const DEFAULT_PROJECT_COLUMN_IDS: ProjectColumnId[] = [
+  "name",
+  "key",
+  "closureState",
+  "startDate",
+  "endDate",
+];
+
+function renderProjectCell(id: ProjectColumnId, p: Project): ReactNode {
+  switch (id) {
+    case "name":
+      return (
+        <Typography variant="body2" noWrap title={p.name}>
+          {p.name}
+        </Typography>
+      );
+    case "key":
+      return p.key;
+    case "closureState":
+      return <ClosureStateChip closureState={p.closureState} emptyFallback="—" />;
+    case "startDate":
+      return formatDate(p.startDate);
+    case "endDate":
+      return formatDate(p.endDate);
+    case "onboardingStatus":
+      return <ProjectOnboardingStatusChip onboardingStatus={p.onboardingStatus} emptyFallback="—" />;
+    case "onboardingOwner":
+      return p.onboardingOwner ? (
+        <UserRefLink
+          name={p.onboardingOwner.name}
+          email={p.onboardingOwner.email || undefined}
+          userId={p.onboardingOwner.id}
+        />
+      ) : (
+        "—"
+      );
+  }
+}
 
 // Matches Project["onboardingStatus"]'s own value set, minus "Not-Applicable"
 // (not a real onboarding state to filter *for* — it means the project has no
@@ -152,6 +217,20 @@ export default function CsmProjectsPage(): JSX.Element {
   const projects = data?.projects ?? [];
   const total = data?.total ?? 0;
 
+  const columnOptions = useMemo<ColumnOption[]>(
+    () => PROJECT_COLUMNS.map(({ id, label }) => ({ id, label })),
+    [],
+  );
+  const currentUser = useCurrentUser().user;
+  const currentUserEmail = useIdTokenClaims()?.email;
+  const columnPrefs = useColumnPreferences({
+    viewId: "projects",
+    userKey: getColumnPreferencesUserKey({ id: currentUser?.id, email: currentUserEmail }),
+    columns: columnOptions,
+    defaultVisibleIds: DEFAULT_PROJECT_COLUMN_IDS,
+  });
+  const visibleColumnIds = columnPrefs.visibleColumns.map((c) => c.id as ProjectColumnId);
+
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
       {backState?.from && (
@@ -170,12 +249,23 @@ export default function CsmProjectsPage(): JSX.Element {
         <Typography variant="body2" color="text.secondary">
           Search across project name, project key, and subscription type.
         </Typography>
-        <RefreshButton
-          onRefresh={() => void refetch()}
-          isFetching={isFetching}
-          updatedAt={dataUpdatedAt}
-          label="Refresh projects"
-        />
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+          <RefreshButton
+            onRefresh={() => void refetch()}
+            isFetching={isFetching}
+            updatedAt={dataUpdatedAt}
+            label="Refresh projects"
+          />
+          <ColumnCustomizerButton
+            allColumns={columnPrefs.allColumns}
+            isVisible={columnPrefs.isVisible}
+            onToggle={columnPrefs.toggleColumn}
+            onMove={columnPrefs.moveColumn}
+            onReorder={columnPrefs.reorderColumn}
+            onReset={columnPrefs.resetToDefault}
+            label="Customise projects columns"
+          />
+        </Box>
       </Box>
 
       <Box sx={{ display: "flex", flexWrap: "wrap", gap: 2 }}>
@@ -204,27 +294,25 @@ export default function CsmProjectsPage(): JSX.Element {
           <Table size="small" sx={{ "& .MuiTableCell-root": { borderColor: "divider" } }}>
             <TableHead>
               <TableRow sx={{ bgcolor: "action.hover" }}>
-                <TableCell>Name</TableCell>
-                <TableCell>Project key</TableCell>
-                <TableCell>State</TableCell>
-                <TableCell>Start</TableCell>
-                <TableCell>End</TableCell>
+                {visibleColumnIds.map((id) => (
+                  <TableCell key={id}>{PROJECT_COLUMNS.find((c) => c.id === id)?.label}</TableCell>
+                ))}
               </TableRow>
             </TableHead>
             <TableBody>
               {isLoading || isFetching ? (
                 Array.from({ length: rowsPerPage }).map((_, i) => (
                   <TableRow key={i}>
-                    <TableCell><Skeleton variant="rounded" width="80%" height={18} /></TableCell>
-                    <TableCell><Skeleton variant="rounded" width="55%" height={18} /></TableCell>
-                    <TableCell><Skeleton variant="rounded" width={80} height={22} /></TableCell>
-                    <TableCell><Skeleton variant="rounded" width={80} height={18} /></TableCell>
-                    <TableCell><Skeleton variant="rounded" width={80} height={18} /></TableCell>
+                    {visibleColumnIds.map((id) => (
+                      <TableCell key={id}>
+                        <Skeleton variant="rounded" width="70%" height={18} />
+                      </TableCell>
+                    ))}
                   </TableRow>
                 ))
               ) : isError ? (
                 <TableRow>
-                  <TableCell colSpan={5} align="center">
+                  <TableCell colSpan={visibleColumnIds.length} align="center">
                     <QueryErrorState
                       message={error instanceof Error && error.message.trim() ? error.message : "Failed to load projects."}
                       error={error}
@@ -233,7 +321,7 @@ export default function CsmProjectsPage(): JSX.Element {
                 </TableRow>
               ) : projects.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={5} align="center" sx={{ py: 4 }}>
+                  <TableCell colSpan={visibleColumnIds.length} align="center" sx={{ py: 4 }}>
                     <Typography variant="body2" color="text.secondary">
                       No projects found.
                     </Typography>
@@ -268,20 +356,11 @@ export default function CsmProjectsPage(): JSX.Element {
                         },
                       }}
                     >
-                      <TableCell sx={{ maxWidth: 320 }}>
-                        <Typography variant="body2" noWrap title={p.name}>
-                          {p.name}
-                        </Typography>
-                      </TableCell>
-                      <TableCell>{p.key}</TableCell>
-                      <TableCell>
-                        <ClosureStateChip
-                          closureState={p.closureState}
-                          emptyFallback="—"
-                        />
-                      </TableCell>
-                      <TableCell>{formatDate(p.startDate)}</TableCell>
-                      <TableCell>{formatDate(p.endDate)}</TableCell>
+                      {visibleColumnIds.map((id) => (
+                        <TableCell key={id} sx={id === "name" ? { maxWidth: 320 } : undefined}>
+                          {renderProjectCell(id, p)}
+                        </TableCell>
+                      ))}
                     </TableRow>
                   );
                 })

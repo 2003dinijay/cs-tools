@@ -15,9 +15,10 @@
 // under the License.
 
 import type { ReactElement } from "react";
-import { fireEvent, render as rtlRender, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render as rtlRender, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import "@testing-library/jest-dom/vitest";
 import CsmProjectsPage from "@features/csm-projects/pages/CsmProjectsPage";
 import { useSearchProjects } from "@features/csm-projects/api/useSearchProjects";
@@ -34,10 +35,23 @@ vi.mock("@features/csm-projects/api/useSearchProjects", () => ({
   useSearchProjects: vi.fn(),
 }));
 
+vi.mock("@context/current-user/CurrentUserContext", () => ({
+  useCurrentUser: () => ({ user: { id: "user-1" }, isLoading: false, isError: false }),
+}));
+
+vi.mock("@hooks/useIdTokenClaims", () => ({
+  useIdTokenClaims: () => ({ email: "user@example.test" }),
+}));
+
 const mockedUseSearch = vi.mocked(useSearchProjects);
 
 function render(ui: ReactElement, initialPath = "/customers/projects"): ReturnType<typeof rtlRender> {
-  return rtlRender(<MemoryRouter initialEntries={[initialPath]}>{ui}</MemoryRouter>);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return rtlRender(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={[initialPath]}>{ui}</MemoryRouter>
+    </QueryClientProvider>,
+  );
 }
 
 function mockResult(overrides: Partial<ReturnType<typeof useSearchProjects>>): void {
@@ -55,6 +69,7 @@ function mockResult(overrides: Partial<ReturnType<typeof useSearchProjects>>): v
 
 beforeEach(() => {
   mockedUseSearch.mockReset();
+  window.localStorage.clear();
 });
 
 // Regression coverage for a real, reported bug: a dashboard tile like
@@ -159,5 +174,75 @@ describe("CsmProjectsPage — onboardingStatus filter from the URL", () => {
       );
     });
     expect(await screen.findByText("Completed")).toBeInTheDocument();
+  });
+});
+
+// Regression coverage: this table used to have a fixed 5-column layout with
+// no customisation at all, unlike the Cases table (CasesList.tsx) and the
+// Accounts table (CsmAccountsPage.tsx), both of which let a caller show/hide/
+// reorder columns via ColumnCustomizerButton + useColumnPreferences. Brought
+// in line with that convention, plus two new opt-in columns (onboarding
+// status/owner) the table previously had nowhere to show at all.
+describe("CsmProjectsPage — column customisation", () => {
+  it("shows exactly the original 5 columns by default, with onboarding columns hidden", () => {
+    mockResult({ data: { projects: [], total: 0, limit: 20, offset: 0, hasMore: false } });
+
+    render(<CsmProjectsPage />);
+
+    const headerRow = screen.getAllByRole("columnheader").map((h) => h.textContent);
+    expect(headerRow).toEqual(["Name", "Project key", "State", "Start", "End"]);
+  });
+
+  it("offers a 'Customise projects columns' control", () => {
+    mockResult({ data: { projects: [], total: 0, limit: 20, offset: 0, hasMore: false } });
+
+    render(<CsmProjectsPage />);
+
+    expect(
+      screen.getByRole("button", { name: "Customise projects columns" }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows a project's onboarding status and owner once those columns are toggled on", async () => {
+    mockResult({
+      data: {
+        projects: [
+          {
+            id: "proj-1",
+            name: "Acme Project",
+            key: "ACME",
+            subscriptionType: "subscription",
+            startDate: null,
+            endDate: null,
+            createdOn: "2024-01-01T00:00:00Z",
+            closureState: "open",
+            endDateClosureState: null,
+            invoiceDueDateClosureState: null,
+            complianceViolationClosureState: null,
+            complianceViolationDate: null,
+            suspensionProcessState: null,
+            onboardingStatus: "In-Progress",
+            onboardingOwner: { id: "user-2", name: "Jane Doe", email: "jane.doe@example.com" },
+          },
+        ],
+        total: 1,
+        limit: 20,
+        offset: 0,
+        hasMore: false,
+      },
+    });
+
+    render(<CsmProjectsPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Customise projects columns" }));
+    // "Onboarding status" also names the filter's MultiSelectField label, so
+    // scope to the picker's own list (aria-labelled with the same button
+    // label) to avoid an ambiguous match.
+    const picker = screen.getByRole("list", { name: "Customise projects columns" });
+    fireEvent.click(within(picker).getByText("Onboarding status"));
+    fireEvent.click(within(picker).getByText("Onboarding owner"));
+
+    expect(screen.getAllByText("In Progress").length).toBeGreaterThan(0);
+    expect(await screen.findByText("Jane Doe")).toBeInTheDocument();
   });
 });

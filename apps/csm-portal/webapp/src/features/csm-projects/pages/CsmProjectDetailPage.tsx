@@ -36,6 +36,7 @@ import { useProjectMetadata } from "@features/csm-projects/api/useProjectMetadat
 import ClosureStateChip from "@features/csm-projects/components/ClosureStateChip";
 import DeploymentsTab from "@features/csm-projects/components/DeploymentsTab";
 import ProjectContactsTab from "@features/csm-projects/components/ProjectContactsTab";
+import ProjectOnboardingStatusChip from "@features/csm-projects/components/ProjectOnboardingStatusChip";
 import WorkItemsTab from "@features/csm-projects/components/WorkItemsTab";
 import {
   endDateLabel,
@@ -400,6 +401,11 @@ export default function CsmProjectDetailPage(): JSX.Element {
             <MetaCell label={endDateLabel(p.endDate)}>
               <Typography variant="body2">{formatDate(p.endDate)}</Typography>
             </MetaCell>
+            {p.onboardingStatus && p.onboardingStatus !== "Not-Applicable" && (
+              <MetaCell label="Onboarding Status">
+                <ProjectOnboardingStatusChip onboardingStatus={p.onboardingStatus} />
+              </MetaCell>
+            )}
             {p.onboardingStatus &&
               p.onboardingStatus !== "Not-Applicable" &&
               p.onboardingOwner && (
