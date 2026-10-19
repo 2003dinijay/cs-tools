@@ -146,7 +146,7 @@ func TestCaseUpdateDispatchIntegration_ServiceRequestRowUnderCaseType(t *testing
 	}
 
 	for _, want := range []domain.CaseState{domain.CaseStateWaitingOnWSO2, domain.CaseStateSolutionProposed, domain.CaseStateClosed} {
-		c, _, err := f.repo.UpdateCase(f.ctx, domain.UpdateCaseRequest{ID: udSRUnderCaseID, State: udState(want)}, &actor)
+		c, _, _, err := f.repo.UpdateCase(f.ctx, domain.UpdateCaseRequest{ID: udSRUnderCaseID, State: udState(want)}, &actor)
 		if err != nil {
 			t.Fatalf("UpdateCase to %s: %v", want, err)
 		}
@@ -178,7 +178,7 @@ func TestCaseUpdateDispatchIntegration_WorkStateAndAutocloseHoldFollowTheRow(t *
 	actor := udUserID
 
 	ws := domain.CaseWorkStateOngoing
-	c, _, err := f.repo.UpdateCase(f.ctx, domain.UpdateCaseRequest{ID: udSRUnderCaseID, WorkState: &ws}, &actor)
+	c, _, _, err := f.repo.UpdateCase(f.ctx, domain.UpdateCaseRequest{ID: udSRUnderCaseID, WorkState: &ws}, &actor)
 	if err != nil {
 		t.Fatalf("UpdateCase workState ongoing: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestCaseUpdateDispatchIntegration_CaseRowUnderServiceRequestType(t *testing
 	if v := f.view(t, udCaseUnderSRID); v.State == nil || *v.State != domain.CaseStateOpen {
 		t.Fatalf("GetCaseByID state = %v, want open (read from the \"case\" row)", v.State)
 	}
-	c, _, err := f.repo.UpdateCase(f.ctx, domain.UpdateCaseRequest{ID: udCaseUnderSRID, State: udState(domain.CaseStateWaitingOnWSO2)}, &actor)
+	c, _, _, err := f.repo.UpdateCase(f.ctx, domain.UpdateCaseRequest{ID: udCaseUnderSRID, State: udState(domain.CaseStateWaitingOnWSO2)}, &actor)
 	if err != nil {
 		t.Fatalf("UpdateCase to waiting_on_wso2: %v", err)
 	}
@@ -219,7 +219,7 @@ func TestCaseUpdateDispatchIntegration_CaseRowUnderServiceRequestType(t *testing
 	}
 
 	sev := domain.CaseSeverityHigh
-	c, previous, err := f.repo.UpdateCase(f.ctx, domain.UpdateCaseRequest{ID: udCaseUnderSRID, Severity: &sev}, &actor)
+	c, previous, _, err := f.repo.UpdateCase(f.ctx, domain.UpdateCaseRequest{ID: udCaseUnderSRID, Severity: &sev}, &actor)
 	if err != nil {
 		t.Fatalf("UpdateCase severity: %v", err)
 	}
@@ -243,7 +243,7 @@ func TestCaseUpdateDispatchIntegration_StillNotFoundWithoutARow(t *testing.T) {
 
 	for _, id := range []string{udNoRowID, udMissingID} {
 		var nf *apierror.NotFoundError
-		if _, _, err := f.repo.UpdateCase(f.ctx, domain.UpdateCaseRequest{ID: id, State: udState(domain.CaseStateClosed)}, &actor); !errors.As(err, &nf) {
+		if _, _, _, err := f.repo.UpdateCase(f.ctx, domain.UpdateCaseRequest{ID: id, State: udState(domain.CaseStateClosed)}, &actor); !errors.As(err, &nf) {
 			t.Errorf("UpdateCase(%s) = %v, want NotFoundError", id, err)
 		}
 		if _, err := f.repo.UpdateCaseFields(f.ctx, domain.UpdateCaseRequest{ID: id, AutocloseHoldUntil: &hold}, actor, udActor); !errors.As(err, &nf) {

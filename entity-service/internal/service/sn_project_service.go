@@ -369,7 +369,7 @@ func (s *snProjectService) fetchAllProjectsFiltered(ctx context.Context, req dom
 	// resolving an announcement audience could under-count real recipients
 	// and never know. Fail loudly instead of guessing.
 	return nil, &apierror.ServiceUnavailableError{Msg: fmt.Sprintf(
-		"too many matching projects to apply excludeClosureStates/excludeSubscriptionTypes/excludeProjectKeys safely (exceeded %d upstream pages of %d) — narrow the search with an additional filter",
+		"too many matching projects to apply excludeClosureStates/excludeSubscriptionTypes/excludeProjectKeys/sfIds safely (exceeded %d upstream pages of %d) — narrow the search with an additional filter",
 		maxExcludeFilterPages, snExcludeFilterPageSize,
 	)}
 }
