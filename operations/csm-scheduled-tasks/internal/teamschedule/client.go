@@ -14,9 +14,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Package teamschedule is a narrow, read-only client for entity-service's Team
-// Schedule API: the catalogue (shift windows and team names) and the rota
-// itself. It exists for the rota reminder emails (internal/rotareminder) and is
+// Package teamschedule is a narrow client for entity-service's Team Schedule
+// API: the catalogue (shift windows and team names), the rota itself, and the
+// rota reminders' own bookkeeping (what a reminder last sent, and the rota
+// admins to ask when a rota is not complete; see reminders.go). It never
+// changes the rota. It exists for the rota reminder emails (internal/rotareminder) and is
 // kept apart from internal/entitycases for the same reason that one is kept
 // apart from internal/ledger: a different endpoint, a different concern, the
 // same deployment and credentials.

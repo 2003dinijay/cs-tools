@@ -1,0 +1,57 @@
+// Copyright (c) 2026 WSO2 LLC. (https://www.wso2.com).
+//
+// WSO2 LLC. licenses this file to you under the Apache License,
+// Version 2.0 (the "License"); you may not use this file except
+// in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+package teamschedule
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
+
+// Nothing saved is a 404 and reads as nil; saved settings are decoded; any
+// other failure is an error, never "nothing saved".
+func TestReminderSettingsFor(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/team-schedule/reminder-settings/SRE":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"code":404,"message":"no reminder settings saved"}`))
+		case "/team-schedule/reminder-settings/CRE":
+			_, _ = w.Write([]byte(`{"weekdayEnabled":true,"weekendEnabled":false,"invitesEnabled":true,
+				"weekendRequired":{"CRE_WEEKEND":2},"windows":{"CRE_WEEKEND_NIGHT":{"start":"08:00","end":"18:00","timeZone":"America/Los_Angeles"}},
+				"copyTo":["lead@example.com"]}`))
+		default:
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+	c := newClient(srv.Client(), srv.URL)
+	ctx := context.Background()
+
+	if s, err := c.ReminderSettingsFor(ctx, "SRE"); err != nil || s != nil {
+		t.Fatalf("nothing saved: %+v, %v", s, err)
+	}
+	s, err := c.ReminderSettingsFor(ctx, "CRE")
+	if err != nil || s == nil || !s.WeekdayEnabled || s.WeekendEnabled || s.WeekendRequired["CRE_WEEKEND"] != 2 ||
+		s.Windows["CRE_WEEKEND_NIGHT"].TimeZone != "America/Los_Angeles" || s.CopyTo[0] != "lead@example.com" {
+		t.Fatalf("settings = %+v, %v", s, err)
+	}
+	if s, err := c.ReminderSettingsFor(ctx, "SME"); err == nil {
+		t.Fatalf("a failure read as %+v", s)
+	}
+}

@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/notify"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/teamschedule"
 )
 
@@ -119,6 +120,7 @@ func (f *fakeRota) WorkingAssignments(_ context.Context, from, to, family string
 type sentEmail struct {
 	to, cc        []string
 	subject, body string
+	attachments   []notify.Attachment
 }
 
 type fakeEmail struct {
@@ -126,11 +128,15 @@ type fakeEmail struct {
 	failOn string // a subject substring whose send fails
 }
 
-func (f *fakeEmail) SendEmail(_ context.Context, to, cc []string, subject, body string) error {
+func (f *fakeEmail) SendEmail(ctx context.Context, to, cc []string, subject, body string) error {
+	return f.SendEmailWithAttachments(ctx, to, cc, subject, body, nil)
+}
+
+func (f *fakeEmail) SendEmailWithAttachments(_ context.Context, to, cc []string, subject, body string, attachments []notify.Attachment) error {
 	if f.failOn != "" && strings.Contains(subject, f.failOn) {
 		return errors.New("mail service down")
 	}
-	f.sent = append(f.sent, sentEmail{to: to, cc: cc, subject: subject, body: body})
+	f.sent = append(f.sent, sentEmail{to: to, cc: cc, subject: subject, body: body, attachments: attachments})
 	return nil
 }
 
@@ -147,7 +153,7 @@ func assignment(name, email, team, code, rotaDate, start, end string) teamschedu
 }
 
 var weekdayRotations = map[string]string{"CRE_MORNING": "Morning", "CRE_MORNING_OC": "On-call", "CRE_EVENING": "Evening"}
-var weekendRotations = map[string]string{"CRE_WEEKEND": "LK Weekend", "CRE_WEEKEND_NIGHT": "America Weekend", "CRE_WEEKEND_NIGHT_OC": "On-call"}
+var weekendRotations = map[string]string{"CRE_WEEKEND": "LK Weekend", "CRE_WEEKEND_NIGHT": "Americas Weekend", "CRE_WEEKEND_NIGHT_OC": "LK On-call"}
 
 // config is a task's configuration as cmd/server/main.go builds it.
 func config(now string, rotations map[string]string) Config {
@@ -242,73 +248,24 @@ func TestWeekdayReminder_CountsDaysInTheRotaZone(t *testing.T) {
 	}
 }
 
-// The weekend is one email per window per day -- LK and America (with its
-// on-call) on Saturday and on Sunday -- each listing the whole weekend's rota.
-// The America window runs past midnight.
-func TestWeekendNotice_OneEmailPerWindowPerDay(t *testing.T) {
-	roster := []teamschedule.Assignment{
-		assignment("Kim", "kim@example.com", "vega", "CRE_WEEKEND", "2026-10-18", "2026-10-18 06:00", "2026-10-18 21:00"),
-		assignment("Jay", "jay@example.com", "americas", "CRE_WEEKEND_NIGHT_OC", "2026-10-17", "2026-10-17 21:00", "2026-10-18 06:00"),
-		assignment("Ivy", "ivy@example.com", "americas", "CRE_WEEKEND_NIGHT", "2026-10-17", "2026-10-17 21:00", "2026-10-18 06:00"),
-		assignment("Hal", "hal@example.com", "orion", "CRE_WEEKEND", "2026-10-17", "2026-10-17 06:00", "2026-10-17 21:00"),
-		assignment("Fay", "fay@example.com", "vega", "CRE_WEEKEND", "2026-10-17", "2026-10-17 06:00", "2026-10-17 21:00"),
-	}
-	for _, c := range []struct{ name, now, notice string }{
-		{"Monday notice", "2026-10-12 15:00", "This is an advance notice that you are rostered for the LK Weekend rotation on Saturday, 17 October 2026, 06:00&#8211;21:00 IST."},
-		{"Friday reminder", "2026-10-16 15:00", "This is a reminder that you are rostered for the LK Weekend rotation tomorrow, Saturday, 17 October 2026, 06:00&#8211;21:00 IST."},
+// The weekend's days are named whichever months and years they fall in.
+func TestDayList(t *testing.T) {
+	for _, c := range []struct {
+		days []string
+		want string
+	}{
+		{[]string{"2026-10-25"}, "Sunday, 25 October 2026"},
+		{[]string{"2026-10-24", "2026-10-25"}, "Saturday, 24 and Sunday, 25 October 2026"},
+		{[]string{"2026-10-31", "2026-11-01"}, "Saturday, 31 October and Sunday, 1 November 2026"},
+		{[]string{"2033-12-31", "2034-01-01"}, "Saturday, 31 December 2033 and Sunday, 1 January 2034"},
 	} {
-		t.Run(c.name, func(t *testing.T) {
-			rota := &fakeRota{assignments: roster}
-			mail := &fakeEmail{}
-			if err := WeekendNotice(rota, mail, config(c.now, weekendRotations))(context.Background()); err != nil {
-				t.Fatalf("handler: %v", err)
-			}
-			if rota.from != "2026-10-17" || rota.to != "2026-10-18" {
-				t.Fatalf("read %s..%s, want Sat 17 to Sun 18 Oct", rota.from, rota.to)
-			}
-			if len(mail.sent) != 3 {
-				t.Fatalf("sent %d emails, want Sat LK, Sat America, Sun LK: %+v", len(mail.sent), mail.sent)
-			}
-			satLK, satAmerica, sunLK := mail.sent[0], mail.sent[1], mail.sent[2]
-
-			if strings.Join(satLK.to, ",") != "fay@example.com,hal@example.com" ||
-				satLK.subject != "[CRE Rota] LK Weekend Rotation – Saturday, 17 October 2026 (06:00–21:00 IST)" ||
-				!strings.Contains(satLK.body, "<p>"+c.notice+"</p>") {
-				t.Errorf("Saturday LK = %+v", satLK)
-			}
-			// Every weekend email lists the whole weekend.
-			whole := row("Fay", "Saturday", "LK Weekend") + "\n" + row("Hal", "Saturday", "LK Weekend") + "\n" +
-				row("Ivy", "Saturday", "America Weekend") + "\n" + row("Jay", "Saturday", "On-call") + "\n" +
-				row("Kim", "Sunday", "LK Weekend")
-			for _, m := range mail.sent {
-				if !strings.Contains(m.body, whole) {
-					t.Errorf("%q does not list the whole weekend:\n%s", m.subject, m.body)
-				}
-			}
-
-			if strings.Join(satAmerica.to, ",") != "ivy@example.com,jay@example.com" ||
-				satAmerica.subject != "[CRE Rota] America Weekend Rotation – Saturday, 17 October 2026 (21:00 IST to 06:00 IST on Sunday)" {
-				t.Errorf("Saturday America = %q to %v", satAmerica.subject, satAmerica.to)
-			}
-			if strings.Join(sunLK.to, ",") != "kim@example.com" || !strings.Contains(sunLK.body, "<p>Dear Kim,</p>") {
-				t.Errorf("Sunday LK = %+v", sunLK)
-			}
-		})
-	}
-}
-
-// A weekend across a year end names the right dates.
-func TestWeekendNotice_AcrossAYearEnd(t *testing.T) {
-	rota := &fakeRota{assignments: []teamschedule.Assignment{
-		assignment("Fay", "fay@example.com", "vega", "CRE_WEEKEND", "2034-01-01", "2034-01-01 06:00", "2034-01-01 21:00"),
-	}}
-	mail := &fakeEmail{}
-	if err := WeekendNotice(rota, mail, config("2033-12-26 15:00", weekendRotations))(context.Background()); err != nil {
-		t.Fatalf("handler: %v", err)
-	}
-	if rota.from != "2033-12-31" || rota.to != "2034-01-01" || len(mail.sent) != 1 ||
-		mail.sent[0].subject != "[CRE Rota] LK Weekend Rotation – Sunday, 1 January 2034 (06:00–21:00 IST)" {
-		t.Fatalf("read %s..%s, sent %+v", rota.from, rota.to, mail.sent)
+		var days []time.Time
+		for _, d := range c.days {
+			days = append(days, dateOf(d, colombo))
+		}
+		if got := dayList(days); got != c.want {
+			t.Errorf("dayList(%v) = %q, want %q", c.days, got, c.want)
+		}
 	}
 }
 
@@ -464,28 +421,6 @@ func TestAWeekdayRetryAfterMidnightKeepsItsDay(t *testing.T) {
 	}
 	if len(mail.sent) != 1 || !strings.Contains(mail.sent[0].body, "rostered for the Evening rotation today, Friday, 16 October 2026") {
 		t.Fatalf("sent = %+v, want one email saying today", mail.sent)
-	}
-}
-
-// Friday's weekend notice, retried on Saturday, announces this weekend, not
-// the next; Saturday's LK window has begun and is left out, Sunday's goes.
-func TestAWeekendRetryOnSaturdayKeepsThisWeekend(t *testing.T) {
-	rota := &fakeRota{assignments: []teamschedule.Assignment{
-		assignment("Ann", "ann@example.com", "vega", "CRE_WEEKEND", "2026-10-17", "2026-10-17 09:00", "2026-10-17 21:00"),
-		assignment("Ben", "ben@example.com", "nova", "CRE_WEEKEND", "2026-10-18", "2026-10-18 09:00", "2026-10-18 21:00"),
-	}}
-	mail := &fakeEmail{}
-	cfg := config("2026-10-17 10:00", weekendRotations)
-	cfg.Anchor = func() time.Time { return at("2026-10-16 15:00") }
-	if err := WeekendNotice(rota, mail, cfg)(context.Background()); err != nil {
-		t.Fatalf("handler: %v", err)
-	}
-	if rota.from != "2026-10-17" || rota.to != "2026-10-18" {
-		t.Fatalf("read %s..%s, want this weekend, 2026-10-17..18", rota.from, rota.to)
-	}
-	if len(mail.sent) != 1 || strings.Join(mail.sent[0].to, ",") != "ben@example.com" ||
-		!strings.Contains(mail.sent[0].body, "rostered for the LK Weekend rotation tomorrow, Sunday, 18 October 2026") {
-		t.Fatalf("sent = %+v, want only Sunday's email, to Ben, saying tomorrow", mail.sent)
 	}
 }
 

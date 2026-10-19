@@ -313,6 +313,8 @@ func main() {
 	rotaWeekdayTo, rotaWeekdayCc := recipientsFor(recipientOverrides, rotaWeekdayTaskName)
 	const rotaWeekendTaskName = "rota_weekend_notice"
 	rotaWeekendTo, rotaWeekendCc := recipientsFor(recipientOverrides, rotaWeekendTaskName)
+	const rotaWeekendReminderTaskName = "rota_weekend_reminder"
+	rotaWeekendReminderTo, rotaWeekendReminderCc := recipientsFor(recipientOverrides, rotaWeekendReminderTaskName)
 
 	tasks := []registry.Task{
 		// This component's first real sub-cron: deletes rows from
@@ -432,49 +434,77 @@ func main() {
 		})
 	}
 
-	// The two rota reminder tasks. Both default to 09:30 UTC, which is 15:00
-	// in Colombo (no DST), on the days the rota's owners asked for: the weekday
-	// windows (Morning with its on-call, Evening) the working day before --
-	// Friday announces Monday -- and the weekend windows (LK and America, each
-	// day) on the Monday and the Friday before the weekend. TZ=UTC-dependent
-	// like every schedule here (see internal/schedule.PeriodKey). Each window
-	// is one email to the people on it. A task's SUB_CRON_RECIPIENTS to/cc get
-	// its failure alerts; they are copied on its emails only with
-	// ROTA_REMINDER_COPY_TASK_RECIPIENTS=true.
+	// The three rota reminder tasks, on the days and times the rota's owners
+	// asked for (Colombo has no DST; TZ=UTC-dependent like every schedule
+	// here, see internal/schedule.PeriodKey):
+	//   - rota_weekday_reminder, 09:30 UTC = 15:00 Colombo, Mon-Fri: the next
+	//     working day's windows (Friday announces Monday), one email each with
+	//     its calendar invitation;
+	//   - rota_weekend_notice, 14:30 UTC = 20:00 Colombo, Sun-Thu: once the
+	//     coming weekend is fully marked, its summary and one invitation per
+	//     team per day, sent once; until then the rota admins are asked every
+	//     evening;
+	//   - rota_weekend_reminder, 09:30 UTC = 15:00 Colombo, Fri: the weekend
+	//     summary again, the invitations as updates, and cancellations.
+	// A task's SUB_CRON_RECIPIENTS to/cc get its failure alerts; they are
+	// copied on its emails only with ROTA_REMINDER_COPY_TASK_RECIPIENTS=true.
 	if rotaRemindersEnabled {
 		family := envString("ROTA_REMINDER_FAMILY", "CRE")
 		copyTaskRecipients := envBool("ROTA_REMINDER_COPY_TASK_RECIPIENTS", false)
+		// Invitations need an organizer: the address the emails come from.
+		organizer := strings.TrimSpace(os.Getenv("EMAIL_FROM_ADDRESS"))
+		invites := envBool("ROTA_REMINDER_INVITES_ENABLED", true)
+		if invites && organizer == "" {
+			slog.Warn("rota reminder calendar invitations are off: EMAIL_FROM_ADDRESS is not set, and an invitation needs an organizer")
+			invites = false
+		}
+		weekendRequired := parseRequired("ROTA_REMINDER_WEEKEND_REQUIRED",
+			envString("ROTA_REMINDER_WEEKEND_REQUIRED", "CRE_WEEKEND=3,CRE_WEEKEND_NIGHT=1"))
 		// Each task's config carries its schedule's period (the run's rota
 		// days are counted from it, so a retry announces what the scheduled
 		// run would have) and the engine's failure audience for it (a run in
 		// which only some emails failed reports them itself; see
 		// rotareminder.Config.AlertTo).
+		// A rotation worked on another clock keeps its hours there: the
+		// Americas Weekend is 08:00-18:00 in Los Angeles, whatever span of
+		// IST that is.
+		rotaWindows, err := rotareminder.ParseWindows(envString("ROTA_REMINDER_WINDOWS", "CRE_WEEKEND_NIGHT=08:00-18:00 America/Los_Angeles,CRE_WEEKEND_NIGHT_OC=08:00-18:00 America/Los_Angeles"))
+		if err != nil {
+			slog.Error("ROTA_REMINDER_WINDOWS is malformed; refusing to start", "err", err)
+			os.Exit(1)
+		}
 		rotaConfig := func(task, sched string, rotations map[string]string, to, cc []string) rotareminder.Config {
 			var copied []string
 			if copyTaskRecipients {
 				copied = append(append(copied, to...), cc...)
 			}
 			return rotareminder.Config{
-				Family:        family,
-				Rotations:     rotations,
-				Copy:          copied,
-				RedirectTo:    splitComma(os.Getenv("ROTA_REMINDER_REDIRECT_TO")),
-				ScheduleURL:   os.Getenv("ROTA_REMINDER_SCHEDULE_URL"),
-				EmailsEnabled: alertsEnabled,
-				Zone:          rotaZone,
-				Now:           time.Now,
-				Anchor:        periodStart(sched),
-				Task:          task,
-				AlertTo:       append(append([]string{}, to...), alertRecipients...),
-				AlertCc:       cc,
+				Family:         family,
+				Rotations:      rotations,
+				Copy:           copied,
+				RedirectTo:     splitComma(os.Getenv("ROTA_REMINDER_REDIRECT_TO")),
+				ScheduleURL:    os.Getenv("ROTA_REMINDER_SCHEDULE_URL"),
+				Invites:        invites,
+				OrganizerEmail: organizer,
+				Required:       weekendRequired,
+				Windows:        rotaWindows,
+				Settings:       teamScheduleClient,
+				EmailsEnabled:  alertsEnabled,
+				Zone:           rotaZone,
+				Now:            time.Now,
+				Anchor:         periodStart(sched),
+				Task:           task,
+				AlertTo:        append(append([]string{}, to...), alertRecipients...),
+				AlertCc:        cc,
 			}
 		}
 		weekdayRotations := parseRotations("ROTA_REMINDER_WEEKDAY_SHIFTS",
 			envString("ROTA_REMINDER_WEEKDAY_SHIFTS", "CRE_MORNING=Morning,CRE_MORNING_OC=On-call,CRE_EVENING=Evening"))
 		weekendRotations := parseRotations("ROTA_REMINDER_WEEKEND_SHIFTS",
-			envString("ROTA_REMINDER_WEEKEND_SHIFTS", "CRE_WEEKEND=LK Weekend,CRE_WEEKEND_NIGHT=America Weekend,CRE_WEEKEND_NIGHT_OC=On-call"))
+			envString("ROTA_REMINDER_WEEKEND_SHIFTS", "CRE_WEEKEND=LK Weekend,CRE_WEEKEND_NIGHT=Americas Weekend,CRE_WEEKEND_NIGHT_OC=LK On-call"))
 		rotaWeekdaySchedule := scheduleFor(scheduleOverrides, rotaWeekdayTaskName, "30 9 * * 1-5")
-		rotaWeekendSchedule := scheduleFor(scheduleOverrides, rotaWeekendTaskName, "30 9 * * 1,5")
+		rotaWeekendSchedule := scheduleFor(scheduleOverrides, rotaWeekendTaskName, "30 14 * * 0-4")
+		rotaWeekendReminderSchedule := scheduleFor(scheduleOverrides, rotaWeekendReminderTaskName, "30 9 * * 5")
 		tasks = append(tasks,
 			registry.Task{
 				Name:     rotaWeekdayTaskName,
@@ -487,10 +517,18 @@ func main() {
 			registry.Task{
 				Name:     rotaWeekendTaskName,
 				Schedule: rotaWeekendSchedule,
-				Handler: rotareminder.WeekendNotice(teamScheduleClient, emailClient,
+				Handler: rotareminder.WeekendNotice(teamScheduleClient, teamScheduleClient, emailClient,
 					rotaConfig(rotaWeekendTaskName, rotaWeekendSchedule, weekendRotations, rotaWeekendTo, rotaWeekendCc)),
 				To: rotaWeekendTo,
 				Cc: rotaWeekendCc,
+			},
+			registry.Task{
+				Name:     rotaWeekendReminderTaskName,
+				Schedule: rotaWeekendReminderSchedule,
+				Handler: rotareminder.WeekendReminder(teamScheduleClient, teamScheduleClient, emailClient,
+					rotaConfig(rotaWeekendReminderTaskName, rotaWeekendReminderSchedule, weekendRotations, rotaWeekendReminderTo, rotaWeekendReminderCc)),
+				To: rotaWeekendReminderTo,
+				Cc: rotaWeekendReminderCc,
 			},
 		)
 	}
@@ -672,6 +710,24 @@ func parseRotations(key, raw string) map[string]string {
 	if len(out) == 0 {
 		slog.Error("empty rota reminder shift list", "key", key)
 		os.Exit(1)
+	}
+	return out
+}
+
+// parseRequired reads the weekend's required headcounts, "CODE=N,CODE=N": how
+// many people each shift needs on each weekend day before the weekend is
+// announced. A malformed entry stops startup, like the shift lists.
+func parseRequired(key, raw string) map[string]int {
+	out := map[string]int{}
+	for _, entry := range splitComma(raw) {
+		code, n, ok := strings.Cut(entry, "=")
+		code = strings.TrimSpace(code)
+		count, err := strconv.Atoi(strings.TrimSpace(n))
+		if !ok || code == "" || err != nil || count < 0 {
+			slog.Error("malformed rota reminder headcount list; expected CODE=N,CODE=N", "key", key, "entry", entry)
+			os.Exit(1)
+		}
+		out[code] = count
 	}
 	return out
 }

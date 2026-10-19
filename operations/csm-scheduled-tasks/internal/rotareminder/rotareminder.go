@@ -15,19 +15,26 @@
 // under the License.
 
 // Package rotareminder emails the people on the rotation shifts in the Team
-// Schedule, one email per shift window. Two sub-crons share it:
+// Schedule, each with a calendar invitation for their window that has
+// everybody on the window as a guest (so they can start a group chat from it).
 //
 //   - WeekdayReminder: the next working day's Morning (with its on-call
-//     person) and Evening windows. A Monday is announced on the Friday before
-//     it, not on the Sunday, when nobody reads work mail or can arrange a swap.
-//   - WeekendNotice: the coming weekend's LK and America windows, one email
-//     for each window on each day, on the Monday (advance notice) and the
-//     Friday (reminder) before it.
+//     person) and Evening windows, one email per window carrying its
+//     invitation. A Monday is announced on the Friday before it.
+//   - WeekendNotice: runs every evening from Sunday to Thursday for the coming
+//     weekend. Once the weekend is fully marked (Config.Required: by default
+//     3 on LK Weekend and 1 on Americas Weekend, each day) it sends one summary
+//     email to everybody on the weekend and one invitation email per team per
+//     day (LK Saturday, Americas Saturday, LK Sunday, Americas Sunday), then
+//     records the send so later evenings send nothing. Until then it emails
+//     the family's rota admins what is missing, every evening.
+//   - WeekendReminder: Friday's reminder. The summary again, the invitations
+//     again as updates (same event identities), and a cancellation for
+//     anybody taken off a window since the last send. With gaps it still
+//     sends, listing them, and tells the rota admins.
 //
 // A window is a shift and its on-call variant (<CODE>_OC): they share hours,
-// so they share one email and one event. Each email goes to the people on its
-// window and lists names and rotations only; a weekend email lists the whole
-// weekend's rota so everybody sees who else is on.
+// so they share one invitation.
 //
 // Which days a task runs on is its cron schedule (cmd/server/main.go). This
 // package only decides, from the day it runs, which rota days it announces.
@@ -63,6 +70,21 @@ type RotaReader interface {
 // EmailSender is the subset of *notify.Client this package depends on.
 type EmailSender interface {
 	SendEmail(ctx context.Context, to, cc []string, subject, htmlBody string) error
+	SendEmailWithAttachments(ctx context.Context, to, cc []string, subject, htmlBody string, attachments []notify.Attachment) error
+}
+
+// SettingsReader is the subset of *teamschedule.Client that reads the
+// reminder settings saved on the Rota Access tab.
+type SettingsReader interface {
+	ReminderSettingsFor(ctx context.Context, family string) (*teamschedule.ReminderSettings, error)
+}
+
+// ReminderStore is the subset of *teamschedule.Client the weekend tasks keep
+// their record in, and ask who the rota admins are.
+type ReminderStore interface {
+	GetReminder(ctx context.Context, family, kind, periodStart string) (*teamschedule.ReminderRecord, error)
+	RecordReminder(ctx context.Context, family, kind, periodStart string, invites []teamschedule.ReminderInvite, sentBy string) error
+	RotaAdmins(ctx context.Context, family string) ([]teamschedule.RotaAdmin, error)
 }
 
 // Config is what both tasks are built from. Everything about who is reminded
@@ -81,8 +103,27 @@ type Config struct {
 	// recipients, who are listed in the body. For environments that hold the
 	// real rota but must not email real people.
 	RedirectTo []string
-	// ScheduleURL, when set, is linked from every email.
+	// ScheduleURL, when set, is linked from every email and is each event's
+	// link.
 	ScheduleURL string
+	// Invites attaches a calendar invitation to each window's email, with
+	// everybody on the window as a guest.
+	Invites bool
+	// OrganizerEmail is the invitations' organizer: the address the emails
+	// come from (EMAIL_FROM_ADDRESS).
+	OrganizerEmail string
+	// Required is how many people each weekend shift needs on each day before
+	// the weekend is announced ("CRE_WEEKEND" -> 3, "CRE_WEEKEND_NIGHT" -> 1).
+	// Only people on the shift itself count, not its on-call variant.
+	Required map[string]int
+	// Windows gives a rotation its own hours on its own clock, instead of the
+	// Team Schedule's ("CRE_WEEKEND_NIGHT" -> 08:00-18:00 America/Los_Angeles).
+	Windows map[string]LocalWindow
+	// Settings, when set, is read at the start of every run: what the rota
+	// admins saved on the Team Schedule's Rota Access tab replaces the
+	// switches, the weekend minimums, the windows and adds to Copy. Nothing
+	// saved keeps this configuration.
+	Settings SettingsReader
 	// EmailsEnabled is ALERTS_ENABLED, this component's single switch for
 	// every email it sends. When false a run succeeds and sends nothing.
 	EmailsEnabled bool
@@ -111,16 +152,15 @@ type Config struct {
 // weekday windows.
 func WeekdayReminder(rota RotaReader, email EmailSender, cfg Config) func(ctx context.Context) error {
 	return func(ctx context.Context) error {
+		if !cfg.EmailsEnabled {
+			return nil
+		}
+		cfg, on, err := withSettings(ctx, cfg, false)
+		if err != nil || !on {
+			return err
+		}
 		day := dayOf(cfg.anchor(), cfg.Zone)
 		return announce(ctx, rota, email, cfg, []time.Time{NextWorkingDay(day)})
-	}
-}
-
-// WeekendNotice returns the handler that emails the coming weekend's windows.
-func WeekendNotice(rota RotaReader, email EmailSender, cfg Config) func(ctx context.Context) error {
-	return func(ctx context.Context) error {
-		sat, sun := ComingWeekend(dayOf(cfg.anchor(), cfg.Zone))
-		return announce(ctx, rota, email, cfg, []time.Time{sat, sun})
 	}
 }
 
@@ -162,8 +202,8 @@ func dayOf(t time.Time, zone *time.Location) time.Time {
 
 const dateLayout = "2006-01-02"
 
-// window is one shift and its on-call variant on one rota day: one email, one
-// event.
+// window is one shift and its on-call variant on one rota day: on a weekday,
+// one email.
 type window struct {
 	date   string
 	day    time.Time
@@ -171,10 +211,10 @@ type window struct {
 	people []teamschedule.Assignment
 }
 
-// announce reads the rota for days and sends one email per window that has
-// not started yet. The run fails, and so is retried, only when no email went
-// out: a retry then tells nobody twice. When some went out and some failed,
-// the failed windows are reported to the alert audience and the run succeeds.
+// announce reads the rota for a weekday and emails each window that has not
+// started yet, with its invitation. The run fails, and so is retried, only when no email went out: a
+// retry then tells nobody twice. When some went out and some failed, the
+// failed emails are reported to the alert audience and the run succeeds.
 func announce(ctx context.Context, rota RotaReader, sender EmailSender, cfg Config, days []time.Time) error {
 	if !cfg.EmailsEnabled {
 		return nil
@@ -200,16 +240,12 @@ func announce(ctx context.Context, rota RotaReader, sender EmailSender, cfg Conf
 		return nil
 	}
 
-	// A weekend email lists the whole weekend, a weekday email its own window.
-	wholeRota := len(days) > 1
 	// "Tomorrow" and "today" in an email are the day it is read, not the
 	// anchor's: a retry can go out the day after its scheduled run.
 	now := cfg.Now()
 	today := dayOf(now, cfg.Zone)
 
-	var errs []error
-	var failed []*window
-	sent := 0
+	var pending []*window
 	for _, w := range windows {
 		if !w.start().After(now) {
 			// A retry that runs late: telling people about a shift they are
@@ -218,25 +254,51 @@ func announce(ctx context.Context, rota RotaReader, sender EmailSender, cfg Conf
 				"window", w.base, "day", w.date)
 			continue
 		}
-		email, ok := buildEmail(cfg, w, rostered, wholeRota, today)
+		pending = append(pending, w)
+	}
+
+	// One email per window, to its own people, carrying its invitation.
+	type batch struct {
+		email   shiftEmail
+		windows []*window
+	}
+	var batches []batch
+	for _, w := range pending {
+		email, ok := buildEmail(cfg, w, today)
 		if !ok {
 			slog.WarnContext(ctx, "rota reminder: nobody on this window has an email address; nothing sent",
 				"window", w.base, "day", w.date)
 			continue
 		}
-		sendTo, sendCc := email.to, email.cc
+		if cfg.Invites {
+			inv := windowInvite(cfg, w, now)
+			email.attachments = []notify.Attachment{inviteAttachment(inv)}
+		}
+		batches = append(batches, batch{email, []*window{w}})
+	}
+
+	var errs []error
+	var failed []failure
+	sent := 0
+	for _, b := range batches {
+		sendTo, sendCc := b.email.to, b.email.cc
 		if len(cfg.RedirectTo) > 0 {
 			sendTo, sendCc = cfg.RedirectTo, nil
 		}
-		if err := sender.SendEmail(ctx, sendTo, sendCc, email.subject, email.body); err != nil {
-			errs = append(errs, fmt.Errorf("%s on %s: %w", w.base, w.date, err))
-			failed = append(failed, w)
+		if err := sender.SendEmailWithAttachments(ctx, sendTo, sendCc, b.email.subject, b.email.body, b.email.attachments); err != nil {
+			var names []string
+			for _, w := range b.windows {
+				names = append(names, w.base+" on "+w.date)
+			}
+			err = fmt.Errorf("%s: %w", strings.Join(names, ", "), err)
+			errs = append(errs, err)
+			failed = append(failed, failure{windows: b.windows, err: err})
 			continue
 		}
 		sent++
 	}
 	slog.InfoContext(ctx, "rota reminder run complete",
-		"days", from+".."+to, "rostered", len(rostered), "windows", len(windows), "sent", sent)
+		"days", from+".."+to, "rostered", len(rostered), "windows", len(windows), "emails", len(batches), "sent", sent)
 	if len(errs) == 0 {
 		return nil
 	}
@@ -246,8 +308,22 @@ func announce(ctx context.Context, rota RotaReader, sender EmailSender, cfg Conf
 		return err
 	}
 	slog.ErrorContext(ctx, "rota reminder: some emails failed; not retried, so the rest are not sent twice", "err", err)
-	alertPartialFailure(ctx, sender, cfg, failed, errs)
+	alertPartialFailure(ctx, sender, cfg, failed)
 	return nil
+}
+
+// span is when the window runs: its earliest start to its latest end.
+func (w *window) span() (start, end time.Time) {
+	start, end = w.people[0].StartsAt, w.people[0].EndsAt
+	for _, a := range w.people[1:] {
+		if a.StartsAt.Before(start) {
+			start = a.StartsAt
+		}
+		if a.EndsAt.After(end) {
+			end = a.EndsAt
+		}
+	}
+	return start, end
 }
 
 // start is when the earliest person on the window starts.
@@ -261,23 +337,37 @@ func (w *window) start() time.Time {
 	return s
 }
 
+// failure is one email that did not go out, and the windows it announced.
+type failure struct {
+	windows []*window
+	// label names what failed when it is not a window's email (the rota
+	// admins' email, a cancellation, recording the send).
+	label string
+	err   error
+}
+
 // alertPartialFailure tells the alert audience which windows' emails failed
 // in a run that otherwise went out, and whom they were for, so that a lead
 // can tell those people by hand. A run like that succeeds and is not retried,
 // so this is the only alert about it.
-func alertPartialFailure(ctx context.Context, sender EmailSender, cfg Config, failed []*window, errs []error) {
+func alertPartialFailure(ctx context.Context, sender EmailSender, cfg Config, failed []failure) {
 	if len(cfg.AlertTo) == 0 {
 		return
 	}
 	data := notify.RotaReminderFailureData{Task: cfg.Task}
-	for i, w := range failed {
-		var names []string
-		for _, a := range w.people {
-			names = append(names, a.Engineer.Name)
+	for _, f := range failed {
+		if len(f.windows) == 0 {
+			data.Rows = append(data.Rows, []string{f.label, "-", "-", f.err.Error()})
 		}
-		data.Rows = append(data.Rows, []string{
-			windowTitle(cfg, w.base), w.day.Format("Monday, 2 January 2006"), strings.Join(names, ", "), errs[i].Error(),
-		})
+		for _, w := range f.windows {
+			var names []string
+			for _, a := range w.people {
+				names = append(names, a.Engineer.Name)
+			}
+			data.Rows = append(data.Rows, []string{
+				windowTitle(cfg, w.base), w.day.Format("Monday, 2 January 2006"), strings.Join(names, ", "), f.err.Error(),
+			})
+		}
 	}
 	// Plain ASCII, as the engine's own alert subject.
 	subject := fmt.Sprintf("[csm-scheduled-tasks] PARTLY FAILED: %s - %d rota reminder(s) not sent", cfg.Task, len(failed))
@@ -306,6 +396,7 @@ func selectRostered(cfg Config, cat teamschedule.Catalogue, assignments []teamsc
 			rostered = append(rostered, a)
 		}
 	}
+	applyWindows(cfg, rostered)
 	sort.SliceStable(rostered, func(i, j int) bool {
 		a, b := rostered[i], rostered[j]
 		if a.RotaDate != b.RotaDate {

@@ -170,14 +170,16 @@ emails" below.
 
 ## Rota reminders
 
-`internal/rotareminder`, registered as **`rota_weekday_reminder`** and **`rota_weekend_notice`**,
-emails the people rostered on a rotation shift in the Team Schedule. **Registered only when
-`ROTA_REMINDERS_ENABLED=true`** (default false): they email real staff from the real rota.
+`internal/rotareminder`, registered as **`rota_weekday_reminder`**, **`rota_weekend_notice`** and
+**`rota_weekend_reminder`**, emails the people rostered on a rotation shift in the Team Schedule,
+with a calendar invitation for their window. **Registered only when `ROTA_REMINDERS_ENABLED=true`**
+(default false): they email real staff from the real rota.
 
 | Task | Default schedule | Announces |
 |---|---|---|
 | `rota_weekday_reminder` | `30 9 * * 1-5` (15:00 Colombo, Mon–Fri) | the next working day's weekday rotations (`CRE_MORNING`, `CRE_MORNING_OC`, `CRE_EVENING`): tomorrow from Monday to Thursday, **Monday from Friday** |
-| `rota_weekend_notice` | `30 9 * * 1,5` (15:00 Colombo, Mon and Fri) | the coming weekend's rotations (`CRE_WEEKEND`, `CRE_WEEKEND_NIGHT`, `CRE_WEEKEND_NIGHT_OC`): a heads-up on Monday, a reminder on Friday |
+| `rota_weekend_notice` | `30 14 * * 0-4` (20:00 Colombo, Sun–Thu) | the coming weekend (`CRE_WEEKEND`, `CRE_WEEKEND_NIGHT`, `CRE_WEEKEND_NIGHT_OC`), **once it is fully marked**: the summary and the invitations, sent once; until then the rota admins are asked every evening |
+| `rota_weekend_reminder` | `30 9 * * 5` (15:00 Colombo, Fri) | this weekend again: the summary, the invitations as updates, cancellations, gaps listed |
 
 The schedule decides only *when* a task runs. Which days it announces comes from the day it runs
 (`NextWorkingDay`, `ComingWeekend`), counted in `ROTA_REMINDER_TIME_ZONE` (default
@@ -191,25 +193,67 @@ schedules assume `TZ=UTC` like every other here.
   the task fails and alerts rather than reminding somebody on leave: deploy entity-service first.
   The Team Schedule is internal-only, so this client's id must be in entity-service's
   `M2M_CLIENT_IDS`.
-- **One email per shift window**, sent to the people on that window only. A window is a shift
-  and its on-call variant (`<CODE>_OC`), which share hours: weekday Morning (with its on-call
-  person) and Evening; weekend LK and America (with its on-call person), for each day. A
-  weekday email lists its window's people; a weekend email lists the whole weekend's rota, so
-  everybody sees who else is on. One recipient is greeted by full name, several with "Dear all,".
+- **Weekday: one email per shift window**, sent to the people on that window only. A window is
+  a shift and its on-call variant (`<CODE>_OC`), which share hours: Morning (with its on-call
+  person) and Evening. The email lists its window's people.
+- **Weekend: one summary email plus one invitation email per team per day.** The summary goes
+  to everybody on the weekend, LK and Americas (with the LK on-call person) alike, in the layout the
+  CRE weekend emails already had: "Hello team,", a Saturday Team and a Sunday Team list
+  ("Name (Rotation)"), a Rotation Definitions table (Rotation with its member count | Local time on
+  the rotation's own clock | UTC window | Role: "IST/PDT General support" or "On-call"), the zone
+  legend and a daylight saving note, then the Handover paragraphs (`notify.RenderWeekendRota`).
+  The Americas Weekend's hours, and the LK On-call's that cover it, are 08:00-18:00
+  America/Los_Angeles (`ROTA_REMINDER_WINDOWS`), not the Team Schedule's 21:00-06:00 IST; the
+  invitations use the same hours. Then each window (LK
+  Saturday, Americas Saturday, LK Sunday, Americas Sunday) gets its own email to its own people,
+  carrying its invitation with all of them as guests, so they can start a group chat from the
+  event. One recipient is greeted by full name, several with "Dear all,".
+- **Settings saved on the Rota Access tab win.** Every run first reads
+  `GET /team-schedule/reminder-settings/{family}` (entity-service, migration 0241; the
+  "CRE rota reminders" card, editable by a CSM admin or the CRE rota admin). When something
+  is saved: `weekdayEnabled` / `weekendEnabled` turn that task off (the run succeeds and
+  sends nothing), `invitesEnabled` replaces `ROTA_REMINDER_INVITES_ENABLED` (still off
+  without an organizer), `weekendRequired` replaces `ROTA_REMINDER_WEEKEND_REQUIRED`,
+  `windows` replaces `ROTA_REMINDER_WINDOWS`, and `copyTo` is copied on top of the
+  configured copy list. Nothing saved (a 404, also from an entity-service without the
+  route) keeps the environment's values. A failed read fails the run, so it is retried
+  rather than sent with settings somebody turned off. Not on the card, on purpose: the
+  send times, `ROTA_REMINDER_REDIRECT_TO`, the family, the shift codes and names, and the
+  email service settings.
+- **Only a fully marked weekend is announced.** `ROTA_REMINDER_WEEKEND_REQUIRED` (default
+  `CRE_WEEKEND=3,CRE_WEEKEND_NIGHT=1`) is how many people each shift needs on each day; the on-call
+  variant does not count. Until that holds, `rota_weekend_notice` emails the family's rota admins
+  (entity-service `GET /team-schedule/rota-admins/{family}`; the task's alert audience when there
+  are none) a table of what is missing, every evening, and sends nothing to the rota. Friday's
+  `rota_weekend_reminder` sends anyway, listing the gaps, and tells the admins.
+- **The weekend send is recorded in entity-service** (`team_schedule_reminder_sent`, migration
+  0240, `GET`/`PUT /team-schedule/reminders/{family}/weekend_notice/{saturday}`): an evening that
+  finds the record sends nothing, and Friday compares its invitations with the recorded ones and
+  sends a cancellation (`METHOD:CANCEL`) to anybody taken off a window, or to everybody on a window
+  that is gone. A failure to record is reported in the partial-failure alert; the emails are not
+  re-sent for it.
+- **Calendar invitations** (`ROTA_REMINDER_INVITES_ENABLED`, default true; needs
+  `EMAIL_FROM_ADDRESS`, the organizer) are `text/calendar; method=REQUEST` attachments built in
+  `ics.go`. Through the email service Gmail shows them as invitation cards and adds the event (an
+  `.ics` attached by hand in Gmail compose does not). Each event's identity is the rota day and
+  shift (`inviteUID`), and its sequence the minute it was sent, so a re-send updates it. The
+  email service binds an attachment to `byte[]`, so `notify.Attachment` sends it as an array of
+  byte values, not base64. Weekday emails carry their window's invitation in the same email.
 - **The task's `SUB_CRON_RECIPIENTS` are not copied** unless
   `ROTA_REMINDER_COPY_TASK_RECIPIENTS=true`; they still get its failure alerts, as everywhere
   here. Nobody is ever both a recipient and copied, or copied twice (case-insensitive).
 - **A plain, formal message, not a branded template** (by request): `notify.RenderRotaReminder`
-  writes a greeting, one line about the window (date and hours in IST), a Name | Rotation table
-  (weekend: Name | Day | Rotation), the swap instruction with the Team Schedule link written out,
-  and a sign-off. Rotation names come from config (`CODE=Name`). Names are escaped.
+  writes a greeting, one line about the window (date and hours in IST) or the weekend, a
+  Name | Rotation table (weekend: Name | Day | Rotation | Time), the swap instruction with the
+  Team Schedule link written out, and a sign-off. Rotation names come from config (`CODE=Name`). Names are escaped.
 - **A retry announces what its scheduled run would have.** The engine retries a failed run every
   tick until the next period, which for `rota_weekend_notice` is days later. So the rota days are
   counted from the run's period key (`Config.Anchor`, from `schedule.PeriodKey`), not the clock:
   Thursday's run retried after midnight still announces Friday, not Monday, and Friday's weekend
   notice retried on Saturday announces this weekend, not the next. "Tomorrow" / "today" in the text
   are from the clock, as the reader sees them.
-- **A window that has started is not sent** (a late retry); it is logged.
+- **A window that has started is not sent** (a late retry); it is logged. A weekend email
+  retried on Saturday goes to the people on the windows still to come.
 - **The run fails only when no email went out.** The handler keeps no record of what it sent, so
   a retry re-sends every window. When some windows went out and some failed, the run succeeds and
   the handler itself emails the task's alert audience (its `SUB_CRON_RECIPIENTS` and
@@ -222,11 +266,11 @@ schedules assume `TZ=UTC` like every other here.
   people. `ALERTS_ENABLED=false` silences these like every other email here.
 - Turning the tasks on with `EMAIL_BASE_URL` unset refuses to start.
 - **Not built**: a "your shift changed" email when a lead edits the rota after the reminder went
-  out (it needs entity-service to announce rota changes; see "Future: events"), SRE and SME
-  rotas (set `ROTA_REMINDER_FAMILY` and the shift lists; the date rules assume CRE's weekday and
-  weekend split), and calendar events. An `.ics` attached through the email service shows in
-  Gmail as a downloadable file, not an invitation, so events need the Google Calendar API from
-  a scheduler account instead. Unlike the report tasks, these own no template file.
+  out (Friday's reminder is the only re-send; it needs entity-service to announce rota changes,
+  see "Future: events"), a manual "Send reminder" button, SRE and SME rotas (set
+  `ROTA_REMINDER_FAMILY` and the shift lists; the date rules assume CRE's weekday and weekend
+  split), and cancelling a weekday invitation (weekday sends are not recorded). Unlike the report
+  tasks, these own no template file.
 
 ## Availability recalculation
 
@@ -370,7 +414,10 @@ report emails" below for why that's not a generic engine feature.
 | `ROTA_REMINDER_REDIRECT_TO` | No | Comma-separated test inbox(es) that receive every rota reminder instead of the people on the shift |
 | `ROTA_REMINDER_SCHEDULE_URL` | No | Link to the CSM portal's Team Schedule page, shown in every reminder |
 | `ROTA_REMINDER_COPY_TASK_RECIPIENTS` | No (default `false`) | Also copies each task's `SUB_CRON_RECIPIENTS` on every reminder |
+| `ROTA_REMINDER_INVITES_ENABLED` | No (default `true`) | Attaches each window's calendar invitation; off when `EMAIL_FROM_ADDRESS` is unset |
+| `ROTA_REMINDER_WEEKEND_REQUIRED` | No (default `CRE_WEEKEND=3,CRE_WEEKEND_NIGHT=1`) | `CODE=N` pairs: how many people each weekend shift needs on each day before the weekend is announced |
 | `ROTA_REMINDER_FAMILY` / `ROTA_REMINDER_WEEKDAY_SHIFTS` / `ROTA_REMINDER_WEEKEND_SHIFTS` | No (defaults `CRE` and the codes in "Rota reminders") | Which rota, and which shifts each task announces as `CODE=Name` pairs (the name the email shows) |
+| `ROTA_REMINDER_WINDOWS` | No (default `CRE_WEEKEND_NIGHT=08:00-18:00 America/Los_Angeles,CRE_WEEKEND_NIGHT_OC=08:00-18:00 America/Los_Angeles`) | A rotation's hours on its own clock, used in the emails and invitations instead of the Team Schedule's (`CODE=HH:MM-HH:MM Zone`, comma-separated). The Americas Weekend and the LK On-call that covers it are 08:00-18:00 Pacific time, so it moves an hour in UTC and IST when US daylight saving changes; the weekend summary says so when a change is within five weeks. A malformed value stops startup |
 | `ROTA_REMINDER_TIME_ZONE` | No (default `Asia/Colombo`) | The calendar "tomorrow" and "the coming weekend" are counted in |
 | `HOUSEKEEPING_RETENTION_DAYS` | No (default `30`) | Plain integer number of days of resolved history the `housekeeping_cleanup` sub-cron keeps — see "Housekeeping" above |
 
