@@ -129,7 +129,7 @@ async function addChartPage(
 // The on-screen EOL block is an accordion. Copying that markup into the PDF
 // keeps the expand icon and can hide the dates, so the sheet is rebuilt from
 // the data attributes on each product.
-function eolPdfHtml(element: HTMLElement): string {
+function eolPdfHtml(element: Element): string {
   const title = element.querySelector(".widget-title")?.textContent?.trim() || "Product versions and EOL";
   const products = Array.from(element.querySelectorAll<HTMLElement>("[data-eol-product]"));
   if (products.length === 0) {
