@@ -486,3 +486,46 @@ func TestDeployedProductService_SearchProjectsByProductVersion_AppliesMandatoryE
 		t.Fatalf("expected mandatoryExcludeSubscriptionTypes to be passed through, got %v", gotSubscriptionTypes)
 	}
 }
+
+func TestDeployedProductService_SearchDeployedProducts_ProjectSfIDs(t *testing.T) {
+	var gotSfIDs []string
+	svc := NewDeployedProductService(&stubDeployedProductRepo{
+		searchDeployedProducts: func(_ context.Context, req domain.SearchDeployedProductsRequest) ([]domain.DeployedProductView, int, error) {
+			gotSfIDs = req.ProjectSfIDs
+			return nil, 0, nil
+		},
+	})
+
+	if _, err := svc.SearchDeployedProducts(context.Background(), domain.SearchDeployedProductsRequest{ProjectSfIDs: []string{"SF001"}}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(gotSfIDs) != 1 || gotSfIDs[0] != "SF001" {
+		t.Errorf("repository did not receive projectSfIds: got %v", gotSfIDs)
+	}
+
+	for name, ids := range map[string][]string{"empty": {""}, "blank": {"  "}, "padded": {"SF001 "}} {
+		if _, err := svc.SearchDeployedProducts(context.Background(), domain.SearchDeployedProductsRequest{ProjectSfIDs: ids}); err == nil {
+			t.Errorf("%s: expected a validation error", name)
+		}
+	}
+}
+
+// active reaches the repository as sent; nil when omitted, so the repository's
+// default of active-only applies.
+func TestDeployedProductService_SearchDeployedProducts_ActiveFilter(t *testing.T) {
+	var gotReq domain.SearchDeployedProductsRequest
+	svc := NewDeployedProductService(&stubDeployedProductRepo{
+		searchDeployedProducts: func(_ context.Context, req domain.SearchDeployedProductsRequest) ([]domain.DeployedProductView, int, error) {
+			gotReq = req
+			return nil, 0, nil
+		},
+	})
+	no := false
+
+	if _, err := svc.SearchDeployedProducts(context.Background(), domain.SearchDeployedProductsRequest{}); err != nil || gotReq.Active != nil {
+		t.Errorf("omitted active: err=%v active=%v, want nil", err, gotReq.Active)
+	}
+	if _, err := svc.SearchDeployedProducts(context.Background(), domain.SearchDeployedProductsRequest{Active: &no}); err != nil || gotReq.Active == nil || *gotReq.Active {
+		t.Errorf("active=false did not reach the repository: err=%v active=%v", err, gotReq.Active)
+	}
+}
