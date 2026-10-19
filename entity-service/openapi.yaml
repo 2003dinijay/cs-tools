@@ -10154,6 +10154,170 @@ paths:
                 $ref: '#/components/schemas/MigrationCaseReport'
         "400":
           description: olderThanDays is not a whole number of days in range.
+  /runbooks:
+    get:
+      summary: List the runbook catalog.
+      description: >
+        Every alert name with its runbook link, ordered by alert name. A new
+        incident whose subject contains an alert name gets a work note with its
+        runbook ("Runbook for this alert: <link>"), or "No runbook available for
+        this alert." when the entry has no link or when an alert-born incident
+        (one with a correlationId) matches no entry. Internal callers only.
+      operationId: listRunbooks
+      responses:
+        "200":
+          description: The catalog.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunbookList'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      summary: Add a runbook entry.
+      operationId: createRunbook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SaveRunbookRequest'
+      responses:
+        "201":
+          description: The entry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Runbook'
+        "400":
+          description: Invalid alert name or link.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: The alert name already has an entry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /runbooks/import:
+    post:
+      summary: Create or update many runbook entries by alert name.
+      description: >
+        One transaction. An entry whose alert name exists (ignoring case and
+        surrounding spaces) has its link replaced; a later entry with the same
+        name in the request wins. At most 5000 entries.
+      operationId: importRunbooks
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImportRunbooksRequest'
+      responses:
+        "200":
+          description: What the import did.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportRunbooksResponse'
+        "400":
+          description: An entry is invalid; nothing was written.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /runbooks/{id}:
+    put:
+      summary: Change a runbook entry.
+      operationId: updateRunbook
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SaveRunbookRequest'
+      responses:
+        "200":
+          description: The entry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Runbook'
+        "400":
+          description: Invalid id, alert name or link.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: No entry with that id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: The alert name already has an entry.
           content:
             application/json:
               schema:
@@ -10172,6 +10336,45 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "503":
           description: The scan's tags are not configured on this deployment, or the caller's identity could not be checked.
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      summary: Remove a runbook entry.
+      operationId: deleteRunbook
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Removed.
+        "400":
+          description: Invalid id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: No entry with that id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller.
           content:
             application/json:
               schema:
@@ -26648,6 +26851,66 @@ components:
                         properties:
                           id: { type: string }
                           key: { type: string }
+    Runbook:
+      type: object
+      required: [id, alertName, runbookUrl, createdOn, createdBy, updatedOn, updatedBy]
+      properties:
+        id:
+          type: string
+          format: uuid
+        alertName:
+          type: string
+          description: Matched against a new incident's subject (contains, ignoring case).
+        runbookUrl:
+          type: string
+          nullable: true
+          description: The runbook link; null when the alert has no runbook yet.
+        createdOn:
+          type: string
+          format: date-time
+        createdBy:
+          type: string
+        updatedOn:
+          type: string
+          format: date-time
+        updatedBy:
+          type: string
+    RunbookList:
+      type: object
+      required: [runbooks]
+      properties:
+        runbooks:
+          type: array
+          items:
+            $ref: '#/components/schemas/Runbook'
+    SaveRunbookRequest:
+      type: object
+      required: [alertName]
+      properties:
+        alertName:
+          type: string
+          maxLength: 1000
+        runbookUrl:
+          type: string
+          nullable: true
+          description: A full http(s) link; empty or null records that no runbook exists.
+    ImportRunbooksRequest:
+      type: object
+      required: [runbooks]
+      properties:
+        runbooks:
+          type: array
+          maxItems: 5000
+          items:
+            $ref: '#/components/schemas/SaveRunbookRequest'
+    ImportRunbooksResponse:
+      type: object
+      required: [created, updated]
+      properties:
+        created:
+          type: integer
+        updated:
+          type: integer
     ErrorResponse:
       type: object
       description: >-
