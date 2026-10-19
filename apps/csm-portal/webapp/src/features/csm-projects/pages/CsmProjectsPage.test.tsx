@@ -15,9 +15,9 @@
 // under the License.
 
 import type { ReactElement } from "react";
-import { render as rtlRender, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render as rtlRender, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, Route, Routes, useNavigate } from "react-router";
 import "@testing-library/jest-dom/vitest";
 import CsmProjectsPage from "@features/csm-projects/pages/CsmProjectsPage";
 import { useSearchProjects } from "@features/csm-projects/api/useSearchProjects";
@@ -107,5 +107,57 @@ describe("CsmProjectsPage — onboardingStatus filter from the URL", () => {
     render(<CsmProjectsPage />, "/customers/projects?onboardingStatus=In-Progress");
 
     expect(await screen.findByText("In Progress")).toBeInTheDocument();
+  });
+
+  // The onboardingStatus state used to be seeded only in a useState
+  // initializer, which runs once at mount -- so a same-route navigation that
+  // doesn't remount the page (e.g. one dashboard tile's click-through
+  // followed by another, both landing on /customers/projects) left the
+  // filter and the search request stuck on whatever the first mount read,
+  // ignoring the URL's new onboardingStatus value. A sibling "navigate"
+  // trigger inside the same <Routes> simulates that: the Route element
+  // itself never unmounts, only its location/searchParams change.
+  it("re-reads onboardingStatus when the URL changes without remounting the page", async () => {
+    mockResult({ data: { projects: [], total: 0, limit: 20, offset: 0, hasMore: false } });
+
+    function NavTrigger(): ReactElement {
+      const navigate = useNavigate();
+      return (
+        <button onClick={() => navigate("/customers/projects?onboardingStatus=Completed")}>
+          go to Completed
+        </button>
+      );
+    }
+
+    rtlRender(
+      <MemoryRouter initialEntries={["/customers/projects?onboardingStatus=In-Progress"]}>
+        <Routes>
+          <Route
+            path="/customers/projects"
+            element={
+              <>
+                <NavTrigger />
+                <CsmProjectsPage />
+              </>
+            }
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(mockedUseSearch).toHaveBeenCalledWith(
+        expect.objectContaining({ onboardingStatus: ["In-Progress"] }),
+      );
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "go to Completed" }));
+
+    await waitFor(() => {
+      expect(mockedUseSearch).toHaveBeenCalledWith(
+        expect.objectContaining({ onboardingStatus: ["Completed"] }),
+      );
+    });
+    expect(await screen.findByText("Completed")).toBeInTheDocument();
   });
 });

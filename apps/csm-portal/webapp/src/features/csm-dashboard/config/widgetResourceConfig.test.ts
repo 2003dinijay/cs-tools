@@ -663,6 +663,24 @@ describe("WIDGET_RESOURCE_CONFIG.project.buildHref", () => {
   it("ignores a malformed (non-string-array) onboardingStatus rather than crashing", () => {
     expect(buildHref({ onboardingStatus: "In-Progress" })).toBe("/customers/projects");
   });
+
+  // The Projects page only reads `onboardingStatus` back out of its URL
+  // (see buildSearchRequestBody's comment above for the full set of fields
+  // `/projects/search` accepts -- accountId, subRegion, ...). A widget
+  // filtering by one of those too would otherwise land this click on every
+  // project matching the status, not just the ones the tile's other filter
+  // also scoped to -- the same lossy-link bug `incident_task`/`problem`'s
+  // own `hasFiltersBeyond` fallback above exists to avoid.
+  it("routes to the widget preview page when a filter beyond onboardingStatus is present", () => {
+    const href = buildHref(
+      { onboardingStatus: ["In-Progress"], accountId: "acc-1" },
+      { widgetId: "widget-7", displayName: "Active Onboarding" },
+    );
+    expect(href.startsWith("/dashboard/preview/projects?")).toBe(true);
+    const params = hrefParams(href);
+    expect(params.get("w")).toBe("widget-7");
+    expect(params.get("n")).toBe("Active Onboarding");
+  });
 });
 
 /**

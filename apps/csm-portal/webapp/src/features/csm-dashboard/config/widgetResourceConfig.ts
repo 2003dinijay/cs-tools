@@ -600,6 +600,8 @@ function hasFiltersBeyond(filters: Record<string, unknown>, listKeys: readonly s
 const INCIDENT_LIST_FILTER_KEYS = ["priorities"] as const;
 /** The only filter keys the change requests list reads from its URL. */
 const CHANGE_REQUEST_LIST_FILTER_KEYS = ["states", "impacts"] as const;
+/** The only filter key the projects list reads from its URL. */
+const PROJECT_LIST_FILTER_KEYS = ["onboardingStatus"] as const;
 
 /** Dashboard incident filters already use the real `BeIncidentPriority`
  * wire values (`CRITICAL`/`HIGH`/...), same as `IncidentFilters.priorities` —
@@ -1035,12 +1037,17 @@ export const WIDGET_RESOURCE_CONFIG: Record<
     // so, unlike e.g. `problem`/`task`/`call_request` below, each of which
     // explains why it has none): clicking a dashboard tile like "Active
     // Onboarding" (`query: {onboardingStatus: ["In-Progress"]}`) landed on
-    // the plain, unfiltered Projects page. `onboardingStatus` is the one
-    // filter a project widget's own flat query shape can carry (see
-    // `buildSearchRequestBody` above) and the only one `CsmProjectsPage`
-    // knows how to read back out of its URL — see that page's own
-    // `onboardingStatus` search-param handling.
-    buildHref: (filters) => {
+    // the plain, unfiltered Projects page. `onboardingStatus` is the only
+    // filter `CsmProjectsPage` knows how to read back out of its URL — same
+    // shape as `incident`/`change_request`/`problem` below: a widget
+    // filtering by anything else (`accountId`, `subRegion`, ...; see
+    // `buildSearchRequestBody` above for the full set this endpoint takes)
+    // would otherwise land on a broader, unscoped list than the tile
+    // counted, so that case goes to the preview page instead.
+    buildHref: (filters, ctx) => {
+      if (hasFiltersBeyond(filters, PROJECT_LIST_FILTER_KEYS)) {
+        return widgetPreviewFallbackHref("projects", "project", filters, ctx);
+      }
       const statuses = asStringArray(filters.onboardingStatus);
       return statuses && statuses.length > 0
         ? `/customers/projects?onboardingStatus=${encodeURIComponent(statuses.join(","))}`
