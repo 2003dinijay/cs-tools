@@ -115,7 +115,19 @@ function addresses(text: string): string[] | string {
  * rotation code this form does not show goes back as it was. An error string
  * says what to fix instead.
  */
-function buildBody(form: Form, loaded: SaveRotaReminderSettings): { body: SaveRotaReminderSettings } | { error: string } {
+/**
+ * The body to save. The minimums and the hours are sent for a rotation only
+ * when it was already saved or the user changed it here: a rotation left out
+ * keeps what the deployment configured (the scheduled task falls back to its
+ * own setting for every code the saved settings do not name), so a first save
+ * of, say, a copy address never writes the built-in values over the
+ * deployment's.
+ */
+function buildBody(
+  form: Form,
+  baseForm: Form,
+  saved: SaveRotaReminderSettings | null,
+): { body: SaveRotaReminderSettings } | { error: string } {
   const lk = wholeNumber(form.lkWeekend, "People needed on LK Weekend each day");
   if (typeof lk === "string") return { error: lk };
   const americas = wholeNumber(form.americasWeekend, "People needed on Americas Weekend each day");
@@ -131,18 +143,27 @@ function buildBody(form: Form, loaded: SaveRotaReminderSettings): { body: SaveRo
   const copyTo = addresses(form.copyTo);
   if (typeof copyTo === "string") return { error: copyTo };
 
-  const hours: ReminderWindow = { start: form.start, end: form.end, timeZone: form.timeZone };
+  const savedRequired = saved?.weekendRequired ?? {};
+  const savedWindows = saved?.windows ?? {};
+  const weekendRequired: Record<string, number> = { ...savedRequired };
+  if (LK_WEEKEND in savedRequired || form.lkWeekend !== baseForm.lkWeekend) weekendRequired[LK_WEEKEND] = lk;
+  if (AMERICAS_WEEKEND in savedRequired || form.americasWeekend !== baseForm.americasWeekend) {
+    weekendRequired[AMERICAS_WEEKEND] = americas;
+  }
+  const windows: Record<string, ReminderWindow> = { ...savedWindows };
+  const hoursChanged =
+    form.start !== baseForm.start || form.end !== baseForm.end || form.timeZone !== baseForm.timeZone;
+  if (hoursChanged || WINDOW_CODES.some((code) => code in savedWindows)) {
+    const hours: ReminderWindow = { start: form.start, end: form.end, timeZone: form.timeZone };
+    for (const code of WINDOW_CODES) windows[code] = { ...hours };
+  }
   return {
     body: {
       weekdayEnabled: form.weekdayEnabled,
       weekendEnabled: form.weekendEnabled,
       invitesEnabled: form.invitesEnabled,
-      weekendRequired: { ...(loaded.weekendRequired ?? {}), [LK_WEEKEND]: lk, [AMERICAS_WEEKEND]: americas },
-      windows: {
-        ...(loaded.windows ?? {}),
-        [WINDOW_CODES[0]]: { ...hours },
-        [WINDOW_CODES[1]]: { ...hours },
-      },
+      weekendRequired,
+      windows,
       copyTo,
     },
   };
@@ -217,7 +238,7 @@ export default function RotaReminderSettings(): JSX.Element {
     e.preventDefault();
     if (!dirty || save.isPending) return;
     setJustSaved(false);
-    const built = buildBody(form, base);
+    const built = buildBody(form, baseForm, loaded);
     if ("error" in built) {
       setError(built.error);
       return;
@@ -249,7 +270,7 @@ export default function RotaReminderSettings(): JSX.Element {
         </span>
       </div>
       {loaded === null ? (
-        <p className="cp-help rrs-meta">Using the built-in settings. Save to change them.</p>
+        <p className="cp-help rrs-meta">Not saved yet: the reminders use the deployment&apos;s settings, and the values below are the defaults. Only what you change here is saved.</p>
       ) : (
         <p className="cp-help rrs-meta">
           Last changed by {loaded.updatedBy}

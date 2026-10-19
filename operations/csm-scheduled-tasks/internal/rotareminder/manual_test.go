@@ -22,6 +22,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/apierror"
+	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/notify"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/teamschedule"
 )
 
@@ -183,5 +185,39 @@ func TestManual_APartlyFailedSendSaysSo(t *testing.T) {
 	}
 	if len(queue.reports) != 1 || !strings.HasPrefix(queue.reports[0], "r1 SENT Sent 1 of 2 emails; 1 could not be sent") {
 		t.Fatalf("reports %v", queue.reports)
+	}
+}
+
+// refusesInvites is an email service that answers 400 to any email carrying
+// an attachment, as one that cannot take calendar invitations would.
+type refusesInvites struct{ fakeEmail }
+
+func (r *refusesInvites) SendEmail(ctx context.Context, to, cc []string, subject, body string) error {
+	return r.SendEmailWithAttachments(ctx, to, cc, subject, body, nil)
+}
+
+func (r *refusesInvites) SendEmailWithAttachments(ctx context.Context, to, cc []string, subject, body string, a []notify.Attachment) error {
+	if len(a) > 0 {
+		return &apierror.Error{StatusCode: 400}
+	}
+	return r.fakeEmail.SendEmailWithAttachments(ctx, to, cc, subject, body, nil)
+}
+
+// A weekday email whose invitation is refused goes out without it; the card
+// counts it as sent, once, not as one failed and one sent.
+func TestManual_AnEmailSentWithoutItsInvitationCountsOnce(t *testing.T) {
+	weekday, weekend := manualConfigs("2026-10-19 10:00")
+	weekday.Invites, weekday.OrganizerEmail = true, "rota@example.com"
+	rota := &fakeRota{assignments: []teamschedule.Assignment{
+		assignment("Ann", "ann@example.com", "vega", "CRE_MORNING", "2026-10-20", "2026-10-20 06:00", "2026-10-20 09:00"),
+		assignment("Ben", "ben@example.com", "vega", "CRE_EVENING", "2026-10-20", "2026-10-20 18:00", "2026-10-20 21:00"),
+	}}
+	queue := &fakeQueue{waiting: []teamschedule.ReminderRequest{{ID: "r1", Kind: "weekday"}}}
+	mail := &refusesInvites{}
+	if err := ManualReminder(rota, &fakeStore{}, queue, mail, weekday, weekend)(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(mail.sent) != 2 || queue.reports[0] != "r1 SENT Sent 2 emails." {
+		t.Fatalf("delivered %d, reports %v", len(mail.sent), queue.reports)
 	}
 }

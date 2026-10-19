@@ -29,7 +29,7 @@ import (
 )
 
 // ScheduleReminderRepository stores what the Team Schedule's reminders last
-// sent (team_schedule_reminder_sent, migration 0241).
+// sent (team_schedule_reminder_sent, migration 0242).
 type ScheduleReminderRepository interface {
 	// Get is the record for one period, or nil when nothing was sent yet.
 	Get(ctx context.Context, family, kind, periodStart string) (*domain.ScheduleReminderSent, error)

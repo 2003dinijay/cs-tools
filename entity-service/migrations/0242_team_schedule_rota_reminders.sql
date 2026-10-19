@@ -14,11 +14,41 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- The rota reminders' two tables for the Team Schedule's Rota Access tab:
--- the settings the card saves (team_schedule_reminder_setting) and the
--- "Send now" / "Send a test to me" requests it queues for
--- csm-scheduled-tasks (team_schedule_reminder_request). One migration so
--- the feature is one change; each table is created only if missing.
+-- The CRE rota reminders' three tables, one migration for the feature:
+--
+--   team_schedule_reminder_sent     what the weekend reminder last sent
+--                                   (so it sends once, and Friday can update
+--                                   or cancel calendar invitations)
+--   team_schedule_reminder_setting  the Rota Access card's saved settings
+--   team_schedule_reminder_request  "Send now" / "Send a test to me" presses
+--                                   queued for csm-scheduled-tasks
+--
+-- Additive and safe to re-run: each table, index and trigger is created only
+-- if missing; nothing existing is changed.
+
+-- Team Schedule reminders: what csm-scheduled-tasks last sent for one rota
+-- period, so a run can tell "already sent" from "not yet" and cancel a
+-- calendar invite for somebody taken off the rota since.
+--
+-- One row per (family, kind, period_start). kind is the reminder, e.g.
+-- 'weekend_notice'; period_start the first rota day it covers (a weekend's
+-- Saturday). invites is the last set of calendar events sent:
+-- [{"uid": "...", "sequence": 3, "attendees": ["a@example.com", ...]}].
+--
+-- Additive and safe to re-run: nothing existing is touched.
+CREATE TABLE IF NOT EXISTS team_schedule_reminder_sent (
+    family        VARCHAR(16)  NOT NULL,
+    kind          VARCHAR(32)  NOT NULL,
+    period_start  DATE         NOT NULL,
+    first_sent_on TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    last_sent_on  TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    send_count    INTEGER      NOT NULL DEFAULT 1,
+    invites       JSONB        NOT NULL DEFAULT '[]'::jsonb,
+    sent_by       VARCHAR(255) NOT NULL,
+    PRIMARY KEY (family, kind, period_start),
+    CONSTRAINT team_schedule_reminder_sent_family_check CHECK (family IN ('CRE', 'SRE', 'SME')),
+    CONSTRAINT team_schedule_reminder_sent_kind_check CHECK (kind ~ '^[a-z_]{1,32}$')
+);
 
 -- Rota reminder settings, one row per rota family, saved from the Team
 -- Schedule's Rota Access tab by a CSM admin or the family's rota admin and

@@ -214,10 +214,12 @@ schedules assume `TZ=UTC` like every other here.
   `GET /team-schedule/reminder-settings/{family}` (entity-service, migration 0242; the
   "CRE rota reminders" card, editable by a CSM admin or the CRE rota admin). When something
   is saved: `weekdayEnabled` / `weekendEnabled` turn that task off (the run succeeds and
-  sends nothing), `invitesEnabled` replaces `ROTA_REMINDER_INVITES_ENABLED` (still off
-  without an organizer), `weekendRequired` replaces `ROTA_REMINDER_WEEKEND_REQUIRED`,
-  `windows` replaces `ROTA_REMINDER_WINDOWS` (either saved empty keeps the configured one), and `copyTo` is copied on top of the
-  configured copy list. Nothing saved (a 404, also from an entity-service without the
+  sends nothing), `invitesEnabled` can turn invitations off but never on where the deployment
+  has them off (`ROTA_REMINDER_INVITES_ENABLED`, or no organizer), `weekendRequired` and
+  `windows` override `ROTA_REMINDER_WEEKEND_REQUIRED` / `ROTA_REMINDER_WINDOWS` code by code
+  (a code the saved settings do not name keeps the configured value; the card saves a code
+  only once somebody changes it there), and `copyTo` is copied on top of the configured copy
+  list. So saving one field never replaces a deployment setting nobody changed. Nothing saved (a 404, also from an entity-service without the
   route) keeps the environment's values. A failed read fails the run, so it is retried
   rather than sent with settings somebody turned off. Not on the card, on purpose: the
   send times, `ROTA_REMINDER_REDIRECT_TO`, the family, the shift codes and names, and the
@@ -267,10 +269,14 @@ schedules assume `TZ=UTC` like every other here.
 - **The task's `SUB_CRON_RECIPIENTS` are not copied** unless
   `ROTA_REMINDER_COPY_TASK_RECIPIENTS=true`; they still get its failure alerts, as everywhere
   here. Nobody is ever both a recipient and copied, or copied twice (case-insensitive).
-- **A plain, formal message, not a branded template** (by request): `notify.RenderRotaReminder`
-  writes a greeting, one line about the window (date and hours in IST) or the weekend, a
-  Name | Rotation table (weekend: Name | Day | Rotation | Time), the swap instruction with the
-  Team Schedule link written out, and a sign-off. Rotation names come from config (`CODE=Name`). Names are escaped.
+- **A plain, formal message, not a branded template** (by request). A weekday email, an invitation
+  email and the rota admins' email (`notify.RenderRotaReminder`): a greeting, one line about the
+  window -- its date and hours on the rotation's own clock (`clockOf`: IST, except a rotation in
+  `ROTA_REMINDER_WINDOWS`, e.g. the Americas Weekend in PDT/PST) -- a Name | Rotation table, the
+  swap instruction with the Team Schedule link written out, and a sign-off. The weekend summary
+  (`notify.RenderWeekendRota`, described above): "Hello team,", the day team lists, the Rotation
+  Definitions table, the zone note and the handover paragraphs. Rotation names come from config
+  (`CODE=Name`). Names are escaped.
 - **A retry announces what its scheduled run would have.** The engine retries a failed run every
   tick until the next period, which for `rota_weekend_notice` is days later. So the rota days are
   counted from the run's period key (`Config.Anchor`, from `schedule.PeriodKey`), not the clock:

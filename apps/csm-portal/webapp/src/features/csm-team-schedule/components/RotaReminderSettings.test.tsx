@@ -86,7 +86,7 @@ describe("RotaReminderSettings", () => {
     expect(screen.getByRole("heading", { name: "CRE rota reminders" })).toBeInTheDocument();
     expect(screen.getByText("Built-in settings")).toBeInTheDocument();
     expect(screen.queryByText("Saved")).not.toBeInTheDocument();
-    expect(screen.getByText("Using the built-in settings. Save to change them.")).toBeInTheDocument();
+    expect(screen.getByText(/^Not saved yet: the reminders use the deployment.s settings/)).toBeInTheDocument();
     expect(screen.queryByText(/^Last changed by/)).not.toBeInTheDocument();
 
     expect(screen.getByRole("checkbox", { name: "Send weekday reminders" })).toBeChecked();
@@ -109,7 +109,7 @@ describe("RotaReminderSettings", () => {
     expect(screen.getByText("Saved")).toBeInTheDocument();
     expect(screen.queryByText("Built-in settings")).not.toBeInTheDocument();
     expect(screen.getByText(/Last changed by ana@example\.test on/)).toBeInTheDocument();
-    expect(screen.queryByText(/^Using the built-in settings/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Not saved yet/)).not.toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: "Send weekend reminders" })).not.toBeChecked();
   });
 
@@ -165,7 +165,7 @@ describe("RotaReminderSettings", () => {
     });
   });
 
-  it("saves the built-in settings with a change when nothing was saved yet", () => {
+  it("a first save keeps the deployment's minimums and hours when they were not changed", () => {
     render(<RotaReminderSettings />);
     fireEvent.click(screen.getByRole("checkbox", { name: "Attach calendar invitations" }));
     fireEvent.click(saveButton());
@@ -173,10 +173,17 @@ describe("RotaReminderSettings", () => {
       weekdayEnabled: true,
       weekendEnabled: true,
       invitesEnabled: false,
-      weekendRequired: { CRE_WEEKEND: 3, CRE_WEEKEND_NIGHT: 1 },
-      windows: { CRE_WEEKEND_NIGHT: LA, CRE_WEEKEND_NIGHT_OC: LA },
+      weekendRequired: {},
+      windows: {},
       copyTo: [],
     });
+  });
+
+  it("a first save sends only the minimum that was changed", () => {
+    render(<RotaReminderSettings />);
+    fireEvent.change(screen.getByLabelText("People needed on LK Weekend each day"), { target: { value: "4" } });
+    fireEvent.click(saveButton());
+    expect(lastBody()).toMatchObject({ weekendRequired: { CRE_WEEKEND: 4 }, windows: {} });
   });
 
   it("refuses an address that is not an email, without saving", () => {

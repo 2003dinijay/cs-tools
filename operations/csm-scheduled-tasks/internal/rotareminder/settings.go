@@ -50,21 +50,32 @@ func withSettings(ctx context.Context, cfg Config, weekend bool) (Config, bool, 
 		slog.InfoContext(ctx, "rota reminder: turned off on the Rota Access tab; nothing sent", "task", cfg.Task, "family", cfg.Family)
 		return cfg, false, nil
 	}
-	// Invitations need an organizer; without one they stay off whatever was
-	// saved.
-	cfg.Invites = s.InvitesEnabled && cfg.OrganizerEmail != ""
-	// An empty map saved (entity-service stores {} for one left out) keeps
-	// the configured values: wiping them would announce a half-staffed
-	// weekend with no minimum, and put the Americas weekend back on the
-	// Team Schedule's IST hours.
+	// The card can turn invitations off, never on where the deployment has
+	// them off (ROTA_REMINDER_INVITES_ENABLED, or no organizer): a save
+	// cannot override a setting nobody changed on the card.
+	cfg.Invites = cfg.Invites && s.InvitesEnabled
+	// Saved minimums and hours override the configured ones code by code; a
+	// code the saved settings do not name keeps the configured value, so a
+	// save that left a rotation untouched never replaces the deployment's
+	// setting for it.
 	if len(s.WeekendRequired) > 0 {
-		cfg.Required = maps.Clone(s.WeekendRequired)
+		required := maps.Clone(cfg.Required)
+		if required == nil {
+			required = map[string]int{}
+		}
+		maps.Copy(required, s.WeekendRequired)
+		cfg.Required = required
 	}
 	if len(s.Windows) > 0 {
-		windows, err := settingsWindows(s.Windows)
+		saved, err := settingsWindows(s.Windows)
 		if err != nil {
 			return cfg, false, fmt.Errorf("rotareminder: the saved %s reminder windows: %w", cfg.Family, err)
 		}
+		windows := maps.Clone(cfg.Windows)
+		if windows == nil {
+			windows = map[string]LocalWindow{}
+		}
+		maps.Copy(windows, saved)
 		cfg.Windows = windows
 	}
 	cfg.Copy = without(append(append([]string{}, cfg.Copy...), s.CopyTo...), nil)

@@ -102,7 +102,8 @@ func sendManual(ctx context.Context, rota RotaReader, store ReminderStore, email
 		}
 		cfg.Manual, cfg.Anchor = true, cfg.Now
 		err := WeekdayReminder(rota, counted, cfg)(ctx)
-		return counted.n, counted.failed, err
+		sent, notSent := counted.counts()
+		return sent, notSent, err
 	case "weekend":
 		cfg := weekendCfg
 		if !cfg.EmailsEnabled {
@@ -111,7 +112,8 @@ func sendManual(ctx context.Context, rota RotaReader, store ReminderStore, email
 		now := cfg.Now()
 		cfg.Manual, cfg.Anchor = true, func() time.Time { return manualWeekendAnchor(now, cfg.Zone) }
 		err := weekend(ctx, rota, store, counted, cfg, true)
-		return counted.n, counted.failed, err
+		sent, notSent := counted.counts()
+		return sent, notSent, err
 	}
 	return 0, 0, fmt.Errorf("unknown reminder kind %q", kind)
 }
@@ -130,12 +132,15 @@ func manualWeekendAnchor(now time.Time, zone *time.Location) time.Time {
 	}
 }
 
-// countingSender counts the reminder emails that went out (n) and those that
-// could not be sent (failed). Only the rota's own emails count: an alert
-// about a failure is not a reminder.
+// countingSender counts the reminder emails by their final outcome. A
+// weekday email the email service refuses with its calendar invitation is
+// sent again without it (sendWindowEmail), so the same email, to the same
+// people, can be tried twice; only its last attempt counts. Only the rota's
+// own emails count: an alert about a failure is not a reminder.
 type countingSender struct {
 	EmailSender
-	n, failed int
+	outcome map[string]bool // subject and recipients -> the last attempt went out
+	order   []string
 }
 
 func (c *countingSender) SendEmail(ctx context.Context, to, cc []string, subject, body string) error {
@@ -145,13 +150,28 @@ func (c *countingSender) SendEmail(ctx context.Context, to, cc []string, subject
 func (c *countingSender) SendEmailWithAttachments(ctx context.Context, to, cc []string, subject, body string, a []notify.Attachment) error {
 	err := c.EmailSender.SendEmailWithAttachments(ctx, to, cc, subject, body, a)
 	if strings.Contains(subject, " Rota]") {
-		if err == nil {
-			c.n++
-		} else {
-			c.failed++
+		key := subject + "\x00" + strings.Join(to, ",")
+		if c.outcome == nil {
+			c.outcome = map[string]bool{}
 		}
+		if _, seen := c.outcome[key]; !seen {
+			c.order = append(c.order, key)
+		}
+		c.outcome[key] = err == nil
 	}
 	return err
+}
+
+// counts is how many reminder emails went out and how many did not.
+func (c *countingSender) counts() (sent, notSent int) {
+	for _, key := range c.order {
+		if c.outcome[key] {
+			sent++
+		} else {
+			notSent++
+		}
+	}
+	return sent, notSent
 }
 
 // asTest is cfg for "Send a test to me": everything, alerts included, goes

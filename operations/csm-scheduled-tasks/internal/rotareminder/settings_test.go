@@ -137,3 +137,37 @@ func TestSettings_EmptyMapsKeepTheConfiguration(t *testing.T) {
 		t.Errorf("Windows = %v, want the configured America/Los_Angeles window", got.Windows)
 	}
 }
+
+// Saved values override the configured ones code by code, and the saved
+// invitations switch can only turn invitations off: a save that left a
+// rotation, or the invitations, untouched keeps what the deployment set.
+func TestSettings_OverrideCodeByCodeAndNeverTurnInvitesOn(t *testing.T) {
+	cfg := weekendConfig("2026-10-18 20:00", "rota_weekend_notice")
+	cfg.Required = map[string]int{"CRE_WEEKEND": 3, "CRE_WEEKEND_NIGHT": 1}
+	cfg.Invites = false // the deployment has them off
+	saved := &teamschedule.ReminderSettings{
+		WeekdayEnabled: true, WeekendEnabled: true, InvitesEnabled: true,
+		WeekendRequired: map[string]int{"CRE_WEEKEND": 4},
+		Windows:         map[string]teamschedule.ReminderWindow{"CRE_WEEKEND_NIGHT": {Start: "09:00", End: "17:00", TimeZone: "America/New_York"}},
+	}
+	cfg.Settings = fakeSettings{s: saved}
+	got, on, err := withSettings(context.Background(), cfg, true)
+	if err != nil || !on {
+		t.Fatalf("on %v, err %v", on, err)
+	}
+	if got.Required["CRE_WEEKEND"] != 4 || got.Required["CRE_WEEKEND_NIGHT"] != 1 {
+		t.Errorf("required %v, want the saved LK minimum and the configured Americas one", got.Required)
+	}
+	if got.Invites {
+		t.Error("a saved invitations switch turned invitations on where the deployment has them off")
+	}
+	if w := got.Windows["CRE_WEEKEND_NIGHT"]; w.Zone.String() != "America/New_York" || w.Start != 9*60 {
+		t.Errorf("Americas window %+v, want the saved one", w)
+	}
+	if w := got.Windows["CRE_WEEKEND_NIGHT_OC"]; w.Zone == nil || w.Zone.String() != "America/Los_Angeles" {
+		t.Errorf("LK On-call window %+v, want the configured one", w)
+	}
+	if cfg.Required["CRE_WEEKEND"] != 3 {
+		t.Error("the configured minimums were changed in place")
+	}
+}

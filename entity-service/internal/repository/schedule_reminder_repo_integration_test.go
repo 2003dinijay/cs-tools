@@ -27,7 +27,7 @@ import (
 )
 
 // The reminder record: nothing for a period yet, the first send creates it,
-// a later one counts itself and replaces the invites. Needs migration 0241;
+// a later one counts itself and replaces the invites. Needs migration 0242;
 // skipped unless ENTITY_TEST_DATABASE_URL is set.
 func TestScheduleReminderIntegration_RecordAndRead(t *testing.T) {
 	dsn := os.Getenv("ENTITY_TEST_DATABASE_URL")
