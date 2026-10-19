@@ -30,6 +30,7 @@ const mockUseGetProjectSupportStats = vi.fn();
 const mockUseGetProjectFilters = vi.fn();
 const mockUseGetProjectCasesPage = vi.fn();
 const mockUseSearchConversations = vi.fn();
+const mockUsePendingVerificationsListSearch = vi.fn();
 
 vi.mock("react-router", () => ({
   useParams: () => mockUseParams(),
@@ -69,6 +70,11 @@ vi.mock("@api/useGetProjectCasesPage", () => ({
 
 vi.mock("@features/support/api/useSearchConversations", () => ({
   useSearchConversations: () => mockUseSearchConversations(),
+}));
+
+vi.mock("@features/support/api/usePendingVerificationsListSearch", () => ({
+  usePendingVerificationsListSearch: (...args: unknown[]) =>
+    mockUsePendingVerificationsListSearch(...args),
 }));
 
 vi.mock("@features/support/hooks/useCloseConversationFlow", () => ({
@@ -132,6 +138,32 @@ vi.mock("@features/support/components/support-overview-cards/OutstandingCasesLis
   ),
 }));
 
+vi.mock("@components/list-view/ListStatGrid", () => ({
+  default: ({
+    isLoading,
+    isError,
+    stats,
+    configs,
+    onStatClick,
+  }: {
+    isLoading: boolean;
+    isError: boolean;
+    stats: Record<string, number>;
+    configs: Array<{ key: string; label: string }>;
+    onStatClick?: (key: string) => void;
+  }) => (
+    <div data-testid="pending-verification-stat-grid">
+      <span data-testid="pv-stats-loading">{String(isLoading)}</span>
+      <span data-testid="pv-stats-error">{String(isError)}</span>
+      {configs.map((c) => (
+        <button key={c.key} onClick={() => onStatClick?.(c.key)}>
+          {c.label}: {stats[c.key] ?? 0}
+        </button>
+      ))}
+    </div>
+  ),
+}));
+
 vi.mock("@features/support/components/support-overview-cards/ChatHistoryList", () => ({
   default: ({
     onItemAction,
@@ -152,7 +184,7 @@ describe("SupportPage", () => {
     mockUseParams.mockReturnValue({ projectId: "project-1" });
     mockUseAsgardeo.mockReturnValue({ isLoading: false });
     mockUseGetProjectDetails.mockReturnValue({
-      data: { type: { label: "Enterprise" } },
+      data: { type: { label: "Enterprise" }, verificationEnabled: false },
     });
     mockUseGetProjectFeatures.mockReturnValue({
       data: {},
@@ -187,6 +219,11 @@ describe("SupportPage", () => {
           },
         ],
       },
+      isLoading: false,
+      isError: false,
+    });
+    mockUsePendingVerificationsListSearch.mockReturnValue({
+      data: { totalRecords: 0, autoClosedCount: 0, manualCount: 0 },
       isLoading: false,
       isError: false,
     });
@@ -229,6 +266,84 @@ describe("SupportPage", () => {
         },
       },
     );
+  });
+
+  describe("pending verification stat boxes", () => {
+    it("are not rendered when the project does not have the feature enabled", () => {
+      render(<SupportPage />);
+
+      expect(screen.queryByTestId("pending-verification-stat-grid")).not.toBeInTheDocument();
+    });
+
+    it("are rendered with the unverified/verified counts when the feature is enabled", () => {
+      mockUseGetProjectDetails.mockReturnValue({
+        data: { type: { label: "Enterprise" }, verificationEnabled: true },
+      });
+      mockUsePendingVerificationsListSearch
+        .mockReturnValueOnce({
+          data: { totalRecords: 5, autoClosedCount: 3, manualCount: 2 },
+          isLoading: false,
+          isError: false,
+        })
+        .mockReturnValueOnce({
+          data: { totalRecords: 7 },
+          isLoading: false,
+          isError: false,
+        });
+
+      render(<SupportPage />);
+
+      expect(screen.getByText("Total Pending Verification: 5")).toBeInTheDocument();
+      expect(screen.getByText("Auto-closed Pending Verification: 3")).toBeInTheDocument();
+      expect(screen.getByText("Manual Pending Verification: 2")).toBeInTheDocument();
+      expect(screen.getByText("Verified: 7")).toBeInTheDocument();
+    });
+
+    it("only queries once the feature is enabled for the project", () => {
+      render(<SupportPage />);
+      expect(mockUsePendingVerificationsListSearch).toHaveBeenCalledWith(
+        "project-1",
+        expect.anything(),
+        expect.anything(),
+        false,
+      );
+
+      mockUsePendingVerificationsListSearch.mockClear();
+      mockUseGetProjectDetails.mockReturnValue({
+        data: { type: { label: "Enterprise" }, verificationEnabled: true },
+      });
+      render(<SupportPage />);
+      expect(mockUsePendingVerificationsListSearch).toHaveBeenCalledWith(
+        "project-1",
+        expect.anything(),
+        expect.anything(),
+        true,
+      );
+    });
+
+    it("navigates each box to its own pre-filtered view of the verifications list", () => {
+      mockUseGetProjectDetails.mockReturnValue({
+        data: { type: { label: "Enterprise" }, verificationEnabled: true },
+      });
+
+      render(<SupportPage />);
+
+      fireEvent.click(screen.getByText(/^Total Pending Verification/));
+      expect(mockNavigate).toHaveBeenCalledWith("/projects/project-1/verifications?tab=unverified");
+
+      fireEvent.click(screen.getByText(/^Auto-closed Pending Verification/));
+      expect(mockNavigate).toHaveBeenCalledWith(
+        "/projects/project-1/verifications?tab=unverified&addedReason=auto-closed",
+      );
+
+      fireEvent.click(screen.getByText(/^Manual Pending Verification/));
+      expect(mockNavigate).toHaveBeenCalledWith(
+        "/projects/project-1/verifications?tab=unverified&addedReason=manual",
+      );
+
+      fireEvent.click(screen.getByText(/^Verified/));
+      expect(mockNavigate).toHaveBeenCalledWith("/projects/project-1/verifications?tab=verified");
+    });
   });
 });
 
