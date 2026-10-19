@@ -15,7 +15,7 @@
 // under the License.
 
 import { describe, expect, it } from "vitest";
-import { findRunbookForIncident, parseRunbookImport, runbookWorkNote } from "./runbooks";
+import { findRunbookForIncident, parseRunbookImport } from "./runbooks";
 
 describe("parseRunbookImport", () => {
   it("reads an object of alert name to link, blank meaning no runbook", () => {
@@ -47,8 +47,8 @@ describe("findRunbookForIncident", () => {
     expect(findRunbookForIncident(catalog, "Fired GW-5XX-PROD-001 on log")?.runbookUrl).toBe("https://docs.example.com/long");
   });
 
-  it("gives the no-runbook note for a known alert without a link and for no match", () => {
-    expect(runbookWorkNote(findRunbookForIncident(catalog, "node / jvm heap"))).toBe("No runbook available for this alert.");
-    expect(runbookWorkNote(findRunbookForIncident(catalog, "unrelated"))).toBe("No runbook available for this alert.");
+  it("finds a known alert without a link, and nothing for an unknown subject", () => {
+    expect(findRunbookForIncident(catalog, "node / jvm heap")).toEqual({ alertName: "JVM Heap", runbookUrl: null });
+    expect(findRunbookForIncident(catalog, "unrelated")).toBeUndefined();
   });
 });
