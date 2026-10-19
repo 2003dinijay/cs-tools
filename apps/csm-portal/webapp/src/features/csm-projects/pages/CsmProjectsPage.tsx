@@ -30,8 +30,9 @@ import {
 } from "@wso2/oxygen-ui";
 import { ArrowLeft } from "@wso2/oxygen-ui-icons-react";
 import { useMemo, useState, type ChangeEvent, type JSX, type KeyboardEvent } from "react";
-import { useLocation } from "react-router";
+import { useLocation, useSearchParams } from "react-router";
 import QueryErrorState from "@components/QueryErrorState";
+import MultiSelectField from "@components/MultiSelectField";
 import { useDebouncedValue } from "@hooks/useDebouncedValue";
 import { useNavTransition } from "@hooks/useNavTransition";
 import { useSearchProjects } from "@features/csm-projects/api/useSearchProjects";
@@ -43,6 +44,25 @@ import { BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
 const DEFAULT_ROWS_PER_PAGE = 20;
 // Top option is the backend's max page limit; larger requests are rejected.
 const ROWS_PER_PAGE_OPTIONS = [10, 20, BE_MAX_PAGE_LIMIT];
+
+// Matches Project["onboardingStatus"]'s own value set, minus "Not-Applicable"
+// (not a real onboarding state to filter *for* — it means the project has no
+// onboarding engagement at all). This is also the exact vocabulary a
+// dashboard widget's `resourceType: "project"` tile sends — see
+// `widgetResourceConfig.ts`'s `project.buildHref`, which is what sends this
+// page the `?onboardingStatus=` param this page reads back below.
+const ONBOARDING_STATUS_OPTIONS: { value: string; label: string }[] = [
+  { value: "In-Progress", label: "In Progress" },
+  { value: "Completed", label: "Completed" },
+  { value: "Not-Started", label: "Not Started" },
+  { value: "Expired", label: "Expired" },
+  { value: "Cancelled", label: "Cancelled" },
+  { value: "OnHold", label: "On Hold" },
+];
+
+function parseOnboardingStatusParam(raw: string | null): string[] {
+  return raw ? raw.split(",").filter(Boolean) : [];
+}
 
 function formatDate(value?: string | null): string {
   if (!value) return "—";
@@ -62,18 +82,43 @@ export default function CsmProjectsPage(): JSX.Element {
   // Set by a dashboard widget's click-through, since this page has no
   // dashboard context of its own.
   const backState = location.state as { from?: string } | undefined;
+  const [searchParams, setSearchParams] = useSearchParams();
   const [searchInput, setSearchInput] = useState("");
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(DEFAULT_ROWS_PER_PAGE);
+  // Initialized from the URL (set by a dashboard widget's click-through, or a
+  // bookmarked/shared link) and kept in sync with it, same as the rest of
+  // this app's URL-backed filter state.
+  const [onboardingStatus, setOnboardingStatus] = useState<string[]>(() =>
+    parseOnboardingStatusParam(searchParams.get("onboardingStatus")),
+  );
 
   const debouncedSearch = useDebouncedValue(searchInput, 300);
+
+  const handleOnboardingStatusChange = (next: string[]): void => {
+    setOnboardingStatus(next);
+    setPage(0);
+    setSearchParams(
+      (prev) => {
+        const params = new URLSearchParams(prev);
+        if (next.length > 0) {
+          params.set("onboardingStatus", next.join(","));
+        } else {
+          params.delete("onboardingStatus");
+        }
+        return params;
+      },
+      { replace: true },
+    );
+  };
 
   const request = useMemo<SearchProjectsRequest>(
     () => ({
       pagination: { limit: rowsPerPage, offset: page * rowsPerPage },
       searchQuery: debouncedSearch.trim() || undefined,
+      onboardingStatus: onboardingStatus.length > 0 ? onboardingStatus : undefined,
     }),
-    [debouncedSearch, page, rowsPerPage],
+    [debouncedSearch, onboardingStatus, page, rowsPerPage],
   );
 
   const { data, isLoading, isFetching, isError, error, refetch, dataUpdatedAt } =
@@ -118,15 +163,26 @@ export default function CsmProjectsPage(): JSX.Element {
         />
       </Box>
 
-      <TextField
-        size="small"
-        label="Search projects"
-        placeholder="Search projects by name, key, or subscription"
-        value={searchInput}
-        onChange={handleSearchChange}
-        slotProps={{ htmlInput: { "aria-label": "Search projects by name, key, or subscription type" } }}
-        sx={{ maxWidth: 480 }}
-      />
+      <Box sx={{ display: "flex", flexWrap: "wrap", gap: 2 }}>
+        <TextField
+          size="small"
+          label="Search projects"
+          placeholder="Search projects by name, key, or subscription"
+          value={searchInput}
+          onChange={handleSearchChange}
+          slotProps={{ htmlInput: { "aria-label": "Search projects by name, key, or subscription type" } }}
+          sx={{ maxWidth: 480, flex: "1 1 320px" }}
+        />
+        <Box sx={{ width: 240 }}>
+          <MultiSelectField
+            id="projects-filter-onboarding-status"
+            label="Onboarding status"
+            values={onboardingStatus}
+            options={ONBOARDING_STATUS_OPTIONS}
+            onChange={handleOnboardingStatusChange}
+          />
+        </Box>
+      </Box>
 
       <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1, overflow: "hidden" }}>
         <TableContainer>

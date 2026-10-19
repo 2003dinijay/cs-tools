@@ -124,6 +124,11 @@ export interface SearchProjectsRequest {
   searchQuery?: string;
   /** Filter to projects belonging to this account (ServiceNow data source only). */
   accountId?: string;
+  /** Filter to projects whose onboarding engagement is in one of these
+   *  states — see {@link Project.onboardingStatus} for the value set. Also
+   *  the field name a dashboard widget's `resourceType: "project"` tile uses
+   *  on the wire (its `query` is passed verbatim as this request body). */
+  onboardingStatus?: string[];
 }
 
 export interface SearchProjectsResponse {

@@ -636,6 +636,35 @@ describe("WIDGET_RESOURCE_CONFIG.project.buildSearchRequestBody", () => {
   });
 });
 
+describe("WIDGET_RESOURCE_CONFIG.project.buildHref", () => {
+  // Used to unconditionally return the bare path and ignore `filters`
+  // entirely — reported live: clicking a tile like "Active Onboarding"
+  // (`query: {onboardingStatus: ["In-Progress"]}`) landed on the plain,
+  // unfiltered Projects page with no way to tell which status it meant.
+  const buildHref = WIDGET_RESOURCE_CONFIG.project.buildHref;
+
+  it("carries a single onboardingStatus value as a URL query param", () => {
+    expect(buildHref({ onboardingStatus: ["In-Progress"] })).toBe(
+      "/customers/projects?onboardingStatus=In-Progress",
+    );
+  });
+
+  it("joins multiple onboardingStatus values with a comma, matching the preview page's own array encoding", () => {
+    expect(buildHref({ onboardingStatus: ["In-Progress", "OnHold"] })).toBe(
+      "/customers/projects?onboardingStatus=In-Progress%2COnHold",
+    );
+  });
+
+  it("falls back to the bare path when onboardingStatus is absent or empty", () => {
+    expect(buildHref({})).toBe("/customers/projects");
+    expect(buildHref({ onboardingStatus: [] })).toBe("/customers/projects");
+  });
+
+  it("ignores a malformed (non-string-array) onboardingStatus rather than crashing", () => {
+    expect(buildHref({ onboardingStatus: "In-Progress" })).toBe("/customers/projects");
+  });
+});
+
 /**
  * `translateCallRequestDashboardFilters`/`callRequestWidgetFiltersToQuery` —
  * the call-requests "View more" landing's own seed/query pair, mirroring

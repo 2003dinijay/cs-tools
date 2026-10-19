@@ -1029,7 +1029,23 @@ export const WIDGET_RESOURCE_CONFIG: Record<
       }
       return { ...body, pagination: { offset, limit } };
     },
-    buildHref: () => "/customers/projects",
+    // Unlike every other resourceType here, this used to ignore `filters`
+    // entirely and always return the bare path — a real gap, not a
+    // deliberate "no filter support" choice (there was no comment saying
+    // so, unlike e.g. `problem`/`task`/`call_request` below, each of which
+    // explains why it has none): clicking a dashboard tile like "Active
+    // Onboarding" (`query: {onboardingStatus: ["In-Progress"]}`) landed on
+    // the plain, unfiltered Projects page. `onboardingStatus` is the one
+    // filter a project widget's own flat query shape can carry (see
+    // `buildSearchRequestBody` above) and the only one `CsmProjectsPage`
+    // knows how to read back out of its URL — see that page's own
+    // `onboardingStatus` search-param handling.
+    buildHref: (filters) => {
+      const statuses = asStringArray(filters.onboardingStatus);
+      return statuses && statuses.length > 0
+        ? `/customers/projects?onboardingStatus=${encodeURIComponent(statuses.join(","))}`
+        : "/customers/projects";
+    },
     icon: FolderKanban,
     iconColor: "secondary",
     previewSlug: "projects",
