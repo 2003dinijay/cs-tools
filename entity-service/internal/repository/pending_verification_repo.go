@@ -40,13 +40,30 @@ type PendingVerificationRepository interface {
 	// 0191) surfaces as a *apierror.ConflictError — there is at most one
 	// unverified entry per work item at a time.
 	Create(ctx context.Context, req domain.CreatePendingVerificationRequest) (domain.PendingVerification, error)
-	// GetWorkItemType returns work_item.type (e.g. "CASE") for workItemID --
-	// used by CreatePendingVerification to enforce the Case-only scope before
-	// inserting. Reads through the same Scoped/RLS-protected path as every
-	// other work_item query, so a work item that exists but is outside the
-	// caller's scope returns *apierror.NotFoundError, identical to one that
-	// doesn't exist at all.
-	GetWorkItemType(ctx context.Context, workItemID string) (string, error)
+	// GetWorkItemTypeAndProject returns work_item.type (e.g. "CASE") and
+	// work_item.project_id for workItemID -- used by CreatePendingVerification
+	// to enforce the Case-only scope and the project's VerificationEnabled
+	// gate before inserting. Reads through the same Scoped/RLS-protected path
+	// as every other work_item query, so a work item that exists but is
+	// outside the caller's scope returns *apierror.ValidationError, identical
+	// to one that doesn't exist at all. Returns *apierror.ValidationError if
+	// the work item has no linked project -- this feature has nothing to
+	// check VerificationEnabled against otherwise.
+	GetWorkItemTypeAndProject(ctx context.Context, workItemID string) (workItemType string, projectID string, err error)
+	// GetProjectIDForEntry returns the project_id of the work item a pending
+	// verification entry (by its own id) belongs to -- used by
+	// VerifyPendingVerification to enforce the project's VerificationEnabled
+	// gate, since that request carries only the entry's id, not a project or
+	// work item id directly.
+	GetProjectIDForEntry(ctx context.Context, id string) (string, error)
+	// GetProjectVerificationEnabled reports whether projectID currently has
+	// Pending Verification enabled (project.verification_enabled, coalesced
+	// to false when NULL). Create/Search/Verify all check this before acting:
+	// RLS enforces project *membership*, not whether the project has this
+	// feature turned on at all, so without this a read-only project member
+	// could create or verify entries even while the project's own toggle is
+	// off.
+	GetProjectVerificationEnabled(ctx context.Context, projectID string) (bool, error)
 	// Search returns the page of entries matching req.Filters, plus the
 	// counts SearchPendingVerificationsResponse needs for the summary tiles
 	// and the type-filter dropdown.
@@ -149,17 +166,51 @@ func (r *pendingVerificationRepo) Create(ctx context.Context, req domain.CreateP
 	return r.getByID(ctx, id)
 }
 
-// GetWorkItemType implements PendingVerificationRepository.
-func (r *pendingVerificationRepo) GetWorkItemType(ctx context.Context, workItemID string) (string, error) {
+// GetWorkItemTypeAndProject implements PendingVerificationRepository.
+func (r *pendingVerificationRepo) GetWorkItemTypeAndProject(ctx context.Context, workItemID string) (string, string, error) {
 	var workItemType string
-	err := r.db.QueryRow(ctx, `SELECT type::TEXT FROM work_item WHERE id = $1`, workItemID).Scan(&workItemType)
+	var projectID *string
+	err := r.db.QueryRow(ctx, `SELECT type::TEXT, project_id FROM work_item WHERE id = $1`, workItemID).Scan(&workItemType, &projectID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return "", &apierror.ValidationError{Msg: "workItemId does not reference an existing record"}
+			return "", "", &apierror.ValidationError{Msg: "workItemId does not reference an existing record"}
 		}
-		return "", fmt.Errorf("get work_item type: %w", err)
+		return "", "", fmt.Errorf("get work_item type and project: %w", err)
 	}
-	return workItemType, nil
+	if projectID == nil {
+		return "", "", &apierror.ValidationError{Msg: "workItemId has no linked project; Pending Verification requires one"}
+	}
+	return workItemType, *projectID, nil
+}
+
+// GetProjectIDForEntry implements PendingVerificationRepository.
+func (r *pendingVerificationRepo) GetProjectIDForEntry(ctx context.Context, id string) (string, error) {
+	var projectID *string
+	query := `SELECT wi.project_id FROM pending_verification pv JOIN work_item wi ON wi.id = pv.work_item_id WHERE pv.id = $1`
+	err := r.db.QueryRow(ctx, query, id).Scan(&projectID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", &apierror.NotFoundError{Msg: "pending_verification not found"}
+		}
+		return "", fmt.Errorf("get project id for pending_verification entry: %w", err)
+	}
+	if projectID == nil {
+		return "", &apierror.ValidationError{Msg: "this entry's work item has no linked project; Pending Verification requires one"}
+	}
+	return *projectID, nil
+}
+
+// GetProjectVerificationEnabled implements PendingVerificationRepository.
+func (r *pendingVerificationRepo) GetProjectVerificationEnabled(ctx context.Context, projectID string) (bool, error) {
+	var enabled bool
+	err := r.db.QueryRow(ctx, `SELECT COALESCE(verification_enabled, false) FROM project WHERE id = $1`, projectID).Scan(&enabled)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, &apierror.ValidationError{Msg: "projectId does not reference an existing record"}
+		}
+		return false, fmt.Errorf("get project verification_enabled: %w", err)
+	}
+	return enabled, nil
 }
 
 func (r *pendingVerificationRepo) getByID(ctx context.Context, id string) (domain.PendingVerification, error) {

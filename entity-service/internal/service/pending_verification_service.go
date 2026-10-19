@@ -98,12 +98,21 @@ func (s *pendingVerificationService) CreatePendingVerification(ctx context.Conte
 	// uses, so a work item this caller can't even see fails exactly like one
 	// that doesn't exist, rather than leaking its existence via a different
 	// error shape.
-	workItemType, err := s.repo.GetWorkItemType(ctx, req.WorkItemID)
+	workItemType, projectID, err := s.repo.GetWorkItemTypeAndProject(ctx, req.WorkItemID)
 	if err != nil {
 		return domain.CreatePendingVerificationResponse{}, err
 	}
 	if workItemType != "CASE" {
 		return domain.CreatePendingVerificationResponse{}, &apierror.ValidationError{Msg: "workItemId must reference a Case -- Pending Verification is scoped to cases only"}
+	}
+
+	// RLS enforces project membership, not whether the project has this
+	// feature turned on at all -- without this, a read-only project member
+	// could still add an entry on a project where the feature is disabled.
+	if enabled, err := s.repo.GetProjectVerificationEnabled(ctx, projectID); err != nil {
+		return domain.CreatePendingVerificationResponse{}, err
+	} else if !enabled {
+		return domain.CreatePendingVerificationResponse{}, &apierror.ForbiddenError{Msg: "Pending Verification is not enabled for this project"}
 	}
 
 	email, err := resolveCallerEmail(ctx)
@@ -148,6 +157,14 @@ func (s *pendingVerificationService) SearchPendingVerifications(ctx context.Cont
 		return domain.SearchPendingVerificationsResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("filters.addedReason must be one of auto-closed/manual, got %q", *req.Filters.AddedReason)}
 	}
 
+	// See CreatePendingVerification's own comment: RLS alone does not check
+	// whether the project has this feature turned on.
+	if enabled, err := s.repo.GetProjectVerificationEnabled(ctx, req.Filters.ProjectID); err != nil {
+		return domain.SearchPendingVerificationsResponse{}, err
+	} else if !enabled {
+		return domain.SearchPendingVerificationsResponse{}, &apierror.ForbiddenError{Msg: "Pending Verification is not enabled for this project"}
+	}
+
 	return s.repo.Search(ctx, req)
 }
 
@@ -155,6 +172,19 @@ func (s *pendingVerificationService) SearchPendingVerifications(ctx context.Cont
 func (s *pendingVerificationService) VerifyPendingVerification(ctx context.Context, req domain.VerifyPendingVerificationRequest) (domain.VerifyPendingVerificationResponse, error) {
 	if err := validateUUIDs("id", []string{req.ID}); err != nil {
 		return domain.VerifyPendingVerificationResponse{}, err
+	}
+
+	// See CreatePendingVerification's own comment: RLS alone does not check
+	// whether the project has this feature turned on. This request only
+	// carries the entry's own id, so its project has to be resolved first.
+	projectID, err := s.repo.GetProjectIDForEntry(ctx, req.ID)
+	if err != nil {
+		return domain.VerifyPendingVerificationResponse{}, err
+	}
+	if enabled, err := s.repo.GetProjectVerificationEnabled(ctx, projectID); err != nil {
+		return domain.VerifyPendingVerificationResponse{}, err
+	} else if !enabled {
+		return domain.VerifyPendingVerificationResponse{}, &apierror.ForbiddenError{Msg: "Pending Verification is not enabled for this project"}
 	}
 
 	email, err := resolveCallerEmail(ctx)

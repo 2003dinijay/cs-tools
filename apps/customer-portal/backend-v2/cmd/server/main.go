@@ -335,9 +335,9 @@ func main() {
 	mux.HandleFunc("GET /metadata", globalHandler.GetMetadata)
 	mux.HandleFunc("POST /search", globalHandler.GlobalSearch)
 
-	mux.HandleFunc("POST /pending-verifications", pendingVerificationHandler.CreatePendingVerification)
-	mux.HandleFunc("POST /pending-verifications/search", pendingVerificationHandler.SearchPendingVerifications)
-	mux.HandleFunc("PATCH /pending-verifications/{id}", pendingVerificationHandler.VerifyPendingVerification)
+	mux.Handle("POST /pending-verifications", middleware.RequirePermission(roleResolver, middleware.ModuleCases, middleware.ActionCreate)(http.HandlerFunc(pendingVerificationHandler.CreatePendingVerification)))
+	mux.Handle("POST /pending-verifications/search", middleware.RequirePermission(roleResolver, middleware.ModuleCases, middleware.ActionRead)(http.HandlerFunc(pendingVerificationHandler.SearchPendingVerifications)))
+	mux.Handle("PATCH /pending-verifications/{id}", middleware.RequirePermission(roleResolver, middleware.ModuleCases, middleware.ActionUpdate)(http.HandlerFunc(pendingVerificationHandler.VerifyPendingVerification)))
 
 	mux.HandleFunc("POST /deployments/products/{deployedProductId}/catalogs/search", catalogHandler.SearchCatalogs)
 	mux.HandleFunc("GET /catalogs/{catalogId}/items/{itemId}", catalogHandler.GetCatalogItemVariables)

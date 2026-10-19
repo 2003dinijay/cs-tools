@@ -31,10 +31,12 @@ import (
 // than silently returning a zero value, same convention as this package's
 // other fake repos.
 type fakePendingVerificationRepo struct {
-	create          func(ctx context.Context, req domain.CreatePendingVerificationRequest) (domain.PendingVerification, error)
-	getWorkItemType func(ctx context.Context, workItemID string) (string, error)
-	search          func(ctx context.Context, req domain.SearchPendingVerificationsRequest) (domain.SearchPendingVerificationsResponse, error)
-	verify          func(ctx context.Context, req domain.VerifyPendingVerificationRequest) (domain.PendingVerification, error)
+	create                        func(ctx context.Context, req domain.CreatePendingVerificationRequest) (domain.PendingVerification, error)
+	getWorkItemTypeAndProject     func(ctx context.Context, workItemID string) (string, string, error)
+	getProjectIDForEntry          func(ctx context.Context, id string) (string, error)
+	getProjectVerificationEnabled func(ctx context.Context, projectID string) (bool, error)
+	search                        func(ctx context.Context, req domain.SearchPendingVerificationsRequest) (domain.SearchPendingVerificationsResponse, error)
+	verify                        func(ctx context.Context, req domain.VerifyPendingVerificationRequest) (domain.PendingVerification, error)
 }
 
 func (f *fakePendingVerificationRepo) Create(ctx context.Context, req domain.CreatePendingVerificationRequest) (domain.PendingVerification, error) {
@@ -44,11 +46,25 @@ func (f *fakePendingVerificationRepo) Create(ctx context.Context, req domain.Cre
 	return f.create(ctx, req)
 }
 
-func (f *fakePendingVerificationRepo) GetWorkItemType(ctx context.Context, workItemID string) (string, error) {
-	if f.getWorkItemType == nil {
-		panic("fakePendingVerificationRepo.GetWorkItemType: not expected to be called by this test")
+func (f *fakePendingVerificationRepo) GetWorkItemTypeAndProject(ctx context.Context, workItemID string) (string, string, error) {
+	if f.getWorkItemTypeAndProject == nil {
+		panic("fakePendingVerificationRepo.GetWorkItemTypeAndProject: not expected to be called by this test")
 	}
-	return f.getWorkItemType(ctx, workItemID)
+	return f.getWorkItemTypeAndProject(ctx, workItemID)
+}
+
+func (f *fakePendingVerificationRepo) GetProjectIDForEntry(ctx context.Context, id string) (string, error) {
+	if f.getProjectIDForEntry == nil {
+		panic("fakePendingVerificationRepo.GetProjectIDForEntry: not expected to be called by this test")
+	}
+	return f.getProjectIDForEntry(ctx, id)
+}
+
+func (f *fakePendingVerificationRepo) GetProjectVerificationEnabled(ctx context.Context, projectID string) (bool, error) {
+	if f.getProjectVerificationEnabled == nil {
+		panic("fakePendingVerificationRepo.GetProjectVerificationEnabled: not expected to be called by this test")
+	}
+	return f.getProjectVerificationEnabled(ctx, projectID)
 }
 
 func (f *fakePendingVerificationRepo) Search(ctx context.Context, req domain.SearchPendingVerificationsRequest) (domain.SearchPendingVerificationsResponse, error) {
@@ -68,14 +84,28 @@ func (f *fakePendingVerificationRepo) Verify(ctx context.Context, req domain.Ver
 const (
 	pvTestWorkItemID  = "6fa0b42d-1bfa-a694-a002-c9d3604bcb77"
 	pvTestEntryID     = "d121847c-58a4-4266-bf83-cffba008e1de"
+	pvTestProjectID   = "11111111-2222-4333-8444-555555555555"
 	pvTestCallerEmail = "jane.doe@example.com"
 )
+
+// pvEnabled is a getProjectVerificationEnabled stub that always reports the
+// feature enabled -- wired into every test below that needs to reach past
+// that gate to exercise something else.
+func pvEnabled(context.Context, string) (bool, error) { return true, nil }
 
 func assertValidationError(t *testing.T, err error) {
 	t.Helper()
 	var ve *apierror.ValidationError
 	if !errors.As(err, &ve) {
 		t.Fatalf("expected *apierror.ValidationError, got %T: %v", err, err)
+	}
+}
+
+func assertForbiddenError(t *testing.T, err error) {
+	t.Helper()
+	var fe *apierror.ForbiddenError
+	if !errors.As(err, &fe) {
+		t.Fatalf("expected *apierror.ForbiddenError, got %T: %v", err, err)
 	}
 }
 
@@ -137,8 +167,8 @@ func TestPendingVerificationService_Create_InvalidPreviousStatusValue(t *testing
 // repository's Create/INSERT.
 func TestPendingVerificationService_Create_RejectsNonCase(t *testing.T) {
 	repo := &fakePendingVerificationRepo{
-		getWorkItemType: func(context.Context, string) (string, error) {
-			return "ENGAGEMENT", nil
+		getWorkItemTypeAndProject: func(context.Context, string) (string, string, error) {
+			return "ENGAGEMENT", pvTestProjectID, nil
 		},
 		create: func(context.Context, domain.CreatePendingVerificationRequest) (domain.PendingVerification, error) {
 			t.Fatal("Create must not be called for a non-Case work item")
@@ -161,8 +191,8 @@ func TestPendingVerificationService_Create_RejectsNonCase(t *testing.T) {
 func TestPendingVerificationService_Create_PropagatesWorkItemLookupError(t *testing.T) {
 	wantErr := &apierror.ValidationError{Msg: "workItemId does not reference an existing record"}
 	repo := &fakePendingVerificationRepo{
-		getWorkItemType: func(context.Context, string) (string, error) {
-			return "", wantErr
+		getWorkItemTypeAndProject: func(context.Context, string) (string, string, error) {
+			return "", "", wantErr
 		},
 	}
 	svc := NewPendingVerificationService(repo)
@@ -172,13 +202,37 @@ func TestPendingVerificationService_Create_PropagatesWorkItemLookupError(t *test
 		AddedReason: domain.PendingVerificationAddedReasonManual,
 	})
 	if !errors.Is(err, error(wantErr)) {
-		t.Fatalf("err = %v, want the exact error GetWorkItemType returned (%v), propagated unchanged", err, wantErr)
+		t.Fatalf("err = %v, want the exact error GetWorkItemTypeAndProject returned (%v), propagated unchanged", err, wantErr)
 	}
+}
+
+// TestPendingVerificationService_Create_RejectsWhenVerificationDisabled locks
+// in the gate CodeRabbit's review found missing: RLS only checks project
+// membership, not whether the project has this feature turned on at all.
+func TestPendingVerificationService_Create_RejectsWhenVerificationDisabled(t *testing.T) {
+	repo := &fakePendingVerificationRepo{
+		getWorkItemTypeAndProject: func(context.Context, string) (string, string, error) {
+			return "CASE", pvTestProjectID, nil
+		},
+		getProjectVerificationEnabled: func(context.Context, string) (bool, error) { return false, nil },
+		create: func(context.Context, domain.CreatePendingVerificationRequest) (domain.PendingVerification, error) {
+			t.Fatal("Create must not be called when the project has the feature disabled")
+			return domain.PendingVerification{}, nil
+		},
+	}
+	svc := NewPendingVerificationService(repo)
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, pvTestCallerEmail))
+	_, err := svc.CreatePendingVerification(ctx, domain.CreatePendingVerificationRequest{
+		WorkItemID:  pvTestWorkItemID,
+		AddedReason: domain.PendingVerificationAddedReasonManual,
+	})
+	assertForbiddenError(t, err)
 }
 
 func TestPendingVerificationService_Create_RequiresCallerToken(t *testing.T) {
 	repo := &fakePendingVerificationRepo{
-		getWorkItemType: func(context.Context, string) (string, error) { return "CASE", nil },
+		getWorkItemTypeAndProject:     func(context.Context, string) (string, string, error) { return "CASE", pvTestProjectID, nil },
+		getProjectVerificationEnabled: pvEnabled,
 	}
 	svc := NewPendingVerificationService(repo)
 	ctx := contextWithUserIDToken("") // no x-user-id-token header
@@ -200,12 +254,13 @@ func TestPendingVerificationService_Create_HappyPath(t *testing.T) {
 	var gotReq domain.CreatePendingVerificationRequest
 	wantPV := domain.PendingVerification{ID: pvTestEntryID, WorkItemID: pvTestWorkItemID, RecordNumber: "CS0441241"}
 	repo := &fakePendingVerificationRepo{
-		getWorkItemType: func(_ context.Context, workItemID string) (string, error) {
+		getWorkItemTypeAndProject: func(_ context.Context, workItemID string) (string, string, error) {
 			if workItemID != pvTestWorkItemID {
-				t.Fatalf("GetWorkItemType called with %q, want %q", workItemID, pvTestWorkItemID)
+				t.Fatalf("GetWorkItemTypeAndProject called with %q, want %q", workItemID, pvTestWorkItemID)
 			}
-			return "CASE", nil
+			return "CASE", pvTestProjectID, nil
 		},
+		getProjectVerificationEnabled: pvEnabled,
 		create: func(_ context.Context, req domain.CreatePendingVerificationRequest) (domain.PendingVerification, error) {
 			gotReq = req
 			return wantPV, nil
@@ -292,6 +347,24 @@ func TestPendingVerificationService_Search_LimitExceedsMax(t *testing.T) {
 	assertValidationError(t, err)
 }
 
+// TestPendingVerificationService_Search_RejectsWhenVerificationDisabled locks
+// in the gate CodeRabbit's review found missing (see the matching Create
+// test's own comment).
+func TestPendingVerificationService_Search_RejectsWhenVerificationDisabled(t *testing.T) {
+	repo := &fakePendingVerificationRepo{
+		getProjectVerificationEnabled: func(context.Context, string) (bool, error) { return false, nil },
+		search: func(context.Context, domain.SearchPendingVerificationsRequest) (domain.SearchPendingVerificationsResponse, error) {
+			t.Fatal("Search must not be called when the project has the feature disabled")
+			return domain.SearchPendingVerificationsResponse{}, nil
+		},
+	}
+	svc := NewPendingVerificationService(repo)
+	_, err := svc.SearchPendingVerifications(context.Background(), domain.SearchPendingVerificationsRequest{
+		Filters: domain.PendingVerificationSearchFilters{ProjectID: pvTestProjectID},
+	})
+	assertForbiddenError(t, err)
+}
+
 // TestPendingVerificationService_Search_HappyPath confirms a valid request,
 // including the new addedReason filter, reaches the repository unchanged and
 // its response is returned as-is.
@@ -300,6 +373,7 @@ func TestPendingVerificationService_Search_HappyPath(t *testing.T) {
 	var gotReq domain.SearchPendingVerificationsRequest
 	wantResp := domain.SearchPendingVerificationsResponse{Total: 1}
 	repo := &fakePendingVerificationRepo{
+		getProjectVerificationEnabled: pvEnabled,
 		search: func(_ context.Context, req domain.SearchPendingVerificationsRequest) (domain.SearchPendingVerificationsResponse, error) {
 			gotReq = req
 			return wantResp, nil
@@ -333,13 +407,36 @@ func TestPendingVerificationService_Verify_InvalidID(t *testing.T) {
 }
 
 func TestPendingVerificationService_Verify_RequiresCallerToken(t *testing.T) {
-	svc := NewPendingVerificationService(&fakePendingVerificationRepo{})
+	repo := &fakePendingVerificationRepo{
+		getProjectIDForEntry:          func(context.Context, string) (string, error) { return pvTestProjectID, nil },
+		getProjectVerificationEnabled: pvEnabled,
+	}
+	svc := NewPendingVerificationService(repo)
 	ctx := contextWithUserIDToken("")
 	_, err := svc.VerifyPendingVerification(ctx, domain.VerifyPendingVerificationRequest{ID: pvTestEntryID})
 	var unauthorized *apierror.UnauthorizedError
 	if !errors.As(err, &unauthorized) {
 		t.Fatalf("expected *apierror.UnauthorizedError, got %T: %v", err, err)
 	}
+}
+
+// TestPendingVerificationService_Verify_RejectsWhenVerificationDisabled locks
+// in the gate CodeRabbit's review found missing (see the matching Create
+// test's own comment). This request carries only the entry's id, so the
+// project it belongs to has to be resolved first.
+func TestPendingVerificationService_Verify_RejectsWhenVerificationDisabled(t *testing.T) {
+	repo := &fakePendingVerificationRepo{
+		getProjectIDForEntry:          func(context.Context, string) (string, error) { return pvTestProjectID, nil },
+		getProjectVerificationEnabled: func(context.Context, string) (bool, error) { return false, nil },
+		verify: func(context.Context, domain.VerifyPendingVerificationRequest) (domain.PendingVerification, error) {
+			t.Fatal("Verify must not be called when the project has the feature disabled")
+			return domain.PendingVerification{}, nil
+		},
+	}
+	svc := NewPendingVerificationService(repo)
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, pvTestCallerEmail))
+	_, err := svc.VerifyPendingVerification(ctx, domain.VerifyPendingVerificationRequest{ID: pvTestEntryID})
+	assertForbiddenError(t, err)
 }
 
 // TestPendingVerificationService_Verify_HappyPath confirms verifiedBy is
@@ -349,6 +446,8 @@ func TestPendingVerificationService_Verify_HappyPath(t *testing.T) {
 	var gotReq domain.VerifyPendingVerificationRequest
 	wantPV := domain.PendingVerification{ID: pvTestEntryID, RecordNumber: "CS0441241"}
 	repo := &fakePendingVerificationRepo{
+		getProjectIDForEntry:          func(context.Context, string) (string, error) { return pvTestProjectID, nil },
+		getProjectVerificationEnabled: pvEnabled,
 		verify: func(_ context.Context, req domain.VerifyPendingVerificationRequest) (domain.PendingVerification, error) {
 			gotReq = req
 			return wantPV, nil
@@ -378,6 +477,8 @@ func TestPendingVerificationService_Verify_HappyPath(t *testing.T) {
 func TestPendingVerificationService_Verify_PropagatesNotFound(t *testing.T) {
 	wantErr := &apierror.NotFoundError{Msg: "pending_verification not found, or already verified"}
 	repo := &fakePendingVerificationRepo{
+		getProjectIDForEntry:          func(context.Context, string) (string, error) { return pvTestProjectID, nil },
+		getProjectVerificationEnabled: pvEnabled,
 		verify: func(context.Context, domain.VerifyPendingVerificationRequest) (domain.PendingVerification, error) {
 			return domain.PendingVerification{}, wantErr
 		},
