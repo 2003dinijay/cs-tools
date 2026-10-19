@@ -274,6 +274,44 @@ describe("CsmProjectDetailPage — report buttons", () => {
   });
 });
 
+describe("CsmProjectDetailPage — Onboarding Status", () => {
+  // Regression coverage for a real gap: onboardingStatus came back from the
+  // API (confirmed on both the search row and this detail response) but the
+  // page never rendered it anywhere — only the owner's name, and only when
+  // an owner happened to be set too.
+  it("renders the onboarding status cell independently of whether an owner is set", () => {
+    mockUseGetProject.mockReturnValue({
+      data: { ...PROJECT, onboardingStatus: "In-Progress", onboardingOwner: null },
+      isLoading: false,
+      isError: false,
+    });
+    renderPage();
+    expect(screen.getByText("Onboarding Status")).toBeInTheDocument();
+    expect(screen.getByText("In Progress")).toBeInTheDocument();
+    expect(screen.queryByText("Onboarding Owner")).not.toBeInTheDocument();
+  });
+
+  it("hides the onboarding status cell when onboardingStatus is Not-Applicable", () => {
+    mockUseGetProject.mockReturnValue({
+      data: { ...PROJECT, onboardingStatus: "Not-Applicable", onboardingOwner: null },
+      isLoading: false,
+      isError: false,
+    });
+    renderPage();
+    expect(screen.queryByText("Onboarding Status")).not.toBeInTheDocument();
+  });
+
+  it("hides the onboarding status cell when there is no onboarding engagement at all", () => {
+    mockUseGetProject.mockReturnValue({
+      data: { ...PROJECT },
+      isLoading: false,
+      isError: false,
+    });
+    renderPage();
+    expect(screen.queryByText("Onboarding Status")).not.toBeInTheDocument();
+  });
+});
+
 describe("CsmProjectDetailPage — Onboarding Owner", () => {
   it("renders the onboarding owner cell when onboarding is enabled and an owner is set", () => {
     mockUseGetProject.mockReturnValue({
