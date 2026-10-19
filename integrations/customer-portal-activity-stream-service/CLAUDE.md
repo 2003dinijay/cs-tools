@@ -8,7 +8,7 @@ Cloned from `integrations/csm-portal-activity-stream-service`, adapted for `apps
 
 - A REST API listener's `WriteTimeout`/`IdleTimeout` would kill long-lived SSE connections. The stream needs its own listener with both timeouts disabled.
 - Horizontal scale: each replica must see 100% of events (per-replica consumer group + `LatestOffset`), and the BroadcastHub only knows its own process's subscribers. Separating the stream lets it scale independently of the BFF.
-- Choreo deployment: the stream has its own endpoint declaration (`.choreo/component.yaml`) and OpenAPI spec (`openapi-stream.yaml`), distinct from `apps/customer-portal/backend-v2`'s REST API.
+- Choreo deployment: the stream has its own endpoint declaration (`.choreo/component.yaml`) and OpenAPI spec (`openapi.yaml`), distinct from `apps/customer-portal/backend-v2`'s REST API.
 
 ## Event flow
 
@@ -51,7 +51,6 @@ The incoming `x-user-id-token` is forwarded to the entity-service `GetCase` call
 | `EVENT_HUB_CONSUMER_GROUP` | No (default `customer-portal-activity-stream-service`) | Base consumer group name (suffixed per-replica with `-replica-<hostname>`) — deliberately distinct from `csm-portal-activity-stream-service`'s own group so each service gets its own full copy of every event |
 | `STREAM_PORT` | No (default 9092) | Port the SSE listener binds to |
 | `STREAM_CORS_ALLOWED_ORIGINS` | No | Comma-separated browser Origins for the SSE endpoint; fail-closed |
-| `CORS_ALLOWED_ORIGINS` | No | Comma-separated browser Origins for the health listener (:8080); fail-closed |
 | `AUTH_JWKS_ENDPOINT` | Yes | JWKS URL for JWT validation — verify against customer-portal's own tenant, see "Auth" above |
 | `AUTH_ISSUER` | Yes | Expected `iss` claim |
 | `AUTH_AUDIENCE` | Yes | Comma-separated accepted `aud` values |
@@ -79,7 +78,7 @@ go test -race ./...
 
 ## Deployment (Choreo)
 
-See `.choreo/component.yaml` (two endpoints: health on :8080, SSE on :9092 with `openapi-stream.yaml`). The stream endpoint is Public network visibility.
+See `.choreo/component.yaml` (one endpoint on :9092, serving the SSE stream and an unauthenticated `GET /health` used for Choreo's liveness probe; spec in `openapi.yaml`). The stream endpoint is Public network visibility.
 
 Apply these proactively at creation time — all five were found and fixed one at a time while deploying the CSM sibling service (see that repo's memory of the saga, or ask for the full history):
 
@@ -112,7 +111,7 @@ Apply these proactively at creation time — all five were found and fixed one a
 
 1. Add the type to `internal/events/events.go` (mirror entity-service's copy).
 2. Add it to the switch in `internal/caseevents/handler.go` (broadcast to hub).
-3. Update `openapi-stream.yaml` if the payload shape changes.
+3. Update `openapi.yaml` if the payload shape changes.
 4. Propagate the same change to the sibling `csm-portal-activity-stream-service` if both portals should see it.
 
 ## Security
