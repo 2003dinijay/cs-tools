@@ -201,7 +201,7 @@ export default function PendingVerificationsPage(): JSX.Element {
       <CaseStateConfirmDialog
         open={!!confirmingRecord}
         title="Mark as Verified"
-        actionLabel="mark as verified"
+        actionLabel="verify"
         isPending={verifyPendingVerification.isPending}
         onClose={() => setConfirmingRecord(null)}
         onConfirm={handleMarkVerifiedConfirm}

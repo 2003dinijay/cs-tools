@@ -154,7 +154,7 @@ export default function VerificationActionButtons({
       <CaseStateConfirmDialog
         open={markVerifiedOpen}
         title="Mark as Verified"
-        actionLabel="mark as verified"
+        actionLabel="verify"
         isPending={verifyPendingVerification.isPending}
         onClose={() => setMarkVerifiedOpen(false)}
         onConfirm={handleMarkVerifiedConfirm}
