@@ -174,10 +174,8 @@ func (c *postgresReportsClient) projectDeployments(ctx context.Context, projectI
 		return []viewer.ProjectDeployment{}, nil
 	}
 	ids := make([]string, len(deployments))
-	names := map[string]string{}
 	for i, d := range deployments {
 		ids[i] = d.ID
-		names[d.ID] = d.Name
 	}
 	products, err := c.searchAllDeployedProducts(ctx, ids)
 	if err != nil {
@@ -193,11 +191,7 @@ func (c *postgresReportsClient) projectDeployments(ctx context.Context, projectI
 		if items == nil {
 			items = []viewer.Product{}
 		}
-		name := d.Name
-		if name == "" {
-			name = names[d.ID]
-		}
-		out = append(out, viewer.ProjectDeployment{Name: name, Products: items})
+		out = append(out, viewer.ProjectDeployment{Name: d.Name, Products: items})
 	}
 	return out, nil
 }

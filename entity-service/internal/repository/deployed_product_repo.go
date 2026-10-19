@@ -449,11 +449,26 @@ func (r *deployedProductRepo) SearchDeployedProducts(ctx context.Context, req do
 	// showing up in every list exactly as before, making "delete" appear to
 	// silently do nothing. NULL counts as active, the same convention
 	// AccessService.ResolveScope already uses for "user".is_active.
-	where := "WHERE dp.deployment_id IS NOT NULL AND dp.product_id IS NOT NULL AND (dp.active IS NULL OR dp.active = TRUE)"
+	// req.Active = false selects the deactivated ones only; omitted or true keeps
+	// the active-only default.
+	where := "WHERE dp.deployment_id IS NOT NULL AND dp.product_id IS NOT NULL"
+	if req.Active != nil && !*req.Active {
+		where += " AND dp.active = FALSE"
+	} else {
+		where += " AND (dp.active IS NULL OR dp.active = TRUE)"
+	}
 
 	if len(req.DeploymentIDs) > 0 {
 		where += fmt.Sprintf(" AND dp.deployment_id = ANY($%d::uuid[])", argIdx)
 		filterArgs = append(filterArgs, req.DeploymentIDs)
+		argIdx++
+	}
+
+	// Scoped by the deployed product's own project (dp.project_id), not its
+	// deployment's. project.sf_id is nullable and a NULL never matches ANY().
+	if len(req.ProjectSfIDs) > 0 {
+		where += fmt.Sprintf(" AND dp.project_id IN (SELECT id FROM project WHERE sf_id = ANY($%d::text[]))", argIdx)
+		filterArgs = append(filterArgs, req.ProjectSfIDs)
 		argIdx++
 	}
 
@@ -489,7 +504,7 @@ func (r *deployedProductRepo) SearchDeployedProducts(ctx context.Context, req do
 	dataQuery := fmt.Sprintf(
 		`SELECT dp.id, dp.created_on, dp.updated_on,
 		        dp.core_count, dp.tps_count, dp.product_category::TEXT,
-		        dp.description, dp.update_level_info,
+		        dp.description, dp.update_level_info, pr.sf_id, COALESCE(dp.active, TRUE),
 		        d.id, d.name,
 		        p.id, p.name, p.code,
 		        pv.id, pv.version, pv.release_date, pv.support_eol_date
@@ -497,6 +512,7 @@ func (r *deployedProductRepo) SearchDeployedProducts(ctx context.Context, req do
 		 JOIN deployment d ON dp.deployment_id = d.id
 		 JOIN product p ON dp.product_id = p.id
 		 LEFT JOIN product_version pv ON dp.version_id = pv.id
+		 LEFT JOIN project pr ON dp.project_id = pr.id
 		 %s
 		 ORDER BY dp.created_on DESC, dp.id
 		 LIMIT $%d OFFSET $%d`,
@@ -535,7 +551,7 @@ func (r *deployedProductRepo) SearchDeployedProducts(ctx context.Context, req do
 			if err := rows.Scan(
 				&dp.ID, &dp.CreatedOn, &dp.UpdatedOn,
 				&dp.Cores, &dp.TPS, &dp.Category,
-				&dp.Description, &updateLevelInfo,
+				&dp.Description, &updateLevelInfo, &dp.ProjectSfID, &dp.Active,
 				&dp.Deployment.ID, &dp.Deployment.Name,
 				&dp.Product.ID, &dp.Product.Name, &dp.Product.Abbreviation,
 				&pvID, &pvName, &pvReleaseDate, &pvEoLDate,

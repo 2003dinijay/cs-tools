@@ -309,6 +309,12 @@ func (s *deploymentService) SearchDeployments(ctx context.Context, req domain.Se
 			return domain.SearchDeploymentsResponse{}, &apierror.ValidationError{Msg: "numbers must be deployment numbers of 1 to 50 characters"}
 		}
 	}
+	if err := validateProjectSfIDs(req.ProjectSfIDs); err != nil {
+		return domain.SearchDeploymentsResponse{}, err
+	}
+	if err := validateDeploymentActiveFilter(req.Active, req.IncludeInactive); err != nil {
+		return domain.SearchDeploymentsResponse{}, err
+	}
 
 	views, total, err := s.repo.SearchDeployments(ctx, req)
 	if err != nil {
