@@ -296,7 +296,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	var pendingVerificationHandler *handler.PendingVerificationHandler
 	if db != nil {
 		pendingVerificationRepo := repository.NewPendingVerificationRepository(repository.NewScoped(db))
-		pendingVerificationHandler = handler.NewPendingVerificationHandler(service.NewPendingVerificationService(pendingVerificationRepo))
+		pendingVerificationHandler = handler.NewPendingVerificationHandler(service.NewPendingVerificationService(pendingVerificationRepo, accessSvc))
 	}
 
 	// announcement_requests has no ServiceNow equivalent either — same

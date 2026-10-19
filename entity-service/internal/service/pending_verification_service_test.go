@@ -112,7 +112,7 @@ func assertForbiddenError(t *testing.T, err error) {
 // --- CreatePendingVerification ---------------------------------------------
 
 func TestPendingVerificationService_Create_InvalidWorkItemID(t *testing.T) {
-	svc := NewPendingVerificationService(&fakePendingVerificationRepo{})
+	svc := NewPendingVerificationService(&fakePendingVerificationRepo{}, stubAccess{scope: AccessScope{Unrestricted: true}})
 	_, err := svc.CreatePendingVerification(context.Background(), domain.CreatePendingVerificationRequest{
 		WorkItemID:  "not-a-uuid",
 		AddedReason: domain.PendingVerificationAddedReasonManual,
@@ -121,7 +121,7 @@ func TestPendingVerificationService_Create_InvalidWorkItemID(t *testing.T) {
 }
 
 func TestPendingVerificationService_Create_InvalidAddedReason(t *testing.T) {
-	svc := NewPendingVerificationService(&fakePendingVerificationRepo{})
+	svc := NewPendingVerificationService(&fakePendingVerificationRepo{}, stubAccess{scope: AccessScope{Unrestricted: true}})
 	_, err := svc.CreatePendingVerification(context.Background(), domain.CreatePendingVerificationRequest{
 		WorkItemID:  pvTestWorkItemID,
 		AddedReason: "SOMETHING_ELSE",
@@ -130,7 +130,7 @@ func TestPendingVerificationService_Create_InvalidAddedReason(t *testing.T) {
 }
 
 func TestPendingVerificationService_Create_AutoClosedRequiresPreviousStatus(t *testing.T) {
-	svc := NewPendingVerificationService(&fakePendingVerificationRepo{})
+	svc := NewPendingVerificationService(&fakePendingVerificationRepo{}, stubAccess{scope: AccessScope{Unrestricted: true}})
 	_, err := svc.CreatePendingVerification(context.Background(), domain.CreatePendingVerificationRequest{
 		WorkItemID:  pvTestWorkItemID,
 		AddedReason: domain.PendingVerificationAddedReasonAutoClosed,
@@ -141,7 +141,7 @@ func TestPendingVerificationService_Create_AutoClosedRequiresPreviousStatus(t *t
 
 func TestPendingVerificationService_Create_ManualRejectsPreviousStatus(t *testing.T) {
 	status := domain.PendingVerificationPreviousStatusAwaitingInfo
-	svc := NewPendingVerificationService(&fakePendingVerificationRepo{})
+	svc := NewPendingVerificationService(&fakePendingVerificationRepo{}, stubAccess{scope: AccessScope{Unrestricted: true}})
 	_, err := svc.CreatePendingVerification(context.Background(), domain.CreatePendingVerificationRequest{
 		WorkItemID:     pvTestWorkItemID,
 		AddedReason:    domain.PendingVerificationAddedReasonManual,
@@ -152,13 +152,64 @@ func TestPendingVerificationService_Create_ManualRejectsPreviousStatus(t *testin
 
 func TestPendingVerificationService_Create_InvalidPreviousStatusValue(t *testing.T) {
 	bad := domain.PendingVerificationPreviousStatus("CLOSED")
-	svc := NewPendingVerificationService(&fakePendingVerificationRepo{})
+	svc := NewPendingVerificationService(&fakePendingVerificationRepo{}, stubAccess{scope: AccessScope{Unrestricted: true}})
 	_, err := svc.CreatePendingVerification(context.Background(), domain.CreatePendingVerificationRequest{
 		WorkItemID:     pvTestWorkItemID,
 		AddedReason:    domain.PendingVerificationAddedReasonAutoClosed,
 		PreviousStatus: &bad,
 	})
 	assertValidationError(t, err)
+}
+
+// TestPendingVerificationService_Create_AutoClosedRequiresInternalCaller
+// locks in the CodeRabbit finding: AUTO_CLOSED claims the system itself
+// closed the case, so only an internal caller may create one -- a
+// registered customer (a non-Unrestricted scope) must be refused before the
+// repository is ever reached, since RLS alone only checks project
+// membership, never added_reason.
+func TestPendingVerificationService_Create_AutoClosedRequiresInternalCaller(t *testing.T) {
+	status := domain.PendingVerificationPreviousStatusAwaitingInfo
+	repo := &fakePendingVerificationRepo{
+		getWorkItemTypeAndProject: func(context.Context, string) (string, string, error) {
+			t.Fatal("the repository must not be reached for a non-internal caller's auto-closed request")
+			return "", "", nil
+		},
+		create: func(context.Context, domain.CreatePendingVerificationRequest) (domain.PendingVerification, error) {
+			t.Fatal("Create must not be called for a non-internal caller's auto-closed request")
+			return domain.PendingVerification{}, nil
+		},
+	}
+	svc := NewPendingVerificationService(repo, restrictedAccess{})
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, pvTestCallerEmail))
+	_, err := svc.CreatePendingVerification(ctx, domain.CreatePendingVerificationRequest{
+		WorkItemID:     pvTestWorkItemID,
+		AddedReason:    domain.PendingVerificationAddedReasonAutoClosed,
+		PreviousStatus: &status,
+	})
+	assertForbiddenError(t, err)
+}
+
+// TestPendingVerificationService_Create_ManualDoesNotRequireInternalCaller
+// confirms the internal-caller gate is scoped to AUTO_CLOSED only -- a
+// registered (non-internal) project member can still create a MANUAL entry.
+func TestPendingVerificationService_Create_ManualDoesNotRequireInternalCaller(t *testing.T) {
+	wantPV := domain.PendingVerification{ID: pvTestEntryID, WorkItemID: pvTestWorkItemID}
+	repo := &fakePendingVerificationRepo{
+		getWorkItemTypeAndProject:     func(context.Context, string) (string, string, error) { return "CASE", pvTestProjectID, nil },
+		getProjectVerificationEnabled: pvEnabled,
+		create: func(context.Context, domain.CreatePendingVerificationRequest) (domain.PendingVerification, error) {
+			return wantPV, nil
+		},
+	}
+	svc := NewPendingVerificationService(repo, restrictedAccess{})
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, pvTestCallerEmail))
+	_, err := svc.CreatePendingVerification(ctx, domain.CreatePendingVerificationRequest{
+		WorkItemID:  pvTestWorkItemID,
+		AddedReason: domain.PendingVerificationAddedReasonManual,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 }
 
 // TestPendingVerificationService_Create_RejectsNonCase locks in the
@@ -175,7 +226,7 @@ func TestPendingVerificationService_Create_RejectsNonCase(t *testing.T) {
 			return domain.PendingVerification{}, nil
 		},
 	}
-	svc := NewPendingVerificationService(repo)
+	svc := NewPendingVerificationService(repo, stubAccess{scope: AccessScope{Unrestricted: true}})
 	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, pvTestCallerEmail))
 	_, err := svc.CreatePendingVerification(ctx, domain.CreatePendingVerificationRequest{
 		WorkItemID:  pvTestWorkItemID,
@@ -195,7 +246,7 @@ func TestPendingVerificationService_Create_PropagatesWorkItemLookupError(t *test
 			return "", "", wantErr
 		},
 	}
-	svc := NewPendingVerificationService(repo)
+	svc := NewPendingVerificationService(repo, stubAccess{scope: AccessScope{Unrestricted: true}})
 	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, pvTestCallerEmail))
 	_, err := svc.CreatePendingVerification(ctx, domain.CreatePendingVerificationRequest{
 		WorkItemID:  pvTestWorkItemID,
@@ -220,7 +271,7 @@ func TestPendingVerificationService_Create_RejectsWhenVerificationDisabled(t *te
 			return domain.PendingVerification{}, nil
 		},
 	}
-	svc := NewPendingVerificationService(repo)
+	svc := NewPendingVerificationService(repo, stubAccess{scope: AccessScope{Unrestricted: true}})
 	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, pvTestCallerEmail))
 	_, err := svc.CreatePendingVerification(ctx, domain.CreatePendingVerificationRequest{
 		WorkItemID:  pvTestWorkItemID,
@@ -234,7 +285,7 @@ func TestPendingVerificationService_Create_RequiresCallerToken(t *testing.T) {
 		getWorkItemTypeAndProject:     func(context.Context, string) (string, string, error) { return "CASE", pvTestProjectID, nil },
 		getProjectVerificationEnabled: pvEnabled,
 	}
-	svc := NewPendingVerificationService(repo)
+	svc := NewPendingVerificationService(repo, stubAccess{scope: AccessScope{Unrestricted: true}})
 	ctx := contextWithUserIDToken("") // no x-user-id-token header
 	_, err := svc.CreatePendingVerification(ctx, domain.CreatePendingVerificationRequest{
 		WorkItemID:  pvTestWorkItemID,
@@ -266,7 +317,7 @@ func TestPendingVerificationService_Create_HappyPath(t *testing.T) {
 			return wantPV, nil
 		},
 	}
-	svc := NewPendingVerificationService(repo)
+	svc := NewPendingVerificationService(repo, stubAccess{scope: AccessScope{Unrestricted: true}})
 	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, pvTestCallerEmail))
 
 	resp, err := svc.CreatePendingVerification(ctx, domain.CreatePendingVerificationRequest{
@@ -290,7 +341,7 @@ func TestPendingVerificationService_Create_HappyPath(t *testing.T) {
 // --- SearchPendingVerifications ---------------------------------------------
 
 func TestPendingVerificationService_Search_RequiresProjectID(t *testing.T) {
-	svc := NewPendingVerificationService(&fakePendingVerificationRepo{})
+	svc := NewPendingVerificationService(&fakePendingVerificationRepo{}, stubAccess{scope: AccessScope{Unrestricted: true}})
 	_, err := svc.SearchPendingVerifications(context.Background(), domain.SearchPendingVerificationsRequest{
 		Filters: domain.PendingVerificationSearchFilters{ProjectID: "not-a-uuid"},
 	})
@@ -299,7 +350,7 @@ func TestPendingVerificationService_Search_RequiresProjectID(t *testing.T) {
 
 func TestPendingVerificationService_Search_InvalidWorkItemIDFilter(t *testing.T) {
 	badID := "not-a-uuid"
-	svc := NewPendingVerificationService(&fakePendingVerificationRepo{})
+	svc := NewPendingVerificationService(&fakePendingVerificationRepo{}, stubAccess{scope: AccessScope{Unrestricted: true}})
 	_, err := svc.SearchPendingVerifications(context.Background(), domain.SearchPendingVerificationsRequest{
 		Filters: domain.PendingVerificationSearchFilters{ProjectID: pvTestWorkItemID, WorkItemID: &badID},
 	})
@@ -311,7 +362,7 @@ func TestPendingVerificationService_Search_SearchQueryTooLong(t *testing.T) {
 	for i := range long {
 		long[i] = 'a'
 	}
-	svc := NewPendingVerificationService(&fakePendingVerificationRepo{})
+	svc := NewPendingVerificationService(&fakePendingVerificationRepo{}, stubAccess{scope: AccessScope{Unrestricted: true}})
 	_, err := svc.SearchPendingVerifications(context.Background(), domain.SearchPendingVerificationsRequest{
 		Filters: domain.PendingVerificationSearchFilters{ProjectID: pvTestWorkItemID, SearchQuery: string(long)},
 	})
@@ -319,7 +370,7 @@ func TestPendingVerificationService_Search_SearchQueryTooLong(t *testing.T) {
 }
 
 func TestPendingVerificationService_Search_UnsupportedWorkItemType(t *testing.T) {
-	svc := NewPendingVerificationService(&fakePendingVerificationRepo{})
+	svc := NewPendingVerificationService(&fakePendingVerificationRepo{}, stubAccess{scope: AccessScope{Unrestricted: true}})
 	_, err := svc.SearchPendingVerifications(context.Background(), domain.SearchPendingVerificationsRequest{
 		Filters: domain.PendingVerificationSearchFilters{ProjectID: pvTestWorkItemID, WorkItemTypes: []string{"INCIDENT"}},
 	})
@@ -331,7 +382,7 @@ func TestPendingVerificationService_Search_UnsupportedWorkItemType(t *testing.T)
 // Auto-closed/Manual stat boxes.
 func TestPendingVerificationService_Search_InvalidAddedReason(t *testing.T) {
 	bad := domain.PendingVerificationAddedReason("SOMETHING_ELSE")
-	svc := NewPendingVerificationService(&fakePendingVerificationRepo{})
+	svc := NewPendingVerificationService(&fakePendingVerificationRepo{}, stubAccess{scope: AccessScope{Unrestricted: true}})
 	_, err := svc.SearchPendingVerifications(context.Background(), domain.SearchPendingVerificationsRequest{
 		Filters: domain.PendingVerificationSearchFilters{ProjectID: pvTestWorkItemID, AddedReason: &bad},
 	})
@@ -339,7 +390,7 @@ func TestPendingVerificationService_Search_InvalidAddedReason(t *testing.T) {
 }
 
 func TestPendingVerificationService_Search_LimitExceedsMax(t *testing.T) {
-	svc := NewPendingVerificationService(&fakePendingVerificationRepo{})
+	svc := NewPendingVerificationService(&fakePendingVerificationRepo{}, stubAccess{scope: AccessScope{Unrestricted: true}})
 	_, err := svc.SearchPendingVerifications(context.Background(), domain.SearchPendingVerificationsRequest{
 		Pagination: domain.Pagination{Limit: 500},
 		Filters:    domain.PendingVerificationSearchFilters{ProjectID: pvTestWorkItemID},
@@ -358,7 +409,7 @@ func TestPendingVerificationService_Search_RejectsWhenVerificationDisabled(t *te
 			return domain.SearchPendingVerificationsResponse{}, nil
 		},
 	}
-	svc := NewPendingVerificationService(repo)
+	svc := NewPendingVerificationService(repo, stubAccess{scope: AccessScope{Unrestricted: true}})
 	_, err := svc.SearchPendingVerifications(context.Background(), domain.SearchPendingVerificationsRequest{
 		Filters: domain.PendingVerificationSearchFilters{ProjectID: pvTestProjectID},
 	})
@@ -379,7 +430,7 @@ func TestPendingVerificationService_Search_HappyPath(t *testing.T) {
 			return wantResp, nil
 		},
 	}
-	svc := NewPendingVerificationService(repo)
+	svc := NewPendingVerificationService(repo, stubAccess{scope: AccessScope{Unrestricted: true}})
 
 	resp, err := svc.SearchPendingVerifications(context.Background(), domain.SearchPendingVerificationsRequest{
 		Filters: domain.PendingVerificationSearchFilters{ProjectID: pvTestWorkItemID, AddedReason: &autoClosed},
@@ -401,7 +452,7 @@ func TestPendingVerificationService_Search_HappyPath(t *testing.T) {
 // --- VerifyPendingVerification -----------------------------------------------
 
 func TestPendingVerificationService_Verify_InvalidID(t *testing.T) {
-	svc := NewPendingVerificationService(&fakePendingVerificationRepo{})
+	svc := NewPendingVerificationService(&fakePendingVerificationRepo{}, stubAccess{scope: AccessScope{Unrestricted: true}})
 	_, err := svc.VerifyPendingVerification(context.Background(), domain.VerifyPendingVerificationRequest{ID: "not-a-uuid"})
 	assertValidationError(t, err)
 }
@@ -411,7 +462,7 @@ func TestPendingVerificationService_Verify_RequiresCallerToken(t *testing.T) {
 		getProjectIDForEntry:          func(context.Context, string) (string, error) { return pvTestProjectID, nil },
 		getProjectVerificationEnabled: pvEnabled,
 	}
-	svc := NewPendingVerificationService(repo)
+	svc := NewPendingVerificationService(repo, stubAccess{scope: AccessScope{Unrestricted: true}})
 	ctx := contextWithUserIDToken("")
 	_, err := svc.VerifyPendingVerification(ctx, domain.VerifyPendingVerificationRequest{ID: pvTestEntryID})
 	var unauthorized *apierror.UnauthorizedError
@@ -433,7 +484,7 @@ func TestPendingVerificationService_Verify_RejectsWhenVerificationDisabled(t *te
 			return domain.PendingVerification{}, nil
 		},
 	}
-	svc := NewPendingVerificationService(repo)
+	svc := NewPendingVerificationService(repo, stubAccess{scope: AccessScope{Unrestricted: true}})
 	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, pvTestCallerEmail))
 	_, err := svc.VerifyPendingVerification(ctx, domain.VerifyPendingVerificationRequest{ID: pvTestEntryID})
 	assertForbiddenError(t, err)
@@ -453,7 +504,7 @@ func TestPendingVerificationService_Verify_HappyPath(t *testing.T) {
 			return wantPV, nil
 		},
 	}
-	svc := NewPendingVerificationService(repo)
+	svc := NewPendingVerificationService(repo, stubAccess{scope: AccessScope{Unrestricted: true}})
 	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, pvTestCallerEmail))
 
 	resp, err := svc.VerifyPendingVerification(ctx, domain.VerifyPendingVerificationRequest{ID: pvTestEntryID})
@@ -483,7 +534,7 @@ func TestPendingVerificationService_Verify_PropagatesNotFound(t *testing.T) {
 			return domain.PendingVerification{}, wantErr
 		},
 	}
-	svc := NewPendingVerificationService(repo)
+	svc := NewPendingVerificationService(repo, stubAccess{scope: AccessScope{Unrestricted: true}})
 	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, pvTestCallerEmail))
 
 	_, err := svc.VerifyPendingVerification(ctx, domain.VerifyPendingVerificationRequest{ID: pvTestEntryID})

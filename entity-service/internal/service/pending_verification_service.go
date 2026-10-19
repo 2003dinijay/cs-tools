@@ -60,13 +60,15 @@ var validPendingVerificationRecordType = map[string]bool{
 // an entry to someone else.
 
 type pendingVerificationService struct {
-	repo repository.PendingVerificationRepository
+	repo   repository.PendingVerificationRepository
+	access AccessService
 }
 
 // NewPendingVerificationService constructs a PendingVerificationService
-// backed by Postgres.
-func NewPendingVerificationService(repo repository.PendingVerificationRepository) PendingVerificationService {
-	return &pendingVerificationService{repo: repo}
+// backed by Postgres. access is used to require an internal caller for
+// AUTO_CLOSED entries -- see CreatePendingVerification's own comment.
+func NewPendingVerificationService(repo repository.PendingVerificationRepository, access AccessService) PendingVerificationService {
+	return &pendingVerificationService{repo: repo, access: access}
 }
 
 // CreatePendingVerification implements PendingVerificationService.
@@ -91,6 +93,18 @@ func (s *pendingVerificationService) CreatePendingVerification(ctx context.Conte
 	}
 	if req.PreviousStatus != nil && !validPendingVerificationPreviousStatus[*req.PreviousStatus] {
 		return domain.CreatePendingVerificationResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("previousStatus must be one of Solution Proposed/Awaiting Info, got %q", *req.PreviousStatus)}
+	}
+
+	// AUTO_CLOSED claims the system itself closed the case -- only an
+	// internal caller may create one, or a registered customer could forge a
+	// false system-generated auto-closure entry (migration 0190's RLS policy
+	// only checks project membership, never added_reason). MANUAL stays open
+	// to any project member, gated below by the usual membership/feature
+	// checks only.
+	if isAutoClosed {
+		if err := RequireInternalCaller(ctx, s.access, "only internal users may add an auto-closed entry to Pending Verification"); err != nil {
+			return domain.CreatePendingVerificationResponse{}, err
+		}
 	}
 
 	// The feature is scoped to Case only (product decision, 2026-10-06) --
