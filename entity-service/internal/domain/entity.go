@@ -1882,8 +1882,11 @@ type ProductVersion struct {
 	ReleaseDate                    time.Time     `json:"releaseDate"`
 	SupportEOLDate                 *time.Time    `json:"supportEolDate"`
 	EarliestPossibleSupportEOLDate *time.Time    `json:"earliestPossibleSupportEolDate"`
-	CreatedOn                      time.Time     `json:"createdOn"`
-	UpdatedOn                      time.Time     `json:"updatedOn"`
+	// DeploymentProfile is product_version.deployment_profile (e.g. "All In
+	// One"); null when the version has none.
+	DeploymentProfile *string   `json:"deploymentProfile"`
+	CreatedOn         time.Time `json:"createdOn"`
+	UpdatedOn         time.Time `json:"updatedOn"`
 }
 
 // SearchProductVersionsRequest is the input for a product version search operation.

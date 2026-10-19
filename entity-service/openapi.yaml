@@ -16383,6 +16383,10 @@ components:
           type: string
           format: date-time
           nullable: true
+        deploymentProfile:
+          type: string
+          nullable: true
+          description: Deployment profile of this version, e.g. "All In One"; null when it has none.
         createdOn:
           type: string
           format: date-time
