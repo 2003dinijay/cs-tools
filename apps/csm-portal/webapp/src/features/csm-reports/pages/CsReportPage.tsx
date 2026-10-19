@@ -19,7 +19,7 @@
 // and type as the rest of CSM. Section class names (subscription-widget,
 // cases-charts-widget, and the rest) are what CsReportPDF.ts looks up when
 // it builds the download, so they stay on the cards.
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX, type ReactNode } from "react";
 import {
   Accordion,
   AccordionDetails,
@@ -29,6 +29,7 @@ import {
   Button,
   Card,
   Chip,
+  CircularProgress,
   Divider,
   FormControl,
   InputLabel,
@@ -362,6 +363,7 @@ export default function CsReportPage(): JSX.Element {
 
   const [uploadError, setUploadError] = useState("");
   const [downloadError, setDownloadError] = useState("");
+  const [downloading, setDownloading] = useState(false);
 
   // Blob URLs are local. Revoke the previous one when it is replaced, and the
   // current one when the page unmounts. A data URL preview is what left image
@@ -397,6 +399,7 @@ export default function CsReportPage(): JSX.Element {
 
   const handleDownloadPDF = () => {
     setDownloadError("");
+    setDownloading(true);
     void csReportPDF(
       "cs-report",
       csReportData?.subscriptionDetails?.accountName ?? "Unknown Account",
@@ -409,9 +412,11 @@ export default function CsReportPage(): JSX.Element {
       deploymentImage,
       businessOverviewText,
       theme.palette.primary.main,
-    ).catch((err: unknown) => {
-      setDownloadError(err instanceof Error ? err.message : "Could not build the PDF.");
-    });
+    )
+      .catch((err: unknown) => {
+        setDownloadError(err instanceof Error ? err.message : "Could not build the PDF.");
+      })
+      .finally(() => setDownloading(false));
   };
 
   const handleSubmit = () => {
@@ -848,40 +853,59 @@ export default function CsReportPage(): JSX.Element {
 
           {deployments.some((d) => (d.products?.length ?? 0) > 0) && (
             <SectionCard className="product-updates-widget" title="Product update levels">
-              {deployments.map((deployment, index) => {
-                const products = deployment.products ?? [];
-                if (products.length === 0) return null;
-                return (
-                  <Box key={index} sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
-                    <Typography variant="body2" color="text.secondary">
-                      {deployment.name} environment
-                    </Typography>
-                    <TableContainer>
-                      <Table size="small">
-                        <TableHead>
+              <TableContainer>
+                <Table size="small" className="update-levels-table" sx={{ tableLayout: "fixed" }}>
+                  <colgroup>
+                    <col style={{ width: "68%" }} />
+                    <col style={{ width: "32%" }} />
+                  </colgroup>
+                  <TableHead>
+                    <TableRow>
+                      <TableCell sx={{ fontWeight: 700, letterSpacing: 0.4, textTransform: "uppercase", color: "text.secondary" }}>
+                        Product
+                      </TableCell>
+                      <TableCell sx={{ fontWeight: 700, letterSpacing: 0.4, textTransform: "uppercase", color: "text.secondary" }}>
+                        Current update level
+                      </TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {deployments.map((deployment, index) => {
+                      const products = deployment.products ?? [];
+                      if (products.length === 0) return null;
+                      return (
+                        <Fragment key={index}>
                           <TableRow>
-                            <TableCell>Product</TableCell>
-                            <TableCell>Current update level</TableCell>
+                            <TableCell
+                              colSpan={2}
+                              className="update-level-env"
+                              sx={{
+                                fontWeight: 700,
+                                bgcolor: "action.hover",
+                                borderBottom: "1px solid",
+                                borderColor: "divider",
+                              }}
+                            >
+                              {deployment.name || "Environment"}
+                            </TableCell>
                           </TableRow>
-                        </TableHead>
-                        <TableBody>
                           {products.map((product, i) => (
                             <TableRow key={i}>
-                              <TableCell>
-                                {product.name}
+                              <TableCell sx={{ fontWeight: 600 }}>
+                                {product.name || "—"}
                                 {product.version ? ` v${product.version}` : ""}
                               </TableCell>
-                              <TableCell>
+                              <TableCell sx={{ color: product.updateLevelInfo != null ? "text.primary" : "text.secondary" }}>
                                 {product.updateLevelInfo != null ? product.updateLevelInfo : "No update history"}
                               </TableCell>
                             </TableRow>
                           ))}
-                        </TableBody>
-                      </Table>
-                    </TableContainer>
-                  </Box>
-                );
-              })}
+                        </Fragment>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </TableContainer>
             </SectionCard>
           )}
 
@@ -982,8 +1006,30 @@ export default function CsReportPage(): JSX.Element {
               {downloadError}
             </Alert>
           )}
-          <Button variant="contained" onClick={handleDownloadPDF} disabled={!csReportData}>
-            Download PDF
+          <Box
+            component="span"
+            role="status"
+            sx={{
+              position: "absolute",
+              width: "1px",
+              height: "1px",
+              p: 0,
+              m: "-1px",
+              overflow: "hidden",
+              clip: "rect(0 0 0 0)",
+              whiteSpace: "nowrap",
+              border: 0,
+            }}
+          >
+            {downloading ? "Downloading PDF…" : ""}
+          </Box>
+          <Button
+            variant="contained"
+            onClick={handleDownloadPDF}
+            disabled={!csReportData || downloading}
+            startIcon={downloading ? <CircularProgress size={16} color="inherit" /> : undefined}
+          >
+            {downloading ? "Downloading…" : "Download PDF"}
           </Button>
         </Box>
       )}
