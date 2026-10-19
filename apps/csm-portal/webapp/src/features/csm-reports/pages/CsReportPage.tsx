@@ -209,7 +209,7 @@ function LocalImage({
 function EngagementDescription({ text }: { text: string }): JSX.Element {
   const [open, setOpen] = useState(false);
   const [overflows, setOverflows] = useState(false);
-  const ref = useRef<HTMLElement>(null);
+  const ref = useRef<HTMLParagraphElement>(null);
 
   useLayoutEffect(() => {
     const el = ref.current;
