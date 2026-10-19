@@ -856,6 +856,15 @@ func (e *Engine) admit(ctx context.Context, t *Trigger) bool {
 	return true
 }
 
+// staleTriggerGrace is how old a trigger must be before a ladder that has
+// fully elapsed is dropped as a replay. It is far longer than the delay
+// between an event being raised and this engine evaluating it (consumer lag,
+// retries), so a live incident is never mistaken for a replay, and far
+// shorter than the window a replayed, redelivered or dead-lettered trigger
+// arrives in after a restart or outage, so those are still dropped rather
+// than burst-dialled.
+const staleTriggerGrace = 5 * time.Minute
+
 // schedule builds an admitted trigger's plan and stores it; see start.
 func (e *Engine) schedule(ctx context.Context, t Trigger, replace bool) error {
 	// USA_WEEKEND is the one shift whose LEVEL_0 depends on ABT eligibility
@@ -910,15 +919,24 @@ func (e *Engine) schedule(ctx context.Context, t Trigger, replace bool) error {
 	}
 	// A plan with rung emails still has something to deliver when it has no
 	// calls; only a plan with neither ends here.
-	if len(plan.Calls) == 0 && len(plan.Emails) == 0 && plan.CallsHeld {
-		// Setup, not an incident outcome: the lead pool has no numbers yet,
-		// and a call-only ladder has nothing else to deliver. No work note.
-		return nil
-	}
 	if len(plan.Calls) == 0 && len(plan.Emails) == 0 {
+		// Nothing to deliver, and nobody was told: this ends the incident's
+		// paging, so it is announced, never swallowed. A held plan (the lead
+		// pool is not verified, see Safety.CallWithoutVerifiedLeads) is
+		// reported the same way as one with nobody to reach, with the reason
+		// named, so the work note says why and not merely that.
+		why := "no level has a recipient"
+		if plan.CallsHeld {
+			why = "calls held: the lead pool is not verified with phone numbers"
+			plan.Issues = append(plan.Issues, PlanIssue{
+				Level: Level0, At: t.At, Reason: "CALLS_HELD",
+				Detail: "the lead pool is not verified with phone numbers",
+			})
+		}
 		slog.WarnContext(ctx, "escalation: plan has no reachable recipients; nothing scheduled",
 			"incidentId", t.IncidentID, "priority", t.Priority, "rule", t.Routing.Rule(),
-			"shift", string(t.Routing.Shift), "product", t.Routing.Product, "team", t.Routing.AssignedCRETeam)
+			"shift", string(t.Routing.Shift), "product", t.Routing.Product, "team", t.Routing.AssignedCRETeam,
+			"why", why)
 		e.writeNote(ctx, plan, nil, nil, nil, "")
 		return nil
 	}
@@ -934,7 +952,14 @@ func (e *Engine) schedule(ctx context.Context, t Trigger, replace bool) error {
 	// catches up correctly (the due calls go out on the next tick, at the
 	// rung the ladder should be on by now); it is the ladder that has run
 	// its whole course before we heard about it that must be dropped.
-	if last := plan.lastScheduled(); last.Before(e.now()) {
+	//
+	// "Run its whole course" is judged on the trigger as well as the ladder:
+	// rota coverage decides which levels are callable at the trigger instant,
+	// so a single-rung ladder (only LEVEL_0, offset 0) is a normal state, and
+	// its last call is the trigger time itself -- already a moment in the
+	// past by the time it is evaluated. Comparing the ladder alone dropped
+	// every such fresh incident unpaged. staleTriggerGrace is the slack.
+	if last := plan.lastScheduled(); last.Before(e.now()) && e.now().Sub(t.At) > staleTriggerGrace {
 		slog.WarnContext(ctx, "escalation: trigger is older than its whole ladder; not scheduling",
 			"incidentId", t.IncidentID, "priority", t.Priority, "trigger", string(t.Kind),
 			"triggeredAt", t.At.Format(time.RFC3339), "lastCallAt", last.Format(time.RFC3339))
