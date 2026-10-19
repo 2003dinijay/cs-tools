@@ -10212,6 +10212,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Runbooks are not available on this deployment (it has no database).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "409":
           description: The alert name already has an entry.
           content:
@@ -10259,6 +10265,12 @@ paths:
                 $ref: '#/components/schemas/ImportRunbooksResponse'
         "400":
           description: An entry is invalid; nothing was written.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Runbooks are not available on this deployment (it has no database).
           content:
             application/json:
               schema:
