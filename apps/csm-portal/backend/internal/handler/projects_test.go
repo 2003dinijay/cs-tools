@@ -22,6 +22,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 )
 
 func TestGetProject(t *testing.T) {
@@ -553,6 +555,107 @@ func TestUpdateProject(t *testing.T) {
 				assertErrorMessage(t, w, tc.wantMsg)
 				assertContentType(t, w, "application/json")
 			})
+		}
+	})
+
+	t.Run("closureState: denied without PermAdmin (no guard wired)", func(t *testing.T) {
+		called := false
+		client := &mockEntityProjectClient{
+			updateProjectFn: func(context.Context, string, []byte) ([]byte, error) {
+				called = true
+				return []byte(`{}`), nil
+			},
+		}
+		h := NewProjectHandler(client)
+		r := withUser(httptest.NewRequest(http.MethodPatch, "/projects/"+projectID, strings.NewReader(`{"closureState":"SUSPENDED"}`)))
+		r.SetPathValue("id", projectID)
+		w := httptest.NewRecorder()
+		h.UpdateProject(w, r)
+		assertStatus(t, w, http.StatusForbidden)
+		if called {
+			t.Fatal("entity service must not be called for a denied closureState update")
+		}
+	})
+
+	t.Run("closureState: denied for cs_engineer, who holds PermWrite but not PermAdmin", func(t *testing.T) {
+		called := false
+		h := NewProjectHandler(&mockEntityProjectClient{
+			updateProjectFn: func(context.Context, string, []byte) ([]byte, error) {
+				called = true
+				return []byte(`{}`), nil
+			},
+		}).WithAccessGuard(NewAccessGuard(testAccessConfig()))
+		r := httptest.NewRequest(http.MethodPatch, "/projects/"+projectID, strings.NewReader(`{"closureState":"SUSPENDED"}`))
+		r.SetPathValue("id", projectID)
+		r = r.WithContext(middleware.WithUserInfo(r.Context(), &middleware.UserInfo{Email: "cs@example.com", UserID: "u1", Roles: []string{"test-cs-engineer"}}))
+		w := httptest.NewRecorder()
+		h.UpdateProject(w, r)
+		assertStatus(t, w, http.StatusForbidden)
+		if called {
+			t.Fatal("entity service must not be called for a denied closureState update")
+		}
+	})
+
+	t.Run("closureState: allowed for admin", func(t *testing.T) {
+		var capturedBody []byte
+		h := NewProjectHandler(&mockEntityProjectClient{
+			updateProjectFn: func(_ context.Context, _ string, body []byte) ([]byte, error) {
+				capturedBody = body
+				return []byte(`{"message":"Project updated.","project":{}}`), nil
+			},
+		}).WithAccessGuard(NewAccessGuard(testAccessConfig()))
+		const reqBody = `{"closureState":"SUSPENDED"}`
+		r := httptest.NewRequest(http.MethodPatch, "/projects/"+projectID, strings.NewReader(reqBody))
+		r.SetPathValue("id", projectID)
+		r = r.WithContext(middleware.WithUserInfo(r.Context(), &middleware.UserInfo{Email: "admin@example.com", UserID: "u2", Roles: []string{"test-admin"}}))
+		w := httptest.NewRecorder()
+		h.UpdateProject(w, r)
+		assertStatus(t, w, http.StatusOK)
+		if string(capturedBody) != reqBody {
+			t.Errorf("upstream received %q, want verbatim %q", capturedBody, reqBody)
+		}
+	})
+
+	t.Run("closureState: case-insensitive key spelling still requires PermAdmin", func(t *testing.T) {
+		// entity-service's own JSON decoding (encoding/json) matches a key to
+		// a struct field without regard to case, so this guard must catch a
+		// differently-cased spelling too -- see projectUpdateTargetsClosureState's
+		// own doc comment.
+		called := false
+		h := NewProjectHandler(&mockEntityProjectClient{
+			updateProjectFn: func(context.Context, string, []byte) ([]byte, error) {
+				called = true
+				return []byte(`{}`), nil
+			},
+		}).WithAccessGuard(NewAccessGuard(testAccessConfig()))
+		r := httptest.NewRequest(http.MethodPatch, "/projects/"+projectID, strings.NewReader(`{"ClosureState":"SUSPENDED"}`))
+		r.SetPathValue("id", projectID)
+		r = r.WithContext(middleware.WithUserInfo(r.Context(), &middleware.UserInfo{Email: "cs@example.com", UserID: "u1", Roles: []string{"test-cs-engineer"}}))
+		w := httptest.NewRecorder()
+		h.UpdateProject(w, r)
+		assertStatus(t, w, http.StatusForbidden)
+		if called {
+			t.Fatal("entity service must not be called for a denied closureState update")
+		}
+	})
+
+	t.Run("non-closureState fields stay reachable for cs_engineer with a guard wired", func(t *testing.T) {
+		var capturedBody []byte
+		h := NewProjectHandler(&mockEntityProjectClient{
+			updateProjectFn: func(_ context.Context, _ string, body []byte) ([]byte, error) {
+				capturedBody = body
+				return []byte(`{"message":"Project updated.","project":{}}`), nil
+			},
+		}).WithAccessGuard(NewAccessGuard(testAccessConfig()))
+		const reqBody = `{"hasAgent":true}`
+		r := httptest.NewRequest(http.MethodPatch, "/projects/"+projectID, strings.NewReader(reqBody))
+		r.SetPathValue("id", projectID)
+		r = r.WithContext(middleware.WithUserInfo(r.Context(), &middleware.UserInfo{Email: "cs@example.com", UserID: "u1", Roles: []string{"test-cs-engineer"}}))
+		w := httptest.NewRecorder()
+		h.UpdateProject(w, r)
+		assertStatus(t, w, http.StatusOK)
+		if string(capturedBody) != reqBody {
+			t.Errorf("upstream received %q, want verbatim %q", capturedBody, reqBody)
 		}
 	})
 }

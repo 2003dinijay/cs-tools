@@ -678,6 +678,19 @@ func updateProjectTx(ctx context.Context, tx pgx.Tx, id string, req domain.Proje
 			return domain.ProjectUpdateResult{}, fmt.Errorf("update project: recompute closure state: %w", err)
 		}
 	}
+
+	// A direct admin override, applied AFTER the sub-field recompute above so
+	// that a request naming both (unusual, not rejected) leaves the caller's
+	// own explicit value in place rather than whatever the sub-states would
+	// otherwise derive. See ProjectUpdateRequest.ClosureState's own doc
+	// comment for the standing caveat this creates: a LATER request that
+	// touches any of the three sub-fields recomputes over this value again,
+	// with nothing recording that it was ever manually set.
+	if req.ClosureState != nil {
+		if _, err := tx.Exec(ctx, `UPDATE project SET wso2_closure_state = $2::wso2_closure_state_enum WHERE id = $1`, id, *closureEnumLabel(req.ClosureState)); err != nil {
+			return domain.ProjectUpdateResult{}, fmt.Errorf("update project: override closure state: %w", err)
+		}
+	}
 	var complianceDate *string
 	err = tx.QueryRow(ctx, `SELECT `+projectClosureColumns+` FROM project p WHERE p.id = $1`, id).Scan(
 		&res.ClosureState, &res.EndDateClosureState, &res.InvoiceDueDateClosureState,
@@ -758,6 +771,10 @@ var (
 		"SUSPENDED_AND_PREVIOUSLY_PAID", "PENDING_NOTIFIED_AND_PREVIOUSLY_PAID", "PENDING_NOTICED_AND_PREVIOUSLY_PAID",
 		"PENDING_RESTRICTED_AND_PREVIOUSLY_PAID", "PENDING_SUSPENDED_AND_PREVIOUSLY_PAID"}
 	complianceViolationClosureLabels = []string{"OPEN", "SUSPENDED"}
+	// wso2ClosureStateLabels are wso2_closure_state_enum's own five values —
+	// the set a direct ClosureState override (ProjectUpdateRequest.ClosureState)
+	// must be one of, distinct from the three sub-state label sets above.
+	wso2ClosureStateLabels = []string{"OPEN", "READ_ONLY", "CLOSED", "RESTRICTED", "SUSPENDED"}
 )
 
 // validateClosureFields rejects a PATCH closure value with no enum label,
@@ -771,6 +788,7 @@ func validateClosureFields(req domain.ProjectUpdateRequest) error {
 		{"endDateClosureState", req.EndDateClosureState, endDateClosureLabels},
 		{"invoiceDueDateClosureState", req.InvoiceDueDateClosureState, invoiceDueDateClosureLabels},
 		{"complianceViolationClosureState", req.ComplianceViolationClosureState, complianceViolationClosureLabels},
+		{"closureState", req.ClosureState, wso2ClosureStateLabels},
 	}
 	for _, f := range fields {
 		if f.value == nil || slices.Contains(f.labels, *closureEnumLabel(f.value)) {

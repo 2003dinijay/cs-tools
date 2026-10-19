@@ -260,6 +260,55 @@ func TestPgProjectUpdateService_PlainPostgresUpdatesFieldsAndNeverCallsSN(t *tes
 	}
 }
 
+// TestPgProjectUpdateService_AcceptsClosureStateOverride pins that a request
+// naming only ClosureState (the admin-only direct override -- fine-grained
+// authorization for it lives in the BFF, not here) is recognized as having
+// something to store and reaches the repository, the same as any other
+// stored field.
+func TestPgProjectUpdateService_AcceptsClosureStateOverride(t *testing.T) {
+	closureState := "SUSPENDED"
+	repo := &stubProjectUpdateRepo{}
+	svc := NewProjectUpdateService(repo, testProjectUserRepo(), alwaysUnrestrictedAccess{})
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	if _, err := svc.UpdateProject(ctx, "11111111-1111-1111-1111-111111111111", domain.ProjectUpdateRequest{ClosureState: &closureState}); err != nil {
+		t.Fatalf("UpdateProject() error = %v, want success", err)
+	}
+	if !repo.called || repo.gotReq.ClosureState == nil || *repo.gotReq.ClosureState != closureState {
+		t.Fatalf("repo called = %v with closureState %v, want %q", repo.called, repo.gotReq.ClosureState, closureState)
+	}
+}
+
+// TestPgProjectUpdateService_ClosureStateOnlyNeverDispatchesSNMirror pins
+// hasSNMirrorableProjectFields's whole reason for existing: ClosureState has
+// no ServiceNow equivalent (it's a Postgres-only direct override), so a
+// dual-write request naming only it must not dispatch a mirror write at all
+// -- one would only ever fail against snProjectUpdateService's own "at least
+// one field must be provided" check, since none of the fields it knows about
+// would be set.
+func TestPgProjectUpdateService_ClosureStateOnlyNeverDispatchesSNMirror(t *testing.T) {
+	closureState := "READ_ONLY"
+	repo := &stubProjectUpdateRepo{}
+	mirror := &stubProjectMirror{}
+	failures := &recordingSNWritebackFailures{}
+	dispatcher := NewSNWritebackDispatcher(failures)
+	svc := NewProjectUpdateServiceWithSNWriteback(repo, testProjectUserRepo(), alwaysUnrestrictedAccess{}, dispatcher, mirror)
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	if _, err := svc.UpdateProject(ctx, "11111111-1111-1111-1111-111111111111", domain.ProjectUpdateRequest{ClosureState: &closureState}); err != nil {
+		t.Fatalf("UpdateProject() error = %v, want success", err)
+	}
+	if !repo.called {
+		t.Fatal("UpdateProject() never called the repository")
+	}
+	// No background goroutine to race against here (mirror dispatch never
+	// happens), so a short, direct check is enough -- unlike the "dispatches
+	// exactly one" test below, which has to waitFor an async failure record.
+	if mirror.calls != 0 {
+		t.Fatalf("ServiceNow mirror UpdateProject called %d times, want 0 for a ClosureState-only request", mirror.calls)
+	}
+}
+
 // TestPgProjectUpdateService_DualWriteDispatchesExactlyOneMirrorCallOnSuccess
 // proves DATA_SOURCE=postgres-servicenow-dual-write mode dispatches exactly
 // one best-effort ServiceNow mirror write after a successful Postgres write,

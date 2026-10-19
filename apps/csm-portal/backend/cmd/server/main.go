@@ -358,6 +358,7 @@ func main() {
 	grantableRolesHandler := handler.NewGrantableRolesHandler(grantableRoles)
 	dashboardHandler := handler.NewDashboardHandler(accessGuard)
 	caseHandler = caseHandler.WithAccessGuard(accessGuard)
+	projectHandler = projectHandler.WithAccessGuard(accessGuard)
 	timeCardHandler = timeCardHandler.WithAccessGuard(accessGuard)
 	incidentHandler = incidentHandler.WithAccessGuard(accessGuard)
 	changeRequestHandler = changeRequestHandler.WithAccessGuard(accessGuard)

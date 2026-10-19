@@ -308,6 +308,31 @@ two different mechanisms, because the feature isn't backed by its own exclusive 
   still fetch it directly by `GET /cases/{id}`. Closing either gap fully needs entity-service itself to
   resolve and enforce it (it has reliable type data on either data source), not this BFF layer.
 
+## PATCH /projects/{id}: closureState requires PermAdmin, every other field stays at PermWrite
+
+Same mechanism as `caseSearchTargetsSecurityReports` above, applied to a write instead of a search:
+`PATCH /projects/{id}` is registered at `PermWrite` (held by both `cs_engineer` and `admin`) and stays
+that way, since every other field on this endpoint (`hasAgent`, `hasKbReferences`, the three closure
+sub-state fields, `suspensionProcessState`) is ordinary `cs_engineer` territory — re-gating the whole
+route to `PermAdmin` would lock `cs_engineer` out of fields nobody asked to restrict. `closureState`
+(entity-service's direct, Postgres-only override of a project's overall closure status — see that
+repo's own `CLAUDE.md`, "PATCH /projects/{id}: closureState is a direct admin override") is the one
+field that needs the narrower bar: an admin can set a project to OPEN/READ_ONLY/CLOSED/RESTRICTED/
+SUSPENDED directly, bypassing the usual derivation from the three sub-state fields, and that's an
+admin-only action by product decision, not something every `cs_engineer` should be able to flip.
+
+`ProjectHandler.UpdateProject` inspects the raw request body itself: `projectUpdateTargetsClosureState`
+(`internal/handler/projects.go`) reads the top-level keys as a case-insensitive token stream (mirroring
+`caseCreateTargetsAnnouncement`'s own reasoning: entity-service's JSON decoder matches a key to a
+struct field without regard to case, so a check that only looked for one spelling could be walked
+around by a body that spells the key differently) and, if `closureState` is present at all — even an
+explicit `null` — additionally requires `PermAdmin` via `ProjectHandler.access` (wired with
+`WithAccessGuard`, the same pattern `CaseHandler`/`UsersHandler` already use). A caller holding
+`PermWrite` but not `PermAdmin` (a plain `cs_engineer`) gets 403 and the entity service is never
+called; every other field on the same PATCH is unaffected and keeps reaching the entity service at the
+route's existing `PermWrite` floor. A nil `access` (no guard wired) fails closed, same as every other
+in-handler permission check in this codebase.
+
 ## Redacting raw base64 inline images (`internal/handler/inline_image_redact.go`)
 
 A pasted screenshot in a comment or case/incident/change-request description is normally extracted

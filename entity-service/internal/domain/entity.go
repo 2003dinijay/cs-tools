@@ -1484,12 +1484,25 @@ type ProjectDetailsView struct {
 	OnboardingOwner *PersonRef `json:"onboardingOwner"`
 }
 
-// ProjectUpdateRequest is the input for PATCH /projects/{id} (ServiceNow data
-// source only — no Postgres equivalent). All fields are optional; at least
-// one must be provided. Note: ClosureState itself is not settable — it is
-// derived automatically from the three closure sub-state fields below by an
-// SN business rule, so setting one of those and re-fetching the project is
-// how a caller observes the resulting overall status.
+// ProjectUpdateRequest is the input for PATCH /projects/{id}. All fields are
+// optional; at least one must be provided. On every data source,
+// ClosureState is normally derived automatically from the three closure
+// sub-state fields below by a business rule (ServiceNow's own rule on that
+// data source, the identical rule re-applied in Postgres via
+// wso2ClosureStateRule) — setting one of those and re-fetching the project
+// is how a caller observes the resulting overall status.
+//
+// ClosureState itself is additionally a direct, Postgres-only override (no
+// ServiceNow equivalent — see hasSNMirrorableProjectFields): an admin may set
+// it straight to one of wso2_closure_state_enum's five values, bypassing the
+// derivation rule entirely. This is a deliberately simple mechanism with one
+// documented caveat, not hidden: a later PATCH that touches any of the three
+// sub-state fields recomputes the overall state from them again, silently
+// overwriting a manual override with no memory that one was ever set. Fine-
+// grained "admin only" enforcement for this field lives in the BFF
+// (apps/csm-portal/backend), not here — this service only authorizes the
+// caller against the project itself, the same as every other field on this
+// request.
 type ProjectUpdateRequest struct {
 	HasAgent                        *bool           `json:"hasAgent,omitempty"`
 	HasKbReferences                 *bool           `json:"hasKbReferences,omitempty"`
@@ -1497,6 +1510,12 @@ type ProjectUpdateRequest struct {
 	InvoiceDueDateClosureState      *string         `json:"invoiceDueDateClosureState,omitempty"`
 	ComplianceViolationClosureState *string         `json:"complianceViolationClosureState,omitempty"`
 	SuspensionProcessState          json.RawMessage `json:"suspensionProcessState,omitempty"`
+	// ClosureState directly overrides project.wso2_closure_state (Postgres
+	// data sources only — see this struct's own doc comment). One of
+	// "OPEN"/"READ_ONLY"/"CLOSED"/"RESTRICTED"/"SUSPENDED", case-insensitive
+	// and tolerant of spaces (normalized the same way the three sub-state
+	// fields above already are).
+	ClosureState *string `json:"closureState,omitempty"`
 }
 
 // ProjectUpdateResponse is the result of a project update operation

@@ -58,6 +58,7 @@ vi.mock("@config/apiConfig", () => ({
 let mockCanWrite = true;
 let mockIsSplAudience = false;
 let mockCanViewWorkItemsStaffView = true;
+let mockCanUpdateProjectClosureState = false;
 vi.mock("@context/current-user/usePortalAccess", () => ({
   usePortalAccess: () => ({
     hasAnyRole: true,
@@ -68,8 +69,28 @@ vi.mock("@context/current-user/usePortalAccess", () => ({
     canWrite: mockCanWrite,
     isSplAudience: mockIsSplAudience,
     canViewWorkItemsStaffView: mockCanViewWorkItemsStaffView,
+    canUpdateProjectClosureState: mockCanUpdateProjectClosureState,
   }),
 }));
+
+const mockPatchClosureStateMutate = vi.fn();
+let mockPatchClosureStateIsPending = false;
+let mockPatchClosureStateIsError = false;
+vi.mock("@features/csm-projects/api/usePatchProjectClosureState", async () => {
+  const actual = await vi.importActual<
+    typeof import("@features/csm-projects/api/usePatchProjectClosureState")
+  >("@features/csm-projects/api/usePatchProjectClosureState");
+  return {
+    ...actual,
+    usePatchProjectClosureState: () => ({
+      mutate: mockPatchClosureStateMutate,
+      reset: vi.fn(),
+      isPending: mockPatchClosureStateIsPending,
+      isError: mockPatchClosureStateIsError,
+      error: mockPatchClosureStateIsError ? new Error("failed") : null,
+    }),
+  };
+});
 
 import CsmProjectDetailPage from "@features/csm-projects/pages/CsmProjectDetailPage";
 
@@ -299,5 +320,55 @@ describe("CsmProjectDetailPage — Onboarding Owner", () => {
     });
     renderPage();
     expect(screen.queryByText("Onboarding Owner")).not.toBeInTheDocument();
+  });
+});
+
+// Regression coverage for the admin-only direct closure-state override: the
+// edit affordance is a client-side convenience only (the backend enforces
+// the real PermAdmin gate on PATCH /projects/{id}'s closureState field, see
+// apps/csm-portal/backend's own CLAUDE.md) -- hiding it here just avoids
+// offering an action that would 403 for everyone else.
+describe("CsmProjectDetailPage — closure state edit", () => {
+  beforeEach(() => {
+    mockCanUpdateProjectClosureState = false;
+    mockPatchClosureStateMutate.mockReset();
+    mockPatchClosureStateIsPending = false;
+    mockPatchClosureStateIsError = false;
+    mockUseGetProject.mockReturnValue({
+      data: { ...PROJECT, closureState: "Open" },
+      isLoading: false,
+      isError: false,
+    });
+  });
+
+  it("hides the edit control for a caller without canUpdateProjectClosureState", () => {
+    renderPage();
+    expect(
+      screen.queryByRole("button", { name: "Edit closure state" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows the edit control for an admin and opens the dialog on click", () => {
+    mockCanUpdateProjectClosureState = true;
+    renderPage();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit closure state" }));
+
+    expect(screen.getByText("Edit closure state", { selector: "h2" })).toBeInTheDocument();
+  });
+
+  it("submits the newly selected state via the patch mutation", () => {
+    mockCanUpdateProjectClosureState = true;
+    renderPage();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit closure state" }));
+    fireEvent.mouseDown(screen.getByRole("combobox", { name: /closure state/i }));
+    fireEvent.click(screen.getByRole("option", { name: "Suspended" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(mockPatchClosureStateMutate).toHaveBeenCalledWith(
+      "SUSPENDED",
+      expect.objectContaining({ onSuccess: expect.any(Function) }),
+    );
   });
 });

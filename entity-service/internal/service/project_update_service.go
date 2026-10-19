@@ -127,7 +127,7 @@ func (s *pgProjectUpdateService) UpdateProject(ctx context.Context, id string, r
 	// and never affects this response -- the same UPDATE-stays-Postgres-
 	// first/async shape as caseService.UpdateCase's own mirror (see that
 	// method's own doc comment).
-	if s.snWriteback != nil && s.snMirror != nil && hasStoredProjectFields(req) {
+	if s.snWriteback != nil && s.snMirror != nil && hasSNMirrorableProjectFields(req) {
 		mirrorReq := req
 		s.snWriteback.Dispatch(ctx, "project", id, "update", mirrorReq, func(writeCtx context.Context) error {
 			_, err := s.snMirror.UpdateProject(writeCtx, id, mirrorReq)
@@ -174,6 +174,18 @@ func (s *pgProjectUpdateService) resolveUpdatedBy(ctx context.Context) (string, 
 
 // hasStoredProjectFields reports whether req sets a field Postgres stores.
 func hasStoredProjectFields(req domain.ProjectUpdateRequest) bool {
+	return hasSNMirrorableProjectFields(req) || req.ClosureState != nil
+}
+
+// hasSNMirrorableProjectFields reports whether req sets a field the
+// ServiceNow dual-write mirror (snProjectUpdateService) knows how to carry.
+// ClosureState is deliberately excluded: it's a direct, Postgres-only
+// override with no ServiceNow equivalent (see
+// domain.ProjectUpdateRequest.ClosureState's own doc comment), so a request
+// that sets only ClosureState has nothing to mirror -- dispatching one would
+// only ever produce an always-failing writeback attempt against a field
+// snProjectUpdateService doesn't know.
+func hasSNMirrorableProjectFields(req domain.ProjectUpdateRequest) bool {
 	return req.HasAgent != nil || req.HasKbReferences != nil || req.EndDateClosureState != nil ||
 		req.InvoiceDueDateClosureState != nil || req.ComplianceViolationClosureState != nil ||
 		req.SuspensionProcessState != nil
