@@ -56,7 +56,6 @@ import {
   findRunbookForIncident,
   isValidRunbookUrl,
   parseRunbookImport,
-  runbookWorkNote,
   type Runbook,
   type RunbookCoverage,
 } from "@features/csm-operations/utils/runbooks";
@@ -400,9 +399,6 @@ function RunbookDialog({ editing, existing, onClose }: RunbookDialogProps): JSX.
           error={urlInvalid}
           helperText={urlInvalid ? "Enter a full http(s) link." : "Leave empty to record that no runbook exists yet."}
         />
-        <Alert severity={trimmedUrl && !urlInvalid ? "info" : "warning"} variant="outlined">
-          Work note on matching incidents: {runbookWorkNote({ runbookUrl: trimmedUrl || null })}
-        </Alert>
         {saveError && <Alert severity="error">{errorText(saveError, "Failed to save the runbook.")}</Alert>}
       </DialogContent>
       <DialogActions>
@@ -424,7 +420,7 @@ function WorkNotePreview({ runbooks }: { runbooks: Runbook[] }): JSX.Element {
       <Box>
         <Typography variant="subtitle2">Try it with an incident</Typography>
         <Typography variant="body2" color="text.secondary">
-          Paste an incident subject to see the work note it would get when created by an alert.
+          Paste an incident subject to see which runbook it matches.
         </Typography>
       </Box>
       <TextField
@@ -438,9 +434,22 @@ function WorkNotePreview({ runbooks }: { runbooks: Runbook[] }): JSX.Element {
           <Typography variant="body2" sx={{ wordBreak: "break-word" }}>
             {match ? `Matched alert: ${match.alertName}` : "No alert in the catalog matches this incident."}
           </Typography>
-          <Typography variant="body2" sx={{ mt: 0.5, fontWeight: 600, wordBreak: "break-word" }}>
-            Work note: {runbookWorkNote(match)}
-          </Typography>
+          {match?.runbookUrl ? (
+            <Link
+              href={match.runbookUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              variant="body2"
+              sx={{ mt: 0.5, display: "inline-flex", alignItems: "center", gap: 0.5, fontWeight: 600, wordBreak: "break-all" }}
+            >
+              {match.runbookUrl}
+              <ExternalLink size={14} />
+            </Link>
+          ) : (
+            <Typography variant="body2" sx={{ mt: 0.5, fontWeight: 600 }}>
+              No runbook available for this alert.
+            </Typography>
+          )}
         </Alert>
       )}
     </Paper>
