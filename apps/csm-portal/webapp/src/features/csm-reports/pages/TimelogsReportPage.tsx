@@ -416,6 +416,24 @@ export default function TimelogsReportPage(): JSX.Element {
                 {data.projectName?.trim() || "Time logged against this project."}
               </Typography>
             </Box>
+            <Box
+              component="span"
+              role="status"
+              data-html2canvas-ignore="true"
+              sx={{
+                position: "absolute",
+                width: "1px",
+                height: "1px",
+                p: 0,
+                m: "-1px",
+                overflow: "hidden",
+                clip: "rect(0 0 0 0)",
+                whiteSpace: "nowrap",
+                border: 0,
+              }}
+            >
+              {printing ? "Downloading PDF…" : ""}
+            </Box>
             <Button
               variant="contained"
               className="csm-print-hide"
