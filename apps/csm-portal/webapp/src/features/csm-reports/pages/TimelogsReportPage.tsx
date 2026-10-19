@@ -25,6 +25,7 @@ import {
   Button,
   Card,
   Chip,
+  CircularProgress,
   Skeleton,
   Table,
   TableBody,
@@ -415,11 +416,17 @@ export default function TimelogsReportPage(): JSX.Element {
                 {data.projectName?.trim() || "Time logged against this project."}
               </Typography>
             </Box>
-            {!printing && (
-              <Button variant="contained" className="csm-print-hide" onClick={handleDownload} sx={{ flexShrink: 0 }}>
-                Download PDF
-              </Button>
-            )}
+            <Button
+              variant="contained"
+              className="csm-print-hide"
+              data-html2canvas-ignore="true"
+              onClick={handleDownload}
+              disabled={printing}
+              startIcon={printing ? <CircularProgress size={16} color="inherit" /> : undefined}
+              sx={{ flexShrink: 0 }}
+            >
+              {printing ? "Downloading…" : "Download PDF"}
+            </Button>
           </Box>
           <ProjectCard data={data} />
           <CasesCard

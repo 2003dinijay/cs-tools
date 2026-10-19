@@ -354,3 +354,23 @@
     overflow-wrap: anywhere;
     white-space: normal;
   }
+
+.pdf-sheet .update-levels-table thead th {
+    font-weight: 700;
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    text-align: left;
+    color: #5c6570;
+  }
+
+.pdf-sheet .update-level-env {
+    font-weight: 700;
+    font-size: 14px;
+    background: #f3f4f6;
+  }
+
+.pdf-sheet .update-levels-table td:nth-child(2),
+.pdf-sheet .update-levels-table th:nth-child(2) {
+    width: 32%;
+  }
