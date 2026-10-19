@@ -1666,6 +1666,13 @@ type ProjectView struct {
 	// populated on GetProjectByID; added here so an account-scoped search
 	// doesn't need one GetProjectByID call per project just to know this.
 	GoLiveDate *time.Time `json:"goLiveDate"`
+	// VerificationEnabled mirrors ProjectDetailsView's own field of the same
+	// name -- see domain.Project.VerificationEnabled's own doc comment.
+	// Previously selected by SearchProjects into the internal Project
+	// handoff type but dropped in this view's own mapping, so a search
+	// result could never tell a caller whether Pending Verification was on
+	// for a project without a separate GetProjectByID call.
+	VerificationEnabled bool `json:"verificationEnabled"`
 }
 
 // SearchProjectsResponse is the paginated result of a project search.
@@ -9401,9 +9408,9 @@ type PendingVerificationSearchFilters struct {
 	// which link straight into a pre-filtered view of the list rather than
 	// landing on the unfiltered Unverified tab.
 	AddedReason     *PendingVerificationAddedReason `json:"addedReason,omitempty"`
-	SearchQuery     string                           `json:"searchQuery,omitempty"`
-	IncludeVerified bool                             `json:"includeVerified,omitempty"`
-	VerifiedOnly    bool                             `json:"verifiedOnly,omitempty"`
+	SearchQuery     string                          `json:"searchQuery,omitempty"`
+	IncludeVerified bool                            `json:"includeVerified,omitempty"`
+	VerifiedOnly    bool                            `json:"verifiedOnly,omitempty"`
 }
 
 // SearchPendingVerificationsRequest is the input for

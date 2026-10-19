@@ -163,6 +163,28 @@ func TestSearchProjects_GoLiveDateReachesResponse(t *testing.T) {
 	}
 }
 
+// TestSearchProjects_VerificationEnabledReachesResponse pins that
+// domain.Project's VerificationEnabled (project.verification_enabled, now
+// selected by SearchProjects alongside GoLiveDate) reaches the mapped
+// ProjectView -- the same class of "repository returns it, service layer
+// silently drops it" bug TestSearchProjects_ClosureStateReachesResponse
+// already guards for ClosureState.
+func TestSearchProjects_VerificationEnabledReachesResponse(t *testing.T) {
+	repo := &recordingProjectRepo{toReturn: []domain.Project{{ID: "p1", VerificationEnabled: true}, {ID: "p2"}}}
+	svc := NewProjectService(repo, alwaysUnrestrictedAccess{})
+
+	resp, err := svc.SearchProjects(t.Context(), domain.SearchProjectsRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.Projects) != 2 || !resp.Projects[0].VerificationEnabled {
+		t.Fatalf("Projects[0].VerificationEnabled = %+v, want true", resp.Projects)
+	}
+	if resp.Projects[1].VerificationEnabled {
+		t.Fatalf("Projects[1].VerificationEnabled = %v, want false (project.verification_enabled was NULL/false)", resp.Projects[1].VerificationEnabled)
+	}
+}
+
 // TestSearchProjects_MapsParityFields pins the v1.0 fields the Postgres path now returns.
 func TestSearchProjects_MapsParityFields(t *testing.T) {
 	str := func(v string) *string { return &v }

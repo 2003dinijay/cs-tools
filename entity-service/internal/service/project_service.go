@@ -86,6 +86,7 @@ func (s *projectService) SearchProjects(ctx context.Context, req domain.SearchPr
 			OnboardingStatus:     p.OnboardingStatus,
 			OnboardingOwner:      p.OnboardingOwner,
 			GoLiveDate:           p.GoLiveDate,
+			VerificationEnabled:  p.VerificationEnabled,
 		}
 	}
 
@@ -106,4 +107,3 @@ func (s *projectService) GetProjectByID(ctx context.Context, id string) (domain.
 	}
 	return s.repo.GetProjectByID(ctx, id, scope)
 }
-

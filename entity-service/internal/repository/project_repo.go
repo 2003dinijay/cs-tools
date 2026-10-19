@@ -285,7 +285,7 @@ func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProje
 		        p.start_date, p.end_date, p.created_on, p.updated_on,
 		        `+projectClosureColumns+`,
 		        INITCAP(REPLACE(p.onboarding_status::TEXT, '_', '-')),
-		        p.onboarding_go_live_date,
+		        p.onboarding_go_live_date, p.verification_enabled,
 		        a.id, a.name, a.region, a.sub_region, `+accountIsPartnerColumn+`,
 		        onb.id,
 		        COALESCE(onb.name, NULLIF(TRIM(CONCAT_WS(' ', onb.first_name, onb.last_name)), '')),
@@ -360,13 +360,17 @@ func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProje
 			// other reader of Project.SfID would also have to handle.
 			var sfID, aID, aName *string
 			var ownerID, ownerName, ownerEmail *string
+			// project.verification_enabled (migration 0177) is a nullable
+			// BOOLEAN with no default, same as GetProjectByID's own
+			// verificationEnabled local -- coalesced to false when NULL.
+			var verificationEnabled *bool
 			var acct domain.ProjectSearchAccountRef
 			if err := rows.Scan(
 				&p.ID, &p.AccountID, &sfID, &name, &p.Key, &projectTypeName,
 				&p.StartDate, &p.EndDate, &p.CreatedOn, &p.UpdatedOn,
 				&p.ClosureState, &p.EndDateClosureState, &p.InvoiceDueDateClosureState,
 				&p.ComplianceViolationClosureState, &p.ComplianceViolationDate, &p.SuspensionProcessState,
-				&p.OnboardingStatus, &p.GoLiveDate,
+				&p.OnboardingStatus, &p.GoLiveDate, &verificationEnabled,
 				&aID, &aName, &acct.Region, &acct.SubRegion, &acct.IsPartner,
 				&ownerID, &ownerName, &ownerEmail,
 				&p.ActiveCasesCount,
@@ -376,6 +380,7 @@ func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProje
 			if sfID != nil {
 				p.SfID = *sfID
 			}
+			p.VerificationEnabled = verificationEnabled != nil && *verificationEnabled
 			p.Name = stringOrEmpty(name)
 			if aID != nil {
 				acct.ID, acct.Name = *aID, stringOrEmpty(aName)

@@ -17153,6 +17153,9 @@ components:
           type: string
           nullable: true
           description: Onboarding status as reported by ServiceNow.
+        verificationEnabled:
+          type: boolean
+          description: Whether the Pending Verification feature is enabled for this project.
         id:
           type: string
         account:
@@ -17317,6 +17320,9 @@ components:
           description: >
             project.onboarding_go_live_date. Null when the project hasn't
             gone live (or the date isn't tracked).
+        verificationEnabled:
+          type: boolean
+          description: Whether the Pending Verification feature is enabled for this project.
         closureState:
           type: string
           nullable: true
