@@ -2037,6 +2037,10 @@ components:
           description: >
             When true, also includes deactivated deployments. Omitted or false
             returns active deployments only.
+        active:
+          type: boolean
+          default: true
+          description: Filter on the deployment's active state. Defaults to true (active deployments only); false returns deactivated deployments only. Cannot be combined with includeInactive true (400).
         projectSfIds:
           type: array
           items:

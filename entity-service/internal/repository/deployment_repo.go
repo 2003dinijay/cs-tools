@@ -87,8 +87,13 @@ func (r *deploymentRepo) SearchDeployments(ctx context.Context, req domain.Searc
 	// that genuinely needs to see deactivated deployments too (e.g. the CSM
 	// portal backend's customer-health EOL-product check). Every existing
 	// caller leaves it unset/false and sees byte-identical behavior.
+	// req.Active, when set, picks the state explicitly (false = deactivated
+	// only); otherwise the default above applies unless IncludeInactive widens it.
 	where := "WHERE d.project_id IS NOT NULL"
-	if !req.IncludeInactive {
+	switch {
+	case req.Active != nil && !*req.Active:
+		where += " AND d.is_active = FALSE"
+	case req.Active != nil || !req.IncludeInactive:
 		where += " AND d.is_active = TRUE"
 	}
 

@@ -1975,12 +1975,16 @@ type SearchDeploymentsRequest struct {
 	// such filter at all -- a deactivated deployment can still carry real EOL
 	// product history that must count toward the risk flag.
 	IncludeInactive bool `json:"includeInactive,omitempty"`
+	// Active filters on the deployment's active state. Omitted (or true) returns
+	// active deployments only -- the default; false returns deactivated ones
+	// only. It cannot be combined with IncludeInactive: true (400), which widens
+	// the result to both. Postgres data source only.
+	Active *bool `json:"active,omitempty"`
 	// ProjectSfIDs restricts results to deployments of the projects whose
 	// Salesforce id is any of the given values, for callers that hold
 	// Salesforce ids rather than project UUIDs. Matching is exact and
 	// case-sensitive, and combines (AND) with ProjectIDs. Applied as a SQL
-	// filter on the Postgres data source; the ServiceNow data source has no
-	// equivalent and rejects it rather than silently returning unfiltered rows.
+	// filter on the Postgres data source.
 	ProjectSfIDs []string `json:"projectSfIds,omitempty"`
 }
 
@@ -2132,8 +2136,7 @@ type SearchDeployedProductsRequest struct {
 	// ProjectSfIDs restricts results to deployed products of the projects whose
 	// Salesforce id is any of the given values (deployed_product.project_id),
 	// exact and case-sensitive, combining (AND) with DeploymentIDs. Postgres
-	// only: the ServiceNow data source rejects it rather than silently
-	// returning unfiltered rows.
+	// data source only.
 	ProjectSfIDs []string `json:"projectSfIds,omitempty"`
 }
 

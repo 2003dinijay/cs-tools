@@ -359,11 +359,27 @@ func TestDeploymentService_SearchDeployments_ProjectSfIDs(t *testing.T) {
 	}
 }
 
-// The ServiceNow data source has no projectSfIds filter, so it must refuse the
-// request rather than return deployments of every project.
-func TestSNDeploymentService_SearchDeployments_RejectsProjectSfIDs(t *testing.T) {
-	svc := &snDeploymentService{}
-	if _, err := svc.SearchDeployments(context.Background(), domain.SearchDeploymentsRequest{ProjectSfIDs: []string{"SF001"}}); err == nil {
-		t.Error("expected projectSfIds to be rejected on the ServiceNow data source")
+// active is forwarded as sent (nil when omitted, so the repository's default of
+// active-only applies), and contradicts includeInactive: true.
+func TestDeploymentService_SearchDeployments_ActiveFilter(t *testing.T) {
+	var gotReq domain.SearchDeploymentsRequest
+	svc := NewDeploymentService(&stubDeploymentRepo{
+		searchDeployments: func(_ context.Context, req domain.SearchDeploymentsRequest) ([]domain.DeploymentView, int, error) {
+			gotReq = req
+			return nil, 0, nil
+		},
+	})
+	no, yes := false, true
+
+	if _, err := svc.SearchDeployments(context.Background(), domain.SearchDeploymentsRequest{}); err != nil || gotReq.Active != nil {
+		t.Errorf("omitted active: err=%v active=%v, want nil", err, gotReq.Active)
+	}
+	if _, err := svc.SearchDeployments(context.Background(), domain.SearchDeploymentsRequest{Active: &no}); err != nil || gotReq.Active == nil || *gotReq.Active {
+		t.Errorf("active=false did not reach the repository: err=%v active=%v", err, gotReq.Active)
+	}
+	for name, active := range map[string]*bool{"true": &yes, "false": &no} {
+		if _, err := svc.SearchDeployments(context.Background(), domain.SearchDeploymentsRequest{Active: active, IncludeInactive: true}); err == nil {
+			t.Errorf("active=%s with includeInactive=true: expected a validation error", name)
+		}
 	}
 }

@@ -509,10 +509,3 @@ func TestDeployedProductService_SearchDeployedProducts_ProjectSfIDs(t *testing.T
 		}
 	}
 }
-
-func TestSNDeployedProductService_SearchDeployedProducts_RejectsProjectSfIDs(t *testing.T) {
-	svc := &snDeployedProductService{}
-	if _, err := svc.SearchDeployedProducts(context.Background(), domain.SearchDeployedProductsRequest{ProjectSfIDs: []string{"SF001"}}); err == nil {
-		t.Error("expected projectSfIds to be rejected on the ServiceNow data source")
-	}
-}

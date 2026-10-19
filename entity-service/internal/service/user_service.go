@@ -224,6 +224,15 @@ func validateProjectSfIDs(ids []string) error {
 	return nil
 }
 
+// validateDeploymentActiveFilter rejects asking for a specific active state and
+// also asking to include inactive deployments, which contradict each other.
+func validateDeploymentActiveFilter(active *bool, includeInactive bool) error {
+	if active != nil && includeInactive {
+		return &apierror.ValidationError{Msg: "active cannot be combined with includeInactive"}
+	}
+	return nil
+}
+
 func validateSearchQuery(q string) error {
 	if utf8.RuneCountInString(q) > maxSearchQueryLen {
 		return &apierror.ValidationError{Msg: "searchQuery cannot exceed 200 characters"}

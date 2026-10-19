@@ -16440,11 +16440,15 @@ components:
             Additive: when true, also includes deployments with
             is_active = FALSE. Omitted/false reproduces the default
             (active-only) behavior exactly. Postgres data source only.
+        active:
+          type: boolean
+          default: true
+          description: Filter on the deployment's active state. Defaults to true (active deployments only); false returns deactivated deployments only. Postgres data source only. Cannot be combined with includeInactive true (400).
         projectSfIds:
           type: array
           items:
             type: string
-          description: Only deployments of the projects whose Salesforce id is any of the given values (exact, case-sensitive; empty or padded values are rejected with 400, at most 100). Combines with projectIds. Applied on the PostgreSQL data source only; the ServiceNow-backed data source rejects it with 400.
+          description: Only deployments of the projects whose Salesforce id is any of the given values (exact, case-sensitive; empty or padded values are rejected with 400, at most 100). Combines with projectIds. Postgres data source only.
 
     DeploymentView:
       type: object
@@ -16606,7 +16610,7 @@ components:
           type: array
           items:
             type: string
-          description: Only deployed products of the projects whose Salesforce id is any of the given values (exact, case-sensitive; empty or padded values are rejected with 400, at most 100). Combines with deploymentIds. Applied on the PostgreSQL data source only; the ServiceNow-backed data source rejects it with 400.
+          description: Only deployed products of the projects whose Salesforce id is any of the given values (exact, case-sensitive; empty or padded values are rejected with 400, at most 100). Combines with deploymentIds. Postgres data source only.
 
     DeployedProductVersionRef:
       type: object
