@@ -23,10 +23,16 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  Divider,
+  FormControl,
+  Grid,
   IconButton,
   InputAdornment,
+  InputLabel,
   Link,
+  MenuItem,
   Paper,
+  Select,
   Skeleton,
   Table,
   TableBody,
@@ -36,12 +42,10 @@ import {
   TablePagination,
   TableRow,
   TextField,
-  ToggleButton,
-  ToggleButtonGroup,
   Tooltip,
   Typography,
 } from "@wso2/oxygen-ui";
-import { ExternalLink, Pencil, Plus, Search, Trash2, Upload, X } from "@wso2/oxygen-ui-icons-react";
+import { ChevronDown, ChevronUp, ExternalLink, ListFilter, Pencil, Plus, Search, Trash2, Upload, X } from "@wso2/oxygen-ui-icons-react";
 import { useMemo, useRef, useState, type ChangeEvent, type JSX } from "react";
 import QueryErrorState from "@components/QueryErrorState";
 import { usePortalAccess } from "@context/current-user/usePortalAccess";
@@ -85,6 +89,7 @@ export default function RunbooksTab(): JSX.Element {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [search, setSearch] = useState("");
   const [coverage, setCoverage] = useState<RunbookCoverage>("all");
+  const [isFiltersOpen, setIsFiltersOpen] = useState(false);
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(DEFAULT_ROWS_PER_PAGE);
   const [dialog, setDialog] = useState<RunbookDialogState>({ open: false });
@@ -175,49 +180,89 @@ export default function RunbooksTab(): JSX.Element {
         </Alert>
       )}
 
-      <Paper sx={{ p: 2.5, display: "flex", alignItems: "center", gap: 1.5, flexWrap: "wrap" }}>
-        <TextField
-          size="small"
-          placeholder="Search by alert name or runbook link…"
-          value={search}
-          onChange={(e) => {
-            setSearch(e.target.value);
-            setPage(0);
-          }}
-          sx={{ flex: 1, minWidth: 240 }}
-          slotProps={{
-            input: {
-              startAdornment: (
-                <InputAdornment position="start">
-                  <Search size={16} />
-                </InputAdornment>
-              ),
-              endAdornment: search ? (
-                <InputAdornment position="end">
-                  <IconButton size="small" edge="end" onClick={() => setSearch("")} aria-label="Clear search">
-                    <X size={16} />
-                  </IconButton>
-                </InputAdornment>
-              ) : undefined,
-            },
-          }}
-        />
-        <ToggleButtonGroup
-          size="small"
-          exclusive
-          value={coverage}
-          onChange={(_: unknown, next: RunbookCoverage | null) => {
-            if (next) {
-              setCoverage(next);
-              setPage(0);
-            }
-          }}
-          aria-label="Runbook coverage"
-        >
-          <ToggleButton value="all">All</ToggleButton>
-          <ToggleButton value="linked">With runbook</ToggleButton>
-          <ToggleButton value="missing">No runbook</ToggleButton>
-        </ToggleButtonGroup>
+      <Paper sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 1.5 }}>
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, flexWrap: "wrap" }}>
+          <Box sx={{ flex: 1, minWidth: 240 }}>
+            <TextField
+              size="small"
+              placeholder="Search by alert name or runbook link…"
+              value={search}
+              onChange={(e) => {
+                setSearch(e.target.value);
+                setPage(0);
+              }}
+              fullWidth
+              slotProps={{
+                input: {
+                  startAdornment: (
+                    <InputAdornment position="start">
+                      <Search size={16} />
+                    </InputAdornment>
+                  ),
+                  endAdornment: search ? (
+                    <InputAdornment position="end">
+                      <IconButton size="small" edge="end" onClick={() => setSearch("")} aria-label="Clear search">
+                        <X size={16} />
+                      </IconButton>
+                    </InputAdornment>
+                  ) : undefined,
+                },
+              }}
+            />
+          </Box>
+
+          <Button
+            variant="outlined"
+            size="small"
+            color="primary"
+            onClick={() => setIsFiltersOpen((open) => !open)}
+            startIcon={<ListFilter size={16} />}
+            endIcon={isFiltersOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+          >
+            {coverage !== "all" ? "Filters (1)" : "Filters"}
+          </Button>
+          {coverage !== "all" && (
+            <Button
+              variant="text"
+              size="small"
+              color="primary"
+              onClick={() => {
+                setCoverage("all");
+                setPage(0);
+              }}
+              startIcon={<X size={16} />}
+            >
+              Clear filters
+            </Button>
+          )}
+        </Box>
+
+        {isFiltersOpen && (
+          <>
+            <Divider />
+            <Grid container spacing={2} alignItems="center">
+              <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                <FormControl fullWidth size="small">
+                  <InputLabel id="runbook-filter-coverage-label">Runbook</InputLabel>
+                  <Select
+                    labelId="runbook-filter-coverage-label"
+                    id="runbook-filter-coverage"
+                    label="Runbook"
+                    value={coverage}
+                    onChange={(e) => {
+                      setCoverage(e.target.value as RunbookCoverage);
+                      setPage(0);
+                    }}
+                  >
+                    <MenuItem value="all">All</MenuItem>
+                    <MenuItem value="linked">With runbook</MenuItem>
+                    <MenuItem value="missing">No runbook</MenuItem>
+                  </Select>
+                </FormControl>
+              </Grid>
+            </Grid>
+          </>
+        )}
       </Paper>
 
       <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1, overflow: "hidden" }}>
