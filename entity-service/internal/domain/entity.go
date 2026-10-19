@@ -1939,8 +1939,11 @@ type DeploymentView struct {
 	Description *string        `json:"description"`
 	URL         *string        `json:"url"`
 	Project     EntityRef      `json:"project"`
-	CreatedOn   time.Time      `json:"createdOn"`
-	UpdatedOn   time.Time      `json:"updatedOn"`
+	// ProjectSfID is the Salesforce id of the deployment's project; null when the
+	// project has none (or the data source does not carry it).
+	ProjectSfID *string   `json:"projectSfId"`
+	CreatedOn   time.Time `json:"createdOn"`
+	UpdatedOn   time.Time `json:"updatedOn"`
 	// DeployedProductCount is the number of deployed products in this
 	// deployment, as reported by the upstream data source. Consumers rely on it
 	// to tell whether a deployment has any products at all without a second
@@ -1972,6 +1975,13 @@ type SearchDeploymentsRequest struct {
 	// such filter at all -- a deactivated deployment can still carry real EOL
 	// product history that must count toward the risk flag.
 	IncludeInactive bool `json:"includeInactive,omitempty"`
+	// ProjectSfIDs restricts results to deployments of the projects whose
+	// Salesforce id is any of the given values, for callers that hold
+	// Salesforce ids rather than project UUIDs. Matching is exact and
+	// case-sensitive, and combines (AND) with ProjectIDs. Applied as a SQL
+	// filter on the Postgres data source; the ServiceNow data source has no
+	// equivalent and rejects it rather than silently returning unfiltered rows.
+	ProjectSfIDs []string `json:"projectSfIds,omitempty"`
 }
 
 // SearchDeploymentsResponse is the paginated result of a deployment search.
@@ -2065,6 +2075,10 @@ type DeployedProductView struct {
 	Cores      *int                       `json:"cores"`
 	TPS        *float64                   `json:"tps"`
 	Category   *string                    `json:"category"`
+	// ProjectSfID is the Salesforce id of the deployed product's project
+	// (deployed_product.project_id); null when it has none or the data source
+	// does not carry it.
+	ProjectSfID *string `json:"projectSfId"`
 	// Description is the customer's own free-text note about this deployed
 	// product. It is editable through the update endpoint, so it has to be
 	// readable here too — otherwise a client cannot show the current value
@@ -2115,6 +2129,12 @@ type SearchDeployedProductsRequest struct {
 	Pagination        Pagination `json:"pagination"`
 	DeploymentIDs     []string   `json:"deploymentIds"`
 	ProductCategories []string   `json:"productCategories,omitempty"`
+	// ProjectSfIDs restricts results to deployed products of the projects whose
+	// Salesforce id is any of the given values (deployed_product.project_id),
+	// exact and case-sensitive, combining (AND) with DeploymentIDs. Postgres
+	// only: the ServiceNow data source rejects it rather than silently
+	// returning unfiltered rows.
+	ProjectSfIDs []string `json:"projectSfIds,omitempty"`
 }
 
 // SearchDeployedProductsResponse is the paginated result of a deployed-product search.

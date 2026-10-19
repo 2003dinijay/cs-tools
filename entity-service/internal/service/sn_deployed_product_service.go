@@ -389,6 +389,9 @@ func (s *snDeployedProductService) SearchDeployedProducts(ctx context.Context, r
 	if err := normalizePagination(&req.Pagination); err != nil {
 		return domain.SearchDeployedProductsResponse{}, err
 	}
+	if len(req.ProjectSfIDs) > 0 {
+		return domain.SearchDeployedProductsResponse{}, &apierror.ValidationError{Msg: "projectSfIds is not supported on this data source"}
+	}
 
 	token := middleware.UserIDTokenFromContext(ctx)
 

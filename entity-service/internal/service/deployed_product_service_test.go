@@ -486,3 +486,33 @@ func TestDeployedProductService_SearchProjectsByProductVersion_AppliesMandatoryE
 		t.Fatalf("expected mandatoryExcludeSubscriptionTypes to be passed through, got %v", gotSubscriptionTypes)
 	}
 }
+
+func TestDeployedProductService_SearchDeployedProducts_ProjectSfIDs(t *testing.T) {
+	var gotSfIDs []string
+	svc := NewDeployedProductService(&stubDeployedProductRepo{
+		searchDeployedProducts: func(_ context.Context, req domain.SearchDeployedProductsRequest) ([]domain.DeployedProductView, int, error) {
+			gotSfIDs = req.ProjectSfIDs
+			return nil, 0, nil
+		},
+	})
+
+	if _, err := svc.SearchDeployedProducts(context.Background(), domain.SearchDeployedProductsRequest{ProjectSfIDs: []string{"SF001"}}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(gotSfIDs) != 1 || gotSfIDs[0] != "SF001" {
+		t.Errorf("repository did not receive projectSfIds: got %v", gotSfIDs)
+	}
+
+	for name, ids := range map[string][]string{"empty": {""}, "blank": {"  "}, "padded": {"SF001 "}} {
+		if _, err := svc.SearchDeployedProducts(context.Background(), domain.SearchDeployedProductsRequest{ProjectSfIDs: ids}); err == nil {
+			t.Errorf("%s: expected a validation error", name)
+		}
+	}
+}
+
+func TestSNDeployedProductService_SearchDeployedProducts_RejectsProjectSfIDs(t *testing.T) {
+	svc := &snDeployedProductService{}
+	if _, err := svc.SearchDeployedProducts(context.Background(), domain.SearchDeployedProductsRequest{ProjectSfIDs: []string{"SF001"}}); err == nil {
+		t.Error("expected projectSfIds to be rejected on the ServiceNow data source")
+	}
+}

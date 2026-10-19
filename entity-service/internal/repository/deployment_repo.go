@@ -105,6 +105,14 @@ func (r *deploymentRepo) SearchDeployments(ctx context.Context, req domain.Searc
 		argIdx++
 	}
 
+	// project.sf_id is nullable and a NULL never matches ANY(), so projects
+	// with no Salesforce id are simply not returned.
+	if len(req.ProjectSfIDs) > 0 {
+		where += fmt.Sprintf(" AND d.project_id IN (SELECT id FROM project WHERE sf_id = ANY($%d::text[]))", argIdx)
+		filterArgs = append(filterArgs, req.ProjectSfIDs)
+		argIdx++
+	}
+
 	if len(req.DeploymentTypes) > 0 {
 		// Convert []DeploymentType to []string — pgx has no codec for named string types.
 		// Cast the parameter to deployment_type_enum[] so the column stays uncast and idx_deployments_type is usable.
@@ -145,7 +153,7 @@ func (r *deploymentRepo) SearchDeployments(ctx context.Context, req domain.Searc
 	dataQuery := fmt.Sprintf(
 		`SELECT d.id, d.number, d.name, d.type::TEXT, d.description,
 		        d.created_on, d.updated_on,
-		        p.id, p.name,
+		        p.id, p.name, p.sf_id,
 		        (SELECT COUNT(*) FROM deployed_product dp
 		          WHERE dp.deployment_id = d.id AND dp.product_id IS NOT NULL
 		            AND (dp.active IS NULL OR dp.active = TRUE))
@@ -184,7 +192,7 @@ func (r *deploymentRepo) SearchDeployments(ctx context.Context, req domain.Searc
 			if err := rows.Scan(
 				&d.ID, &d.Number, &d.Name, &deploymentType, &d.Description,
 				&d.CreatedOn, &d.UpdatedOn,
-				&d.Project.ID, &d.Project.Name,
+				&d.Project.ID, &d.Project.Name, &d.ProjectSfID,
 				&d.DeployedProductCount,
 			); err != nil {
 				return fmt.Errorf("scan deployment: %w", err)

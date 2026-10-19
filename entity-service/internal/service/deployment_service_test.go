@@ -326,3 +326,44 @@ func TestDeploymentService_UpdateDeployment_MirrorFailureDoesNotFailTheUpdate(t 
 		t.Fatal("mirror.UpdateDeployment was never called")
 	}
 }
+
+// SearchDeployments forwards projectSfIds to the repository and rejects values
+// that could never match, instead of silently returning nothing.
+func TestDeploymentService_SearchDeployments_ProjectSfIDs(t *testing.T) {
+	var gotReq domain.SearchDeploymentsRequest
+	svc := NewDeploymentService(&stubDeploymentRepo{
+		searchDeployments: func(_ context.Context, req domain.SearchDeploymentsRequest) ([]domain.DeploymentView, int, error) {
+			gotReq = req
+			return nil, 0, nil
+		},
+	})
+
+	if _, err := svc.SearchDeployments(context.Background(), domain.SearchDeploymentsRequest{ProjectSfIDs: []string{"SF001", "SF002"}}); err != nil {
+		t.Fatalf("SearchDeployments: unexpected error: %v", err)
+	}
+	if len(gotReq.ProjectSfIDs) != 2 || gotReq.ProjectSfIDs[0] != "SF001" {
+		t.Errorf("repository did not receive projectSfIds: got %v", gotReq.ProjectSfIDs)
+	}
+
+	for name, ids := range map[string][]string{"empty": {""}, "blank": {"  "}, "padded": {" SF001"}} {
+		if _, err := svc.SearchDeployments(context.Background(), domain.SearchDeploymentsRequest{ProjectSfIDs: ids}); err == nil {
+			t.Errorf("%s: expected a validation error", name)
+		}
+	}
+	tooMany := make([]string, maxProjectSfIDs+1)
+	for i := range tooMany {
+		tooMany[i] = "SF"
+	}
+	if _, err := svc.SearchDeployments(context.Background(), domain.SearchDeploymentsRequest{ProjectSfIDs: tooMany}); err == nil {
+		t.Error("expected a validation error for too many projectSfIds")
+	}
+}
+
+// The ServiceNow data source has no projectSfIds filter, so it must refuse the
+// request rather than return deployments of every project.
+func TestSNDeploymentService_SearchDeployments_RejectsProjectSfIDs(t *testing.T) {
+	svc := &snDeploymentService{}
+	if _, err := svc.SearchDeployments(context.Background(), domain.SearchDeploymentsRequest{ProjectSfIDs: []string{"SF001"}}); err == nil {
+		t.Error("expected projectSfIds to be rejected on the ServiceNow data source")
+	}
+}

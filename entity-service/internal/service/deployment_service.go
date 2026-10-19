@@ -256,6 +256,9 @@ func (s *deploymentService) SearchDeployments(ctx context.Context, req domain.Se
 	if err := validateUUIDs("ids", req.IDs); err != nil {
 		return domain.SearchDeploymentsResponse{}, err
 	}
+	if err := validateProjectSfIDs(req.ProjectSfIDs); err != nil {
+		return domain.SearchDeploymentsResponse{}, err
+	}
 
 	views, total, err := s.repo.SearchDeployments(ctx, req)
 	if err != nil {
