@@ -12956,7 +12956,7 @@ paths:
 
   /deployed-products/{id}/metrics/search:
     post:
-      summary: Get deployed-product cores metrics over a date range (ServiceNow data source only).
+      summary: Get deployed-product cores metrics over a date range.
       operationId: searchDeployedProductMetrics
       parameters:
         - name: id
@@ -13004,7 +13004,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         "503":
-          description: Deployed product metrics are only supported for the ServiceNow data source.
+          description: Service temporarily unavailable.
           content:
             application/json:
               schema:
@@ -13012,7 +13012,7 @@ paths:
 
   /deployed-products/{id}/metrics/usage-counts/search:
     post:
-      summary: Get deployed-product usage-count metrics over a date range (ServiceNow data source only).
+      summary: Get deployed-product usage-count metrics over a date range.
       operationId: searchDeployedProductUsageCounts
       parameters:
         - name: id
@@ -13060,7 +13060,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         "503":
-          description: Deployed product usage counts are only supported for the ServiceNow data source.
+          description: Service temporarily unavailable.
           content:
             application/json:
               schema:

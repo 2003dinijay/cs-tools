@@ -7926,6 +7926,32 @@ matches independent SQL counts. The same resolution is reused by
 `deployment_information.node_id` matches any `deployment_node.node_id` in staging
 (the former are sys_ids and `TEST2`/`TEST3`), so no instance has `Metadata` there.
 
+**`SearchDeployedProductMetrics`/`SearchDeployedProductUsageCounts` read
+`daily_usage_summary`, not `hourly_usage_summary` -- found live, via a real
+HAR capture and direct queries against staging, after the CSM Portal's Usage
+Metrics page showed empty/null charts for deployed products with genuine,
+months-long usage history.** Both methods originally queried
+`hourly_usage_summary` (bucketing its per-event `counted_on` into days in
+Go); for one real deployed product's 7 resolved nodes, that table held zero
+rows, while `daily_usage_summary` -- already shaped as one row per node per
+day per count type, with real `summary_date`/`value` columns -- held 487
+rows of genuine daily transaction counts spanning January through August.
+The two tables are independent sync feeds with no foreign key or rollup
+relationship to each other in this schema (see migration 0054's own doc
+comment), so there's no guarantee one ever catches up to what the other
+already has -- `daily_usage_summary` is simply the more complete, and more
+directly-shaped, source for a per-day chart. A handful of real rows repeat
+the same `(deployment_node_id, summary_date, count_type)` key (an
+uncorrected correction/re-ingest on the sync's side), so both queries `SUM`
+rather than assume exactly one row per key. A direct check found a small
+set of `(node, day, count_type)` keys that exist only in `hourly_usage_summary`
+(10, against 487 in `daily_usage_summary`) -- these two endpoints have no
+production traffic yet, so there is no existing behavior built on that
+narrower coverage to preserve, and the fix is a straight switch to
+`daily_usage_summary` rather than a union of both tables. Revisit if either
+endpoint ever needs to recover that handful of hourly-only keys once real
+callers depend on it.
+
 **Metrics vs. usage vs. usage-stats read three different tables, not one,
 because only one of them carries what each endpoint needs:**
 
