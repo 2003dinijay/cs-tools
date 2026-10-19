@@ -117,4 +117,23 @@ func TestRotaReminderRequestIntegration_Queue(t *testing.T) {
 	if err != nil || len(listed) != 3 || listed[0].Status != "QUEUED" {
 		t.Errorf("list: %+v, %v", listed, err)
 	}
+
+	// A request that failed sent nobody anything, so it does not start the
+	// cooldown: the button can be pressed again at once.
+	if _, err := pool.Exec(ctx, `DELETE FROM team_schedule_reminder_request WHERE family = 'SME'`); err != nil {
+		t.Fatal(err)
+	}
+	failed, err := repo.Create(ctx, "ann@example.com", "SME", "weekend", false, 10*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c, err := repo.Claim(ctx, "csm-scheduled-tasks", "SME", 2*time.Hour); err != nil || c == nil || c.ID != failed.ID {
+		t.Fatalf("claim the request that will fail: %+v, %v", c, err)
+	}
+	if _, err := repo.Report(ctx, "csm-scheduled-tasks", "SME", failed.ID, "FAILED", "mail service down"); err != nil {
+		t.Fatal(err)
+	}
+	if retry, err := repo.Create(ctx, "ann@example.com", "SME", "weekend", false, 10*time.Minute); err != nil || retry.Status != "QUEUED" {
+		t.Errorf("a retry after a failed request: %+v, %v", retry, err)
+	}
 }

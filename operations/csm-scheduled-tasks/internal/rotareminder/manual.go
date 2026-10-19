@@ -21,10 +21,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
-	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/notify"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/teamschedule"
 )
 
@@ -62,23 +62,23 @@ func ManualReminder(rota RotaReader, store ReminderStore, queue RequestQueue, em
 			if req.Test {
 				weekday, weekend = asTest(weekday, req.RequestedBy), asTest(weekend, req.RequestedBy)
 			}
-			sent, notSent, err := sendManual(ctx, rota, store, email, weekday, weekend, req.Kind)
+			tally, err := sendManual(ctx, rota, store, email, weekday, weekend, req.Kind)
 			switch {
 			case err != nil:
 				status, result = "FAILED", err.Error()
-			case notSent > 0:
+			case tally.Failed > 0:
 				// Some went out, so the run did not fail; the person who
 				// pressed the button must still see that some did not.
 				result = fmt.Sprintf("Sent %d of %d emails; %d could not be sent (the task's alert recipients were told who missed out).",
-					sent, sent+notSent, notSent)
-			case sent == 0:
-				result = "Nothing was sent: nobody on these rotations has an email address, or the rotations are empty."
-			case sent == 1:
+					tally.Sent, tally.Sent+tally.Failed, tally.Failed)
+			case tally.Sent == 0:
+				result = "Nothing was sent: " + tally.reason() + "."
+			case tally.Sent == 1:
 				result = "Sent 1 email."
 			default:
-				result = fmt.Sprintf("Sent %d emails.", sent)
+				result = fmt.Sprintf("Sent %d emails.", tally.Sent)
 			}
-			if req.Test && err == nil && sent > 0 && notSent == 0 {
+			if req.Test && err == nil && tally.Sent > 0 && tally.Failed == 0 {
 				result = strings.TrimSuffix(result, ".") + " to " + req.RequestedBy + " (test)."
 			}
 			slog.InfoContext(ctx, "rota reminder: sent by hand", "kind", req.Kind, "test", req.Test, "requestedBy", req.RequestedBy, "status", status, "result", result)
@@ -90,32 +90,29 @@ func ManualReminder(rota RotaReader, store ReminderStore, queue RequestQueue, em
 	}
 }
 
-// sendManual sends one request and counts the reminder emails that went out
+// sendManual sends one request and tallies the reminder emails that went out
 // and those that did not.
-func sendManual(ctx context.Context, rota RotaReader, store ReminderStore, email EmailSender, weekdayCfg, weekendCfg Config, kind string) (sent, notSent int, err error) {
-	counted := &countingSender{EmailSender: email}
+func sendManual(ctx context.Context, rota RotaReader, store ReminderStore, email EmailSender, weekdayCfg, weekendCfg Config, kind string) (*Tally, error) {
+	tally := &Tally{}
 	switch kind {
 	case "weekday":
 		cfg := weekdayCfg
 		if !cfg.EmailsEnabled {
-			return 0, 0, errors.New("emails are turned off in this environment (ALERTS_ENABLED)")
+			return tally, errors.New("emails are turned off in this environment (ALERTS_ENABLED)")
 		}
-		cfg.Manual, cfg.Anchor = true, cfg.Now
-		err := WeekdayReminder(rota, counted, cfg)(ctx)
-		sent, notSent := counted.counts()
-		return sent, notSent, err
+		cfg.Manual, cfg.Anchor, cfg.Tally = true, cfg.Now, tally
+		return tally, WeekdayReminder(rota, email, cfg)(ctx)
 	case "weekend":
 		cfg := weekendCfg
 		if !cfg.EmailsEnabled {
-			return 0, 0, errors.New("emails are turned off in this environment (ALERTS_ENABLED)")
+			return tally, errors.New("emails are turned off in this environment (ALERTS_ENABLED)")
 		}
 		now := cfg.Now()
-		cfg.Manual, cfg.Anchor = true, func() time.Time { return manualWeekendAnchor(now, cfg.Zone) }
-		err := weekend(ctx, rota, store, counted, cfg, true)
-		sent, notSent := counted.counts()
-		return sent, notSent, err
+		cfg.Manual, cfg.Tally = true, tally
+		cfg.Anchor = func() time.Time { return manualWeekendAnchor(now, cfg.Zone) }
+		return tally, weekend(ctx, rota, store, email, cfg, true)
 	}
-	return 0, 0, fmt.Errorf("unknown reminder kind %q", kind)
+	return tally, fmt.Errorf("unknown reminder kind %q", kind)
 }
 
 // manualWeekendAnchor is the day a "Send now" weekend is counted from: today,
@@ -132,47 +129,48 @@ func manualWeekendAnchor(now time.Time, zone *time.Location) time.Time {
 	}
 }
 
-// countingSender counts the reminder emails by their final outcome. A
-// weekday email the email service refuses with its calendar invitation is
-// sent again without it (sendWindowEmail), so the same email, to the same
-// people, can be tried twice; only its last attempt counts. Only the rota's
-// own emails count: an alert about a failure is not a reminder.
-type countingSender struct {
-	EmailSender
-	outcome map[string]bool // subject and recipients -> the last attempt went out
-	order   []string
+// Tally is what a run did with the rota's own reminder emails, counted where
+// each is sent: a weekday window's email by its final outcome (after it is
+// sent again without its invitation, sendWindowEmail), the weekend summary
+// and each weekend invitation. The rota admins' email, cancellations and
+// alerts are not reminders and are not counted. Its methods do nothing on a
+// nil Tally, so a scheduled run, which has none, calls them unchecked.
+type Tally struct {
+	Sent, Failed int
+	reasons      []string
 }
 
-func (c *countingSender) SendEmail(ctx context.Context, to, cc []string, subject, body string) error {
-	return c.SendEmailWithAttachments(ctx, to, cc, subject, body, nil)
-}
-
-func (c *countingSender) SendEmailWithAttachments(ctx context.Context, to, cc []string, subject, body string, a []notify.Attachment) error {
-	err := c.EmailSender.SendEmailWithAttachments(ctx, to, cc, subject, body, a)
-	if strings.Contains(subject, " Rota]") {
-		key := subject + "\x00" + strings.Join(to, ",")
-		if c.outcome == nil {
-			c.outcome = map[string]bool{}
-		}
-		if _, seen := c.outcome[key]; !seen {
-			c.order = append(c.order, key)
-		}
-		c.outcome[key] = err == nil
+// count records one reminder email's outcome.
+func (t *Tally) count(err error) {
+	if t == nil {
+		return
 	}
-	return err
+	if err == nil {
+		t.Sent++
+	} else {
+		t.Failed++
+	}
 }
 
-// counts is how many reminder emails went out and how many did not.
-func (c *countingSender) counts() (sent, notSent int) {
-	for _, key := range c.order {
-		if c.outcome[key] {
-			sent++
-		} else {
-			notSent++
-		}
+// skipped notes why something was not sent.
+func (t *Tally) skipped(reason string) {
+	if t == nil || slices.Contains(t.reasons, reason) {
+		return
 	}
-	return sent, notSent
+	t.reasons = append(t.reasons, reason)
 }
+
+// reason is why nothing was sent, for the card.
+func (t *Tally) reason() string {
+	if len(t.reasons) == 0 {
+		return "there was nothing to send"
+	}
+	return strings.Join(t.reasons, "; ")
+}
+
+// longDay writes a rota day for the card as the emails do (dayList):
+// "Tuesday, 20 October 2026".
+func longDay(d time.Time) string { return dayList([]time.Time{d}) }
 
 // asTest is cfg for "Send a test to me": everything, alerts included, goes
 // only to the person who asked, and nothing is copied or recorded.

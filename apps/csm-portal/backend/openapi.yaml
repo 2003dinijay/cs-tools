@@ -13221,7 +13221,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
         "429":
-          description: "One of the same kind was asked for less than 10 minutes ago."
+          description: "One of the same kind was asked for less than 10 minutes ago (a FAILED one does not count)."
           content:
             application/json:
               schema:

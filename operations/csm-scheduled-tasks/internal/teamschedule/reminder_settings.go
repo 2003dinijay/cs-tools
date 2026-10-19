@@ -19,12 +19,9 @@ package teamschedule
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
-
-	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/apierror"
 )
 
 // ReminderWindow is a rotation's hours on its own clock: "08:00" to "18:00"
@@ -51,8 +48,7 @@ type ReminderSettings struct {
 // nothing has been saved (the task then keeps its own configuration).
 func (c *Client) ReminderSettingsFor(ctx context.Context, family string) (*ReminderSettings, error) {
 	body, err := c.do(ctx, http.MethodGet, "/team-schedule/reminder-settings/"+url.PathEscape(family), nil)
-	var apiErr *apierror.Error
-	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+	if notFoundSaying(err, noSettingsMessage) {
 		return nil, nil
 	}
 	if err != nil {
@@ -83,8 +79,7 @@ func reminderRequestPath(family string) string {
 // or returns nil when nothing is waiting.
 func (c *Client) ClaimReminderRequest(ctx context.Context, family string) (*ReminderRequest, error) {
 	body, err := c.do(ctx, http.MethodPost, reminderRequestPath(family)+"/claim", nil)
-	var apiErr *apierror.Error
-	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+	if notFoundSaying(err, nothingWaitingMessage) {
 		return nil, nil
 	}
 	if err != nil {

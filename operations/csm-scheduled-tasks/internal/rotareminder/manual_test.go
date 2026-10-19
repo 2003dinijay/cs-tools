@@ -19,6 +19,7 @@ package rotareminder
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -98,7 +99,9 @@ func TestManual_SeveralRequestsAndWhatIsReported(t *testing.T) {
 	if err := ManualReminder(&fakeRota{}, &fakeStore{}, queue, &fakeEmail{}, weekday, weekend)(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(queue.reports) != 2 || !strings.HasPrefix(queue.reports[0], "r1 SENT Nothing was sent") {
+	if len(queue.reports) != 2 ||
+		queue.reports[0] != "r1 SENT Nothing was sent: nobody is rostered on Tuesday, 20 October 2026." ||
+		queue.reports[1] != "r2 SENT Nothing was sent: nobody is rostered for the weekend of Saturday, 24 October 2026." {
 		t.Fatalf("reports %v", queue.reports)
 	}
 	weekday.EmailsEnabled = false
@@ -219,5 +222,48 @@ func TestManual_AnEmailSentWithoutItsInvitationCountsOnce(t *testing.T) {
 	}
 	if len(mail.sent) != 2 || queue.reports[0] != "r1 SENT Sent 2 emails." {
 		t.Fatalf("delivered %d, reports %v", len(mail.sent), queue.reports)
+	}
+}
+
+// When nothing goes out the card says why, window by window: one that has
+// already started, one whose people have no email address.
+func TestManual_NothingSentSaysWhy(t *testing.T) {
+	weekday, weekend := manualConfigs("2026-10-19 10:00")
+	rota := &fakeRota{assignments: []teamschedule.Assignment{
+		assignment("Ann", "ann@example.com", "vega", "CRE_MORNING", "2026-10-20", "2026-10-19 09:00", "2026-10-20 09:00"),
+		assignment("Ben", "", "vega", "CRE_EVENING", "2026-10-20", "2026-10-20 18:00", "2026-10-20 21:00"),
+	}}
+	queue := &fakeQueue{waiting: []teamschedule.ReminderRequest{{ID: "r1", Kind: "weekday"}}}
+	mail := &fakeEmail{}
+	if err := ManualReminder(rota, &fakeStore{}, queue, mail, weekday, weekend)(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	r := queue.reports[0]
+	if len(mail.sent) != 0 || !strings.HasPrefix(r, "r1 SENT Nothing was sent: ") ||
+		!strings.Contains(r, "on Tuesday, 20 October 2026 has already started; nobody on ") ||
+		!strings.HasSuffix(r, " on Tuesday, 20 October 2026 has an email address.") {
+		t.Fatalf("sent %d, reports %v", len(mail.sent), queue.reports)
+	}
+}
+
+// Only the rota's reminders are counted where they are sent: the weekend
+// summary and its invitations, not the email asking the rota admins to fill
+// a gap.
+func TestManual_TheRotaAdminsEmailIsNotCounted(t *testing.T) {
+	weekday, weekend := manualConfigs("2026-10-19 10:00")
+	store := &fakeStore{admins: []teamschedule.RotaAdmin{{Name: "Ola", Email: "ola@example.com"}}}
+	queue := &fakeQueue{waiting: []teamschedule.ReminderRequest{{ID: "r1", Kind: "weekend"}}}
+	mail := &fakeEmail{}
+	if err := ManualReminder(&fakeRota{assignments: fullWeekend()[1:]}, store, queue, mail, weekday, weekend)(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	toAdmins := 0
+	for _, m := range mail.sent {
+		if strings.Join(m.to, ",") == "ola@example.com" {
+			toAdmins++
+		}
+	}
+	if toAdmins != 1 || queue.reports[0] != fmt.Sprintf("r1 SENT Sent %d emails.", len(mail.sent)-1) {
+		t.Fatalf("sent %d (%d to the rota admins), reports %v", len(mail.sent), toAdmins, queue.reports)
 	}
 }

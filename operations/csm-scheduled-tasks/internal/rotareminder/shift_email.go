@@ -410,7 +410,7 @@ func windowInvite(cfg Config, w *window, stamp time.Time) Invite {
 			inv.Attendees = append(inv.Attendees, Attendee{Name: named[i], Email: to[i]})
 		}
 	}
-	if cfg.ScheduleURL != "" {
+	if ValidScheduleURL(cfg.ScheduleURL) {
 		inv.Description += "\nLatest roster: " + cfg.ScheduleURL
 		inv.URL = cfg.ScheduleURL
 	}

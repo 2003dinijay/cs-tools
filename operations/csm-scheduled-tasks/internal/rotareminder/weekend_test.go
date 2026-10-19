@@ -384,6 +384,70 @@ func TestInviteUID_IsSafeForAnyFamily(t *testing.T) {
 	}
 }
 
+// Nothing from the rota or the configuration can add a line to an invitation:
+// a line break or other control character in a name or in the notes is
+// dropped or escaped, an address that is not a plain address is left out, and
+// so is a URL that is not http(s).
+func TestICS_NothingCanStartALineOfItsOwn(t *testing.T) {
+	at := time.Date(2026, 10, 24, 0, 30, 0, 0, time.UTC)
+	inv := Invite{
+		UID: "cre-rota-2026-10-24-cre_weekend@csm-team-schedule", Summary: "CRE\r\nATTENDEE:mailto:evil@example.com",
+		Description: "line one\rline two\x00\x1b", Start: at, End: at.Add(time.Hour), Stamp: at,
+		OrganizerName: "CSM\nTeam", OrganizerEmail: "rota@example.com",
+		Attendees: []Attendee{
+			{Name: "Ann\r\nATTENDEE:mailto:evil@example.com", Email: "ann@example.com"},
+			{Name: "Ben", Email: "ben@example.com\r\nATTENDEE:mailto:evil@example.com"},
+			{Name: "Cid", Email: "Cid <cid@example.com>"},
+		},
+		URL: "javascript:alert(1)",
+	}
+	ics := unfolded(inv.ICS())
+	lines := strings.Split(strings.TrimSuffix(ics, "\r\n"), "\r\n")
+	attendees := 0
+	for _, l := range lines {
+		if strings.ContainsAny(l, "\r\n\x00\x1b") {
+			t.Errorf("control character in %q", l)
+		}
+		if strings.HasPrefix(l, "ATTENDEE") {
+			attendees++
+		}
+		if strings.HasPrefix(l, "URL:") {
+			t.Errorf("unsafe URL kept: %q", l)
+		}
+	}
+	for _, want := range []string{`SUMMARY:CRE\nATTENDEE:mailto:evil@example.com`, `DESCRIPTION:line one\nline two`,
+		"ORGANIZER;CN=CSMTeam:mailto:rota@example.com", `ATTENDEE;CN="AnnATTENDEE:mailto:evil@example.com";`} {
+		if !strings.Contains(ics, want) {
+			t.Errorf("invite lacks %q:\n%s", want, ics)
+		}
+	}
+	if attendees != 1 {
+		t.Errorf("%d attendees, want only Ann:\n%s", attendees, ics)
+	}
+
+	inv.URL, inv.OrganizerEmail = "https://portal.example.com/team-schedule", "not an address"
+	ics = unfolded(inv.ICS())
+	if !strings.Contains(ics, "URL:https://portal.example.com/team-schedule\r\n") || strings.Contains(ics, "ORGANIZER") {
+		t.Errorf("invite:\n%s", ics)
+	}
+}
+
+// Only a plain address and an http(s) URL pass the startup checks.
+func TestValidInviteAddressAndScheduleURL(t *testing.T) {
+	for s, want := range map[string]bool{"rota@example.com": true, "": false, "Rota <rota@example.com>": false,
+		"rota@example.com\r\nX": false, "a b@example.com": false, "rota": false} {
+		if got := ValidInviteAddress(s); got != want {
+			t.Errorf("ValidInviteAddress(%q) = %v", s, got)
+		}
+	}
+	for s, want := range map[string]bool{"https://portal.example.com/x": true, "http://localhost:3000": true, "": false,
+		"javascript:alert(1)": false, "https://": false, "https://a.example.com/x\ny": false, "/team-schedule": false} {
+		if got := ValidScheduleURL(s); got != want {
+			t.Errorf("ValidScheduleURL(%q) = %v", s, got)
+		}
+	}
+}
+
 // A weekend after the US clock change has no daylight saving note, and the
 // Americas Weekend is then 08:00-18:00 PST, an hour later in UTC.
 func TestWeekendNotice_AmericasHoursFollowLosAngeles(t *testing.T) {

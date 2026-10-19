@@ -456,9 +456,14 @@ func main() {
 		// Invitations need an organizer: the address the emails come from.
 		organizer := strings.TrimSpace(os.Getenv("EMAIL_FROM_ADDRESS"))
 		invites := envBool("ROTA_REMINDER_INVITES_ENABLED", true)
-		if invites && organizer == "" {
-			slog.Warn("rota reminder calendar invitations are off: EMAIL_FROM_ADDRESS is not set, and an invitation needs an organizer")
+		if invites && !rotareminder.ValidInviteAddress(organizer) {
+			slog.Warn("rota reminder calendar invitations are off: EMAIL_FROM_ADDRESS is not set or is not a plain email address, and an invitation needs an organizer")
 			invites = false
+		}
+		scheduleURL := strings.TrimSpace(os.Getenv("ROTA_REMINDER_SCHEDULE_URL"))
+		if scheduleURL != "" && !rotareminder.ValidScheduleURL(scheduleURL) {
+			slog.Warn("ROTA_REMINDER_SCHEDULE_URL is not an http(s) URL; the rota reminders go without the Team Schedule link")
+			scheduleURL = ""
 		}
 		weekendRequired := parseRequired("ROTA_REMINDER_WEEKEND_REQUIRED",
 			envString("ROTA_REMINDER_WEEKEND_REQUIRED", "CRE_WEEKEND=3,CRE_WEEKEND_NIGHT=1"))
@@ -485,7 +490,7 @@ func main() {
 				Rotations:      rotations,
 				Copy:           copied,
 				RedirectTo:     splitComma(os.Getenv("ROTA_REMINDER_REDIRECT_TO")),
-				ScheduleURL:    os.Getenv("ROTA_REMINDER_SCHEDULE_URL"),
+				ScheduleURL:    scheduleURL,
 				Invites:        invites,
 				OrganizerEmail: organizer,
 				Required:       weekendRequired,

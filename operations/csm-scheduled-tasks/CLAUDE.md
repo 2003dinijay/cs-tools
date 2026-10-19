@@ -227,15 +227,18 @@ schedules assume `TZ=UTC` like every other here.
 - **"Send now" (`rota_manual_reminder`, every run).** The card's Send now button queues a
   request in entity-service (`team_schedule_reminder_request`, migration 0242; asked for by a
   CSM admin or the family's rota admin, refused while one of the same kind is waiting and within
-  10 minutes of the last). This task has no address to call, so at every run it claims the
+  10 minutes of the last that did not fail). This task has no address to call, so at every run it claims the
   waiting requests (`POST .../reminder-requests/{family}/claim`, up to 5 a run) and sends each
   with the code above: `weekday` is the next working day's windows, `weekend` the coming weekend
   (this one from a Saturday or a Sunday), sent even when not fully marked, as on Friday, and
   recorded like Friday's, so invitations update and cancellations follow. The saved on/off
   switches do not stop it; the saved minimums, hours, invitations switch and copy list apply.
-  Each request is reported `SENT` ("Sent N emails.") or `FAILED` with the reason
+  Each request is reported `SENT` ("Sent N emails.", counted where each reminder is sent: a
+  weekday window's email by its final outcome, the weekend summary and each invitation, never the
+  rota admins' email, cancellations or alerts; or "Nothing was sent: <why>.", the reason each
+  window was skipped) or `FAILED` with the reason
   (`PUT .../{id}/result`); only a failed claim or report fails the run. A request claimed but
-  never reported (the run died) is claimed again after 30 minutes, so in that rare case its
+  never reported (the run died) is claimed again after 2 hours, so in that rare case its
   emails go out twice. How soon it is sent is the driver's cadence (`DRIVER_INTERVAL`, an hour by
   default); its schedule (`*/5 * * * *`) is finer than the driver, so it is due at every tick.
 - **"Send a test to me".** The same queue with `test: true` (its own queue per person, 2 minutes
@@ -266,6 +269,12 @@ schedules assume `TZ=UTC` like every other here.
   email service binds an attachment to `byte[]`, so `notify.Attachment` sends it as an array of
   byte values, not base64. Weekday emails carry their window's invitation in the same email. If the email service rejects a weekday email's invitation (HTTP 400), the email is sent again
   without it, so the reminder still arrives; a weekend invitation email has no such fallback.
+  Nothing from the rota or the configuration can add a line to an invitation: names and notes
+  are escaped and stripped of control characters, an attendee whose address is not a plain
+  address is left out (`ValidInviteAddress`), and the event's URL is written only when it is
+  http(s) (`ValidScheduleURL`). At startup an `EMAIL_FROM_ADDRESS` that is not a plain address
+  turns invitations off, and a `ROTA_REMINDER_SCHEDULE_URL` that is not http(s) is dropped from
+  every email, both with a warning.
 - **The task's `SUB_CRON_RECIPIENTS` are not copied** unless
   `ROTA_REMINDER_COPY_TASK_RECIPIENTS=true`; they still get its failure alerts, as everywhere
   here. Nobody is ever both a recipient and copied, or copied twice (case-insensitive).

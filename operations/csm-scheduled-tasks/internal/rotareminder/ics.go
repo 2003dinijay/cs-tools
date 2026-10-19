@@ -18,8 +18,11 @@ package rotareminder
 
 import (
 	"fmt"
+	"net/mail"
+	"net/url"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // Invite is one calendar event: one rotation window, with everybody on it as
@@ -100,6 +103,9 @@ func inviteUID(family, rotaDate, shiftCode string) string {
 
 // ICS writes the invite as an iCalendar file. The organizer is a no-reply
 // address, so every attendee is marked RSVP=FALSE: a Yes/No would go nowhere.
+// Nothing taken from the rota or the configuration can start a line of its
+// own: text is escaped and stripped of control characters, an address that
+// is not a plain address is left out, and so is a URL that is not http(s).
 func (inv Invite) ICS() []byte {
 	var b strings.Builder
 	line := func(s string) { b.WriteString(foldLine(s)) }
@@ -120,11 +126,16 @@ func (inv Invite) ICS() []byte {
 	if inv.Description != "" {
 		line("DESCRIPTION:" + escapeText(inv.Description))
 	}
-	if inv.URL != "" {
+	if ValidScheduleURL(inv.URL) {
 		line("URL:" + inv.URL)
 	}
-	line(fmt.Sprintf("ORGANIZER;CN=%s:mailto:%s", paramValue(inv.OrganizerName), inv.OrganizerEmail))
+	if ValidInviteAddress(inv.OrganizerEmail) {
+		line(fmt.Sprintf("ORGANIZER;CN=%s:mailto:%s", paramValue(inv.OrganizerName), inv.OrganizerEmail))
+	}
 	for _, a := range inv.Attendees {
+		if !ValidInviteAddress(a.Email) {
+			continue
+		}
 		line(fmt.Sprintf("ATTENDEE;CN=%s;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=FALSE:mailto:%s",
 			paramValue(a.Name), a.Email))
 	}
@@ -140,23 +151,58 @@ func (inv Invite) ICS() []byte {
 }
 
 // escapeText escapes a TEXT value (RFC 5545 3.3.11): backslash, semicolon,
-// comma and newline.
+// comma and newline. A lone carriage return is a newline too, and any other
+// control character is dropped: none may appear in a TEXT value.
 func escapeText(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
 	s = strings.ReplaceAll(s, ";", `\;`)
 	s = strings.ReplaceAll(s, ",", `\,`)
-	s = strings.ReplaceAll(s, "\r\n", `\n`)
-	return strings.ReplaceAll(s, "\n", `\n`)
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	s = strings.ReplaceAll(s, "\n", `\n`)
+	return withoutControls(s)
 }
 
 // paramValue quotes a parameter value (a CN) when it holds a character that
-// would end it, and drops double quotes, which a parameter value cannot hold.
+// would end it, and drops double quotes and control characters, which a
+// parameter value cannot hold.
 func paramValue(s string) string {
-	s = strings.ReplaceAll(s, `"`, "")
+	s = withoutControls(strings.ReplaceAll(s, `"`, ""))
 	if strings.ContainsAny(s, ",;:") {
 		return `"` + s + `"`
 	}
 	return s
+}
+
+// withoutControls drops every control character (a line break included).
+func withoutControls(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// ValidInviteAddress reports whether s is a plain email address an
+// invitation can name after "mailto:": one address, nothing around it, no
+// control character, quote or space.
+func ValidInviteAddress(s string) bool {
+	if s == "" || strings.ContainsFunc(s, func(r rune) bool { return unicode.IsControl(r) || unicode.IsSpace(r) || r == '"' }) {
+		return false
+	}
+	a, err := mail.ParseAddress(s)
+	return err == nil && a.Name == "" && a.Address == s
+}
+
+// ValidScheduleURL reports whether s is an http or https URL with a host and
+// no control character or space, safe to put in an email and an invitation.
+func ValidScheduleURL(s string) bool {
+	if s == "" || strings.ContainsFunc(s, func(r rune) bool { return unicode.IsControl(r) || unicode.IsSpace(r) }) {
+		return false
+	}
+	u, err := url.Parse(s)
+	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
 }
 
 // foldLine ends a content line with CRLF, folding it at 75 octets as RFC 5545

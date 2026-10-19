@@ -8737,7 +8737,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         "429":
-          description: "One of the same kind was asked for less than 10 minutes ago."
+          description: "One of the same kind was asked for less than 10 minutes ago (a FAILED one does not count)."
           content:
             application/json:
               schema:
@@ -8810,7 +8810,7 @@ paths:
       summary: Claim the oldest waiting request (csm-scheduled-tasks).
       description: >
         Service credential only. Marks the oldest QUEUED request, or one
-        SENDING but not reported within 30 minutes, as SENDING and returns
+        SENDING but not reported within 2 hours, as SENDING and returns
         it; 404 when nothing is waiting.
       operationId: claimRotaReminderRequest
       security:

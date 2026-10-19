@@ -52,6 +52,30 @@ type RotaAdmin struct {
 	Email string `json:"email"`
 }
 
+// notFoundSaying is whether err is entity-service's own "nothing there"
+// answer: a 404 whose JSON message is want. A 404 with any other body -- a
+// route that does not exist yet, because this task was deployed before the
+// entity-service that adds it -- is a real failure: reading it as "nothing
+// sent" or "nothing saved" would re-send the weekend notice every evening and
+// ignore reminders an admin switched off.
+func notFoundSaying(err error, want string) bool {
+	var apiErr *apierror.Error
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
+		return false
+	}
+	var body struct {
+		Message string `json:"message"`
+	}
+	return json.Unmarshal([]byte(apiErr.Body), &body) == nil && body.Message == want
+}
+
+// The messages entity-service answers its 404s with on these routes.
+const (
+	nothingSentMessage    = "nothing was sent for this period"
+	noSettingsMessage     = "no rota reminder settings saved for this family"
+	nothingWaitingMessage = "no rota reminder request is waiting"
+)
+
 func reminderPath(family, kind, periodStart string) string {
 	return "/team-schedule/reminders/" + url.PathEscape(family) + "/" + url.PathEscape(kind) + "/" + url.PathEscape(periodStart)
 }
@@ -60,8 +84,7 @@ func reminderPath(family, kind, periodStart string) string {
 // periodStart (YYYY-MM-DD), or nil when nothing was sent yet.
 func (c *Client) GetReminder(ctx context.Context, family, kind, periodStart string) (*ReminderRecord, error) {
 	body, err := c.do(ctx, http.MethodGet, reminderPath(family, kind, periodStart), nil)
-	var apiErr *apierror.Error
-	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+	if notFoundSaying(err, nothingSentMessage) {
 		return nil, nil
 	}
 	if err != nil {

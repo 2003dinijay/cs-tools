@@ -121,6 +121,7 @@ func weekend(ctx context.Context, rota RotaReader, store ReminderStore, sender E
 	}
 	if !final && rec != nil {
 		slog.InfoContext(ctx, "rota reminder: the weekend was already announced; nothing sent", "weekend", period, "sentOn", rec.LastSentOn)
+		cfg.Tally.skipped("the weekend of " + longDay(sat) + " was already announced")
 		return nil
 	}
 
@@ -145,6 +146,7 @@ func weekend(ctx context.Context, rota RotaReader, store ReminderStore, sender E
 		adminErr := askRotaAdmins(ctx, store, sender, cfg, days, gaps, final)
 		slog.InfoContext(ctx, "rota reminder: the weekend is not fully marked; the rota admins were asked",
 			"weekend", period, "gaps", gapList(cfg, gaps))
+		cfg.Tally.skipped("the weekend of " + longDay(sat) + " is not fully marked; the rota admins were asked")
 		return adminErr
 	}
 
@@ -158,17 +160,26 @@ func weekend(ctx context.Context, rota RotaReader, store ReminderStore, sender E
 			started = append(started, w)
 		}
 	}
+	if len(windows) == 0 {
+		slog.InfoContext(ctx, "rota reminder: nobody is rostered for the weekend; nothing sent", "weekend", period)
+		cfg.Tally.skipped("nobody is rostered for the weekend of " + longDay(sat))
+		return nil
+	}
 	if len(pending) == 0 {
 		slog.InfoContext(ctx, "rota reminder: nothing of the weekend is still to come; nothing sent", "weekend", period)
+		cfg.Tally.skipped("every window of the weekend of " + longDay(sat) + " has already started")
 		return nil
 	}
 
 	summary, ok := buildWeekendEmail(cfg, pending, rostered, today, gaps)
 	if !ok {
 		slog.WarnContext(ctx, "rota reminder: nobody on the weekend rota has an email address; nothing sent", "weekend", period)
+		cfg.Tally.skipped("nobody on the weekend rota of " + longDay(sat) + " has an email address")
 		return nil
 	}
-	if err := send(ctx, sender, cfg, summary); err != nil {
+	err = send(ctx, sender, cfg, summary)
+	cfg.Tally.count(err)
+	if err != nil {
 		// Nothing has gone to the rota yet, so the run fails and is retried.
 		return fmt.Errorf("rotareminder: the weekend summary for %s: %w", period, err)
 	}
@@ -196,7 +207,9 @@ func weekend(ctx context.Context, rota RotaReader, store ReminderStore, sender E
 				continue
 			}
 			current[inv.UID] = true
-			if err := send(ctx, sender, cfg, email); err != nil {
+			err := send(ctx, sender, cfg, email)
+			cfg.Tally.count(err)
+			if err != nil {
 				failed = append(failed, failure{windows: []*window{w}, err: err})
 				if old, ok := previous[inv.UID]; ok {
 					invites = append(invites, old) // keep who still holds the old version

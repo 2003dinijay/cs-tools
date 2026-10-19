@@ -35,7 +35,8 @@ import (
 type RotaReminderRequestRepository interface {
 	// Create queues a request, unless one of the same family and kind is
 	// still waiting (ConflictError) or was asked for within cooldown
-	// (TooManyRequestsError). Checked and written under one lock, so two
+	// (TooManyRequestsError). A FAILED request sent nobody anything, so it
+	// does not start the cooldown: it can be asked for again at once. Checked and written under one lock, so two
 	// presses at once queue one request.
 	// A test is its own queue per person: a test never holds up the real
 	// reminders or somebody else's test.
@@ -96,6 +97,7 @@ func (r *rotaReminderRequestRepository) Create(ctx context.Context, actor, famil
 		last, err := scanRotaReminderRequest(tx.QueryRow(ctx, `SELECT `+rotaReminderRequestColumns+`
 			FROM team_schedule_reminder_request
 			WHERE family = $1 AND kind = $2 AND test = $3 AND ($4 = '' OR LOWER(requested_by) = LOWER($4))
+			  AND status <> 'FAILED'
 			ORDER BY requested_on DESC LIMIT 1`, family, kind, test, owner))
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):

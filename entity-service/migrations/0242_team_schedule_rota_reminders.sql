@@ -105,7 +105,7 @@ CREATE TRIGGER team_schedule_reminder_setting_audit
 --   kind    'weekday' (the next working day's Morning and Evening) or
 --           'weekend' (the coming weekend, sent even if not fully marked)
 --   status  QUEUED -> SENDING (claimed) -> SENT or FAILED. A SENDING request
---           not reported within 30 minutes is claimed again.
+--           not reported within 2 hours is claimed again.
 --   test    "Send a test to me": sent only to requested_by, marked as a
 --           test copy, with test calendar event ids; not recorded, so the
 --           real reminders are not affected.

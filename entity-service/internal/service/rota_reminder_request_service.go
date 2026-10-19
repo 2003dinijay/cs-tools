@@ -61,8 +61,10 @@ const (
 	// person asking.
 	reminderTestCooldown = 2 * time.Minute
 	// reminderRequestStale is when a request claimed but never reported is
-	// claimed again (the run that took it died).
-	reminderRequestStale  = 30 * time.Minute
+	// claimed again (the run that took it died). Well beyond any run, and
+	// beyond the driver's hourly tick, so a slow run's request is never
+	// claimed again while it is still being sent.
+	reminderRequestStale  = 2 * time.Hour
 	reminderRequestListed = 5
 	maxReminderResult     = 500
 	// reminderRequestActor names the scheduled task in the audit trail.

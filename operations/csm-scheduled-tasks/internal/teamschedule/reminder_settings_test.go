@@ -21,6 +21,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -31,7 +33,7 @@ func TestReminderSettingsFor(t *testing.T) {
 		switch r.URL.Path {
 		case "/team-schedule/reminder-settings/SRE":
 			w.WriteHeader(http.StatusNotFound)
-			_, _ = w.Write([]byte(`{"code":404,"message":"no reminder settings saved"}`))
+			_, _ = w.Write([]byte(`{"code":404,"message":"no rota reminder settings saved for this family"}`))
 		case "/team-schedule/reminder-settings/CRE":
 			_, _ = w.Write([]byte(`{"weekdayEnabled":true,"weekendEnabled":false,"invitesEnabled":true,
 				"weekendRequired":{"CRE_WEEKEND":2},"windows":{"CRE_WEEKEND_NIGHT":{"start":"08:00","end":"18:00","timeZone":"America/Los_Angeles"}},
@@ -93,5 +95,42 @@ func TestReminderRequests_ClaimAndReport(t *testing.T) {
 	waiting = false
 	if req, err := c.ClaimReminderRequest(ctx, "CRE"); err != nil || req != nil {
 		t.Fatalf("nothing waiting: %+v, %v", req, err)
+	}
+}
+
+// Only entity-service's own "nothing there" answer reads as nothing: a 404
+// from a route that does not exist yet (this task deployed before the
+// entity-service that adds it) fails, so the weekend notice is not sent every
+// evening and switched-off reminders do not go out.
+func TestNotFound_OnlyEntityServicesOwnAnswerMeansNothing(t *testing.T) {
+	bare := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r) // "404 page not found", as Go's mux answers an unknown route
+	}))
+	defer bare.Close()
+	c := newClient(bare.Client(), bare.URL)
+	ctx := context.Background()
+	if rec, err := c.GetReminder(ctx, "CRE", "weekend_notice", "2026-10-24"); err == nil {
+		t.Errorf("GetReminder on a missing route = %+v, nil", rec)
+	}
+	if s, err := c.ReminderSettingsFor(ctx, "CRE"); err == nil {
+		t.Errorf("ReminderSettingsFor on a missing route = %+v, nil", s)
+	}
+	if r, err := c.ClaimReminderRequest(ctx, "CRE"); err == nil {
+		t.Errorf("ClaimReminderRequest on a missing route = %+v, nil", r)
+	}
+}
+
+// The messages this client recognises are the ones entity-service writes; read
+// from its handler, so a reworded message there fails here instead of turning
+// every "nothing there" into a failed run.
+func TestNotFound_MessagesMatchEntityService(t *testing.T) {
+	src, err := os.ReadFile("../../../../entity-service/internal/handler/schedule_reminder_handler.go")
+	if err != nil {
+		t.Skip("entity-service is not next to this module here")
+	}
+	for _, m := range []string{nothingSentMessage, noSettingsMessage, nothingWaitingMessage} {
+		if !strings.Contains(string(src), `http.StatusNotFound, "`+m+`")`) {
+			t.Errorf("entity-service no longer answers %q", m)
+		}
 	}
 }

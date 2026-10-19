@@ -132,6 +132,10 @@ type Config struct {
 	// who asked) with "[Test]" in its subject, invitations carry test event
 	// ids, and the weekend's send record is neither read nor written.
 	Test bool
+	// Tally, when set, counts the reminder emails the run sent and could not
+	// send, and notes why nothing was sent when nothing was: the result a
+	// "Send now" request reports to the card.
+	Tally *Tally
 	// EmailsEnabled is ALERTS_ENABLED, this component's single switch for
 	// every email it sends. When false a run succeeds and sends nothing.
 	EmailsEnabled bool
@@ -245,6 +249,7 @@ func announce(ctx context.Context, rota RotaReader, sender EmailSender, cfg Conf
 	windows := groupWindows(rostered, wantedDay)
 	if len(windows) == 0 {
 		slog.InfoContext(ctx, "rota reminder: nobody is rostered; nothing sent", "days", from+".."+to)
+		cfg.Tally.skipped("nobody is rostered on " + dayList(days))
 		return nil
 	}
 
@@ -260,6 +265,7 @@ func announce(ctx context.Context, rota RotaReader, sender EmailSender, cfg Conf
 			// already on (or that is over) helps nobody.
 			slog.WarnContext(ctx, "rota reminder: this window has already started; not sent",
 				"window", w.base, "day", w.date)
+			cfg.Tally.skipped(windowTitle(cfg, w.base) + " on " + longDay(w.day) + " has already started")
 			continue
 		}
 		pending = append(pending, w)
@@ -276,6 +282,7 @@ func announce(ctx context.Context, rota RotaReader, sender EmailSender, cfg Conf
 		if !ok {
 			slog.WarnContext(ctx, "rota reminder: nobody on this window has an email address; nothing sent",
 				"window", w.base, "day", w.date)
+			cfg.Tally.skipped("nobody on " + windowTitle(cfg, w.base) + " on " + longDay(w.day) + " has an email address")
 			continue
 		}
 		if cfg.Invites {
@@ -294,7 +301,9 @@ func announce(ctx context.Context, rota RotaReader, sender EmailSender, cfg Conf
 			sendTo, sendCc = cfg.RedirectTo, nil
 		}
 		b.email.subject = cfg.subject(b.email.subject)
-		if err := sendWindowEmail(ctx, sender, sendTo, sendCc, b.email); err != nil {
+		err := sendWindowEmail(ctx, sender, sendTo, sendCc, b.email)
+		cfg.Tally.count(err) // after the fallback: the email's final outcome
+		if err != nil {
 			var names []string
 			for _, w := range b.windows {
 				names = append(names, w.base+" on "+w.date)
