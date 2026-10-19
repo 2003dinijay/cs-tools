@@ -306,6 +306,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	var teamMemberHandler *handler.TeamMemberHandler
 	var pagingChainHandler *handler.PagingChainHandler
 	var caseAlertSettingsHandler *handler.CaseAlertSettingsHandler
+	var runbookHandler *handler.RunbookHandler
+	// runbookRepo stays a nil interface without a pool, so no incident service gets a catalog.
+	var runbookRepo repository.RunbookRepository
 
 	// Customer-health risk tracking (migration 0219) has no upstream
 	// equivalent either -- it replaces a standalone MySQL database
@@ -1400,6 +1403,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// paging ladders use, changed on the Alert Settings tab instead of a
 		// Choreo secret. csm-notification-service reads them only when it runs
 		// with PAGING_CONFIG_SOURCE set.
+		// Runbooks: the alert-name to runbook catalog, matched against every new incident's subject.
+		runbookRepo = repository.NewRunbookRepository(db)
+		runbookHandler = handler.NewRunbookHandler(service.NewRunbookService(runbookRepo))
 		caseAlertSettingsHandler = handler.NewCaseAlertSettingsHandler(
 			service.NewCaseAlertSettingsService(repository.NewCaseAlertSettingsRepository(db), repository.NewPagingChainRepository(db), accessSvc,
 				service.CaseAlertSettingsConfig{
@@ -1433,6 +1439,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// groupless default is logged, never fatal -- the create still works, it
 	// just leaves such incidents unassigned.
 	activeIncidentSvc = service.WithIncidentDefaultService(activeIncidentSvc, cfg.IncidentDefaultServiceID)
+	if runbookRepo != nil {
+		activeIncidentSvc = service.WithRunbookCatalog(activeIncidentSvc, runbookRepo)
+	}
 	if cfg.IncidentDefaultServiceID != "" && (db != nil || cfg.DataSource == config.DataSourceServiceNow) {
 		go service.CheckIncidentDefaultService(context.Background(), activeIncidentSvc, cfg.IncidentDefaultServiceID)
 	}
@@ -1807,6 +1816,14 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("DELETE /team-schedule/paging-contacts/{userId}", pagingChainHandler.DeletePagingPhone)
 		mux.HandleFunc("POST /team-schedule/paging-contacts/{userId}/test", pagingChainHandler.RequestTestCall)
 		mux.HandleFunc("PUT /team-schedule/paging-contacts/{userId}/test-result", pagingChainHandler.RecordTestResult)
+	}
+	if runbookHandler != nil {
+		// Runbooks (Operations > Runbooks): internal callers only.
+		mux.HandleFunc("GET /runbooks", internalOnly(accessSvc, runbookHandler.ListRunbooks))
+		mux.HandleFunc("POST /runbooks", internalOnly(accessSvc, runbookHandler.CreateRunbook))
+		mux.HandleFunc("POST /runbooks/import", internalOnly(accessSvc, runbookHandler.ImportRunbooks))
+		mux.HandleFunc("PUT /runbooks/{id}", internalOnly(accessSvc, runbookHandler.UpdateRunbook))
+		mux.HandleFunc("DELETE /runbooks/{id}", internalOnly(accessSvc, runbookHandler.DeleteRunbook))
 	}
 	if caseAlertSettingsHandler != nil {
 		// Case Alerts settings: chat rooms, group routes and the other ladder
