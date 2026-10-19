@@ -379,7 +379,7 @@ export const SETTINGS_VERIFICATION_ADMIN_ONLY_HINT =
 export const SETTINGS_VERIFICATION_TOGGLE_LABEL = "Pending Verification";
 
 export const SETTINGS_VERIFICATION_TOGGLE_DESCRIPTION =
-  "Show the Pending Verification list and allow records to be flagged for customer sign-off";
+  "Show the Pending Verification list and let customers flag a closed case for their own follow-up verification";
 
 export const REGISTRY_ADMIN_ALERT_PREFIX = "Admin View:";
 
