@@ -14,6 +14,12 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- Renamed from the old-style
+-- 000093_pending_verification_work_item_added_on_index.up.sql -- see
+-- 0176_pending_verification_table.sql's own comment for why the six-digit
+-- name had to go. Numbered after 0176 (pending_verification) since this
+-- index is on that table.
+--
 -- Backs the Verified tab's "one row per work_item_id, its latest cycle"
 -- DISTINCT ON (pv.work_item_id) ... ORDER BY pv.work_item_id, pv.added_on DESC
 -- pattern (pending_verification_repo.go's Search, VerifiedOnly branch). The

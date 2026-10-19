@@ -14,6 +14,7 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-DROP TABLE IF EXISTS pending_verification;
-DROP TYPE IF EXISTS pending_verification_previous_status_enum;
-DROP TYPE IF EXISTS pending_verification_added_reason_enum;
+-- Renamed from the old-style 000084_project_add_verification_enabled.up.sql
+-- -- see 0176_pending_verification_table.sql's own comment for why the
+-- six-digit name had to go. ADD COLUMN IF NOT EXISTS was already re-run-safe.
+ALTER TABLE project ADD COLUMN IF NOT EXISTS verification_enabled BOOLEAN;

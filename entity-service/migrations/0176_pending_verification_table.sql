@@ -14,8 +14,23 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-CREATE TYPE pending_verification_added_reason_enum AS ENUM ('AUTO_CLOSED', 'MANUAL');
-CREATE TYPE pending_verification_previous_status_enum AS ENUM ('SOLUTION_PROPOSED', 'AWAITING_INFO');
+-- Renamed from the old-style 000075_pending_verification_table.up.sql
+-- (its .down.sql counterpart is deleted, not mirrored here) -- that
+-- six-digit name sorted before 0001 (`"0000" < "0001"`), so make migrate
+-- tried to run this CREATE TABLE ... REFERENCES work_item(id) on a fresh
+-- database before work_item existed, and separately applied the paired
+-- .down.sql (DROP TABLE/TYPE) as an ordinary migration, since the runner
+-- globs every *.sql file with no up/down distinction. See the top-level
+-- CLAUDE.md's "Migrations are keyed by filename" for why a bare rename is
+-- still safe here: this file guards both CREATE TYPEs so re-running it
+-- against staging, which already applied the old filename, is a no-op.
+DO $$ BEGIN
+    CREATE TYPE pending_verification_added_reason_enum AS ENUM ('AUTO_CLOSED', 'MANUAL');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+DO $$ BEGIN
+    CREATE TYPE pending_verification_previous_status_enum AS ENUM ('SOLUTION_PROPOSED', 'AWAITING_INFO');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 CREATE TABLE IF NOT EXISTS pending_verification (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
