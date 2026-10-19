@@ -18,6 +18,8 @@ package service
 
 import (
 	"context"
+	"fmt"
+	"html"
 	"log/slog"
 	"strings"
 
@@ -30,8 +32,12 @@ type runbookLister interface {
 }
 
 const (
-	runbookNotePrefix = "Runbook for this alert: "
-	noRunbookNoteText = "No runbook available for this alert."
+	runbookNoteHeading = "Runbook for this alert"
+	noRunbookNoteText  = "No runbook available for this alert."
+	// The table styles match sre-alert-core-service's incident creation note, so the two notes read alike.
+	runbookNoteTableStyle = "border:1px solid #dcdcdc; border-collapse:collapse; width:100%; font-family:Arial, sans-serif; font-size:13px;"
+	runbookNoteKeyStyle   = "background:#f5f5f5; font-weight:bold; width:30%; padding:8px; border:1px solid #dcdcdc;"
+	runbookNoteValueStyle = "padding:8px; border:1px solid #dcdcdc;"
 )
 
 // matchRunbook is the entry whose alert name the subject contains, ignoring case; the longest name wins.
@@ -50,21 +56,36 @@ func matchRunbook(runbooks []domain.Runbook, subject string) *domain.Runbook {
 	return best
 }
 
-// runbookNote is the work note for a new incident, or "" when it gets none: a catalog match, or an alert-born incident with no match.
+// runbookNote is the HTML work note for a new incident, or "" when it gets none: a catalog match, or an alert-born incident with no match.
 func runbookNote(runbooks []domain.Runbook, req domain.CreateIncidentRequest) string {
 	if rb := matchRunbook(runbooks, req.Subject); rb != nil {
 		if rb.RunbookURL != nil && strings.TrimSpace(*rb.RunbookURL) != "" {
-			return runbookNotePrefix + *rb.RunbookURL
+			link := html.EscapeString(strings.TrimSpace(*rb.RunbookURL))
+			return "<p>" + runbookNoteHeading + "</p>" + runbookNoteTable(
+				[2]string{"alert_name", html.EscapeString(rb.AlertName)},
+				[2]string{"runbook", `<a href="` + link + `" target="_blank" rel="noopener noreferrer">` + link + `</a>`},
+			)
 		}
-		return noRunbookNoteText
+		return "<p>" + noRunbookNoteText + "</p>" + runbookNoteTable([2]string{"alert_name", html.EscapeString(rb.AlertName)})
 	}
 	if req.CorrelationID != nil && strings.TrimSpace(*req.CorrelationID) != "" {
-		return noRunbookNoteText
+		return "<p>" + noRunbookNoteText + "</p>"
 	}
 	return ""
 }
 
-// withRunbookNote appends the runbook work note after the caller's own; a catalog read failure is logged and leaves the request as it was.
+// runbookNoteTable renders already-escaped key/value rows as the bordered table alert-core's note uses.
+func runbookNoteTable(rows ...[2]string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "<table style='%s'>", runbookNoteTableStyle)
+	for _, r := range rows {
+		fmt.Fprintf(&b, "<tr><td style='%s'>%s</td><td style='%s'>%s</td></tr>", runbookNoteKeyStyle, r[0], runbookNoteValueStyle, r[1])
+	}
+	b.WriteString("</table>")
+	return b.String()
+}
+
+// withRunbookNote appends the runbook work note right after the caller's own; a catalog read failure is logged and leaves the request as it was.
 func withRunbookNote(ctx context.Context, req domain.CreateIncidentRequest, catalog runbookLister) domain.CreateIncidentRequest {
 	if catalog == nil {
 		return req
@@ -78,8 +99,9 @@ func withRunbookNote(ctx context.Context, req domain.CreateIncidentRequest, cata
 	if note == "" {
 		return req
 	}
+	// Joined with no line break: the note starts with its own block element, and comments render source line breaks as gaps.
 	if req.WorkNotes != nil && strings.TrimSpace(*req.WorkNotes) != "" {
-		note = *req.WorkNotes + "\n\n" + note
+		note = *req.WorkNotes + note
 	}
 	req.WorkNotes = &note
 	return req

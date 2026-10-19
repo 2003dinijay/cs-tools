@@ -19,6 +19,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
@@ -40,34 +41,54 @@ var testRunbooks = []domain.Runbook{
 }
 
 func TestRunbookNote(t *testing.T) {
-	cases := []struct {
-		name    string
-		subject string
-		corrID  *string
-		want    string
-	}{
-		{"longest match wins, inside a longer subject", "[Alert]Fired:Sev0 Azure Monitor Alert EXAMPLE-gw-CriticalHTTP5xxCountLimitExceeded-prod-001 on log-002", nil, "Runbook for this alert: https://docs.example.com/gw-5xx"},
-		{"shorter entry still matches on its own", "example-gw-CriticalHTTP5xx spike", nil, "Runbook for this alert: https://docs.example.com/short"},
-		{"known alert without a link", "Icinga Alert: demo-node-01 / JVM Heap", nil, noRunbookNoteText},
-		{"alert-born incident with no match", "unknown alert", strp("fp-1"), noRunbookNoteText},
-		{"customer incident with no match gets nothing", "Login page is slow", nil, ""},
-		{"blank correlation id is not alert-born", "Login page is slow", strp("  "), ""},
+	linked := runbookNote(testRunbooks, domain.CreateIncidentRequest{
+		Subject: "[Alert]Fired:Sev0 Azure Monitor Alert EXAMPLE-gw-CriticalHTTP5xxCountLimitExceeded-prod-001 on log-002"})
+	for _, want := range []string{
+		"<p>Runbook for this alert</p><table style='border:1px solid #dcdcdc; border-collapse:collapse;",
+		">alert_name</td><td style='padding:8px; border:1px solid #dcdcdc;'>example-gw-CriticalHTTP5xxCountLimitExceeded-prod-001</td>",
+		`<a href="https://docs.example.com/gw-5xx" target="_blank" rel="noopener noreferrer">https://docs.example.com/gw-5xx</a>`,
+	} {
+		if !strings.Contains(linked, want) {
+			t.Fatalf("linked note %q does not contain %q", linked, want)
+		}
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := runbookNote(testRunbooks, domain.CreateIncidentRequest{Subject: tc.subject, CorrelationID: tc.corrID})
-			if got != tc.want {
-				t.Fatalf("runbookNote = %q, want %q", got, tc.want)
-			}
-		})
+	if strings.Contains(linked, "[code]") {
+		t.Fatalf("note must not carry a [code] wrapper: %q", linked)
+	}
+
+	short := runbookNote(testRunbooks, domain.CreateIncidentRequest{Subject: "example-gw-CriticalHTTP5xx spike"})
+	if !strings.Contains(short, "https://docs.example.com/short") {
+		t.Fatalf("shorter entry did not match on its own: %q", short)
+	}
+
+	unlinked := runbookNote(testRunbooks, domain.CreateIncidentRequest{Subject: "Icinga Alert: demo-node-01 / JVM Heap"})
+	if !strings.HasPrefix(unlinked, "<p>"+noRunbookNoteText+"</p><table") || !strings.Contains(unlinked, "Icinga Alert: demo-node-01 / JVM Heap") {
+		t.Fatalf("unlinked note = %q", unlinked)
+	}
+
+	if got := runbookNote(testRunbooks, domain.CreateIncidentRequest{Subject: "unknown alert", CorrelationID: strp("fp-1")}); got != "<p>"+noRunbookNoteText+"</p>" {
+		t.Fatalf("alert-born no-match note = %q", got)
+	}
+	for _, corr := range []*string{nil, strp("  ")} {
+		if got := runbookNote(testRunbooks, domain.CreateIncidentRequest{Subject: "Login page is slow", CorrelationID: corr}); got != "" {
+			t.Fatalf("customer incident got a note: %q", got)
+		}
+	}
+}
+
+func TestRunbookNote_EscapesCatalogValues(t *testing.T) {
+	rbs := []domain.Runbook{{AlertName: "<script>x</script>", RunbookURL: strp(`https://docs.example.com/a?x="><img src=y>`)}}
+	got := runbookNote(rbs, domain.CreateIncidentRequest{Subject: "fired <script>x</script> now"})
+	if strings.Contains(got, "<script>") || strings.Contains(got, "<img") || strings.Contains(got, `"><`) {
+		t.Fatalf("catalog values reached the note unescaped: %q", got)
 	}
 }
 
 func TestWithRunbookNote_AppendsAfterCallerNotes(t *testing.T) {
-	req := domain.CreateIncidentRequest{Subject: "Icinga Alert: demo-node-01 / JVM Heap", WorkNotes: strp("Created by alert-core.")}
+	req := domain.CreateIncidentRequest{Subject: "Icinga Alert: demo-node-01 / JVM Heap", WorkNotes: strp("<p>Created by alert-core.</p>")}
 	got := withRunbookNote(context.Background(), req, fakeRunbookLister{runbooks: testRunbooks})
-	want := "Created by alert-core.\n\n" + noRunbookNoteText
-	if got.WorkNotes == nil || *got.WorkNotes != want {
+	want := "<p>Created by alert-core.</p><p>" + noRunbookNoteText + "</p>"
+	if got.WorkNotes == nil || !strings.HasPrefix(*got.WorkNotes, want) {
 		t.Fatalf("WorkNotes = %v, want %q", got.WorkNotes, want)
 	}
 }
