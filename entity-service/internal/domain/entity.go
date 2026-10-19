@@ -1953,9 +1953,12 @@ type DeploymentView struct {
 	Project     EntityRef      `json:"project"`
 	// ProjectSfID is the Salesforce id of the deployment's project; null when the
 	// project has none (or the data source does not carry it).
-	ProjectSfID *string   `json:"projectSfId"`
-	CreatedOn   time.Time `json:"createdOn"`
-	UpdatedOn   time.Time `json:"updatedOn"`
+	ProjectSfID *string `json:"projectSfId"`
+	// Active reports whether the deployment is active; null when the data
+	// source does not say.
+	Active    *bool     `json:"active"`
+	CreatedOn time.Time `json:"createdOn"`
+	UpdatedOn time.Time `json:"updatedOn"`
 	// DeployedProductCount is the number of deployed products in this
 	// deployment, as reported by the upstream data source. Consumers rely on it
 	// to tell whether a deployment has any products at all without a second
@@ -2095,6 +2098,9 @@ type DeployedProductView struct {
 	// (deployed_product.project_id); null when it has none or the data source
 	// does not carry it.
 	ProjectSfID *string `json:"projectSfId"`
+	// Active reports whether the deployed product is active (a missing value in
+	// the database counts as active); null when the data source does not say.
+	Active *bool `json:"active"`
 	// Description is the customer's own free-text note about this deployed
 	// product. It is editable through the update endpoint, so it has to be
 	// readable here too — otherwise a client cannot show the current value
@@ -2150,6 +2156,11 @@ type SearchDeployedProductsRequest struct {
 	// exact and case-sensitive, combining (AND) with DeploymentIDs. Postgres
 	// data source only.
 	ProjectSfIDs []string `json:"projectSfIds,omitempty"`
+	// Active filters on the deployed product's active state. Omitted (or true)
+	// returns active deployed products only -- the default; false returns
+	// deactivated ones only. A missing value in the database counts as active.
+	// Postgres data source only.
+	Active *bool `json:"active,omitempty"`
 }
 
 // SearchDeployedProductsResponse is the paginated result of a deployed-product search.

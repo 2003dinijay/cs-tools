@@ -16485,6 +16485,10 @@ components:
           type: string
           nullable: true
           description: Salesforce id of the deployment's project; null when the project has none.
+        active:
+          type: boolean
+          nullable: true
+          description: Whether the deployment is active.
         createdOn:
           type: string
           format: date-time
@@ -16619,6 +16623,10 @@ components:
           items:
             type: string
           description: Only deployed products of the projects whose Salesforce id is any of the given values (exact, case-sensitive; empty or padded values are rejected with 400, at most 100). Combines with deploymentIds. Postgres data source only.
+        active:
+          type: boolean
+          default: true
+          description: Filter on the deployed product's active state. Defaults to true (active deployed products only); false returns deactivated ones only. A product with no recorded state counts as active. Postgres data source only.
 
     DeployedProductVersionRef:
       type: object
@@ -16689,6 +16697,10 @@ components:
           type: string
           nullable: true
           description: Salesforce id of the deployed product's project; null when the project has none.
+        active:
+          type: boolean
+          nullable: true
+          description: Whether the deployed product is active.
         description:
           type: string
           nullable: true

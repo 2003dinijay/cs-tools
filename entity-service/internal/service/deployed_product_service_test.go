@@ -509,3 +509,23 @@ func TestDeployedProductService_SearchDeployedProducts_ProjectSfIDs(t *testing.T
 		}
 	}
 }
+
+// active reaches the repository as sent; nil when omitted, so the repository's
+// default of active-only applies.
+func TestDeployedProductService_SearchDeployedProducts_ActiveFilter(t *testing.T) {
+	var gotReq domain.SearchDeployedProductsRequest
+	svc := NewDeployedProductService(&stubDeployedProductRepo{
+		searchDeployedProducts: func(_ context.Context, req domain.SearchDeployedProductsRequest) ([]domain.DeployedProductView, int, error) {
+			gotReq = req
+			return nil, 0, nil
+		},
+	})
+	no := false
+
+	if _, err := svc.SearchDeployedProducts(context.Background(), domain.SearchDeployedProductsRequest{}); err != nil || gotReq.Active != nil {
+		t.Errorf("omitted active: err=%v active=%v, want nil", err, gotReq.Active)
+	}
+	if _, err := svc.SearchDeployedProducts(context.Background(), domain.SearchDeployedProductsRequest{Active: &no}); err != nil || gotReq.Active == nil || *gotReq.Active {
+		t.Errorf("active=false did not reach the repository: err=%v active=%v", err, gotReq.Active)
+	}
+}
