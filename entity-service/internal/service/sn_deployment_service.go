@@ -91,9 +91,6 @@ func (s *snDeploymentService) SearchDeployments(ctx context.Context, req domain.
 	if err := validateSearchQuery(req.SearchQuery); err != nil {
 		return domain.SearchDeploymentsResponse{}, err
 	}
-	if len(req.ProjectSfIDs) > 0 {
-		return domain.SearchDeploymentsResponse{}, &apierror.ValidationError{Msg: "projectSfIds is not supported on this data source"}
-	}
 
 	token := middleware.UserIDTokenFromContext(ctx)
 
