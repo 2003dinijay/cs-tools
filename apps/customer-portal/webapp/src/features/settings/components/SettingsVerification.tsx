@@ -31,10 +31,12 @@ import { usePatchProject } from "@features/settings/api/usePatchProject";
 import { useDarkMode } from "@utils/useDarkMode";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 import { useSuccessBanner } from "@context/success-banner/SuccessBannerContext";
+import ErrorIndicator from "@components/error-indicator/ErrorIndicator";
 import {
   SETTINGS_VERIFICATION_ADMIN_ONLY_HINT,
   SETTINGS_VERIFICATION_HEADER_BODY,
   SETTINGS_VERIFICATION_HEADER_TITLE,
+  SETTINGS_VERIFICATION_LOAD_ERROR,
   SETTINGS_VERIFICATION_PATCH_ERROR,
   SETTINGS_VERIFICATION_SECTION_TITLE,
   SETTINGS_VERIFICATION_SUCCESS_MESSAGE,
@@ -59,8 +61,11 @@ export default function SettingsVerification({
 }: SettingsVerificationProps): JSX.Element {
   const { showError } = useErrorBanner();
   const { showSuccess } = useSuccessBanner();
-  const { data: projectDetails, isLoading: isProjectDetailsLoading } =
-    useGetProjectDetails(projectId);
+  const {
+    data: projectDetails,
+    isLoading: isProjectDetailsLoading,
+    isError: isProjectDetailsError,
+  } = useGetProjectDetails(projectId);
   const patchProject = usePatchProject(projectId);
   const [verificationOverride, setVerificationOverride] = useState<
     boolean | null
@@ -98,7 +103,10 @@ export default function SettingsVerification({
   const isDarkMode = useDarkMode();
 
   const disabledForSwitches =
-    !canEdit || isProjectDetailsLoading || patchProject.isPending;
+    !canEdit ||
+    isProjectDetailsLoading ||
+    isProjectDetailsError ||
+    patchProject.isPending;
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
@@ -210,25 +218,34 @@ export default function SettingsVerification({
                   >
                     {SETTINGS_VERIFICATION_TOGGLE_LABEL}
                   </Typography>
-                  <Chip
-                    label={verificationEnabled ? "Active" : "Inactive"}
-                    size="small"
-                    color={!canEdit ? "default" : verificationEnabled ? "success" : "default"}
-                    variant="outlined"
-                    sx={{
-                      height: 20,
-                      fontSize: "0.7rem",
-                      ...(!canEdit && {
-                        color: "text.disabled",
-                        borderColor: isDarkMode
-                          ? alpha(colors.grey[600], 0.5)
-                          : "action.disabled",
-                      }),
-                    }}
-                  />
+                  {isProjectDetailsError ? (
+                    <ErrorIndicator entityName="Pending Verification setting" size="small" />
+                  ) : (
+                    <Chip
+                      label={verificationEnabled ? "Active" : "Inactive"}
+                      size="small"
+                      color={!canEdit ? "default" : verificationEnabled ? "success" : "default"}
+                      variant="outlined"
+                      sx={{
+                        height: 20,
+                        fontSize: "0.7rem",
+                        ...(!canEdit && {
+                          color: "text.disabled",
+                          borderColor: isDarkMode
+                            ? alpha(colors.grey[600], 0.5)
+                            : "action.disabled",
+                        }),
+                      }}
+                    />
+                  )}
                 </Box>
-                <Typography variant="body2" color={!canEdit ? "text.disabled" : "text.secondary"}>
-                  {SETTINGS_VERIFICATION_TOGGLE_DESCRIPTION}
+                <Typography
+                  variant="body2"
+                  color={isProjectDetailsError ? "error" : !canEdit ? "text.disabled" : "text.secondary"}
+                >
+                  {isProjectDetailsError
+                    ? SETTINGS_VERIFICATION_LOAD_ERROR
+                    : SETTINGS_VERIFICATION_TOGGLE_DESCRIPTION}
                 </Typography>
               </Box>
               <FormControlLabel

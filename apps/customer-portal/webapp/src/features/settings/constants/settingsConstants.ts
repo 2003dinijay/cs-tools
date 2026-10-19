@@ -363,6 +363,9 @@ export const SETTINGS_VERIFICATION_SUCCESS_MESSAGE =
 export const SETTINGS_VERIFICATION_PATCH_ERROR =
   "Failed to update Pending Verification settings.";
 
+export const SETTINGS_VERIFICATION_LOAD_ERROR =
+  "Could not load the current Pending Verification setting. Try again before changing it.";
+
 export const SETTINGS_VERIFICATION_HEADER_TITLE = "Pending Verification";
 
 export const SETTINGS_VERIFICATION_HEADER_BODY =
