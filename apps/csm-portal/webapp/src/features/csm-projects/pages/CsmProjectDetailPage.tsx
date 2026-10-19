@@ -24,7 +24,6 @@ import {
   Skeleton,
   Tab,
   Tabs,
-  Tooltip,
   Typography,
 } from "@wso2/oxygen-ui";
 import { ArrowLeft, ChevronDown, Plus } from "@wso2/oxygen-ui-icons-react";
@@ -251,13 +250,9 @@ export default function CsmProjectDetailPage(): JSX.Element {
         <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap", flexShrink: 0 }}>
           {/* Shown to anyone who can open this project. Outlined, not
               contained: the single contained CTA on this page is Create. */}
-          <Tooltip title="Coming">
-            <Box component="span" className="csm-print-hide" sx={{ display: "inline-flex" }}>
-              <Button variant="outlined" size="small" disabled>
-                SLA Report — Coming soon
-              </Button>
-            </Box>
-          </Tooltip>
+          <Button variant="outlined" size="small" className="csm-print-hide" disabled>
+            SLA Report — Coming soon
+          </Button>
           <Button
             variant="outlined"
             size="small"
