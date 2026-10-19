@@ -7692,7 +7692,20 @@ Routing is configuration, not code or tables: `SPECIALIST_HANDOFF_CONFIG`
 (one line of JSON, `specialist_handoff_config.go`, validated at startup --
 a bad value refuses to start) lists products, each with its service ids,
 its Special Ops teams (`key` = the handoff's `escalationTeam`, `label`,
-`groupId`) and an optional GitHub repo. A product with several teams
+`groupId`) and an optional GitHub repo. A team with no `groupId` is the
+Team Schedule team keyed `key` (`{"key":"u2"}`): at startup
+`ResolveTeamGroups` (`specialist_handoff_group_repo.go`) takes the team's id
+as its group id and its name as an empty `label`, `smeTeam` defaults to the
+key, and a `"group"` row with that id and name is added when missing --
+`work_item.assignment_group_id` references `"group"`, so the incident needs
+one. ServiceNow-synced teams already share their group's id; an existing
+row is never touched. A key no team holds is logged and the team refuses
+handoffs (409) until the team exists and the service restarts. NewRouter
+resolves its copy of the config at startup; the alert drainer's copy (main.go)
+resolves on demand instead (`WithSpecialOpsAlertTeamGroups`): a group change
+matching no team while a team-only team is unresolved resolves them first,
+and a failed lookup is returned so the change is retried -- a handoff the
+router took always raises its alert. A product with several teams
 (Choreo) requires `escalationTeam`; one with a single team (Asgardeo) takes
 it and records no team, as SN does. `GET /specialist-handoff-teams?serviceId=`
 feeds the dialog, and `IncidentView.CanHandOffToSpecialist` (SN's
