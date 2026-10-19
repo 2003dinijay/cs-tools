@@ -957,8 +957,19 @@ func (s *snIncidentService) CreateIncident(ctx context.Context, req domain.Creat
 	resp.Incident.CreatedOn = snResp.Incident.CreatedOn
 	resp.Incident.CreatedBy = snResp.Incident.CreatedBy
 	resp.Incident.Priority = incidentPriorityFor(req.Impact, req.Urgency)
+	s.addRunbookWorkNote(ctx, resp.Incident.ID, req.RunbookWorkNote)
 	s.publishIncidentCreated(ctx, req, resp.Incident.ID, resp.Incident.Number, resp.Incident.CreatedOn)
 	return resp, nil
+}
+
+// addRunbookWorkNote adds the runbook note to the new incident as a work note of its own; a failure is logged and never fails the create.
+func (s *snIncidentService) addRunbookWorkNote(ctx context.Context, incidentID string, note *string) {
+	if note == nil || strings.TrimSpace(*note) == "" {
+		return
+	}
+	if _, err := s.UpdateIncident(ctx, domain.UpdateIncidentRequest{ID: incidentID, WorkNotes: note}); err != nil {
+		slog.WarnContext(ctx, "incident create: runbook work note not added", "incidentId", incidentID, "error", err)
+	}
 }
 
 // publishIncidentCreated best-effort publishes an incident.created event for
