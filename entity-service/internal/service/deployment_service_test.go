@@ -326,3 +326,60 @@ func TestDeploymentService_UpdateDeployment_MirrorFailureDoesNotFailTheUpdate(t 
 		t.Fatal("mirror.UpdateDeployment was never called")
 	}
 }
+
+// SearchDeployments forwards projectSfIds to the repository and rejects values
+// that could never match, instead of silently returning nothing.
+func TestDeploymentService_SearchDeployments_ProjectSfIDs(t *testing.T) {
+	var gotReq domain.SearchDeploymentsRequest
+	svc := NewDeploymentService(&stubDeploymentRepo{
+		searchDeployments: func(_ context.Context, req domain.SearchDeploymentsRequest) ([]domain.DeploymentView, int, error) {
+			gotReq = req
+			return nil, 0, nil
+		},
+	})
+
+	if _, err := svc.SearchDeployments(context.Background(), domain.SearchDeploymentsRequest{ProjectSfIDs: []string{"SF001", "SF002"}}); err != nil {
+		t.Fatalf("SearchDeployments: unexpected error: %v", err)
+	}
+	if len(gotReq.ProjectSfIDs) != 2 || gotReq.ProjectSfIDs[0] != "SF001" {
+		t.Errorf("repository did not receive projectSfIds: got %v", gotReq.ProjectSfIDs)
+	}
+
+	for name, ids := range map[string][]string{"empty": {""}, "blank": {"  "}, "padded": {" SF001"}} {
+		if _, err := svc.SearchDeployments(context.Background(), domain.SearchDeploymentsRequest{ProjectSfIDs: ids}); err == nil {
+			t.Errorf("%s: expected a validation error", name)
+		}
+	}
+	tooMany := make([]string, maxProjectSfIDs+1)
+	for i := range tooMany {
+		tooMany[i] = "SF"
+	}
+	if _, err := svc.SearchDeployments(context.Background(), domain.SearchDeploymentsRequest{ProjectSfIDs: tooMany}); err == nil {
+		t.Error("expected a validation error for too many projectSfIds")
+	}
+}
+
+// active is forwarded as sent (nil when omitted, so the repository's default of
+// active-only applies), and contradicts includeInactive: true.
+func TestDeploymentService_SearchDeployments_ActiveFilter(t *testing.T) {
+	var gotReq domain.SearchDeploymentsRequest
+	svc := NewDeploymentService(&stubDeploymentRepo{
+		searchDeployments: func(_ context.Context, req domain.SearchDeploymentsRequest) ([]domain.DeploymentView, int, error) {
+			gotReq = req
+			return nil, 0, nil
+		},
+	})
+	no, yes := false, true
+
+	if _, err := svc.SearchDeployments(context.Background(), domain.SearchDeploymentsRequest{}); err != nil || gotReq.Active != nil {
+		t.Errorf("omitted active: err=%v active=%v, want nil", err, gotReq.Active)
+	}
+	if _, err := svc.SearchDeployments(context.Background(), domain.SearchDeploymentsRequest{Active: &no}); err != nil || gotReq.Active == nil || *gotReq.Active {
+		t.Errorf("active=false did not reach the repository: err=%v active=%v", err, gotReq.Active)
+	}
+	for name, active := range map[string]*bool{"true": &yes, "false": &no} {
+		if _, err := svc.SearchDeployments(context.Background(), domain.SearchDeploymentsRequest{Active: active, IncludeInactive: true}); err == nil {
+			t.Errorf("active=%s with includeInactive=true: expected a validation error", name)
+		}
+	}
+}

@@ -426,6 +426,14 @@ func (r *deployedProductRepo) SearchDeployedProducts(ctx context.Context, req do
 		argIdx++
 	}
 
+	// Scoped by the deployed product's own project (dp.project_id), not its
+	// deployment's. project.sf_id is nullable and a NULL never matches ANY().
+	if len(req.ProjectSfIDs) > 0 {
+		where += fmt.Sprintf(" AND dp.project_id IN (SELECT id FROM project WHERE sf_id = ANY($%d::text[]))", argIdx)
+		filterArgs = append(filterArgs, req.ProjectSfIDs)
+		argIdx++
+	}
+
 	// deployed_product.product_category (deployed_product_category_enum:
 	// PDP/MS/PS/CL/PC) is already selected below -- the request's own
 	// lowercase values (SearchDeployedProductsRequest.ProductCategories'
@@ -458,7 +466,7 @@ func (r *deployedProductRepo) SearchDeployedProducts(ctx context.Context, req do
 	dataQuery := fmt.Sprintf(
 		`SELECT dp.id, dp.created_on, dp.updated_on,
 		        dp.core_count, dp.tps_count, dp.product_category::TEXT,
-		        dp.description, dp.update_level_info,
+		        dp.description, dp.update_level_info, pr.sf_id,
 		        d.id, d.name,
 		        p.id, p.name, p.code,
 		        pv.id, pv.version, pv.release_date, pv.support_eol_date
@@ -466,6 +474,7 @@ func (r *deployedProductRepo) SearchDeployedProducts(ctx context.Context, req do
 		 JOIN deployment d ON dp.deployment_id = d.id
 		 JOIN product p ON dp.product_id = p.id
 		 LEFT JOIN product_version pv ON dp.version_id = pv.id
+		 LEFT JOIN project pr ON dp.project_id = pr.id
 		 %s
 		 ORDER BY dp.created_on DESC, dp.id
 		 LIMIT $%d OFFSET $%d`,
@@ -504,7 +513,7 @@ func (r *deployedProductRepo) SearchDeployedProducts(ctx context.Context, req do
 			if err := rows.Scan(
 				&dp.ID, &dp.CreatedOn, &dp.UpdatedOn,
 				&dp.Cores, &dp.TPS, &dp.Category,
-				&dp.Description, &updateLevelInfo,
+				&dp.Description, &updateLevelInfo, &dp.ProjectSfID,
 				&dp.Deployment.ID, &dp.Deployment.Name,
 				&dp.Product.ID, &dp.Product.Name, &dp.Product.Abbreviation,
 				&pvID, &pvName, &pvReleaseDate, &pvEoLDate,

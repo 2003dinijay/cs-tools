@@ -65,6 +65,13 @@ func (r *productVersionRepo) SearchProductVersions(ctx context.Context, req doma
 		argIdx++
 	}
 
+	// An empty profile (an explicit opt-out) applies no profile filter.
+	if req.DeploymentProfile != nil && *req.DeploymentProfile != "" {
+		where += fmt.Sprintf(" AND lower(deployment_profile) = lower($%d)", argIdx)
+		filterArgs = append(filterArgs, *req.DeploymentProfile)
+		argIdx++
+	}
+
 	countQuery := "SELECT COUNT(*) FROM product_version " + where
 
 	dataQuery := fmt.Sprintf(
