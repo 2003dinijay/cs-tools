@@ -6069,6 +6069,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden — Pending Verification is not enabled for this project.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "409":
+          description: Conflict — the case already has an unverified entry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
         "500":
           description: InternalServerError
           content:
@@ -6106,6 +6118,12 @@ paths:
                 $ref: '#/components/schemas/ErrorPayload'
         "401":
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden — Pending Verification is not enabled for this project.
           content:
             application/json:
               schema:
@@ -6148,6 +6166,12 @@ paths:
                 $ref: '#/components/schemas/ErrorPayload'
         "401":
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden — Pending Verification is not enabled for this project.
           content:
             application/json:
               schema:
@@ -6330,6 +6354,14 @@ components:
           items:
             type: string
             enum: [Case, Engagement, Security Report, Service Request, Announcement, Change Request]
+        addedReason:
+          type: string
+          enum: [auto-closed, manual]
+          description: >-
+            Narrows to entries added for this one reason — backs the Support
+            page's Auto-closed/Manual stat boxes, which link into a
+            pre-filtered view of the list rather than landing on the
+            unfiltered tab.
         searchQuery:
           type: string
         includeVerified:
