@@ -369,7 +369,7 @@ export const SETTINGS_VERIFICATION_LOAD_ERROR =
 export const SETTINGS_VERIFICATION_HEADER_TITLE = "Pending Verification";
 
 export const SETTINGS_VERIFICATION_HEADER_BODY =
-  "Require formal customer sign-off before a case, engagement, service request, security report, or change request is considered done.";
+  "Let customers flag a closed case for their own follow-up verification, and mark it verified once they've confirmed it's resolved.";
 
 export const SETTINGS_VERIFICATION_SECTION_TITLE = "Verification Settings";
 
