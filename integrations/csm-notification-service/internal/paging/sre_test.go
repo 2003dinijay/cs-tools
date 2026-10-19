@@ -33,21 +33,14 @@ import (
 // them, plus one CRE window, whatever the stub holds otherwise. The windows
 // are reference data rather than something a test varies.
 func (s *stubScheduleReader) ScheduleCatalogue(context.Context) (scheduleCatalogue, error) {
+	if s.catalogue != nil {
+		return *s.catalogue, nil
+	}
 	var cat scheduleCatalogue
 	for _, t := range []struct{ key, family string }{
 		{"apollo", "SRE"}, {"artemis", "SRE"}, {"atlas", "CRE"},
 	} {
-		cat.Teams = append(cat.Teams, struct {
-			Key    string `json:"key"`
-			Name   string `json:"name"`
-			Family string `json:"family"`
-		}{t.key, t.key, t.family})
-	}
-	str := func(v string) *string {
-		if v == "" {
-			return nil
-		}
-		return &v
+		cat.Teams = append(cat.Teams, catalogueTeam{Key: t.key, Name: t.key, Family: t.family})
 	}
 	for _, sh := range []struct{ code, family, zone, tier string }{
 		{"SRE_TZ1_L1", "SRE", "TZ1", "L1"},
@@ -57,14 +50,17 @@ func (s *stubScheduleReader) ScheduleCatalogue(context.Context) (scheduleCatalog
 		{"SRE_TZ3", "SRE", "TZ3", ""},
 		{"CRE_MORNING", "CRE", "", ""},
 	} {
-		cat.Shifts = append(cat.Shifts, struct {
-			Code     string  `json:"code"`
-			Family   string  `json:"family"`
-			ZoneCode *string `json:"zoneCode,omitempty"`
-			Tier     *string `json:"tier,omitempty"`
-		}{sh.code, sh.family, str(sh.zone), str(sh.tier)})
+		cat.Shifts = append(cat.Shifts, catalogueShift{Code: sh.code, Family: sh.family, ZoneCode: optStr(sh.zone), Tier: optStr(sh.tier)})
 	}
 	return cat, nil
+}
+
+// optStr is nil for "", as the catalogue's optional fields arrive.
+func optStr(v string) *string {
+	if v == "" {
+		return nil
+	}
+	return &v
 }
 
 // sreTeams is the SRE half of the configuration: the two SRE-ABTs.
@@ -244,9 +240,9 @@ type handoverReader struct {
 	after    []onDutyAssignment
 }
 
-func (h handoverReader) OnDutyAt(ctx context.Context, at time.Time) ([]onDutyAssignment, error) {
+func (h handoverReader) OnDutyAt(ctx context.Context, at time.Time, includeOnLeave bool) ([]onDutyAssignment, error) {
 	if at.Before(h.handover) {
-		return h.stubScheduleReader.OnDutyAt(ctx, at)
+		return h.stubScheduleReader.OnDutyAt(ctx, at, includeOnLeave)
 	}
 	return h.after, nil
 }
@@ -337,7 +333,7 @@ func TestResolveSRE_PhoneBookFillsNumbers(t *testing.T) {
 }
 
 func TestSRE_RolesAndInstruction(t *testing.T) {
-	if got := Level1.RoleIn(LadderSRE); got != "L2 support" {
+	if got := Level1.RoleIn(LadderSRE); got != "L2 Support" {
 		t.Errorf("RoleIn = %q", got)
 	}
 	if got := Level1.RoleIn(LadderCRE); got != Level1.Role() {
@@ -400,7 +396,7 @@ func TestEngine_SRELadderStopsWhenAssigned(t *testing.T) {
 	if !found || st.Plan.Trigger.Routing.Ladder != LadderSRE || len(st.Plan.Calls) != 3 {
 		t.Fatalf("found=%v ladder=%q calls=%d; want an SRE ladder of 3", found, st.Plan.Trigger.Routing.Ladder, len(st.Plan.Calls))
 	}
-	for i, want := range []string{"L1 support", "L2 support"} {
+	for i, want := range []string{"L1 Support", "L2 Support"} {
 		if err := e.Tick(ctx, testClock.Add(time.Duration(i)*5*time.Minute)); err != nil {
 			t.Fatal(err)
 		}
@@ -444,66 +440,242 @@ func TestEngine_SRELadderRunsAtEveryPriority(t *testing.T) {
 	}
 }
 
-// The ladders divide the incidents: an SRE team's incident is the SRE
-// engine's alone, a CRE team's non-P0 incident the CRE engine's alone.
-func TestEngines_DivideIncidentsByTeam(t *testing.T) {
+// The agreed routing (Case Paging Rules.xlsx): a customer case S0 pages CRE
+// and SRE, S1-S4 CRE only; an SRE incident pages SRE only; an incident on a
+// CRE team pages nobody, since CRE work arrives as a case.
+func TestEngines_RouteCasesAndIncidents(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
-		team, priority string
-		cre, sre       bool
+		name     string
+		rec      func() eventbus.Record
+		cre, sre bool
 	}{
-		{"Apollo", "HIGH", false, true},
-		{"Atlas", "HIGH", true, false},
-		{"Atlas", "P0", true, true},
-		{"Atlas", "CATASTROPHIC", true, true},
-		// An incident's highest priority: no incident is CATASTROPHIC.
-		{"Atlas", "CRITICAL", true, true},
-		{"Apollo", "CRITICAL", false, true},
+		{"SRE incident HIGH", func() eventbus.Record { return created(t, "Apollo", "HIGH") }, false, true},
+		{"SRE incident CRITICAL", func() eventbus.Record { return created(t, "Apollo", "CRITICAL") }, false, true},
+		{"CRE-team incident HIGH", func() eventbus.Record { return created(t, "Atlas", "HIGH") }, false, false},
+		{"CRE-team incident CRITICAL", func() eventbus.Record { return created(t, "Atlas", "CRITICAL") }, false, false},
+		{"case S0", func() eventbus.Record { return caseCreated(t, "Atlas", "CATASTROPHIC") }, true, true},
+		{"case S1", func() eventbus.Record { return caseCreated(t, "Atlas", "CRITICAL") }, true, false},
+		{"case S2", func() eventbus.Record { return caseCreated(t, "Atlas", "HIGH") }, true, false},
+		{"case S3", func() eventbus.Record { return caseCreated(t, "Atlas", "MEDIUM") }, true, false},
+		{"case S4, no priority gate", func() eventbus.Record { return caseCreated(t, "Atlas", "LOW") }, true, false},
+		{"service request", func() eventbus.Record { return caseCreatedOfType(t, "SERVICE_REQUEST", "Atlas", "") }, false, false},
 	} {
 		creStore, sreStore := newMemStore(), newMemStore()
 		cre, sre := ladderEngine(LadderCRE, &fakeChat{}, creStore), ladderEngine(LadderSRE, &fakeChat{}, sreStore)
 		for _, e := range []*Engine{cre, sre} {
-			if err := e.Handle(ctx, created(t, tc.team, tc.priority)); err != nil {
-				t.Fatal(err)
+			if err := e.Handle(ctx, tc.rec()); err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
 			}
 		}
 		_, gotCRE, _ := creStore.Get(ctx, testIncidentID)
 		_, gotSRE, _ := sreStore.Get(ctx, testIncidentID)
 		if gotCRE != tc.cre || gotSRE != tc.sre {
-			t.Errorf("%s %s: CRE=%v SRE=%v; want CRE=%v SRE=%v", tc.team, tc.priority, gotCRE, gotSRE, tc.cre, tc.sre)
+			t.Errorf("%s: CRE=%v SRE=%v; want CRE=%v SRE=%v", tc.name, gotCRE, gotSRE, tc.cre, tc.sre)
 		}
 	}
 }
 
-// A P0 CRE incident runs both ladders; an assignee stops the SRE one only.
-func TestEngines_P0RunsBothAndAssignmentStopsOnlySRE(t *testing.T) {
+// S4 is paged only when cre.trigger.priorities lists it.
+func TestEngine_CaseS4IsOptional(t *testing.T) {
+	ctx := context.Background()
+	store := newMemStore()
+	cre := ladderEngine(LadderCRE, &fakeChat{}, store)
+	cre.cfg.Ladder.Start.Priorities = []string{"S0", "S1", "S2", "S3"}
+	if err := cre.Handle(ctx, caseCreated(t, "Atlas", "LOW")); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, _ := store.Get(ctx, testIncidentID); found {
+		t.Fatal("an S4 case was paged with S4 left out of cre.trigger.priorities")
+	}
+	cre.cfg.Ladder.Start.Priorities = append(cre.cfg.Ladder.Start.Priorities, "S4")
+	if err := cre.Handle(ctx, caseCreated(t, "Atlas", "LOW")); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, _ := store.Get(ctx, testIncidentID); !found {
+		t.Fatal("an S4 case was not paged with S4 listed")
+	}
+}
+
+// A case S0: any engineer assigned stops SRE; CRE needs the assignee's public
+// comment too. A customer's comment stops neither. The summary goes onto the
+// case.
+func TestEngines_CaseS0StopRules(t *testing.T) {
 	ctx := context.Background()
 	creStore, sreStore := newMemStore(), newMemStore()
 	cre, sre := ladderEngine(LadderCRE, &fakeChat{}, creStore), ladderEngine(LadderSRE, &fakeChat{}, sreStore)
-	for _, e := range []*Engine{cre, sre} {
-		if err := e.Handle(ctx, created(t, "Atlas", "P0")); err != nil {
-			t.Fatal(err)
+	both := func(r eventbus.Record) {
+		t.Helper()
+		for _, e := range []*Engine{cre, sre} {
+			if err := e.Handle(ctx, r); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
+	both(caseCreated(t, "Atlas", "CATASTROPHIC"))
 	st, _, _ := sreStore.Get(ctx, testIncidentID)
-	if st.Plan.Trigger.Routing.Ladder != LadderSRE {
-		t.Fatalf("the P0's SRE plan routes as %q", st.Plan.Trigger.Routing.Ladder)
+	if st.Plan.Trigger.Routing.Ladder != LadderSRE || !st.Plan.Trigger.isCase() {
+		t.Fatalf("SRE plan: ladder %q, record %q", st.Plan.Trigger.Routing.Ladder, st.Plan.Trigger.Record)
 	}
-	for _, e := range []*Engine{cre, sre} {
-		if err := e.Handle(ctx, assigned(t)); err != nil {
-			t.Fatal(err)
-		}
+
+	both(caseComment(t, "customer@acme.com", false, false))
+	if _, found, _ := creStore.Get(ctx, testIncidentID); !found {
+		t.Fatal("a customer's comment stopped the CRE chain")
 	}
+	if _, found, _ := sreStore.Get(ctx, testIncidentID); !found {
+		t.Fatal("a customer's comment stopped the SRE chain")
+	}
+
+	both(caseAssigned(t, "eng@wso2.com"))
 	if _, found, _ := sreStore.Get(ctx, testIncidentID); found {
-		t.Error("the SRE ladder kept climbing after an assignee was set")
+		t.Fatal("the SRE chain kept paging after an engineer was assigned to the S0 case")
 	}
 	if st, found, _ := creStore.Get(ctx, testIncidentID); !found || st.Cancelled != nil {
-		t.Error("an assignee stopped the CRE ladder; assignment is not a CRE acknowledgement")
+		t.Fatal("assignment alone stopped the CRE chain; it needs the assignee's public comment too")
+	}
+
+	both(caseComment(t, "other@wso2.com", false, true))
+	if _, found, _ := creStore.Get(ctx, testIncidentID); !found {
+		t.Fatal("another engineer's comment stopped the CRE chain; only the assignee's counts")
+	}
+	both(caseComment(t, "eng@wso2.com", true, true))
+	if _, found, _ := creStore.Get(ctx, testIncidentID); !found {
+		t.Fatal("the assignee's work note stopped the CRE chain; only a public comment counts")
+	}
+	both(caseComment(t, "ENG@wso2.com", false, true))
+	if _, found, _ := creStore.Get(ctx, testIncidentID); found {
+		t.Fatal("the CRE chain kept paging after the assignee's public comment")
+	}
+	if notes := cre.notes.(*fakeNotes); len(notes.caseNotes) != 1 || len(notes.notes) != 0 {
+		t.Fatalf("summary: %d on the case, %d on an incident; want 1 on the case", len(notes.caseNotes), len(notes.notes))
 	}
 }
 
-// An elevation brings a CRE incident onto the SRE ladder when it reaches P0,
-// and never restarts an SRE team's ladder.
+// A comment written just before its author is assigned still counts.
+func TestEngine_CaseCommentBeforeAssignmentCounts(t *testing.T) {
+	ctx := context.Background()
+	store := newMemStore()
+	cre := ladderEngine(LadderCRE, &fakeChat{}, store)
+	for _, r := range []eventbus.Record{
+		caseCreated(t, "Atlas", "HIGH"),
+		caseComment(t, "eng@wso2.com", false, true),
+		caseAssigned(t, "eng@wso2.com"),
+	} {
+		if err := cre.Handle(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, found, _ := store.Get(ctx, testIncidentID); found {
+		t.Fatal("the chain kept paging: the comment came first, then its author was assigned")
+	}
+}
+
+// Any severity change stops the running chain and starts a new one for the new
+// severity, even after acknowledgement; S0 brings SRE in and losing it takes
+// SRE out; S4 (off) pages nobody. A case already assigned when raised to S0
+// stops both chains on the assignee's comment.
+func TestEngines_CaseSeverityChanges(t *testing.T) {
+	ctx := context.Background()
+	creStore, sreStore := newMemStore(), newMemStore()
+	cre, sre := ladderEngine(LadderCRE, &fakeChat{}, creStore), ladderEngine(LadderSRE, &fakeChat{}, sreStore)
+	cre.cfg.Ladder.Start.Priorities = []string{"S0", "S1", "S2", "S3"}
+	both := func(r eventbus.Record) {
+		t.Helper()
+		for _, e := range []*Engine{cre, sre} {
+			if err := e.Handle(ctx, r); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	running := func() (string, bool) {
+		st, found, _ := creStore.Get(ctx, testIncidentID)
+		return NormalisePriority(st.Plan.Trigger.Priority), found
+	}
+	sreRunning := func() bool { _, found, _ := sreStore.Get(ctx, testIncidentID); return found }
+
+	both(caseCreated(t, "Atlas", "MEDIUM"))
+	both(severityChanged(t, "MEDIUM", "CRITICAL"))
+	if p, ok := running(); !ok || p != "P1" || sreRunning() {
+		t.Fatalf("S3 -> S1: CRE %v at %s, SRE %v; want a new S1 CRE chain and no SRE", ok, p, sreRunning())
+	}
+
+	both(severityChanged(t, "CRITICAL", "CATASTROPHIC"))
+	if p, ok := running(); !ok || p != "P0" || !sreRunning() {
+		t.Fatalf("S1 -> S0: CRE %v at %s, SRE %v; want both, CRE at S0", ok, p, sreRunning())
+	}
+	before, _, _ := sreStore.Get(ctx, testIncidentID)
+	both(severityChanged(t, "CRITICAL", "CATASTROPHIC")) // redelivered
+	after, _, _ := sreStore.Get(ctx, testIncidentID)
+	if !after.Plan.Trigger.At.Equal(before.Plan.Trigger.At) {
+		t.Fatal("a redelivered severity change restarted the SRE chain")
+	}
+
+	both(severityChanged(t, "CATASTROPHIC", "HIGH"))
+	if p, ok := running(); !ok || p != "P2" || sreRunning() {
+		t.Fatalf("S0 -> S2: CRE %v at %s, SRE %v; want a new S2 CRE chain and SRE stopped", ok, p, sreRunning())
+	}
+
+	// Acknowledged: assigned and the assignee's comment.
+	both(caseAssigned(t, "eng@wso2.com"))
+	both(caseComment(t, "eng@wso2.com", false, true))
+	if _, ok := running(); ok {
+		t.Fatal("the acknowledged S2 chain kept paging")
+	}
+	// Lowered after acknowledgement: still a new chain.
+	both(severityChanged(t, "HIGH", "MEDIUM"))
+	if p, ok := running(); !ok || p != "P3" {
+		t.Fatalf("S2 -> S3 after acknowledgement: CRE %v at %s; want a new S3 chain", ok, p)
+	}
+	// Raised to S0 while assigned: both start; the assignee's comment stops both.
+	both(severityChanged(t, "MEDIUM", "CATASTROPHIC"))
+	if _, ok := running(); !ok || !sreRunning() {
+		t.Fatal("S3 -> S0 on an assigned case did not start both chains")
+	}
+	both(caseComment(t, "eng@wso2.com", false, true))
+	if _, ok := running(); ok || sreRunning() {
+		t.Fatalf("the assignee's comment after the raise left CRE %v, SRE %v; want both stopped", ok, sreRunning())
+	}
+
+	// Lowered to S4 while S4 is off: nobody is paged.
+	both(severityChanged(t, "CATASTROPHIC", "HIGH"))
+	both(severityChanged(t, "HIGH", "LOW"))
+	if _, ok := running(); ok || sreRunning() {
+		t.Fatal("a case lowered to S4 (off) is still paging")
+	}
+}
+
+// A closed case stops both chains.
+func TestEngines_ClosedCaseStopsBoth(t *testing.T) {
+	ctx := context.Background()
+	creStore, sreStore := newMemStore(), newMemStore()
+	cre, sre := ladderEngine(LadderCRE, &fakeChat{}, creStore), ladderEngine(LadderSRE, &fakeChat{}, sreStore)
+	for _, r := range []eventbus.Record{
+		caseCreated(t, "Atlas", "CATASTROPHIC"),
+		caseStatus(t, "Work In Progress"),
+	} {
+		for _, e := range []*Engine{cre, sre} {
+			if err := e.Handle(ctx, r); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if _, found, _ := creStore.Get(ctx, testIncidentID); !found {
+		t.Fatal("a status change that is not a close stopped the CRE chain")
+	}
+	for _, e := range []*Engine{cre, sre} {
+		if err := e.Handle(ctx, caseStatus(t, "Closed")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, creUp, _ := creStore.Get(ctx, testIncidentID)
+	_, sreUp, _ := sreStore.Get(ctx, testIncidentID)
+	if creUp || sreUp {
+		t.Fatalf("closed case: CRE %v, SRE %v still paging", creUp, sreUp)
+	}
+}
+
+// An incident elevation never brings SRE in from a CRE team -- CRE work, and
+// its S0, arrive as a case -- and never restarts an SRE team's ladder.
 func TestEngine_SREElevations(t *testing.T) {
 	ctx := context.Background()
 	elevated := func(team, to string) eventbus.Record {
@@ -512,31 +684,68 @@ func TestEngine_SREElevations(t *testing.T) {
 			Team: team, ElevatedAt: testClock.Format(time.RFC3339),
 		})
 	}
+	for _, tc := range []struct{ team, to, why string }{
+		{"Atlas", "P0", "a CRE-team incident elevated to P0 started the SRE ladder"},
+		{"Apollo", "P1", "an elevation started an SRE team's ladder; its clock does not depend on priority"},
+	} {
+		store := newMemStore()
+		if err := ladderEngine(LadderSRE, &fakeChat{}, store).Handle(ctx, elevated(tc.team, tc.to)); err != nil {
+			t.Fatal(err)
+		}
+		if _, found, _ := store.Get(ctx, testIncidentID); found {
+			t.Fatal(tc.why)
+		}
+	}
+}
 
-	store := newMemStore()
-	e := ladderEngine(LadderSRE, &fakeChat{}, store)
-	if err := e.Handle(ctx, elevated("Atlas", "P0")); err != nil {
-		t.Fatal(err)
-	}
-	if _, found, _ := store.Get(ctx, testIncidentID); !found {
-		t.Fatal("a CRE incident elevated to P0 did not start the SRE ladder")
-	}
+// --- case events ---------------------------------------------------------------
 
-	store = newMemStore()
-	e = ladderEngine(LadderSRE, &fakeChat{}, store)
-	if err := e.Handle(ctx, elevated("Apollo", "P1")); err != nil {
-		t.Fatal(err)
-	}
-	if _, found, _ := store.Get(ctx, testIncidentID); found {
-		t.Fatal("an elevation started an SRE team's ladder; its clock does not depend on priority")
-	}
+func caseCreated(t *testing.T, team, severity string) eventbus.Record {
+	return caseCreatedOfType(t, "CASE", team, severity)
+}
+
+func caseCreatedOfType(t *testing.T, caseType, team, severity string) eventbus.Record {
+	return record(t, events.TypeCaseCreated, events.CaseCreatedPayload{
+		ReporterName: "Jane Customer", ProjectName: "Acme", ProjectID: "p-1", CaseID: testIncidentID,
+		CaseNumber: "CS0099001", CaseTitle: "Gateway down", CaseType: caseType, Priority: severity,
+		Team: team, CreatedAt: testClock.Format(time.RFC3339), Description: "everything fails",
+		Recipients: []string{"watcher@wso2.com"},
+	})
+}
+
+func severityChanged(t *testing.T, from, to string) eventbus.Record {
+	return record(t, events.TypeSeverityChanged, events.SeverityChangedPayload{
+		ProjectID: "p-1", CaseID: testIncidentID, CaseNumber: "CS0099001", CaseTitle: "Gateway down",
+		OldSeverity: from, NewSeverity: to, Team: "Atlas", Recipients: []string{"watcher@wso2.com"},
+	})
+}
+
+func caseAssigned(t *testing.T, email string) eventbus.Record {
+	return record(t, events.TypeCaseAssigned, events.CaseAssignedPayload{
+		AssigneeName: "An Engineer", AssigneeEmail: email, ProjectID: "p-1", CaseID: testIncidentID,
+		Recipients: []string{"watcher@wso2.com"},
+	})
+}
+
+func caseComment(t *testing.T, author string, workNote, engineer bool) eventbus.Record {
+	return record(t, events.TypeCommentAdded, events.CommentAddedPayload{
+		Name: "Someone", ProjectID: "p-1", CaseID: testIncidentID, CaseTitle: "Gateway down",
+		CaseComment: "looking", CommentID: "c-1", IsInternalNote: workNote, AuthorEmail: author,
+		IsSupportEngineerResponse: engineer, Recipients: []string{"watcher@wso2.com"},
+	})
+}
+
+func caseStatus(t *testing.T, status string) eventbus.Record {
+	return record(t, events.TypeStatusChanged, events.StatusChangedPayload{
+		ProjectID: "p-1", CaseID: testIncidentID, NewStatus: status, Recipients: []string{"watcher@wso2.com"},
+	})
 }
 
 // --- configuration -----------------------------------------------------------
 
 func loadYAML(t *testing.T, body string) (Config, error) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "escalation.yaml")
+	path := filepath.Join(t.TempDir(), "paging-alert.yaml")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -574,14 +783,18 @@ func TestRouting_DefaultRules(t *testing.T) {
 		in       RouteInput
 		cre, sre bool
 	}{
-		{RouteInput{Team: "sre", Priority: "HIGH"}, false, true},                         // sheet "Yes" rows
-		{RouteInput{Team: "cre", Priority: "HIGH"}, true, false},                         // a CRE incident
-		{RouteInput{Team: "cre", Priority: "P0"}, true, true},                            // CRE P0: both
-		{RouteInput{Team: "cre", Priority: "CATASTROPHIC"}, true, true},                  // label = code
-		{RouteInput{Team: "none", Priority: "P0"}, true, false},                          // no team, no monitoring
-		{RouteInput{Team: "none", ContactType: "AZURE", Priority: "LOW"}, true, true},    // sheet "No" rows
-		{RouteInput{Team: "cre", ContactType: "SITE_24_7", Priority: "LOW"}, true, true}, // monitoring on a CRE team: both
-		{RouteInput{Team: "none", ContactType: "EMAIL"}, true, false},                    // a person raised it
+		{RouteInput{Record: "incident", Team: "sre", Priority: "HIGH"}, false, true},                           // sheet "Yes" rows
+		{RouteInput{Record: "incident", Team: "cre", Priority: "HIGH"}, false, false},                          // CRE work is a case
+		{RouteInput{Record: "incident", Team: "cre", Priority: "CRITICAL"}, false, false},                      // not S0
+		{RouteInput{Record: "incident", Team: "none", ContactType: "AZURE", Priority: "LOW"}, false, true},     // sheet "No" rows
+		{RouteInput{Record: "incident", Team: "sre", ContactType: "SENTINEL"}, false, true},                    // monitoring, SRE team
+		{RouteInput{Record: "incident", Team: "cre", ContactType: "SITE_24_7", Priority: "LOW"}, false, false}, // monitoring, CRE team
+		{RouteInput{Record: "incident", Team: "none", ContactType: "EMAIL"}, false, false},                     // a person raised it
+		{RouteInput{Record: "case", Team: "cre", Priority: "CATASTROPHIC"}, true, true},                        // S0: both
+		{RouteInput{Record: "case", Team: "cre", Priority: "S0"}, true, true},                                  // label = code
+		{RouteInput{Record: "case", Team: "none", Priority: "P0"}, true, true},                                 // S0 on no ABT
+		{RouteInput{Record: "case", Team: "cre", Priority: "CRITICAL"}, true, false},                           // S1: CRE only
+		{RouteInput{Record: "case", Team: "cre", Priority: "LOW"}, true, false},                                // S4: CRE (gate decides)
 	} {
 		_, cre := r.Match(tc.in, LadderKeyCRE)
 		_, sre := r.Match(tc.in, LadderKeySRE)
@@ -591,38 +804,11 @@ func TestRouting_DefaultRules(t *testing.T) {
 	}
 }
 
-func TestRouting_FromTheFileReplacesTheDefaults(t *testing.T) {
-	cfg, err := loadYAML(t, `
-routing:
-  rules:
-    - name: monitoring-only
-      when: { contactType: [SENTINEL] }
-      ladders: [sre]
-`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := cfg.Routing.Match(RouteInput{Team: "sre"}, LadderKeySRE); ok {
-		t.Fatal("an SRE team matched; the file's rules should replace the defaults entirely")
-	}
-	rule, ok := cfg.Routing.Match(RouteInput{Team: "none", ContactType: "sentinel"}, LadderKeySRE)
-	if !ok || rule.Name != "monitoring-only" || !rule.AdmitsNoTeam() {
-		t.Fatalf("rule = %+v, %v; want monitoring-only, admitting no team", rule, ok)
-	}
-}
-
-func TestRouting_InvalidRulesAreRefused(t *testing.T) {
-	for name, body := range map[string]string{
-		"no name":         "routing:\n  rules:\n    - ladders: [sre]\n",
-		"no ladders":      "routing:\n  rules:\n    - name: x\n",
-		"unknown ladder":  "routing:\n  rules:\n    - name: x\n      ladders: [ops]\n",
-		"unknown team":    "routing:\n  rules:\n    - name: x\n      when: { team: [ops] }\n      ladders: [sre]\n",
-		"duplicate name":  "routing:\n  rules:\n    - name: x\n      ladders: [sre]\n    - name: x\n      ladders: [cre]\n",
-		"misspelled when": "routing:\n  rules:\n    - name: x\n      when: { contacttype: [AZURE] }\n      ladders: [sre]\n",
-	} {
-		if _, err := loadYAML(t, body); err == nil {
-			t.Errorf("%s: loaded; want an error", name)
-		}
+// Routing is code, not configuration: a file carrying a routing section is
+// refused rather than allowed to change who gets paged.
+func TestConfig_RoutingSectionIsRefused(t *testing.T) {
+	if _, err := loadYAML(t, "routing:\n  rules:\n    - name: x\n      ladders: [sre]\n"); err == nil {
+		t.Fatal("a routing section loaded; routing is DefaultRouting, in code")
 	}
 }
 
@@ -641,7 +827,9 @@ func TestEngines_MonitoringRaisedIncidentClimbsSRE(t *testing.T) {
 		cre, sre                      bool
 	}{
 		{"no team, AZURE", "", "LOW", "AZURE", false, true},
-		{"CRE team, SITE_247", "Atlas", "LOW", "SITE_247", true, true},
+		// A CRE team's work arrives as a case; its monitoring incident pages
+		// nobody.
+		{"CRE team, SITE_247", "Atlas", "LOW", "SITE_247", false, false},
 		{"SRE team, SENTINEL", "Apollo", "HIGH", "SENTINEL", false, true},
 		{"no team, EMAIL", "", "LOW", "EMAIL", false, false},
 	} {
@@ -684,17 +872,38 @@ func TestConfig_RefusesMisplacedAndOverlappingSettings(t *testing.T) {
 // The shipped local configuration must load: an invalid one disables both
 // ladders on the stack everybody tests against.
 func TestConfig_LocalComposeFileLoads(t *testing.T) {
-	cfg, err := LoadConfig(filepath.Join("..", "..", "..", "..", "scripts", "csm-compose", "escalation.yaml"))
+	cfg, err := LoadConfig(filepath.Join("..", "..", "..", "..", "scripts", "csm-compose", "paging-alert.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.SRE.Teams.ABTs) != 2 || cfg.SRE.Timing.Policy().Levels[Level1].NotificationInterval != 5*time.Minute {
+	if len(cfg.SRE.Teams.ABTs) != 3 || cfg.SRE.Timing.Policy().Levels[Level1].NotificationInterval != 5*time.Minute {
 		t.Fatalf("sre section = %+v", cfg.SRE)
+	}
+	// "SRE IaaS" is the IaaS team's assignment group.
+	r := NewTeamScheduleResolver(&stubScheduleReader{}, resolverTeamsFor(cfg), nil)
+	if got := r.keyOf("SRE IaaS"); got != "iaas" {
+		t.Errorf(`"SRE IaaS" resolves to %q, want iaas`, got)
+	}
+	if r.defaultRota != RotaSRESaaS {
+		t.Errorf("defaultRota = %q, want %s", r.defaultRota, RotaSRESaaS)
+	}
+	// The local stack logs the SME page rather than calling anybody.
+	if !cfg.SME.Enabled || cfg.SME.Channel != ChannelLog {
+		t.Errorf("sme section = %+v; want enabled on the log channel", cfg.SME)
 	}
 }
 
+// resolverTeamsFor merges the two sections the way cmd/server does.
+func resolverTeamsFor(cfg Config) TeamKeys {
+	teams := cfg.CRE.Teams
+	teams.SRE = cfg.SRE.Teams.ABTs
+	teams.Aliases = cfg.SRE.Teams.Aliases
+	teams.DefaultRota = cfg.SRE.Teams.DefaultRota
+	return teams
+}
+
 // The log channel names each rung the way its own ladder does: an SRE rung is
-// "L2 support", not the CRE ladder's name for LEVEL_1.
+// "L2 Support", not the CRE ladder's name for LEVEL_1.
 func TestLogNotifier_NamesTheRungByItsLadder(t *testing.T) {
 	var buf strings.Builder
 	prev := slog.Default()
@@ -705,7 +914,36 @@ func TestLogNotifier_NamesTheRungByItsLadder(t *testing.T) {
 	if _, err := (logNotifier{}).Deliver(context.Background(), plan, PlannedCall{Level: Level1}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(buf.String(), `role="L2 support"`) {
-		t.Fatalf("log line = %s; want role=\"L2 support\"", buf.String())
+	if !strings.Contains(buf.String(), `role="L2 Support"`) {
+		t.Fatalf("log line = %s; want role=\"L2 Support\"", buf.String())
+	}
+}
+
+// A severity change refused only by a team or shift setting keeps the running
+// chain: those settings decide whether a chain may start, not whether one
+// should stop. A severity the ladder does not page still stops it.
+func TestEngine_SeverityChangeRefusedByShiftKeepsTheChain(t *testing.T) {
+	ctx := context.Background()
+	store := newMemStore()
+	cre := ladderEngine(LadderCRE, &fakeChat{}, store)
+	cre.cfg.Ladder.Start.Priorities = []string{"S0", "S1", "S2", "S3"}
+	if err := cre.Handle(ctx, caseCreated(t, "Atlas", "MEDIUM")); err != nil {
+		t.Fatal(err)
+	}
+	// testClock is the LK shift; from now on only the Americas night may start
+	// a chain.
+	cre.cfg.Ladder.Start.Shifts = []string{"USA"}
+	if err := cre.Handle(ctx, severityChanged(t, "MEDIUM", "CRITICAL")); err != nil {
+		t.Fatal(err)
+	}
+	st, found, _ := store.Get(ctx, testIncidentID)
+	if !found || NormalisePriority(st.Plan.Trigger.Priority) != "P3" {
+		t.Fatalf("S3 -> S1 refused by the shift setting: chain found=%v at %s; want the S3 chain still running", found, st.Plan.Trigger.Priority)
+	}
+	if err := cre.Handle(ctx, severityChanged(t, "CRITICAL", "LOW")); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, _ := store.Get(ctx, testIncidentID); found {
+		t.Fatal("lowered to S4 (not paged) and the chain is still running")
 	}
 }

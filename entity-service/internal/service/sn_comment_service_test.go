@@ -132,3 +132,69 @@ func TestSNCommentSearchService_EditDeleteUnsupported(t *testing.T) {
 		}
 	})
 }
+
+// TestSNCommentSearchService_SearchComments_MapsInlineAttachments pins that
+// the generic SearchComments (POST /comments/search) carries inline
+// attachments through, same as snCaseService.SearchCaseComments already does
+// for the case-nested POST /cases/{id}/comments/search. Found live: this
+// generic path parsed the identical upstream response into domain.Comment,
+// which had no InlineAttachments field at all, so the data was silently
+// dropped -- backend-v2's commentAttachmentIsVisible authorization fallback
+// (customer-portal, internal/handler/attachments.go) depends on this field to
+// authorize an attachment pasted inline into a case comment, and always
+// returned "not found" with it missing.
+func TestSNCommentSearchService_SearchComments_MapsInlineAttachments(t *testing.T) {
+	client := newTestSNClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"comments": [{
+				"id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				"referenceId": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+				"content": "see attached",
+				"type": "comments",
+				"createdOn": "2026-08-01 10:00:00",
+				"createdBy": "jane.doe@example.com",
+				"hasInlineAttachments": true,
+				"inlineAttachments": [{
+					"id": "cccccccccccccccccccccccccccccccc",
+					"fileName": "screenshot.png",
+					"contentType": "image/png",
+					"downloadUrl": "https://wso2sndev.service-now.com/cccccccccccccccccccccccccccccccc.iix",
+					"createdOn": "2026-08-01 10:00:00",
+					"createdBy": "jane.doe@example.com"
+				}]
+			}],
+			"offset": 0,
+			"limit": 50,
+			"totalRecords": 1
+		}`))
+	}))
+	svc := NewServiceNowCommentService(client, nil)
+
+	resp, err := svc.SearchComments(context.Background(), domain.SearchCommentsRequest{
+		ReferenceID:   testUUID,
+		ReferenceType: domain.ReferenceTypeCase,
+		Pagination:    domain.Pagination{Limit: 50},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.Comments) != 1 {
+		t.Fatalf("got %d comments, want 1", len(resp.Comments))
+	}
+	c := resp.Comments[0]
+	if !c.HasInlineAttachments {
+		t.Error("HasInlineAttachments = false, want true")
+	}
+	if len(c.InlineAttachments) != 1 {
+		t.Fatalf("got %d inline attachments, want 1", len(c.InlineAttachments))
+	}
+	ia := c.InlineAttachments[0]
+	const wantID = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+	if ia.ID != wantID {
+		t.Errorf("InlineAttachments[0].ID = %q, want %q", ia.ID, wantID)
+	}
+	if ia.FileName != "screenshot.png" {
+		t.Errorf("InlineAttachments[0].FileName = %q, want %q", ia.FileName, "screenshot.png")
+	}
+}

@@ -19,6 +19,7 @@ package service
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
@@ -140,6 +141,28 @@ func TestSearchProjects_ClosureStateReachesResponse(t *testing.T) {
 	}
 }
 
+// TestSearchProjects_GoLiveDateReachesResponse pins that domain.Project's
+// GoLiveDate (project.onboarding_go_live_date, now selected by SearchProjects
+// alongside OnboardingStatus) reaches the mapped ProjectView -- the same class
+// of "repository returns it, service layer silently drops it" bug
+// TestSearchProjects_ClosureStateReachesResponse already guards for ClosureState.
+func TestSearchProjects_GoLiveDateReachesResponse(t *testing.T) {
+	goLive := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	repo := &recordingProjectRepo{toReturn: []domain.Project{{ID: "p1", GoLiveDate: &goLive}, {ID: "p2"}}}
+	svc := NewProjectService(repo, alwaysUnrestrictedAccess{})
+
+	resp, err := svc.SearchProjects(t.Context(), domain.SearchProjectsRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.Projects) != 2 || resp.Projects[0].GoLiveDate == nil || !resp.Projects[0].GoLiveDate.Equal(goLive) {
+		t.Fatalf("Projects[0].GoLiveDate = %+v, want %v", resp.Projects, goLive)
+	}
+	if resp.Projects[1].GoLiveDate != nil {
+		t.Fatalf("Projects[1].GoLiveDate = %v, want nil (no go-live date recorded)", resp.Projects[1].GoLiveDate)
+	}
+}
+
 // TestSearchProjects_MapsParityFields pins the v1.0 fields the Postgres path now returns.
 func TestSearchProjects_MapsParityFields(t *testing.T) {
 	str := func(v string) *string { return &v }
@@ -202,5 +225,29 @@ func TestSearchProjects_ValidatesV10Filters(t *testing.T) {
 				t.Fatalf("repo.called = %v, want %v", repo.called, !tc.wantErr)
 			}
 		})
+	}
+}
+
+// TestSearchProjects_OnboardingOwnerReachesResponse proves the owner survives
+// the domain.Project -> domain.ProjectView mapping and that a project with no
+// owner stays nil without affecting the total.
+func TestSearchProjects_OnboardingOwnerReachesResponse(t *testing.T) {
+	email := "jane.doe@example.com"
+	owner := &domain.PersonRef{ID: "00000000-0000-0000-0000-000000000001", Name: "Jane Doe", Email: &email}
+	repo := &recordingProjectRepo{toReturn: []domain.Project{{ID: "p1", OnboardingOwner: owner}, {ID: "p2"}}}
+	svc := NewProjectService(repo, alwaysUnrestrictedAccess{})
+
+	resp, err := svc.SearchProjects(t.Context(), domain.SearchProjectsRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Total != 2 || len(resp.Projects) != 2 {
+		t.Fatalf("total/len = %d/%d, want 2/2", resp.Total, len(resp.Projects))
+	}
+	if resp.Projects[0].OnboardingOwner == nil || resp.Projects[0].OnboardingOwner.Name != "Jane Doe" {
+		t.Errorf("Projects[0].OnboardingOwner = %+v, want Jane Doe", resp.Projects[0].OnboardingOwner)
+	}
+	if resp.Projects[1].OnboardingOwner != nil {
+		t.Errorf("Projects[1].OnboardingOwner = %+v, want nil", resp.Projects[1].OnboardingOwner)
 	}
 }

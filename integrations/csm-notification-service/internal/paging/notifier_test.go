@@ -30,13 +30,66 @@ import (
 // fakeChat records the cards a run would have posted.
 type fakeChat struct {
 	posted []notifications.EscalationAlert
-	err    error
+	// unanswered is every closing message posted (sre.unansweredChat).
+	unanswered []notifications.EscalationUnanswered
+	// handoffs is every escalated-to-SME message posted (sre.smeHandoffChat).
+	handoffs []notifications.EscalationHandoff
+	// stopped is every stopped-ladder reply posted (ackChat).
+	stopped []notifications.EscalationStopped
+	// incidents is every "Incident Reported" card posted to an SRE space.
+	incidents []notifications.IncidentCreatedAlert
+	// incidentAudiences is the space each of incidents went to.
+	incidentAudiences []string
+	// acks is every "Incident Acknowledged." reply posted to an SRE space.
+	acks []notifications.IncidentAssignedAlert
+	err  error
 	// noRoom lists audiences GOOGLE_CHAT_SPACES has no space for. Empty means
 	// every audience has one, which is what the older tests assume.
 	noRoom map[string]bool
 }
 
 func (f *fakeChat) HasAudienceSpace(audience string) bool { return !f.noRoom[audience] }
+
+func (f *fakeChat) SendEscalationHandoff(_ context.Context, h notifications.EscalationHandoff) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.handoffs = append(f.handoffs, h)
+	return nil
+}
+
+func (f *fakeChat) SendEscalationStopped(_ context.Context, s notifications.EscalationStopped) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.stopped = append(f.stopped, s)
+	return nil
+}
+
+func (f *fakeChat) SendEscalationUnanswered(_ context.Context, u notifications.EscalationUnanswered) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.unanswered = append(f.unanswered, u)
+	return nil
+}
+
+func (f *fakeChat) SendIncidentCreatedAlert(_ context.Context, audience string, a notifications.IncidentCreatedAlert) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.incidents = append(f.incidents, a)
+	f.incidentAudiences = append(f.incidentAudiences, audience)
+	return nil
+}
+
+func (f *fakeChat) SendIncidentAssignedAlert(_ context.Context, _ string, a notifications.IncidentAssignedAlert) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.acks = append(f.acks, a)
+	return nil
+}
 
 func (f *fakeChat) SendEscalationAlert(_ context.Context, a notifications.EscalationAlert) error {
 	if f.err != nil {
@@ -52,6 +105,10 @@ func (fakeLinks) IncidentLink(id string) string {
 	return "https://csm.example/operations/incidents/" + id
 }
 
+func (fakeLinks) CaseLink(id string) string {
+	return "https://csm.example/cases/" + id
+}
+
 func chatEngine(t *testing.T, chat chatSender, store ladderStore, notes incidentNotes) *Engine {
 	t.Helper()
 	return &Engine{
@@ -60,7 +117,7 @@ func chatEngine(t *testing.T, chat chatSender, store ladderStore, notes incident
 		notifiers: []notifier{chatNotifier{chat: chat, links: fakeLinks{}, audience: "WSO2 API Manager"}},
 		store:     store,
 		notes:     notes,
-		cfg:       EngineConfig{CallSendingEnabled: true, Channel: ChannelChat},
+		cfg:       EngineConfig{CallSendingEnabled: true, Channel: ChannelChat, Routing: incidentRouting},
 		clock:     func() time.Time { return testClock },
 	}
 }
@@ -118,7 +175,7 @@ func TestChatNotifier_PostsOncePerRung(t *testing.T) {
 	if len(chat.posted) != 4 {
 		t.Fatalf("posted %d cards, want 4 (one per rung, not one per attempt)", len(chat.posted))
 	}
-	wantRungs := []string{"LEVEL_1", "LEVEL_2", "LEVEL_3", "LEVEL_4"}
+	wantRungs := []string{"L2", "L3", "L4", "L5"}
 	for i, want := range wantRungs {
 		if chat.posted[i].Rung != want {
 			t.Errorf("card %d is %s, want %s (the rungs must climb in order)", i+1, chat.posted[i].Rung, want)
@@ -149,7 +206,7 @@ func TestChatNotifier_CardCarriesTheContext(t *testing.T) {
 	}
 
 	card := chat.posted[0]
-	if card.Rung != "LEVEL_1" || card.RungRole == "" {
+	if card.Rung != "L2" || card.RungRole == "" {
 		t.Errorf("rung = %q / %q; a reader needs both the level and who it is", card.Rung, card.RungRole)
 	}
 	if card.IncidentRef != "INC0012345" {
@@ -232,7 +289,7 @@ func TestBothChannels_EachIsAttemptedIndependently(t *testing.T) {
 		},
 		store: store,
 		notes: &fakeNotes{},
-		cfg:   EngineConfig{CallSendingEnabled: true, Channel: ChannelBoth},
+		cfg:   EngineConfig{CallSendingEnabled: true, Channel: ChannelBoth, Routing: incidentRouting},
 		clock: func() time.Time { return testClock },
 	}
 
@@ -275,7 +332,7 @@ func TestEngine_NoNotifierConfigured(t *testing.T) {
 		resolver: fullResolver(),
 		store:    store,
 		notes:    &fakeNotes{},
-		cfg:      EngineConfig{CallSendingEnabled: true, Channel: ChannelChat},
+		cfg:      EngineConfig{CallSendingEnabled: true, Channel: ChannelChat, Routing: incidentRouting},
 		clock:    func() time.Time { return testClock },
 	}
 	at := ist(2026, 9, 9, 10, 0)
@@ -318,7 +375,7 @@ func TestChatNotifier_NilLinkResolverDoesNotPanic(t *testing.T) {
 	chat := &fakeChat{}
 	e := NewEngine(DefaultPolicy, fullResolver(), nil, &notifications.GoogleChatClient{}, PortalLinks{},
 		nil, nil, "WSO2 API Manager",
-		EngineConfig{CallSendingEnabled: true, Channel: ChannelChat})
+		EngineConfig{CallSendingEnabled: true, Channel: ChannelChat, Routing: incidentRouting})
 
 	// The constructor is what has to be safe; swap in the fake to deliver.
 	e.notifiers = []notifier{chatNotifier{chat: chat, audience: "WSO2 API Manager"}}
@@ -398,8 +455,8 @@ func TestChatChannel_ClimbsOverTimeAndStopsOnAcknowledgement(t *testing.T) {
 	if err := e.Tick(context.Background(), at.Add(6*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	if len(chat.posted) != 1 || chat.posted[0].Rung != "LEVEL_1" {
-		t.Fatalf("after six minutes: %d cards, first %v; want one LEVEL_1 card", len(chat.posted), rungsOf(chat.posted))
+	if len(chat.posted) != 1 || chat.posted[0].Rung != "L2" {
+		t.Fatalf("after six minutes: %d cards, first %v; want one L2 card", len(chat.posted), rungsOf(chat.posted))
 	}
 
 	// LEVEL_2 does not open until fifteen: the initial wait plus LEVEL_1's
@@ -415,8 +472,8 @@ func TestChatChannel_ClimbsOverTimeAndStopsOnAcknowledgement(t *testing.T) {
 	if err := e.Tick(context.Background(), at.Add(15*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	if len(chat.posted) != 2 || chat.posted[1].Rung != "LEVEL_2" {
-		t.Fatalf("after fifteen minutes: %v; want LEVEL_1 then LEVEL_2", rungsOf(chat.posted))
+	if len(chat.posted) != 2 || chat.posted[1].Rung != "L3" {
+		t.Fatalf("after fifteen minutes: %v; want L2 then L3", rungsOf(chat.posted))
 	}
 
 	// Somebody picks it up. Every remaining rung is cancelled.
@@ -470,21 +527,21 @@ func TestChatNotifier_CardCarriesTheClock(t *testing.T) {
 	if first.Elapsed != "6m" {
 		t.Errorf("first card says unattended %q, want 6m", first.Elapsed)
 	}
-	if first.NextRung != "LEVEL_2" || first.NextIn != "9m" {
-		t.Errorf("first card points at %q in %q, want LEVEL_2 in 9m", first.NextRung, first.NextIn)
+	if first.NextRung != "L3" || first.NextIn != "9m" {
+		t.Errorf("first card points at %q in %q, want L3 in 9m", first.NextRung, first.NextIn)
 	}
 
 	// Every rung of one incident belongs to one conversation.
 	for _, c := range chat.posted {
-		if c.ThreadKey != "incident-escalation-"+testIncidentID {
+		if c.ThreadKey != "incident-"+testIncidentID {
 			t.Errorf("card %s threaded under %q", c.Rung, c.ThreadKey)
 		}
 	}
 
 	// The last rung has nowhere to climb and must not claim otherwise.
 	last := chat.posted[len(chat.posted)-1]
-	if last.Rung != "LEVEL_4" {
-		t.Fatalf("last card is %s, want LEVEL_4", last.Rung)
+	if last.Rung != "L5" {
+		t.Fatalf("last card is %s, want L5", last.Rung)
 	}
 	if last.NextRung != "" || last.NextIn != "" {
 		t.Errorf("the final rung claims it escalates to %q in %q", last.NextRung, last.NextIn)

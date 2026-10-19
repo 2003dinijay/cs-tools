@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -57,6 +58,28 @@ type ProjectTypeRow struct {
 	AcceptedSeverityValues       []string
 	DefaultCaseProductCategories []string
 	SrProductCategories          []string
+
+	// IsPdpSubscription is the owning project's own project.is_pdp_subscription
+	// flag (NULL read as false), not a project_type column -- carried on this
+	// row only by GetProjectByID, and always false from ListProjectTypes.
+	IsPdpSubscription bool
+}
+
+// cloudSupportProjectTypeName is the one project type whose service-request
+// entitlement is decided by the project's own is_pdp_subscription flag rather
+// than the static project_type columns.
+const cloudSupportProjectTypeName = "Cloud Support"
+
+// srAccessForProject returns the service-request entitlement (write and read
+// share one value) for a project: the project_type's static value, except for
+// Cloud Support, where it is the project's own is_pdp_subscription flag (NULL
+// read as false). This mirrors the backing data source's rule; the static
+// project_type rows stay FALSE for Cloud Support.
+func srAccessForProject(typeName string, static bool, isPdpSubscription *bool) bool {
+	if typeName != cloudSupportProjectTypeName {
+		return static
+	}
+	return isPdpSubscription != nil && *isPdpSubscription
 }
 
 // ReferenceDataRepository backs the choice-list/reference-data reads shared
@@ -91,6 +114,31 @@ type ReferenceDataRepository interface {
 	// that mapping is defined, so this method stays the only repository
 	// read anywhere that needs to apply it for this table.
 	ListSLADurationPolicy(ctx context.Context) ([]SLADurationPolicyRow, error)
+	// ListFeedbackEmojis returns the five case-feedback emoji choices (the
+	// "<rating> - Reasons" rows of work_item_feedback_metric, migration
+	// 0127), each with its own reason chips -- backs GET /metadata's
+	// feedbackEmojies field. See case_feedback_repo.go's own doc comment
+	// for the shared rating-scale design this and
+	// GetCaseFeedback/CreateCaseFeedback both depend on.
+	ListFeedbackEmojis(ctx context.Context) ([]FeedbackEmojiRow, error)
+}
+
+// FeedbackEmojiChipRow is one selectable reason chip under a feedback emoji
+// (a work_item_feedback_metric_option row).
+type FeedbackEmojiChipRow struct {
+	ID    string
+	Name  string
+	Value string
+}
+
+// FeedbackEmojiRow is one of the five feedback-form emoji choices.
+type FeedbackEmojiRow struct {
+	ID              string
+	Name            string
+	Value           string
+	UnselectedImage string
+	SelectedImage   string
+	Chips           []FeedbackEmojiChipRow
 }
 
 // SLADurationPolicyRow is one row of the sla_duration_policy table, already
@@ -193,12 +241,85 @@ func (r *referenceDataRepo) ListSLADurationPolicy(ctx context.Context) ([]SLADur
 	return out, rows.Err()
 }
 
+// ListFeedbackEmojis implements ReferenceDataRepository.
+func (r *referenceDataRepo) ListFeedbackEmojis(ctx context.Context) ([]FeedbackEmojiRow, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT id::TEXT, name, selected_image, unselected_image
+		FROM work_item_feedback_metric
+		WHERE selected_image IS NOT NULL AND is_active
+		ORDER BY display_order NULLS LAST, name`)
+	if err != nil {
+		return nil, fmt.Errorf("list feedback emojis: %w", err)
+	}
+
+	var emojis []FeedbackEmojiRow
+	for rows.Next() {
+		var id, name string
+		var selectedImage, unselectedImage *string
+		if err := rows.Scan(&id, &name, &selectedImage, &unselectedImage); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan feedback emoji: %w", err)
+		}
+		rating, label, ok := resolveCaseFeedbackRating(name)
+		if !ok {
+			// Not one of the five known "<rating> - Reasons" rows -- a
+			// malformed or renamed row the fixed scale can't place. Skipped
+			// rather than surfaced with a guessed label.
+			continue
+		}
+		emojis = append(emojis, FeedbackEmojiRow{
+			ID:              id,
+			Name:            label,
+			Value:           strconv.Itoa(rating),
+			UnselectedImage: stringOrEmpty(unselectedImage),
+			SelectedImage:   stringOrEmpty(selectedImage),
+		})
+	}
+	closeErr := rows.Err()
+	rows.Close()
+	if closeErr != nil {
+		return nil, fmt.Errorf("iterate feedback emojis: %w", closeErr)
+	}
+
+	for i := range emojis {
+		chipRows, err := r.db.Query(ctx, `
+			SELECT id::TEXT, label, value
+			FROM work_item_feedback_metric_option
+			WHERE metric_id = $1
+			ORDER BY display_order NULLS LAST, label`,
+			emojis[i].ID,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("list feedback emoji chips: %w", err)
+		}
+		var chips []FeedbackEmojiChipRow
+		for chipRows.Next() {
+			var chipID, label string
+			var value int
+			if err := chipRows.Scan(&chipID, &label, &value); err != nil {
+				chipRows.Close()
+				return nil, fmt.Errorf("scan feedback emoji chip: %w", err)
+			}
+			chips = append(chips, FeedbackEmojiChipRow{ID: chipID, Name: label, Value: strconv.Itoa(value)})
+		}
+		chipErr := chipRows.Err()
+		chipRows.Close()
+		if chipErr != nil {
+			return nil, fmt.Errorf("iterate feedback emoji chips: %w", chipErr)
+		}
+		emojis[i].Chips = chips
+	}
+
+	return emojis, nil
+}
+
 // GetProjectByID implements ReferenceDataRepository.
 func (r *referenceDataRepo) GetProjectByID(ctx context.Context, projectID string) (bool, *ProjectTypeRow, error) {
 	var (
 		ptID, ptName *string
 		hasSRWrite, hasSRRead, hasCR, hasSraWrite, hasSraRead, hasEngagements, hasUpdates,
 		hasDeployWrite, hasDeployRead, hasTimeLogs, hasComponentAnalysis, hasUsageMetrics *bool
+		isPdpSubscription                   *bool
 		acceptedSeverities                  []string
 		defaultCaseCategories, srCategories []string
 	)
@@ -215,7 +336,8 @@ func (r *referenceDataRepo) GetProjectByID(ctx context.Context, projectID string
 			pt.has_sra_write_access, pt.has_sra_read_access, pt.has_engagements_read_access, pt.has_updates_read_access,
 			pt.has_deployment_write_access, pt.has_deployment_read_access, pt.has_time_logs_read_access,
 			pt.has_component_analysis_read_access, pt.has_usage_metrics_read_access,
-			pt.accepted_severity_values::TEXT[], pt.default_case_product_categories::TEXT[], pt.sr_product_categories::TEXT[]
+			pt.accepted_severity_values::TEXT[], pt.default_case_product_categories::TEXT[], pt.sr_product_categories::TEXT[],
+			p.is_pdp_subscription
 		 FROM project p
 		 LEFT JOIN project_type pt ON pt.id = p.project_type_id
 		 WHERE p.id = $1`, projectID,
@@ -226,6 +348,7 @@ func (r *referenceDataRepo) GetProjectByID(ctx context.Context, projectID string
 		&hasDeployWrite, &hasDeployRead, &hasTimeLogs,
 		&hasComponentAnalysis, &hasUsageMetrics,
 		&acceptedSeverities, &defaultCaseCategories, &srCategories,
+		&isPdpSubscription,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil, nil
@@ -251,8 +374,8 @@ func (r *referenceDataRepo) GetProjectByID(ctx context.Context, projectID string
 		ID:   *ptID,
 		Name: *ptName,
 
-		HasServiceRequestWriteAccess:   deref(hasSRWrite),
-		HasServiceRequestReadAccess:    deref(hasSRRead),
+		HasServiceRequestWriteAccess:   srAccessForProject(*ptName, deref(hasSRWrite), isPdpSubscription),
+		HasServiceRequestReadAccess:    srAccessForProject(*ptName, deref(hasSRRead), isPdpSubscription),
 		HasChangeRequestReadAccess:     deref(hasCR),
 		HasSraWriteAccess:              deref(hasSraWrite),
 		HasSraReadAccess:               deref(hasSraRead),
@@ -266,6 +389,7 @@ func (r *referenceDataRepo) GetProjectByID(ctx context.Context, projectID string
 		AcceptedSeverityValues:         acceptedSeverities,
 		DefaultCaseProductCategories:   defaultCaseCategories,
 		SrProductCategories:            srCategories,
+		IsPdpSubscription:              deref(isPdpSubscription),
 	}, nil
 }
 

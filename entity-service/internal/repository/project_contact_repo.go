@@ -44,6 +44,7 @@ type ProjectContactRow struct {
 	ResolvedUserID *string
 	ResolvedName   *string
 	ResolvedEmail  *string
+	IsSystemUser   bool
 	// Roles is the union of project_role.role across every project_group
 	// this contact belongs to (via project_contact_group). Never nil --
 	// COALESCE'd to an empty array in the query.
@@ -97,6 +98,7 @@ func NewProjectContactRepository(db *pgxpool.Pool) ProjectContactRepository {
 const projectContactColumns = `
 	pc.email, pc.state,
 	u.id, COALESCE(u.name, NULLIF(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), '')), u.email,
+	COALESCE(u.is_system_user, FALSE),
 	COALESCE((
 		SELECT array_agg(DISTINCT pr.role::text)
 		FROM project_contact_group pcg
@@ -114,12 +116,15 @@ const projectContactColumns = `
 const projectContactFromJoins = `
 	FROM project_contact pc
 	JOIN account_contact ac ON ac.id = pc.account_contact_id
-	LEFT JOIN "user" u ON LOWER(u.user_name) = LOWER(ac.user_name)`
+	LEFT JOIN LATERAL (
+		SELECT * FROM "user" WHERE LOWER(user_name) = LOWER(ac.user_name)
+		ORDER BY (is_active IS TRUE) DESC, created_on, id LIMIT 1
+	) u ON TRUE`
 
 func scanProjectContact(row interface{ Scan(...any) error }) (ProjectContactRow, error) {
 	var c ProjectContactRow
 	var state *string
-	err := row.Scan(&c.Email, &state, &c.ResolvedUserID, &c.ResolvedName, &c.ResolvedEmail, &c.Roles, &c.AccountRoles)
+	err := row.Scan(&c.Email, &state, &c.ResolvedUserID, &c.ResolvedName, &c.ResolvedEmail, &c.IsSystemUser, &c.Roles, &c.AccountRoles)
 	if err != nil {
 		return ProjectContactRow{}, err
 	}
@@ -199,7 +204,11 @@ func (r *projectContactRepo) SearchProjectContacts(ctx context.Context, projectI
 
 // GetProjectContactByUserID implements ProjectContactRepository.
 func (r *projectContactRepo) GetProjectContactByUserID(ctx context.Context, projectID, userID string, _ string) (ProjectContactRow, error) {
-	query := "SELECT " + projectContactColumns + " " + projectContactFromJoins + " WHERE pc.project_id = $1 AND u.id = $2"
+	query := "SELECT " + projectContactColumns + `
+	FROM project_contact pc
+	JOIN account_contact ac ON ac.id = pc.account_contact_id
+	JOIN "user" u ON u.id = $2 AND LOWER(u.user_name) = LOWER(ac.user_name)
+	WHERE pc.project_id = $1`
 	c, err := scanProjectContact(r.db.QueryRow(ctx, query, projectID, userID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ProjectContactRow{}, &apierror.NotFoundError{Msg: "contact not found on this project"}

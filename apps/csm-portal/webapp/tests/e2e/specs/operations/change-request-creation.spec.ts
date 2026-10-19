@@ -135,6 +135,51 @@ test.describe("change request creation — Customer Approval / Customer Review c
   }
 });
 
+test.describe("change request creation — an Emergency change proceeds without customer approval or review (mocked backend)", () => {
+  test("choosing Emergency disables and unticks both boxes with one line saying why; choosing another type leaves them off, tickable again", async ({ page }) => {
+    await installFakeChangeRequestApi(page, "emergency", FAKE_CREATOR);
+    const cr = new ChangeRequestCreatePage(page);
+    await cr.goto();
+    await expect(cr.emergencyCustomerStepsNote()).toHaveCount(0);
+
+    // Ticked on another type first: switching to Emergency clears them.
+    await cr.selectType("Normal");
+    await cr.customerApprovalCheckbox().check();
+    await cr.customerReviewCheckbox().check();
+    await cr.selectType("Emergency");
+    for (const box of [cr.customerApprovalCheckbox(), cr.customerReviewCheckbox()]) {
+      await expect(box).toBeDisabled();
+      await expect(box).not.toBeChecked();
+    }
+    await expect(cr.emergencyCustomerStepsNote()).toHaveCount(1);
+    await expect(cr.emergencyCustomerStepsNote()).toBeVisible();
+
+    // Switching away leaves them off, for the user to tick again.
+    await cr.selectType("Standard");
+    await expect(cr.emergencyCustomerStepsNote()).toHaveCount(0);
+    for (const box of [cr.customerApprovalCheckbox(), cr.customerReviewCheckbox()]) {
+      await expect(box).toBeEnabled();
+      await expect(box).not.toBeChecked();
+    }
+    await cr.customerApprovalCheckbox().check();
+    await expect(cr.customerApprovalCheckbox()).toBeChecked();
+  });
+
+  test("the create carries type emergency with both flags false, whatever was ticked before the type was chosen", async ({ page }) => {
+    const api = await installFakeChangeRequestApi(page, "emergency", FAKE_CREATOR);
+    const cr = new ChangeRequestCreatePage(page);
+    await cr.goto();
+    await cr.selectType("Normal");
+    await cr.customerApprovalCheckbox().check();
+    await cr.customerReviewCheckbox().check();
+    await cr.fillSubjectAndSubmit(e2eChangeRequestSubject("emergency without customer steps"), "Emergency");
+
+    const body = api.requestBodies().find((r) => r.request === "POST /change-requests")?.body ?? {};
+    expect(body).toMatchObject({ type: "emergency", customerApprovalRequired: false, customerReviewRequired: false });
+    expect(api.flags()).toEqual({ customerApprovalRequired: false, customerReviewRequired: false });
+  });
+});
+
 test.describe("change request creation — happy path", () => {
   test("creates a real change request and lands on its detail page", async ({ page }) => {
     // Real network round trip to create, then a navigation and a second
@@ -325,6 +370,26 @@ test.describe("change request creation — Customer Group: the project's registe
     await cr.clearProject();
     await expect(cr.customerGroupChips()).toHaveCount(0);
     await expect(page.getByText("Select a Customer Project first.").first()).toBeVisible();
+  });
+
+  test("a customer box ticked on a project with no registered contact is accepted at create (the change is New, nobody is asked yet); the detail page then says Request Approval needs a contact, with the reason", async ({ page }) => {
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR);
+    const cr = new ChangeRequestCreatePage(page);
+    await cr.goto();
+    await cr.selectType("Normal");
+    await cr.subjectField().fill(e2eChangeRequestSubject("nobody to ask"));
+    await cr.selectProject(GAMMA.name);
+    await expect(page.getByText(/No registered contacts on this project/)).toBeVisible();
+    await cr.customerApprovalCheckbox().check();
+    await cr.createButton().click();
+    await expect(page).toHaveURL(new RegExp(`/operations/change-requests/${FAKE_CR_ID}$`));
+    expect(api.state()).toBe("new");
+    expect(api.flags()).toEqual({ customerApprovalRequired: true, customerReviewRequired: false });
+
+    // The refusal comes at Request Approval, not here: the page says so up front (the project's own contact list is empty).
+    const blocked = page.getByLabel("Request Approval: Register a contact for the Customer Project before requesting approval");
+    await expect(blocked).toBeVisible();
+    await expect(blocked.getByRole("button", { name: "Request Approval" })).toBeDisabled();
   });
 
   test("is never sent: the create carries no customerGroupId (nor environmentIds), whatever the project's contacts", async ({ page }) => {

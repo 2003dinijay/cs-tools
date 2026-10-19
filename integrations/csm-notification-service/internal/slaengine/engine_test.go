@@ -68,13 +68,18 @@ func (s *fakeStore) DueMembers(_ context.Context, now time.Time) ([]string, erro
 // SetClock mirrors the real Store's own setClockScript semantics: display
 // fields always overwrite, but state/paused/alertedTier only initialize on
 // the first call for this key -- a later call (simulating a case.created
-// retry/replay) must never reset them. See redis.go's own doc comment.
+// retry/replay) must never reset them -- UNLESS StartedAt genuinely
+// changed (a new incarnation, e.g. a severity revision's fresh clock seen
+// via Reconcile), in which case alertedTier resets to 0 same as the real
+// setClockScript. See redis.go's own doc comment on both.
 func (s *fakeStore) SetClock(_ context.Context, caseID, clockType string, meta ClockMeta) error {
 	key := caseID + "|" + clockType
 	if existing, ok := s.clocks[key]; ok {
 		meta.State = existing.State
 		meta.Paused = existing.Paused
-		meta.AlertedTier = existing.AlertedTier
+		if existing.StartedAt.Equal(meta.StartedAt) {
+			meta.AlertedTier = existing.AlertedTier
+		}
 	}
 	s.clocks[key] = meta
 	return nil
@@ -101,24 +106,27 @@ func (s *fakeStore) SetState(_ context.Context, caseID, clockType, state string)
 	return nil
 }
 
-func (s *fakeStore) AdvanceAlertedTier(_ context.Context, caseID, clockType string, tier int) error {
+func (s *fakeStore) AdvanceAlertedTier(_ context.Context, caseID, clockType string, tier int, incarnation time.Time) (bool, error) {
 	if s.failAdvance {
-		return errors.New("advance failed")
+		return false, errors.New("advance failed")
 	}
 	key := caseID + "|" + clockType
 	meta := s.clocks[key]
+	if !incarnation.IsZero() && !meta.StartedAt.IsZero() && !meta.StartedAt.Equal(incarnation) {
+		return false, nil
+	}
 	if tier > meta.AlertedTier {
 		meta.AlertedTier = tier
 	}
 	s.clocks[key] = meta
-	return nil
+	return true, nil
 }
 
-func (s *fakeStore) ClaimTier(_ context.Context, caseID, clockType string, tier int) (bool, error) {
+func (s *fakeStore) ClaimTier(_ context.Context, caseID, clockType string, tier int, startedAt time.Time) (bool, error) {
 	if s.failClaim {
 		return false, errors.New("claim failed")
 	}
-	key := tierClaimKey(caseID, clockType, tier)
+	key := tierClaimKey(caseID, clockType, tier, startedAt)
 	if s.claims[key] {
 		return false, nil
 	}
@@ -126,8 +134,8 @@ func (s *fakeStore) ClaimTier(_ context.Context, caseID, clockType string, tier 
 	return true, nil
 }
 
-func (s *fakeStore) ReleaseTier(_ context.Context, caseID, clockType string, tier int) error {
-	delete(s.claims, tierClaimKey(caseID, clockType, tier))
+func (s *fakeStore) ReleaseTier(_ context.Context, caseID, clockType string, tier int, startedAt time.Time) error {
+	delete(s.claims, tierClaimKey(caseID, clockType, tier, startedAt))
 	return nil
 }
 
@@ -181,8 +189,14 @@ func testDurations() map[string]map[string]time.Duration {
 	}
 }
 
+// weekdayDaytime is a Wednesday at 11:00 IST, outside both the Americas
+// (21:00-06:00 IST) and weekend coverage windows, so chataudience.Resolve
+// adds no audience that depends on when the test happens to run.
+var weekdayDaytime = time.Date(2026, time.October, 14, 5, 30, 0, 0, time.UTC)
+
 func newTestEngine(st *fakeStore, chat *fakeChat, pub *fakePublisher) *Engine {
-	return &Engine{store: st, pub: pub, chat: chat, links: fakeLinks{}, durations: testDurations()}
+	return &Engine{store: st, pub: pub, chat: chat, links: fakeLinks{}, durations: testDurations(), slaEmailSendingEnabled: true,
+		now: func() time.Time { return weekdayDaytime }}
 }
 
 // --- RegisterClocks ---
@@ -318,7 +332,7 @@ func TestApplyStateEffects_AwaitingInfo_PausesWorkaroundAndResolution(t *testing
 	}
 }
 
-func TestApplyStateEffects_Closed_CompletesResolutionAndPausesWorkaround(t *testing.T) {
+func TestApplyStateEffects_Closed_CompletesResolutionAndResponseAndPausesWorkaround(t *testing.T) {
 	st := newFakeStore()
 	e := newTestEngine(st, &fakeChat{}, &fakePublisher{})
 	e.RegisterClocks(context.Background(), "case-1", "CATASTROPHIC", time.Now(), "CS0001", "", "", "CASE", "", "")
@@ -331,6 +345,74 @@ func TestApplyStateEffects_Closed_CompletesResolutionAndPausesWorkaround(t *test
 	}
 	if wMeta, _, _ := st.GetClock(context.Background(), "case-1", ClockWorkaround); !wMeta.Paused {
 		t.Error("workaround clock not paused on close")
+	}
+	// Regression for a real reported bug: a case that
+	// closes without ever getting a qualifying support-engineer reply
+	// (CompleteResponseClock never called -- a work note doesn't qualify,
+	// and neither does a comment whose author didn't resolve as a
+	// recognized CS-engineer role) used to leave the response clock
+	// neither paused nor completed, so its Redis wake entries stayed live
+	// and a breach alert fired well after the case had already closed.
+	rMeta, _, _ := st.GetClock(context.Background(), "case-1", ClockResponse)
+	if rMeta.AlertedTier != 100 {
+		t.Errorf("response AlertedTier = %d, want 100 (force-completed on close, same as resolution)", rMeta.AlertedTier)
+	}
+}
+
+// TestApplyStateEffects_Closed_WithoutAQualifyingReply_NeverAlertsOnResponse
+// is the end-to-end regression for a real reported bug: a case closes with no
+// CompleteResponseClock ever called (no qualifying support-engineer reply --
+// only a work note was added), and a Tick long after close must not fire a
+// response-clock breach alert.
+func TestApplyStateEffects_Closed_WithoutAQualifyingReply_NeverAlertsOnResponse(t *testing.T) {
+	st := newFakeStore()
+	chat := &fakeChat{}
+	e := newTestEngine(st, chat, &fakePublisher{})
+	start := time.Now().Add(-2 * time.Hour)
+	e.RegisterClocks(context.Background(), "case-1", "CATASTROPHIC", start, "CS0001", "", "", "CASE", "", "")
+
+	// The case closes with no qualifying support-engineer reply ever having
+	// completed the response clock -- matching the issue's own repro (a
+	// comment and a work note were added, neither of which qualifies).
+	e.ApplyStateEffects(context.Background(), "case-1", "Closed")
+
+	// Now time passes well beyond every tier's original due date (the
+	// issue's own "wait more than 1 hour" step) and a tick runs.
+	if err := e.Tick(context.Background(), time.Now().Add(1*time.Hour)); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+
+	for _, c := range chat.calls {
+		if c.clockType == ClockResponse {
+			t.Fatalf("a response-clock breach alert was sent after the case closed with no qualifying reply: %+v", c)
+		}
+	}
+}
+
+// TestApplyStateEffects_Closed_NoClockTypeAlertsAfterClose is the same proof
+// as the response-only test above, but for all three clock types at once,
+// closing a case directly from "Open" (no intermediate pause) with no
+// WorkaroundProvided-equivalent signal and no qualifying reply ever having
+// run -- the worst case for every clock. Workaround is only paused on
+// close (not completed, a documented accepted gap -- see ApplyStateEffects'
+// own doc comment), but processDueMember drops a paused clock's wake entry
+// without alerting regardless of tier, so it must be just as silent as the
+// two force-completed clocks here.
+func TestApplyStateEffects_Closed_NoClockTypeAlertsAfterClose(t *testing.T) {
+	st := newFakeStore()
+	chat := &fakeChat{}
+	e := newTestEngine(st, chat, &fakePublisher{})
+	start := time.Now().Add(-2 * time.Hour)
+	e.RegisterClocks(context.Background(), "case-1", "CATASTROPHIC", start, "CS0001", "", "", "CASE", "", "")
+
+	e.ApplyStateEffects(context.Background(), "case-1", "Closed")
+
+	if err := e.Tick(context.Background(), time.Now().Add(1*time.Hour)); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+
+	if len(chat.calls) != 0 {
+		t.Fatalf("expected no breach alerts of any clock type after close, got: %+v", chat.calls)
 	}
 }
 
@@ -365,6 +447,47 @@ func TestCompleteResponseClock_AdvancesToTier100(t *testing.T) {
 	}
 }
 
+// --- CompleteWorkaroundClock ---
+
+// TestCompleteWorkaroundClock_AdvancesToTier100 is the regression test for
+// the case PATCH workaroundProvided:true gap: entity-service's own
+// Postgres-side SLA engine completed its workaround clock, but this
+// engine's own Redis-based clock had no way to hear about it at all until
+// case.workaround_provided existed.
+func TestCompleteWorkaroundClock_AdvancesToTier100(t *testing.T) {
+	st := newFakeStore()
+	e := newTestEngine(st, &fakeChat{}, &fakePublisher{})
+	e.RegisterClocks(context.Background(), "case-1", "CATASTROPHIC", time.Now(), "CS0001", "", "", "CASE", "", "")
+
+	if err := e.CompleteWorkaroundClock(context.Background(), "case-1"); err != nil {
+		t.Fatalf("CompleteWorkaroundClock() error = %v", err)
+	}
+
+	meta, _, _ := st.GetClock(context.Background(), "case-1", ClockWorkaround)
+	if meta.AlertedTier != 100 {
+		t.Errorf("workaround AlertedTier = %d, want 100", meta.AlertedTier)
+	}
+}
+
+// TestCompleteWorkaroundClock_StoreFailure_ReturnsError is the regression
+// test for a CodeRabbit-caught gap: unlike its siblings (CompleteResponseClock
+// and the other triggers, all genuinely best-effort since a later event or
+// Reconcile's own startup sweep can re-derive their effect), a lost
+// workaround-provided signal has no second chance — so a store failure here
+// must be returned, not just logged, so dispatch.handleWorkaroundProvided
+// can fail the record for a retry instead of silently acknowledging a clock
+// that was never actually completed.
+func TestCompleteWorkaroundClock_StoreFailure_ReturnsError(t *testing.T) {
+	st := newFakeStore()
+	st.failAdvance = true
+	e := newTestEngine(st, &fakeChat{}, &fakePublisher{})
+	e.RegisterClocks(context.Background(), "case-1", "CATASTROPHIC", time.Now(), "CS0001", "", "", "CASE", "", "")
+
+	if err := e.CompleteWorkaroundClock(context.Background(), "case-1"); err == nil {
+		t.Fatal("expected CompleteWorkaroundClock() to return an error on a store failure, got nil")
+	}
+}
+
 // --- Tick / processDueMember ---
 
 func TestTick_AlertsADueTierAndRemovesTheWakeEntry(t *testing.T) {
@@ -393,6 +516,240 @@ func TestTick_AlertsADueTierAndRemovesTheWakeEntry(t *testing.T) {
 	meta, _, _ := st.GetClock(context.Background(), "case-1", "response")
 	if meta.AlertedTier != 50 {
 		t.Errorf("AlertedTier = %d, want 50 after alerting", meta.AlertedTier)
+	}
+}
+
+// TestTick_SLANotificationsDisabled_SkipsChatButKeepsPublishAndCursor guards
+// SLA_EMAIL_SENDING_ENABLED=false: no Chat card (and no entity-service
+// lookup), but the event is still published and the tier is still marked
+// alerted and removed from the wake index, so re-enabling cannot replay it.
+func TestTick_SLANotificationsDisabled_SkipsChatButKeepsPublishAndCursor(t *testing.T) {
+	st := newFakeStore()
+	chat := &fakeChat{}
+	pub := &fakePublisher{}
+	ent := &fakeEntityClockStatus{}
+	e := newTestEngine(st, chat, pub)
+	e.slaEmailSendingEnabled = false
+	e.entity = ent
+
+	past := time.Now().Add(-time.Minute)
+	st.clocks["case-1|response"] = ClockMeta{CaseNumber: "CS0001", Team: "Team Nova", StartedAt: past}
+	st.wake[wakeMember("case-1", "response", 50)] = past
+
+	if err := e.Tick(context.Background(), time.Now()); err != nil {
+		t.Fatalf("Tick() error = %v, want nil", err)
+	}
+	if len(chat.calls) != 0 {
+		t.Errorf("chat calls = %+v, want none when SLA notifications are disabled", chat.calls)
+	}
+	if len(ent.calls) != 0 {
+		t.Errorf("entity lookups = %v, want none when disabled", ent.calls)
+	}
+	if pub.calls != 1 {
+		t.Errorf("publish calls = %d, want 1 (event still published)", pub.calls)
+	}
+	if _, stillWaiting := st.wake[wakeMember("case-1", "response", 50)]; stillWaiting {
+		t.Error("wake entry not removed")
+	}
+	meta, _, _ := st.GetClock(context.Background(), "case-1", "response")
+	if meta.AlertedTier != 50 {
+		t.Errorf("AlertedTier = %d, want 50 (cursor advances so re-enable does not flood)", meta.AlertedTier)
+	}
+}
+
+// fakeEntityClockStatus is an entityClockStatusClient test double.
+type fakeEntityClockStatus struct {
+	// states, keyed by "<caseID>|<clockType>", answers GetClockState; a key
+	// this map doesn't mention defaults to clockState{Found: false} (never
+	// registered in entity-service), so a test only needs to name the clock
+	// it specifically cares about.
+	states map[string]clockState
+	err    error
+	calls  []string // "<caseID>|<clockType>", in call order
+}
+
+func (f *fakeEntityClockStatus) GetClockState(_ context.Context, caseID, clockType string) (clockState, error) {
+	f.calls = append(f.calls, caseID+"|"+clockType)
+	if f.err != nil {
+		return clockState{}, f.err
+	}
+	return f.states[caseID+"|"+clockType], nil
+}
+
+// TestTick_EntityServiceReportsClockAlreadyResolved_SuppressesTheAlert is the
+// regression guard for the real, reproduced incident this check exists for:
+// this engine's own Redis copy of a clock (AlertedTier still 0) disagreeing
+// with entity-service's own durable record (the clock has actually already
+// completed, e.g. a case closed or a qualifying comment landed, but the
+// Redis-side AdvanceAlertedTier write that should have recorded that was
+// lost) must not produce a false breach alert. The Kafka sla.tier_reached
+// publish still happens regardless (it has no consumer today, and the
+// wall-clock threshold genuinely was crossed) -- only the Chat send itself,
+// and the bookkeeping that follows it, are what entity-service's answer
+// changes.
+func TestTick_EntityServiceReportsClockAlreadyResolved_SuppressesTheAlert(t *testing.T) {
+	st := newFakeStore()
+	chat := &fakeChat{}
+	pub := &fakePublisher{}
+	e := newTestEngine(st, chat, pub)
+	past := time.Now().Add(-time.Minute)
+	e.entity = &fakeEntityClockStatus{states: map[string]clockState{
+		"case-1|response": {Found: true, IsActive: false, Stage: "ACHIEVED", HasBreached: false, StartedOn: &past},
+	}}
+
+	st.clocks["case-1|response"] = ClockMeta{CaseNumber: "CS0001", Team: "Team Nova", StartedAt: past}
+	st.wake[wakeMember("case-1", "response", 100)] = past
+
+	if err := e.Tick(context.Background(), time.Now()); err != nil {
+		t.Fatalf("Tick() error = %v, want nil", err)
+	}
+
+	if len(chat.calls) != 0 {
+		t.Errorf("chat calls = %+v, want none -- entity-service reports this clock already resolved with no breach", chat.calls)
+	}
+	if pub.calls != 1 {
+		t.Errorf("publish calls = %d, want 1 -- the sla.tier_reached event still publishes even when the chat send is suppressed", pub.calls)
+	}
+	if _, stillWaiting := st.wake[wakeMember("case-1", "response", 100)]; stillWaiting {
+		t.Error("wake entry not removed even though the alert was suppressed")
+	}
+	meta, _, _ := st.GetClock(context.Background(), "case-1", "response")
+	if meta.AlertedTier != 100 {
+		t.Errorf("AlertedTier = %d, want 100 -- a confirmed-resolved clock must still be marked done so a later tier for the same clock isn't re-checked and re-suppressed from scratch", meta.AlertedTier)
+	}
+}
+
+// TestTick_EntityServiceConfirmsClockStillActive_StillSendsTheAlert proves
+// the new check is not a blanket suppression -- a clock entity-service
+// still considers live (the overwhelmingly common case: a real, ongoing
+// SLA warning or breach) must alert exactly as before this check existed.
+func TestTick_EntityServiceConfirmsClockStillActive_StillSendsTheAlert(t *testing.T) {
+	st := newFakeStore()
+	chat := &fakeChat{}
+	pub := &fakePublisher{}
+	e := newTestEngine(st, chat, pub)
+	past := time.Now().Add(-time.Minute)
+	e.entity = &fakeEntityClockStatus{states: map[string]clockState{
+		"case-1|response": {Found: true, IsActive: true, Stage: "IN_PROGRESS", StartedOn: &past},
+	}}
+
+	st.clocks["case-1|response"] = ClockMeta{CaseNumber: "CS0001", StartedAt: past}
+	st.wake[wakeMember("case-1", "response", 50)] = past
+
+	if err := e.Tick(context.Background(), time.Now()); err != nil {
+		t.Fatalf("Tick() error = %v, want nil", err)
+	}
+	if len(chat.calls) == 0 {
+		t.Error("chat calls = none, want at least one -- entity-service confirms this clock is still active")
+	}
+}
+
+// TestTick_EntityServiceReportsResolvedButBreached_StillSendsTheAlert proves
+// the suppression is specific to a clean, no-breach resolution -- a clock
+// that genuinely DID breach before it was later completed (e.g. an
+// engineer's reply came in long after the deadline) is a real violation
+// worth reporting, not the false-alarm case this feature exists to catch.
+func TestTick_EntityServiceReportsResolvedButBreached_StillSendsTheAlert(t *testing.T) {
+	st := newFakeStore()
+	chat := &fakeChat{}
+	pub := &fakePublisher{}
+	e := newTestEngine(st, chat, pub)
+	past := time.Now().Add(-time.Minute)
+	e.entity = &fakeEntityClockStatus{states: map[string]clockState{
+		"case-1|response": {Found: true, IsActive: false, Stage: "ACHIEVED", HasBreached: true, StartedOn: &past},
+	}}
+
+	st.clocks["case-1|response"] = ClockMeta{CaseNumber: "CS0001", StartedAt: past}
+	st.wake[wakeMember("case-1", "response", 100)] = past
+
+	if err := e.Tick(context.Background(), time.Now()); err != nil {
+		t.Fatalf("Tick() error = %v, want nil", err)
+	}
+	if len(chat.calls) == 0 {
+		t.Error("chat calls = none, want at least one -- a resolved clock that genuinely breached is a real violation, not a false alarm")
+	}
+}
+
+// TestTick_EntityServiceHasNoRecordOfClock_SendsAnywayFailOpen is the
+// regression guard for a CodeRabbit-caught gap in an earlier version of this
+// check: entity-service's own CSM clock registration is itself best-effort,
+// on a different trigger than this engine's Redis registration, so "no row
+// found" must never be read as "confirmed resolved" -- it's exactly as
+// unconfirmed as a lookup error.
+func TestTick_EntityServiceHasNoRecordOfClock_SendsAnywayFailOpen(t *testing.T) {
+	st := newFakeStore()
+	chat := &fakeChat{}
+	pub := &fakePublisher{}
+	e := newTestEngine(st, chat, pub)
+	e.entity = &fakeEntityClockStatus{} // no states configured -- every lookup reports Found: false
+
+	past := time.Now().Add(-time.Minute)
+	st.clocks["case-1|response"] = ClockMeta{CaseNumber: "CS0001", StartedAt: past}
+	st.wake[wakeMember("case-1", "response", 50)] = past
+
+	if err := e.Tick(context.Background(), time.Now()); err != nil {
+		t.Fatalf("Tick() error = %v, want nil", err)
+	}
+	if len(chat.calls) == 0 {
+		t.Error("chat calls = none, want at least one -- no record in entity-service is unconfirmed, not evidence of resolution")
+	}
+}
+
+// TestTick_EntityServiceReportsADifferentIncarnation_SendsAnywayFailOpen is
+// the regression guard for the other CodeRabbit-caught gap: a severity
+// revision cancels the old clock and registers a fresh one for the same
+// (case, clockType) pair. entity-service reporting that NEW, currently-active
+// incarnation must not be read as confirming the OLD, Redis-tracked
+// incarnation (the one this wake entry is actually about) is resolved.
+func TestTick_EntityServiceReportsADifferentIncarnation_SendsAnywayFailOpen(t *testing.T) {
+	st := newFakeStore()
+	chat := &fakeChat{}
+	pub := &fakePublisher{}
+	e := newTestEngine(st, chat, pub)
+
+	redisStartedAt := time.Now().Add(-4 * time.Hour)
+	// entity-service's own row started far more recently than Redis's own
+	// copy of this clock -- a different incarnation, well outside
+	// clockIncarnationTolerance, even though its stage happens to be
+	// terminal/non-breached (what would otherwise look like a clean
+	// suppression candidate).
+	entityStartedOn := time.Now().Add(-time.Minute)
+	e.entity = &fakeEntityClockStatus{states: map[string]clockState{
+		"case-1|response": {Found: true, IsActive: false, Stage: "ACHIEVED", HasBreached: false, StartedOn: &entityStartedOn},
+	}}
+
+	st.clocks["case-1|response"] = ClockMeta{CaseNumber: "CS0001", StartedAt: redisStartedAt}
+	st.wake[wakeMember("case-1", "response", 50)] = redisStartedAt
+
+	if err := e.Tick(context.Background(), time.Now()); err != nil {
+		t.Fatalf("Tick() error = %v, want nil", err)
+	}
+	if len(chat.calls) == 0 {
+		t.Error("chat calls = none, want at least one -- a mismatched incarnation must not confirm this wake entry's own clock is resolved")
+	}
+}
+
+// TestTick_EntityServiceCheckFails_SendsAnywayFailOpen proves a transient
+// failure of the new verification call (entity-service briefly unreachable,
+// a network error) does not suppress a real alert -- silently losing a
+// genuine breach notification over a failed double-check would be worse
+// than the occasional false positive this whole feature exists to reduce.
+func TestTick_EntityServiceCheckFails_SendsAnywayFailOpen(t *testing.T) {
+	st := newFakeStore()
+	chat := &fakeChat{}
+	pub := &fakePublisher{}
+	e := newTestEngine(st, chat, pub)
+	e.entity = &fakeEntityClockStatus{err: errors.New("entity-service unreachable")}
+
+	past := time.Now().Add(-time.Minute)
+	st.clocks["case-1|response"] = ClockMeta{CaseNumber: "CS0001", StartedAt: past}
+	st.wake[wakeMember("case-1", "response", 50)] = past
+
+	if err := e.Tick(context.Background(), time.Now()); err != nil {
+		t.Fatalf("Tick() error = %v, want nil", err)
+	}
+	if len(chat.calls) == 0 {
+		t.Error("chat calls = none, want at least one -- a failed verification must fail open, not silently drop a real alert")
 	}
 }
 
@@ -468,7 +825,7 @@ func TestTick_PublishFailure_LeavesWakeEntryForRetry(t *testing.T) {
 	if _, stillWaiting := st.wake[wakeMember("case-1", "response", 50)]; !stillWaiting {
 		t.Error("wake entry removed despite a publish failure -- it should be retried")
 	}
-	if st.claims[tierClaimKey("case-1", "response", 50)] {
+	if st.claims[tierClaimKey("case-1", "response", 50, time.Time{})] {
 		t.Error("tier claim not released after a publish failure")
 	}
 }
@@ -509,7 +866,7 @@ func TestTick_ClaimLost_DropsWakeEntryWithoutAlerting(t *testing.T) {
 	st.wake[wakeMember("case-1", "response", 50)] = past
 	// Simulate a concurrent replica (or an earlier attempt) already holding
 	// the claim.
-	st.claims[tierClaimKey("case-1", "response", 50)] = true
+	st.claims[tierClaimKey("case-1", "response", 50, time.Time{})] = true
 
 	if err := e.Tick(context.Background(), time.Now()); err != nil {
 		t.Fatalf("Tick() error = %v, want nil", err)
@@ -559,5 +916,313 @@ func TestParseWakeMember(t *testing.T) {
 	}
 	if _, _, _, ok := parseWakeMember("missing-parts"); ok {
 		t.Error("parseWakeMember(malformed) ok = true, want false")
+	}
+}
+
+// --- Reconcile ---
+
+// fakeActiveClocksClient is an entityActiveClocksClient test double.
+type fakeActiveClocksClient struct {
+	clocks []activeSLAClock
+	err    error
+}
+
+func (f *fakeActiveClocksClient) GetActiveCSMSLAClocks(context.Context) ([]activeSLAClock, error) {
+	return f.clocks, f.err
+}
+
+func timePtr(t time.Time) *time.Time { return &t }
+
+// TestReconcileClock_PastTiersAreClaimedNotAlerted is the core regression
+// guard for the whole reconciliation feature: a clock whose response window
+// closed well before "now" (as it would after a real Redis wipe) must NOT
+// get a wake entry for that already-past tier -- scheduling one would have
+// the very next Tick immediately alert on stale history. The past tier is
+// pre-claimed via AlertedTier instead, and a still-future tier still gets a
+// real wake entry so normal ticking resumes.
+func TestReconcileClock_PastTiersAreClaimedNotAlerted(t *testing.T) {
+	st := newFakeStore()
+	e := newTestEngine(st, &fakeChat{}, &fakePublisher{})
+
+	now := time.Date(2026, 1, 10, 12, 0, 0, 0, time.UTC)
+	// CATASTROPHIC response = 15m. Started 2h ago: all three tiers (50/75/100%
+	// of 15m) are long past.
+	startedAt := now.Add(-2 * time.Hour)
+
+	e.reconcileClock(context.Background(), activeSLAClock{
+		CaseID: "case-1", ClockType: ClockResponse, Priority: "CATASTROPHIC",
+		StartedOn: timePtr(startedAt), CaseNumber: "CS0001", Team: "Team Nova",
+	}, now)
+
+	meta, found, _ := st.GetClock(context.Background(), "case-1", ClockResponse)
+	if !found {
+		t.Fatal("clock not registered")
+	}
+	if meta.AlertedTier != 100 {
+		t.Errorf("AlertedTier = %d, want 100 (every tier already past)", meta.AlertedTier)
+	}
+	if meta.CaseNumber != "CS0001" || meta.Team != "Team Nova" {
+		t.Errorf("meta = %+v, missing expected display fields", meta)
+	}
+	for _, tier := range tierSequence {
+		if _, ok := st.wake[wakeMember("case-1", ClockResponse, tier)]; ok {
+			t.Errorf("wake entry scheduled for already-past tier %d, want none (would cause an immediate stale alert)", tier)
+		}
+	}
+}
+
+// TestReconcileClock_FutureTiersGetRealWakeEntries confirms the opposite
+// case: a clock that just started has every tier still ahead, so all three
+// get real wake entries and none are pre-claimed.
+func TestReconcileClock_FutureTiersGetRealWakeEntries(t *testing.T) {
+	st := newFakeStore()
+	e := newTestEngine(st, &fakeChat{}, &fakePublisher{})
+
+	now := time.Date(2026, 1, 10, 12, 0, 0, 0, time.UTC)
+	startedAt := now.Add(-1 * time.Minute) // CATASTROPHIC response = 15m, barely started
+
+	e.reconcileClock(context.Background(), activeSLAClock{
+		CaseID: "case-1", ClockType: ClockResponse, Priority: "CATASTROPHIC",
+		StartedOn: timePtr(startedAt),
+	}, now)
+
+	meta, found, _ := st.GetClock(context.Background(), "case-1", ClockResponse)
+	if !found {
+		t.Fatal("clock not registered")
+	}
+	if meta.AlertedTier != 0 {
+		t.Errorf("AlertedTier = %d, want 0 (nothing past yet)", meta.AlertedTier)
+	}
+	for _, tier := range tierSequence {
+		if _, ok := st.wake[wakeMember("case-1", ClockResponse, tier)]; !ok {
+			t.Errorf("no wake entry for still-future tier %d", tier)
+		}
+	}
+}
+
+// TestReconcileClock_MixOfPastAndFutureTiers confirms a clock straddling
+// "now" (50%/75% already past, 100% still ahead) splits correctly: the
+// past tiers are claimed via the single highest-past-tier value (75, which
+// already covers 50 — see processDueMember's own ">=" comparison), and only
+// the 100% tier gets a real wake entry.
+func TestReconcileClock_MixOfPastAndFutureTiers(t *testing.T) {
+	st := newFakeStore()
+	e := newTestEngine(st, &fakeChat{}, &fakePublisher{})
+
+	now := time.Date(2026, 1, 10, 12, 0, 0, 0, time.UTC)
+	// CATASTROPHIC response = 15m: 50%=7.5m, 75%=11.25m, 100%=15m.
+	// Started 12m ago: 50%/75% are past, 100% is still ~3m away.
+	startedAt := now.Add(-12 * time.Minute)
+
+	e.reconcileClock(context.Background(), activeSLAClock{
+		CaseID: "case-1", ClockType: ClockResponse, Priority: "CATASTROPHIC",
+		StartedOn: timePtr(startedAt),
+	}, now)
+
+	meta, _, _ := st.GetClock(context.Background(), "case-1", ClockResponse)
+	if meta.AlertedTier != 75 {
+		t.Errorf("AlertedTier = %d, want 75", meta.AlertedTier)
+	}
+	if _, ok := st.wake[wakeMember("case-1", ClockResponse, 100)]; !ok {
+		t.Error("no wake entry for the still-future 100%% tier")
+	}
+	for _, tier := range []int{50, 75} {
+		if _, ok := st.wake[wakeMember("case-1", ClockResponse, tier)]; ok {
+			t.Errorf("wake entry scheduled for already-past tier %d, want none", tier)
+		}
+	}
+}
+
+// TestReconcileClock_PausedSetsPausedFlag confirms a Postgres row reported
+// as PAUSED (stage='PAUSED') carries that through to Redis, so Tick's own
+// "drop if paused" check (see processDueMember) takes effect immediately
+// rather than only after the next real pause event.
+func TestReconcileClock_PausedSetsPausedFlag(t *testing.T) {
+	st := newFakeStore()
+	e := newTestEngine(st, &fakeChat{}, &fakePublisher{})
+
+	e.reconcileClock(context.Background(), activeSLAClock{
+		CaseID: "case-1", ClockType: ClockWorkaround, Priority: "CATASTROPHIC",
+		StartedOn: timePtr(time.Now()), IsPaused: true,
+	}, time.Now())
+
+	meta, found, _ := st.GetClock(context.Background(), "case-1", ClockWorkaround)
+	if !found || !meta.Paused {
+		t.Errorf("meta = %+v (found=%v), want Paused=true", meta, found)
+	}
+}
+
+// TestReconcileClock_UnknownSeverityOrClockType_SkipsGracefully confirms a
+// row this engine's duration policy doesn't cover (e.g. a severity it was
+// never fetched for) is skipped, not a panic or a half-written clock.
+func TestReconcileClock_UnknownSeverityOrClockType_SkipsGracefully(t *testing.T) {
+	st := newFakeStore()
+	e := newTestEngine(st, &fakeChat{}, &fakePublisher{})
+
+	e.reconcileClock(context.Background(), activeSLAClock{
+		CaseID: "case-1", ClockType: ClockResponse, Priority: "UNKNOWN", StartedOn: timePtr(time.Now()),
+	}, time.Now())
+	e.reconcileClock(context.Background(), activeSLAClock{
+		CaseID: "case-2", ClockType: ClockWorkaround, Priority: "LOW", StartedOn: timePtr(time.Now()),
+	}, time.Now())
+	e.reconcileClock(context.Background(), activeSLAClock{
+		CaseID: "case-3", ClockType: ClockResponse, Priority: "CATASTROPHIC", StartedOn: nil,
+	}, time.Now())
+
+	if len(st.clocks) != 0 {
+		t.Errorf("clocks = %+v, want none registered", st.clocks)
+	}
+}
+
+// TestEngine_Reconcile_ProcessesEveryClockFromTheClient is the end-to-end
+// path: Reconcile fetches the client's full list and rebuilds each one.
+func TestEngine_Reconcile_ProcessesEveryClockFromTheClient(t *testing.T) {
+	st := newFakeStore()
+	e := newTestEngine(st, &fakeChat{}, &fakePublisher{})
+	client := &fakeActiveClocksClient{clocks: []activeSLAClock{
+		{CaseID: "case-1", ClockType: ClockResponse, Priority: "CATASTROPHIC", StartedOn: timePtr(time.Now())},
+		{CaseID: "case-2", ClockType: ClockWorkaround, Priority: "CATASTROPHIC", StartedOn: timePtr(time.Now()), IsPaused: true},
+	}}
+
+	if err := e.Reconcile(context.Background(), client); err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+
+	if _, found, _ := st.GetClock(context.Background(), "case-1", ClockResponse); !found {
+		t.Error("case-1 response clock not rebuilt")
+	}
+	meta, found, _ := st.GetClock(context.Background(), "case-2", ClockWorkaround)
+	if !found || !meta.Paused {
+		t.Errorf("case-2 workaround clock = %+v (found=%v), want Paused=true", meta, found)
+	}
+}
+
+// TestEngine_Reconcile_ClientErrorPropagates confirms a fetch failure is
+// returned (so main.go can log it) rather than silently swallowed.
+func TestEngine_Reconcile_ClientErrorPropagates(t *testing.T) {
+	st := newFakeStore()
+	e := newTestEngine(st, &fakeChat{}, &fakePublisher{})
+	client := &fakeActiveClocksClient{err: errors.New("entity-service unreachable")}
+
+	if err := e.Reconcile(context.Background(), client); err == nil {
+		t.Fatal("Reconcile() error = nil, want the client's error propagated")
+	}
+}
+
+// raceSimulatingStore wraps fakeStore and, right after a ClaimTier call
+// succeeds for a chosen (caseID, clockType), simulates a concurrent
+// registration replacing that clock with a new incarnation -- the exact
+// race window between processDueMember's own GetClock read and its later
+// AdvanceAlertedTier/RemoveWake calls that a CodeRabbit review caught: a
+// second replica (or an overlapping Reconcile pass) landing a severity
+// revision's fresh clock in that window.
+type raceSimulatingStore struct {
+	*fakeStore
+	caseID, clockType string
+	replacement       ClockMeta
+	replacementWakeAt time.Time
+}
+
+func (r *raceSimulatingStore) ClaimTier(ctx context.Context, caseID, clockType string, tier int, startedAt time.Time) (bool, error) {
+	claimed, err := r.fakeStore.ClaimTier(ctx, caseID, clockType, tier, startedAt)
+	if claimed && err == nil && caseID == r.caseID && clockType == r.clockType {
+		r.fakeStore.clocks[caseID+"|"+clockType] = r.replacement
+		r.fakeStore.wake[wakeMember(caseID, clockType, tier)] = r.replacementWakeAt
+	}
+	return claimed, err
+}
+
+// TestEngine_ProcessDueMember_IncarnationChangedMidFlight_DoesNotClobberNewClock
+// is the direct regression test for the CodeRabbit-flagged race: a tick
+// that already won its (incarnation-scoped) claim under an OLD clock must
+// not let its own AdvanceAlertedTier/RemoveWake calls afterward corrupt a
+// DIFFERENT, NEWER incarnation that was registered for the identical
+// (caseID, clockType) in the meantime -- neither clobbering its
+// just-reset alerted-tier cursor nor deleting its own, independently
+// scheduled wake entry.
+func TestEngine_ProcessDueMember_IncarnationChangedMidFlight_DoesNotClobberNewClock(t *testing.T) {
+	base := newFakeStore()
+	oldStartedAt := time.Now().Add(-time.Hour)
+	newStartedAt := time.Now().Add(time.Minute) // a genuinely different incarnation
+	newWakeAt := time.Now().Add(time.Hour)      // the new clock's own, still-future tier-50 due time
+
+	base.clocks["case-1|response"] = ClockMeta{StartedAt: oldStartedAt, Priority: "CATASTROPHIC"}
+	base.wake[wakeMember("case-1", "response", 50)] = time.Now().Add(-time.Minute) // due now, under the OLD incarnation
+
+	raceStore := &raceSimulatingStore{
+		fakeStore:         base,
+		caseID:            "case-1",
+		clockType:         "response",
+		replacement:       ClockMeta{StartedAt: newStartedAt, Priority: "HIGH"},
+		replacementWakeAt: newWakeAt,
+	}
+	e := &Engine{store: raceStore, pub: &fakePublisher{}, chat: &fakeChat{}, links: fakeLinks{}, durations: testDurations(), slaEmailSendingEnabled: true}
+
+	if err := e.Tick(context.Background(), time.Now()); err != nil {
+		t.Fatalf("Tick() error = %v", err)
+	}
+
+	got := base.clocks["case-1|response"]
+	if !got.StartedAt.Equal(newStartedAt) {
+		t.Fatalf("test setup broken: clock is not the new incarnation (got StartedAt = %v)", got.StartedAt)
+	}
+	if got.AlertedTier != 0 {
+		t.Errorf("new incarnation's AlertedTier = %d, want 0 -- the stale tick must not advance a cursor that isn't its own", got.AlertedTier)
+	}
+	gotWakeAt, stillPresent := base.wake[wakeMember("case-1", "response", 50)]
+	if !stillPresent {
+		t.Fatal("new incarnation's own wake entry was removed by the stale tick -- its real future alert is now lost")
+	}
+	if !gotWakeAt.Equal(newWakeAt) {
+		t.Errorf("wake entry due time = %v, want the new incarnation's own %v (unchanged)", gotWakeAt, newWakeAt)
+	}
+}
+
+// --- isSameClockIncarnation / isTerminalSLAStage ---
+
+func TestIsSameClockIncarnation(t *testing.T) {
+	base := time.Date(2026, 1, 5, 10, 0, 0, 0, time.UTC)
+
+	cases := []struct {
+		name            string
+		entityStartedOn *time.Time
+		redisStartedAt  time.Time
+		want            bool
+	}{
+		{"identical instant", &base, base, true},
+		{"a few seconds apart (ordinary processing lag)", ptrTime(base.Add(2 * time.Second)), base, true},
+		{"just inside the tolerance", ptrTime(base.Add(clockIncarnationTolerance - time.Second)), base, true},
+		{"just outside the tolerance", ptrTime(base.Add(clockIncarnationTolerance + time.Second)), base, false},
+		{"entity-service's own instant is EARLIER (clock skew), still close", ptrTime(base.Add(-2 * time.Second)), base, true},
+		{"a genuinely new incarnation, hours later", ptrTime(base.Add(4 * time.Hour)), base, false},
+		{"entity-service reports no startedOn at all", nil, base, true},
+		{"redis has no startedAt at all (defensive, shouldn't happen for a real wake entry)", &base, time.Time{}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := isSameClockIncarnation(c.entityStartedOn, c.redisStartedAt); got != c.want {
+				t.Errorf("isSameClockIncarnation(%v, %v) = %v, want %v", c.entityStartedOn, c.redisStartedAt, got, c.want)
+			}
+		})
+	}
+}
+
+func ptrTime(t time.Time) *time.Time { return &t }
+
+func TestIsTerminalSLAStage(t *testing.T) {
+	cases := map[string]bool{
+		"ACHIEVED":    true,
+		"CANCELLED":   true,
+		"COMPLETED":   true,
+		"achieved":    true, // case-insensitive
+		"IN_PROGRESS": false,
+		"BREACHED":    false, // deliberately not terminal -- see isTerminalSLAStage's own doc comment
+		"PAUSED":      false,
+		"":            false,
+	}
+	for stage, want := range cases {
+		if got := isTerminalSLAStage(stage); got != want {
+			t.Errorf("isTerminalSLAStage(%q) = %v, want %v", stage, got, want)
+		}
 	}
 }

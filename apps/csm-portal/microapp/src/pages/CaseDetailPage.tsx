@@ -498,6 +498,8 @@ function CaseDetailContent({ id }: { id: string }) {
           caseId={id}
           caseNumber={caseDetail.number}
           caseSeverity={caseDetail.severity}
+          caseType={caseDetail.type}
+          engagementPaymentType={caseDetail.engagementPaymentType}
           projectId={caseDetail.project?.id ?? ""}
           projectName={caseDetail.project?.name ?? ""}
         />
@@ -534,6 +536,8 @@ function CaseDetailContent({ id }: { id: string }) {
           caseId={id}
           caseNumber={caseDetail.number}
           caseSeverity={caseDetail.severity}
+          caseType={caseDetail.type}
+          engagementPaymentType={caseDetail.engagementPaymentType}
           projectId={caseDetail.project?.id ?? ""}
           projectName={caseDetail.project?.name ?? ""}
           isSubmitting={isLoggingTime}

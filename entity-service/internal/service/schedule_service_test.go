@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,10 +33,11 @@ import (
 // the request reached the repository unchanged — and returns fixed rows, since
 // what the repository does with them is SQL's business, not the service's.
 type fakeScheduleRepo struct {
-	gotAssignmentReq domain.SearchScheduleAssignmentsRequest
-	gotAbsenceReq    domain.SearchScheduleAbsencesRequest
-	gotOnDutyAt      time.Time
-	called           bool
+	gotAssignmentReq  domain.SearchScheduleAssignmentsRequest
+	gotAbsenceReq     domain.SearchScheduleAbsencesRequest
+	gotOnDutyAt       time.Time
+	gotIncludeOnLeave bool
+	called            bool
 
 	assignments []domain.ScheduleAssignment
 	absences    []domain.ScheduleAbsence
@@ -53,6 +55,28 @@ type fakeScheduleRepo struct {
 	gotKindCode string
 	gotRange    domain.ApplyScheduleRangeRequest
 	adminTeams  []string
+	// markerTeams is what a rota marker holds (migration 0225). Nil by
+	// default, so the existing tests describe nobody holding one.
+	markerTeams []string
+
+	// Per-team answers, when set: which teams the caller leads, which the
+	// engineer belongs to, and a span that moved the engineer to movedTo
+	// from movedHome. Unset, the blanket answers above apply.
+	ledTeams  []string
+	memberOf  []string
+	movedTo   string
+	movedHome string
+	// shareRota is the answer to TeamsShareRota: the SaaS Night cover and
+	// its people's own teams are one rota.
+	shareRota  bool
+	gotAbsence domain.ApplyScheduleAbsenceRequest
+
+	// The families of the rota admin roles held (nil = none), and what the
+	// absence tag writes were given.
+	adminFamilies  []string
+	gotKindFamily  *string
+	gotKindAllowed []string
+	markers        []domain.ScheduleEditMarker
 }
 
 func (f *fakeScheduleRepo) AssignmentByID(context.Context, string) (domain.ScheduleAssignment, error) {
@@ -62,9 +86,12 @@ func (f *fakeScheduleRepo) AssignmentByID(context.Context, string) (domain.Sched
 	return f.byID, nil
 }
 
-func (f *fakeScheduleRepo) LeadsTeam(context.Context, string, string) (bool, error) {
+func (f *fakeScheduleRepo) LeadsTeam(_ context.Context, _ string, teamKey string) (bool, error) {
 	if f.err != nil {
 		return false, f.err
+	}
+	if f.ledTeams != nil {
+		return containsFold(f.ledTeams, teamKey), nil
 	}
 	return f.leadsTeam, nil
 }
@@ -94,7 +121,7 @@ func (f *fakeScheduleRepo) ApplyRange(_ context.Context, req domain.ApplySchedul
 }
 
 func (f *fakeScheduleRepo) ApplyAbsence(_ context.Context, req domain.ApplyScheduleAbsenceRequest, actor string) (domain.ApplyScheduleAbsenceResponse, error) {
-	f.called, f.gotActorEml = true, actor
+	f.called, f.gotActorEml, f.gotAbsence = true, actor, req
 	return domain.ApplyScheduleAbsenceResponse{Created: 1}, f.err
 }
 
@@ -114,22 +141,40 @@ func (f *fakeScheduleRepo) DeleteAbsence(_ context.Context, id, actor string, _ 
 	return f.err
 }
 
-func (f *fakeScheduleRepo) CreateAbsenceKind(_ context.Context, code string, req domain.CreateScheduleAbsenceKindRequest, actor string) (domain.ScheduleAbsenceKind, error) {
-	f.called, f.gotKindCode, f.gotActorEml = true, code, actor
+func (f *fakeScheduleRepo) CreateAbsenceKind(_ context.Context, code string, req domain.CreateScheduleAbsenceKindRequest, family *string, actor string) (domain.ScheduleAbsenceKind, error) {
+	f.called, f.gotKindCode, f.gotActorEml, f.gotKindFamily = true, code, actor, family
 	return domain.ScheduleAbsenceKind{Code: code, ShortCode: req.ShortCode, Label: req.Label, Bucket: req.Bucket, ColourToken: req.ColourToken}, f.err
 }
 
-func (f *fakeScheduleRepo) DeleteAbsenceKind(_ context.Context, code, actor string) error {
-	f.called, f.gotKindCode, f.gotActorEml = true, code, actor
+func (f *fakeScheduleRepo) DeleteAbsenceKind(_ context.Context, code, actor string, allowed []string) error {
+	f.called, f.gotKindCode, f.gotActorEml, f.gotKindAllowed = true, code, actor, allowed
 	return f.err
 }
 
 func (f *fakeScheduleRepo) EditMarkers(context.Context, string, string) ([]domain.ScheduleEditMarker, error) {
-	return nil, f.err
+	return f.markers, f.err
 }
 
-func (f *fakeScheduleRepo) UserInTeam(context.Context, string, string) (bool, error) {
+func (f *fakeScheduleRepo) RotaAdminFamilies(context.Context, string) ([]string, error) {
+	return f.adminFamilies, f.err
+}
+
+func (f *fakeScheduleRepo) UserInTeam(_ context.Context, _ string, teamKey string) (bool, error) {
+	if f.memberOf != nil {
+		return containsFold(f.memberOf, teamKey), f.err
+	}
 	return true, f.err
+}
+
+func (f *fakeScheduleRepo) MovedToTeamOver(_ context.Context, _ string, teamKey, _, _ string) (string, bool, error) {
+	if f.movedTo != "" && strings.EqualFold(f.movedTo, teamKey) {
+		return f.movedHome, true, f.err
+	}
+	return "", false, f.err
+}
+
+func (f *fakeScheduleRepo) TeamsShareRota(context.Context, string, string) (bool, error) {
+	return f.shareRota, f.err
 }
 
 func (f *fakeScheduleRepo) LeadTeamsFor(context.Context, string) ([]string, error) {
@@ -149,6 +194,13 @@ func (f *fakeScheduleRepo) RotaAdminTeamsFor(context.Context, string) ([]string,
 	return f.adminTeams, f.err
 }
 
+func (f *fakeScheduleRepo) RotaMarkerTeamsFor(context.Context, string) ([]string, error) {
+	if f.markerTeams == nil {
+		return []string{}, f.err
+	}
+	return f.markerTeams, f.err
+}
+
 func (f *fakeScheduleRepo) Catalogue(context.Context) (domain.ScheduleCatalogue, error) {
 	f.called = true
 	return f.catalogue, f.err
@@ -166,9 +218,10 @@ func (f *fakeScheduleRepo) SearchAbsences(_ context.Context, req domain.SearchSc
 	return f.absences, f.err
 }
 
-func (f *fakeScheduleRepo) OnDutyAt(_ context.Context, at time.Time) ([]domain.ScheduleAssignment, error) {
+func (f *fakeScheduleRepo) OnDutyAt(_ context.Context, at time.Time, includeOnLeave bool) ([]domain.ScheduleAssignment, error) {
 	f.called = true
 	f.gotOnDutyAt = at
+	f.gotIncludeOnLeave = includeOnLeave
 	return f.assignments, f.err
 }
 
@@ -186,7 +239,7 @@ func TestSearchAssignmentsRejectsBadWindows(t *testing.T) {
 		{"to not a date", domain.SearchScheduleAssignmentsRequest{From: "2026-09-21", To: "soon"}},
 		{"to before from", domain.SearchScheduleAssignmentsRequest{From: "2026-09-21", To: "2026-09-20"}},
 		{"window too wide", domain.SearchScheduleAssignmentsRequest{From: "2026-01-01", To: "2026-12-31"}},
-		{"family is neither CRE nor SRE", domain.SearchScheduleAssignmentsRequest{From: "2026-09-21", To: "2026-09-21", Family: "OPS"}},
+		{"family is not a rota family", domain.SearchScheduleAssignmentsRequest{From: "2026-09-21", To: "2026-09-21", Family: "OPS"}},
 	}
 
 	for _, tc := range cases {
@@ -203,6 +256,27 @@ func TestSearchAssignmentsRejectsBadWindows(t *testing.T) {
 			// read would happily return every row in the table.
 			if repo.called {
 				t.Fatal("repository was called for a request that failed validation")
+			}
+		})
+	}
+}
+
+// Every rota family reaches the repository: CRE and SRE as before, and SME,
+// the product special rotations added in migration 0199. An unknown family is
+// still refused (TestSearchAssignmentsRejectsBadWindows).
+func TestSearchAssignmentsAcceptsEveryRotaFamily(t *testing.T) {
+	t.Parallel()
+
+	for _, family := range []string{"", "CRE", "SRE", "SME"} {
+		t.Run("family "+family, func(t *testing.T) {
+			t.Parallel()
+			repo := &fakeScheduleRepo{}
+			req := domain.SearchScheduleAssignmentsRequest{From: "2026-10-05", To: "2026-10-05", Family: family}
+			if _, err := NewScheduleService(repo, alwaysUnrestrictedAccess{}).SearchAssignments(context.Background(), req); err != nil {
+				t.Fatalf("family %q: unexpected error: %v", family, err)
+			}
+			if !repo.called {
+				t.Fatalf("family %q: the repository was not asked", family)
 			}
 		})
 	}
@@ -275,7 +349,7 @@ func TestOnDutyDefaultsToNow(t *testing.T) {
 
 	repo := &fakeScheduleRepo{}
 	before := time.Now()
-	if _, err := NewScheduleService(repo, alwaysUnrestrictedAccess{}).OnDuty(context.Background(), nil); err != nil {
+	if _, err := NewScheduleService(repo, alwaysUnrestrictedAccess{}).OnDuty(context.Background(), nil, false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if repo.gotOnDutyAt.Before(before) || repo.gotOnDutyAt.After(time.Now()) {
@@ -288,11 +362,14 @@ func TestOnDutyUsesTheInstantAskedFor(t *testing.T) {
 
 	repo := &fakeScheduleRepo{}
 	at := time.Date(2026, 9, 21, 22, 15, 0, 0, time.UTC)
-	if _, err := NewScheduleService(repo, alwaysUnrestrictedAccess{}).OnDuty(context.Background(), &at); err != nil {
+	if _, err := NewScheduleService(repo, alwaysUnrestrictedAccess{}).OnDuty(context.Background(), &at, true); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !repo.gotOnDutyAt.Equal(at) {
 		t.Fatalf("want %v, got %v", at, repo.gotOnDutyAt)
+	}
+	if !repo.gotIncludeOnLeave {
+		t.Fatal("includeOnLeave was not passed to the repository")
 	}
 }
 
@@ -334,7 +411,7 @@ func TestScheduleReadsRequireInternalCaller(t *testing.T) {
 			return err
 		},
 		"on-duty": func(s ScheduleService) error {
-			_, err := s.OnDuty(context.Background(), nil)
+			_, err := s.OnDuty(context.Background(), nil, false)
 			return err
 		},
 	}
@@ -542,8 +619,76 @@ func TestMyLeadTeamsCoversLeadingAndAdministering(t *testing.T) {
 	}
 	// castor is held both ways and must appear once, not twice.
 	want := []string{"castor", "draco", "vega"}
-	if !reflect.DeepEqual(teams, want) {
-		t.Fatalf("MyLeadTeams = %v, want %v", teams, want)
+	if !reflect.DeepEqual(teams.TeamKeys, want) || len(teams.MarkerOnlyTeamKeys) != 0 {
+		t.Fatalf("MyLeadTeams = %+v, want %v and no marker-only teams", teams, want)
+	}
+}
+
+// A rota marker's team is one they may edit, and the page also needs to know
+// it is held only as a marker: Generate month and the tags are not theirs.
+// A team they also lead is no marker-only team.
+func TestMyLeadTeamsListsAMarkersTeamApart(t *testing.T) {
+	repo := &fakeScheduleRepo{leadsTeam: true} // LeadTeamsFor returns castor
+	repo.markerTeams = []string{"lyra", "castor"}
+	svc := NewScheduleService(repo, alwaysUnrestrictedAccess{})
+
+	teams, err := svc.MyLeadTeams(leadCtx("castor.01@example.com"))
+	if err != nil {
+		t.Fatalf("MyLeadTeams: %v", err)
+	}
+	if want := []string{"castor", "lyra"}; !reflect.DeepEqual(teams.TeamKeys, want) {
+		t.Fatalf("TeamKeys = %v, want %v", teams.TeamKeys, want)
+	}
+	if want := []string{"lyra"}; !reflect.DeepEqual(teams.MarkerOnlyTeamKeys, want) {
+		t.Fatalf("MarkerOnlyTeamKeys = %v, want %v", teams.MarkerOnlyTeamKeys, want)
+	}
+}
+
+// A rota marker marks their own team: rotations, leave and allocations all go
+// through the rota writer rule, and the marker passes it for that team only.
+func TestRotaMarkerMarksOwnTeamOnly(t *testing.T) {
+	repo := &leadOf{team: ""}
+	repo.markerTeams = []string{"lyra"}
+	svc := NewScheduleService(repo, alwaysUnrestrictedAccess{})
+	ctx := leadCtx("lyra.marker@example.com")
+	req := domain.ApplyScheduleRangeRequest{
+		UserID:    "22222222-2222-2222-2222-222222222222",
+		TeamKey:   "Lyra",
+		ShiftCode: "CRE_EVENING",
+		From:      "2026-10-01",
+		To:        "2026-10-03",
+	}
+	if _, err := svc.ApplyRange(ctx, req); err != nil {
+		t.Fatalf("a rota marker was refused their own team: %v", err)
+	}
+
+	repo.called = false
+	req.TeamKey = "castor"
+	_, err := svc.ApplyRange(ctx, req)
+	var forbidden *apierror.ForbiddenError
+	if !errors.As(err, &forbidden) {
+		t.Fatalf("want ForbiddenError marking another team, got %v", err)
+	}
+	if repo.called {
+		t.Fatal("a rota marker wrote to a team that is not theirs")
+	}
+}
+
+// The tags are shared by every team, so they stay with the leads and rota
+// admins: being one team's marker is not leading a team.
+func TestRotaMarkerCannotChangeTheTags(t *testing.T) {
+	repo := &fakeScheduleRepo{leadsTeam: false}
+	repo.markerTeams = []string{"lyra"}
+	svc := NewScheduleService(repo, alwaysUnrestrictedAccess{})
+	_, err := svc.CreateAbsenceKind(leadCtx("lyra.marker@example.com"), domain.CreateScheduleAbsenceKindRequest{
+		ShortCode: "Trn", Label: "Training", Bucket: "allocation", ColourToken: "int",
+	})
+	var forbidden *apierror.ForbiddenError
+	if !errors.As(err, &forbidden) {
+		t.Fatalf("want ForbiddenError, got %v", err)
+	}
+	if repo.called {
+		t.Fatal("a rota marker wrote to the shared tags")
 	}
 }
 
@@ -852,5 +997,159 @@ func TestDeletingATagNeedsALead(t *testing.T) {
 	}
 	if repo.gotKindCode != "TRAINING" {
 		t.Fatalf("deleted %q, want TRAINING", repo.gotKindCode)
+	}
+}
+
+// ── A span that moves somebody to another team ─────────────────────────────
+// A Draco engineer on the Brazil rotation is filed under the Americas team for
+// its dates. These cover who may then change their rota.
+
+const movedEngineer = "33333333-3333-3333-3333-333333333333"
+
+func movedRepo(callerLeads ...string) *fakeScheduleRepo {
+	return &fakeScheduleRepo{
+		ledTeams:  callerLeads,
+		memberOf:  []string{"draco"},
+		movedTo:   "americas",
+		movedHome: "draco",
+	}
+}
+
+func TestTheTeamASpanMovedSomebodyToMayRosterThem(t *testing.T) {
+	repo := movedRepo("americas")
+	svc := NewScheduleService(repo, alwaysUnrestrictedAccess{})
+	_, err := svc.ApplyRange(leadCtx("americas.lead@example.com"), domain.ApplyScheduleRangeRequest{
+		UserID: movedEngineer, TeamKey: "americas", ShiftCode: "CRE_WEEKEND",
+		From: "2026-10-10", To: "2026-10-10",
+	})
+	if err != nil {
+		t.Fatalf("the Americas lead was refused someone on the Brazil rotation: %v", err)
+	}
+	if !repo.called {
+		t.Fatal("the write never reached the repository")
+	}
+}
+
+func TestTheHomeLeadKeepsChargeOfTheSpanButCannotRosterThere(t *testing.T) {
+	repo := movedRepo("draco")
+	svc := NewScheduleService(repo, alwaysUnrestrictedAccess{})
+	ctx := leadCtx("draco.lead@example.com")
+
+	// Ending the rotation early, from the Americas row.
+	if _, err := svc.ApplyAbsence(ctx, domain.ApplyScheduleAbsenceRequest{
+		UserID: movedEngineer, TeamKey: "americas", KindCode: "",
+		From: "2026-10-20", To: "2026-10-31",
+	}); err != nil {
+		t.Fatalf("the Draco lead could not end their engineer's rotation: %v", err)
+	}
+	if repo.gotAbsence.HomeTeamKey != "draco" {
+		t.Fatalf("home team handed to the repository = %q, want draco", repo.gotAbsence.HomeTeamKey)
+	}
+
+	// But rostering on the Americas rota is the Americas lead's call.
+	repo.called = false
+	_, err := svc.ApplyRange(ctx, domain.ApplyScheduleRangeRequest{
+		UserID: movedEngineer, TeamKey: "americas", ShiftCode: "CRE_WEEKEND",
+		From: "2026-10-10", To: "2026-10-10",
+	})
+	var forbidden *apierror.ForbiddenError
+	if !errors.As(err, &forbidden) {
+		t.Fatalf("the Draco lead rostered on the Americas rota: got %v, want ForbiddenError", err)
+	}
+	if repo.called {
+		t.Fatal("the repository was written to")
+	}
+}
+
+func TestAThirdTeamsLeadHasNoSayOverAMovedEngineer(t *testing.T) {
+	repo := movedRepo("castor")
+	svc := NewScheduleService(repo, alwaysUnrestrictedAccess{})
+	_, err := svc.ApplyAbsence(leadCtx("castor.lead@example.com"), domain.ApplyScheduleAbsenceRequest{
+		UserID: movedEngineer, TeamKey: "americas", KindCode: "",
+		From: "2026-10-20", To: "2026-10-31",
+	})
+	var forbidden *apierror.ForbiddenError
+	if !errors.As(err, &forbidden) {
+		t.Fatalf("got %v, want ForbiddenError", err)
+	}
+	if repo.called {
+		t.Fatal("the repository was written to")
+	}
+}
+
+// Marking the rotation from the engineer's own row hands the repository their
+// team as home, so the span can be filed under the Americas team beside it.
+func TestMarkingAMoveFromTheHomeRowNamesTheHomeTeam(t *testing.T) {
+	repo := &fakeScheduleRepo{ledTeams: []string{"draco"}, memberOf: []string{"draco"}}
+	svc := NewScheduleService(repo, alwaysUnrestrictedAccess{})
+	if _, err := svc.ApplyAbsence(leadCtx("draco.lead@example.com"), domain.ApplyScheduleAbsenceRequest{
+		UserID: movedEngineer, TeamKey: "draco", KindCode: "ALLO_BR",
+		From: "2026-10-01", To: "2027-03-31",
+	}); err != nil {
+		t.Fatalf("ApplyAbsence: %v", err)
+	}
+	if repo.gotAbsence.HomeTeamKey != "draco" {
+		t.Fatalf("home team = %q, want draco", repo.gotAbsence.HomeTeamKey)
+	}
+}
+
+// The SaaS Night cover has no lead of its own, and the people on it are still
+// on the SaaS rota: their own team's lead keeps rostering them there. Another
+// SaaS team's lead does not.
+func TestTheHomeLeadRostersTheirOwnPersonOnTheNightCover(t *testing.T) {
+	night := func(callerLeads ...string) *fakeScheduleRepo {
+		return &fakeScheduleRepo{
+			ledTeams: callerLeads, memberOf: []string{"apollo"},
+			movedTo: "saas-night-cover", movedHome: "apollo", shareRota: true,
+		}
+	}
+	tier := "L2"
+	req := domain.ApplyScheduleRangeRequest{
+		UserID: movedEngineer, TeamKey: "saas-night-cover", ShiftCode: "SRE_TZ3", Tier: &tier,
+		From: "2026-11-04", To: "2026-11-04",
+	}
+
+	repo := night("apollo")
+	if _, err := NewScheduleService(repo, alwaysUnrestrictedAccess{}).ApplyRange(leadCtx("apollo.lead@example.com"), req); err != nil {
+		t.Fatalf("the Apollo lead was refused their own engineer's night on the Night cover: %v", err)
+	}
+	if !repo.called {
+		t.Fatal("the write never reached the repository")
+	}
+
+	repo = night("artemis")
+	_, err := NewScheduleService(repo, alwaysUnrestrictedAccess{}).ApplyRange(leadCtx("artemis.lead@example.com"), req)
+	var forbidden *apierror.ForbiddenError
+	if !errors.As(err, &forbidden) {
+		t.Fatalf("the Artemis lead rostered an Apollo engineer: got %v, want ForbiddenError", err)
+	}
+}
+
+// Remove on a move (or leave inside one) is filed under the team it moved
+// them to, where they are no member: their own team's lead may still remove
+// it. A third team's lead may not.
+func TestTheHomeLeadRemovesAMoveFiledUnderTheOtherTeam(t *testing.T) {
+	home := "draco"
+	span := domain.ScheduleAbsence{
+		ID: "11111111-1111-1111-1111-111111111111", Engineer: domain.ScheduleEngineer{UserID: movedEngineer},
+		TeamKey: "americas", HomeTeamKey: &home, KindCode: "ALLO_BR", StartsOn: "2026-10-01",
+	}
+
+	repo := &fakeScheduleRepo{ledTeams: []string{"draco"}, memberOf: []string{"draco"}, absenceByID: span}
+	if err := NewScheduleService(repo, alwaysUnrestrictedAccess{}).DeleteAbsence(leadCtx("draco.lead@example.com"), span.ID, nil); err != nil {
+		t.Fatalf("the Draco lead could not remove their engineer's rotation: %v", err)
+	}
+	if repo.deletedID != span.ID {
+		t.Fatalf("deleted %q, want %q", repo.deletedID, span.ID)
+	}
+
+	repo = &fakeScheduleRepo{ledTeams: []string{"castor"}, memberOf: []string{"draco"}, absenceByID: span}
+	err := NewScheduleService(repo, alwaysUnrestrictedAccess{}).DeleteAbsence(leadCtx("castor.lead@example.com"), span.ID, nil)
+	var forbidden *apierror.ForbiddenError
+	if !errors.As(err, &forbidden) {
+		t.Fatalf("a third team's lead removed it: got %v, want ForbiddenError", err)
+	}
+	if repo.deletedID != "" {
+		t.Fatal("the repository was written to")
 	}
 }

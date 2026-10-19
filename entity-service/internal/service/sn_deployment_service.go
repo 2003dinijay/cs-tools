@@ -131,7 +131,6 @@ func (s *snDeploymentService) SearchDeployments(ctx context.Context, req domain.
 			Name:        d.Name,
 			Type:        deployType,
 			Description: d.Description,
-			CreatedBy:   nil,
 			Project:     domain.EntityRef{ID: sysidToUUID(d.Project.ID), Name: d.Project.Name},
 			CreatedOn:   createdOn,
 			UpdatedOn:   updatedOn,

@@ -15,14 +15,16 @@
 // under the License.
 
 import { UserMenu } from "@wso2/oxygen-ui";
-import { LogOut, Settings, User } from "@wso2/oxygen-ui-icons-react";
+import { FlaskConical, LogOut, Settings, User } from "@wso2/oxygen-ui-icons-react";
 import { type JSX, useState } from "react";
 import { useAsgardeo } from "@asgardeo/react";
 import { useLogger } from "@hooks/useLogger";
 import { useIdTokenClaims } from "@hooks/useIdTokenClaims";
 import UserProfileModal from "@components/header/UserProfileModal";
 import PreferencesDialog from "@components/header/PreferencesDialog";
+import FeaturePreviewDialog from "@components/header/FeaturePreviewDialog";
 import { resolveUserInfo } from "@utils/userClaims";
+import { usePortalAccess } from "@context/current-user/usePortalAccess";
 
 interface UserProfileProps {
   /** Hides Profile/Preferences (nothing meaningful to view/configure without
@@ -36,8 +38,10 @@ export default function UserProfile({
   const { signOut } = useAsgardeo();
   const claims = useIdTokenClaims();
   const logger = useLogger();
+  const access = usePortalAccess();
   const [profileModalOpen, setProfileModalOpen] = useState(false);
   const [preferencesOpen, setPreferencesOpen] = useState(false);
+  const [featurePreviewOpen, setFeaturePreviewOpen] = useState(false);
 
   const handleSignOut = async () => {
     window.dispatchEvent(new CustomEvent("app:signing-out"));
@@ -74,6 +78,13 @@ export default function UserProfile({
             onClick={() => setPreferencesOpen(true)}
           />
         )}
+        {!hideProjectControls && access.isAdmin && (
+          <UserMenu.Item
+            icon={<FlaskConical size={16} />}
+            label="Feature Preview"
+            onClick={() => setFeaturePreviewOpen(true)}
+          />
+        )}
         <UserMenu.Logout
           icon={<LogOut size={16} />}
           label="Sign out"
@@ -91,6 +102,12 @@ export default function UserProfile({
             onClose={() => setPreferencesOpen(false)}
           />
         </>
+      )}
+      {!hideProjectControls && access.isAdmin && (
+        <FeaturePreviewDialog
+          open={featurePreviewOpen}
+          onClose={() => setFeaturePreviewOpen(false)}
+        />
       )}
     </>
   );

@@ -47,7 +47,7 @@ import {
   resolveDisplayTimeZone,
   zonedInputToUtcIso,
 } from "@utils/dateTime";
-import { sanitizeRichTextHtml } from "@utils/sanitizeHtml";
+import { sanitizeAnnouncementHtml } from "@utils/sanitizeHtml";
 import {
   DRY_RUN_TAG_LABEL,
   useAnnouncementDryRun,
@@ -146,7 +146,11 @@ export default function AnnouncementRequestDialog({
   onClose,
   caseMembers = [],
 }: AnnouncementRequestDialogProps): JSX.Element {
-  const { canWrite } = usePortalAccess();
+  // canWrite alone gates "Mark as approved" (it only records a decision taken over
+  // email); everything that edits, submits, schedules, publishes or updates a
+  // request needs canCreateAnnouncement (announcement creator or admin, on top
+  // of write access).
+  const { canWrite, canCreateAnnouncement } = usePortalAccess();
   const { data: request, isLoading, isError, refetch } = useGetAnnouncementRequest(requestId);
   const update = useUpdateAnnouncementRequest();
   const recordDryRun = useRecordAnnouncementRequestDryRun();
@@ -527,6 +531,7 @@ export default function AnnouncementRequestDialog({
                     Description
                   </Typography>
                   <EditorWithSourceToggle
+                    keepStyledHtmlAsSource
                     value={description}
                     onChange={setDescription}
                     placeholder="Describe the announcement…"
@@ -563,7 +568,7 @@ export default function AnnouncementRequestDialog({
                       update.isPending ||
                       subject.trim().length === 0 ||
                       contentLockedForRetry ||
-                      !canWrite
+                      !canCreateAnnouncement
                     }
                   >
                     {update.isPending ? "Saving…" : "Save changes"}
@@ -587,7 +592,7 @@ export default function AnnouncementRequestDialog({
                 </Box>
                 <Box
                   sx={{ fontSize: "0.875rem", lineHeight: 1.5, wordBreak: "break-word" }}
-                  dangerouslySetInnerHTML={{ __html: sanitizeRichTextHtml(request.description) }}
+                  dangerouslySetInnerHTML={{ __html: sanitizeAnnouncementHtml(request.description) }}
                 />
               </>
             )}
@@ -711,7 +716,7 @@ export default function AnnouncementRequestDialog({
                   variant="text"
                   size="small"
                   onClick={() => setConfirmEditOpen(true)}
-                  disabled={!canWrite}
+                  disabled={!canCreateAnnouncement}
                 >
                   Edit
                 </Button>
@@ -735,7 +740,7 @@ export default function AnnouncementRequestDialog({
                     hasUnsavedChanges ||
                     subject.trim().length === 0 ||
                     isEmptyHtml(description) ||
-                    !canWrite
+                    !canCreateAnnouncement
                   }
                 >
                   {dryRun.runningDryRun
@@ -781,7 +786,7 @@ export default function AnnouncementRequestDialog({
                       !claimsReady ||
                       !isRequestCreator ||
                       !publish.readyToPublish ||
-                      !canWrite
+                      !canCreateAnnouncement
                     }
                   >
                     {!claimsReady
@@ -805,7 +810,7 @@ export default function AnnouncementRequestDialog({
                         variant="outlined"
                         color="warning"
                         size="small"
-                        disabled={hasUnsavedChanges || !canWrite}
+                        disabled={hasUnsavedChanges || !canCreateAnnouncement}
                         onClick={() => setConfirmGiveUpOpen(true)}
                       >
                         Publish anyway
@@ -883,7 +888,7 @@ export default function AnnouncementRequestDialog({
                       size="small"
                       variant="text"
                       color="error"
-                      disabled={schedule.isPending || !canWrite || !isRequestCreator}
+                      disabled={schedule.isPending || !canCreateAnnouncement || !isRequestCreator}
                       onClick={() => schedule.mutate({ id: request.id, scheduledFor: null })}
                     >
                       Cancel schedule
@@ -891,7 +896,7 @@ export default function AnnouncementRequestDialog({
                   </Box>
                 ) : (
                   isRequestCreator &&
-                  canWrite &&
+                  canCreateAnnouncement &&
                   (schedulePickerOpen ? (
                     <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
                       <LocalizationProvider dateAdapter={AdapterDateFns}>
@@ -1033,7 +1038,7 @@ export default function AnnouncementRequestDialog({
                 {(!claimsReady ||
                   (isRequestCreator && (request.publishedCaseIds ?? []).length > 0)) && (
                   <>
-                    <EditorWithSourceToggle value={updateContent} onChange={setUpdateContent} />
+                    <EditorWithSourceToggle keepStyledHtmlAsSource value={updateContent} onChange={setUpdateContent} />
                     <Box>
                       <Button
                         variant="outlined"
@@ -1045,7 +1050,7 @@ export default function AnnouncementRequestDialog({
                           createUpdate.isPending ||
                           postUpdateComments.posting ||
                           (request.publishedCaseIds ?? []).length === 0 ||
-                          !canWrite
+                          !canCreateAnnouncement
                         }
                         onClick={() => setConfirmUpdateOpen(true)}
                       >
@@ -1077,7 +1082,7 @@ export default function AnnouncementRequestDialog({
                         </Typography>
                         <Box
                           sx={{ fontSize: "0.875rem", lineHeight: 1.5, wordBreak: "break-word", mt: 0.5 }}
-                          dangerouslySetInnerHTML={{ __html: sanitizeRichTextHtml(u.content) }}
+                          dangerouslySetInnerHTML={{ __html: sanitizeAnnouncementHtml(u.content) }}
                         />
                       </Box>
                     ))}

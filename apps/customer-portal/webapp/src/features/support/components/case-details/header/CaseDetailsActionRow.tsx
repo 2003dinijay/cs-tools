@@ -25,15 +25,13 @@ import {
   useTheme,
   type Theme,
 } from "@wso2/oxygen-ui";
-import CaseStateConfirmDialog, {
-  type CaseResolutionFields,
-} from "@features/support/components/case-details/dialogs/CaseStateConfirmDialog";
+import CaseStateConfirmDialog from "@features/support/components/case-details/dialogs/CaseStateConfirmDialog";
 import RejectSolutionDialog from "@features/support/components/case-details/dialogs/RejectSolutionDialog";
 import EscalateCaseModal from "../escalation/EscalateCaseModal";
 import DeescalateCaseModal from "../escalation/DeescalateCaseModal";
 import CaseFeedbackModal from "../feedback/CaseFeedbackModal";
 import VerificationActionButtons from "../verifications-tab/VerificationActionButtons";
-import { type JSX, useState } from "react";
+import { Fragment, type JSX, useState } from "react";
 import {
   CASE_STATUS_ACTIONS,
   CommentType,
@@ -62,15 +60,12 @@ const ACTION_BUTTON_ICON_SIZE = 12;
 const DEESCALATE_PERMISSION_TOOLTIP =
   "Only customer admins, project leads, or (at escalation level 1-3) the user who created the escalation can de-escalate this case.";
 const REJECT_SOLUTION_LABEL = "Reject Solution";
-// Both actions map to the "Closed" case state (see ACTION_TO_CASE_STATE_LABEL
-// in utils/support.ts). entity-service requires resolutionCode/cause/
-// closeNotes when an INTERNAL (WSO2 staff) caller closes a case — never an
-// external one: those fields are WSO2's own case-resolution taxonomy
-// ("Product Bug", "Infrastructure Network", ...), vocabulary a customer
-// closing their own case was never meant to classify it with. See
-// entity-service's own UpdateCase doc comment for the server-side half of
-// this rule — this only decides when the webapp should ask at all.
-const RESOLUTION_REQUIRED_ACTIONS = new Set(["Closed", "Accept Solution"]);
+// Both actions move the case to the "Closed" state. Internal users close
+// cases from the CSM portal, where the closure details are collected, so they
+// are not offered here.
+const INTERNAL_CLOSE_BLOCKED_LABELS = new Set(["Closed", "Accept Solution"]);
+const INTERNAL_CLOSE_BLOCKED_TOOLTIP =
+  "Cases can't be closed from the customer portal for internal users. Use the CSM portal.";
 
 function getActionButtonSx(
   theme: Theme,
@@ -136,8 +131,6 @@ export default function CaseDetailsActionRow({
   const theme = useTheme();
   const { data: filterMetadata } = useGetProjectFilters(projectId);
   const caseStates = filterMetadata?.caseStates;
-  const resolutionCodes = filterMetadata?.resolutionCodes ?? [];
-  const causes = filterMetadata?.causes ?? [];
   const { isExternalUser } = useCustomerPermissions();
 
   const { showSuccess } = useSuccessBanner();
@@ -262,10 +255,13 @@ export default function CaseDetailsActionRow({
             ? isRejectSubmitting
             : patchCase.isPending && pendingActionLabel === label;
         const isAnyActionPending = patchCase.isPending || isRejectSubmitting;
+        // Fails closed: until the signed-in user is known to be external
+        // (including while their roles are still loading), closing is blocked.
+        const isBlockedForInternal =
+          !isExternalUser && INTERNAL_CLOSE_BLOCKED_LABELS.has(label);
 
-        return (
+        const actionButton = (
           <Button
-            key={label}
             variant="outlined"
             size="small"
             startIcon={
@@ -279,7 +275,10 @@ export default function CaseDetailsActionRow({
                 <Icon size={ACTION_BUTTON_ICON_SIZE} />
               )
             }
-            disabled={!isOpenRelatedCase && (isAnyActionPending || !canPatch)}
+            disabled={
+              isBlockedForInternal ||
+              (!isOpenRelatedCase && (isAnyActionPending || !canPatch))
+            }
             onClick={
               isOpenRelatedCase
                 ? onOpenRelatedCase
@@ -296,6 +295,14 @@ export default function CaseDetailsActionRow({
               ? toPresentContinuousActionLabel(label)
               : toPresentTenseActionLabel(label)}
           </Button>
+        );
+
+        return isBlockedForInternal ? (
+          <Tooltip key={label} title={INTERNAL_CLOSE_BLOCKED_TOOLTIP} describeChild>
+            <Box component="span">{actionButton}</Box>
+          </Tooltip>
+        ) : (
+          <Fragment key={label}>{actionButton}</Fragment>
         );
       })}
       {showEscalateButton && (
@@ -356,28 +363,12 @@ export default function CaseDetailsActionRow({
         actionLabel={confirmAction ? toPresentTenseActionLabel(confirmAction.label) : ""}
         isPending={patchCase.isPending}
         onClose={() => setConfirmAction(null)}
-        requiresResolutionFields={
-          !!confirmAction &&
-          !isExternalUser &&
-          RESOLUTION_REQUIRED_ACTIONS.has(confirmAction.label)
-        }
-        resolutionCodes={resolutionCodes}
-        causes={causes}
-        onConfirm={(resolution?: CaseResolutionFields) => {
+        onConfirm={() => {
           if (!confirmAction) return;
           const { label, stateKey } = confirmAction;
           setPendingActionLabel(label);
           patchCase.mutate(
-            {
-              stateKey,
-              ...(resolution
-                ? {
-                    resolutionCode: resolution.resolutionCode,
-                    cause: resolution.cause,
-                    closeNotes: resolution.closeNotes,
-                  }
-                : {}),
-            },
+            { stateKey },
             {
               onSuccess: () => {
                 showSuccess("State updated successfully.");

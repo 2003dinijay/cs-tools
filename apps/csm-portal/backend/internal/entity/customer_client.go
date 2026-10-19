@@ -45,7 +45,14 @@ func WithUserIDToken(ctx context.Context, token string) context.Context {
 	return context.WithValue(ctx, userIDTokenKey, token)
 }
 
-func userIDTokenFromContext(ctx context.Context) string {
+// UserIDTokenFromContext returns the x-user-id-token this request arrived with,
+// or "" when it carried none.
+//
+// Exported because PLG's entity client is a different package with context keys
+// of its own, so it cannot read this one. Its middleware copies the value across
+// — the same bridge ForwardCorrelationID already builds for the correlation id,
+// and for the same reason: two packages, one concept, package-private keys.
+func UserIDTokenFromContext(ctx context.Context) string {
 	v, _ := ctx.Value(userIDTokenKey).(string)
 	return v
 }
@@ -68,7 +75,17 @@ type CustomerEntityConfig struct {
 	ClientID     string
 	ClientSecret string
 	Scopes       []string
+	// Timeout is the per-request timeout for calls to the entity service.
+	// Zero selects defaultCustomerEntityTimeout.
+	Timeout time.Duration
 }
+
+// defaultCustomerEntityTimeout is the entity-service call timeout used when
+// CustomerEntityConfig.Timeout is unset. Raised from 25s to 60s so large
+// inline-attachment uploads are not cut off; matches the customer-portal
+// backend. Keeping it shorter than the REST server write timeout is advisable
+// so a clean error can be returned, but is not enforced.
+const defaultCustomerEntityTimeout = 60 * time.Second
 
 // CustomerEntityClient is an HTTP client for the customer entity service (this
 // repo's entity-service, covering cases/accounts/projects/products/etc.),
@@ -97,7 +114,10 @@ func NewCustomerEntityClient(cfg CustomerEntityConfig) *CustomerEntityClient {
 	tokenCtx := context.WithValue(context.Background(), oauth2.HTTPClient,
 		&http.Client{Timeout: tokenFetchTimeout})
 	httpClient := cc.Client(tokenCtx)
-	httpClient.Timeout = 25 * time.Second
+	httpClient.Timeout = cfg.Timeout
+	if httpClient.Timeout <= 0 {
+		httpClient.Timeout = defaultCustomerEntityTimeout
+	}
 
 	return &CustomerEntityClient{
 		http:    httpClient,
@@ -128,7 +148,7 @@ func (c *CustomerEntityClient) do(ctx context.Context, method, path string, body
 	if len(body) > 0 {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if token := userIDTokenFromContext(ctx); token != "" {
+	if token := UserIDTokenFromContext(ctx); token != "" {
 		req.Header.Set("x-user-id-token", token)
 	}
 	if id := correlationIDFromContext(ctx); id != "" {
@@ -165,7 +185,7 @@ func (c *CustomerEntityClient) doBinary(ctx context.Context, path string) (body 
 	if err != nil {
 		return nil, "", fmt.Errorf("entity: build request GET %s: %w", path, err)
 	}
-	if token := userIDTokenFromContext(ctx); token != "" {
+	if token := UserIDTokenFromContext(ctx); token != "" {
 		req.Header.Set("x-user-id-token", token)
 	}
 	if id := correlationIDFromContext(ctx); id != "" {

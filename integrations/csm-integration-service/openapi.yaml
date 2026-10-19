@@ -956,6 +956,257 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /deployed-products/search:
+    post:
+      summary: Search deployed products
+      operationId: searchDeployedProducts
+      description: The payload is forwarded to the entity service and its response is returned unchanged. An empty body is treated as {}.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchDeployedProductsRequest'
+      responses:
+        "200":
+          description: Ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchDeployedProductsResponse'
+        "400":
+          description: BadRequest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthorized (upstream rejected this service's credentials)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Forbidden (upstream reported an authorization failure)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: NotFound
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "413":
+          description: Request body too large
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: InternalServerError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "503":
+          description: ServiceUnavailable (the upstream entity service is unavailable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /deployments/search:
+    post:
+      summary: Search deployments
+      operationId: searchDeployments
+      description: The payload is forwarded to the entity service and its response is returned unchanged. An empty body is treated as {}.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchDeploymentsRequest'
+      responses:
+        "200":
+          description: Ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchDeploymentsResponse'
+        "400":
+          description: BadRequest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthorized (upstream rejected this service's credentials)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Forbidden (upstream reported an authorization failure)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: NotFound
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "413":
+          description: Request body too large
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: InternalServerError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "503":
+          description: ServiceUnavailable (the upstream entity service is unavailable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /products/search:
+    post:
+      summary: Search products
+      operationId: searchProducts
+      description: The payload is forwarded to the entity service and its response is returned unchanged. An empty body is treated as {}.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchProductsRequest'
+      responses:
+        "200":
+          description: Ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchProductsResponse'
+        "400":
+          description: BadRequest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthorized (upstream rejected this service's credentials)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Forbidden (upstream reported an authorization failure)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: NotFound
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "413":
+          description: Request body too large
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: InternalServerError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "503":
+          description: ServiceUnavailable (the upstream entity service is unavailable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /products/{id}/versions/search:
+    post:
+      summary: Search versions of a product
+      operationId: searchProductVersions
+      description: The payload is forwarded to the entity service and its response is returned unchanged. An empty body is treated as {}.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchProductVersionsRequest'
+      responses:
+        "200":
+          description: Ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchProductVersionsResponse'
+        "400":
+          description: BadRequest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthorized (upstream rejected this service's credentials)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Forbidden (upstream reported an authorization failure)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: NotFound
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "413":
+          description: Request body too large
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: InternalServerError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "503":
+          description: ServiceUnavailable (the upstream entity service is unavailable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /cloud-status/monitors:
     get:
       summary: The public status dashboard's monitor view for one cloud.
@@ -1695,6 +1946,319 @@ components:
               description: The endpoint's payload, forwarded unchanged.
           required: [code, message, cloud, data]
       required: [result]
+    SearchProductsRequest:
+      type: object
+      properties:
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+        searchQuery:
+          type: string
+          description: Case-insensitive match against product name.
+        class:
+          type: string
+          enum: [software, service]
+          description: Optional filter restricting results to a single product class. Omit to return every class.
+
+    SearchProductsResponse:
+      type: object
+      properties:
+        products:
+          type: array
+          items:
+            $ref: '#/components/schemas/Product'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+        hasMore:
+          type: boolean
+
+    SearchProductVersionsRequest:
+      type: object
+      properties:
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+        searchQuery:
+          type: string
+          description: Case-insensitive match against version string.
+
+    SearchProductVersionsResponse:
+      type: object
+      properties:
+        productVersions:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProductVersion'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+        hasMore:
+          type: boolean
+
+    SearchDeploymentsRequest:
+      type: object
+      properties:
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+        searchQuery:
+          type: string
+          description: Case-insensitive match against deployment name.
+        projectIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: Filter by project UUIDs.
+        deploymentTypes:
+          type: array
+          items:
+            type: string
+            enum:
+              - primary_production
+              - staging
+              - qa
+              - stress
+              - uat
+              - development
+          description: Filter by deployment types.
+        ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: Filter by the deployment's own UUID.
+        includeInactive:
+          type: boolean
+          description: >
+            When true, also includes deactivated deployments. Omitted or false
+            returns active deployments only.
+
+    SearchDeploymentsResponse:
+      type: object
+      properties:
+        deployments:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeploymentView'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+        hasMore:
+          type: boolean
+
+    SearchDeployedProductsRequest:
+      type: object
+      properties:
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+        deploymentIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: Filter by deployment UUIDs.
+        productCategories:
+          type: array
+          items:
+            type: string
+          description: Optional filter by product category (e.g. "pdp"). Combines with deploymentIds rather than replacing it. Values are matched case-insensitively against the deployed product's category. The category returned on each deployed product is the same lower-case code.
+
+    SearchDeployedProductsResponse:
+      type: object
+      properties:
+        deployedProducts:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeployedProductView'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+        hasMore:
+          type: boolean
+
+    Product:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        class:
+          type: string
+        createdOn:
+          type: string
+          format: date-time
+        updatedOn:
+          type: string
+          format: date-time
+
+    ProductVersion:
+      type: object
+      properties:
+        id:
+          type: string
+        productId:
+          type: string
+        version:
+          type: string
+        currentSupportStatus:
+          type: string
+          enum: [available, extended, deprecated, discontinued]
+        releaseDate:
+          type: string
+          format: date
+        supportEolDate:
+          type: string
+          format: date-time
+          nullable: true
+        earliestPossibleSupportEolDate:
+          type: string
+          format: date-time
+          nullable: true
+        createdOn:
+          type: string
+          format: date-time
+        updatedOn:
+          type: string
+          format: date-time
+
+    DeploymentView:
+      type: object
+      properties:
+        id:
+          type: string
+        number:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+          enum:
+            - primary_production
+            - staging
+            - qa
+            - stress
+            - uat
+            - development
+        description:
+          type: string
+          nullable: true
+        project:
+          $ref: '#/components/schemas/EntityRef'
+        createdOn:
+          type: string
+          format: date-time
+        updatedOn:
+          type: string
+          format: date-time
+        url:
+          type: string
+          nullable: true
+        deployedProductCount:
+          type: integer
+          description: Number of deployed products in this deployment.
+
+    DeployedProductView:
+      type: object
+      properties:
+        id:
+          type: string
+        deployment:
+          $ref: '#/components/schemas/EntityRef'
+        product:
+          $ref: '#/components/schemas/ProductRef'
+        version:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/DeployedProductVersionRef'
+        cores:
+          type: integer
+          nullable: true
+        tps:
+          type: number
+          nullable: true
+        category:
+          type: string
+          nullable: true
+        description:
+          type: string
+          nullable: true
+          description: >
+            The customer's own note about this deployed product. Editable via
+            the update endpoint, so it is readable here too.
+        updates:
+          type: array
+          nullable: true
+          items:
+            $ref: '#/components/schemas/ProductUpdateEntry'
+          description: Update-level history recorded against this deployed product.
+        createdOn:
+          type: string
+          format: date-time
+        updatedOn:
+          type: string
+          format: date-time
+
+    ProductRef:
+      type: object
+      description: >
+        A reference to a product, carrying its short key alongside the display
+        name. The short key (e.g. "wso2am") is distinct from the display name
+        (e.g. "WSO2 API Manager").
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        abbreviation:
+          type: string
+          nullable: true
+          description: Short product key, e.g. "wso2am". Absent when the product has none.
+      required:
+        - id
+        - name
+
+    DeployedProductVersionRef:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        releasedDate:
+          type: string
+          format: date-time
+          nullable: true
+        supportEoLDate:
+          type: string
+          format: date-time
+          nullable: true
+
+    ProductUpdateEntry:
+      type: object
+      required: [updateLevel, date]
+      properties:
+        updateLevel:
+          type: integer
+        date:
+          type: string
+          format: date
+        details:
+          type: string
+          nullable: true
+
     ErrorResponse:
       type: object
       properties:
@@ -1883,6 +2447,11 @@ components:
         arrTodayGte:
           type: string
           description: Minimum account ARR. Rejected with 400 on the Postgres data source.
+        sfIds:
+          type: array
+          items:
+            type: string
+          description: Only projects whose Salesforce ID is any of these (exact match; empty or padded values are rejected with 400).
 
     ProjectSearchResponse:
       type: object
@@ -2403,10 +2972,8 @@ components:
           type: string
           format: uuid
           description: >-
-            The incident's assignment group is set from this service's support
-            group; there is no assignmentGroupId on create. A service with no
-            support group creates the incident unassigned. Reassign afterwards
-            with PATCH.
+            When no assignmentGroupId is sent, the incident's assignment group
+            is this service's support group (see assignmentGroupId).
         serviceOfferingId:
           type: string
           format: uuid
@@ -2441,6 +3008,21 @@ components:
             correlation_id field. Look it up via SearchIncidentsRequest filters.correlationId
             to find an incident this caller already created, without depending on
             free-text search over subject or workNotes.
+        assignmentGroupId:
+          type: string
+          format: uuid
+          nullable: true
+          description: >-
+            Optional; forwarded unchanged to the entity service, which decides
+            the group once for every caller. Sent: used when it is an active
+            group that is the support group of at least one service, otherwise
+            400 (a value that is not a UUID is a 400 too; blank counts as not
+            sent). Not sent: the service's support group; when the service has
+            none, the support group of the entity service's default service
+            (INCIDENT_DEFAULT_SERVICE_ID); with no default group either, the
+            incident is created unassigned. A failed lookup fails the request
+            and nothing is created. A work note records where the group came
+            from, after any workNotes sent.
         assignedEngineerId:
           type: string
           format: uuid

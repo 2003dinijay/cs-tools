@@ -4,254 +4,265 @@
 [![GitHub last commit](https://img.shields.io/github/last-commit/wso2-open-operations/cs-tools/main?path=apps%2Fcsm-portal)](https://github.com/wso2-open-operations/cs-tools/commits/main/?path=apps/csm-portal)
 [![GitHub issues](https://img.shields.io/github/issues/wso2-open-operations/cs-tools.svg)](https://github.com/wso2-open-operations/cs-tools/issues)
 
-CSM Portal is an open-source solution for customer success management operations, built with a modular architecture that combines a Go backend-for-frontend (BFF) and a React web application. It enables customer success managers to handle cases, projects, accounts, deployments, time tracking, and security operations through a unified platform.
+CSM Portal is the internal, customer-success-engineer-facing part of the **CSM platform**: an open-source
+solution for customer success operations, built from a Go backend-for-frontend (BFF) and a React web
+application. It lets engineers handle cases, projects, accounts, deployments, time tracking, operations
+(incidents, change and service requests, problems) and security information from one workspace.
+
+This README is the entry point for the whole platform: it explains the [architecture](#architecture), how to
+[develop and run](#developer-guide) each piece, and how the pieces are [configured](#configuration).
+
+## Contents
+
+- [Why CSM Portal?](#why-csm-portal)
+- [Features](#features)
+- [Architecture](#architecture)
+  - [Components](#components)
+  - [Request flow](#request-flow)
+  - [Authentication and authorization](#authentication-and-authorization)
+  - [Data stores and events](#data-stores-and-events)
+- [Developer guide](#developer-guide)
+  - [Prerequisites](#prerequisites)
+  - [Repository layout](#repository-layout)
+  - [Run everything with Docker Compose](#run-everything-with-docker-compose)
+  - [Run a single component](#run-a-single-component)
+  - [Build, test and lint](#build-test-and-lint)
+  - [Contributing](#contributing)
+- [Configuration](#configuration)
+- [Troubleshooting](#troubleshooting)
+- [Reporting issues](#reporting-issues)
+- [License](#license)
 
 ## Why CSM Portal?
 
-Customer success teams need a single workspace to track support cases, customer projects, deployments, product updates, and security vulnerabilities across accounts. Managing these in disparate systems creates disconnected workflows and duplicated effort.
+Customer success teams need one workspace to track support cases, customer projects, deployments, product
+updates and security information across accounts. Managing these in disparate systems creates disconnected
+workflows and duplicated effort. CSM Portal combines:
 
-CSM Portal addresses this by combining:
+- a Go BFF that validates the caller's identity and fronts the platform's upstream services, and
+- a React single-page application for the engineer workflows.
 
-- A centralized Go BFF that validates identity and proxies authenticated requests to upstream services,
-- A React SPA for CSM workflows including case management, project tracking, time cards, and more.
+## Features
 
-This setup lets teams deliver consistent, efficient customer success operations without rebuilding shared infrastructure.
+- **Case management**: create, search, patch and comment on cases; attachments; call requests; escalations.
+- **Projects and deployments**: customer projects, deployments and deployed products across accounts.
+- **Operations**: incidents, change requests, service requests and problems.
+- **Time cards**: time spent per case, with an approval flow.
+- **Security center**: product vulnerability disclosures per account.
+- **Product updates**: update levels and upgrade paths between product versions.
+- **Role-based access**: portal roles map to the permissions of each route (see
+  [Authentication and authorization](#authentication-and-authorization)).
+- **In-app user guide**: the webapp serves a `/help` route with one topic per navigation section.
 
-## CSM Portal Features
+## Architecture
 
-- **Modular Application Structure**
-  Backend and webapp are developed as independent units while remaining part of one cohesive product.
-- **Centralized BFF Layer**
-  The Go backend validates JWTs, applies security headers, and proxies requests to entity, SCIM, and updates upstream services.
-- **Rich Case Management**
-  Create, search, patch, and comment on support cases, with attachment uploads and call request support.
-- **Project & Deployment Tracking**
-  View and manage customer projects, deployments, and deployed products across accounts.
-- **Time Cards & Operations**
-  Track time spent per case and manage customer success operations including change requests.
-- **Security Center**
-  Search and view product vulnerability disclosures per account.
-- **Product Updates**
-  Browse product update levels and upgrade paths between versions.
-- **Identity Integration**
-  Authentication is integrated with OIDC-compatible identity providers for secure access control.
+The CSM platform replaces a legacy, external ticketing-system-backed stack with a purpose-built one.
+Internal engineers work customer cases through **this portal**; customers use a separate, existing
+**customer portal** (`apps/customer-portal`). Each portal has its own BFF, and both read and write the same
+PostgreSQL-backed **entity service**, which is the platform's system of record.
 
-## Project Structure
+```text
+        Engineers                                          Customers
+            |                                                  |
+   +--------v---------+                              +---------v----------+
+   |  CSM webapp      |                              | Customer webapp    |
+   |  (React SPA)     |                              | (React SPA)        |
+   +--------+---------+                              +---------+----------+
+            | HTTPS, Bearer token                              | HTTPS, Bearer token
+   +--------v-------------------------------------------------v----------+
+   |  API gateway: validates the token, forwards the identity as          |
+   |  the x-jwt-assertion header (OIDC identity provider supplies keys)   |
+   +--------+-------------------------------------------------+----------+
+            |                                                  |
+   +--------v---------+                              +---------v----------+
+   | csm-portal       |                              | customer-portal    |
+   | backend (Go BFF) |                              | backend-v2 (Go BFF)|
+   +--------+---------+                              +---------+----------+
+            |   REST + OAuth2 client credentials               |
+            +--------------------+-----------------------------+
+                                 |
+                       +---------v----------+      REST (machine-to-machine)
+                       |   entity-service   |<-----------------------------+
+                       |   (Go, REST)       |                              |
+                       +----+----------+----+                  +----------+-----------+
+                            |          |                       | csm-integration-     |
+                  SQL       |          | publishes events      | service (M2M API)    |
+                  +---------v--+   +---v------------------+    +----------^-----------+
+                  | PostgreSQL |   | Event bus (Kafka API)|               |
+                  | (system of |   | topic: case-events   |    sre-alert-ingestion / core
+                  |  record)   |   +--+---------+------+--+      (alert -> incident)
+                  +------------+      |         |      |
+                            consumed  |         |      |
+                      +---------------v+  +-----v------v---------------+
+                      | csm-notification|  | activity-stream services   |
+                      | -service        |  | (one per portal) -> SSE    |
+                      | email/chat/voice|  +----------------------------+
+                      +----------------+
 
-```bash
-.
-├── backend                  # Go BFF REST API service
-│   └── README.md            # Detailed backend documentation
-├── webapp                   # React + TypeScript SPA for CSMs
-│   └── README.md            # Detailed webapp documentation
-└── README.md                # You're here
+   operations/csm-scheduled-tasks  --REST-->  entity-service   (recurring jobs)
+   operations/csm-webhooks/github  --REST-->  entity-service   (inbound webhooks)
 ```
-
-CSM Portal is one part of the broader CSM platform. The platform's other components —
-`entity-service`, the customer-facing portal (`apps/customer-portal`), and several
-supporting integrations — live elsewhere in this repository. See
-[Platform architecture](#platform-architecture) below for how they all fit together, and
-[Running the full platform locally](#running-the-full-platform-locally) for a
-one-command way to bring all of them up together.
-
-## Technologies Used
-
-### Backend
-
-- **Language**: [Go](https://go.dev/) 1.26+
-- **Authentication**: JWT validation via JWKS endpoint (OIDC-compatible)
-- **Upstream Clients**: OAuth2 client credentials for entity, SCIM, and updates services
-
-### Frontend
-
-- **Framework**: React 19 + TypeScript (Vite)
-- **UI**: WSO2 Oxygen UI
-- **Data Layer**: TanStack Query
-- **Authentication**: OIDC React SDK
-
-## Getting Started
-
-### Prerequisites
-
-- Go 1.26+
-- Node.js 20+ (LTS recommended)
-- `pnpm` 9+
-
-### Backend Setup Guide
-
-- [Backend](./backend/README.md)
-
-### Frontend Setup Guide
-
-- [Webapp](./webapp/README.md)
-
-The two guides above run just this portal's backend and webapp, against whatever
-upstream services (entity-service, etc.) you already have available. If you'd rather
-bring up the **entire CSM platform** — both portals, entity-service, Postgres, the event
-bus, and every supporting integration — in one shot, see the next two sections instead.
-
-## Platform architecture
-
-The CSM platform is replacing a legacy, vendor ticketing-system-backed stack with a
-purpose-built one. Internal CS engineers work customer cases through **this portal** (the
-CSM portal); customers interact through a separate, existing **customer portal**
-(`apps/customer-portal`). Both are served by their own Go BFF, and both ultimately read
-and write the same PostgreSQL-backed **entity service**, which is the platform's system of
-record.
-
-```
-                          ┌─────────────────────┐        ┌──────────────────────────┐
-                          │   CSM webapp (FE)    │        │  Customer webapp (FE)     │
-                          └──────────┬───────────┘        └────────────┬─────────────┘
-                                     │ REST (x-jwt-assertion)           │ REST (x-jwt-assertion)
-                          ┌──────────▼───────────┐        ┌────────────▼─────────────┐
-                          │  csm-portal backend   │        │ customer-portal backend-v2│
-                          │  (Go BFF, this dir)   │        │ (Go BFF)                  │
-                          └──────────┬───────────┘        └────────────┬─────────────┘
-                                     │ REST                              │ REST
-                                     └──────────────┬────────────────────┘
-                                                     ▼
-                                          ┌─────────────────────┐
-                                          │   entity-service     │  <- system of record
-                                          │   (Go, Postgres)      │
-                                          └──────────┬───────────┘
-                                                     │
-                                    ┌────────────────┼─────────────────────┐
-                                    ▼                ▼                     ▼
-                          ┌──────────────────┐  ┌───────────┐   ┌───────────────────────┐
-                          │ csm-integration-  │  │ Postgres  │   │  Kafka (case-events)   │
-                          │ service (M2M API) │  │           │   │  (stands in for Azure  │
-                          └───────────────────┘  └───────────┘   │  Event Hub locally)    │
-                                                                  └────────┬──────┬───────┘
-                                                                           │      │
-                                                                  consumed by      consumed by
-                                                                           │      │
-                                                              notification- activity-stream
-                                                                service     services (x2, one
-                                                                            per webapp) -> SSE
-```
-
-Auth for every backend is a JWT presented in the `x-jwt-assertion` header, validated
-against an OIDC-compatible identity provider (issuer + JWKS). Nothing in this repo names a
-specific identity provider — the platform is IdP-agnostic by design.
 
 ### Components
 
-| Component | Language | Role |
-|---|---|---|
-| `apps/csm-portal/webapp` | React | This portal's UI. Calls csm-portal backend only, never entity-service directly. |
-| `apps/csm-portal/backend` | Go | This portal's BFF. Validates the caller's JWT, calls entity-service for all case/project/account data. |
-| `apps/customer-portal/webapp` | React | Customer-facing portal UI. Calls customer-portal backend-v2 only. |
-| `apps/customer-portal/backend-v2` | Go | Customer portal's BFF (the current, Postgres-era backend — **not** the legacy Ballerina `apps/customer-portal/backend`, which is a separate, older stack). |
-| `entity-service` | Go | Shared entity service both BFFs talk to. PostgreSQL-backed (`DATA_SOURCE=postgres`) — the platform's system of record. Publishes domain events (`case.created`, `comment.added`, ...) to the event bus. Does not itself validate JWTs; it trusts whatever caller invoked it (the BFFs sit in front of it). |
-| `integrations/csm-integration-service` | Go | M2M-only REST API (accounts/projects/contacts/incidents) for machine callers. No inbound JWT validation — trust is delegated to the API gateway in every real environment. |
-| `integrations/csm-notification-service` | Go | Consumes case/incident events from Kafka and turns them into email / Google Chat / voice-call notifications. |
-| `integrations/csm-portal-activity-stream-service` | Go | Consumes the same event stream and re-exposes it as a per-case Server-Sent-Events (SSE) feed for this portal's live activity tab. |
-| `integrations/customer-portal-activity-stream-service` | Go | Same idea, for the customer portal webapp. |
-| PostgreSQL | — | System of record for entity-service. |
-| Kafka | — | Local stand-in for Azure Event Hub's Kafka-compatible endpoint (production). See below. |
+| Component | Path | Language | Role |
+|---|---|---|---|
+| CSM webapp | [`apps/csm-portal/webapp`](./webapp/README.md) | React + TypeScript | The engineer UI. Talks only to the CSM backend (and, optionally, the activity-stream service), never to the entity service. |
+| CSM backend (BFF) | [`apps/csm-portal/backend`](./backend/README.md) | Go | Validates the caller's token, enforces portal roles per route, and fronts the entity service plus the updates and directory (SCIM) services. Contract: [`backend/openapi.yaml`](./backend/openapi.yaml). |
+| CSM microapp | [`apps/csm-portal/microapp`](./microapp) | React + TypeScript | Mobile micro-app variant of the portal UI. |
+| Customer portal | [`apps/customer-portal`](../customer-portal/README.md) | Go BFF (`backend-v2`) + React | The customer-facing portal. `backend-v2` is the PostgreSQL-era backend; `apps/customer-portal/backend` is the older, deprecated stack. |
+| Entity service | [`entity-service`](../../entity-service/README.md) | Go | System of record API over PostgreSQL. Publishes domain events (for example `case.created`, `comment.added`) to the event bus. Can also be configured with an external ticketing/case system adapter (`DATA_SOURCE`); the default and the one used here is `postgres`. |
+| Integration service | [`integrations/csm-integration-service`](../../integrations/csm-integration-service/README.md) | Go | Machine-to-machine REST API (accounts, projects, contacts, a subset of cases) for third-party callers. Inbound trust is delegated to the API gateway. |
+| Notification service | [`integrations/csm-notification-service`](../../integrations/csm-notification-service/README.md) | Go | Event consumer (health endpoint only) that sends email, chat and voice-call notifications. |
+| Activity-stream services | [`integrations/csm-portal-activity-stream-service`](../../integrations/csm-portal-activity-stream-service/README.md), [`integrations/customer-portal-activity-stream-service`](../../integrations/customer-portal-activity-stream-service/README.md) | Go | Consume the event stream and expose a per-case Server-Sent-Events feed to each portal's activity tab. |
+| Alert services | [`integrations/sre-alert-ingestion-service`](../../integrations/sre-alert-ingestion-service/README.md), [`integrations/sre-alert-core-service`](../../integrations/sre-alert-core-service/README.md) | Go | Ingest monitoring alerts, deduplicate them into incidents and forward them to the platform through the integration service. |
+| Other integrations | [`integrations/acp-closure-service`](../../integrations/acp-closure-service/README.md), [`integrations/sftpgo-authentication-service`](../../integrations/sftpgo-authentication-service/README.md) | Go | Account-closure job and file-transfer authentication hook. |
+| Scheduled tasks | [`operations/csm-scheduled-tasks`](../../operations/csm-scheduled-tasks/README.md) | Go | One run-to-completion component that runs several cron-style sub-tasks per invocation, with retry state kept in the entity service. |
+| Webhooks | [`operations/csm-webhooks`](../../operations/csm-webhooks/README.md) | Go | One folder per inbound webhook source (currently `github`). Verifies the signature and forwards to the entity service. |
+| PostgreSQL | n/a | n/a | System of record (owned by the entity service). |
+| Event bus | n/a | n/a | Kafka-compatible endpoint. Local dev uses Apache Kafka; deployed environments use a managed Kafka-compatible service. |
 
-### Event backbone: Kafka standing in for Azure Event Hub
+### Request flow
 
-In every deployed environment, `entity-service`, `csm-notification-service`, and both
-activity-stream services talk to **Azure Event Hub's Kafka-compatible endpoint** using
-`github.com/segmentio/kafka-go`, authenticating with SASL/PLAIN over TLS (Event Hub's
-required transport). That client configuration is **hardcoded** — there is no
-plaintext/no-TLS code path anywhere in these services.
+A typical read from the CSM portal, end to end:
 
-The local compose stack described below therefore runs a **real, local Apache Kafka
-broker** (the official `apache/kafka` image, KRaft mode, Apache 2.0 licensed) configured
-to accept the same protocol: TLS (via a throwaway CA) and SASL/PLAIN with the literal
-username `$ConnectionString` that the Go client hardcodes. The CA and broker cert are
-generated once into the persistent `csm-dev-certs` volume; a normal `docker compose up` /
-`docker compose down` cycle reuses them, and they are only regenerated when that volume is
-empty or has been removed with `docker compose down -v`. Production is Azure Event Hub;
-local dev is real Kafka speaking the same wire protocol — no application code differs
-between the two.
+1. The webapp signs the engineer in with an OIDC authorization-code flow (PKCE) against the configured
+   identity provider and holds the resulting access token.
+2. The webapp calls the CSM backend with `Authorization: Bearer <token>`.
+3. The API gateway validates the token and forwards the request to the backend with the token in the
+   `x-jwt-assertion` header. (Locally, a small gateway shim does this header rewrite; see
+   [Run everything with Docker Compose](#run-everything-with-docker-compose).)
+4. The backend's auth middleware verifies the `x-jwt-assertion` JWT again (signature via the provider's JWKS
+   endpoint, issuer, audience, expiry) and extracts the caller's identity and roles. Each route is registered
+   with a required permission, so a request without the needed role gets `403`.
+5. The backend calls the entity service (and, for some routes, the updates or directory services) using its own
+   OAuth2 client-credentials token, forwarding the end user's identity where the upstream scopes data by user.
+6. The entity service reads or writes PostgreSQL and, for domain changes, publishes an event.
+7. Event consumers (notification, activity-stream services) react asynchronously; the activity-stream services
+   push updates to open case pages over SSE.
 
-The topic used everywhere is `case-events`, plus a `case-events-dlq` dead-letter topic for
-`csm-notification-service`.
+### Authentication and authorization
 
-## Running the full platform locally
+- **Authentication** is delegated to an OIDC identity provider. The platform never stores credentials. The
+  gateway validates the token at the edge, and services behind it trust the gateway-validated *identity*
+  (`x-jwt-assertion`). The CSM backend additionally verifies the JWT signature against the provider's JWKS
+  endpoint unless `AUTH_TOKEN_VALIDATOR_ENABLED=false` (local development only).
+- **Authorization** is decided by the platform, not the gateway. In the CSM backend, the token's `roles` claim
+  is matched against role names configured through `AUTH_*_ROLES` variables, producing portal roles such as
+  viewer, `cs_engineer`, escalator and admin; each route requires one permission. The backend returns the
+  caller's portal roles from `GET /users/me`, and the backend's `403` is the real gate. User, team and role
+  records live in PostgreSQL behind the entity service. See
+  [`backend/README.md`](./backend/README.md#access-control) for the full role and permission table.
+- **Entity service** validates the end user's ID token (`x-user-id-token`) when a portal backend acts for a
+  user, and treats `x-jwt-assertion` client-credentials callers as service-to-service callers. Machine-to-machine
+  client ids are listed in its `M2M_CLIENT_IDS` setting. See
+  [`entity-service/README.md`](../../entity-service/README.md).
+- **Machine-to-machine** services (`csm-integration-service`, webhooks, scheduled tasks) authenticate to the
+  entity service as OAuth2 clients and rely on the API gateway for inbound trust.
 
-A `docker-compose.yml` at the repo root brings up the entire CSM platform — both portals,
-entity-service, Postgres, Kafka, and every integration listed above — against a real,
-seeded PostgreSQL database, with a local mock identity provider so no access to a real IdP
-is needed.
+### Data stores and events
+
+- **PostgreSQL** is the system of record, accessed only by the entity service (and the alert services, which
+  use their own tables). Migrations live in [`entity-service/migrations`](../../entity-service/migrations).
+- **Redis** is optional: the entity service can use it as a user cache (`REDIS_URL` or `REDIS_ADDR`).
+  Caches are read-performance only; PostgreSQL stays authoritative.
+- **Event bus**: the entity service publishes to the `case-events` topic (plus `sre-events` and optionally
+  per-domain topics), and consumers use consumer groups. Failed consumer records go to a dead-letter topic
+  (`case-events-dlq`). All Go services use `github.com/segmentio/kafka-go` with SASL/PLAIN over TLS, which is
+  the transport of a managed Kafka-compatible endpoint. The local Compose stack therefore runs a real Apache
+  Kafka broker (KRaft mode) with a throwaway CA and SASL/PLAIN username `$ConnectionString`, so no application
+  code differs between local and deployed environments. The CA and broker certificate are generated once into
+  the persistent `csm-dev-certs` volume and reused until that volume is removed.
+
+## Developer guide
 
 ### Prerequisites
 
-- Docker and Docker Compose v2 (`docker compose version`).
-- About 4 GB of free RAM for the stack (Postgres, Kafka, 8 Go services, 2 webapps).
-- Ports free on the host: `3000`, `3001`, `5433`, `8081`–`8086`, `8090`, `8092`, `9095`,
-  `9096`, `9100`, `19094`. If any of these collide with something else you're already
-  running, edit the `ports:` mappings in `docker-compose.yml` (only the **host** side,
-  left of the `:`, needs to change).
+| Tool | Version | Needed for |
+|---|---|---|
+| Go | 1.26+ (`go.mod` declares `go 1.26.9`) | backend, entity-service, integrations, operations |
+| Node.js | 20+ (the Compose image builds with Node 20) | webapp |
+| pnpm | 9+ | webapp (`pnpm-lock.yaml`) |
+| Docker with Compose v2 | recent | the full local stack |
+| PostgreSQL | 15+ | running the entity service outside Docker |
 
-### Bring the stack up
+### Repository layout
 
-From the repo root:
-
-```sh
-docker compose up -d
+```text
+cs-tools/
+├── apps/
+│   ├── csm-portal/
+│   │   ├── backend/         # Go BFF (cmd/server, internal/, openapi.yaml)
+│   │   ├── webapp/          # React + TypeScript SPA
+│   │   ├── microapp/        # mobile micro-app UI
+│   │   └── README.md        # this file
+│   └── customer-portal/     # customer-facing portal (backend-v2 is the Go BFF)
+├── entity-service/          # Go system-of-record API, migrations/, openapi.yaml
+├── integrations/            # event consumers, M2M API, alert services, other integrations
+├── operations/              # csm-scheduled-tasks, csm-webhooks
+├── docker/local/            # Dockerfiles used only by the local Compose stack
+├── scripts/csm-compose/     # local-dev tooling: mock identity provider, gateway shim, seed data
+├── docker-compose.yml       # the full local platform
+└── .githooks/pre-push       # optional pre-push test hook
 ```
 
-First run builds every image (a few minutes — mostly Go module downloads and two
-`pnpm install`s) and:
+### Run everything with Docker Compose
 
-1. Starts PostgreSQL and Kafka (KRaft mode).
-2. Generates a throwaway TLS CA + broker certificate (`certgen`).
-3. Applies `entity-service`'s raw SQL migrations, and loads dummy seed data — one
-   account, project, deployment, case, comment, and time card — into a fresh
-   `csm_platform` database (`migrate` service; see
-   `scripts/csm-compose/seed-entity-service.sql`).
-4. Creates the `case-events` / `case-events-dlq` Kafka topics.
-5. Starts every backend, then both webapps.
+The root [`docker-compose.yml`](../../docker-compose.yml) brings up the whole platform against a seeded
+PostgreSQL database, with a local mock identity provider so no access to a real one is needed. It is for local
+development only.
 
-Watch progress with `docker compose logs -f`, and check everything is up with
-`docker compose ps`.
+Prerequisites: Docker with Compose v2 and roughly 4 GB of free RAM. These host ports must be free (change only
+the host side, left of the `:`, in `docker-compose.yml` if they collide): `3000`, `3001`, `5433`, `6379`,
+`8081`–`8086`, `8090`, `8092`, `9095`, `9096`, `9100`, `19094`.
 
-### URLs
+```sh
+docker compose up -d      # from the repository root; the first run builds every image (a few minutes)
+docker compose ps
+docker compose logs -f <service>
+```
+
+On startup the stack:
+
+1. starts PostgreSQL, Redis and Kafka, and generates the throwaway TLS CA (`certgen`);
+2. applies the entity service's SQL migrations and loads seed data (`migrate`, using
+   `scripts/csm-compose/seed-entity-service.sql`, then `seed-generator`, which adds a broader randomized
+   data set and is idempotent);
+3. creates the `case-events`, `case-events-dlq`, `sre-events` and `sre-events-dlq` topics;
+4. starts the backends, gateway shims and webapps.
 
 | What | URL |
 |---|---|
-| CSM webapp (this portal) | http://localhost:3001 |
+| CSM webapp | http://localhost:3001 |
 | Customer portal webapp | http://localhost:3000 |
-| csm-portal backend (this portal's BFF) | http://localhost:8082 |
-| customer-portal backend-v2 | http://localhost:8090 (REST), `:8092` (WebSocket) |
+| CSM backend (via gateway shim) | http://localhost:8082 |
+| Customer portal backend-v2 | http://localhost:8090 (REST), `:8092` (WebSocket) |
 | entity-service | http://localhost:8081 |
 | csm-integration-service | http://localhost:8084 |
-| csm-notification-service (health only, no UI) | http://localhost:8083/health |
+| csm-notification-service (health only) | http://localhost:8083/health |
 | csm-portal-activity-stream-service | health `:8085`, SSE `:9095` |
 | customer-portal-activity-stream-service | health `:8086`, SSE `:9096` |
-| mock-oidc (discovery, JWKS, token, login) | http://localhost:9100 |
-| Postgres | `localhost:5433` (`postgres` / `devpassword`, database `csm_platform`) |
+| Mock identity provider | http://localhost:9100 |
+| PostgreSQL | `localhost:5433` (user `postgres`, password `devpassword`, database `csm_platform`; local dev only) |
+| Redis | `localhost:6379` |
 | Kafka (external listener, SASL_SSL) | `localhost:19094` |
 
-### Bring it down
+Stop the stack with `docker compose down` (keeps data) or `docker compose down -v` (also wipes the Postgres,
+Kafka and certificate volumes, so the next `up` reseeds from scratch).
 
-```sh
-docker compose down       # stop, keep data
-docker compose down -v    # stop and wipe Postgres/Kafka/cert volumes -- next `up` reseeds from scratch
-```
+**Signing in.** [`scripts/csm-compose/mock-oidc`](../../scripts/csm-compose/mock-oidc) is a local-only OIDC
+provider (discovery, authorization-code flow with PKCE, client-credentials grant, JWKS, userinfo). It performs
+**no credential check**: it signs a real RS256 JWT for whatever email and comma-separated group list you enter.
+Never point anything except this local stack at it. Open http://localhost:3001, enter any email and a group such
+as `cs_engineer` (the Compose file maps `cs_engineer` to the engineer role through `AUTH_SUPPORT_ENGINEER_ROLES`;
+other roles use `cs_viewer`, `cs_admin`, and so on, see `docker-compose.yml`).
 
-### Logging in via the mock identity provider
+**Gateway shim.** Browsers send `Authorization: Bearer <token>`, but the backends read `x-jwt-assertion`. In
+production the API gateway performs that rewrite; locally
+[`scripts/csm-compose/gateway-shim`](../../scripts/csm-compose/gateway-shim) does, and publishes the host ports
+`8082` (CSM) and `8090` (customer portal) in front of the backends.
 
-`scripts/csm-compose/mock-oidc` is a small, local-dev-only OpenID Connect provider. **It
-performs no credential check at all** — it signs a real RS256 JWT for whatever email and
-group list you type into its login form. Never point anything other than this local
-compose stack at it.
-
-It implements enough of the OIDC spec (discovery document, authorization-code flow with
-PKCE, client-credentials grant, JWKS, userinfo) that both webapps' normal OIDC client code
-and both BFFs' normal JWT-validation code run unmodified against it.
-
-**Through a webapp:** open http://localhost:3001 (or :3000), let it redirect you to
-`http://localhost:9100/oauth2/authorize`, type in any email address and a comma-separated
-group list (e.g. `cs_engineer` for this portal), and submit. You'll be redirected back
-signed in.
-
-**From the command line**, to get a bearer token directly (useful for `curl`):
+**Calling an API from the command line:**
 
 ```sh
 CODE=$(curl -s -i -X POST http://localhost:9100/oauth2/authorize \
@@ -266,136 +277,126 @@ TOKEN=$(curl -s -X POST http://localhost:9100/oauth2/token \
   --data-urlencode "code=$CODE" \
   | python3 -c "import sys,json;print(json.load(sys.stdin)['access_token'])")
 
-curl http://localhost:8082/users/me -H "x-jwt-assertion: $TOKEN"
+curl http://localhost:8082/users/me -H "Authorization: Bearer $TOKEN"
 ```
 
-Both BFFs run with real JWT signature validation **enabled**
-(`AUTH_TOKEN_VALIDATOR_ENABLED=true`) against the mock provider's JWKS endpoint, so this
-exercises the real validation code path, just against a throwaway signing key instead of a
-real identity provider.
+Both BFFs run with real JWT signature validation enabled (`AUTH_TOKEN_VALIDATOR_ENABLED=true`) against the mock
+provider's JWKS endpoint, so this exercises the production validation path with a throwaway signing key.
 
-### Verifying the stack
-
-A few checks that prove each piece is doing real work, not just running:
-
-**Postgres has real seed data:**
+**Checks that prove each piece does real work:**
 
 ```sh
+# Postgres has seed data
 docker exec $(docker ps -qf name=csm-platform-postgres-1) \
-  psql -U postgres -d csm_platform -c "SELECT number, subject FROM work_item;"
-```
+  psql -U postgres -d csm_platform -c "SELECT number, subject FROM work_item LIMIT 5;"
 
-**entity-service reads it back:**
-
-```sh
+# entity-service reads it back (GET /health never touches the database, so it proves nothing about data)
 curl http://localhost:8081/accounts/00000000-0000-0000-0000-000000000301
-```
-(`GET /health` always returns `{"status":"ok"}` without touching the database, so it proves
-nothing about the seeded data; this instead does a plain by-id get against the account row
-the seed data above creates. The `search` endpoints, including `/accounts/search`, have a
-known bug on this branch — see [Known issues](#known-issues) below — which is why this uses
-the by-id get rather than a search.)
 
-**A BFF round-trips to entity-service and Postgres** (get a token as shown above, then):
-
-```sh
-curl http://localhost:8082/users/me -H "x-jwt-assertion: $TOKEN"
-# -> real seeded user, e.g. {"id":"...","email":"jane.doe@example.com","firstName":"Jane","lastName":"Doe",...}
-```
-
-**csm-integration-service returns real M2M data:**
-
-```sh
+# csm-integration-service returns the same account over the M2M API
 curl http://localhost:8084/accounts/00000000-0000-0000-0000-000000000301
-# -> real seeded account "Example Corp"
 ```
 
-**Kafka + notification-service + both activity-stream services**: publish a synthetic
-event onto `case-events` (any Kafka client speaking TLS + SASL/PLAIN username
-`$ConnectionString`, password = `EVENT_HUB_CONNECTION_STRING`), then watch:
+To exercise the event pipeline, publish an event to `case-events` with any Kafka client speaking TLS and
+SASL/PLAIN (username `$ConnectionString`, password = the `EVENT_HUB_CONNECTION_STRING` set in
+`docker-compose.yml`), then watch
+`docker compose logs -f csm-notification-service csm-portal-activity-stream-service customer-portal-activity-stream-service`.
 
-```sh
-docker compose logs -f csm-notification-service csm-portal-activity-stream-service customer-portal-activity-stream-service
-```
+### Run a single component
 
-You should see `dispatch: email sending disabled ... not sending` (notification-service
-logs a real dispatch decision without needing real email credentials) and `caseevents:
-received case event` from both activity-stream services.
+Use this when you already have the upstream services available (for example the Compose stack for the entity
+service, with only the component you are editing running on the host).
 
-### Troubleshooting
+| Component | Command (from the component directory) | Details |
+|---|---|---|
+| CSM backend | `cp .env.example .env`, fill it in, then `go run ./cmd/server/main.go` (listens on `:8080`) | [`backend/README.md`](./backend/README.md) |
+| CSM webapp | `pnpm install`, `cp public/config.js.example public/config.js`, edit it, then `pnpm run dev` (serves on `:3001`) | [`webapp/README.md`](./webapp/README.md) |
+| CSM webapp, fully local | `pnpm run dev:local`: the Vite dev server acts as the gateway, pointing at a mock identity provider on `:9100` and a backend on `:8080` | [`webapp/README.md`](./webapp/README.md#local-full-stack-mode-sandboxed-dev) |
+| entity-service | `cp .env.example .env`, fill in the database settings, then `go run cmd/api/main.go` (listens on `:8080`, health on `:8081`) | [`entity-service/README.md`](../../entity-service/README.md) |
+| csm-integration-service | `go run ./cmd/server/main.go` | [README](../../integrations/csm-integration-service/README.md) |
+| Other integrations and operations | see each component's README | [`integrations/`](../../integrations), [`operations/`](../../operations) |
 
-- **A container keeps restarting right after `up`**: `docker compose logs <service>`.
-  Almost always a missing/placeholder env var — every backend fails loudly (`os.Exit(1)`
-  with a named variable) rather than silently, by design.
-- **`Group Coordinator Not Available` in any Kafka-consuming service's logs**: only
-  happens on a from-scratch Kafka data dir. This compose file already sets
-  `KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1` (and the transaction-log equivalents) because
-  a single-broker cluster can't satisfy Kafka's default replication factor of 3 for its
-  own internal topics. If you hit this anyway (e.g. after hand-editing the Kafka service),
-  it means `__consumer_offsets` failed to create — `docker compose down -v` and start
-  clean.
-- **A Kafka client (in a service, or your own test script) fails TLS verification against
-  the local broker**: the broker's certificate is signed by a throwaway CA generated fresh
-  by the `certgen` service into the `csm-dev-certs` volume on first boot. Any Go service
-  that talks to Kafka needs `SSL_CERT_FILE=/certs/ca.crt` and the `csm-dev-certs` volume
-  mounted (already wired up for `entity-service`, `csm-notification-service`, and both
-  activity-stream services) — a plain `curl`/local script needs the same CA trusted.
-- **`pnpm build` fails with `packages field missing or empty`** if you're building the
-  customer-portal webapp outside its compose Dockerfile: that webapp's
-  `pnpm-workspace.yaml` carries only `allowBuilds`/`minimumReleaseAgeExclude` settings, no
-  `packages:` key, which the pinned pnpm version (9.15.x) refuses to build under. The
-  Dockerfile works around it by deleting that file before `pnpm build` (it's not needed
-  for a single-package build); this is a repo/tooling gap, not something to fix by
-  hand-editing the file.
-- **`WS_PORT` / port collisions**: `customer-portal-backend-v2`'s `WS_PORT` defaults to
-  `8081`, the same as `entity-service`'s default port — this compose file sets it
-  explicitly to `8092`. If you add a new service, check its actual default port in code,
-  not just its `.env.example` (several vars are marked optional there but are enforced
-  as non-empty, or even scheme-restricted, at startup).
+The backend and the entity service load a `.env` file from the working directory automatically (a missing file is
+ignored). Never commit `.env` or `public/config.js`; only the `*.example` templates are tracked.
 
-### Known issues
+### Build, test and lint
 
-These are **pre-existing application bugs on this branch**, not something introduced or
-fixed by the compose stack. Reported here for visibility; do not treat their presence as a
-defect in the Docker/compose setup itself.
+| Component | Command | Notes |
+|---|---|---|
+| CSM backend | `make test` (runs `go vet ./...` then `go test -race ./...`) | `make build` runs the tests then builds `./server`; `make setup` installs the shared git hooks |
+| CSM backend | `go test ./...` | faster, without the race detector |
+| CSM webapp | `pnpm run lint` (ESLint), `pnpm run test` (Vitest), `pnpm run build` (`tsc -b && vite build`) | `pnpm run test:e2e` runs Playwright |
+| entity-service | `make build`, `make test`, `make lint` (`go vet ./...`) | `make migrate` applies the SQL migrations to a database |
+| Other Go components | `go build ./...` and `go test ./...` in the component directory | some have their own `Makefile` |
 
-- **`entity-service`'s repository layer queries table names that don't match its own
-  migrations, for six of its core entities.** Every migration creates singular table names
-  (`case`, `project`, `deployment`, `product`, `product_version`, `deployed_product`), but
-  the corresponding repositories query plural names that don't exist:
-  - `internal/repository/case_repo.go` — `cases` (e.g. lines 145, 209, 218-219, 444,
-    814-817, 831)
-  - `internal/repository/project_repo.go` — `projects` (lines 72, 77, 136)
-  - `internal/repository/deployment_repo.go` — `deployments` (lines 80, 87)
-  - `internal/repository/product_repo.go` — `products` (lines 67, 71)
-  - `internal/repository/product_version_repo.go` — `product_versions` (lines 67, 73)
-  - `internal/repository/deployed_product_repo.go` — `deployed_products` (lines 59, 66)
+Security scanning commands (`gosec`, `govulncheck`) are documented in the backend and entity-service READMEs.
 
-  Every code path that touches one of these (`POST /cases/search`, `GET /cases/{id}`,
-  `POST /projects/search`, `POST /deployed-products/search`, case creation, case comments
-  — which authorizes via `GetCase` first — and both activity-stream services' per-case SSE
-  authorization, which also calls `GetCase`) fails with `relation "..." does not exist`
-  against a freshly-migrated Postgres database. Other repositories (`account`, `comment`,
-  `work_item`, `time_card`, `sla_clocks`, `event_publish_failures`,
-  `scheduled_task_run`, `project_contact`, `product_vulnerability`, `user_role`) correctly
-  match their migrated table names and work as expected — the seed data and verification
-  steps above route around the six broken ones deliberately (seeding rows directly in
-  Postgres, and verifying Kafka/SSE delivery with a directly-published synthetic event
-  instead of a real case-creation call).
+### Contributing
 
-## Reporting Issues
+Contributions are welcome. Create a feature branch, keep changes focused, and open a pull request with a clear
+description and verification steps. Use the repository's [issue template](../../issue_template.md) and
+[pull request template](../../pull_request_template.md). Run
+`git config core.hooksPath .githooks` (or `make setup` in the backend) to enable the optional
+[`.githooks/pre-push`](../../.githooks/pre-push) hook, which runs the tests of the components a push touches.
+If you change a user-facing flow in the webapp, also update the matching topic under
+`webapp/src/features/help/content/`.
 
-### 1. Opening an issue
+## Configuration
 
-Please use this repository's issue tracker and include reproduction steps, expected behavior, actual behavior, and relevant logs.
+Each component is configured through environment variables, except the webapp, which reads a runtime
+`window.config` object from `public/config.js`. Names below are the ones the code reads; see each component's
+README (and its `.env.example`) for the full list, defaults and validation rules.
 
-### 2. Reporting security issues
+| Component | Mechanism | Key settings | Full reference |
+|---|---|---|---|
+| CSM webapp | `public/config.js` (from `config.js.example`) | `CSM_PORTAL_AUTH_BASE_URL`, `CSM_PORTAL_AUTH_CLIENT_ID`, `CSM_PORTAL_AUTH_SIGN_IN_REDIRECT_URL`, `CSM_PORTAL_AUTH_SIGN_OUT_REDIRECT_URL`, `CSM_PORTAL_BACKEND_BASE_URL`; optional stream, theme, feature-override and banner keys | [`webapp/README.md`](./webapp/README.md#configuration) |
+| CSM backend | env / `.env` (from `.env.example`) | `OAUTH2_CLIENT_ID`, `OAUTH2_CLIENT_SECRET`, `OAUTH2_TOKEN_URL`; `CUSTOMER_ENTITY_BASE_URL`, `UPDATES_BASE_URL`, `SCIM_BASE_URL` (+ `*_SCOPES`); `AUTH_JWKS_ENDPOINT`, `AUTH_ISSUER`, `AUTH_AUDIENCE`, `AUTH_TOKEN_VALIDATOR_ENABLED`; `AUTH_*_ROLES`; `CORS_ALLOWED_ORIGINS`, `PORT` | [`backend/README.md`](./backend/README.md#configuration-reference) |
+| entity-service | env / `.env` (from `.env.example`) | `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `DB_SSLMODE`; `SERVER_PORT`, `HEALTH_PORT`; `DATA_SOURCE` (default `postgres`); `AUTH_ISSUER`, `AUTH_JWKS_URL`, `AUTH_USER_TOKEN_AUDIENCES`; `M2M_CLIENT_IDS`; `EVENT_PUBLISHING_ENABLED`, `EVENT_HUB_BROKER`, `EVENT_HUB_CONNECTION_STRING`, `EVENT_HUB_TOPIC`; optional `REDIS_URL` / `REDIS_ADDR` | [`entity-service/README.md`](../../entity-service/README.md#configuration-reference) |
+| csm-integration-service | env / `.env` | `ENTITY_BASE_URL`, `ENTITY_TOKEN_URL`, `ENTITY_CLIENT_ID`, `ENTITY_CLIENT_SECRET`, `ENTITY_SCOPES`, `PORT` | [README](../../integrations/csm-integration-service/README.md) |
+| csm-notification-service | env / `.env` | `EVENT_HUB_*` consumer settings, channel credentials, `PORT` | [README](../../integrations/csm-notification-service/README.md) |
+| Activity-stream services | env / `.env` | `EVENT_HUB_*`, `OAUTH2_*`, `CUSTOMER_ENTITY_BASE_URL`, `AUTH_JWKS_ENDPOINT`, `AUTH_ISSUER`, `AUTH_AUDIENCE`, `HEALTH_PORT`, `STREAM_PORT` | [CSM](../../integrations/csm-portal-activity-stream-service/README.md), [customer](../../integrations/customer-portal-activity-stream-service/README.md) |
+| Scheduled tasks, webhooks, alert services | env or `config.toml` | see each README | [`operations/`](../../operations), [`integrations/`](../../integrations) |
 
-Please do not report security issues through public issues. Follow the [WSO2 Security Vulnerability Reporting Guidelines](https://security.docs.wso2.com/en/latest/security-reporting/vulnerability-reporting-guidelines/).
+How the settings line up across components (the same value must agree in both places):
 
-## Contributing
+| Concern | Set on | Must match |
+|---|---|---|
+| Token issuer and keys | `AUTH_ISSUER` + `AUTH_JWKS_ENDPOINT` (backend, activity-stream), `AUTH_ISSUER` + `AUTH_JWKS_URL` (entity-service) | The identity provider's issuer and JWKS URL |
+| Token audience | `AUTH_AUDIENCE` (backend, activity-stream), `AUTH_USER_TOKEN_AUDIENCES` (entity-service) | The webapp's OIDC client id (`CSM_PORTAL_AUTH_CLIENT_ID`) |
+| Backend to entity-service | `CUSTOMER_ENTITY_BASE_URL`, `OAUTH2_*` (backend) | The entity service's address; the backend's client id must be known to the entity service |
+| M2M callers | `M2M_CLIENT_IDS` (entity-service) | The OAuth2 client ids of the integration, notification, webhook and scheduled-task components |
+| Browser to backend | `CSM_PORTAL_BACKEND_BASE_URL` (webapp), `CORS_ALLOWED_ORIGINS` (backend) | The gateway URL in front of the backend; the webapp's origin |
+| Event bus | `EVENT_HUB_BROKER`, `EVENT_HUB_CONNECTION_STRING`, `EVENT_HUB_TOPIC` (entity-service, consumers) | The same broker and topic everywhere; consumers also need their own consumer group |
+| Portal roles | `AUTH_*_ROLES` (backend) | The role names the identity provider puts in the token's `roles` claim |
 
-Contributions are welcome. Create a feature branch, keep changes focused, and submit a pull request with a clear description and verification steps.
+The Compose file sets working local values for all of this; it is the most complete worked example.
+
+## Troubleshooting
+
+- **A container keeps restarting after `up`**: run `docker compose logs <service>`. It is almost always a
+  missing or placeholder environment variable; the backends exit at startup naming the variable instead of
+  failing silently.
+- **`Group Coordinator Not Available` in a Kafka consumer**: only happens on a from-scratch Kafka data
+  directory when a single broker cannot meet the default internal-topic replication factor. The Compose file
+  already sets the replication factors to 1; if you hit it anyway, run `docker compose down -v` and start clean.
+- **A Kafka client fails TLS verification against the local broker**: the broker certificate is signed by the
+  throwaway CA in the `csm-dev-certs` volume. Go services need `SSL_CERT_FILE=/certs/ca.crt` with that volume
+  mounted (already wired in Compose); a script on the host must trust the same CA.
+- **`pnpm build` fails with `packages field missing or empty`** when building the customer-portal webapp outside
+  its Dockerfile: that webapp's `pnpm-workspace.yaml` has no `packages:` key, which pnpm 9.15 rejects. The
+  Dockerfile works around it by removing that file before building.
+- **Port collisions**: check a service's real default port in code, not only its `.env.example` (for example
+  `customer-portal-backend-v2`'s `WS_PORT` defaults to `8081`, the same as the entity service's health port, so
+  Compose sets it to `8092`).
+- **401 from a backend you call directly**: send the token as `x-jwt-assertion`, not `Authorization`, or go
+  through the gateway shim on `:8082` / `:8090`.
+
+## Reporting issues
+
+1. **Opening an issue**: use this repository's issue tracker and include reproduction steps, expected behavior,
+   actual behavior and relevant logs.
+2. **Security issues**: do not report them through public issues. Follow the
+   [WSO2 Security Vulnerability Reporting Guidelines](https://security.docs.wso2.com/en/latest/security-reporting/vulnerability-reporting-guidelines/).
 
 ## License
 

@@ -18,6 +18,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"reflect"
@@ -68,6 +69,10 @@ type changeRequestService struct {
 	// the correct ServiceNow record.
 	snMirror    ChangeRequestService
 	snWriteback *SNWritebackDispatcher
+	// snUsers is optional and only used by the dual-write create path, to check
+	// that the people a change is assigned to exist in ServiceNow before it is
+	// called -- see resolveServiceNowPeople. Set by WithChangeRequestSNUserLookup.
+	snUsers snUserSearcher
 }
 
 // NewChangeRequestService constructs a ChangeRequestService backed by
@@ -269,6 +274,7 @@ func (s *changeRequestService) PatchChangeRequest(ctx context.Context, id string
 		req.RollbackDurationText == nil &&
 		req.OnHold == nil && req.OnHoldReason == nil &&
 		req.CustomerApprovalRequired == nil && req.CustomerReviewRequired == nil &&
+		req.ConfirmCustomerUpdatedDate == nil &&
 		req.DeploymentIDs == nil && req.DeploymentProductIDs == nil &&
 		req.Comment == nil && req.WorkNote == nil && req.DurationInput == nil {
 		return domain.PatchChangeRequestResponse{}, &apierror.ValidationError{Msg: "at least one field must be provided"}
@@ -323,6 +329,29 @@ func (s *changeRequestService) PatchChangeRequest(ctx context.Context, id string
 	mirrorReq := req
 	mirrorReq.CustomerApprovalRequired, mirrorReq.CustomerReviewRequired = nil, nil
 	mirrorReq.DeploymentIDs, mirrorReq.DeploymentProductIDs = nil, nil
+	// The conversation about a time the customer proposed (confirmCustomerUpdatedDate,
+	// expectedCustomerUpdatedOn) has no field in the previous system's change request API: it stays
+	// PostgreSQL-only. What of it changes the change request itself is mirrored from what
+	// PostgreSQL COMMITTED, and whether a window is a customer's PROPOSAL (never mirrored) is
+	// decided from the request's CALLER (mirrorOfTheTimeConversation), never from a read of the
+	// committed row alone: that read runs after the commit, in another transaction, and its
+	// failure is logged and swallowed.
+	mirrorReq.ConfirmCustomerUpdatedDate, mirrorReq.ExpectedCustomerUpdatedOn = nil, nil
+	mirrorReq = mirrorOfTheTimeConversation(req, mirrorReq, cr, repository.IsExternalCaller(ctx))
+	// PostgreSQL has accepted the window, in either of the layouts it takes (RFC
+	// 3339, or "YYYY-MM-DD HH:MM:SS" in UTC); ServiceNow's API takes only the
+	// second, so the mirror gets it in that one (what was sent in it is unchanged).
+	if mirrorReq.PlannedStartOn != nil {
+		v := repository.PlannedTimestampForServiceNow(*mirrorReq.PlannedStartOn)
+		mirrorReq.PlannedStartOn = &v
+	}
+	if mirrorReq.PlannedEndOn != nil {
+		v := repository.PlannedTimestampForServiceNow(*mirrorReq.PlannedEndOn)
+		mirrorReq.PlannedEndOn = &v
+	}
+	// The window a customer's answer was given for is a precondition checked
+	// against PostgreSQL only; there is nothing of it to mirror.
+	mirrorReq.ExpectedPlannedStartOn, mirrorReq.ExpectedPlannedEndOn = nil, nil
 	if s.snWriteback != nil && !reflect.DeepEqual(mirrorReq, domain.PatchChangeRequestRequest{}) {
 		mirrorID := id
 		s.snWriteback.Dispatch(ctx, "change_request", id, "patch", mirrorReq,
@@ -337,6 +366,63 @@ func (s *changeRequestService) PatchChangeRequest(ctx context.Context, id string
 		Message:       "Change request updated successfully",
 		ChangeRequest: cr,
 	}, nil
+}
+
+// mirrorOfTheTimeConversation adjusts the best-effort mirror of a PATCH to the previous system for the
+// acts of the customer's-proposed-time conversation, and ONLY for them: every other PATCH
+// mirrors exactly what it always did (mirror comes back unchanged).
+//
+// externalCaller is whether the PATCH came from a customer (repository.IsExternalCaller: the
+// very test the repository used to decide what the request WAS), so what a window is, is
+// decided by who sent it and not by anything read back afterwards.
+//
+//   - A PATCH from an external caller never mirrors its window. The repository accepts exactly
+//     two things from a customer (classifyExternalPatch): their answer (isCustomerApproved /
+//     isCustomerReviewed, mirrored as before) and a proposed window (plannedStartOn /
+//     plannedEndOn), which PostgreSQL did NOT apply as the plan: it waits for WSO2 in
+//     customer_updated_on, and the previous system has no field for it. Everything else is refused (403)
+//     before this runs. This does not depend on the committed read model: the detail read
+//     (GetChangeRequestByID -> fillCustomerProposal) runs after the commit, in a separate
+//     transaction, logs and swallows its errors (CustomerProposal then stays nil) and can see
+//     a conversation that has moved on (WSO2 answered in between), and a customer's proposed
+//     time must never reach the previous system as the plan because of either.
+//   - Accept proposed time (confirmCustomerUpdatedDate): the previous system has no field for the
+//     answer, but the change moved to Scheduled with a new planned window, so that is what is
+//     mirrored, read from what PostgreSQL committed. UNVERIFIED that the previous system accepts a
+//     manual Scheduled out of Customer Approval: if it refuses, PostgreSQL stays committed and the
+//     refused payload lands in the write-back failure record.
+//   - A Re-schedule / counter-proposal / decline names {state: "authorize"} but the change STAYS in
+//     Customer Approval: forwarding the state would put the previous system in Authorize while
+//     PostgreSQL is not, so the state is dropped (the window, when there is one, is mirrored as
+//     always).
+//   - Second guard, for any caller: a window equal to the proposal the committed row still shows as
+//     pending, that is not the committed plan, is the proposal and is not mirrored either. It can
+//     only ever ADD to what the caller rule keeps out (it needs the read model to be there).
+func mirrorOfTheTimeConversation(req, mirror domain.PatchChangeRequestRequest, committed domain.ChangeRequest, externalCaller bool) domain.PatchChangeRequestRequest {
+	if externalCaller {
+		mirror.PlannedStartOn, mirror.PlannedEndOn = nil, nil
+		return mirror
+	}
+	if req.ConfirmCustomerUpdatedDate != nil {
+		scheduled := domain.ChangeRequestStateScheduled
+		return domain.PatchChangeRequestRequest{State: &scheduled, PlannedStartOn: committed.PlannedStartOn, PlannedEndOn: committed.PlannedEndOn}
+	}
+	if mirror.State != nil && strings.EqualFold(string(*mirror.State), string(domain.ChangeRequestStateAuthorize)) &&
+		committed.State != nil && strings.EqualFold(*committed.State, string(domain.ChangeRequestStateCustomerApproval)) {
+		mirror.State = nil
+	}
+	if mirror.State == nil && mirror.PlannedStartOn != nil && committed.CustomerProposal != nil && committed.CustomerProposal.Answer == "pending" &&
+		sameMirroredInstant(*mirror.PlannedStartOn, committed.CustomerProposal.StartOn) &&
+		(committed.PlannedStartOn == nil || !sameMirroredInstant(*mirror.PlannedStartOn, *committed.PlannedStartOn)) {
+		mirror.PlannedStartOn, mirror.PlannedEndOn = nil, nil
+	}
+	return mirror
+}
+
+// sameMirroredInstant compares two planned timestamps as the mirror writes them (the previous
+// system's layout, UTC, whole seconds).
+func sameMirroredInstant(a, b string) bool {
+	return repository.PlannedTimestampForServiceNow(a) == repository.PlannedTimestampForServiceNow(b)
 }
 
 // CreateChangeRequest implements ChangeRequestService.
@@ -387,6 +473,12 @@ func (s *changeRequestService) createChangeRequestPortal(ctx context.Context, re
 	if !repository.ChangeRequestTypeSupported(*req.Type) {
 		return domain.CreateChangeRequestResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("type %q is not supported on the PostgreSQL data source", *req.Type)}
 	}
+	// An Emergency change takes no customer step: refused here, before the previous
+	// system is called on the dual-write path, where a refusal after the fact would
+	// strand a record there with no PostgreSQL row.
+	if err := repository.ValidateCreateChangeRequestCustomerGates(req.Type, req.CustomerApprovalRequired, req.CustomerReviewRequired); err != nil {
+		return domain.CreateChangeRequestResponse{}, err
+	}
 	if err := validateChangeRequestCreateScope(req); err != nil {
 		return domain.CreateChangeRequestResponse{}, err
 	}
@@ -428,14 +520,38 @@ func (s *changeRequestService) createChangeRequestSNFirst(ctx context.Context, r
 	if !repository.ChangeRequestTypeSupported(*req.Type) {
 		return domain.CreateChangeRequestResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("type %q is not supported on the PostgreSQL data source", *req.Type)}
 	}
+	// An Emergency change takes no customer step: refused here, before the previous
+	// system is called on the dual-write path, where a refusal after the fact would
+	// strand a record there with no PostgreSQL row.
+	if err := repository.ValidateCreateChangeRequestCustomerGates(req.Type, req.CustomerApprovalRequired, req.CustomerReviewRequired); err != nil {
+		return domain.CreateChangeRequestResponse{}, err
+	}
 	if err := validateChangeRequestCreateScope(req); err != nil {
+		return domain.CreateChangeRequestResponse{}, err
+	}
+	// The planned window is validated BEFORE the previous system is called, exactly as the
+	// plain-Postgres create does it (repository.NormalizeCreatePlannedWindow): the
+	// raw text used to reach both the previous system and PostgreSQL's own date parser
+	// ('tomorrow', 'infinity', a year in the thousands). PostgreSQL then gets the
+	// request as sent (its create normalises the window again, to an instant) and the
+	// previous system the window in the layout ITS service takes, as the PATCH mirror
+	// does it (the mirror's timestamp conversion: RFC 3339 becomes "YYYY-MM-DD HH:MM:SS"
+	// in UTC, whole seconds). The service in front
+	// of it converts RFC 3339 itself too (snPlannedTimestamp), but it refuses a
+	// zoneless value with a fractional second, which PostgreSQL accepts, so what
+	// PostgreSQL accepted is converted here and never reaches it as typed.
+	if _, err := repository.NormalizeCreatePlannedWindow(req); err != nil {
 		return domain.CreateChangeRequestResponse{}, err
 	}
 	// The project / deployments / deployment products are validated BEFORE
 	// ServiceNow is called: once ServiceNow has created the change request, a
 	// refusal on the Postgres side would strand it there.
+	// The assignment group is checked here too: a group that is not one of
+	// "group" (a hand-made team the picker used to list) is not a ServiceNow group
+	// either, and ServiceNow answers it with a bare 404.
 	if _, err := s.repo.ValidateChangeRequestLinks(ctx, domain.ChangeRequestLinkSelection{
-		ProjectID: req.ProjectID, DeploymentIDs: req.DeploymentIDs, DeploymentProductIDs: req.DeploymentProductIDs,
+		ProjectID: req.ProjectID, AssignmentGroupID: req.GroupID,
+		DeploymentIDs: req.DeploymentIDs, DeploymentProductIDs: req.DeploymentProductIDs,
 	}); err != nil {
 		return domain.CreateChangeRequestResponse{}, err
 	}
@@ -448,12 +564,35 @@ func (s *changeRequestService) createChangeRequestSNFirst(ctx context.Context, r
 	// the project's registered contacts).
 	mirrorReq := req
 	mirrorReq.ProjectID, mirrorReq.DeploymentIDs, mirrorReq.DeploymentProductIDs = nil, nil, nil
+	if mirrorReq.PlannedStartDate != nil {
+		v := repository.PlannedTimestampForServiceNow(*mirrorReq.PlannedStartDate)
+		mirrorReq.PlannedStartDate = &v
+	}
+	if mirrorReq.PlannedEndDate != nil {
+		v := repository.PlannedTimestampForServiceNow(*mirrorReq.PlannedEndDate)
+		mirrorReq.PlannedEndDate = &v
+	}
+	// The people named are made ServiceNow ones (or refused in words) before
+	// ServiceNow is called: its answer to an unknown user is a bare 404.
+	if err := s.resolveServiceNowPeople(ctx, &mirrorReq); err != nil {
+		return domain.CreateChangeRequestResponse{}, err
+	}
 	snResp, err := s.snMirror.CreateChangeRequest(ctx, mirrorReq)
 	if err != nil {
 		// ServiceNow never accepted the change request -- nothing is
 		// written to Postgres at all, by construction
 		// (s.repo.CreateChangeRequestFromServiceNow is simply never called
 		// on this path). No orphan gets created.
+		//
+		// A "not found" here cannot be about the change request (it does not
+		// exist yet): ServiceNow does not know a record it was handed. The portal
+		// shows a 404 as "The requested resource was not found!", which says
+		// nothing, so it is reported as the 400 it is.
+		var notFound *apierror.NotFoundError
+		if errors.As(err, &notFound) {
+			slog.WarnContext(ctx, "sn create change request: ServiceNow did not recognise a record the change request refers to", "error", err)
+			return domain.CreateChangeRequestResponse{}, &apierror.ValidationError{Msg: serviceNowUnknownRecordMsg}
+		}
 		return domain.CreateChangeRequestResponse{}, err
 	}
 
@@ -470,6 +609,15 @@ func (s *changeRequestService) createChangeRequestSNFirst(ctx context.Context, r
 	}
 	return resp, nil
 }
+
+// serviceNowUnknownRecordMsg is what a create is refused with when ServiceNow answers
+// "not found": one of the records the form refers to is not one it knows, and it does
+// not say which. The people and the assignment group are checked before ServiceNow is
+// called, so what is left is mostly the service, the service offering and the
+// configuration item.
+const serviceNowUnknownRecordMsg = "The change request was not created: ServiceNow did not recognise one of the records it refers to " +
+	"(the assignment group, the person it is assigned to, the requester, the service, the service offering or the configuration item). " +
+	"Change one of those fields and try again."
 
 // GetChangeRequestApprovals implements ChangeRequestService. Reads always
 // stay on Postgres regardless of data source -- config.go's own doc comment
@@ -545,9 +693,10 @@ func (s *changeRequestService) DecideChangeRequestApproval(ctx context.Context, 
 	// changeRequestApprovalDecisions (sn_change_request_service.go) is
 	// reused directly rather than redeclared: both data sources accept
 	// exactly the same two request-level values ("approved"/"rejected"),
-	// and approval_stage_approver.status stores those same raw strings
-	// verbatim (migration 0089's own comment), so there is no separate
-	// translation table to keep in lockstep here.
+	// and approval_stage_approver.state (renamed from status by migration
+	// 0138, values UPPER_SNAKE_CASE) stores them uppercased -- the repository
+	// does that one conversion (strings.ToUpper at the UPDATE) -- so there is
+	// no separate translation table to keep in lockstep here.
 	if !changeRequestApprovalDecisions[decision] {
 		return domain.ChangeRequestApprovalDecisionResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("invalid decision %q", decision)}
 	}

@@ -17,10 +17,14 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import CaseDetailsDetailsPanel from "@case-details-details/CaseDetailsDetailsPanel";
 import { ThemeProvider, createTheme } from "@wso2/oxygen-ui";
 import type { CaseDetails } from "@features/support/types/cases";
 import { formatDateOnly } from "@features/support/utils/support";
+import LoggerProvider from "@context/logger/LoggerProvider";
+import { ErrorBannerProvider } from "@context/error-banner/ErrorBannerContext";
+import { SuccessBannerProvider } from "@context/success-banner/SuccessBannerContext";
 
 const mockCaseDetails: Partial<CaseDetails> = {
   id: "case-001",
@@ -61,19 +65,30 @@ function renderDetailsPanel(
     isServiceRequest?: boolean;
   } = {},
 ) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
   return render(
     <MemoryRouter initialEntries={["/projects/p1/support/cases/case-001"]}>
       <Routes>
         <Route
           path="/projects/:projectId/support/cases/:caseId"
           element={
-            <ThemeProvider theme={createTheme()}>
-              <CaseDetailsDetailsPanel
-                data={(props.data ?? mockCaseDetails) as CaseDetails}
-                isError={props.isError ?? false}
-                isServiceRequest={props.isServiceRequest ?? false}
-              />
-            </ThemeProvider>
+            <QueryClientProvider client={queryClient}>
+              <ThemeProvider theme={createTheme()}>
+                <LoggerProvider>
+                  <ErrorBannerProvider>
+                    <SuccessBannerProvider>
+                      <CaseDetailsDetailsPanel
+                        data={(props.data ?? mockCaseDetails) as CaseDetails}
+                        isError={props.isError ?? false}
+                        isServiceRequest={props.isServiceRequest ?? false}
+                      />
+                    </SuccessBannerProvider>
+                  </ErrorBannerProvider>
+                </LoggerProvider>
+              </ThemeProvider>
+            </QueryClientProvider>
           }
         />
       </Routes>
@@ -85,6 +100,26 @@ describe("CaseDetailsDetailsPanel", () => {
   it("should render Case Overview card as first section with title", () => {
     renderDetailsPanel();
     expect(screen.getByText("Case Overview")).toBeInTheDocument();
+  });
+
+  it("should show the related case number as a link in Case Overview", () => {
+    renderDetailsPanel({
+      data: {
+        ...mockCaseDetails,
+        relatedCase: { id: "case-closed", label: "CS0378824" },
+      },
+    });
+
+    expect(screen.getByText("Related Case")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "CS0378824" })).toHaveAttribute(
+      "href",
+      "/projects/p1/support/cases/case-closed",
+    );
+  });
+
+  it("should omit Related Case from Case Overview when the case has none", () => {
+    renderDetailsPanel();
+    expect(screen.queryByText("Related Case")).not.toBeInTheDocument();
   });
 
   it("should render case overview section with API data", () => {
@@ -109,12 +144,6 @@ describe("CaseDetailsDetailsPanel", () => {
     expect(
       screen.getByText(formatDateOnly(mockCaseDetails.updatedOn)),
     ).toBeInTheDocument();
-    expect(screen.getByText("SLA Response Time")).toBeInTheDocument();
-    expect(
-      screen.getByText((content) =>
-        /\d+\s+(?:hour|minute|day|second)s?/.test(content),
-      ),
-    ).toBeInTheDocument();
     expect(screen.getAllByText("--").length).toBeGreaterThan(0);
   });
 
@@ -122,7 +151,6 @@ describe("CaseDetailsDetailsPanel", () => {
     renderDetailsPanel();
     expect(screen.getByText("Product & Environment")).toBeInTheDocument();
     expect(screen.getByText("Product Name")).toBeInTheDocument();
-    expect(screen.getByText("Product Version")).toBeInTheDocument();
     expect(screen.getByText("Environment Type")).toBeInTheDocument();
     expect(screen.getByText("Production")).toBeInTheDocument();
   });
@@ -203,8 +231,7 @@ describe("CaseDetailsDetailsPanel", () => {
     });
     expect(screen.getByText("Service Request Overview")).toBeInTheDocument();
     expect(screen.getByText("Request number")).toBeInTheDocument();
-    expect(screen.getByText("WSO2 Case Id")).toBeInTheDocument();
-    expect(screen.getByText("Severity")).toBeInTheDocument();
+    expect(screen.getByText("WSO2 Case ID")).toBeInTheDocument();
     expect(screen.getByText("Duration")).toBeInTheDocument();
     expect(screen.getAllByText("Assigned team").length).toBeGreaterThan(0);
     expect(screen.getByText("Description")).toBeInTheDocument();

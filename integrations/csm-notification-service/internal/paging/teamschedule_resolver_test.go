@@ -33,6 +33,8 @@ type stubScheduleReader struct {
 	onDuty     []onDutyAssignment
 	membersErr error
 	onDutyErr  error
+	// catalogue replaces the default SRE catalogue (sre_test.go) when set.
+	catalogue *scheduleCatalogue
 
 	gotTeamKeys []string
 	gotRoles    []string
@@ -41,6 +43,12 @@ type stubScheduleReader struct {
 	gotAt       time.Time
 	memberCalls int
 	onDutyCalls int
+
+	// away is who AwayOn reports on leave, by lower-cased email.
+	away              map[string]bool
+	awayErr           error
+	gotAwayDay        string
+	gotIncludeOnLeave bool
 }
 
 func (s *stubScheduleReader) TeamMembers(_ context.Context, teamKeys, roles, tiers, types []string) ([]teamMember, error) {
@@ -71,10 +79,28 @@ func (s *stubScheduleReader) TeamMembers(_ context.Context, teamKeys, roles, tie
 	return out, nil
 }
 
-func (s *stubScheduleReader) OnDutyAt(_ context.Context, at time.Time) ([]onDutyAssignment, error) {
+// OnDutyAt mirrors entity-service: someone marked OnLeave comes back only
+// with includeOnLeave.
+func (s *stubScheduleReader) OnDutyAt(_ context.Context, at time.Time, includeOnLeave bool) ([]onDutyAssignment, error) {
 	s.gotAt = at
 	s.onDutyCalls++
-	return s.onDuty, s.onDutyErr
+	s.gotIncludeOnLeave = includeOnLeave
+	if s.onDutyErr != nil || includeOnLeave {
+		return s.onDuty, s.onDutyErr
+	}
+	var out []onDutyAssignment
+	for _, a := range s.onDuty {
+		if !a.OnLeave {
+			out = append(out, a)
+		}
+	}
+	return out, nil
+}
+
+// AwayOn is who is on leave, from s.away, whatever the day.
+func (s *stubScheduleReader) AwayOn(_ context.Context, day string) (map[string]bool, error) {
+	s.gotAwayDay = day
+	return s.away, s.awayErr
 }
 
 func inList(list []string, v string) bool {
@@ -1125,5 +1151,47 @@ func TestResolve_RotaRungsReachOnlyThisLaddersTeams(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Email != "castor.on@example.com" {
 		t.Errorf("rotaTeams [Castor]: LEVEL_0 = %v, want castor only", emails(got))
+	}
+}
+
+// A case carries its team's name; a deployment whose team keys are not slugs of
+// it (DEV: "rigel_abt_cre_team") maps the name through teams.aliases. Every CRE
+// lookup has to honour that alias, as the SRE ladder's already does.
+//
+// Regression test: the CRE side slugified the name and skipped the alias, so on
+// DEV "Rigel" became "rigel", a team that does not exist -- every ABT case
+// routed by R3 and its own-team rungs reached nobody.
+func TestResolve_CRETeamNameMapsThroughAlias(t *testing.T) {
+	stub := &stubScheduleReader{members: []teamMember{
+		member("rigel_abt_cre_team", "r1@example.com", "engineer", "T1"),
+		member("rigel_abt_cre_team", "r2@example.com", "engineer", "T2"),
+		member("rigel_abt_cre_team", "r3@example.com", "engineer", "T3"),
+		member("rigel_abt_cre_team", "lead@example.com", roleLead, ""),
+	}}
+	teams := TeamKeys{
+		ABTType:    "cre-abt",
+		Americas:   "americas_cre_team",
+		Leadership: "cre-leadership",
+		Aliases:    map[string]string{"rigel": "rigel_abt_cre_team"},
+	}
+	r := NewTeamScheduleResolver(stub, teams, nil)
+	rc := RoutingContext{Shift: ShiftLK, AssignedCRETeam: "Rigel", At: time.Now()}
+
+	if rule, ok := r.RuleFor(rc); !ok || rule.ID != "R2" {
+		t.Fatalf("a Rigel case in LK routed by %q (matched %v), want R2", rule.ID, ok)
+	}
+	tier1, err := r.Resolve(context.Background(), Level0, rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := emails(tier1); len(got) != 3 || got[0] != "r1@example.com" || got[2] != "r3@example.com" {
+		t.Errorf("LEVEL_0 = %v, want Rigel's T1..T3", got)
+	}
+	tier2, err := r.Resolve(context.Background(), Level1, rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := emails(tier2); len(got) != 1 || got[0] != "lead@example.com" {
+		t.Errorf("LEVEL_1 = %v, want Rigel's own lead", got)
 	}
 }

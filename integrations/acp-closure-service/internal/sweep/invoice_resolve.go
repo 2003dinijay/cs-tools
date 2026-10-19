@@ -160,7 +160,7 @@ func resolveDueInvoices(ctx context.Context, reader entityReader, proj project) 
 // more-overdue eligible invoice on a later page.
 func fetchAllProjectOpportunityLinks(ctx context.Context, reader entityReader, projectID string) ([]projectOpportunityLinkDTO, error) {
 	var all []projectOpportunityLinkDTO
-	offset := 0
+	offset, pages := 0, 0
 	for {
 		reqBody, err := json.Marshal(searchProjectOpportunityLinksRequest{
 			Pagination: pagination{Limit: pageSize, Offset: offset},
@@ -178,8 +178,15 @@ func fetchAllProjectOpportunityLinks(ctx context.Context, reader entityReader, p
 			return nil, fmt.Errorf("parse project-opportunity links at offset %d: %w", offset, err)
 		}
 		all = append(all, page.Links...)
-		if len(page.Links) == 0 || !page.HasMore {
+		// Stop once "total" rows are read even if hasMore stays true, so a
+		// misbehaving upstream can't keep this loop going until the job
+		// timeout (security assessment 2026-10-08).
+		if len(page.Links) == 0 || !page.HasMore || (page.Total > 0 && len(all) >= page.Total) {
 			break
+		}
+		pages++
+		if pages >= maxSearchPages {
+			return nil, fmt.Errorf("project-opportunity links search still reports more pages after %d pages; stopping", maxSearchPages)
 		}
 		offset += pageSize
 	}
@@ -191,7 +198,7 @@ func fetchAllProjectOpportunityLinks(ctx context.Context, reader entityReader, p
 // fetchAllProjectOpportunityLinks's doc comment for why this matters.
 func fetchAllInvoicesForOpportunity(ctx context.Context, reader entityReader, opportunityID string) ([]invoiceDTO, error) {
 	var all []invoiceDTO
-	offset := 0
+	offset, pages := 0, 0
 	for {
 		reqBody, err := json.Marshal(searchInvoicesRequest{
 			Pagination:    pagination{Limit: pageSize, Offset: offset},
@@ -209,8 +216,15 @@ func fetchAllInvoicesForOpportunity(ctx context.Context, reader entityReader, op
 			return nil, fmt.Errorf("parse invoices for opportunity %s at offset %d: %w", opportunityID, offset, err)
 		}
 		all = append(all, page.Invoices...)
-		if len(page.Invoices) == 0 || !page.HasMore {
+		// Stop once "total" rows are read even if hasMore stays true, so a
+		// misbehaving upstream can't keep this loop going until the job
+		// timeout (security assessment 2026-10-08).
+		if len(page.Invoices) == 0 || !page.HasMore || (page.Total > 0 && len(all) >= page.Total) {
 			break
+		}
+		pages++
+		if pages >= maxSearchPages {
+			return nil, fmt.Errorf("invoices search still reports more pages after %d pages; stopping", maxSearchPages)
 		}
 		offset += pageSize
 	}

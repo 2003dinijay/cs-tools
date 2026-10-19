@@ -189,6 +189,9 @@ Every flag for that cutover is named `CSM_MIGRATION_*`, is opt-in (on only when 
 |---|---|
 | `PORT` | REST server listen port — a plain number, not an address (default `8080`) |
 | `WS_PORT` | WebSocket (`GET /ws`) listen port — a separate listener from `PORT`, must match the `customer-portal-websocket` endpoint in `.choreo/component.yaml` (default `8081`) |
+| `REST_READ_TIMEOUT` | REST server `ReadTimeout` as a Go duration (e.g. `60s`, `1m30s`); must be > 0 (default `60s`) |
+| `REST_WRITE_TIMEOUT` | REST server `WriteTimeout` as a Go duration; must be > 0 (default `60s`) |
+| `ENTITY_SERVICE_TIMEOUT` | Timeout of the entity-service HTTP client as a Go duration; must be > 0 (default `60s`); no ordering against `REST_WRITE_TIMEOUT` is enforced, but keeping it shorter lets the server return a clean error |
 
 ## Project Structure
 
@@ -356,7 +359,7 @@ backend-v2/
 - `POST /cases/{id}/activities/search` — search a case's activity feed (comments, attachments, field changes)
 - `POST /change-requests` — create a change request (ServiceNow data source only)
 - `POST /projects/{id}/change-requests/search` — search a project's change requests (ServiceNow data source only)
-- `GET /change-requests/{id}` — get change request by ID (ServiceNow data source only)
+- `GET /change-requests/{id}` — get change request by ID (ServiceNow data source only); carries `customerCanAnswer`, the signed-in customer's own "may I approve / reject (or confirm / fail the review of) this now" (absent, not false, when entity-service did not compute it — see CLAUDE.md) and `customerProposal`, the time a customer proposed and WSO2's answer (`pending` / `agreed` / `disagreed` / `unanswered`)
 - `PATCH /change-requests/{id}` — update a change request (restricted, customer-safe field subset — see CLAUDE.md; ServiceNow data source only)
 - `GET /change-requests/{id}/approvals` — get a change request's approval stages (ServiceNow data source only)
 - `POST /change-requests/{id}/approvals/decision` — approve/reject the caller's own pending approval (ServiceNow data source only)

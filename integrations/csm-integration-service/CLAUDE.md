@@ -93,6 +93,40 @@ specific fields instead of failing outright) — its actual behavior is
 "unconditionally ServiceNow-backed, no Postgres fallback, M2M-credential-
 dependent on that data source."**
 
+**`POST /services/search` (`SearchITServices`) uses this exact same
+M2M-fallback mechanism** — it proxies a ServiceNow-backed entity-service CMDB
+IT-service search operation, confirmed to go through the identical code path
+as `CreateIncident`/`SearchIncidents` above. It works over M2M the same way
+those two now do: a 401 is possible if the target environment's M2M
+ServiceNow credential isn't configured, but that is not unconditional. This
+endpoint backs `sre-alert-ingestion-service`'s live service-UUID resolution
+fallback (see that service's own CLAUDE.md) — a static label-to-UUID map is
+consulted first, synchronously, before an alert is ever buffered; this
+endpoint is only called, at delivery-attempt time, for a label the static map
+doesn't cover.
+
+**`PATCH /incidents/{id}` (`PatchIncident`) uses this exact same M2M-fallback
+mechanism as `CreateIncident`/`SearchIncidents`/`SearchITServices` above — but
+unlike `PATCH /cases/{id}` below, it has no Postgres-data-source path at
+all.** On `DATA_SOURCE=postgres`, entity-service's `incidentService.UpdateIncident`
+unconditionally returns a 503 (not supported on this data source yet — several
+fields have no backing Postgres column, and others would need comment-table
+side effects not implemented there); there is no field combination that
+succeeds. On `DATA_SOURCE=servicenow`, it goes through the identical
+M2M-credential-fallback code path as the other three endpoints above: a 401
+is possible if the target environment's M2M ServiceNow credential isn't
+configured, but not unconditional. **Do not describe this endpoint as "always
+401" (that's `UpdateProject`'s situation) or as a field-dependent partial
+exception like `PATCH /cases/{id}` (that endpoint's Postgres path narrows to
+specific fields instead of failing outright) — its actual behavior is
+"unconditionally ServiceNow-backed, no Postgres fallback, M2M-credential-
+dependent on that data source."** Added for `sre-alert-ingestion-service`'s
+group-attach work-note push (see that service's own CLAUDE.md): when it
+attaches a new alert to an already-existing incident instead of creating one,
+it pushes a work note summarizing the new alert via this endpoint —
+best-effort, non-blocking, matching that service's existing failure-tolerance
+conventions.
+
 The "deferred pending a captured end-user token" history below (from the owning
 team's internal issue, written by the engineer who built the ACP path) describes
 `UpdateProject`'s situation specifically — that endpoint's ServiceNow operation
@@ -169,6 +203,23 @@ endpoint one way or the other.
 ## Contacts and opportunity reads on `DATA_SOURCE=postgres`
 
 Contacts search and opportunity/invoice/link reads work over M2M only if this service's client id is in entity-service's `AUTH_INTERNAL_CLIENT_IDS`; otherwise 401/403.
+
+## Catalog searches (`/products`, `/deployments`, `/deployed-products`)
+
+`POST /products/search`, `POST /products/{id}/versions/search`,
+`POST /deployments/search` and `POST /deployed-products/search`
+(`internal/handler/catalog.go`) are plain passthroughs, like the account and
+project searches: the JSON body is capped, checked for validity, forwarded to
+entity-service as-is, and its response is returned verbatim. Filters, paging and
+ordering are entity-service's, and the request and response schemas in
+`openapi.yaml` mirror entity-service's. An empty body is forwarded as `{}`
+(entity-service rejects a body with no JSON object); the `{id}` in the versions
+path must be a UUID.
+
+An earlier revision exposed these as `GET` endpoints that reshaped entity-service
+responses into the legacy scripted-API format (name ordering, in-memory version
+sorting, `sfIds` resolution, reformatted dates). That was removed on purpose; see
+git history if the reshaping logic is needed again.
 
 ## Middleware chain
 

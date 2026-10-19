@@ -73,6 +73,11 @@ const publishCaseAcknowledgedTimeout = 5 * time.Second
 // needs.
 const publishSeverityChangedTimeout = 5 * time.Second
 
+// publishWorkaroundProvidedTimeout bounds publishWorkaroundProvidedEvent's
+// own publish call — see publishStatusChangedTimeout's doc comment for why.
+// No GetCaseByID enrichment is needed: the payload carries only the case id.
+const publishWorkaroundProvidedTimeout = 5 * time.Second
+
 // applyResponseSLATimeout bounds registerCaseSLAClocks'/
 // applyResponseSLAOnComment's own GetCaseByID/author resolution
 // (SearchCaseComments) + role lookup (SearchUsers) + SLAEngineService calls
@@ -874,6 +879,10 @@ type snCaseService struct {
 	// registerCaseSLAClocks), applyResponseSLAOnComment, and
 	// applyCaseStateSLAEffects. See internal/service/sla_engine_service.go.
 	slaEngine SLAEngineService
+	// srCatalog derives a service request's subject and description from its
+	// catalog answers when the caller sent none (fillServiceRequestText). nil
+	// unless wired via WithServiceRequestCatalog.
+	srCatalog srCatalogReader
 }
 
 // NewSNCaseService constructs a CaseService that delegates SearchCases to the
@@ -978,6 +987,10 @@ func (s *snCaseService) CreateCase(ctx context.Context, req domain.CreateCaseReq
 		DeployedProductID: uuidToSysid(req.DeployedProductID),
 	}
 
+	if req.Type == "service_request" && s.srCatalog != nil {
+		fillServiceRequestText(ctx, s.srCatalog, &req)
+	}
+
 	switch req.Type {
 	case "case":
 		payload.Title = req.Subject
@@ -991,6 +1004,8 @@ func (s *snCaseService) CreateCase(ctx context.Context, req domain.CreateCaseReq
 		if err := validateUUIDs("catalogItemId", []string{req.CatalogItemID}); err != nil {
 			return domain.CreateCaseResponse{}, err
 		}
+		payload.Title = req.Subject
+		payload.Description = req.Description
 		payload.CatalogID = uuidToSysid(req.CatalogID)
 		payload.CatalogItemID = uuidToSysid(req.CatalogItemID)
 		if len(req.Variables) > 0 {
@@ -1256,6 +1271,15 @@ func publishCaseCreatedEvent(
 		return
 	}
 
+	// A case with no project (on the Postgres data source, a service request
+	// raised from a GitHub issue) has no projectId, which every case.* payload
+	// requires -- csm-notification-service rejects the event (validate.go)
+	// and it would only be retried into the dead-letter topic.
+	if cv.ProjectDetails == nil {
+		slog.InfoContext(ctx, "create case: case.created not published, case has no project", "caseId", caseID)
+		return
+	}
+
 	if req.Type == "case" && cv.Severity == nil {
 		slog.InfoContext(ctx, "create case: case.created not published, case has no severity", "caseId", caseID)
 		return
@@ -1295,21 +1319,24 @@ func publishCaseCreatedEvent(
 	}
 	product := caseProductName(cv)
 
+	description, descriptionTruncated := stripInlineBase64Images(cv.Description)
+
 	payload, err := json.Marshal(events.CaseCreatedPayload{
-		ReporterName: reporterName,
-		ProjectName:  cv.ProjectDetails.Name,
-		ProjectID:    cv.ProjectDetails.ID,
-		CaseID:       caseID,
-		CaseNumber:   cv.Number,
-		WSO2CaseID:   cv.InternalID,
-		CaseTitle:    cv.Subject,
-		CaseType:     strings.ToUpper(req.Type),
-		Priority:     strings.ToUpper(string(derefSeverity(cv.Severity))),
-		Product:      product,
-		Team:         caseTeamName(cv),
-		CreatedAt:    cv.CreatedOn.Format(time.RFC3339),
-		Description:  cv.Description,
-		Recipients:   recipients,
+		ReporterName:         reporterName,
+		ProjectName:          cv.ProjectDetails.Name,
+		ProjectID:            cv.ProjectDetails.ID,
+		CaseID:               caseID,
+		CaseNumber:           cv.Number,
+		WSO2CaseID:           cv.InternalID,
+		CaseTitle:            cv.Subject,
+		CaseType:             strings.ToUpper(req.Type),
+		Priority:             strings.ToUpper(string(derefSeverity(cv.Severity))),
+		Product:              product,
+		Team:                 caseTeamName(cv),
+		CreatedAt:            cv.CreatedOn.Format(time.RFC3339),
+		Description:          description,
+		DescriptionTruncated: descriptionTruncated,
+		Recipients:           recipients,
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "create case: encode case.created payload failed", "caseId", caseID, "error", err)
@@ -1456,6 +1483,15 @@ func publishCommentAddedEvent(ctx context.Context, publisher EventPublisherServi
 	ctx, cancel := context.WithTimeout(ctx, publishCommentAddedTimeout)
 	defer cancel()
 
+	// A case with no project (on the Postgres data source, a service request
+	// raised from a GitHub issue) has no projectId, which every case.* payload
+	// requires -- csm-notification-service rejects the event (validate.go)
+	// and it would only be retried into the dead-letter topic.
+	if cv.ProjectDetails == nil {
+		slog.InfoContext(ctx, "create comment: case.comment_added not published, case has no project", "caseId", req.CaseID)
+		return
+	}
+
 	defaultWatchers := resolveCaseDefaultWatcherEmails(ctx, resolveAccountDefaultWatcherEmails, cv, "create comment")
 	recipients := mergeUnique(watchListUserEmails(cv.WatchList), defaultWatchers)
 	if req.Type == domain.CommentTypeWorkNote {
@@ -1481,6 +1517,8 @@ func publishCommentAddedEvent(ctx context.Context, publisher EventPublisherServi
 		}
 	}
 
+	caseComment, caseCommentTruncated := stripInlineBase64Images(req.Content)
+
 	payload, err := json.Marshal(events.CommentAddedPayload{
 		Name:                      authorName,
 		ProjectID:                 cv.ProjectDetails.ID,
@@ -1488,7 +1526,8 @@ func publishCommentAddedEvent(ctx context.Context, publisher EventPublisherServi
 		CaseNumber:                cv.Number,
 		WSO2CaseID:                cv.InternalID,
 		CaseTitle:                 cv.Subject,
-		CaseComment:               req.Content,
+		CaseComment:               caseComment,
+		CaseCommentTruncated:      caseCommentTruncated,
 		CommentID:                 commentID,
 		IsInternalNote:            req.Type == domain.CommentTypeWorkNote,
 		Recipients:                recipients,
@@ -1498,6 +1537,8 @@ func publishCommentAddedEvent(ctx context.Context, publisher EventPublisherServi
 		IsEvaluationAccount:       isEvaluationAccount,
 		ProjectOnboardingStatus:   onboardingStatus,
 		IsSupportEngineerResponse: isSupportEngineerResponse,
+		CaseType:                  strings.ToUpper(derefString(cv.Type)),
+		EngagementType:            derefString(cv.EngagementType),
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "create comment: encode case.comment_added payload failed", "caseId", req.CaseID, "error", err)
@@ -1781,6 +1822,15 @@ func publishStatusChangedEvent(ctx context.Context, publisher EventPublisherServ
 	ctx, cancel := context.WithTimeout(ctx, publishStatusChangedTimeout)
 	defer cancel()
 
+	// A case with no project (on the Postgres data source, a service request
+	// raised from a GitHub issue) has no projectId, which every case.* payload
+	// requires -- csm-notification-service rejects the event (validate.go)
+	// and it would only be retried into the dead-letter topic.
+	if before.ProjectDetails == nil {
+		slog.InfoContext(ctx, "update case: case.status_changed not published, case has no project", "caseId", caseID)
+		return
+	}
+
 	defaultWatchers := resolveCaseDefaultWatcherEmails(ctx, resolveAccountDefaultWatcherEmails, before, "update case")
 	recipients := mergeUnique(watchListUserEmails(before.WatchList), defaultWatchers)
 	if len(recipients) == 0 {
@@ -1896,6 +1946,35 @@ func publishSeverityChangedEvent(ctx context.Context, publisher EventPublisherSe
 	slog.InfoContext(ctx, "update case: case.severity_changed published", "caseId", caseID)
 }
 
+// publishWorkaroundProvidedEvent publishes case.workaround_provided — see
+// events.WorkaroundProvidedPayload's own doc comment for why this exists.
+// Factored out to a package-level function, same "follow the write, not
+// DATA_SOURCE" reasoning as publishSeverityChangedEvent's own doc comment,
+// so both caseService.updateCaseFields and snCaseService.UpdateCase can
+// call it without duplicating it. The payload carries only the case id —
+// there's no recipient audience and no display enrichment to resolve for a
+// pure tracking signal, so this needs no CaseView at all.
+func publishWorkaroundProvidedEvent(ctx context.Context, publisher EventPublisherService, caseID string) {
+	if publisher == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, publishWorkaroundProvidedTimeout)
+	defer cancel()
+
+	payload, err := json.Marshal(events.WorkaroundProvidedPayload{CaseID: caseID})
+	if err != nil {
+		slog.ErrorContext(ctx, "update case: encode case.workaround_provided payload failed", "caseId", caseID, "error", err)
+		return
+	}
+	if err := publisher.Publish(ctx, events.TypeWorkaroundProvided, caseID, payload); err != nil {
+		// Not logging err itself — see publishCaseCreatedEvent's matching
+		// log line for why.
+		slog.ErrorContext(ctx, "update case: publish case.workaround_provided failed", "caseId", caseID)
+		return
+	}
+	slog.InfoContext(ctx, "update case: case.workaround_provided published", "caseId", caseID)
+}
+
 // publishCaseAssigned best-effort publishes a case.assigned event after
 // UpdateCase changes a case's assignee. assigneeName/assigneeEmail
 // identify who the case is now assigned *to* — not who performed the
@@ -1994,6 +2073,7 @@ func (s *snCaseService) publishCaseAcknowledged(ctx context.Context, caseID, ack
 		Product:          product,
 		Team:             caseTeamName(cv),
 		AcknowledgerName: acknowledgerName,
+		CaseType:         strings.ToUpper(derefString(cv.Type)),
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "sn update case: encode case.acknowledged payload failed", "caseId", caseID, "error", err)
@@ -2052,6 +2132,23 @@ func (s *snCaseService) GetCaseEtaSharedOn(ctx context.Context, caseID string) (
 		return nil, nil
 	}
 	return s.pgFallback.GetCaseEtaSharedOn(ctx, caseID)
+}
+
+// CaseVolumeTrend implements CaseService. Unlike the pgFallback delegations
+// above, a missing day-bucketed total here has no safe "empty" fallback that
+// wouldn't mislead a dashboard chart into showing a flat zero trend -- so a
+// pure ServiceNow deployment with no Postgres pool (pgFallback nil) gets a
+// ServiceUnavailableError instead, the same posture
+// unavailableFeedbackService takes for the structurally identical
+// case-feedback trend. Day-bucketed case counts have no ServiceNow endpoint
+// to compute them from at all (see CaseRepository.CaseVolumeTrend, which
+// depends on Postgres-native date_trunc SQL), so under
+// DATA_SOURCE=postgres-servicenow-dual-write this simply delegates whole.
+func (s *snCaseService) CaseVolumeTrend(ctx context.Context, req domain.CaseVolumeTrendRequest) (domain.CaseVolumeTrendResponse, error) {
+	if s.pgFallback == nil {
+		return domain.CaseVolumeTrendResponse{}, &apierror.ServiceUnavailableError{Msg: "case volume trend is only supported for the Postgres data source"}
+	}
+	return s.pgFallback.CaseVolumeTrend(ctx, req)
 }
 
 func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.CaseView, error) {
@@ -2613,11 +2710,25 @@ func (s *snCaseService) SearchCaseComments(ctx context.Context, req domain.Searc
 		// whole comment page, so a bad timestamp leaves that entry's CreatedOn zero.
 		var inlineAttachments []domain.InlineAttachment
 		for _, ia := range c.InlineAttachments {
+			convertedID := sysidToUUID(ia.ID)
+			// ia.DownloadURL embeds the same raw sysid as ia.ID (e.g.
+			// "/attachments/<sysid>/content"), but GET /attachments/{id}/content
+			// only ever accepts the UUID form -- confirmed live via a HAR
+			// capture of 404s on the raw-sysid URL for an attachment that
+			// succeeded under its converted id. Replace the sysid substring
+			// with the already-converted UUID rather than reconstruct the
+			// URL from scratch, since this upstream shape isn't otherwise
+			// documented and a guessed rebuild could silently drop a query
+			// string or path segment ia.DownloadURL actually carries.
+			downloadURL := ia.DownloadURL
+			if ia.ID != "" {
+				downloadURL = strings.ReplaceAll(downloadURL, ia.ID, convertedID)
+			}
 			entry := domain.InlineAttachment{
-				ID:          sysidToUUID(ia.ID),
+				ID:          convertedID,
 				FileName:    ia.FileName,
 				ContentType: ia.ContentType,
-				DownloadURL: ia.DownloadURL,
+				DownloadURL: downloadURL,
 				CreatedBy:   ia.CreatedBy,
 			}
 			// Left nil for an empty or unparseable value: a zero time would render as
@@ -2701,9 +2812,8 @@ type snUpdateCasePayload struct {
 	RelatedCaseID *string `json:"relatedCaseId,omitempty"`
 	// AutocloseHoldUntil places the case on hold in ServiceNow's staged auto-closure
 	// sequence, internally setting u_autoclosure_step = ON_HOLD and
-	// u_autoclosure_state_time = this date together. A matching field on the backing
-	// service's case-update payload exists, but is not yet available in the backing
-	// service.
+	// u_autoclosure_state_time = this date together. Date only (YYYY-MM-DD): the
+	// integration service constrains it to that shape.
 	AutocloseHoldUntil *string `json:"autocloseHoldUntil,omitempty"`
 	// Title/DeploymentID/DeployedProductID as PATCH-time fields (previously the backing
 	// service's case-update payload only supported these at create time, via the
@@ -3536,6 +3646,16 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 	if s.slaEngine != nil && req.WorkaroundProvided != nil && *req.WorkaroundProvided {
 		s.slaEngine.CompleteWorkaroundClock(ctx, req.ID)
 	}
+	// Deliberately independent of s.slaEngine above and of s.publisher's
+	// usual EVENT_PUBLISHING_ENABLED gate (publishWorkaroundProvidedEvent
+	// checks s.publisher itself) -- this is the signal
+	// csm-notification-service's own Redis-based SLA engine needs to
+	// complete ITS OWN workaround clock; see
+	// events.WorkaroundProvidedPayload's own doc comment for why nothing
+	// published this before.
+	if req.WorkaroundProvided != nil && *req.WorkaroundProvided {
+		publishWorkaroundProvidedEvent(ctx, s.publisher, req.ID)
+	}
 	// Independent of the WorkaroundProvided check above, same "no Event Hub
 	// dependency" reasoning -- a caller can set workaroundProvided and
 	// addPublicComment together (CompleteWorkaroundClock would then simply
@@ -3638,7 +3758,7 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 // traffic. At most one of state/severity/workState/markFixIssued is expected
 // non-nil at a time -- this method does not enforce that itself, the caller
 // already has.
-func (s *snCaseService) patchCaseFields(ctx context.Context, caseID string, state *domain.CaseState, severity *domain.CaseSeverity, workState *domain.CaseWorkState, markFixIssued *bool, resolution *caseResolutionFields) (domain.UpdatedCase, error) {
+func (s *snCaseService) patchCaseFields(ctx context.Context, caseID string, state *domain.CaseState, severity *domain.CaseSeverity, workState *domain.CaseWorkState, markFixIssued *bool, resolution *caseResolutionFields, asSystemUser bool) (domain.UpdatedCase, error) {
 	payload := snUpdateCasePayload{}
 	if resolution != nil {
 		if resolution.Code != nil {
@@ -3692,7 +3812,19 @@ func (s *snCaseService) patchCaseFields(ctx context.Context, caseID string, stat
 		payload.MarkFixIssued = markFixIssued
 	}
 
+	// asSystemUser forwards no x-user-id-token at all, rather than this
+	// request's own, when the caller (UpdateCase) has determined ServiceNow
+	// must see this write as the integration's own M2M ServiceNow user, not
+	// as the acting caller -- see snFieldPatcher's own doc comment for why
+	// (ServiceNow has been observed to reject resolutionCode/cause/closeNotes
+	// outright when set under a customer's own identity, "cannot be
+	// provided by this user", even though the values are system-generated
+	// defaults the customer never supplied). This is the exact "no user
+	// token" shape SNGithubCases already relies on for its own M2M writes.
 	token := middleware.UserIDTokenFromContext(ctx)
+	if asSystemUser {
+		token = ""
+	}
 	raw, err := s.client.Patch(ctx, "/cases/"+uuidToSysid(caseID), token, payload)
 	if err != nil {
 		return domain.UpdatedCase{}, err
@@ -3851,8 +3983,8 @@ func (s *snCaseService) patchCaseParent(ctx context.Context, caseID, parentID st
 // patchCaseFieldsBundle performs a bare ServiceNow PATCH covering the part
 // of UpdateCase's combinable "plain field" bundle the backing service
 // actually implements today -- Subject/DeploymentID/DeployedProductID/
-// RelatedCaseID/BestCaseFixEta/MostLikelyFixEta/WorstCaseFixEta/
-// WorkaroundProvided -- with none of UpdateCase's enrichment reads, no-op
+// RelatedCaseID/AutocloseHoldUntil/BestCaseFixEta/MostLikelyFixEta/
+// WorstCaseFixEta/WorkaroundProvided -- with none of UpdateCase's enrichment reads, no-op
 // detection, or event publishing -- same reasoning as patchCaseFields's own
 // doc comment, extended to this bundle for
 // DATA_SOURCE=postgres-servicenow-dual-write's async mirror (see
@@ -3877,9 +4009,10 @@ func (s *snCaseService) patchCaseParent(ctx context.Context, caseID, parentID st
 // GlideRecordSecure, which does enforce it) -- sending it would be silently
 // dropped by that ACL, leaving ServiceNow's copy no better off than not
 // mirroring it at all. Returns nil without a PATCH call when req sets none
-// of the eight supported fields, rather than sending an empty no-op request.
+// of the nine supported fields, rather than sending an empty no-op request.
 func (s *snCaseService) patchCaseFieldsBundle(ctx context.Context, caseID string, req domain.UpdateCaseRequest) error {
 	if req.Subject == nil && req.DeploymentID == nil && req.DeployedProductID == nil && req.RelatedCaseID == nil &&
+		req.AutocloseHoldUntil == nil &&
 		req.BestCaseFixEta == nil && req.MostLikelyFixEta == nil && req.WorstCaseFixEta == nil && req.WorkaroundProvided == nil {
 		return nil
 	}
@@ -3902,6 +4035,15 @@ func (s *snCaseService) patchCaseFieldsBundle(ctx context.Context, caseID string
 	if req.RelatedCaseID != nil {
 		sysid := uuidToSysid(*req.RelatedCaseID)
 		payload.RelatedCaseID = &sysid
+	}
+	// The hold is what ServiceNow's own auto-closure flow reads (it sets
+	// u_autoclosure_step = ON_HOLD and u_autoclosure_state_time together), so
+	// unlike the display-only fields it is the one write here that decides
+	// whether the case is actually closed. Same date-only wire format as
+	// UpdateCase's own AutocloseHoldUntil handling.
+	if req.AutocloseHoldUntil != nil {
+		holdUntil := formatSNDateOnly(req.AutocloseHoldUntil)
+		payload.AutocloseHoldUntil = &holdUntil
 	}
 	_, err := s.client.Patch(ctx, "/cases/"+uuidToSysid(caseID), token, payload)
 	return err
@@ -4258,10 +4400,48 @@ func (s *snCaseService) SearchCaseActivities(ctx context.Context, req domain.Sea
 	}, nil
 }
 
+// GetCaseAttachmentContent deliberately does NOT forward the caller's own
+// x-user-id-token to the ServiceNow Integration Service (contrast every
+// other snCaseService method, which does). Evidence gathered live: a
+// sys_attachment row whose table_name is sys_journal_field (ServiceNow's own
+// auto-extraction of a base64 <img> embedded in a case comment) 404s here
+// when the forwarded identity is an external customer, but the identical
+// sys_id succeeds through apps/csm-portal/backend, whose forwarded identity
+// is an internal WSO2 staff user -- same entity-service code path, same
+// shared M2M credential for this integration, only the forwarded
+// x-user-id-token differs. ServiceNow's DownloadAttachmentByIdAPI script
+// (AttachmentDownloadUtils) does a bare GlideRecord('sys_attachment').
+// get(id) with no table_name filter at all, so the only remaining mechanism
+// is a ServiceNow ACL on sys_attachment keyed off the caller's own identity
+// -- evidently granting read access to journal/work-note-scoped attachments
+// for internal roles but not external customer roles.
+//
+// This is safe to omit here specifically because the actual authorization
+// boundary for a customer-facing caller is NOT this identity forward -- it
+// is authorizeAttachmentAccess in apps/customer-portal/backend-v2, which
+// independently verifies the caller may see the attachment's own case
+// BEFORE ever reaching this method (see this repo's own CLAUDE.md, "change
+// request attachments" row: "not reachable through the customer portal
+// (authorizeAttachmentAccess forces case / deployment)"). entity-service's
+// own HTTP handler for this route (handler.CaseHandler.GetCaseAttachmentContent)
+// performs no independent case-visibility check of its own -- it trusts the
+// calling BFF to have already done so, exactly as it does here. Omitting the
+// per-customer token therefore does not weaken that boundary; it only stops
+// ServiceNow's own ACL from additionally (and, for this one attachment
+// shape, incorrectly) vetoing a read access-control.go/backend-v2 has
+// already approved.
+//
+// Unverified assumption, flag for whoever deploys this: that the shared M2M
+// credential alone (no x-user-id-token at all) has sufficient ServiceNow
+// read access to sys_attachment regardless of table_name. Every data point
+// gathered so far paired the M2M credential with SOME x-user-id-token
+// (customer or staff) -- never with none -- so this should be verified
+// against a known sys_journal_field-scoped attachment before being trusted
+// in production. If the M2M identity itself lacks this grant, the result
+// changes (e.g. to 401/403) rather than succeeding, and the real fix
+// remains a ServiceNow-side ACL change.
 func (s *snCaseService) GetCaseAttachmentContent(ctx context.Context, attachmentID string) ([]byte, string, error) {
-	token := middleware.UserIDTokenFromContext(ctx)
-
-	resp, err := s.client.GetBinary(ctx, "/attachments/"+uuidToSysid(attachmentID)+"/content", token)
+	resp, err := s.client.GetBinary(ctx, "/attachments/"+uuidToSysid(attachmentID)+"/content", "")
 	if err != nil {
 		return nil, "", err
 	}
@@ -4309,14 +4489,23 @@ type snAttachmentDetails struct {
 	Content     string  `json:"content"`
 }
 
+// GetAttachmentByID deliberately does NOT forward the caller's own
+// x-user-id-token to the ServiceNow Integration Service -- same reasoning
+// and same ServiceNow-side ACL finding as GetCaseAttachmentContent's own doc
+// comment above, which this method gates (backend-v2's GetAttachmentContent
+// handler calls this first, purely to resolve ReferenceID for its own
+// authorizeAttachmentAccess check, before ever reaching content). Revealing
+// an attachment's bare metadata (name, size, which case it belongs to) to a
+// caller who turns out not to own that case is not itself the exposure --
+// authorizeAttachmentAccess's subsequent GetCase(ReferenceID) call, which
+// DOES still forward the caller's own identity and is not touched by this
+// change, is what actually decides whether the request may proceed.
 func (s *snCaseService) GetAttachmentByID(ctx context.Context, id string) (domain.AttachmentDetails, error) {
 	if err := validateUUIDs("id", []string{id}); err != nil {
 		return domain.AttachmentDetails{}, err
 	}
 
-	token := middleware.UserIDTokenFromContext(ctx)
-
-	raw, err := s.client.Get(ctx, "/attachments/"+uuidToSysid(id), token)
+	raw, err := s.client.Get(ctx, "/attachments/"+uuidToSysid(id), "")
 	if err != nil {
 		return domain.AttachmentDetails{}, err
 	}

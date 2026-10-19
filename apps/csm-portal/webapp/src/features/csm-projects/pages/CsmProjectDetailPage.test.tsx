@@ -50,10 +50,14 @@ vi.mock("@api/backend/client", () => ({
 vi.mock("@config/apiConfig", () => ({
   apiConfig: { backendUrl: "https://example.test" },
 }));
-// This page now reads usePortalAccess (to gate the "Create" split-button),
-// which transitively imports the real backend client/config -- mocked
-// above. Default to full write access; the gating test below overrides it.
+// This page now reads usePortalAccess (to gate the "Create" split-button and
+// the viewer-audience "Time Report" button), which transitively imports the
+// real backend client/config -- mocked above. Default to full write access,
+// no SPL audience, and the Work items staff view; the gating tests below
+// override each independently.
 let mockCanWrite = true;
+let mockIsSplAudience = false;
+let mockCanViewWorkItemsStaffView = true;
 vi.mock("@context/current-user/usePortalAccess", () => ({
   usePortalAccess: () => ({
     hasAnyRole: true,
@@ -62,6 +66,8 @@ vi.mock("@context/current-user/usePortalAccess", () => ({
     canUseOperations: true,
     canUseTimeCardsAndUpdates: true,
     canWrite: mockCanWrite,
+    isSplAudience: mockIsSplAudience,
+    canViewWorkItemsStaffView: mockCanViewWorkItemsStaffView,
   }),
 }));
 
@@ -127,6 +133,8 @@ function renderPage(initialEntry = "/customers/projects/proj-1") {
 describe("CsmProjectDetailPage — tab state", () => {
   beforeEach(() => {
     mockCanWrite = true;
+    mockIsSplAudience = false;
+    mockCanViewWorkItemsStaffView = true;
     mockUseGetProject.mockReturnValue({
       data: PROJECT,
       isLoading: false,
@@ -183,10 +191,87 @@ describe("CsmProjectDetailPage — tab state", () => {
     );
   });
 
+  it.each([
+    ["managed_cloud_subscription", true],
+    ["cloud_support", true],
+    ["subscription", false],
+    ["cloud_evaluation_support", false],
+  ] as const)(
+    "Create menu for a %s project shows 'Create service request': %s",
+    (subscriptionType, shown) => {
+      mockUseGetProject.mockReturnValue({
+        data: { ...PROJECT, subscriptionType },
+        isLoading: false,
+        isError: false,
+      });
+      renderPage();
+      fireEvent.click(screen.getByRole("button", { name: /create/i }));
+      expect(screen.getByText("Create case")).toBeInTheDocument();
+      if (shown) {
+        expect(screen.getByText("Create service request")).toBeInTheDocument();
+      } else {
+        expect(screen.queryByText("Create service request")).not.toBeInTheDocument();
+      }
+    },
+  );
+
   it("hides the Create split-button entirely for a caller without write access", () => {
     mockCanWrite = false;
     renderPage();
     expect(screen.queryByRole("button", { name: /create/i })).not.toBeInTheDocument();
+  });
+
+  // Regression: a caller without the Work items staff view (cs_engineer/
+  // admin/timecard_approver) never sees Chats inside this tab (WorkItemsTab's
+  // own canViewWorkItemsStaffView gate), so for them it's relabelled "Cases"
+  // rather than "Work items".
+  it("relabels the Work items tab as Cases for a caller without the staff view", () => {
+    mockCanViewWorkItemsStaffView = false;
+    renderPage();
+    expect(screen.queryByRole("tab", { name: "Work items" })).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Cases" })).toBeInTheDocument();
+  });
+});
+
+// Regression: the Time report button has no modern equivalent and must stay
+// limited to the viewer audience (isSplAudience), independently of canWrite
+// -- it must never appear for an ordinary cs_engineer/admin session that
+// doesn't separately hold the viewer role, and must appear for one that
+// does, even without write access.
+//
+// Temporarily disabled on the page itself (see CsmProjectDetailPage.tsx's own
+// comment) -- the button is hidden unconditionally right now, so the
+// isSplAudience-gating test below is skipped rather than deleted, to make
+// re-enabling the feature (and this assertion) a one-line change.
+describe("CsmProjectDetailPage — Time report button", () => {
+  beforeEach(() => {
+    mockCanViewWorkItemsStaffView = true;
+    mockUseGetProject.mockReturnValue({
+      data: PROJECT,
+      isLoading: false,
+      isError: false,
+    });
+  });
+
+  it("hides the Time report button for a caller without the viewer role", () => {
+    mockIsSplAudience = false;
+    renderPage();
+    expect(screen.queryByRole("link", { name: "Time Report" })).not.toBeInTheDocument();
+  });
+
+  // Rendered via component={RouterLink} (an in-app navigation, not a
+  // dialog/menu trigger), so it's an <a>, accessible role "link".
+  it.skip("shows the Time report button for a caller holding the viewer role, even without write access", () => {
+    mockIsSplAudience = true;
+    mockCanWrite = false;
+    renderPage();
+    expect(screen.getByRole("link", { name: "Time Report" })).toBeInTheDocument();
+  });
+
+  it("hides the Time report button even for a caller holding the viewer role, while temporarily disabled", () => {
+    mockIsSplAudience = true;
+    renderPage();
+    expect(screen.queryByRole("link", { name: "Time Report" })).not.toBeInTheDocument();
   });
 });
 

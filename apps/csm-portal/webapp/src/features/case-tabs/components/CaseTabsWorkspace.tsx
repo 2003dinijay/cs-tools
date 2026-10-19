@@ -16,6 +16,7 @@
 
 import { Suspense, useEffect, useRef, type JSX } from "react";
 import { useLocation } from "react-router";
+import { LayoutDashboard } from "@wso2/oxygen-ui-icons-react";
 import { pageComponentForKind } from "@features/case-tabs/tabPageRegistry";
 import RouteSuspenseFallback from "@components/route-fallback/RouteSuspenseFallback";
 import { basePathForKind, matchCaseLocation } from "@context/case-tabs/caseRoutePatterns";
@@ -24,6 +25,7 @@ import { useCaseTabsBehavior } from "@context/case-tabs/CaseTabsBehaviorContext"
 import { useNavTransition } from "@hooks/useNavTransition";
 import CaseTabIsolatedRouter from "@features/case-tabs/components/CaseTabIsolatedRouter";
 import CaseTabStrip from "@features/case-tabs/components/CaseTabStrip";
+import { useCaseTabsLiveUpdates } from "@features/case-tabs/hooks/useCaseTabsLiveUpdates";
 import { useCaseTabCloseConfirm } from "@features/case-tabs/hooks/useCaseTabCloseConfirm";
 import { useCurrentLocationTab } from "@features/case-tabs/hooks/useCurrentLocationTab";
 
@@ -76,6 +78,10 @@ export function CaseTabStripBar(): JSX.Element | null {
           label: currentLocationTab.label,
           active: currentLocationTab.active,
           onClick: () => navigate(currentLocationTab.path),
+          // A fixed "you are here" glyph, the same regardless of which page
+          // is currently pinned — not that page's own nav-section icon (see
+          // `PinnedTabProps.icon`'s own doc comment).
+          icon: <LayoutDashboard size={14} />,
         }}
         onActivate={(id) => {
           const tab = tabs.find((t) => t.id === id);
@@ -147,6 +153,11 @@ export function CaseTabsContentHost(): JSX.Element | null {
   const navigate = useNavTransition();
   const { tabs, activeTabId } = useCaseTabsController();
   const currentLocationTab = useCurrentLocationTab();
+  // The one live-update stream for every open case tab (and a flag on the
+  // ones not on screen). Mounted here because this host lives for the whole
+  // authenticated layout, not per tab: per-tab streams starved the browser's
+  // connection pool.
+  useCaseTabsLiveUpdates();
 
   const currentMatch = matchCaseLocation(location.pathname);
   // Whether a tab actually backs the CURRENT route's specific case — not

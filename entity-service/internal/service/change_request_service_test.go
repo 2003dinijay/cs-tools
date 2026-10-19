@@ -37,6 +37,7 @@ type stubChangeRequestRepo struct {
 	createChangeRequest               func(ctx context.Context, req domain.CreateChangeRequestRequest, createdBy string) (domain.CreateChangeRequestResponse, error)
 	createChangeRequestFromServiceNow func(ctx context.Context, req domain.CreateChangeRequestRequest, id, number, createdBy string) (domain.CreateChangeRequestResponse, error)
 	patchChangeRequest                func(ctx context.Context, id string, req domain.PatchChangeRequestRequest, email string) (domain.ChangeRequest, error)
+	getChangeRequestByID              func(ctx context.Context, id string) (domain.ChangeRequest, error)
 	getChangeRequestApprovals         func(ctx context.Context, id string) (domain.ChangeRequestApprovals, error)
 	decideChangeRequestApproval       func(ctx context.Context, id, approverUserID, decision, actorEmail string) (string, error)
 	validateChangeRequestLinks        func(ctx context.Context, sel domain.ChangeRequestLinkSelection) (domain.ChangeRequestLinkSet, error)
@@ -79,7 +80,10 @@ func (s *stubChangeRequestRepo) SearchChangeRequests(context.Context, domain.Sea
 func (s *stubChangeRequestRepo) AggregateChangeRequests(context.Context, domain.AggregateChangeRequestsRequest, string, int, *time.Time, *time.Time, *string) (domain.AggregateResponse, error) {
 	panic("not implemented")
 }
-func (s *stubChangeRequestRepo) GetChangeRequestByID(context.Context, string) (domain.ChangeRequest, error) {
+func (s *stubChangeRequestRepo) GetChangeRequestByID(ctx context.Context, id string) (domain.ChangeRequest, error) {
+	if s.getChangeRequestByID != nil {
+		return s.getChangeRequestByID(ctx, id)
+	}
 	panic("not implemented")
 }
 func (s *stubChangeRequestRepo) PatchChangeRequest(ctx context.Context, id string, req domain.PatchChangeRequestRequest, email string) (domain.ChangeRequest, error) {
@@ -673,7 +677,7 @@ func TestChangeRequestService_DecideChangeRequestApproval_MirrorFailureRecordsWr
 // TestChangeRequestService_DecideChangeRequestApproval_RepoNotFoundPropagates
 // covers the "no pending approval for this caller" case: the repo's
 // NotFoundError (no approval_stage_approver row matched work_item_id +
-// approver_user_id + status='requested') must propagate as-is, with no
+// approver_user_id + state='REQUESTED') must propagate as-is, with no
 // mirror dispatch attempted -- stubMirrorChangeRequestService here has no
 // decideChangeRequestApproval configured, so a dispatch attempt would
 // panic.
@@ -822,6 +826,87 @@ func TestChangeRequestService_PatchChangeRequest_CustomerGateFlagsStayOutOfTheMi
 		time.Sleep(150 * time.Millisecond) // the dispatch is asynchronous; give a wrongly-fired one time to show
 		if got := failures.count(); got != 0 {
 			t.Errorf("writeback failures = %d, want 0", got)
+		}
+	})
+}
+
+// TestChangeRequestService_CreateChangeRequest_EmergencyWithACustomerBoxIsRefusedBeforeAnyWrite:
+// an Emergency change takes no customer step, so a create that ticks either box is a 400 --
+// on the plain path before the repository is called, and on the dual-write path BEFORE
+// the previous system is called (a refusal after it accepted the create would strand a
+// record there with no PostgreSQL row). The same create with the boxes off, and a Normal
+// change with them on, go through.
+func TestChangeRequestService_CreateChangeRequest_EmergencyWithACustomerBoxIsRefusedBeforeAnyWrite(t *testing.T) {
+	yes, no := true, false
+	emergency := domain.ChangeRequestTypeEmergency
+	build := func(approval, review *bool) domain.CreateChangeRequestRequest {
+		req := validCreateChangeRequestRequest()
+		req.Type = &emergency
+		req.CustomerApprovalRequired, req.CustomerReviewRequired = approval, review
+		return req
+	}
+	ok := func() domain.CreateChangeRequestResponse {
+		resp := domain.CreateChangeRequestResponse{Message: "ok"}
+		resp.ChangeRequest.ID = testUUID
+		return resp
+	}
+	const reason = "Emergency changes proceed without customer consent, so customer approval and customer review cannot be required"
+	for name, boxes := range map[string][2]*bool{"approval": {&yes, nil}, "review": {nil, &yes}, "both": {&yes, &yes}} {
+		boxes := boxes
+		t.Run("plain/"+name, func(t *testing.T) {
+			repo := &stubChangeRequestRepo{
+				createChangeRequest: func(context.Context, domain.CreateChangeRequestRequest, string) (domain.CreateChangeRequestResponse, error) {
+					t.Fatal("the repository must not be called for an Emergency change with a customer box")
+					return domain.CreateChangeRequestResponse{}, nil
+				},
+			}
+			svc := NewChangeRequestService(repo, stubUserRepo{})
+			ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+			_, err := svc.CreateChangeRequest(ctx, build(boxes[0], boxes[1]))
+			var ve *apierror.ValidationError
+			if !asValidationError(err, &ve) || !strings.HasPrefix(ve.Msg, reason) {
+				t.Fatalf("err = %v (%T), want a ValidationError that gives the reason", err, err)
+			}
+		})
+		t.Run("previous-system-first/"+name, func(t *testing.T) {
+			mirror := &stubMirrorChangeRequestService{
+				createChangeRequest: func(context.Context, domain.CreateChangeRequestRequest) (domain.CreateChangeRequestResponse, error) {
+					t.Fatal("the previous system must never be called for an Emergency change with a customer box")
+					return domain.CreateChangeRequestResponse{}, nil
+				},
+			}
+			repo := &stubChangeRequestRepo{
+				createChangeRequestFromServiceNow: func(context.Context, domain.CreateChangeRequestRequest, string, string, string) (domain.CreateChangeRequestResponse, error) {
+					t.Fatal("the repository must not be called for an Emergency change with a customer box")
+					return domain.CreateChangeRequestResponse{}, nil
+				},
+			}
+			svc := NewChangeRequestServiceWithSNMirror(repo, stubUserRepo{}, mirror)
+			_, err := svc.CreateChangeRequest(context.Background(), build(boxes[0], boxes[1]))
+			var ve *apierror.ValidationError
+			if !asValidationError(err, &ve) || !strings.HasPrefix(ve.Msg, reason) {
+				t.Fatalf("err = %v (%T), want a ValidationError that gives the reason", err, err)
+			}
+		})
+	}
+	t.Run("an Emergency change with the boxes off, and a Normal one with them on, are created", func(t *testing.T) {
+		repo := &stubChangeRequestRepo{
+			createChangeRequest: func(context.Context, domain.CreateChangeRequestRequest, string) (domain.CreateChangeRequestResponse, error) {
+				return ok(), nil
+			},
+		}
+		svc := NewChangeRequestService(repo, stubUserRepo{})
+		ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+		if _, err := svc.CreateChangeRequest(ctx, build(&no, &no)); err != nil {
+			t.Fatalf("an Emergency change with both boxes off: %v", err)
+		}
+		if _, err := svc.CreateChangeRequest(ctx, build(nil, nil)); err != nil {
+			t.Fatalf("an Emergency change with no box: %v", err)
+		}
+		normal := validCreateChangeRequestRequest()
+		normal.CustomerApprovalRequired, normal.CustomerReviewRequired = &yes, &yes
+		if _, err := svc.CreateChangeRequest(ctx, normal); err != nil {
+			t.Fatalf("a Normal change with both boxes: %v", err)
 		}
 	})
 }
@@ -1257,5 +1342,35 @@ func TestChangeRequestService_PatchChangeRequest_RefusesRemovedFields(t *testing
 		if !asValidationError(err, &ve) || ve.Msg != tc.want {
 			t.Fatalf("%s: err = %v, want ValidationError %q", name, err, tc.want)
 		}
+	}
+}
+
+// TestChangeRequestService_GetChangeRequest_PassesTheViewerAnswerThrough: the
+// detail's customerCanAnswer is the repository's, per viewer -- the service adds,
+// drops and recomputes nothing, and keeps absent, false and true apart.
+func TestChangeRequestService_GetChangeRequest_PassesTheViewerAnswerThrough(t *testing.T) {
+	yes, no := true, false
+	for name, want := range map[string]*bool{"absent": nil, "false": &no, "true": &yes} {
+		repo := &stubChangeRequestRepo{
+			getChangeRequestByID: func(_ context.Context, id string) (domain.ChangeRequest, error) {
+				if id != testUUID {
+					t.Errorf("repo got id %q, want %q", id, testUUID)
+				}
+				return domain.ChangeRequest{CustomerCanAnswer: want}, nil
+			},
+		}
+		got, err := NewChangeRequestService(repo, stubUserRepo{}).GetChangeRequest(context.Background(), testUUID)
+		if err != nil {
+			t.Fatalf("%s: unexpected error: %v", name, err)
+		}
+		if (got.CustomerCanAnswer == nil) != (want == nil) || (want != nil && *got.CustomerCanAnswer != *want) {
+			t.Errorf("%s: customerCanAnswer = %v, want %v", name, got.CustomerCanAnswer, want)
+		}
+	}
+
+	_, err := NewChangeRequestService(&stubChangeRequestRepo{}, stubUserRepo{}).GetChangeRequest(context.Background(), "not-a-uuid")
+	var ve *apierror.ValidationError
+	if !asValidationError(err, &ve) {
+		t.Fatalf("expected *apierror.ValidationError for an invalid id, got %T: %v", err, err)
 	}
 }

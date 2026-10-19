@@ -18,6 +18,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -48,7 +49,7 @@ func TestUserService_GetMe_ResolvesCallerFromToken(t *testing.T) {
 			}, nil
 		},
 	}
-	svc := NewUserService(repo)
+	svc := NewUserService(repo, nil)
 	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
 
 	resp, err := svc.GetMe(ctx)
@@ -78,10 +79,52 @@ func TestUserService_GetMe_ResolvesCallerFromToken(t *testing.T) {
 	}
 }
 
+// TestUserService_GetMe_Phone proves the user's phone is passed through to the
+// response and serialised as "phone", and that a NULL phone is omitted.
+func TestUserService_GetMe_Phone(t *testing.T) {
+	phone := "+15555550123"
+	for _, tc := range []struct {
+		name     string
+		phone    *string
+		wantJSON bool
+	}{
+		{"with phone", &phone, true},
+		{"NULL phone", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := stubUserRepo{
+				getUserByEmail: func(_ context.Context, email string) (domain.User, error) {
+					return domain.User{ID: "11111111-1111-1111-1111-111111111111", Email: email, Phone: tc.phone}, nil
+				},
+			}
+			svc := NewUserService(repo, nil)
+			resp, err := svc.GetMe(contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com")))
+			if err != nil {
+				t.Fatalf("GetMe returned error: %v", err)
+			}
+			raw, err := json.Marshal(resp)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var m map[string]any
+			if err := json.Unmarshal(raw, &m); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			got, present := m["phone"]
+			if present != tc.wantJSON {
+				t.Fatalf("phone present = %v, want %v (body %s)", present, tc.wantJSON, raw)
+			}
+			if tc.wantJSON && got != phone {
+				t.Errorf("phone = %v, want %q", got, phone)
+			}
+		})
+	}
+}
+
 // TestUserService_GetMe_RequiresToken proves a missing x-user-id-token header
 // fails as Unauthorized rather than falling through to some other identity.
 func TestUserService_GetMe_RequiresToken(t *testing.T) {
-	svc := NewUserService(stubUserRepo{})
+	svc := NewUserService(stubUserRepo{}, nil)
 	ctx := contextWithUserIDToken("")
 
 	_, err := svc.GetMe(ctx)
@@ -93,7 +136,7 @@ func TestUserService_GetMe_RequiresToken(t *testing.T) {
 // TestUserService_GetMe_RejectsMalformedToken proves an undecodable
 // x-user-id-token surfaces as a ValidationError, not an opaque failure.
 func TestUserService_GetMe_RejectsMalformedToken(t *testing.T) {
-	svc := NewUserService(stubUserRepo{})
+	svc := NewUserService(stubUserRepo{}, nil)
 	ctx := contextWithUserIDToken("not-a-jwt")
 
 	_, err := svc.GetMe(ctx)
@@ -113,7 +156,7 @@ func TestUserService_GetMe_PropagatesRepoNotFound(t *testing.T) {
 			return domain.User{}, &apierror.NotFoundError{Msg: "no user found with that email"}
 		},
 	}
-	svc := NewUserService(repo)
+	svc := NewUserService(repo, nil)
 	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "ghost@example.com"))
 
 	_, err := svc.GetMe(ctx)
@@ -126,35 +169,52 @@ func TestUserService_GetMe_PropagatesRepoNotFound(t *testing.T) {
 	}
 }
 
-// TestUserService_PatchMe_UpdatesTimeZone proves PatchMe resolves the caller
-// from their token (same as GetMe), never a caller-supplied id, and writes
-// the new TimeZone to that user's own row.
-func TestUserService_PatchMe_UpdatesTimeZone(t *testing.T) {
-	var gotUserID, gotTimeZone string
-	repo := stubUserRepo{
+// patchCall records what PatchMe handed to UpdateUserProfile.
+type patchCall struct {
+	userID          string
+	timezone, phone *string
+	called          bool
+}
+
+func patchRepo(call *patchCall) stubUserRepo {
+	return stubUserRepo{
 		getUserByEmail: func(_ context.Context, email string) (domain.User, error) {
-			if email != "jane.doe@example.com" {
-				t.Fatalf("GetUserByEmail called with unexpected email: %q", email)
-			}
 			return domain.User{ID: "11111111-1111-1111-1111-111111111111", Email: email}, nil
 		},
-		updateUserTimeZone: func(_ context.Context, userID, timezone string) (time.Time, error) {
-			gotUserID, gotTimeZone = userID, timezone
-			return time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC), nil
+		updateUserProfile: func(_ context.Context, userID string, timezone, phone *string) (domain.UserProfileUpdate, error) {
+			*call = patchCall{userID: userID, timezone: timezone, phone: phone, called: true}
+			out := domain.UserProfileUpdate{UpdatedOn: time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)}
+			if timezone != nil {
+				out.Timezone = timezone
+			}
+			if phone != nil && *phone != "" {
+				out.Phone = phone
+			}
+			return out, nil
 		},
 	}
-	svc := NewUserService(repo)
+}
+
+// TestUserService_PatchMe_UpdatesTimeZone proves PatchMe resolves the caller
+// from their token (same as GetMe), never a caller-supplied id, and writes
+// the new TimeZone to that user's own row, leaving phone untouched.
+func TestUserService_PatchMe_UpdatesTimeZone(t *testing.T) {
+	var call patchCall
+	svc := NewUserService(patchRepo(&call), nil)
 	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
 
 	resp, err := svc.PatchMe(ctx, domain.PatchUserMeRequest{TimeZone: "Asia/Colombo"})
 	if err != nil {
 		t.Fatalf("PatchMe returned error: %v", err)
 	}
-	if gotUserID != "11111111-1111-1111-1111-111111111111" {
-		t.Errorf("UpdateUserTimeZone called with userID %q, want the caller's own id", gotUserID)
+	if call.userID != "11111111-1111-1111-1111-111111111111" {
+		t.Errorf("UpdateUserProfile called with userID %q, want the caller's own id", call.userID)
 	}
-	if gotTimeZone != "Asia/Colombo" {
-		t.Errorf("UpdateUserTimeZone called with timezone %q, want Asia/Colombo", gotTimeZone)
+	if call.timezone == nil || *call.timezone != "Asia/Colombo" {
+		t.Errorf("timezone = %v, want Asia/Colombo", call.timezone)
+	}
+	if call.phone != nil {
+		t.Errorf("phone = %q, want nil (untouched)", *call.phone)
 	}
 	if resp.User.ID != "11111111-1111-1111-1111-111111111111" {
 		t.Errorf("response User.ID = %q, want the caller's own id", resp.User.ID)
@@ -162,13 +222,85 @@ func TestUserService_PatchMe_UpdatesTimeZone(t *testing.T) {
 	if resp.User.UpdatedOn != "2026-10-03T12:00:00Z" {
 		t.Errorf("response User.UpdatedOn = %q, want 2026-10-03T12:00:00Z", resp.User.UpdatedOn)
 	}
+	if resp.User.TimeZone == nil || *resp.User.TimeZone != "Asia/Colombo" {
+		t.Errorf("response User.TimeZone = %v, want Asia/Colombo", resp.User.TimeZone)
+	}
 }
 
-// TestUserService_PatchMe_RejectsBlankTimeZone mirrors the ServiceNow-backed
-// PatchMe's own validation -- an empty TimeZone is a ValidationError before
-// the repository is ever reached.
-func TestUserService_PatchMe_RejectsBlankTimeZone(t *testing.T) {
-	svc := NewUserService(stubUserRepo{})
+// TestUserService_PatchMe_PhoneOnly proves a phone-only PATCH is accepted, the
+// value is trimmed, and timezone is left untouched.
+func TestUserService_PatchMe_PhoneOnly(t *testing.T) {
+	var call patchCall
+	svc := NewUserService(patchRepo(&call), nil)
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	resp, err := svc.PatchMe(ctx, domain.PatchUserMeRequest{Phone: strp("  +15555550123 ")})
+	if err != nil {
+		t.Fatalf("PatchMe returned error: %v", err)
+	}
+	if call.timezone != nil {
+		t.Errorf("timezone = %q, want nil (untouched)", *call.timezone)
+	}
+	if call.phone == nil || *call.phone != "+15555550123" {
+		t.Errorf("phone = %v, want trimmed +15555550123", call.phone)
+	}
+	if resp.User.Phone == nil || *resp.User.Phone != "+15555550123" {
+		t.Errorf("response User.Phone = %v, want +15555550123", resp.User.Phone)
+	}
+}
+
+// TestUserService_PatchMe_BothFields proves timeZone and phone are written together.
+func TestUserService_PatchMe_BothFields(t *testing.T) {
+	var call patchCall
+	svc := NewUserService(patchRepo(&call), nil)
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	if _, err := svc.PatchMe(ctx, domain.PatchUserMeRequest{TimeZone: "Asia/Colombo", Phone: strp("+15555550123")}); err != nil {
+		t.Fatalf("PatchMe returned error: %v", err)
+	}
+	if call.timezone == nil || *call.timezone != "Asia/Colombo" || call.phone == nil || *call.phone != "+15555550123" {
+		t.Errorf("got timezone=%v phone=%v, want both set", call.timezone, call.phone)
+	}
+}
+
+// TestUserService_PatchMe_BlankPhoneClears proves a whitespace-only phone is
+// handed to the repository as an empty string, which clears the column.
+func TestUserService_PatchMe_BlankPhoneClears(t *testing.T) {
+	var call patchCall
+	svc := NewUserService(patchRepo(&call), nil)
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	if _, err := svc.PatchMe(ctx, domain.PatchUserMeRequest{Phone: strp("   ")}); err != nil {
+		t.Fatalf("PatchMe returned error: %v", err)
+	}
+	if call.phone == nil || *call.phone != "" {
+		t.Errorf("phone = %v, want empty string (clear)", call.phone)
+	}
+}
+
+// TestUserService_PatchMe_PhoneTooLong proves 33 characters is a ValidationError
+// before the repository is reached, and 32 (after trimming) is accepted.
+func TestUserService_PatchMe_PhoneTooLong(t *testing.T) {
+	var call patchCall
+	svc := NewUserService(patchRepo(&call), nil)
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	_, err := svc.PatchMe(ctx, domain.PatchUserMeRequest{Phone: strp(strings.Repeat("1", 33))})
+	if _, ok := err.(*apierror.ValidationError); !ok {
+		t.Fatalf("PatchMe error = %v (%T), want *apierror.ValidationError", err, err)
+	}
+	if call.called {
+		t.Error("UpdateUserProfile was called for an over-long phone")
+	}
+	if _, err := svc.PatchMe(ctx, domain.PatchUserMeRequest{Phone: strp(" " + strings.Repeat("1", 32) + " ")}); err != nil {
+		t.Errorf("32 characters after trimming should be accepted, got %v", err)
+	}
+}
+
+// TestUserService_PatchMe_RejectsEmptyBody proves a PATCH with neither field is
+// a ValidationError before the repository is ever reached.
+func TestUserService_PatchMe_RejectsEmptyBody(t *testing.T) {
+	svc := NewUserService(stubUserRepo{}, nil)
 	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
 
 	_, err := svc.PatchMe(ctx, domain.PatchUserMeRequest{})
@@ -180,7 +312,7 @@ func TestUserService_PatchMe_RejectsBlankTimeZone(t *testing.T) {
 // TestUserService_PatchMe_RequiresToken mirrors GetMe's own requirement: no
 // x-user-id-token means no caller to resolve, regardless of the request body.
 func TestUserService_PatchMe_RequiresToken(t *testing.T) {
-	svc := NewUserService(stubUserRepo{})
+	svc := NewUserService(stubUserRepo{}, nil)
 	ctx := contextWithUserIDToken("")
 
 	_, err := svc.PatchMe(ctx, domain.PatchUserMeRequest{TimeZone: "Asia/Colombo"})
@@ -218,7 +350,7 @@ func TestUserService_SearchUsers_SortBy(t *testing.T) {
 					return nil, 0, nil
 				},
 			}
-			_, err := NewUserService(repo).SearchUsers(context.Background(), domain.SearchUsersRequest{SortBy: tt.sort})
+			_, err := NewUserService(repo, nil).SearchUsers(context.Background(), domain.SearchUsersRequest{SortBy: tt.sort})
 			if tt.wantErr != "" {
 				var ve *apierror.ValidationError
 				if !errors.As(err, &ve) || ve.Msg != tt.wantErr {
@@ -258,7 +390,7 @@ func TestUserService_SearchUsers_ActiveFilterReachesRepository(t *testing.T) {
 			}
 			active := active
 			req := domain.SearchUsersRequest{Filters: domain.SearchUsersFilters{Active: &active}}
-			if _, err := NewUserService(repo).SearchUsers(context.Background(), req); err != nil {
+			if _, err := NewUserService(repo, nil).SearchUsers(context.Background(), req); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			if got == nil || *got != active {
@@ -289,7 +421,7 @@ func TestUserService_SearchUsers_UserIDsGroupFiltersReachRepository(t *testing.T
 		GroupIDs:   []string{groupID},
 		GroupNames: []string{"CAB Approval"},
 	}}
-	if _, err := NewUserService(repo).SearchUsers(context.Background(), req); err != nil {
+	if _, err := NewUserService(repo, nil).SearchUsers(context.Background(), req); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(got.UserIDs) != 1 || got.UserIDs[0] != userID {
@@ -304,7 +436,7 @@ func TestUserService_SearchUsers_UserIDsGroupFiltersReachRepository(t *testing.T
 }
 
 // TestUserService_SearchUsers_UserIDsGroupFilters_RejectsMalformedUUID proves
-// userIds/groupIds still validate as UUIDs before reaching the repository --
+// userIds/groupIds/teamIds still validate as UUIDs before reaching the repository --
 // only the blanket "unsupported on Postgres" rejection was removed.
 func TestUserService_SearchUsers_UserIDsGroupFilters_RejectsMalformedUUID(t *testing.T) {
 	tests := []struct {
@@ -313,6 +445,7 @@ func TestUserService_SearchUsers_UserIDsGroupFilters_RejectsMalformedUUID(t *tes
 	}{
 		{name: "userIds", filters: domain.SearchUsersFilters{UserIDs: []string{"not-a-uuid"}}},
 		{name: "groupIds", filters: domain.SearchUsersFilters{GroupIDs: []string{"not-a-uuid"}}},
+		{name: "teamIds", filters: domain.SearchUsersFilters{TeamIDs: []string{"not-a-uuid"}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -323,7 +456,7 @@ func TestUserService_SearchUsers_UserIDsGroupFilters_RejectsMalformedUUID(t *tes
 				},
 			}
 			req := domain.SearchUsersRequest{Filters: tt.filters}
-			_, err := NewUserService(repo).SearchUsers(context.Background(), req)
+			_, err := NewUserService(repo, nil).SearchUsers(context.Background(), req)
 			var ve *apierror.ValidationError
 			if !errors.As(err, &ve) {
 				t.Fatalf("err = %v, want ValidationError", err)
@@ -348,7 +481,7 @@ func TestUserService_GetUser(t *testing.T) {
 			},
 			// getUserProjectAccess left nil: calling it panics, proving it is skipped.
 		}
-		got, err := NewUserService(repo).GetUser(context.Background(), userDetailTestID)
+		got, err := NewUserService(repo, nil).GetUser(context.Background(), userDetailTestID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -366,7 +499,7 @@ func TestUserService_GetUser(t *testing.T) {
 				return access, nil
 			},
 		}
-		got, err := NewUserService(repo).GetUser(context.Background(), userDetailTestID)
+		got, err := NewUserService(repo, nil).GetUser(context.Background(), userDetailTestID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -376,7 +509,7 @@ func TestUserService_GetUser(t *testing.T) {
 	})
 
 	t.Run("malformed id is a validation error and never reaches the repository", func(t *testing.T) {
-		_, err := NewUserService(stubUserRepo{}).GetUser(context.Background(), "not-a-uuid")
+		_, err := NewUserService(stubUserRepo{}, nil).GetUser(context.Background(), "not-a-uuid")
 		var ve *apierror.ValidationError
 		if !errors.As(err, &ve) {
 			t.Fatalf("err = %v, want ValidationError", err)
@@ -387,7 +520,7 @@ func TestUserService_GetUser(t *testing.T) {
 		repo := stubUserRepo{getUserDetail: func(context.Context, string) (domain.UserDetail, error) {
 			return domain.UserDetail{}, &apierror.NotFoundError{Msg: "no user"}
 		}}
-		_, err := NewUserService(repo).GetUser(context.Background(), userDetailTestID)
+		_, err := NewUserService(repo, nil).GetUser(context.Background(), userDetailTestID)
 		var nf *apierror.NotFoundError
 		if !errors.As(err, &nf) {
 			t.Fatalf("err = %v, want NotFoundError", err)
@@ -400,7 +533,7 @@ func TestUserService_GetUser(t *testing.T) {
 			getUserDetail: func(context.Context, string) (domain.UserDetail, error) { return staff, nil },
 			getUserRoles:  func(context.Context, string) ([]string, error) { return nil, boom },
 		}
-		if _, err := NewUserService(repo).GetUser(context.Background(), userDetailTestID); !errors.Is(err, boom) {
+		if _, err := NewUserService(repo, nil).GetUser(context.Background(), userDetailTestID); !errors.Is(err, boom) {
 			t.Fatalf("err = %v, want %v", err, boom)
 		}
 	})
@@ -419,7 +552,7 @@ func TestUserService_CreateUser(t *testing.T) {
 			},
 		}
 		ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "admin@example.com"))
-		got, err := NewUserService(repo).CreateUser(ctx, validReq)
+		got, err := NewUserService(repo, nil).CreateUser(ctx, validReq)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -435,7 +568,7 @@ func TestUserService_CreateUser(t *testing.T) {
 	})
 
 	t.Run("requires a token, same as GetMe", func(t *testing.T) {
-		_, err := NewUserService(stubUserRepo{}).CreateUser(contextWithUserIDToken(""), validReq)
+		_, err := NewUserService(stubUserRepo{}, nil).CreateUser(contextWithUserIDToken(""), validReq)
 		if _, ok := err.(*apierror.UnauthorizedError); !ok {
 			t.Fatalf("err = %v (%T), want *apierror.UnauthorizedError", err, err)
 		}
@@ -448,7 +581,7 @@ func TestUserService_CreateUser(t *testing.T) {
 			"malformed": {FirstName: "Jane", LastName: "Doe", Email: "not-an-email"},
 		} {
 			t.Run(name, func(t *testing.T) {
-				_, err := NewUserService(stubUserRepo{}).CreateUser(ctx, req)
+				_, err := NewUserService(stubUserRepo{}, nil).CreateUser(ctx, req)
 				if _, ok := err.(*apierror.ValidationError); !ok {
 					t.Fatalf("err = %v (%T), want *apierror.ValidationError", err, err)
 				}
@@ -458,7 +591,7 @@ func TestUserService_CreateUser(t *testing.T) {
 
 	t.Run("requires at least a first or last name", func(t *testing.T) {
 		ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "admin@example.com"))
-		_, err := NewUserService(stubUserRepo{}).CreateUser(ctx, domain.CreateUserRequest{Email: "jane.doe@example.com"})
+		_, err := NewUserService(stubUserRepo{}, nil).CreateUser(ctx, domain.CreateUserRequest{Email: "jane.doe@example.com"})
 		if _, ok := err.(*apierror.ValidationError); !ok {
 			t.Fatalf("err = %v (%T), want *apierror.ValidationError", err, err)
 		}
@@ -469,7 +602,7 @@ func TestUserService_CreateUser(t *testing.T) {
 		for _, role := range []domain.UserRole{"internal", "admin", "Admin"} {
 			t.Run(string(role), func(t *testing.T) {
 				req := domain.CreateUserRequest{FirstName: "Jane", LastName: "Doe", Email: "jane.doe@example.com", Roles: []domain.UserRole{role}}
-				_, err := NewUserService(stubUserRepo{}).CreateUser(ctx, req)
+				_, err := NewUserService(stubUserRepo{}, nil).CreateUser(ctx, req)
 				if _, ok := err.(*apierror.ValidationError); !ok {
 					t.Fatalf("err = %v (%T), want *apierror.ValidationError", err, err)
 				}
@@ -485,7 +618,7 @@ func TestUserService_CreateUser(t *testing.T) {
 		}
 		ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "admin@example.com"))
 		req := domain.CreateUserRequest{FirstName: "Jane", LastName: "Doe", Email: "jane.doe@wso2.com", Roles: []domain.UserRole{"internal"}}
-		if _, err := NewUserService(repo).CreateUser(ctx, req); err != nil {
+		if _, err := NewUserService(repo, nil).CreateUser(ctx, req); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
@@ -498,7 +631,7 @@ func TestUserService_CreateUser(t *testing.T) {
 		}
 		ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "admin@example.com"))
 		req := domain.CreateUserRequest{FirstName: "Jane", LastName: "Doe", Email: "jane.doe@example.com", Roles: []domain.UserRole{"agent"}}
-		if _, err := NewUserService(repo).CreateUser(ctx, req); err != nil {
+		if _, err := NewUserService(repo, nil).CreateUser(ctx, req); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
@@ -508,7 +641,7 @@ func TestUserService_CreateUser(t *testing.T) {
 		for _, role := range []domain.UserRole{"external", "partner", "customer", "partner_admin", "customer_admin", "External"} {
 			t.Run(string(role), func(t *testing.T) {
 				req := domain.CreateUserRequest{FirstName: "Jane", LastName: "Doe", Email: "jane.doe@example.com", Roles: []domain.UserRole{role}}
-				_, err := NewUserService(stubUserRepo{}).CreateUser(ctx, req)
+				_, err := NewUserService(stubUserRepo{}, nil).CreateUser(ctx, req)
 				if _, ok := err.(*apierror.ValidationError); !ok {
 					t.Fatalf("err = %v (%T), want *apierror.ValidationError", err, err)
 				}
@@ -523,7 +656,7 @@ func TestUserService_CreateUser(t *testing.T) {
 			},
 		}
 		ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "admin@example.com"))
-		_, err := NewUserService(repo).CreateUser(ctx, validReq)
+		_, err := NewUserService(repo, nil).CreateUser(ctx, validReq)
 		ce, ok := err.(*apierror.ConflictError)
 		if !ok {
 			t.Fatalf("err = %v (%T), want *apierror.ConflictError", err, err)
@@ -532,4 +665,130 @@ func TestUserService_CreateUser(t *testing.T) {
 			t.Errorf("ConflictError.Msg = %q, must never contain the submitted email address", ce.Msg)
 		}
 	})
+}
+
+const testUpdatePhoneUserID = "22222222-2222-2222-2222-222222222222"
+
+func phoneReq(phone string) domain.UpdateUserRequest {
+	return domain.UpdateUserRequest{Phone: &phone}
+}
+
+func TestUserService_UpdateUser_RequiresInternalCaller(t *testing.T) {
+	svc := NewUserService(stubUserRepo{}, restrictedAccess{})
+
+	_, err := svc.UpdateUser(context.Background(), testUpdatePhoneUserID, phoneReq("+15555550123"))
+
+	var fe *apierror.ForbiddenError
+	if !errors.As(err, &fe) {
+		t.Fatalf("expected ForbiddenError for a non-internal caller, got %v", err)
+	}
+}
+
+func TestUserService_UpdateUser_RejectsMalformedUserID(t *testing.T) {
+	svc := NewUserService(stubUserRepo{}, alwaysUnrestrictedAccess{})
+
+	_, err := svc.UpdateUser(context.Background(), "not-a-uuid", phoneReq("+15555550123"))
+
+	var ve *apierror.ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected ValidationError for a malformed id, got %v", err)
+	}
+}
+
+func TestUserService_UpdateUser_RejectsWhenNeitherFieldGiven(t *testing.T) {
+	svc := NewUserService(stubUserRepo{}, alwaysUnrestrictedAccess{})
+
+	_, err := svc.UpdateUser(context.Background(), testUpdatePhoneUserID, domain.UpdateUserRequest{})
+
+	var ve *apierror.ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected ValidationError when neither timeZone nor phone is given, got %v", err)
+	}
+}
+
+func TestUserService_UpdateUser_ClearsPhoneOnBlank(t *testing.T) {
+	var call patchCall
+	svc := NewUserService(patchRepo(&call), alwaysUnrestrictedAccess{})
+
+	_, err := svc.UpdateUser(context.Background(), testUpdatePhoneUserID, phoneReq("   "))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if call.phone == nil || *call.phone != "" {
+		t.Errorf("phone = %v, want a pointer to an empty string (clears it)", call.phone)
+	}
+}
+
+func TestUserService_UpdateUser_RejectsOverLongPhone(t *testing.T) {
+	svc := NewUserService(stubUserRepo{}, alwaysUnrestrictedAccess{})
+
+	_, err := svc.UpdateUser(context.Background(), testUpdatePhoneUserID, phoneReq(strings.Repeat("1", maxPhoneLen+1)))
+
+	var ve *apierror.ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected ValidationError for an over-long phone, got %v", err)
+	}
+}
+
+func TestUserService_UpdateUser_StoresTrimmedPhoneForGivenUser(t *testing.T) {
+	var call patchCall
+	svc := NewUserService(patchRepo(&call), alwaysUnrestrictedAccess{})
+
+	resp, err := svc.UpdateUser(context.Background(), testUpdatePhoneUserID, phoneReq("  +15555550123  "))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !call.called {
+		t.Fatal("expected UpdateUserProfile to be called")
+	}
+	if call.userID != testUpdatePhoneUserID {
+		t.Errorf("UpdateUserProfile called with userID %q, want %q", call.userID, testUpdatePhoneUserID)
+	}
+	if call.timezone != nil {
+		t.Errorf("timezone = %v, want nil (untouched)", call.timezone)
+	}
+	if call.phone == nil || *call.phone != "+15555550123" {
+		t.Errorf("phone = %v, want +15555550123", call.phone)
+	}
+	if resp.User.ID != testUpdatePhoneUserID {
+		t.Errorf("response User.ID = %q, want %q", resp.User.ID, testUpdatePhoneUserID)
+	}
+	if resp.User.Phone == nil || *resp.User.Phone != "+15555550123" {
+		t.Errorf("response User.Phone = %v, want +15555550123", resp.User.Phone)
+	}
+	if resp.User.UpdatedBy != "internal" {
+		t.Errorf("response User.UpdatedBy = %q, want internal (no caller token)", resp.User.UpdatedBy)
+	}
+}
+
+func TestUserService_UpdateUser_SetsTimeZone(t *testing.T) {
+	var call patchCall
+	svc := NewUserService(patchRepo(&call), alwaysUnrestrictedAccess{})
+
+	tz := "Asia/Colombo"
+	_, err := svc.UpdateUser(context.Background(), testUpdatePhoneUserID, domain.UpdateUserRequest{TimeZone: &tz})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if call.timezone == nil || *call.timezone != tz {
+		t.Errorf("timezone = %v, want %q", call.timezone, tz)
+	}
+	if call.phone != nil {
+		t.Errorf("phone = %v, want nil (untouched)", call.phone)
+	}
+}
+
+func TestUserService_UpdateUser_RepoError(t *testing.T) {
+	boom := errors.New("boom")
+	repo := stubUserRepo{
+		updateUserProfile: func(context.Context, string, *string, *string) (domain.UserProfileUpdate, error) {
+			return domain.UserProfileUpdate{}, boom
+		},
+	}
+	svc := NewUserService(repo, alwaysUnrestrictedAccess{})
+
+	_, err := svc.UpdateUser(context.Background(), testUpdatePhoneUserID, phoneReq("+15555550123"))
+	if !errors.Is(err, boom) {
+		t.Fatalf("expected repo error, got %v", err)
+	}
 }

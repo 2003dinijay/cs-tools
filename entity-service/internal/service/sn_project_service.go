@@ -135,13 +135,39 @@ const snCreatedOnLayout = "2006-01-02 15:04:05"
 // parseSNDateTime, the Go-side tolerant parser that works around it.
 const snAltCreatedOnLayout = "01-02-2006 15:04:05"
 
+// snSlashCreatedOnLayout is a third datetime format ServiceNow has started
+// sending for these same fields: slash-separated, day-first (DD/MM/YYYY),
+// e.g. "15/10/2026 13:48:20" — observed repeatedly in sn_writeback_failures
+// under entity_type=case_comment, operation=create. Same root cause as
+// snAltCreatedOnLayout (GlideRecord.getDisplayValue() rendering per session
+// locale instead of the canonical getValue()), just a different locale's
+// date ordering/separator.
+const snSlashCreatedOnLayout = "02/01/2006 15:04:05"
+
 // snDateLayout is the date-only format used by the Choreo API for start/end dates.
 const snDateLayout = "2006-01-02"
 
-// parseSNDateTime parses a ServiceNow datetime string, tolerating both formats
-// observed in production. It tries snCreatedOnLayout first — the overwhelmingly
-// common case, and the fast path — and only on failure falls back to
-// snAltCreatedOnLayout.
+// snDateTimeLayout names one of the layouts parseSNDateTime tries, paired
+// with the description logged when it's the one that ends up matching.
+type snDateTimeLayout struct {
+	layout string
+	desc   string
+}
+
+// snDateTimeLayouts is the ordered, tolerant fallback chain parseSNDateTime
+// tries: snCreatedOnLayout first (the overwhelmingly common case, and the
+// fast path), then each known locale variant in the order they were
+// discovered in production. Add a newly observed locale variant here rather
+// than another sequential if/else branch.
+var snDateTimeLayouts = []snDateTimeLayout{
+	{snCreatedOnLayout, "canonical"},
+	{snAltCreatedOnLayout, "alternate MM-DD-YYYY"},
+	{snSlashCreatedOnLayout, "alternate DD/MM/YYYY"},
+}
+
+// parseSNDateTime parses a ServiceNow datetime string, tolerating every
+// format observed in production (snDateTimeLayouts). It tries each layout in
+// order and returns on the first one that matches.
 //
 // Before this helper existed, a bare time.Parse(snCreatedOnLayout, ...) on one
 // of these fields would return an error, and callers turned that into a 500 —
@@ -150,21 +176,27 @@ const snDateLayout = "2006-01-02"
 // and sn_comment_service.go.
 //
 // callSite and field identify where the value came from, for the WARN logged
-// when the fallback format is the one that actually matched: this keeps the
-// upstream format drift visible/monitorable instead of silently masked. If
-// neither format parses, the original snCreatedOnLayout error is returned
-// unchanged — a genuinely malformed value still fails the request.
+// when a fallback format (anything past the first) is the one that actually
+// matched: this keeps upstream format drift visible/monitorable instead of
+// silently masked. If no layout matches, the original snCreatedOnLayout error
+// is returned unchanged — a genuinely malformed value still fails the request.
 func parseSNDateTime(ctx context.Context, callSite, field, value string) (time.Time, error) {
-	t, err := time.Parse(snCreatedOnLayout, value)
-	if err == nil {
+	var firstErr error
+	for i, l := range snDateTimeLayouts {
+		t, err := time.Parse(l.layout, value)
+		if err != nil {
+			if i == 0 {
+				firstErr = err
+			}
+			continue
+		}
+		if i > 0 {
+			slog.WarnContext(ctx, fmt.Sprintf("sn date field in %s format, applied fallback parse", l.desc),
+				"callSite", callSite, "field", field)
+		}
 		return t, nil
 	}
-	if alt, altErr := time.Parse(snAltCreatedOnLayout, value); altErr == nil {
-		slog.WarnContext(ctx, "sn date field in alternate MM-DD-YYYY format, applied fallback parse",
-			"callSite", callSite, "field", field)
-		return alt, nil
-	}
-	return time.Time{}, err
+	return time.Time{}, firstErr
 }
 
 // isProjectContractEnded reports whether endDate's day has fully elapsed as
@@ -216,7 +248,7 @@ func (s *snProjectService) SearchProjects(ctx context.Context, req domain.Search
 
 	token := middleware.UserIDTokenFromContext(ctx)
 
-	if len(req.ExcludeClosureStates) == 0 && len(req.ExcludeSubscriptionTypes) == 0 && len(req.ExcludeProjectKeys) == 0 {
+	if len(req.ExcludeClosureStates) == 0 && len(req.ExcludeSubscriptionTypes) == 0 && len(req.ExcludeProjectKeys) == 0 && len(req.SfIDs) == 0 {
 		views, total, err := s.fetchProjectsPage(ctx, req, accountSysid, token, req.Pagination.Limit, req.Pagination.Offset)
 		if err != nil {
 			return domain.SearchProjectsResponse{}, err
@@ -275,7 +307,8 @@ const snExcludeFilterPageSize = maxLimit
 // fetchAllProjectsFiltered pages through every ServiceNow match for req
 // (ignoring req.Pagination — the caller applies that to the returned slice)
 // and returns the subset that matches none of ExcludeClosureStates,
-// ExcludeSubscriptionTypes, or ExcludeProjectKeys.
+// ExcludeSubscriptionTypes, or ExcludeProjectKeys, and, when req.SfIDs is set,
+// keeps only projects whose Salesforce id is one of them.
 func (s *snProjectService) fetchAllProjectsFiltered(ctx context.Context, req domain.SearchProjectsRequest, accountSysid, token string) ([]domain.ProjectView, error) {
 	excludeClosure := make(map[string]struct{}, len(req.ExcludeClosureStates))
 	for _, v := range req.ExcludeClosureStates {
@@ -288,6 +321,11 @@ func (s *snProjectService) fetchAllProjectsFiltered(ctx context.Context, req dom
 	excludeKey := make(map[string]struct{}, len(req.ExcludeProjectKeys))
 	for _, v := range req.ExcludeProjectKeys {
 		excludeKey[v] = struct{}{}
+	}
+
+	includeSfID := make(map[string]struct{}, len(req.SfIDs))
+	for _, v := range req.SfIDs {
+		includeSfID[v] = struct{}{}
 	}
 
 	var filtered []domain.ProjectView
@@ -309,6 +347,14 @@ func (s *snProjectService) fetchAllProjectsFiltered(ctx context.Context, req dom
 			if _, excluded := excludeKey[v.Key]; excluded {
 				continue
 			}
+			if len(includeSfID) > 0 {
+				if v.SfID == nil {
+					continue
+				}
+				if _, ok := includeSfID[*v.SfID]; !ok {
+					continue
+				}
+			}
 			filtered = append(filtered, v)
 		}
 		offset += len(views)
@@ -323,7 +369,7 @@ func (s *snProjectService) fetchAllProjectsFiltered(ctx context.Context, req dom
 	// resolving an announcement audience could under-count real recipients
 	// and never know. Fail loudly instead of guessing.
 	return nil, &apierror.ServiceUnavailableError{Msg: fmt.Sprintf(
-		"too many matching projects to apply excludeClosureStates/excludeSubscriptionTypes/excludeProjectKeys safely (exceeded %d upstream pages of %d) — narrow the search with an additional filter",
+		"too many matching projects to apply excludeClosureStates/excludeSubscriptionTypes/excludeProjectKeys/sfIds safely (exceeded %d upstream pages of %d) — narrow the search with an additional filter",
 		maxExcludeFilterPages, snExcludeFilterPageSize,
 	)}
 }
@@ -802,6 +848,17 @@ func validateProjectSearchFilters(req domain.SearchProjectsRequest) error {
 		}
 		if k != strings.TrimSpace(k) {
 			return &apierror.ValidationError{Msg: "excludeProjectKeys must not contain leading or trailing whitespace: " + strconv.Quote(k)}
+		}
+	}
+	// Same shapes rejected as ExcludeProjectKeys, for the same reason: an
+	// empty or padded id could never equal a real Salesforce id, so it would
+	// silently match nothing instead of failing loudly.
+	for _, id := range req.SfIDs {
+		if strings.TrimSpace(id) == "" {
+			return &apierror.ValidationError{Msg: "sfIds must not contain empty values"}
+		}
+		if id != strings.TrimSpace(id) {
+			return &apierror.ValidationError{Msg: "sfIds must not contain leading or trailing whitespace: " + strconv.Quote(id)}
 		}
 	}
 	return nil

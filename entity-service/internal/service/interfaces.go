@@ -63,6 +63,16 @@ type UserService interface {
 	// ServiceUnavailableError naming any requested role not seeded in the role
 	// table.
 	CreateUser(ctx context.Context, req domain.CreateUserRequest) (domain.User, error)
+	// UpdateUser sets the given user's timezone and/or "user".phone (the
+	// number the incident call-escalation ladder dials) by id, not by
+	// resolving the caller from their own token the way PatchMe does -- an
+	// internal caller (RequireInternalCaller) acting on someone else's
+	// profile, e.g. a portal admin recording a newly-assigned team lead's
+	// paging number. Both fields are optional but at least one must be
+	// present. A ValidationError is returned for a malformed id, neither
+	// field present, or an over-long phone; a NotFoundError when no user has
+	// that id.
+	UpdateUser(ctx context.Context, userID string, req domain.UpdateUserRequest) (domain.PatchUserMeResponse, error)
 }
 
 // UserCacheInvalidator clears a user's cached GET /users/{id} and
@@ -83,6 +93,30 @@ type UserCache interface {
 	SetUserDetail(ctx context.Context, d domain.UserDetail)
 	GetMe(ctx context.Context, email string) (domain.GetUserMeResponse, bool)
 	SetMe(ctx context.Context, email string, me domain.GetUserMeResponse)
+}
+
+// CaseVolumeTrendCache is the read-through, per-day store behind caseService's
+// CaseVolumeTrend caching -- internal/cache.InMemoryCaseVolumeTrendCache, a
+// plain per-pod map, deliberately not Redis-backed (see routes.go's own wiring
+// comment: this endpoint's own cache entry is cheap enough to recompute, and
+// read-only/identical for every caller, that a shared store buys nothing worth
+// its own complexity here). routes.go always wires one, so this is never nil.
+// Deliberately NOT scoped by caller identity: this endpoint only ever reports
+// a portal-wide count (every real caller of it resolves to the same,
+// Unrestricted visibility -- it is reached solely through the CSM portal's
+// internal-staff dashboard), so the same count is correct for every caller and
+// a day's entry is shared globally, keyed only by filtersKey (which
+// request-level filters, if any, produced it) and the day itself. With
+// several pods each running their own copy, each pod simply computes and
+// caches independently -- harmless for this read-only data. A miss just
+// means the day is computed fresh from Postgres; nothing here is a
+// correctness boundary, only a cost-saving one.
+type CaseVolumeTrendCache interface {
+	GetMany(ctx context.Context, filtersKey string, days []string) map[string]domain.CaseVolumeDayCount
+	// Set caches dc for day under filtersKey, for ttl -- see case_service.go's
+	// own CaseVolumeTrend doc comment for why "today"'s own ttl is time left
+	// until UTC midnight, not a flat duration.
+	Set(ctx context.Context, filtersKey, day string, dc domain.CaseVolumeDayCount, ttl time.Duration)
 }
 
 // SavedFilterViewService is the caller's own named list-filter bookmarks
@@ -121,6 +155,10 @@ type AccountService interface {
 	// GetAccountByID returns the account with the given UUID. A ValidationError is
 	// returned for a malformed UUID; a NotFoundError if no account matches.
 	GetAccountByID(ctx context.Context, id string) (domain.AccountDetail, error)
+	// GetAccountHealthDetail returns the per-project customer-health breakdown of
+	// the account with the given UUID. A ValidationError is returned for a
+	// malformed UUID; a NotFoundError if no account matches.
+	GetAccountHealthDetail(ctx context.Context, id string) (domain.AccountHealthDetail, error)
 	// UpdateAccountTeams sets the account's CRE and/or SRE team (Postgres data
 	// source only). A ValidationError is returned for a malformed UUID, if
 	// neither field is provided, or if a provided team ID does not reference
@@ -208,8 +246,24 @@ type EventPublisherService interface {
 type SLAStatusService interface {
 	// SearchActiveSLAStatuses returns every currently-active SLA clock across
 	// every case-like work item, paginated. A ValidationError is returned for
-	// an invalid pagination limit.
-	SearchActiveSLAStatuses(ctx context.Context, req domain.Pagination) (domain.SearchSLAStatusResponse, error)
+	// an invalid pagination limit or an unrecognized sourceFilter.
+	// sourceFilter, case-insensitive, accepts "" (no filter), "csm" or
+	// "servicenow" -- "csm" is what csm-notification-service's own
+	// Redis-recovery reconciliation pass sends, so it only ever scans this
+	// engine's own (much smaller) row set rather than the full
+	// ServiceNow-synced table.
+	SearchActiveSLAStatuses(ctx context.Context, req domain.Pagination, sourceFilter string) (domain.SearchSLAStatusResponse, error)
+
+	// GetClockState returns the full, current state of one (work item,
+	// clock target) "sla" row, regardless of whether it's currently
+	// "active" -- unlike SearchActiveSLAStatuses, which only ever lists
+	// active rows. See domain.SLAClockState's own doc comment for why this
+	// distinction exists and who needs it. A ValidationError is returned
+	// for a malformed workItemId, an unrecognized target (must be
+	// "response"/"workaround"/"resolution", case-insensitive), or an
+	// unrecognized sourceFilter (same accepted values as
+	// SearchActiveSLAStatuses's own).
+	GetClockState(ctx context.Context, workItemID, target, sourceFilter string) (domain.SLAClockState, error)
 }
 
 // SLADurationPolicyService backs GET /sla-duration-policy — see
@@ -415,6 +469,9 @@ type SNAccountService interface {
 	SearchAccounts(ctx context.Context, req domain.SearchAccountsRequest) (domain.SearchAccountsResponse, error)
 	// GetAccountByID returns the full account detail for the given UUID.
 	GetAccountByID(ctx context.Context, id string) (domain.AccountDetail, error)
+	// GetAccountHealthDetail always fails with a ValidationError: the customer-health
+	// detail is computed from Postgres tables only.
+	GetAccountHealthDetail(ctx context.Context, id string) (domain.AccountHealthDetail, error)
 }
 
 // ProjectService defines the operations available on the project entity.
@@ -703,6 +760,13 @@ type CaseService interface {
 	// the remainder folded into AggregateResponse.OthersCount. A ValidationError
 	// is returned for invalid input.
 	AggregateCases(ctx context.Context, req domain.AggregateCasesRequest) (domain.AggregateResponse, error)
+	// CaseVolumeTrend returns the daily opened/closed case counts for a
+	// trailing window (req.Days, default 30), for a dashboard trend chart.
+	// Unlike AggregateCases' open-ended groupBy, this always returns exactly
+	// two fixed series ("Opened", "Closed") -- see
+	// domain.CaseVolumeTrendResponse's own doc comment. A ValidationError is
+	// returned for invalid input.
+	CaseVolumeTrend(ctx context.Context, req domain.CaseVolumeTrendRequest) (domain.CaseVolumeTrendResponse, error)
 	// CreateCaseComment creates a new comment on the case identified by req.CaseID.
 	// A ValidationError is returned for invalid input or constraint violations.
 	CreateCaseComment(ctx context.Context, req domain.CreateCaseCommentRequest) (domain.CreateCaseCommentResponse, error)
@@ -830,8 +894,8 @@ type CaseGithubIssueService interface {
 type CaseEscalationService interface {
 	// SearchCaseEscalations returns the full escalation history for the given
 	// case, newest first, plus CurrentNotifiedUsers (the most recent record's
-	// notified-users list — who is authorized to de-escalate the case's
-	// current level). A ValidationError is returned for a malformed case UUID.
+	// notified-users list) and TeamLeads (the case's ABT team leads, who may
+	// de-escalate it). A ValidationError is returned for a malformed case UUID.
 	SearchCaseEscalations(ctx context.Context, caseID string) (domain.CaseEscalationHistory, error)
 	// CreateCaseEscalation escalates or de-escalates the given case, then
 	// records a work note on the case (verified live against SN dev data that
@@ -887,7 +951,10 @@ type CallRequestService interface {
 	SearchAllCallRequests(ctx context.Context, req domain.SearchAllCallRequestsRequest) (domain.SearchCallRequestsResponse, error)
 	// UpdateCallRequest updates the state or other fields of a call request.
 	// The target state selects the behaviour (customer/agent transitions, scheduling,
-	// rejection, conclusion with notes). A ValidationError is returned for invalid
+	// rejection, conclusion). Notes are optional when concluding: on the Postgres
+	// data source a conclude without them ("Mark as completed") is staff-only (a
+	// ForbiddenError otherwise) and only applies to a scheduled or notes-pending
+	// call (a ConflictError otherwise). A ValidationError is returned for invalid
 	// input; a NotFoundError if no call request matches.
 	UpdateCallRequest(ctx context.Context, req domain.UpdateCallRequestRequest) (domain.UpdateCallRequestResponse, error)
 }
@@ -1020,17 +1087,21 @@ type CommentService interface {
 	SearchComments(ctx context.Context, req domain.SearchCommentsRequest) (domain.SearchCommentsResponse, error)
 	// CreateComment creates a new comment on the given reference entity.
 	CreateComment(ctx context.Context, req domain.CreateCommentRequest) (domain.CreateCommentResponse, error)
-	// UpdateComment edits an existing comment's content. Only the comment's
-	// original author or a caller holding the "admin" role may call this; see
-	// commentService.UpdateComment's own doc comment for the authorization
-	// rule. Returns a ForbiddenError if the caller may not edit this comment,
-	// a NotFoundError if it doesn't exist, and a ValidationError if it is
-	// already soft-deleted.
+	// GetComment returns a single comment by id, with no author/role check of
+	// its own -- see commentService.GetComment's own doc comment for why.
+	// csm-portal-backend calls this to learn a comment's author before
+	// deciding whether to allow an edit/delete. Returns a NotFoundError if it
+	// doesn't exist.
+	GetComment(ctx context.Context, id string) (domain.Comment, error)
+	// UpdateComment edits an existing comment's content. Performs no
+	// author/role check of its own -- see commentService.UpdateComment's own
+	// doc comment for why. Returns a NotFoundError if it doesn't exist, and a
+	// ValidationError if it is already soft-deleted.
 	UpdateComment(ctx context.Context, req domain.UpdateCommentRequest) (domain.UpdateCommentResponse, error)
 	// DeleteComment soft-deletes a comment (content is retained but no longer
 	// generally visible -- see commentService's own visibility rule doc
-	// comment). Same author-or-admin authorization rule as UpdateComment.
-	// Returns a ConflictError if the comment is already deleted.
+	// comment). Performs no author/role check of its own, same as
+	// UpdateComment. Returns a ConflictError if the comment is already deleted.
 	DeleteComment(ctx context.Context, id string) error
 	// GetCommentEditHistory returns a comment's prior versions, newest first.
 	GetCommentEditHistory(ctx context.Context, id string) (domain.GetCommentEditHistoryResponse, error)
@@ -1176,6 +1247,16 @@ type IncidentService interface {
 	// ConflictError if the incident is not eligible (wrong business service, not in
 	// progress, or already with the specialist group for this service).
 	HandOffIncidentToSpecialist(ctx context.Context, req domain.HandOffIncidentToSpecialistRequest) (domain.HandOffIncidentToSpecialistResponse, error)
+	// ListSpecialistHandoffTeams returns the sub-teams a handoff of an
+	// incident on serviceID can name, for the handoff dialog's team select:
+	// empty when the service has only one specialist team, so the dialog
+	// offers no choice. An empty serviceID lists every sub-team.
+	ListSpecialistHandoffTeams(ctx context.Context, serviceID string) (domain.SpecialistHandoffTeamsResponse, error)
+	// GetIncidentCreateDefaults returns the default service
+	// (INCIDENT_DEFAULT_SERVICE_ID) and its support group: the group
+	// CreateIncident assigns when the incident's own service has none. Read
+	// only; the group is null when the default is unset, missing or groupless.
+	GetIncidentCreateDefaults(ctx context.Context) (domain.IncidentCreateDefaults, error)
 }
 
 // ProblemService defines the operations available on the problems entity.
@@ -1440,8 +1521,13 @@ type CloudStatusService interface {
 	PendingWebhooks(ctx context.Context) (domain.PendingCloudStatusWebhooksResponse, error)
 
 	// RecordDelivery stamps the outcome of one attempt. A ValidationError is
-	// returned when a failure is reported without an error message.
+	// returned when a failure is reported without an error message, a
+	// ConflictError when there is no open attempt to record it against.
 	RecordDelivery(ctx context.Context, req domain.RecordCloudStatusDeliveryRequest) error
+
+	// ClaimWebhook starts the attempt to post one webhook under the claim
+	// token outage.status_page_due carried. A ConflictError means do not post.
+	ClaimWebhook(ctx context.Context, req domain.ClaimCloudStatusWebhookRequest) error
 
 	// HandleOutages re-derives the current transition for the named outages.
 	// The record-triggered counterpart to Sweep, reaching the same conclusions

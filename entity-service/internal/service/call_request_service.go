@@ -231,13 +231,11 @@ func (s *callRequestService) SearchAllCallRequests(ctx context.Context, req doma
 	if err := validateUUIDs("filters.assignedUserIds", req.Filters.AssignedUserIDs); err != nil {
 		return domain.SearchCallRequestsResponse{}, err
 	}
-	// The parent case's assignment team has no column on this data source
-	// (work_item carries only assigned_to_id, and customer_call's own
-	// assignment_group was deliberately skipped in migration 0073), so this
-	// filter cannot be honored. Reject it rather than silently ignore it: an
-	// ignored filter would widen the result set.
-	if len(req.Filters.AssignmentTeamIDs) > 0 {
-		return domain.SearchCallRequestsResponse{}, &apierror.ValidationError{Msg: "filters.assignmentTeamIds is only supported for the ServiceNow data source"}
+	// The parent case's team is its account's CRE team on this data source; the
+	// repository binds these as uuid[], so a malformed id is rejected here
+	// (a 400 naming the field) rather than surfacing as a database cast error.
+	if err := validateUUIDs("filters.assignmentTeamIds", req.Filters.AssignmentTeamIDs); err != nil {
+		return domain.SearchCallRequestsResponse{}, err
 	}
 	for _, st := range req.Filters.States {
 		if _, ok := validCallRequestStates[st]; !ok {
@@ -279,14 +277,14 @@ func (s *callRequestService) SearchAllCallRequests(ctx context.Context, req doma
 }
 
 // UpdateCallRequest implements CallRequestService. The input rules mirror the
-// ServiceNow implementation's (per-state required fields); req.Assignee is
-// interpreted as the assignee's email, resolved to a user id. CancellationReason
-// is rejected: customer_call has no column to store it, and accepting it would
-// report success while silently discarding what the caller sent.
+// ServiceNow implementation's (per-state required fields, except that a conclude
+// needs no notes -- see below); req.Assignee is
+// interpreted as the assignee's email, resolved to a user id.
+// CancellationReason is stored in customer_call.reject_reason -- a distinct
+// column from the request's own "reason" (migration 0073, set once at
+// creation): this one is captured later, whenever a call is rejected or
+// canceled, and must not overwrite that original value.
 func (s *callRequestService) UpdateCallRequest(ctx context.Context, req domain.UpdateCallRequestRequest) (domain.UpdateCallRequestResponse, error) {
-	if req.CancellationReason != nil {
-		return domain.UpdateCallRequestResponse{}, &apierror.ValidationError{Msg: "cancellationReason is not supported for the Postgres data source"}
-	}
 	if err := validateUUIDs("id", []string{req.ID}); err != nil {
 		return domain.UpdateCallRequestResponse{}, err
 	}
@@ -315,11 +313,17 @@ func (s *callRequestService) UpdateCallRequest(ctx context.Context, req domain.U
 		if req.DurationMinutes == nil {
 			return domain.UpdateCallRequestResponse{}, &apierror.ValidationError{Msg: "durationInMinutes is required when state is scheduled"}
 		}
-	case domain.CallRequestStateConcluded:
-		if req.Notes == nil || strings.TrimSpace(*req.Notes) == "" {
-			return domain.UpdateCallRequestResponse{}, &apierror.ValidationError{Msg: "notes is required when state is concluded"}
-		}
 	}
+	// A conclude with blank notes is a conclude with none: dropping them here (rather
+	// than storing "   ") keeps "Mark as completed" from overwriting the call's real
+	// notes, in Postgres and in the mirror, which both see this req.
+	if req.State == domain.CallRequestStateConcluded && req.Notes != nil && strings.TrimSpace(*req.Notes) == "" {
+		req.Notes = nil
+	}
+	// concluded needs no notes here: "Mark as completed" is a one-click action that
+	// concludes a call without writing any (digiops-cs#3350), and "Send call notes"
+	// still collects them in the UI. What keeps a notes-less conclude safe is the
+	// repository, which only applies it to a call that is scheduled or notes pending.
 	if req.CaseID != "" {
 		if err := validateUUIDs("caseId", []string{req.CaseID}); err != nil {
 			return domain.UpdateCallRequestResponse{}, err

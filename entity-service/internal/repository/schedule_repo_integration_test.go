@@ -40,10 +40,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
@@ -76,6 +78,8 @@ const (
 	schedTeamKey       = "schedfixture"
 	schedOtherTeam     = "schedother"
 	schedSreTeamKey    = "schedsrefixture"
+	schedLeadershipKey = "schedleadership"
+	schedBoardKey      = "schedboard"
 
 	// A Monday, so the weekday/weekend arithmetic below reads plainly.
 	schedMonday = "2026-09-21"
@@ -186,7 +190,33 @@ func newScheduleIntegrationRepo(t *testing.T) (ScheduleRepository, *pgxpool.Pool
 		SELECT gen_random_uuid(), NOW(), NOW(), 'fixture', 'fixture', $1, r.id
 		  FROM role r WHERE r.name = 'cre_rota_admin'`, schedOutsiderID)
 
+	// And torn down after, too: these tests run against a developer's local
+	// database, where a fixture team left behind turns up on the real rota
+	// page -- its lead heading a team called "schedfixture".
+	t.Cleanup(func() { removeScheduleFixtures(t, pool) })
+
 	return NewScheduleRepository(pool), pool
+}
+
+// removeScheduleFixtures deletes every row the fixtures above create: their
+// rota history, assignments and absences, memberships, role grants, users and
+// teams, children first.
+func removeScheduleFixtures(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	teams := []string{schedTeamKey, schedOtherTeam, schedSreTeamKey, schedLeadershipKey, schedBoardKey}
+	users := []string{schedLeadID, schedMemberID, schedOtherID, schedAdminID, schedOutsiderID}
+	for _, stmt := range []string{
+		`DELETE FROM team_schedule_assignment_activity WHERE team_key = ANY($1) OR user_id = ANY($2::uuid[])`,
+		`DELETE FROM team_schedule_absence_activity WHERE team_key = ANY($1) OR user_id = ANY($2::uuid[])`,
+		`DELETE FROM team_schedule_assignment WHERE team_key = ANY($1) OR user_id = ANY($2::uuid[])`,
+		`DELETE FROM team_schedule_absence WHERE team_key = ANY($1) OR user_id = ANY($2::uuid[])`,
+		`DELETE FROM team_member WHERE user_id = ANY($2::uuid[]) OR team_id IN (SELECT id FROM team WHERE key = ANY($1))`,
+		`DELETE FROM user_role WHERE user_id = ANY($2::uuid[]) AND cardinality($1::text[]) >= 0`,
+		`DELETE FROM "user" WHERE id = ANY($2::uuid[]) AND cardinality($1::text[]) >= 0`,
+		`DELETE FROM team WHERE key = ANY($1) AND cardinality($2::uuid[]) >= 0`,
+	} {
+		mustExec(t, pool, stmt, teams, users)
+	}
 }
 
 // ordinaryMemberRole returns a team_member.role this database will accept for
@@ -286,6 +316,94 @@ func TestScheduleIntegration_CatalogueServesAllThreeParts(t *testing.T) {
 			t.Fatalf("teams %s and %s share sortOrder %d", other, tm.Key, tm.SortOrder)
 		}
 		seen[tm.SortOrder] = tm.Key
+	}
+}
+
+// Rotas (migrations 0199-0200): the catalogue names SRE's SaaS and IaaS and
+// the SME product rotations, ties each zone to its rota, and reads a team's
+// rota -- and the SME family -- from its type, the way family has always been
+// read. SaaS SRE's own zones and teams must come out on the SaaS rota, so the
+// rota a live team is on is exactly the one it was on before.
+func TestScheduleIntegration_CatalogueServesRotas(t *testing.T) {
+	repo, pool := newScheduleIntegrationRepo(t)
+	ctx := context.Background()
+
+	const smeTeamID, smeTeamKey = "8c1f6d3e-5b7a-4e2c-9a0d-3f4e5d6c7b8a", "fixture-sme-moesif"
+	mustExec(t, pool, `DELETE FROM team WHERE id = $1`, smeTeamID)
+	mustExec(t, pool, `
+		INSERT INTO team (id, created_on, updated_on, created_by, updated_by, name, key, type)
+		VALUES ($1, NOW(), NOW(), 'fixture', 'fixture', $2, $2, 'SME-Moesif')`, smeTeamID, smeTeamKey)
+	t.Cleanup(func() { mustExec(t, pool, `DELETE FROM team WHERE id = $1`, smeTeamID) })
+
+	cat, err := repo.Catalogue(ctx)
+	if err != nil {
+		t.Fatalf("Catalogue: %v", err)
+	}
+
+	rotas := map[string]domain.ScheduleRota{}
+	for _, ro := range cat.Rotas {
+		rotas[ro.Code] = ro
+	}
+	for code, family := range map[string]string{"SRE_SAAS": "SRE", "SRE_IAAS": "SRE", "SME_ASGARDEO": "SME", "SME_MOESIF": "SME"} {
+		if rotas[code].Family != family {
+			t.Fatalf("rota %s: family %q, want %q (served rotas: %v)", code, rotas[code].Family, family, cat.Rotas)
+		}
+	}
+	if m := rotas["SME_MOESIF"].EscalationMinutes; m == nil || *m != 30 {
+		t.Fatalf("Moesif escalates after %v minutes, want 30", m)
+	}
+	if rotas["SME_ASGARDEO"].Rotates != "DAILY" || rotas["SME_MOESIF"].Rotates != "WEEKLY" {
+		t.Fatalf("rotation frequency: Asgardeo %q, Moesif %q", rotas["SME_ASGARDEO"].Rotates, rotas["SME_MOESIF"].Rotates)
+	}
+
+	zoneRota := map[string]string{}
+	for _, z := range cat.Zones {
+		if z.RotaCode != nil {
+			zoneRota[z.Code] = *z.RotaCode
+		}
+	}
+	for zone, rota := range map[string]string{"TZ1": "SRE_SAAS", "TZ3": "SRE_SAAS", "IAAS_D": "SRE_IAAS", "MOE_N": "SME_MOESIF"} {
+		if zoneRota[zone] != rota {
+			t.Fatalf("zone %s is on rota %q, want %q", zone, zoneRota[zone], rota)
+		}
+	}
+
+	var night *domain.ScheduleShift
+	for i := range cat.Shifts {
+		if cat.Shifts[i].Code == "SME_MOE_NIGHT" {
+			night = &cat.Shifts[i]
+		}
+	}
+	if night == nil || night.Family != "SME" || night.ZoneCode == nil || *night.ZoneCode != "MOE_N" ||
+		night.StartMinute != 1320 || night.EndMinute != 2040 || !night.IsEscalation || night.DayScope != "ANY" {
+		t.Fatalf("Moesif night window = %+v, want SME, zone MOE_N, 22:00-10:00 every day, escalation", night)
+	}
+
+	// IaaS's Day and Night are served (migration 0231). Seeded inactive by
+	// 0200 and never switched on, they left an IaaS lead's roster cell with
+	// leave and nothing to roster; the catalogue serves active windows only.
+	iaas := map[string]string{}
+	for _, s := range cat.Shifts {
+		if s.ZoneCode != nil && (s.Code == "SRE_IAAS_DAY" || s.Code == "SRE_IAAS_NIGHT") && s.IsEscalation && s.Tier == nil {
+			iaas[s.Code] = *s.ZoneCode
+		}
+	}
+	if iaas["SRE_IAAS_DAY"] != "IAAS_D" || iaas["SRE_IAAS_NIGHT"] != "IAAS_N" {
+		t.Fatalf("IaaS windows served = %v, want SRE_IAAS_DAY on IAAS_D and SRE_IAAS_NIGHT on IAAS_N, tier left to the turn", iaas)
+	}
+
+	teams := map[string]domain.ScheduleTeam{}
+	for _, tm := range cat.Teams {
+		teams[tm.Key] = tm
+	}
+	if tm := teams[smeTeamKey]; tm.Family != "SME" || tm.RotaCode == nil || *tm.RotaCode != "SME_MOESIF" {
+		t.Fatalf("an SME-Moesif team reads as family %q, rota %v; want SME on SME_MOESIF", tm.Family, tm.RotaCode)
+	}
+	if tm := teams[schedSreTeamKey]; tm.Family != "SRE" || tm.RotaCode == nil || *tm.RotaCode != "SRE_SAAS" {
+		t.Fatalf("an sre-abt team reads as family %q, rota %v; want SRE on SRE_SAAS", tm.Family, tm.RotaCode)
+	}
+	if tm := teams[schedTeamKey]; tm.Family != "CRE" || tm.RotaCode != nil {
+		t.Fatalf("a cre-abt team reads as family %q, rota %v; want CRE on no named rota", tm.Family, tm.RotaCode)
 	}
 }
 
@@ -395,6 +513,63 @@ func TestScheduleIntegration_RotaAdminReachesOneFamilyOnly(t *testing.T) {
 }
 
 // A rota admin is not a lead. LeadsTeam answers about team_member alone, and
+// The CRE head and the CS head run CRE's rota from above the teams: holding
+// the position, on any team, reaches every CRE team the way the CRE rota admin
+// role does -- and no SRE team. Like the role, it counts only for internal
+// staff, and it does not make them a lead of anything.
+func TestScheduleIntegration_CREAndCSHeadsReachEveryCRETeam(t *testing.T) {
+	repo, pool := newScheduleIntegrationRepo(t)
+	ctx := context.Background()
+	mustExec(t, pool, `
+		INSERT INTO team (id, created_on, updated_on, created_by, updated_by, name, key, type)
+		VALUES (gen_random_uuid(), NOW(), NOW(), 'fixture', 'fixture', 'Sched Leadership', $1, 'cre-leadership')
+		ON CONFLICT DO NOTHING`, schedLeadershipKey)
+	t.Cleanup(func() {
+		mustExec(t, pool, `DELETE FROM user_role WHERE user_id = $1`, schedOtherID)
+		mustExec(t, pool, `DELETE FROM team_member WHERE user_id = $1`, schedOtherID)
+	})
+
+	for _, position := range []string{"cre_head", "cs_head"} {
+		t.Run(position, func(t *testing.T) {
+			mustExec(t, pool, `DELETE FROM user_role WHERE user_id = $1`, schedOtherID)
+			mustExec(t, pool, `DELETE FROM team_member WHERE user_id = $1`, schedOtherID)
+			mustExec(t, pool, `
+				INSERT INTO team_member (id, created_on, updated_on, created_by, updated_by, team_id, user_id, role)
+				SELECT gen_random_uuid(), NOW(), NOW(), 'fixture', 'fixture', t.id, $2, $3
+				  FROM team t WHERE t.key = $1`, schedLeadershipKey, schedOtherID, position)
+
+			// Not internal staff yet: the position alone grants nothing.
+			if teams, err := repo.RotaAdminTeamsFor(ctx, schedOtherEmail); err != nil || len(teams) != 0 {
+				t.Fatalf("a %s who is not internal reached %v (err %v)", position, teams, err)
+			}
+
+			mustExec(t, pool, `
+				INSERT INTO user_role (id, created_on, updated_on, created_by, updated_by, user_id, role_id)
+				SELECT gen_random_uuid(), NOW(), NOW(), 'fixture', 'fixture', $1, r.id
+				  FROM role r WHERE r.name = 'internal'`, schedOtherID)
+
+			teams, err := repo.RotaAdminTeamsFor(ctx, schedOtherEmail)
+			if err != nil {
+				t.Fatalf("RotaAdminTeamsFor: %v", err)
+			}
+			if !slices.Contains(teams, schedTeamKey) || slices.Contains(teams, schedSreTeamKey) {
+				t.Fatalf("a %s reached %v; want the CRE fixture team and no SRE team", position, teams)
+			}
+			families, err := repo.RotaAdminFamilies(ctx, schedOtherEmail)
+			if err != nil {
+				t.Fatalf("RotaAdminFamilies: %v", err)
+			}
+			if !slices.Equal(families, []string{"CRE"}) {
+				t.Fatalf("a %s administers %v, want [CRE]", position, families)
+			}
+			if lead, err := repo.LeadsTeam(ctx, schedOtherEmail, schedTeamKey); err != nil || lead {
+				t.Fatalf("a %s was reported as the team's lead (%v, err %v)", position, lead, err)
+			}
+		})
+	}
+}
+
+// A rota admin is not a lead. LeadsTeam answers about team_member alone, and
 // folding the role into it would have made the two indistinguishable -- which
 // is exactly what the service needs to keep apart to report a refusal
 // accurately.
@@ -415,6 +590,139 @@ func TestScheduleIntegration_RotaAdminIsNotReportedAsALead(t *testing.T) {
 	}
 	if len(teams) != 0 {
 		t.Fatalf("a rota admin was listed as leading %v", teams)
+	}
+}
+
+// The catalogue lists each team's members with their role, so the roster can
+// show every one of them on a month they hold no window -- the lead heading
+// the team, the engineer whose only entry was cleared still there to mark.
+func TestScheduleIntegration_CatalogueListsEachTeamsMembers(t *testing.T) {
+	repo, _ := newScheduleIntegrationRepo(t)
+	cat, err := repo.Catalogue(context.Background())
+	if err != nil {
+		t.Fatalf("Catalogue: %v", err)
+	}
+	for _, team := range cat.Teams {
+		if team.Key != schedTeamKey {
+			continue
+		}
+		roles := map[string]string{}
+		for _, m := range team.Members {
+			roles[m.UserID] = m.Role
+			if m.IsLead != (m.Role == "lead") {
+				t.Errorf("member %s: role %q but isLead %v", m.UserID, m.Role, m.IsLead)
+			}
+		}
+		if roles[schedLeadID] != "lead" {
+			t.Errorf("the fixture lead is listed as %q, want lead", roles[schedLeadID])
+		}
+		if _, ok := roles[schedMemberID]; !ok {
+			t.Error("the fixture member is not listed")
+		}
+		if _, ok := roles[schedOtherID]; ok {
+			t.Error("a member of another team is listed")
+		}
+		return
+	}
+	t.Fatalf("catalogue has no team %s", schedTeamKey)
+}
+
+// Management is above the rota: a leadership team is no team of the
+// schedule's, and somebody holding a management role is left out of a team's
+// view of its rota -- but still sees their own, read by id.
+func TestScheduleIntegration_ManagementIsNotOnTheRota(t *testing.T) {
+	repo, pool := newScheduleIntegrationRepo(t)
+	ctx := context.Background()
+	mustExec(t, pool, `
+		INSERT INTO team (id, created_on, updated_on, created_by, updated_by, name, key, type)
+		VALUES (gen_random_uuid(), NOW(), NOW(), 'fixture', 'fixture', 'Sched Leadership', $1, 'cre-leadership')
+		ON CONFLICT DO NOTHING`, schedLeadershipKey)
+
+	code := shiftWithScope(t, pool, "CRE", "WEEKDAY")
+	if _, err := repo.ApplyRange(ctx, domain.ApplyScheduleRangeRequest{
+		UserID: schedMemberID, TeamKey: schedTeamKey, ShiftCode: code, From: schedMonday, To: schedMonday,
+	}, schedLeadEmail); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// The member also leads the Americas team as a whole.
+	mustExec(t, pool, `
+		INSERT INTO team_member (id, created_on, updated_on, created_by, updated_by, team_id, user_id, role)
+		VALUES (gen_random_uuid(), NOW(), NOW(), 'fixture', 'fixture', $1, $2, 'americas_team_lead')`,
+		schedOtherTeamID, schedMemberID)
+
+	cat, err := repo.Catalogue(ctx)
+	if err != nil {
+		t.Fatalf("Catalogue: %v", err)
+	}
+	for _, team := range cat.Teams {
+		if team.Key == schedLeadershipKey {
+			t.Error("a leadership team is served as a rota team")
+		}
+		for _, m := range team.Members {
+			if m.UserID == schedMemberID && m.Role == "americas_team_lead" {
+				t.Error("a management role is served as a team member")
+			}
+		}
+	}
+
+	byTeam, err := repo.SearchAssignments(ctx, domain.SearchScheduleAssignmentsRequest{
+		From: schedMonday, To: schedMonday, TeamKeys: []string{schedTeamKey},
+	})
+	if err != nil {
+		t.Fatalf("SearchAssignments(team): %v", err)
+	}
+	for _, a := range byTeam {
+		if a.Engineer.UserID == schedMemberID {
+			t.Error("the team's rota lists somebody holding a management role")
+		}
+	}
+	own, err := repo.SearchAssignments(ctx, domain.SearchScheduleAssignmentsRequest{
+		From: schedMonday, To: schedMonday, UserID: schedMemberID,
+	})
+	if err != nil {
+		t.Fatalf("SearchAssignments(own): %v", err)
+	}
+	if len(own) != 1 {
+		t.Errorf("their own rota read = %d rows, want 1", len(own))
+	}
+}
+
+// A CRE-typed team that works no rota -- a change-request approval board the
+// directory sync brought in as a team -- is no team of the schedule's, so its
+// members are not listed on the roster under it. Given an ordinary-weekday
+// window it is one, which is how a new team is put on the rota.
+func TestScheduleIntegration_OnlyTeamsThatWorkARotaAreInTheCatalogue(t *testing.T) {
+	repo, pool := newScheduleIntegrationRepo(t)
+	ctx := context.Background()
+	mustExec(t, pool, `
+		INSERT INTO team (id, created_on, updated_on, created_by, updated_by, name, key, type)
+		VALUES (gen_random_uuid(), NOW(), NOW(), 'fixture', 'fixture', 'Sched Approval Board', $1, 'cre')
+		ON CONFLICT DO NOTHING`, schedBoardKey)
+	mustExec(t, pool, `
+		INSERT INTO team_member (id, created_on, updated_on, created_by, updated_by, team_id, user_id, role)
+		SELECT gen_random_uuid(), NOW(), NOW(), 'fixture', 'fixture', t.id, $2, 'engineer' FROM team t WHERE t.key = $1`,
+		schedBoardKey, schedOtherID)
+
+	listed := func() (board, abt bool) {
+		t.Helper()
+		cat, err := repo.Catalogue(ctx)
+		if err != nil {
+			t.Fatalf("Catalogue: %v", err)
+		}
+		for _, team := range cat.Teams {
+			board = board || team.Key == schedBoardKey
+			abt = abt || team.Key == schedTeamKey
+		}
+		return board, abt
+	}
+	if board, abt := listed(); board || !abt {
+		t.Fatalf("board listed=%v (want false), ABT listed=%v (want true)", board, abt)
+	}
+
+	mustExec(t, pool, `INSERT INTO team_schedule_team_default_shift (team_key, shift_code, created_by)
+		VALUES ($1, $2, 'fixture')`, schedBoardKey, shiftWithScope(t, pool, "CRE", "WEEKDAY"))
+	if board, _ := listed(); !board {
+		t.Fatal("a team given an ordinary-weekday window is still not listed")
 	}
 }
 
@@ -490,6 +798,40 @@ func TestScheduleIntegration_ApplyRangeReplacesAndRecordsWhatItDisplaced(t *test
 		`SELECT count(*) FROM team_schedule_assignment_activity WHERE user_id = $1::uuid AND action = 'CREATED'`,
 		schedMemberID); n != 2 {
 		t.Fatalf("%d CREATED activity rows, want 2", n)
+	}
+}
+
+// A person already on a window for another team cannot be put on an
+// overlapping one: the day's replace clears only the lead's own team's rows.
+// The database refuses the second window, and that has to come back as a
+// conflict the picker can show, not as a 500 that says only "not saved".
+func TestScheduleIntegration_ApplyRangeOverAnotherTeamsWindowIsAConflict(t *testing.T) {
+	repo, pool := newScheduleIntegrationRepo(t)
+	ctx := context.Background()
+	shift := shiftWithScope(t, pool, "CRE", "WEEKDAY")
+
+	other := domain.ApplyScheduleRangeRequest{
+		UserID: schedMemberID, TeamKey: schedOtherTeam, ShiftCode: shift,
+		From: schedMonday, To: schedMonday,
+	}
+	if _, err := repo.ApplyRange(ctx, other, schedLeadEmail); err != nil {
+		t.Fatalf("ApplyRange on the other team: %v", err)
+	}
+
+	mine := other
+	mine.TeamKey = schedTeamKey
+	_, err := repo.ApplyRange(ctx, mine, schedLeadEmail)
+	var conflict *apierror.ConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("ApplyRange over another team's window: got %v, want a ConflictError", err)
+	}
+	if !strings.Contains(conflict.Msg, schedMonday) {
+		t.Errorf("conflict message %q does not name the day", conflict.Msg)
+	}
+	if n := countRows(t, pool,
+		`SELECT count(*) FROM team_schedule_assignment WHERE user_id = $1::uuid AND rota_date = $2::date`,
+		schedMemberID, schedMonday); n != 1 {
+		t.Fatalf("%d rows on the day, want the other team's 1 left alone", n)
 	}
 }
 
@@ -844,7 +1186,7 @@ func TestScheduleIntegration_CreateAbsenceKindJoinsTheEndOfItsBucket(t *testing.
 	}
 
 	req := domain.CreateScheduleAbsenceKindRequest{ShortCode: "ITT", Label: "Integration test tag", Bucket: "ALLOCATION", ColourToken: "INT"}
-	k, err := repo.CreateAbsenceKind(ctx, "INTEGRATION_TEST_TAG", req, schedLeadEmail)
+	k, err := repo.CreateAbsenceKind(ctx, "INTEGRATION_TEST_TAG", req, nil, schedLeadEmail)
 	if err != nil {
 		t.Fatalf("CreateAbsenceKind: %v", err)
 	}
@@ -861,12 +1203,12 @@ func TestScheduleIntegration_CreateAbsenceKindJoinsTheEndOfItsBucket(t *testing.
 	var conflict *apierror.ConflictError
 	if _, err := repo.CreateAbsenceKind(ctx, "INTEGRATION_TEST_TAG", domain.CreateScheduleAbsenceKindRequest{
 		ShortCode: "IT2", Label: "Integration test tag", Bucket: "ALLOCATION", ColourToken: "INT",
-	}, schedLeadEmail); !errors.As(err, &conflict) {
+	}, nil, schedLeadEmail); !errors.As(err, &conflict) {
 		t.Fatalf("the same label again: want ConflictError, got %v", err)
 	}
 	if _, err := repo.CreateAbsenceKind(ctx, "SOMETHING_ELSE", domain.CreateScheduleAbsenceKindRequest{
 		ShortCode: "al", Label: "Something else", Bucket: "LEAVE", ColourToken: "AL",
-	}, schedLeadEmail); !errors.As(err, &conflict) {
+	}, nil, schedLeadEmail); !errors.As(err, &conflict) {
 		t.Fatalf("annual leave's short code: want ConflictError, got %v", err)
 	}
 }
@@ -928,13 +1270,13 @@ func TestScheduleIntegration_DeleteAbsenceKindOnlyRemovesAnUnusedCustomTag(t *te
 	})
 
 	var forbidden *apierror.ForbiddenError
-	if err := repo.DeleteAbsenceKind(ctx, "ANNUAL_LEAVE", schedLeadEmail); !errors.As(err, &forbidden) {
+	if err := repo.DeleteAbsenceKind(ctx, "ANNUAL_LEAVE", schedLeadEmail, nil); !errors.As(err, &forbidden) {
 		t.Fatalf("deleting annual leave: want ForbiddenError, got %v", err)
 	}
 
 	k, err := repo.CreateAbsenceKind(ctx, "INTEGRATION_DELETE_TAG", domain.CreateScheduleAbsenceKindRequest{
 		ShortCode: "IDT", Label: "Integration delete tag", Bucket: "ALLOCATION", ColourToken: "INT",
-	}, schedLeadEmail)
+	}, nil, schedLeadEmail)
 	if err != nil {
 		t.Fatalf("CreateAbsenceKind: %v", err)
 	}
@@ -947,7 +1289,7 @@ func TestScheduleIntegration_DeleteAbsenceKindOnlyRemovesAnUnusedCustomTag(t *te
 		t.Fatalf("marking the tag: %v", err)
 	}
 	var conflict *apierror.ConflictError
-	if err := repo.DeleteAbsenceKind(ctx, k.Code, schedLeadEmail); !errors.As(err, &conflict) {
+	if err := repo.DeleteAbsenceKind(ctx, k.Code, schedLeadEmail, nil); !errors.As(err, &conflict) {
 		t.Fatalf("deleting a tag in use: want ConflictError, got %v", err)
 	}
 
@@ -956,7 +1298,7 @@ func TestScheduleIntegration_DeleteAbsenceKindOnlyRemovesAnUnusedCustomTag(t *te
 	}, schedLeadEmail); err != nil {
 		t.Fatalf("clearing the day: %v", err)
 	}
-	if err := repo.DeleteAbsenceKind(ctx, k.Code, schedLeadEmail); err != nil {
+	if err := repo.DeleteAbsenceKind(ctx, k.Code, schedLeadEmail, nil); err != nil {
 		t.Fatalf("deleting the unused tag: %v", err)
 	}
 	cat, err := repo.Catalogue(ctx)
@@ -1096,6 +1438,296 @@ func TestScheduleIntegration_SearchAssignmentsFiltersByTeamAndWindow(t *testing.
 	}
 }
 
+// ── a span that moves somebody to another team ─────────────────────────────
+
+// moveKind is a fixture tag that moves people to the fixture's other team, the
+// way the Brazil rotation moves them to the Americas team.
+func moveKind(t *testing.T, pool *pgxpool.Pool) string {
+	t.Helper()
+	const code = "FIXTURE_MOVE"
+	cleanup := func() {
+		mustExec(t, pool, `DELETE FROM team_schedule_absence_activity WHERE kind_code = $1`, code)
+		mustExec(t, pool, `DELETE FROM team_schedule_absence WHERE kind_id IN (SELECT id FROM team_schedule_absence_kind WHERE code = $1)`, code)
+		mustExec(t, pool, `DELETE FROM team_schedule_absence_kind WHERE code = $1`, code)
+	}
+	cleanup()
+	t.Cleanup(cleanup)
+	mustExec(t, pool, `
+		INSERT INTO team_schedule_absence_kind
+		  (code, short_code, label, bucket, colour_token, sort_order, is_active,
+		   created_by, updated_by, moves_to_team_key, works_rota_there)
+		VALUES ($1, 'FXM', 'Fixture move', 'ALLOCATION', 'BR', 999, TRUE,
+		        'fixture', 'fixture', $2, TRUE)`, code, schedOtherTeam)
+	return code
+}
+
+// The span is filed under the team it moves the person to, with their own
+// team beside it; the move covers exactly its dates; and the ladder pages
+// them for that team's shifts while still treating them as away from their own.
+func TestScheduleIntegration_AMovingSpanIsFiledUnderItsTeamAndPagedThere(t *testing.T) {
+	repo, pool := newScheduleIntegrationRepo(t)
+	ctx := context.Background()
+	kind := moveKind(t, pool)
+	friday := "2026-09-25"
+
+	if _, err := repo.ApplyAbsence(ctx, domain.ApplyScheduleAbsenceRequest{
+		UserID: schedMemberID, TeamKey: schedTeamKey, HomeTeamKey: schedTeamKey,
+		KindCode: kind, From: schedMonday, To: friday,
+	}, schedLeadEmail); err != nil {
+		t.Fatalf("ApplyAbsence: %v", err)
+	}
+
+	var teamKey, home string
+	if err := pool.QueryRow(ctx,
+		`SELECT team_key, COALESCE(home_team_key, '') FROM team_schedule_absence WHERE user_id = $1::uuid`,
+		schedMemberID).Scan(&teamKey, &home); err != nil {
+		t.Fatalf("read the span back: %v", err)
+	}
+	if teamKey != schedOtherTeam || home != schedTeamKey {
+		t.Fatalf("span filed under %q with home %q, want %q with home %q", teamKey, home, schedOtherTeam, schedTeamKey)
+	}
+
+	got, err := repo.SearchAbsences(ctx, domain.SearchScheduleAbsencesRequest{
+		From: schedMonday, To: friday, TeamKeys: []string{schedOtherTeam},
+	})
+	if err != nil {
+		t.Fatalf("SearchAbsences: %v", err)
+	}
+	if len(got) != 1 || got[0].HomeTeamKey == nil || *got[0].HomeTeamKey != schedTeamKey {
+		t.Fatalf("the other team's read = %+v, want the span with its home team", got)
+	}
+	// And their own team's read still finds it, under the team they went to.
+	fromHome, err := repo.SearchAbsences(ctx, domain.SearchScheduleAbsencesRequest{
+		From: schedMonday, To: friday, TeamKeys: []string{schedTeamKey},
+	})
+	if err != nil {
+		t.Fatalf("SearchAbsences(home): %v", err)
+	}
+	if len(fromHome) != 1 || fromHome[0].TeamKey != schedOtherTeam {
+		t.Fatalf("the home team's read = %+v, want the moved span", fromHome)
+	}
+
+	for _, c := range []struct {
+		team, from, to string
+		want           bool
+	}{
+		{schedOtherTeam, "2026-09-22", "2026-09-23", true},
+		{schedOtherTeam, schedMonday, "2026-09-28", false}, // runs past the span
+		{schedTeamKey, "2026-09-22", "2026-09-23", false},  // not the team it moved them to
+	} {
+		gotHome, ok, err := repo.MovedToTeamOver(ctx, schedMemberID, c.team, c.from, c.to)
+		if err != nil {
+			t.Fatalf("MovedToTeamOver: %v", err)
+		}
+		if ok != c.want || (ok && gotHome != schedTeamKey) {
+			t.Errorf("MovedToTeamOver(%s, %s..%s) = %q, %v; want %v", c.team, c.from, c.to, gotHome, ok, c.want)
+		}
+	}
+
+	// A shift for each team: Monday for the team the span moved them to,
+	// Tuesday for their own.
+	code := shiftWithScope(t, pool, "CRE", "WEEKDAY")
+	for _, a := range []struct{ team, day string }{{schedOtherTeam, schedMonday}, {schedTeamKey, "2026-09-22"}} {
+		if _, err := repo.ApplyRange(ctx, domain.ApplyScheduleRangeRequest{
+			UserID: schedMemberID, TeamKey: a.team, ShiftCode: code, From: a.day, To: a.day,
+		}, schedLeadEmail); err != nil {
+			t.Fatalf("seed %s shift: %v", a.team, err)
+		}
+	}
+	onDutyFor := func(team string) bool {
+		var startsAt, endsAt time.Time
+		if err := pool.QueryRow(ctx,
+			`SELECT starts_at, ends_at FROM team_schedule_assignment WHERE user_id = $1::uuid AND team_key = $2`,
+			schedMemberID, team).Scan(&startsAt, &endsAt); err != nil {
+			t.Fatalf("read the %s window back: %v", team, err)
+		}
+		rows, err := repo.OnDutyAt(ctx, startsAt.Add(endsAt.Sub(startsAt)/2), false)
+		if err != nil {
+			t.Fatalf("OnDutyAt: %v", err)
+		}
+		for _, a := range rows {
+			if a.Engineer.UserID == schedMemberID {
+				return true
+			}
+		}
+		return false
+	}
+	if !onDutyFor(schedOtherTeam) {
+		t.Error("not paged for a shift on the team the span moved them to")
+	}
+	if onDutyFor(schedTeamKey) {
+		t.Error("paged for their own team's shift while the span has them working elsewhere")
+	}
+}
+
+// A span of a tag worked as another team's normal hours writes those hours as
+// real shifts on that team, and keeps them in step with the span: cut short,
+// overlaid by leave, or removed, the shifts it no longer covers go -- and a
+// shift a lead placed by hand is never touched.
+func TestScheduleIntegration_AMoveWritesRealShiftsAndKeepsThemInStep(t *testing.T) {
+	repo, pool := newScheduleIntegrationRepo(t)
+	ctx := context.Background()
+	kind := moveKind(t, pool)
+	shown := shiftWithScope(t, pool, "CRE", "WEEKDAY")
+	mustExec(t, pool, `UPDATE team_schedule_absence_kind SET shows_as_shift_code = $2 WHERE code = $1`, kind, shown)
+	friday := "2026-09-25"
+
+	moveShifts := func() []string {
+		t.Helper()
+		rows, err := pool.Query(ctx, `
+			SELECT rota_date::text FROM team_schedule_assignment
+			 WHERE user_id = $1::uuid AND source = 'MOVE' AND team_key = $2 ORDER BY rota_date`,
+			schedMemberID, schedOtherTeam)
+		if err != nil {
+			t.Fatalf("read move shifts: %v", err)
+		}
+		defer rows.Close()
+		var days []string
+		for rows.Next() {
+			var d string
+			if err := rows.Scan(&d); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			days = append(days, d)
+		}
+		return days
+	}
+	apply := func(kindCode, from, to string) {
+		t.Helper()
+		if _, err := repo.ApplyAbsence(ctx, domain.ApplyScheduleAbsenceRequest{
+			UserID: schedMemberID, TeamKey: schedTeamKey, HomeTeamKey: schedTeamKey,
+			KindCode: kindCode, From: from, To: to,
+		}, schedLeadEmail); err != nil {
+			t.Fatalf("ApplyAbsence(%q %s..%s): %v", kindCode, from, to, err)
+		}
+	}
+
+	// A shift placed by hand on the other team, which no span may touch.
+	if _, err := repo.ApplyRange(ctx, domain.ApplyScheduleRangeRequest{
+		UserID: schedMemberID, TeamKey: schedOtherTeam, ShiftCode: shown, From: "2026-09-28", To: "2026-09-28",
+	}, schedLeadEmail); err != nil {
+		t.Fatalf("seed manual shift: %v", err)
+	}
+
+	apply(kind, schedMonday, friday)
+	if got := moveShifts(); len(got) != 5 {
+		t.Fatalf("after marking Mon-Fri: %v, want five weekdays", got)
+	}
+	apply("", "2026-09-24", friday) // back from Thursday
+	if got := moveShifts(); len(got) != 3 {
+		t.Fatalf("after cutting it to Mon-Wed: %v, want three days", got)
+	}
+	apply(absenceKind(t, pool, "LEAVE"), "2026-09-22", "2026-09-22") // leave on the Tuesday
+	if got := moveShifts(); len(got) != 2 || got[0] != schedMonday || got[1] != "2026-09-23" {
+		t.Fatalf("after leave on Tuesday: %v, want Mon and Wed", got)
+	}
+
+	var spanID string
+	if err := pool.QueryRow(ctx, `
+		SELECT ab.id::text FROM team_schedule_absence ab JOIN team_schedule_absence_kind k ON k.id = ab.kind_id
+		 WHERE ab.user_id = $1::uuid AND k.code = $2 ORDER BY ab.starts_on LIMIT 1`, schedMemberID, kind).Scan(&spanID); err != nil {
+		t.Fatalf("find span: %v", err)
+	}
+	if err := repo.DeleteAbsence(ctx, spanID, schedLeadEmail, nil); err != nil {
+		t.Fatalf("DeleteAbsence: %v", err)
+	}
+	if got := moveShifts(); len(got) != 1 || got[0] != "2026-09-23" {
+		t.Fatalf("after removing the Monday span: %v, want only Wednesday's, from the span after the leave", got)
+	}
+	if n := countRows(t, pool, `SELECT count(*) FROM team_schedule_assignment
+		WHERE user_id = $1::uuid AND source = 'MANUAL' AND rota_date = '2026-09-28'`, schedMemberID); n != 1 {
+		t.Fatalf("the hand-placed shift was touched: %d rows", n)
+	}
+}
+
+// Removing an open-ended move takes every shift it wrote, however far past
+// its start they run -- the ladder would otherwise go on paging the person
+// for the team they moved to.
+func TestScheduleIntegration_RemovingAnOpenEndedMoveLeavesNoShiftBehind(t *testing.T) {
+	repo, pool := newScheduleIntegrationRepo(t)
+	ctx := context.Background()
+	kind := moveKind(t, pool)
+	shown := shiftWithScope(t, pool, "CRE", "WEEKDAY")
+	mustExec(t, pool, `UPDATE team_schedule_absence_kind SET shows_as_shift_code = $2 WHERE code = $1`, kind, shown)
+
+	// Open-ended, started well over a year before the shifts below.
+	var spanID string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO team_schedule_absence (id, created_on, updated_on, created_by, updated_by, user_id, team_key, kind_id, starts_on, ends_on, home_team_key)
+		SELECT gen_random_uuid(), now(), now(), 'fixture', 'fixture', $1::uuid, $2, k.id, DATE '2024-01-01', NULL, $3
+		  FROM team_schedule_absence_kind k WHERE k.code = $4
+		RETURNING id::text`, schedMemberID, schedOtherTeam, schedTeamKey, kind).Scan(&spanID); err != nil {
+		t.Fatalf("seed open-ended span: %v", err)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if err := syncMoveShifts(ctx, tx, schedMemberID, schedMonday, "2026-09-25", schedLeadEmail); err != nil {
+		t.Fatalf("syncMoveShifts: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	moves := func() int {
+		return countRows(t, pool, `SELECT count(*) FROM team_schedule_assignment WHERE user_id = $1::uuid AND source = 'MOVE'`, schedMemberID)
+	}
+	if n := moves(); n != 5 {
+		t.Fatalf("seeded %d move shifts, want 5", n)
+	}
+
+	if err := repo.DeleteAbsence(ctx, spanID, schedLeadEmail, nil); err != nil {
+		t.Fatalf("DeleteAbsence: %v", err)
+	}
+	if n := moves(); n != 0 {
+		t.Fatalf("%d move shifts left behind after removing the open-ended span", n)
+	}
+}
+
+// Somebody moved to a team that works no rota (Migration) takes no rotation
+// turn while the span lasts -- and their standing hours are still theirs.
+func TestScheduleIntegration_NoRotationWhileMovedOffTheRota(t *testing.T) {
+	repo, pool := newScheduleIntegrationRepo(t)
+	ctx := context.Background()
+	kind := moveKind(t, pool)
+	mustExec(t, pool, `UPDATE team_schedule_absence_kind SET works_rota_there = FALSE WHERE code = $1`, kind)
+	if _, err := repo.ApplyAbsence(ctx, domain.ApplyScheduleAbsenceRequest{
+		UserID: schedMemberID, TeamKey: schedTeamKey, HomeTeamKey: schedTeamKey,
+		KindCode: kind, From: schedMonday, To: "2026-09-25",
+	}, schedLeadEmail); err != nil {
+		t.Fatalf("ApplyAbsence: %v", err)
+	}
+
+	var rotation, standing string
+	if err := pool.QueryRow(ctx, `SELECT code FROM team_schedule_shift
+		WHERE family::text = 'CRE' AND is_rotation AND day_scope::text <> 'WEEKEND' AND is_active ORDER BY sort_order LIMIT 1`).Scan(&rotation); err != nil {
+		t.Fatalf("no CRE weekday rotation: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT code FROM team_schedule_shift
+		WHERE family::text = 'CRE' AND NOT is_rotation AND day_scope::text = 'WEEKDAY' AND is_active ORDER BY sort_order LIMIT 1`).Scan(&standing); err != nil {
+		t.Fatalf("no CRE standing window: %v", err)
+	}
+
+	_, err := repo.ApplyRange(ctx, domain.ApplyScheduleRangeRequest{
+		UserID: schedMemberID, TeamKey: schedOtherTeam, ShiftCode: rotation, From: "2026-09-23", To: "2026-09-23",
+	}, schedLeadEmail)
+	var conflict *apierror.ConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("a rotation on a day moved off the rota: got %v, want a ConflictError", err)
+	}
+	if _, err := repo.ApplyRange(ctx, domain.ApplyScheduleRangeRequest{
+		UserID: schedMemberID, TeamKey: schedOtherTeam, ShiftCode: standing, From: "2026-09-23", To: "2026-09-23",
+	}, schedLeadEmail); err != nil {
+		t.Fatalf("standing hours on a day moved off the rota were refused: %v", err)
+	}
+	// After the span, rotations are theirs again.
+	if _, err := repo.ApplyRange(ctx, domain.ApplyScheduleRangeRequest{
+		UserID: schedMemberID, TeamKey: schedTeamKey, ShiftCode: rotation, From: "2026-09-28", To: "2026-09-28",
+	}, schedLeadEmail); err != nil {
+		t.Fatalf("a rotation after the span was refused: %v", err)
+	}
+}
+
 // The point of the GiST range index: on-call is a containment question, and
 // the answer has to exclude anyone on leave or it names somebody who is away.
 func TestScheduleIntegration_OnDutyAtExcludesSomebodyOnLeave(t *testing.T) {
@@ -1119,7 +1751,7 @@ func TestScheduleIntegration_OnDutyAtExcludesSomebodyOnLeave(t *testing.T) {
 	middle := startsAt.Add(endsAt.Sub(startsAt) / 2)
 
 	onDuty := func() bool {
-		rows, err := repo.OnDutyAt(ctx, middle)
+		rows, err := repo.OnDutyAt(ctx, middle, false)
 		if err != nil {
 			t.Fatalf("OnDutyAt: %v", err)
 		}
@@ -1136,7 +1768,7 @@ func TestScheduleIntegration_OnDutyAtExcludesSomebodyOnLeave(t *testing.T) {
 	}
 
 	// Just outside it, they are not.
-	if rows, err := repo.OnDutyAt(ctx, endsAt.Add(time.Hour)); err != nil {
+	if rows, err := repo.OnDutyAt(ctx, endsAt.Add(time.Hour), false); err != nil {
 		t.Fatalf("OnDutyAt(after): %v", err)
 	} else {
 		for _, a := range rows {
@@ -1548,11 +2180,11 @@ func TestScheduleIntegration_CreateAbsenceKindConflictNamesTheExistingTag(t *tes
 	_, _ = pool.Exec(ctx, `DELETE FROM team_schedule_absence_kind WHERE code = 'INTEGRATION_CLASH_TAG'`)
 
 	first := domain.CreateScheduleAbsenceKindRequest{Label: "Integration clash tag", ShortCode: "ICT1", Bucket: "ALLOCATION", ColourToken: "INT"}
-	if _, err := repo.CreateAbsenceKind(ctx, "INTEGRATION_CLASH_TAG", first, schedLeadEmail); err != nil {
+	if _, err := repo.CreateAbsenceKind(ctx, "INTEGRATION_CLASH_TAG", first, nil, schedLeadEmail); err != nil {
 		t.Fatalf("first create: %v", err)
 	}
 	second := domain.CreateScheduleAbsenceKindRequest{Label: "Integration-clash tag!", ShortCode: "ICT2", Bucket: "ALLOCATION", ColourToken: "INT"}
-	_, err := repo.CreateAbsenceKind(ctx, "INTEGRATION_CLASH_TAG", second, schedLeadEmail)
+	_, err := repo.CreateAbsenceKind(ctx, "INTEGRATION_CLASH_TAG", second, nil, schedLeadEmail)
 	var conflict *apierror.ConflictError
 	if !errors.As(err, &conflict) {
 		t.Fatalf("want a ConflictError, got %v", err)
@@ -1594,5 +2226,362 @@ func TestScheduleIntegration_OvernightViewCarriesOnlyTheNightBefore(t *testing.T
 	}
 	if found("2026-09-23") {
 		t.Fatal("Wednesday's view carried Monday's block, which ended on Tuesday")
+	}
+}
+
+// ── one holder per tier ───────────────────────────────────────────────────
+//
+// A rung of the SRE pager's ladder is one person. In these tests
+// schedSreTeamKey stands in for Apollo and schedOtherTeam for Artemis: the
+// rule is about the window, not the team's type, so any two teams will do.
+
+// schedNightCoverMonday is far from any real rota, because the shared TZ3
+// slot is checked across every team in the database -- a developer's local
+// rota on schedMonday would otherwise turn up as the existing holder.
+const schedNightCoverMonday = "2030-09-23"
+
+// applyTurn sets one person to one window on one team over [from, to].
+func applyTurn(t *testing.T, repo ScheduleRepository, userID, teamKey, code, tier, from, to string) error {
+	t.Helper()
+	req := domain.ApplyScheduleRangeRequest{
+		UserID: userID, TeamKey: teamKey, ShiftCode: code, From: from, To: to,
+	}
+	if tier != "" {
+		req.Tier = &tier
+	}
+	_, err := repo.ApplyRange(context.Background(), req, schedLeadEmail)
+	return err
+}
+
+// holdersOf lists who holds a zone's tiers on a day, as "team:email:tier".
+func holdersOf(t *testing.T, pool *pgxpool.Pool, zone, day string) []string {
+	t.Helper()
+	rows, err := pool.Query(context.Background(), `
+		SELECT a.team_key || ':' || u.email || ':' || a.tier::text
+		  FROM team_schedule_assignment a
+		  JOIN "user" u ON u.id = a.user_id
+		  JOIN team_schedule_zone z ON z.id = a.zone_id
+		 WHERE z.code = $1 AND a.rota_date = $2::date AND a.tier IS NOT NULL
+		   AND a.user_id = ANY($3::uuid[])
+		 ORDER BY 1`, zone, day, []string{schedLeadID, schedMemberID, schedOtherID})
+	if err != nil {
+		t.Fatalf("read holders: %v", err)
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// A second person put on a team's TZ1 L1 used to be added beside the first,
+// and the pager then picked one of the two. It is a conflict naming the
+// holder now, and the span is left as it was -- the days before the clash
+// included. The fixed-tier L1 window and the open window at L1 are one rung.
+func TestScheduleIntegration_ApplyRangeRefusesASecondHolderOfATier(t *testing.T) {
+	repo, pool := newScheduleIntegrationRepo(t)
+	wednesday := "2026-09-23"
+
+	if err := applyTurn(t, repo, schedLeadID, schedSreTeamKey, "SRE_TZ1_L1", "", wednesday, wednesday); err != nil {
+		t.Fatalf("the first holder: %v", err)
+	}
+
+	err := applyTurn(t, repo, schedMemberID, schedSreTeamKey, "SRE_TZ1", "L1", schedMonday, wednesday)
+	var conflict *apierror.ConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("a second TZ1 L1 holder: got %v, want a ConflictError", err)
+	}
+	for _, want := range []string{"Sched Lead", "TZ1 L1", wednesday} {
+		if !strings.Contains(conflict.Msg, want) {
+			t.Errorf("conflict message %q does not say %q", conflict.Msg, want)
+		}
+	}
+	if n := countRows(t, pool,
+		`SELECT count(*) FROM team_schedule_assignment WHERE user_id = $1::uuid AND rota_date BETWEEN $2::date AND $3::date`,
+		schedMemberID, schedMonday, wednesday); n != 0 {
+		t.Fatalf("%d rows written for the refused span, want none", n)
+	}
+	if n := countRows(t, pool,
+		`SELECT count(*) FROM team_schedule_assignment_activity WHERE user_id = $1::uuid`, schedMemberID); n != 0 {
+		t.Fatalf("%d history rows for the refused span, want none", n)
+	}
+	if got := holdersOf(t, pool, "TZ1", wednesday); fmt.Sprint(got) != fmt.Sprint([]string{schedSreTeamKey + ":" + schedLeadEmail + ":L1"}) {
+		t.Fatalf("TZ1 on %s is held by %v, want the first holder alone", wednesday, got)
+	}
+
+	// A different rung on the same team and day is free.
+	if err := applyTurn(t, repo, schedMemberID, schedSreTeamKey, "SRE_TZ1", "L2", wednesday, wednesday); err != nil {
+		t.Fatalf("TZ1 L2 beside the L1 holder: %v", err)
+	}
+}
+
+// TZ3 is one crew for the whole SaaS rota, so an Artemis engineer cannot take
+// TZ3 L1 on a night an Apollo engineer holds it -- but can take L2.
+func TestScheduleIntegration_ApplyRangeRefusesASecondTZ3HolderAcrossTeams(t *testing.T) {
+	repo, pool := newScheduleIntegrationRepo(t)
+	night := schedNightCoverMonday
+
+	var shared, iaasShared bool
+	if err := pool.QueryRow(context.Background(), `
+		SELECT (SELECT shared_across_teams FROM team_schedule_shift WHERE code = 'SRE_TZ3'),
+		       COALESCE((SELECT shared_across_teams FROM team_schedule_shift WHERE code = 'SRE_IAAS_NIGHT'), FALSE)`).
+		Scan(&shared, &iaasShared); err != nil {
+		t.Fatalf("read the catalogue: %v", err)
+	}
+	if !shared || iaasShared {
+		t.Fatalf("SRE_TZ3 shared=%v, SRE_IAAS_NIGHT shared=%v; want only SaaS's night shared (migration 0223)", shared, iaasShared)
+	}
+
+	if err := applyTurn(t, repo, schedLeadID, schedSreTeamKey, "SRE_TZ3", "L1", night, night); err != nil {
+		t.Fatalf("Apollo's TZ3 L1: %v", err)
+	}
+	err := applyTurn(t, repo, schedMemberID, schedOtherTeam, "SRE_TZ3", "L1", night, night)
+	var conflict *apierror.ConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("Artemis's TZ3 L1 on Apollo's night: got %v, want a ConflictError", err)
+	}
+	for _, want := range []string{"Sched Lead", "TZ3 L1", night} {
+		if !strings.Contains(conflict.Msg, want) {
+			t.Errorf("conflict message %q does not say %q", conflict.Msg, want)
+		}
+	}
+	if n := countRows(t, pool,
+		`SELECT count(*) FROM team_schedule_assignment WHERE user_id = $1::uuid AND rota_date = $2::date`,
+		schedMemberID, night); n != 0 {
+		t.Fatalf("%d rows written for the refused night, want none", n)
+	}
+
+	if err := applyTurn(t, repo, schedMemberID, schedOtherTeam, "SRE_TZ3", "L2", night, night); err != nil {
+		t.Fatalf("Artemis's TZ3 L2 under Apollo's L1: %v", err)
+	}
+	want := []string{schedOtherTeam + ":" + schedMemberEmail + ":L2", schedSreTeamKey + ":" + schedLeadEmail + ":L1"}
+	if got := holdersOf(t, pool, "TZ3", night); fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("TZ3 crew on %s is %v, want %v", night, got, want)
+	}
+}
+
+// The person being edited is never in their own way: moving the L1 holder to
+// L2 frees L1 for somebody else, and a clear still clears.
+func TestScheduleIntegration_ApplyRangeMovesTheSameHolderBetweenTiers(t *testing.T) {
+	repo, pool := newScheduleIntegrationRepo(t)
+	ctx := context.Background()
+	night := schedNightCoverMonday
+
+	if err := applyTurn(t, repo, schedMemberID, schedSreTeamKey, "SRE_TZ1_L1", "", schedMonday, schedMonday); err != nil {
+		t.Fatalf("TZ1 L1: %v", err)
+	}
+	if err := applyTurn(t, repo, schedMemberID, schedSreTeamKey, "SRE_TZ1", "L2", schedMonday, schedMonday); err != nil {
+		t.Fatalf("the same person, L1 to L2: %v", err)
+	}
+	if err := applyTurn(t, repo, schedLeadID, schedSreTeamKey, "SRE_TZ1_L1", "", schedMonday, schedMonday); err != nil {
+		t.Fatalf("somebody else onto the L1 the move freed: %v", err)
+	}
+	want := []string{schedSreTeamKey + ":" + schedLeadEmail + ":L1", schedSreTeamKey + ":" + schedMemberEmail + ":L2"}
+	if got := holdersOf(t, pool, "TZ1", schedMonday); fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("TZ1 on %s is held by %v, want %v", schedMonday, got, want)
+	}
+
+	// The same on the shared night, from one team's TZ3 L1 to its L3.
+	if err := applyTurn(t, repo, schedMemberID, schedOtherTeam, "SRE_TZ3", "L1", night, night); err != nil {
+		t.Fatalf("TZ3 L1: %v", err)
+	}
+	if err := applyTurn(t, repo, schedMemberID, schedOtherTeam, "SRE_TZ3", "L3", night, night); err != nil {
+		t.Fatalf("the same person, TZ3 L1 to L3: %v", err)
+	}
+	if got := holdersOf(t, pool, "TZ3", night); fmt.Sprint(got) != fmt.Sprint([]string{schedOtherTeam + ":" + schedMemberEmail + ":L3"}) {
+		t.Fatalf("TZ3 on %s is held by %v, want the member at L3 alone", night, got)
+	}
+
+	if _, err := repo.ApplyRange(ctx, domain.ApplyScheduleRangeRequest{
+		UserID: schedMemberID, TeamKey: schedSreTeamKey, From: schedMonday, To: schedMonday,
+	}, schedLeadEmail); err != nil {
+		t.Fatalf("clearing the day: %v", err)
+	}
+	if got := holdersOf(t, pool, "TZ1", schedMonday); fmt.Sprint(got) != fmt.Sprint([]string{schedSreTeamKey + ":" + schedLeadEmail + ":L1"}) {
+		t.Fatalf("after the clear TZ1 is held by %v, want the lead's L1 alone", got)
+	}
+}
+
+// TZ1 is one crew per team: Apollo's and Artemis's TZ1 L1 are two people, and
+// so are IaaS's per-team night rungs. Only a window marked shared is shared.
+func TestScheduleIntegration_ApplyRangeLetsEachTeamHoldItsOwnTZ1Tier(t *testing.T) {
+	repo, pool := newScheduleIntegrationRepo(t)
+	night := schedNightCoverMonday
+
+	if err := applyTurn(t, repo, schedLeadID, schedSreTeamKey, "SRE_TZ1_L1", "", schedMonday, schedMonday); err != nil {
+		t.Fatalf("Apollo's TZ1 L1: %v", err)
+	}
+	if err := applyTurn(t, repo, schedMemberID, schedOtherTeam, "SRE_TZ1", "L1", schedMonday, schedMonday); err != nil {
+		t.Fatalf("Artemis's TZ1 L1 the same day: %v", err)
+	}
+	want := []string{schedOtherTeam + ":" + schedMemberEmail + ":L1", schedSreTeamKey + ":" + schedLeadEmail + ":L1"}
+	if got := holdersOf(t, pool, "TZ1", schedMonday); fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("TZ1 on %s is held by %v, want %v", schedMonday, got, want)
+	}
+
+	if err := applyTurn(t, repo, schedLeadID, schedSreTeamKey, "SRE_IAAS_NIGHT", "L1", night, night); err != nil {
+		t.Fatalf("one team's IaaS night L1: %v", err)
+	}
+	if err := applyTurn(t, repo, schedMemberID, schedOtherTeam, "SRE_IAAS_NIGHT", "L1", night, night); err != nil {
+		t.Fatalf("another team's IaaS night L1 the same night: %v", err)
+	}
+	var conflict *apierror.ConflictError
+	if err := applyTurn(t, repo, schedOtherID, schedOtherTeam, "SRE_IAAS_NIGHT", "L1", night, night); !errors.As(err, &conflict) {
+		t.Fatalf("a second IaaS night L1 on the same team: got %v, want a ConflictError", err)
+	}
+}
+
+// nightCoverTeam is the SaaS Night cover, which migration 0232 adds: a team
+// on the SaaS rota with no members, and the SRE_NIGHT_COVER tag that moves
+// somebody onto it.
+const nightCoverTeam = "saas-night-cover"
+
+// teamOfTurn is the team a person's turn on a shift that day is filed under,
+// or "" when they hold none.
+func teamOfTurn(t *testing.T, pool *pgxpool.Pool, userID, shiftCode, day string) string {
+	t.Helper()
+	var team string
+	err := pool.QueryRow(context.Background(), `
+		SELECT a.team_key FROM team_schedule_assignment a
+		  JOIN team_schedule_shift s ON s.id = a.shift_id
+		 WHERE a.user_id = $1::uuid AND s.code = $2 AND a.rota_date = $3::date`, userID, shiftCode, day).Scan(&team)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ""
+	}
+	if err != nil {
+		t.Fatalf("read the %s turn on %s: %v", shiftCode, day, err)
+	}
+	return team
+}
+
+// onDutyOn is whether the person holds a live, not-away turn on shiftCode at
+// the instant -- what the pager is given.
+func onDutyOn(t *testing.T, repo ScheduleRepository, userID, shiftCode string, at time.Time) bool {
+	t.Helper()
+	rows, err := repo.OnDutyAt(context.Background(), at, false)
+	if err != nil {
+		t.Fatalf("OnDutyAt: %v", err)
+	}
+	for _, a := range rows {
+		if a.Engineer.UserID == userID && a.ShiftCode == shiftCode {
+			return true
+		}
+	}
+	return false
+}
+
+// A lead moves an engineer onto the SaaS Night cover, and they are moved: the
+// move is filed under it with their own team beside it and writes no hours of
+// its own; the nights already set inside it go with them; what they held on
+// their own team over it -- a day turn, the generator's hours and a lead's --
+// goes, recorded in the history; and a turn set later from their own team's
+// row lands on the Night cover. Nothing of theirs is on two teams. A night
+// before the move starts stays their own team's. The pager still reaches them
+// on every one of those nights, the one that runs into the move's first day
+// included. Cutting the move short brings the nights after it back to their
+// own team.
+func TestScheduleIntegration_TheNightCoverMoveTakesTheNightsWithIt(t *testing.T) {
+	repo, pool := newScheduleIntegrationRepo(t)
+	ctx := context.Background()
+	if countRows(t, pool, `SELECT count(*) FROM team_schedule_absence_kind WHERE code = 'SRE_NIGHT_COVER'`) == 0 {
+		t.Fatal("no SRE_NIGHT_COVER tag; apply migration 0232")
+	}
+	mustExec(t, pool, `
+		INSERT INTO team_member (id, created_on, updated_on, created_by, updated_by, team_id, user_id, role)
+		VALUES (gen_random_uuid(), NOW(), NOW(), 'fixture', 'fixture', $1, $2, $3)`,
+		schedSreTeamID, schedOtherID, ordinaryMemberRole(t, pool))
+
+	mon, tue, wed, fri := "2030-09-23", "2030-09-24", "2030-09-25", "2030-09-27"
+	for _, turn := range []struct{ code, tier, day string }{
+		{"SRE_TZ3", "L1", mon}, {"SRE_TZ1_L1", "", tue}, {"SRE_TZ3", "L2", wed},
+	} {
+		if err := applyTurn(t, repo, schedOtherID, schedSreTeamKey, turn.code, turn.tier, turn.day, turn.day); err != nil {
+			t.Fatalf("%s %s on %s: %v", turn.code, turn.tier, turn.day, err)
+		}
+	}
+
+	// Regular hours on their own team inside the move: one the generator
+	// wrote, and one a lead set by hand.
+	thu := "2030-09-26"
+	mustExec(t, pool, `
+		INSERT INTO team_schedule_assignment
+		  (id, created_on, updated_on, created_by, updated_by, user_id, team_id, team_key, shift_id, zone_id,
+		   rota_date, starts_at, ends_at, is_on_call, source)
+		SELECT gen_random_uuid(), now(), now(), 'fixture', 'fixture', $1, t.id, t.key, s.id, s.zone_id, v.d::date,
+		       (v.d::date::timestamp + make_interval(mins => s.start_minute)) AT TIME ZONE s.authoring_time_zone,
+		       (v.d::date::timestamp + make_interval(mins => s.end_minute)) AT TIME ZONE s.authoring_time_zone,
+		       FALSE, v.src::team_schedule_source_enum
+		  FROM team t, team_schedule_shift s,
+		       (VALUES ($2::text, 'GENERATED'), ($3::text, 'MANUAL')) AS v(d, src)
+		 WHERE t.key = $4 AND s.code = 'SRE_TZ2_REGULAR'`,
+		schedOtherID, thu, fri, schedSreTeamKey)
+
+	if _, err := repo.ApplyAbsence(ctx, domain.ApplyScheduleAbsenceRequest{
+		UserID: schedOtherID, TeamKey: schedSreTeamKey, KindCode: "SRE_NIGHT_COVER",
+		From: tue, To: fri, HomeTeamKey: schedSreTeamKey,
+	}, schedLeadEmail); err != nil {
+		t.Fatalf("move onto the Night cover: %v", err)
+	}
+	// What they held on their own team over the move is gone -- whoever set it.
+	for _, c := range []struct{ code, day string }{
+		{"SRE_TZ1_L1", tue}, {"SRE_TZ2_REGULAR", thu}, {"SRE_TZ2_REGULAR", fri},
+	} {
+		if got := teamOfTurn(t, pool, schedOtherID, c.code, c.day); got != "" {
+			t.Errorf("%s on %s is still there, under %q: the move should have taken it off their own team", c.code, c.day, got)
+		}
+	}
+	if n := countRows(t, pool, `
+		SELECT count(*) FROM team_schedule_assignment_activity
+		 WHERE user_id = $1::uuid AND action = 'DELETED' AND note = 'moved to another team for these days'`,
+		schedOtherID); n != 3 {
+		t.Errorf("%d removals recorded in the history, want 3", n)
+	}
+	if n := countRows(t, pool, `
+		SELECT count(*) FROM team_schedule_absence
+		 WHERE user_id = $1::uuid AND team_key = $2 AND home_team_key = $3`,
+		schedOtherID, nightCoverTeam, schedSreTeamKey); n != 1 {
+		t.Fatalf("%d moves filed under the Night cover with their team beside it, want 1", n)
+	}
+	if n := countRows(t, pool, `
+		SELECT count(*) FROM team_schedule_assignment WHERE user_id = $1::uuid AND source = 'MOVE'`,
+		schedOtherID); n != 0 {
+		t.Fatalf("%d hours written by the move, want none: being on the Night cover is the whole of it", n)
+	}
+	// A day turn set from their own team's row on a day of the move.
+	if err := applyTurn(t, repo, schedOtherID, schedSreTeamKey, "SRE_TZ1_L1", "", thu, thu); err != nil {
+		t.Fatalf("a TZ1 L1 inside the move from their own team's row: %v", err)
+	}
+	for _, c := range []struct{ code, day, want string }{
+		{"SRE_TZ3", wed, nightCoverTeam},    // a night inside the move goes with them
+		{"SRE_TZ1_L1", thu, nightCoverTeam}, // a turn set inside it later lands there too
+		{"SRE_TZ3", mon, schedSreTeamKey},   // the night before it does not
+	} {
+		if got := teamOfTurn(t, pool, schedOtherID, c.code, c.day); got != c.want {
+			t.Errorf("%s on %s is filed under %q, want %q", c.code, c.day, got, c.want)
+		}
+	}
+
+	ist := time.FixedZone("IST", 5*3600+1800)
+	if !onDutyOn(t, repo, schedOtherID, "SRE_TZ3", time.Date(2030, 9, 24, 2, 0, 0, 0, ist)) {
+		t.Error("Monday's night, at 02:00 on the move's first day, is not on duty: the move read as time away")
+	}
+	if !onDutyOn(t, repo, schedOtherID, "SRE_TZ3", time.Date(2030, 9, 25, 23, 0, 0, 0, ist)) {
+		t.Error("Wednesday's night on the Night cover is not on duty")
+	}
+
+	// Back on their own team from Wednesday: the move is Tuesday alone.
+	if _, err := repo.ApplyAbsence(ctx, domain.ApplyScheduleAbsenceRequest{
+		UserID: schedOtherID, TeamKey: nightCoverTeam, KindCode: "",
+		From: wed, To: fri, HomeTeamKey: schedSreTeamKey,
+	}, schedLeadEmail); err != nil {
+		t.Fatalf("cut the move short: %v", err)
+	}
+	if got := teamOfTurn(t, pool, schedOtherID, "SRE_TZ3", wed); got != schedSreTeamKey {
+		t.Errorf("after the move was cut short, Wednesday's night is filed under %q, want %q", got, schedSreTeamKey)
 	}
 }

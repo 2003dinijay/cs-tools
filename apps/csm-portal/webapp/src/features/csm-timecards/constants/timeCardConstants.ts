@@ -73,6 +73,17 @@ export const NON_BILLABLE_SEVERITIES: readonly Severity[] = [
   "S3",
 ];
 
+/**
+ * Whether an engagement's payment type marks it free of charge. The backend
+ * returns the ServiceNow choice's display label (see `BeCaseView`), not the
+ * `"foc"` enum code, so either wording is matched case-insensitively (e.g.
+ * "FOC", "Free of Charge", "FOC (Free of Charge)"). Time on an FOC engagement
+ * is never billable; the FE billable switch is locked off.
+ */
+export function isFocPaymentType(paymentType: string | null | undefined): boolean {
+  return !!paymentType && /\bfoc\b|free of charge/i.test(paymentType);
+}
+
 /** Short label for a card's billable classification. */
 export function billableLabel(billable: boolean): string {
   return billable ? "Billable" : "Non-billable";
@@ -81,6 +92,14 @@ export function billableLabel(billable: boolean): string {
 /** Character caps mirroring the ServiceNow form. */
 export const WORK_LOG_MAX = 4000;
 export const LEAD_COMMENT_MAX = 500;
+
+/**
+ * Maximum minutes an engineer may log against a single ticket in one day (the
+ * old SN Portal's "no more than 8 hours per ticket per day" rule, missing
+ * from this form until now). Mirrors entity-service's maxUserTicketDailyMinutes,
+ * which is the authoritative server-side check across all of a user's cards.
+ */
+export const MAX_MINUTES_PER_TICKET_PER_DAY = 480;
 
 /**
  * Label + semantic colour for each card state (drives the status chip).

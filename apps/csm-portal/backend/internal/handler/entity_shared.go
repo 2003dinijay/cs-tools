@@ -70,6 +70,12 @@ type entitySearchCasesRequest struct {
 	Filters    entitySearchCasesFilters `json:"filters"`
 	SortBy     entityCaseSort           `json:"sortBy"`
 	Pagination entityPagination         `json:"pagination"`
+	// CountOnly mirrors entity-service's own SearchCasesRequest.CountOnly: a
+	// caller that only ever reads Total off the response (never Cases) should
+	// set this so entity-service skips building and running the page query
+	// entirely, rather than paying for a full, sorted, RLS-checked page fetch
+	// whose one row is then discarded unread.
+	CountOnly bool `json:"countOnly,omitempty"`
 }
 
 type entitySearchCaseView struct {
@@ -77,11 +83,17 @@ type entitySearchCaseView struct {
 	InternalID       string               `json:"internalId"`
 	Number           string               `json:"number"`
 	CreatedOn        string               `json:"createdOn"`
+	UpdatedOn        string               `json:"updatedOn"`
 	CreatedBy        *entityUserReference `json:"createdBy"`
 	Subject          *string              `json:"subject"`
 	Description      *string              `json:"description"`
 	State            *string              `json:"state"`
+	Severity         *string              `json:"severity"`
+	Type             string               `json:"type"`
+	IssueType        *string              `json:"issueType"`
+	EngagementType   *string              `json:"engagementType"`
 	Product          *entityRef           `json:"product"`
+	Deployment       *entityRef           `json:"deployment"`
 	Project          *entityRef           `json:"project"`
 	ProjectKey       *string              `json:"projectKey"`
 	AssignedEngineer *entityUserReference `json:"assignedEngineer"`
@@ -103,6 +115,10 @@ type entityProjectView struct {
 	// ProjectClosureFields) -- project.wso2_closure_state, populated on
 	// both its data sources.
 	ClosureState *string `json:"closureState"`
+	// OnboardingStatus mirrors entity-service's own ProjectView.OnboardingStatus
+	// (project.onboarding_status) -- nil when onboarding isn't tracked for
+	// this project.
+	OnboardingStatus *string `json:"onboardingStatus"`
 }
 
 type entitySearchProjectsRequest struct {
@@ -120,6 +136,7 @@ type entityProjectAccountRef struct {
 	ID     string `json:"id"`
 	Name   string `json:"name"`
 	Number string `json:"number"`
+	Tier   string `json:"tier"`
 }
 
 type entityProjectDetailsView struct {
@@ -133,6 +150,7 @@ type entityProjectDetailsView struct {
 	ClosureState        *string                 `json:"closureState"`
 	TotalQueryHours     *float64                `json:"totalQueryHours"`
 	RemainingQueryHours *float64                `json:"remainingQueryHours"`
+	ConsumedQueryHours  *float64                `json:"consumedQueryHours"`
 }
 
 // caseStateToDisplay translates entity-service's domain.CaseState wire
@@ -149,9 +167,9 @@ var caseStateToDisplay = map[string]string{
 	"closed":            "Closed",
 }
 
-// derefStr returns "" for a nil pointer, matching servicenow.CaseDetails's
-// own convention of empty-string-not-omitted for a field ServiceNow itself
-// never leaves absent.
+// derefStr returns "" for a nil pointer: the viewer wire types keep the
+// empty-string-not-omitted convention for fields the webapp always expects
+// to be present.
 func derefStr(s *string) string {
 	if s == nil {
 		return ""

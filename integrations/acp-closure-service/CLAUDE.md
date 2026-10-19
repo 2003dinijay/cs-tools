@@ -43,7 +43,8 @@ session, ever, so that code path would be permanently dead here.
   resolution. `ResolveCustomerContacts` implements the three-tier fallback
   (business-contact-role Project Contacts → account-level Primary Contacts →
   signal to nudge the Account Manager instead). Each tier returns **every**
-  match, not the first — see "The customer notice goes to every customer
+  match, not the first; `HasBusinessContacts` reports whether tier 1 alone
+  resolves, so callers can skip fetching account contacts — see "The customer notice goes to every customer
   contact" below. `AccountManagerEmail`
   extracts an email from an already-fetched `PersonRef`, treating "no AM
   assigned" and "AM assigned but no email" both as legitimate absence
@@ -149,6 +150,23 @@ builds on it and updates it after a successful PATCH.
 `TestProcessProject_BothCascadesFireSameRun_HistoryWritesDoNotClobberEachOther`
 covers both orders. As with `alreadyClosed`, don't fix this with a live
 re-fetch: the backend isn't read-after-write consistent.
+
+## End-date suspension writes "Closed", invoice suspension "Suspended"
+
+`suspend` (`sweep.go`) writes `endDateClosureState: "Closed"`; `suspendInvoice`
+writes `invoiceDueDateClosureState: "Suspended"`. This is legacy's split.
+ServiceNow's "Update WSO2 Closure State" business rule sets the overall state
+to Suspended when the end-date state is **Closed** or the invoice (or
+compliance) state is **Suspended**; an end-date "Suspended" did not count
+there. Salesforce's `Closure_State_End_Date_Based__c` picklist has `CLOSED`
+and no `SUSPENDED`. CSM's own roll-up (`wso2ClosureStateRule` in
+entity-service) accepts both, so the overall `closureState` is "Suspended"
+either way.
+
+Earlier builds wrote "Suspended" to the end-date field, so staging projects
+suspended before this change hold that value. The guard treats any value
+other than "Open" as already suspended, so both are skipped. Don't narrow it
+to one exact value.
 
 ## isPartner does not gate the invoice cascade on its own
 
@@ -603,14 +621,33 @@ wrong answer:
   `projectKey` by an openapi.yaml update, verify live behavior again before
   copying it — don't just trust the spec.
 
-## Open dependencies
+## Business Contacts come only from the CSM database (v1.1)
 
-- **Business-contact role string** (`internal/recipients`'s
-  `businessContactRole` constant, marked `PLACEHOLDER`) — exact
-  ServiceNow-side literal still unconfirmed with the API team. Broad-sweep
-  testing against real data shows this role is rarely configured in
-  practice regardless — most real resolutions land on `primary_contact` or
-  `am_nudge`, not `business_contact`.
+`businessContactRole` is `"BUSINESS_CONTACT"`, the upper-case label
+csm-integration-service **v1.1** returns in a project contact's `roles`
+(confirmed against a live response on 2026-10-01; other values there are
+`PORTAL_USER`, `SECURITY_CONTACT`, `LEAD_USER`, `ADMIN`). Project roles live
+in the CSM Postgres database, copied from Salesforce. ServiceNow has no
+project-role field at all, so **v1.0 (ServiceNow) never returns them**: its
+`roles` only holds ServiceNow access roles such as
+`sn_customerservice.customer`, which every contact has and which must never
+be read as "business contact". On v1.0, then, no contact matches and the
+customer notice goes to the Primary Contacts. This was checked live, not
+assumed: a contact added as Business Contact in Salesforce shows up in v1.0
+with `roles: []`, then `["sn_customerservice.customer"]` once synced.
+
+v1.1 is planned to be merged into v1.0 (v1.0 will then read from Postgres),
+and ACP stays on v1.0 until then. As of 2026-10-01, v1.1 isn't ready for
+ACP: `PATCH /projects/{id}` accepts `suspensionProcessState` but doesn't save
+it (ACP would resend the same notice daily), and the data migration from
+ServiceNow isn't complete (closure states, `isPartner`, contacts). Retest
+everything against the merged version before relying on it.
+
+`fetchContacts` skips the account-contacts search when
+`recipients.HasBusinessContacts` is true: account contacts only feed the
+Primary Contact fallback, so fetching every page of them anyway would let a
+failure there block a notice that never needed them (CodeRabbit, PR #2134).
+The decision stays in `recipients`, the fetching in `sweep`.
 
 ## Both HTTP clients share one set of transport guards
 
@@ -628,6 +665,21 @@ client through `internal/httpsec`, and must keep doing so:
   `oauth2.Transport` would re-attach the bearer token to a followed
   redirect). Guarding only the API client leaves the secret exposed; this
   exact mistake happened once in the email client.
+
+- `httpsec.ReadBounded` caps how much of a **successful** response either
+  client reads into memory: 10 MiB for csm-integration-service (a 50-item
+  page is a few hundred KB) and 1 MiB for the email service (a small JSON
+  acknowledgement). A larger body is an error, not buffered. Error bodies
+  were already capped at 256 bytes; success bodies weren't, which the
+  2026-10-08 security assessment flagged (CWE-400). The project-opportunity
+  link and invoice paging loops also stop once `total` rows are read, like
+  `Run`'s project paging, so an upstream that keeps answering `hasMore: true`
+  can't hold the run until the job timeout. Because the `total` bound only
+  applies when `total` > 0, every loop also has a hard page cap that trusts
+  nothing from the upstream (`maxProjectPages` = 1,000, `maxSearchPages` =
+  200 in `run.go`); reaching it is an error, so skipped data is visible
+  (CodeRabbit, PR #2545). Contacts paging needs no cap: it stops once offset
+  reaches `total`, which with `total` = 0 is after the first page.
 
 These checks were first added to the email client alone (CodeRabbit, PR
 #1657). The entity client went without them until they were moved into the
@@ -754,6 +806,7 @@ plain authenticated HTTP call.
   trivial fixture would silently paper over.
 - TDD throughout: red before green, one seam at a time. Seams under test:
   `closure.Decide`, `recipients.ResolveCustomerContacts` /
+  `HasBusinessContacts` /
   `AccountManagerEmail`, `suspensionstate.LastNoticeWindow` /
   `WithSubscriptionEndDateState`, `sweep.processProject`, `sweep.Run`, the
   pure subject/body builders (`internalNoticeSubject`,

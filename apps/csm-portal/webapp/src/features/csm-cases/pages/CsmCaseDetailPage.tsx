@@ -81,7 +81,6 @@ import {
 } from "@features/csm-cases/api/useCsmCaseComments";
 import { useGetCsmConversationMessages } from "@features/csm-cases/api/useCsmConversationMessages";
 import { useGetCsmCaseActivities } from "@features/csm-cases/api/useCsmCaseActivities";
-import { useCaseActivityStream } from "@features/csm-cases/api/useCaseActivityStream";
 import { useGetCsmCaseFeedback } from "@features/csm-cases/api/useCsmCaseFeedback";
 import {
   useGetCsmCaseAttachments,
@@ -102,7 +101,10 @@ import ChangeSeverityDialog from "@features/csm-cases/components/ChangeSeverityD
 import ChangeCaseTypeDialog, {
   type CaseTypeTransferSubmission,
 } from "@features/csm-cases/components/ChangeCaseTypeDialog";
-import { hasPublicComment } from "@features/csm-cases/utils/commentContent";
+import {
+  hasPublicComment,
+  isGithubRaisedCaseNumber,
+} from "@features/csm-cases/utils/commentContent";
 import { caseTypeTransferLabel } from "@features/csm-cases/utils/caseTypeTransfer";
 import SetAutocloseHoldDialog from "@features/csm-cases/components/SetAutocloseHoldDialog";
 import EditCaseDetailsDialog, {
@@ -142,6 +144,7 @@ import { CreateGithubIssueDialog } from "@features/csm-cases/components/CreateGi
 import { isCloudSupportSubscription } from "@features/csm-projects/utils/subscriptionType";
 import { usePostCaseGithubIssue } from "@features/csm-cases/api/useCsmCaseGithubIssue";
 import CaseActivitiesFeed from "@features/csm-cases/components/CaseActivitiesFeed";
+import { ACTIVITY_PAGE_SIZE } from "@features/csm-cases/utils/caseActivityFeed";
 import { scrollToFragmentWithRetry } from "@features/csm-cases/utils/permalinkScroll";
 import CaseMetaBand from "@features/csm-cases/components/CaseMetaBand";
 import RefreshButton from "@components/RefreshButton";
@@ -172,12 +175,14 @@ import {
 } from "@features/csm-timecards/api/useTimeCards";
 import type { CsmTimeCard } from "@features/csm-timecards/types/timeCards";
 import { caseIdLabel } from "@features/csm-cases/utils/caseIdentity";
+import { githubIssueCaseTags } from "@features/csm-cases/utils/githubIssueCaseTags";
 import { useReportCaseTabDraft } from "@features/case-tabs/hooks/useReportCaseTabDraft";
 import { useReportCaseTabMeta } from "@features/case-tabs/hooks/useReportCaseTabMeta";
 import { useCaseRouteOverride } from "@context/case-tabs/CaseRouteOverrideContext";
 import { replaceUuids } from "@utils/redactIds";
-import { formatAbsoluteForUser } from "@utils/dateTime";
+import { formatUtcDateForDisplay } from "@utils/dateTime";
 import {
+  escapeHtml,
   isBlankHtml,
   isDescriptionEchoedInComment,
   stripHtmlTags,
@@ -206,6 +211,7 @@ import type {
   CreateRelatedCaseNavState,
   CreateServiceRequestFromCaseNavState,
   CsmCaseComment,
+  CsmCaseDetail,
 } from "@features/csm-cases/types/csmCases";
 import type { CaseState } from "@features/csm-dashboard/types/abtDashboard";
 import { useNavTransition } from "@hooks/useNavTransition";
@@ -360,6 +366,44 @@ const CASE_TAB_IDS: readonly CaseTabId[] = TAB_DEFS.filter(
   (t) => !t.hidden,
 ).map((t) => t.id);
 
+/**
+ * Composes the customer-visible comment posted for "Share fix ETA with
+ * customer" — matches the real wording ServiceNow production's own "Share
+ * Fix ETA" CWF action uses verbatim, so the comment reads identically
+ * regardless of which data source actually posted it. Posted directly via
+ * POST /cases/{id}/comments instead of ServiceNow's own addPublicComment
+ * PATCH field, which works on every data source. Only the ETA fields
+ * actually set are included, matching the dialog's own "all three
+ * independently optional" behavior.
+ */
+function buildFixEtaShareComment(fields: {
+  bestCaseFixEta?: string;
+  mostLikelyFixEta?: string;
+  worstCaseFixEta?: string;
+  product?: string;
+  publicTicket?: string;
+}): string {
+  // product/publicTicket are free-text form input that ends up in a
+  // customer-visible comment — escape before interpolating, same as any
+  // other user-entered text embedded in markup. The ETA dates are not user
+  // free-text (picker-produced "YYYY-MM-DD" strings) and need no escaping.
+  const lines: string[] = [];
+  if (fields.product) lines.push(`Product: ${escapeHtml(fields.product)}`);
+  if (fields.publicTicket) {
+    lines.push(`Public git issue: ${escapeHtml(fields.publicTicket)}`);
+  }
+  if (fields.bestCaseFixEta) {
+    lines.push(`Best Case Estimate: ${fields.bestCaseFixEta}`);
+  }
+  if (fields.mostLikelyFixEta) {
+    lines.push(`Most Likely Estimate: ${fields.mostLikelyFixEta}`);
+  }
+  if (fields.worstCaseFixEta) {
+    lines.push(`Worst Case Estimate: ${fields.worstCaseFixEta}`);
+  }
+  return `<p>ETA information for the fix will be as follows.</p><p>${lines.join("<br>")}</p>`;
+}
+
 export default function CsmCaseDetailPage(): JSX.Element {
   // Real router hooks — called unconditionally regardless of `routeOverride`
   // below (rules of hooks), but their VALUES are only actually used when
@@ -387,6 +431,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
     canAddWorkNotes,
     canUseOperations,
     canUseTimeCardsAndUpdates,
+    canViewSlaTab,
   } = usePortalAccess();
   // A worknote_creator without full write may still add an internal work
   // note -- and nothing else on this page. The composer is locked to
@@ -536,10 +581,9 @@ export default function CsmCaseDetailPage(): JSX.Element {
     refetch: refetchActivities,
     isFetching: isFetchingActivities,
   } = useGetCsmCaseActivities(caseId);
-  // Live updates: invalidates the two queries above whenever another viewer
-  // adds a comment or the case's status changes, so this tab doesn't rely
-  // solely on their own staleTime/a manual refresh to catch up.
-  useCaseActivityStream(caseId);
+  // Live updates for this case arrive over the single multiplexed stream the
+  // case-tabs workspace owns (`useCaseTabsLiveUpdates`); this page opens no
+  // connection of its own.
   // Case Feedback (CSAT survey) submissions for this case, if any — the
   // survey only exists once a case is closed, so the query itself is
   // disabled until then rather than firing early for an open case.
@@ -598,9 +642,10 @@ export default function CsmCaseDetailPage(): JSX.Element {
   // the tab-label counts below; each widget still runs its own scoped query
   // when its tab mounts, deduped against this one by react-query's cache.
   // Skipped for announcements (undefined caseId disables the query) since
-  // neither tab is shown there.
+  // neither tab is shown there, and for a caller without canViewSlaTab, since
+  // the tab itself is hidden for them.
   const { data: slaList } = useGetCsmCaseSlas(
-    isAnnouncement ? undefined : caseId,
+    isAnnouncement || !canViewSlaTab ? undefined : caseId,
   );
   const {
     data: callRequests,
@@ -668,25 +713,25 @@ export default function CsmCaseDetailPage(): JSX.Element {
   const findMyOngoingCases = useFindMyOngoingCases();
   const recordView = useRecordRecentView();
   const claims = useIdTokenClaims();
-  // De-escalating is restricted to whoever was notified on the case's
-  // current escalation level (the backend enforces the same check -- this is
-  // a client-side affordance only, matching every other role/permission
-  // check in this app). Matched by platform id first (currentUser.id against
-  // a notified user's own id, the same identity space the backend's own
-  // check uses), falling back to a case-insensitive email match against the
-  // signed-in user's ID token claim when either id is unavailable -- mirrors
-  // the BFF's own callerIsNotifiedOnCurrentEscalation exactly.
+  // De-escalating is restricted to the case's ABT team leads (the backend
+  // enforces the same check -- this is a client-side affordance only,
+  // matching every other role/permission check in this app). Matched by
+  // platform id first (currentUser.id against a lead's own id, the same
+  // identity space the backend's own check uses), falling back to a
+  // case-insensitive email match against the signed-in user's ID token claim
+  // when either id is unavailable -- mirrors the BFF's own
+  // callerIsCaseTeamLead exactly.
   const callerId = currentUser?.id;
   const callerEmail = claims?.email?.toLowerCase();
-  const callerIsNotifiedOnCurrentEscalation = (
-    escalationHistory?.currentNotifiedUsers ?? []
-  ).some((u) => {
-    if (callerId && u.id && callerId === u.id) return true;
-    if ((!callerId || !u.id) && callerEmail && u.email) {
-      return u.email.toLowerCase() === callerEmail;
-    }
-    return false;
-  });
+  const callerIsCaseTeamLead = (escalationHistory?.teamLeads ?? []).some(
+    (u) => {
+      if (callerId && u.id && callerId === u.id) return true;
+      if ((!callerId || !u.id) && callerEmail && u.email) {
+        return u.email.toLowerCase() === callerEmail;
+      }
+      return false;
+    },
+  );
   // Display name for comments authored in this session, resolved from the
   // signed-in user's ID token. Falls back to the email local part so a token
   // without name claims still attributes the comment to the right person.
@@ -722,6 +767,11 @@ export default function CsmCaseDetailPage(): JSX.Element {
   const [isAcknowledging, setIsAcknowledging] = useState(false);
   const [metaCollapsed, setMetaCollapsed] = useState(false);
   const [composerOpen, setComposerOpen] = useState(false);
+  // Activity timeline window: only this many entries render (the rest load as
+  // the user scrolls, or all at once via "Load all"). `status` mirrors what
+  // the feed reports so the button can hide once nothing is left to load.
+  const [activityLimit, setActivityLimit] = useState(ACTIVITY_PAGE_SIZE);
+  const [activityStatus, setActivityStatus] = useState({ total: 0, shown: 0 });
   // Reports composerOpen up to the in-app case-tabs layer, purely so closing
   // this case's tab from the tab strip can confirm first — see the hook's
   // own doc comment for what this signal does and doesn't guarantee.
@@ -824,6 +874,8 @@ export default function CsmCaseDetailPage(): JSX.Element {
     setPrevCaseId(caseId);
     setFeedback(null);
     setComposerOpen(false);
+    setActivityLimit(ACTIVITY_PAGE_SIZE);
+    setActivityStatus({ total: 0, shown: 0 });
     // The lifted composer draft (see clearComposerDraft above) is per-case: a
     // draft left over from the previous case must not appear — or be
     // submittable — against the newly opened one.
@@ -886,11 +938,12 @@ export default function CsmCaseDetailPage(): JSX.Element {
           activeTab === "time" ||
           activeTab === "call-requests" ||
           activeTab === "tasks")) ||
-      (activeTab === "time" && !canUseTimeCardsAndUpdates)
+      (activeTab === "time" && !canUseTimeCardsAndUpdates) ||
+      (activeTab === "sla" && !canViewSlaTab)
     ) {
       setActiveTab("activities");
     }
-  }, [isAnnouncement, activeTab, setActiveTab, canUseTimeCardsAndUpdates]);
+  }, [isAnnouncement, activeTab, setActiveTab, canUseTimeCardsAndUpdates, canViewSlaTab]);
 
   // Twitter-style permalinks: when the URL has a fragment matching an entry id,
   // jump to the Activities tab and hand off to `scrollToFragmentWithRetry`,
@@ -1223,19 +1276,51 @@ export default function CsmCaseDetailPage(): JSX.Element {
             showError("Could not assign the case to you: no signed-in email found.");
             return;
           }
-          patchCase.mutate(
-            { assigneeEmail: currentUserEmail },
-            {
-              onSuccess: () =>
-                void startWork(
-                  LIFECYCLE_TOAST.assign_to_me,
-                  LIFECYCLE_SEVERITY.assign_to_me,
-                  showSuccess,
-                ),
-              onError: (err) =>
-                showError("Could not assign the case to you.", err),
-            },
-          );
+          // The button was rendered from a view that may be stale: another
+          // engineer can have started work on this case since it loaded. The
+          // assignment PATCH below would still land (the backend only rejects
+          // the follow-up work_in_progress -> work_in_progress state move),
+          // silently handing the case to a second engineer. So read the case
+          // fresh and bail out BEFORE any write if it's already in progress.
+          void (async () => {
+            let fresh: CsmCaseDetail | null | undefined;
+            try {
+              const result = await refetchCaseDetail();
+              // A failed refetch resolves with the previous (stale) data, so
+              // treat it like a failed read: never write blind.
+              fresh = result?.isError ? undefined : result?.data;
+            } catch {
+              fresh = undefined;
+            }
+            if (!fresh) {
+              showError(
+                "Couldn't check the latest state of this case. Please try again.",
+              );
+              return;
+            }
+            if (fresh.state === "work_in_progress") {
+              const holder = fresh.assigneeIsMe
+                ? "you"
+                : fresh.assigneeName || "another engineer";
+              showError(
+                `This case is already in progress with ${holder}. Refresh to see the latest state.`,
+              );
+              return;
+            }
+            patchCase.mutate(
+              { assigneeEmail: currentUserEmail },
+              {
+                onSuccess: () =>
+                  void startWork(
+                    LIFECYCLE_TOAST.assign_to_me,
+                    LIFECYCLE_SEVERITY.assign_to_me,
+                    showSuccess,
+                  ),
+                onError: (err) =>
+                  showError("Could not assign the case to you.", err),
+              },
+            );
+          })();
           return;
         }
 
@@ -1521,6 +1606,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
       startWork,
       resolveOngoingConflict,
       proceedLifecycleTransition,
+      refetchCaseDetail,
       currentUserEmail,
       navigate,
     ],
@@ -1704,7 +1790,19 @@ export default function CsmCaseDetailPage(): JSX.Element {
               sticky: true,
             });
           },
-          onError: (err) => showError("Could not change the case type.", err),
+          onError: (err) => {
+            // A refused transfer carries its reason (ServiceNow turning down a
+            // missing catalog answer, a case that cannot move to another type
+            // yet, a caller who may not do it) -- surface a 4xx message verbatim
+            // rather than the generic fallback, same treatment as every other
+            // 4xx on this page. Without it the engineer only ever saw "Could
+            // not change the case type." whatever the cause.
+            const msg =
+              err instanceof BackendApiError && err.status < 500 && err.message
+                ? err.message
+                : "Could not change the case type.";
+            showError(msg, err);
+          },
         },
       );
     },
@@ -1884,26 +1982,71 @@ export default function CsmCaseDetailPage(): JSX.Element {
       // case is on screen. Closing the dialog on a stale success would shut
       // the *new* case's dialog and throw away whatever was typed into it.
       const submittedViewToken = caseViewTokenRef.current;
-      patchCase.mutate(patch as BeCaseUpdatePayload, {
+      const isStale = (): boolean => caseViewTokenRef.current !== submittedViewToken;
+
+      // The ETA save and the "share with customer" step are sent separately,
+      // not bundled into one PATCH: addPublicComment (ServiceNow's own way
+      // of doing the share) is ServiceNow-only, and the backend used to
+      // reject the *entire* request when it was present on another data
+      // source — silently blocking the ETA save too. The share step itself
+      // no longer goes through that field at all: it posts a real,
+      // customer-visible comment via POST /cases/{id}/comments instead,
+      // which works on every data source.
+      const { addPublicComment, product, publicTicket, ...etaOnly } = patch;
+
+      const shareWithCustomer = (): void => {
+        if (!addPublicComment || !caseId) return;
+        void postComment
+          .mutateAsync({
+            caseId,
+            bodyHtml: buildFixEtaShareComment({ ...etaOnly, product, publicTicket }),
+            authorName: engineerName,
+            internal: false,
+          })
+          .then(
+            () => {
+              if (isStale()) return;
+              setFeedback({
+                message: "Fix ETA shared with the customer.",
+                severity: "success",
+                sticky: false,
+              });
+            },
+            (err: unknown) => {
+              if (isStale()) return;
+              showError("Fix ETA saved, but could not share it with the customer.", err);
+            },
+          );
+      };
+
+      patchCase.mutate(etaOnly as BeCaseUpdatePayload, {
         onSuccess: () => {
-          if (caseViewTokenRef.current !== submittedViewToken) return;
-          // Close on success, same as every other dialog on this page. The
-          // PATCH lands either way, so leaving it open reads as a failed save
-          // and invites a second submit of an estimate that's already stored.
-          setFixEtaOpen(false);
-          setFeedback({
-            message: "Fix ETA updated.",
-            severity: "success",
-            sticky: false,
-          });
+          // The share request is a real side effect the engineer asked for —
+          // it must still run even if the case view has since gone stale
+          // (navigated away mid-request); only the UI feedback below is
+          // skipped for a stale view, same as every other guarded callback
+          // on this page.
+          if (!isStale()) {
+            // Close on success, same as every other dialog on this page. The
+            // PATCH lands either way, so leaving it open reads as a failed
+            // save and invites a second submit of an estimate that's
+            // already stored.
+            setFixEtaOpen(false);
+            setFeedback({
+              message: "Fix ETA updated.",
+              severity: "success",
+              sticky: false,
+            });
+          }
+          shareWithCustomer();
         },
         onError: (err) => {
-          if (caseViewTokenRef.current !== submittedViewToken) return;
+          if (isStale()) return;
           showError("Could not set the fix ETA.", err);
         },
       });
     },
-    [patchCase, showError],
+    [patchCase, postComment, caseId, engineerName, showError],
   );
 
   const onRequestUpdate = useCallback(
@@ -2089,6 +2232,10 @@ export default function CsmCaseDetailPage(): JSX.Element {
       createdAt: data?.createdAt ?? "",
       internal: false,
       synthetic: true,
+      // A record raised from a GitHub issue has the issue body as its
+      // description: GitHub Markdown, not HTML. Without this its "### Heading"
+      // template sections render as literal text.
+      ...(isGithubRaisedCaseNumber(data?.caseNumber) && { bodyFormat: "markdown" as const }),
     };
     return [...mergedComments, synthetic];
   }, [data, descriptionEchoedInOriginComment, mergedComments]);
@@ -2394,9 +2541,12 @@ export default function CsmCaseDetailPage(): JSX.Element {
                 are singular facts (never more than one each), so a compact
                 "Cell" fits better than a chip crowding this row, especially
                 once both are present on the same case at once. */}
+            {/* Only ON_HOLD is a hold. FIRST_COMMENT / SECOND_COMMENT are the
+                other stages of the same auto-closure sequence (the case is
+                counting down to closure, not paused), and their state time is
+                when the next stage fires, so "On hold until" would be wrong. */}
             {!isAnnouncement &&
-              c.autoclosureStep &&
-              c.autoclosureStep !== "DEFAULT" && (
+              c.autoclosureStep === "ON_HOLD" && (
                 <Chip
                   size="small"
                   variant="outlined"
@@ -2404,7 +2554,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
                   icon={<PauseCircle size={14} />}
                   label={
                     c.autoclosureStateTime
-                      ? `On hold until ${formatAbsoluteForUser(c.autoclosureStateTime) ?? "—"}`
+                      ? `On hold until ${formatUtcDateForDisplay(c.autoclosureStateTime) ?? "—"}`
                       : "On auto-closure hold"
                   }
                   sx={{ fontWeight: 600 }}
@@ -2543,6 +2693,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
             (t) =>
               !t.hidden &&
               (t.id !== "time" || canUseTimeCardsAndUpdates) &&
+              (t.id !== "sla" || canViewSlaTab) &&
               (!isAnnouncement ||
                 (t.id !== "related" &&
                   t.id !== "watchers" &&
@@ -2734,11 +2885,24 @@ export default function CsmCaseDetailPage(): JSX.Element {
                   />
                 )}
               </Box>
-              <RefreshButton
-                onRefresh={refreshActivitiesTab}
-                isFetching={isRefreshingActivities}
-                label="Refresh activity timeline"
-              />
+              <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                {!(isCommentsLoading || isChatLoading || isActivityLoading || isFeedbackLoading) &&
+                  activityStatus.shown < activityStatus.total && (
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      onClick={() => setActivityLimit(Infinity)}
+                      aria-label="Load all activity timeline entries"
+                    >
+                      Load all
+                    </Button>
+                  )}
+                <RefreshButton
+                  onRefresh={refreshActivitiesTab}
+                  isFetching={isRefreshingActivities}
+                  label="Refresh activity timeline"
+                />
+              </Box>
             </Box>
 
             {isCommentsLoading || isChatLoading || isActivityLoading || isFeedbackLoading ? (
@@ -2798,6 +2962,12 @@ export default function CsmCaseDetailPage(): JSX.Element {
                   }
                   onEditComment={canWrite ? onEditComment : undefined}
                   onDeleteComment={canWrite ? onDeleteComment : undefined}
+                  entryWindow={{
+                    limit: activityLimit,
+                    onLimitChange: setActivityLimit,
+                    onStatusChange: setActivityStatus,
+                    revealEntryId: permalinkFragment || undefined,
+                  }}
                 />
               </>
             )}
@@ -2904,7 +3074,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
             onDeescalate={
               canEscalate &&
               canDeescalate(c.escalationLevel) &&
-              callerIsNotifiedOnCurrentEscalation
+              callerIsCaseTeamLead
                 ? () => setEscalationDialogAction("DEESCALATE")
                 : undefined
             }
@@ -3027,8 +3197,9 @@ export default function CsmCaseDetailPage(): JSX.Element {
         </Box>
       )}
 
-      {activeTab === "sla" &&
-        caseId && <CaseSlaTable caseId={caseId} />}
+      {activeTab === "sla" && canViewSlaTab && caseId && (
+        <CaseSlaTable caseId={caseId} />
+      )}
 
       {activeTab === "attachments" && (
         <Box sx={{ display: "grid", gap: 2, gridTemplateColumns: "1fr" }}>
@@ -3193,7 +3364,9 @@ export default function CsmCaseDetailPage(): JSX.Element {
 
       {autocloseHoldOpen && (
         <SetAutocloseHoldDialog
-          currentHoldUntil={c.autoclosureStateTime}
+          currentHoldUntil={
+            c.autoclosureStep === "ON_HOLD" ? c.autoclosureStateTime : undefined
+          }
           isSaving={patchCase.isPending}
           onClose={() => setAutocloseHoldOpen(false)}
           onSave={onSetAutocloseHold}
@@ -3258,6 +3431,12 @@ export default function CsmCaseDetailPage(): JSX.Element {
 
       {fixEtaOpen && (
         <SetFixEtaDialog
+          // Sharing now posts through the same comment endpoint
+          // CsmCaseCommentInput's own public-reply composer uses, so it's
+          // gated by the identical backend rule — reusing
+          // publicReplyGateReason rather than a second, possibly-drifting
+          // copy of the same check.
+          publicCommentDisabledReason={publicReplyGateReason}
           currentBestCaseFixEta={c.bestCaseFixEta}
           currentMostLikelyFixEta={c.mostLikelyFixEta}
           currentWorstCaseFixEta={c.worstCaseFixEta}
@@ -3290,6 +3469,8 @@ export default function CsmCaseDetailPage(): JSX.Element {
           caseId={c.id}
           caseNumber={c.caseNumber ?? c.id}
           caseSeverity={c.severity}
+          caseType={c.caseType}
+          engagementPaymentType={c.engagementPaymentType}
           projectId={c.projectId}
           projectName={c.projectName}
           editingCard={editTimeCard ?? undefined}
@@ -3382,9 +3563,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
                   // done reading the confirmation.
                   setActiveTab("activities");
                   setGithubIssueResult(res);
-                  const tagLabels = ["s_dp"];
-                  if (payload.regression) tagLabels.push("s_rg");
-                  if (payload.reason === "migration") tagLabels.push("migration");
+                  const tagLabels = githubIssueCaseTags(payload);
                   // Each mutateAsync promise is handled on its own. Per-call
                   // callbacks on mutate are replaced by the next call.
                   void Promise.all(

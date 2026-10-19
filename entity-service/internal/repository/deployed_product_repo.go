@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -120,7 +121,14 @@ func (r *deployedProductRepo) GetDeployedProductCategory(ctx context.Context, id
 func (r *deployedProductRepo) resolveDeployedProductNodes(ctx context.Context, id, deploymentID string) (domain.ReferenceTableItem, []domain.ReferenceTableItem, error) {
 	var name, number *string
 	var dpDeploymentID, versionID *string
-	err := r.db.QueryRow(ctx, `SELECT name, number, deployment_id, version_id FROM deployed_product WHERE id = $1`, id).
+	// product_id IS NOT NULL matches the same "is this a real deployed
+	// product" definition the deployment picker's own productCount already
+	// enforces (see deployment_repo.go's own doc comment on that subquery)
+	// -- without it, a caller who already knows a deployed product's id
+	// could reach its usage/metrics directly even though that same record
+	// is treated as having no product at all everywhere else, including
+	// being hidden from ever being offered as a choice in the first place.
+	err := r.db.QueryRow(ctx, `SELECT name, number, deployment_id, version_id FROM deployed_product WHERE id = $1 AND product_id IS NOT NULL`, id).
 		Scan(&name, &number, &dpDeploymentID, &versionID)
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -519,12 +527,22 @@ func (r *deployedProductRepo) SearchDeployedProducts(ctx context.Context, req do
 				}
 			}
 			dp.Category = lowercaseCategory(dp.Category)
+			// update_level_info is real, synced data, not something this
+			// service ever writes into that shape itself -- a live check
+			// found it stored as a JSON array (the only shape this decodes),
+			// but also, for a real minority of rows, a JSON object or a
+			// plain string. A row shaped like that must not fail the whole
+			// search: Updates is already documented elsewhere as "not
+			// populated... deliberately left nil rather than guessed at"
+			// for the exact same reason (no confirmed shape to trust), so a
+			// row this can't decode gets the identical nil treatment,
+			// logged rather than silently dropped.
 			if len(updateLevelInfo) > 0 {
 				var updates []domain.ProductUpdateEntry
 				if err := json.Unmarshal(updateLevelInfo, &updates); err != nil {
-					return fmt.Errorf("unmarshal deployed product update_level_info: %w", err)
-				}
-				if len(updates) > 0 {
+					slog.WarnContext(ctx, "search deployed products: update_level_info is not a JSON array, leaving Updates unset",
+						"deployedProductId", dp.ID, "error", err)
+				} else if len(updates) > 0 {
 					dp.Updates = updates
 				}
 			}

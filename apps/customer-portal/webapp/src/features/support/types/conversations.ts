@@ -33,6 +33,8 @@ export type ChatHistoryItem = {
   kbArticles: number;
   status: string;
   createdBy?: string | null;
+  /** Set when this chat was converted to a case. View opens that case. */
+  caseId?: string | null;
 };
 
 // Response type for project chat history list.
@@ -176,6 +178,9 @@ export type ConversationSearchFilters = {
   searchQuery?: string;
   stateKeys?: number[];
   createdByMe?: boolean;
+  // Bounds on the conversation's last update time (RFC 3339, inclusive).
+  startUpdatedDate?: string;
+  endUpdatedDate?: string;
 };
 
 // Request type for searching conversations.

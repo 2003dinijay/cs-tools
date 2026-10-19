@@ -68,6 +68,9 @@ func NewRegistryHandler(entityClient entityUserProjectClient, registryClient reg
 }
 
 func (h *RegistryHandler) isAdmin(roles []string) bool {
+	if hasAccountAdminRole(roles) {
+		return true
+	}
 	for _, r := range roles {
 		if r == h.adminRole {
 			return true

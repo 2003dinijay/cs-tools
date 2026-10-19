@@ -63,6 +63,23 @@ A few things worth knowing:
 - Reorder your saved views with the up/down arrows next to each one in the menu; a freshly
   saved view still jumps to the top of the list.
 
+## Creating a case
+
+**New case** (from the Cases list, or the **Create** menu on a project's page) opens the create
+form. Pick the project first: it loads that project's deployments, and the deployment you pick
+loads its deployed products. Severity, issue type, subject and description are required;
+attachments are optional.
+
+The **Watch list** section sits below the description. As soon as a project is selected it is
+pre-filled with that project's registered contacts (invited or deactivated contacts, and contacts
+who are only security contacts, are left out). Remove anyone with the **x** next to their name, and
+use **Add a watcher** to add another of the project's contacts or an internal user. Nobody outside
+the project's contacts and WSO2 staff is offered. You are not added automatically, so add yourself
+if you want case updates. Changing the project resets the list to the new project's contacts.
+Leave the list empty to create the case with no watchers. If a watcher is rejected, the case is not
+created and the error banner appears; review the list and retry. The Create case button waits
+until the project's contacts have loaded so the pre-filled list isn't dropped.
+
 ## Case detail
 
 Opening a case shows its full detail: overview fields, the comment/activity timeline,
@@ -106,9 +123,9 @@ each change, when, and their stated reason. **Escalate** and **De-escalate** but
 to the badge (whichever apply at the current level: neither shows past EL5, only "Escalate"
 shows at EL0). Either opens a short confirm dialog asking for a reason — required when
 escalating, optional when de-escalating — and posts a case work note recording the change
-automatically. Any signed-in engineer can escalate a case. De-escalating is restricted to
-whoever was notified about the case's current escalation level — the **De-escalate** button
-only shows for you if you're on that notified list. Escalation is a ServiceNow data source
+automatically. Any internal engineer can escalate a case. De-escalating is restricted to the
+case's ABT team lead (the lead of the account's CRE team) — the **De-escalate** button only
+shows for you if you're one of them, and it always returns the case to EL0. Escalation is a ServiceNow data source
 feature only; a non-ServiceNow-backed case shows no escalation level at all. The Cases list
 also has an optional **Escalation** column
 (via **Customise columns**) that shows the level badge for escalated cases only, left blank for

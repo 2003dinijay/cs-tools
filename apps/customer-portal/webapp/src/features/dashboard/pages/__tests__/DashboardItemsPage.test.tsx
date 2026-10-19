@@ -16,8 +16,9 @@
 
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import DashboardItemsPage from "@features/dashboard/pages/DashboardItemsPage";
+import { CaseType } from "@features/support/constants/supportConstants";
 
 vi.mock("react-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react-router")>();
@@ -37,16 +38,17 @@ vi.mock("@api/useGetProjectDetails", () => ({
   default: () => ({ data: { type: { label: "Enterprise" } }, isLoading: false }),
 }));
 
+const mockProjectFeatures = vi.fn(() => ({
+  data: {
+    hasServiceRequestReadAccess: false,
+    hasChangeRequestReadAccess: false,
+    hasSraReadAccess: false,
+    acceptedSeverityValues: [],
+  },
+  isLoading: false,
+}));
 vi.mock("@api/useGetProjectFeatures", () => ({
-  default: () => ({
-    data: {
-      hasServiceRequestReadAccess: false,
-      hasChangeRequestReadAccess: false,
-      hasSraReadAccess: false,
-      acceptedSeverityValues: [],
-    },
-    isLoading: false,
-  }),
+  default: () => mockProjectFeatures(),
 }));
 
 vi.mock("@api/useGetProjectFilters", () => ({
@@ -56,12 +58,25 @@ vi.mock("@api/useGetProjectFilters", () => ({
   }),
 }));
 
+type GetProjectCasesPageArgs = [
+  projectId?: string,
+  body?: { filters?: { caseTypes?: string[] } },
+];
+type GetProjectCasesPageResult = {
+  data: { cases: unknown[]; totalRecords: number };
+  isLoading: boolean;
+  isError: boolean;
+};
+const mockGetProjectCasesPage = vi.fn<
+  (...args: GetProjectCasesPageArgs) => GetProjectCasesPageResult
+>(() => ({
+  data: { cases: [], totalRecords: 0 },
+  isLoading: false,
+  isError: false,
+}));
 vi.mock("@api/useGetProjectCasesPage", () => ({
-  useGetProjectCasesPage: () => ({
-    data: { cases: [], totalRecords: 0 },
-    isLoading: false,
-    isError: false,
-  }),
+  useGetProjectCasesPage: (...args: GetProjectCasesPageArgs) =>
+    mockGetProjectCasesPage(...args),
 }));
 
 vi.mock("@features/operations/api/useGetChangeRequests", () => ({
@@ -73,6 +88,23 @@ vi.mock("@features/operations/api/useGetChangeRequests", () => ({
 }));
 
 describe("DashboardItemsPage", () => {
+  beforeEach(() => {
+    mockProjectFeatures.mockReturnValue({
+      data: {
+        hasServiceRequestReadAccess: false,
+        hasChangeRequestReadAccess: false,
+        hasSraReadAccess: false,
+        acceptedSeverityValues: [],
+      },
+      isLoading: false,
+    });
+    mockGetProjectCasesPage.mockReturnValue({
+      data: { cases: [], totalRecords: 0 },
+      isLoading: false,
+      isError: false,
+    });
+  });
+
   it("renders action required items heading", () => {
     render(
       <MemoryRouter>
@@ -89,5 +121,61 @@ describe("DashboardItemsPage", () => {
       </MemoryRouter>,
     );
     expect(screen.getByText("Outstanding Items")).toBeInTheDocument();
+  });
+
+  // Regression: the Dashboard tiles this page breaks down now include
+  // Security Report Analysis cases (see DashboardPage.tsx's combinedCaseTypes),
+  // so this page needs its own SRA section too, or the per-section totals
+  // would no longer sum to the tile's own count.
+  it("shows a Security Report Analysis section when the project has SRA access and cases", () => {
+    mockProjectFeatures.mockReturnValue({
+      data: {
+        hasServiceRequestReadAccess: false,
+        hasChangeRequestReadAccess: false,
+        hasSraReadAccess: true,
+        acceptedSeverityValues: [],
+      },
+      isLoading: false,
+    });
+    mockGetProjectCasesPage.mockImplementation((_projectId, body) => {
+      if (body?.filters?.caseTypes?.[0] === CaseType.SECURITY_REPORT_ANALYSIS) {
+        return {
+          data: { cases: [{ id: "sra-1" }], totalRecords: 2 },
+          isLoading: false,
+          isError: false,
+        };
+      }
+      return { data: { cases: [], totalRecords: 0 }, isLoading: false, isError: false };
+    });
+
+    render(
+      <MemoryRouter>
+        <DashboardItemsPage mode="action-required" />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText("Security Report Analysis")).toBeInTheDocument();
+    expect(screen.getByText("2")).toBeInTheDocument();
+  });
+
+  it("omits the Security Report Analysis section when the project lacks SRA access", () => {
+    mockGetProjectCasesPage.mockImplementation((_projectId, body) => {
+      if (body?.filters?.caseTypes?.[0] === CaseType.SECURITY_REPORT_ANALYSIS) {
+        return {
+          data: { cases: [{ id: "sra-1" }], totalRecords: 2 },
+          isLoading: false,
+          isError: false,
+        };
+      }
+      return { data: { cases: [], totalRecords: 0 }, isLoading: false, isError: false };
+    });
+
+    render(
+      <MemoryRouter>
+        <DashboardItemsPage mode="action-required" />
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByText("Security Report Analysis")).not.toBeInTheDocument();
   });
 });

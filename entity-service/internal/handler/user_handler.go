@@ -80,6 +80,25 @@ func (h *UserHandler) PatchMe(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
+// UpdateUser handles PATCH /users/{id} -- internal callers only
+// (UserService.UpdateUser enforces this), unlike PatchMe: the id comes from
+// the path, not the caller's own token, so an internal caller can update
+// someone else's profile (e.g. a portal admin recording a newly-assigned
+// team lead's paging number).
+func (h *UserHandler) UpdateUser(w http.ResponseWriter, r *http.Request) {
+	var req domain.UpdateUserRequest
+	if !decodeRequest(w, r, &req) {
+		return
+	}
+	resp, err := h.svc.UpdateUser(r.Context(), r.PathValue("id"), req)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
 // GetUser handles GET /users/{id} for the PostgreSQL data source.
 func (h *UserHandler) GetUser(w http.ResponseWriter, r *http.Request) {
 	resp, err := h.svc.GetUser(r.Context(), r.PathValue("id"))

@@ -57,6 +57,23 @@ func (c *Client) GetAttachment(ctx context.Context, id string) (AttachmentDetail
 	return out, err
 }
 
+// GetAttachmentCase calls GET /attachments/{id}/case — resolves an
+// attachment to its own parent CaseView, sourced consistently with whichever
+// data source entity-service uses for attachment reads
+// (ATTACHMENT_DATA_SOURCE). Used by authorizeAttachmentAccess instead of the
+// plain GetCase: that check resolves an attachment's own parent case, which
+// on ATTACHMENT_DATA_SOURCE=servicenow can exist only in ServiceNow, never
+// synced to Postgres — GetCase (always DATA_SOURCE-scoped) would 404 there
+// even though the attachment's content is otherwise reachable. id is the
+// attachment id, matching every other GetAttachment*/attachments/{id}...
+// method in this file — entity-service resolves it to the parent case
+// server-side.
+func (c *Client) GetAttachmentCase(ctx context.Context, id string) (CaseView, error) {
+	var out CaseView
+	err := c.getJSON(ctx, fmt.Sprintf("/attachments/%s/case", url.PathEscape(id)), &out)
+	return out, err
+}
+
 // UpdateAttachment calls PATCH /attachments/{id}.
 func (c *Client) UpdateAttachment(ctx context.Context, id string, req UpdateAttachmentRequest) (UpdateAttachmentResponse, error) {
 	var out UpdateAttachmentResponse

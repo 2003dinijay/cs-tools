@@ -19,6 +19,7 @@ package dispatch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"runtime"
 	"slices"
 	"strings"
@@ -30,6 +31,7 @@ import (
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/chataudience"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/escalation"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/eventbus"
+	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/events"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/notifications"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/recipientlinks"
 )
@@ -100,7 +102,7 @@ type sentCaseAcknowledgedAlert struct {
 }
 
 type sentSeverityChangedAlert struct {
-	audience, oldSeverityLabel, oldSeverityColor, newSeverityLabel, newSeverityColor, caseNumber, wso2CaseID, title, team, caseLink string
+	audience, oldSeverityLabel, oldSeverityColor, newSeverityLabel, newSeverityColor, caseNumber, wso2CaseID, productName, title, team, caseLink string
 }
 
 type sentFrustrationAlert struct {
@@ -112,12 +114,21 @@ type sentFrustrationAlert struct {
 type mockGoogleChatSender struct {
 	err error
 	// mu guards calls — see mockEmailSender.mu's doc comment.
-	mu                          sync.Mutex
-	caseCreatedCalls            []sentCaseCreatedAlert
-	caseAcknowledgedCalls       []sentCaseAcknowledgedAlert
-	severityChangedCalls        []sentSeverityChangedAlert
-	securityReportAnalysisCalls []sentSecurityReportAnalysisAlert
-	frustrationCalls            []sentFrustrationAlert
+	mu                                      sync.Mutex
+	caseCreatedCalls                        []sentCaseCreatedAlert
+	caseAcknowledgedCalls                   []sentCaseAcknowledgedAlert
+	severityChangedCalls                    []sentSeverityChangedAlert
+	securityReportAnalysisCalls             []sentSecurityReportAnalysisAlert
+	securityReportAnalysisAcknowledgedCalls []sentCaseAcknowledgedAlert
+	frustrationCalls                        []sentFrustrationAlert
+	srCalls                                 []sentSRAlert
+	incidentCreatedCalls                    []sentIncidentCreatedAlert
+	incidentAssignedCalls                   []sentIncidentAssignedAlert
+	// srBlock, when non-nil, holds every SR send open until it is closed,
+	// so a test can have a second Handle call arrive mid-send; srStarted
+	// counts SR sends that have begun.
+	srBlock   chan struct{}
+	srStarted atomic.Int32
 	// hasAudienceSpace, when set, backs HasAudienceSpace; nil means every
 	// audience is "unconfigured" (false) — same convention as
 	// internal/slaengine's own fakeChatSender.
@@ -152,10 +163,20 @@ func (m *mockGoogleChatSender) SendCaseAcknowledgedAlert(ctx context.Context, au
 	return m.err
 }
 
-func (m *mockGoogleChatSender) SendSeverityChangedAlert(ctx context.Context, audience, oldSeverityLabel, oldSeverityColor, newSeverityLabel, newSeverityColor, caseNumber, wso2CaseID, title, team, caseLink string) error {
+func (m *mockGoogleChatSender) SendSecurityReportAnalysisAcknowledgedAlert(ctx context.Context, audience, caseNumber, wso2CaseID, caseLink, acknowledgerName string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.severityChangedCalls = append(m.severityChangedCalls, sentSeverityChangedAlert{audience, oldSeverityLabel, oldSeverityColor, newSeverityLabel, newSeverityColor, caseNumber, wso2CaseID, title, team, caseLink})
+	// No severity fields on this card — recorded under the same
+	// sentCaseAcknowledgedAlert shape with both left blank, so existing
+	// assertions distinguishing the two calls can check severityLabel == "".
+	m.securityReportAnalysisAcknowledgedCalls = append(m.securityReportAnalysisAcknowledgedCalls, sentCaseAcknowledgedAlert{audience, "", "", caseNumber, wso2CaseID, caseLink, acknowledgerName})
+	return m.err
+}
+
+func (m *mockGoogleChatSender) SendSeverityChangedAlert(ctx context.Context, audience, oldSeverityLabel, oldSeverityColor, newSeverityLabel, newSeverityColor, caseNumber, wso2CaseID, productName, title, team, caseLink string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.severityChangedCalls = append(m.severityChangedCalls, sentSeverityChangedAlert{audience, oldSeverityLabel, oldSeverityColor, newSeverityLabel, newSeverityColor, caseNumber, wso2CaseID, productName, title, team, caseLink})
 	return m.err
 }
 
@@ -163,6 +184,63 @@ func (m *mockGoogleChatSender) SendFrustrationAlert(ctx context.Context, audienc
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.frustrationCalls = append(m.frustrationCalls, sentFrustrationAlert{audience, caseNumber, wso2CaseID, productName, reason, frustrationLevel, caseLink})
+	return m.err
+}
+
+// sentSRAlert records one sr.* card send: which method (kind), the audience,
+// and the card content (exactly one of the three alerts is set).
+type sentSRAlert struct {
+	kind     string
+	audience string
+	created  notifications.SRCreatedAlert
+	acked    notifications.SRAcknowledgedAlert
+	comment  notifications.SRCustomerCommentAlert
+}
+
+func (m *mockGoogleChatSender) recordSR(a sentSRAlert) error {
+	m.srStarted.Add(1)
+	if m.srBlock != nil {
+		<-m.srBlock
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.srCalls = append(m.srCalls, a)
+	return m.err
+}
+
+func (m *mockGoogleChatSender) SendSRCreatedAlert(ctx context.Context, audience string, a notifications.SRCreatedAlert) error {
+	return m.recordSR(sentSRAlert{kind: "created", audience: audience, created: a})
+}
+
+func (m *mockGoogleChatSender) SendSRAcknowledgedAlert(ctx context.Context, audience string, a notifications.SRAcknowledgedAlert) error {
+	return m.recordSR(sentSRAlert{kind: "acknowledged", audience: audience, acked: a})
+}
+
+func (m *mockGoogleChatSender) SendSRCustomerCommentAlert(ctx context.Context, audience string, a notifications.SRCustomerCommentAlert) error {
+	return m.recordSR(sentSRAlert{kind: "comment", audience: audience, comment: a})
+}
+
+type sentIncidentCreatedAlert struct {
+	audience string
+	alert    notifications.IncidentCreatedAlert
+}
+
+type sentIncidentAssignedAlert struct {
+	audience string
+	alert    notifications.IncidentAssignedAlert
+}
+
+func (m *mockGoogleChatSender) SendIncidentCreatedAlert(ctx context.Context, audience string, a notifications.IncidentCreatedAlert) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.incidentCreatedCalls = append(m.incidentCreatedCalls, sentIncidentCreatedAlert{audience, a})
+	return m.err
+}
+
+func (m *mockGoogleChatSender) SendIncidentAssignedAlert(ctx context.Context, audience string, a notifications.IncidentAssignedAlert) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.incidentAssignedCalls = append(m.incidentAssignedCalls, sentIncidentAssignedAlert{audience, a})
 	return m.err
 }
 
@@ -228,6 +306,14 @@ func (m *mockLinkResolver) OutageLink(outageID string) string {
 	return "https://csm.example/operations/outages/" + outageID
 }
 
+func (m *mockLinkResolver) IncidentLink(incidentID string) string {
+	return "https://csm.example/operations/incidents/" + incidentID
+}
+
+func (m *mockLinkResolver) ServiceRequestLink(caseID string) string {
+	return "https://csm.example/operations/service-requests/" + caseID
+}
+
 func (m *mockLinkResolver) ChangeRequestLink(audience, changeRequestID, projectID string) string {
 	if audience == "customer" && projectID != "" {
 		return "https://customer.example/projects/" + projectID + "/operations/change-requests/" + changeRequestID
@@ -257,6 +343,42 @@ const testRecipient = "test-recipient@example.com"
 
 func newTestDispatcher(email emailSender, chat googleChatSender, call callSender) *Dispatcher {
 	return NewDispatcher(email, chat, call, &mockLinkResolver{}, true, false, nil, true, "", nil)
+}
+
+// mockFullContentFetcher is a hand-written fake for fullContentFetcher —
+// the truncated-event re-fetch handleCaseCreated/handleCommentAdded make
+// when a payload's Description/CaseComment was stripped of an embedded
+// base64 image. descriptionErr/commentErr simulate the fetch itself failing
+// (e.g. entity-service unreachable), which the real dispatcher must fall
+// back from rather than fail or drop the notification over.
+type mockFullContentFetcher struct {
+	mu             sync.Mutex
+	description    string
+	descriptionErr error
+	comment        string
+	commentErr     error
+	caseCalls      []string
+	commentCalls   []string
+}
+
+func (m *mockFullContentFetcher) GetCaseDescription(_ context.Context, caseID string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.caseCalls = append(m.caseCalls, caseID)
+	if m.descriptionErr != nil {
+		return "", m.descriptionErr
+	}
+	return m.description, nil
+}
+
+func (m *mockFullContentFetcher) GetCommentContent(_ context.Context, commentID string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.commentCalls = append(m.commentCalls, commentID)
+	if m.commentErr != nil {
+		return "", m.commentErr
+	}
+	return m.comment, nil
 }
 
 func TestDispatcher_Handle_CaseCreated(t *testing.T) {
@@ -292,13 +414,93 @@ func TestDispatcher_Handle_CaseCreated(t *testing.T) {
 	}
 }
 
+// TestDispatcher_Handle_CaseCreated_TruncatedDescription_FetchesFullContentForEmail
+// is the regression guard for the fix to a real production bug: a case
+// description with an embedded base64 image blew past Event Hub's
+// per-message size limit and silently failed the whole case.created
+// publish. entity-service now strips the image and sets
+// descriptionTruncated — this asserts the dispatcher notices that flag and
+// fetches the full, original description (images included) for the email
+// instead of sending the stripped placeholder, calling the fetcher exactly
+// once regardless of how many recipient-link groups the event resolves to.
+func TestDispatcher_Handle_CaseCreated_TruncatedDescription_FetchesFullContentForEmail(t *testing.T) {
+	mock := &mockEmailSender{}
+	fetcher := &mockFullContentFetcher{description: `<p>Full description</p><img src="data:image/png;base64,realImageData">`}
+	d := newTestDispatcher(mock, &mockGoogleChatSender{}, &mockCallSender{}).WithFullContentFetcher(fetcher)
+
+	record := eventbus.Record{Value: []byte(`{"type":"case.created","entityId":"CASE-1","payload":{"reporterName":"Reporter","projectName":"Proj","projectId":"PROJ-1","caseId":"CASE-1","caseTitle":"Something broke","caseType":"CASE","priority":"HIGH","product":"api-manager","createdAt":"2026-01-01","description":"[Image not available in this notification]","descriptionTruncated":true,"recipients":["test-recipient@example.com"]}}`)}
+
+	if err := d.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if len(fetcher.caseCalls) != 1 || fetcher.caseCalls[0] != "CASE-1" {
+		t.Fatalf("expected GetCaseDescription called exactly once with CASE-1, got %v", fetcher.caseCalls)
+	}
+	if len(mock.calls) != 1 {
+		t.Fatalf("expected 1 email sent, got %d", len(mock.calls))
+	}
+	if strings.Contains(mock.calls[0].htmlBody, "not available") {
+		t.Error("expected the email to show the fetched full description, not the stripped placeholder")
+	}
+	if !strings.Contains(mock.calls[0].htmlBody, "Full description") {
+		t.Error("expected the email to contain the fetched full description's text")
+	}
+}
+
+// TestDispatcher_Handle_CaseCreated_TruncatedDescription_FetchFailureFallsBackToStrippedContent
+// verifies that a failed re-fetch degrades the email's content, never its
+// delivery: the notification must still send, using the (already safe)
+// stripped placeholder, rather than failing or dropping the record.
+func TestDispatcher_Handle_CaseCreated_TruncatedDescription_FetchFailureFallsBackToStrippedContent(t *testing.T) {
+	mock := &mockEmailSender{}
+	fetcher := &mockFullContentFetcher{descriptionErr: errors.New("entity-service unreachable")}
+	d := newTestDispatcher(mock, &mockGoogleChatSender{}, &mockCallSender{}).WithFullContentFetcher(fetcher)
+
+	record := eventbus.Record{Value: []byte(`{"type":"case.created","entityId":"CASE-1","payload":{"reporterName":"Reporter","projectName":"Proj","projectId":"PROJ-1","caseId":"CASE-1","caseTitle":"Something broke","caseType":"CASE","priority":"HIGH","product":"api-manager","createdAt":"2026-01-01","description":"[Image not available in this notification]","descriptionTruncated":true,"recipients":["test-recipient@example.com"]}}`)}
+
+	if err := d.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle() error = %v, want the notification to still send despite the failed re-fetch", err)
+	}
+	if len(mock.calls) != 1 {
+		t.Fatalf("expected 1 email still sent, got %d", len(mock.calls))
+	}
+	if !strings.Contains(mock.calls[0].htmlBody, "not available") {
+		t.Error("expected the email to fall back to the stripped placeholder text")
+	}
+}
+
+// TestDispatcher_Handle_CaseCreated_NotTruncated_NeverFetches verifies the
+// common, unremarkable case (no embedded image, descriptionTruncated unset)
+// never pays the extra entity-service round trip.
+func TestDispatcher_Handle_CaseCreated_NotTruncated_NeverFetches(t *testing.T) {
+	mock := &mockEmailSender{}
+	fetcher := &mockFullContentFetcher{description: "should never be used"}
+	d := newTestDispatcher(mock, &mockGoogleChatSender{}, &mockCallSender{}).WithFullContentFetcher(fetcher)
+
+	record := eventbus.Record{Value: []byte(`{"type":"case.created","entityId":"CASE-1","payload":{"reporterName":"Reporter","projectName":"Proj","projectId":"PROJ-1","caseId":"CASE-1","caseTitle":"Something broke","caseType":"CASE","priority":"HIGH","product":"api-manager","createdAt":"2026-01-01","description":"ordinary description","recipients":["test-recipient@example.com"]}}`)}
+
+	if err := d.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if len(fetcher.caseCalls) != 0 {
+		t.Errorf("expected no fetch when descriptionTruncated is unset, got %d call(s)", len(fetcher.caseCalls))
+	}
+	if !strings.Contains(mock.calls[0].htmlBody, "ordinary description") {
+		t.Error("expected the email to contain the untouched description")
+	}
+}
+
 // TestDispatcher_Handle_CaseCreated_NonCaseTypesSkipChatButStillEmail verifies
-// handleCaseCreated's CaseType gate: every non-"CASE" type (engagement,
-// service_request, security_report_analysis, announcement) sends no Google
-// Chat alert at all — explicit product direction, those types notify their
-// audience by email only — while the email reaction is unaffected.
+// handleCaseCreated's CaseType gate: every non-"CASE" type that gets no Chat
+// alert at all (engagement, service_request, announcement) sends neither
+// SendCaseCreatedAlert nor SendSecurityReportAnalysisAlert — explicit
+// product direction, those types notify their audience by email only —
+// while the email reaction is unaffected. security_report_analysis is
+// deliberately NOT in this list any more — it does get a Chat alert now,
+// just a dedicated one; see
+// TestDispatcher_Handle_CaseCreated_SecurityReportAnalysisGetsDedicatedChatCard.
 func TestDispatcher_Handle_CaseCreated_NonCaseTypesSkipChatButStillEmail(t *testing.T) {
-	for _, caseType := range []string{"ENGAGEMENT", "SERVICE_REQUEST", "SECURITY_REPORT_ANALYSIS", "ANNOUNCEMENT"} {
+	for _, caseType := range []string{"ENGAGEMENT", "SERVICE_REQUEST", "ANNOUNCEMENT"} {
 		t.Run(caseType, func(t *testing.T) {
 			email := &mockEmailSender{}
 			chat := &mockGoogleChatSender{}
@@ -320,6 +522,39 @@ func TestDispatcher_Handle_CaseCreated_NonCaseTypesSkipChatButStillEmail(t *test
 				t.Errorf("expected the email reaction to still fire for a %s case, got %d call(s)", caseType, len(email.calls))
 			}
 		})
+	}
+}
+
+// TestDispatcher_Handle_CaseCreated_SecurityReportAnalysisGetsDedicatedChatCard
+// verifies a security_report_analysis case.created now posts a Chat alert —
+// previously excluded alongside engagement/service_request/announcement —
+// through the dedicated SendSecurityReportAnalysisAlert card (no severity
+// line), never the plain SendCaseCreatedAlert one, alongside its usual email
+// reaction.
+func TestDispatcher_Handle_CaseCreated_SecurityReportAnalysisGetsDedicatedChatCard(t *testing.T) {
+	email := &mockEmailSender{}
+	chat := &mockGoogleChatSender{}
+	d := newTestDispatcher(email, chat, &mockCallSender{})
+
+	record := eventbus.Record{Value: []byte(`{"type":"case.created","entityId":"CASE-1","payload":{"reporterName":"Reporter","projectName":"Proj","projectId":"PROJ-1","caseId":"CASE-1","caseNumber":"CS0001001","wso2CaseId":"WSO2-1000","caseTitle":"Something broke","caseType":"SECURITY_REPORT_ANALYSIS","priority":"","product":"api-manager","team":"Team Nova","createdAt":"2026-01-01","description":"desc","recipients":["test-recipient@example.com"]}}`)}
+
+	if err := d.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+
+	if len(chat.caseCreatedCalls) != 0 {
+		t.Errorf("expected SendCaseCreatedAlert NOT to be called for a security_report_analysis case, got %d call(s)", len(chat.caseCreatedCalls))
+	}
+	if len(chat.securityReportAnalysisCalls) != 1 {
+		t.Fatalf("expected 1 SendSecurityReportAnalysisAlert call, got %d", len(chat.securityReportAnalysisCalls))
+	}
+	got := chat.securityReportAnalysisCalls[0]
+	if got.audience != chataudience.IncidentMonitor || got.caseNumber != "CS0001001" || got.wso2CaseID != "WSO2-1000" ||
+		got.productName != "api-manager" || got.team != "Team Nova" {
+		t.Errorf("unexpected SendSecurityReportAnalysisAlert args: %+v", got)
+	}
+	if len(email.calls) != 1 {
+		t.Errorf("expected the email reaction to still fire, got %d call(s)", len(email.calls))
 	}
 }
 
@@ -600,12 +835,67 @@ func TestDispatcher_Handle_CommentAdded(t *testing.T) {
 	}
 }
 
+// TestDispatcher_Handle_CommentAdded_TruncatedComment_FetchesFullContentForEmail
+// is handleCaseCreated's identical regression guard, for a comment's own
+// body: entity-service strips an embedded base64 image out of CaseComment
+// and sets caseCommentTruncated, and the dispatcher must fetch the full,
+// original comment (images included) for the email.
+func TestDispatcher_Handle_CommentAdded_TruncatedComment_FetchesFullContentForEmail(t *testing.T) {
+	mock := &mockEmailSender{}
+	fetcher := &mockFullContentFetcher{comment: `<p>Here's the real comment</p><img src="data:image/png;base64,realImageData">`}
+	d := newTestDispatcher(mock, &mockGoogleChatSender{}, &mockCallSender{}).WithFullContentFetcher(fetcher)
+
+	record := eventbus.Record{Value: []byte(`{"type":"case.comment_added","entityId":"CASE-1","payload":{"name":"Commenter","projectId":"PROJ-1","caseId":"CASE-1","caseTitle":"Something broke","caseComment":"[Image not available in this notification]","caseCommentTruncated":true,"commentId":"C-1","recipients":["test-recipient@example.com"]}}`)}
+
+	if err := d.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if len(fetcher.commentCalls) != 1 || fetcher.commentCalls[0] != "C-1" {
+		t.Fatalf("expected GetCommentContent called exactly once with C-1, got %v", fetcher.commentCalls)
+	}
+	if len(mock.calls) != 1 {
+		t.Fatalf("expected 1 email sent, got %d", len(mock.calls))
+	}
+	if strings.Contains(mock.calls[0].htmlBody, "not available") {
+		t.Error("expected the email to show the fetched full comment, not the stripped placeholder")
+	}
+	if !strings.Contains(mock.calls[0].htmlBody, "Here&#39;s the real comment") && !strings.Contains(mock.calls[0].htmlBody, "Here's the real comment") {
+		t.Errorf("expected the email to contain the fetched full comment's text, got %q", mock.calls[0].htmlBody)
+	}
+}
+
+// TestDispatcher_Handle_CommentAdded_TruncatedComment_FetchFailureFallsBackToStrippedContent
+// verifies the same must-still-send-on-fetch-failure guarantee as
+// handleCaseCreated's own fallback test, for a comment.
+func TestDispatcher_Handle_CommentAdded_TruncatedComment_FetchFailureFallsBackToStrippedContent(t *testing.T) {
+	mock := &mockEmailSender{}
+	fetcher := &mockFullContentFetcher{commentErr: errors.New("entity-service unreachable")}
+	d := newTestDispatcher(mock, &mockGoogleChatSender{}, &mockCallSender{}).WithFullContentFetcher(fetcher)
+
+	record := eventbus.Record{Value: []byte(`{"type":"case.comment_added","entityId":"CASE-1","payload":{"name":"Commenter","projectId":"PROJ-1","caseId":"CASE-1","caseTitle":"Something broke","caseComment":"[Image not available in this notification]","caseCommentTruncated":true,"commentId":"C-1","recipients":["test-recipient@example.com"]}}`)}
+
+	if err := d.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle() error = %v, want the notification to still send despite the failed re-fetch", err)
+	}
+	if len(mock.calls) != 1 {
+		t.Fatalf("expected 1 email still sent, got %d", len(mock.calls))
+	}
+	if !strings.Contains(mock.calls[0].htmlBody, "not available") {
+		t.Error("expected the email to fall back to the stripped placeholder text")
+	}
+}
+
 // mockSLAEngine is a hand-written fake for slaEngineService.
 type mockSLAEngine struct {
-	mu                    sync.Mutex
-	registerCalls         []struct{ caseID, priority, caseNumber string }
-	applyStateCalls       []struct{ caseID, newStatus string }
-	completeResponseCalls []string
+	mu                      sync.Mutex
+	registerCalls           []struct{ caseID, priority, caseNumber string }
+	applyStateCalls         []struct{ caseID, newStatus string }
+	completeResponseCalls   []string
+	completeWorkaroundCalls []string
+	// completeWorkaroundErr, when set, is returned by CompleteWorkaroundClock
+	// after still recording the call — simulates a Redis outage so a test
+	// can confirm the error actually propagates out of Handle.
+	completeWorkaroundErr error
 }
 
 func (m *mockSLAEngine) RegisterClocks(_ context.Context, caseID, priority string, _ time.Time, caseNumber, _, _, _, _, _ string) {
@@ -624,6 +914,13 @@ func (m *mockSLAEngine) CompleteResponseClock(_ context.Context, caseID string) 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.completeResponseCalls = append(m.completeResponseCalls, caseID)
+}
+
+func (m *mockSLAEngine) CompleteWorkaroundClock(_ context.Context, caseID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.completeWorkaroundCalls = append(m.completeWorkaroundCalls, caseID)
+	return m.completeWorkaroundErr
 }
 
 // TestDispatcher_Handle_CaseCreated_RegistersSLAClocksWhenConfigured verifies
@@ -716,6 +1013,61 @@ func TestDispatcher_Handle_CommentAdded_NotSupportEngineer_DoesNotCompleteRespon
 	}
 }
 
+// TestDispatcher_Handle_WorkaroundProvided_CompletesWorkaroundClock verifies
+// handleWorkaroundProvided calls slaEngine.CompleteWorkaroundClock with the
+// payload's own caseId — the fix for the case PATCH workaroundProvided:true
+// gap (entity-service's own Postgres-side SLA engine completed its clock,
+// but this engine's own Redis-based one never heard about it at all before
+// this event existed).
+func TestDispatcher_Handle_WorkaroundProvided_CompletesWorkaroundClock(t *testing.T) {
+	sla := &mockSLAEngine{}
+	d := newTestDispatcher(&mockEmailSender{}, &mockGoogleChatSender{}, &mockCallSender{}).WithSLAEngine(sla)
+
+	record := eventbus.Record{Value: []byte(`{"type":"case.workaround_provided","entityId":"CASE-1","payload":{"caseId":"CASE-1"}}`)}
+
+	if err := d.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if len(sla.completeWorkaroundCalls) != 1 || sla.completeWorkaroundCalls[0] != "CASE-1" {
+		t.Errorf("unexpected CompleteWorkaroundClock calls: %v", sla.completeWorkaroundCalls)
+	}
+}
+
+// TestDispatcher_Handle_WorkaroundProvided_NoEngineConfigured_NoError verifies
+// an unconfigured slaEngine (REDIS_ADDR/REDIS_URL unset) is a silent no-op,
+// same posture as every other slaEngine call site in this file.
+func TestDispatcher_Handle_WorkaroundProvided_NoEngineConfigured_NoError(t *testing.T) {
+	d := newTestDispatcher(&mockEmailSender{}, &mockGoogleChatSender{}, &mockCallSender{})
+
+	record := eventbus.Record{Value: []byte(`{"type":"case.workaround_provided","entityId":"CASE-1","payload":{"caseId":"CASE-1"}}`)}
+
+	if err := d.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+}
+
+// TestDispatcher_Handle_WorkaroundProvided_StoreFailure_ReturnsErrorForRetry
+// is the regression test for a CodeRabbit-caught gap: unlike its three
+// sibling triggers (RegisterClocks/ApplyStateEffects/CompleteResponseClock,
+// all genuinely best-effort), a lost workaround-provided signal has no
+// later event or reconciliation pass to re-derive it from, so a Redis
+// failure here must fail the whole Handle call — not be swallowed — so
+// eventbus.Consumer retries the record instead of silently acknowledging a
+// clock that was never actually completed.
+func TestDispatcher_Handle_WorkaroundProvided_StoreFailure_ReturnsErrorForRetry(t *testing.T) {
+	sla := &mockSLAEngine{completeWorkaroundErr: errors.New("redis: connection refused")}
+	d := newTestDispatcher(&mockEmailSender{}, &mockGoogleChatSender{}, &mockCallSender{}).WithSLAEngine(sla)
+
+	record := eventbus.Record{Value: []byte(`{"type":"case.workaround_provided","entityId":"CASE-1","payload":{"caseId":"CASE-1"}}`)}
+
+	if err := d.Handle(context.Background(), record); err == nil {
+		t.Fatal("expected Handle() to return an error so the record is retried, got nil")
+	}
+	if len(sla.completeWorkaroundCalls) != 1 || sla.completeWorkaroundCalls[0] != "CASE-1" {
+		t.Errorf("unexpected CompleteWorkaroundClock calls: %v", sla.completeWorkaroundCalls)
+	}
+}
+
 // mockEscalationDetector is a hand-written fake for escalationDetector.
 type mockEscalationDetector struct {
 	result escalation.Result
@@ -741,6 +1093,11 @@ func (m *mockEscalationDetector) callCount() int {
 	return len(m.calls)
 }
 
+// weekdayDaytime is a Wednesday at 11:00 IST, outside both the Americas
+// (21:00-06:00 IST) and weekend coverage windows, so chataudience.Resolve
+// adds no audience that depends on when the test happens to run.
+var weekdayDaytime = time.Date(2026, time.October, 14, 5, 30, 0, 0, time.UTC)
+
 // TestDispatcher_Handle_CommentAdded_FrustrationDetected_SendsChatAlert
 // verifies the full frustration-detection path: a customer-authored comment
 // is sent to the detector, and a ShouldAlert result sends a Chat alert routed
@@ -755,6 +1112,7 @@ func TestDispatcher_Handle_CommentAdded_FrustrationDetected_SendsChatAlert(t *te
 	}}
 	d := NewDispatcher(&mockEmailSender{}, chat, &mockCallSender{}, links, true, false, nil, true, "", nil).
 		WithFrustrationDetection(detector)
+	d.now = func() time.Time { return weekdayDaytime }
 
 	record := eventbus.Record{Value: []byte(`{"type":"case.comment_added","entityId":"CASE-1","payload":{"name":"Commenter","projectId":"PROJ-1","caseId":"CASE-1","caseNumber":"CS0001","caseTitle":"Something broke","caseComment":"this is unacceptable, still no update","commentId":"C-1","recipients":["test-recipient@example.com"],"authorEmail":"customer@acme.com","product":"WSO2 API Manager"}}`)}
 
@@ -773,6 +1131,59 @@ func TestDispatcher_Handle_CommentAdded_FrustrationDetected_SendsChatAlert(t *te
 	}
 	if got.reason != "Repeated unanswered follow-ups" || got.frustrationLevel != 0.91 {
 		t.Errorf("unexpected SendFrustrationAlert args: %+v", got)
+	}
+}
+
+// TestDispatcher_Handle_CommentAdded_FrustrationDetected_MigrationEngagementRoutesToMigrationAudience
+// verifies isMigrationEngagementComment's own routing override: a frustration
+// alert on a migration engagement (caseType "ENGAGEMENT", engagementType
+// "migration") goes to chataudience.Migration alone, even though the payload
+// carries a real Team that would otherwise resolve via chataudience.Resolve.
+func TestDispatcher_Handle_CommentAdded_FrustrationDetected_MigrationEngagementRoutesToMigrationAudience(t *testing.T) {
+	chat := &mockGoogleChatSender{}
+	links := &mockLinkResolver{isCustomer: true}
+	detector := &mockEscalationDetector{result: escalation.Result{
+		IsFrustrated: true, FrustratedLevel: 0.91, Reason: "Repeated unanswered follow-ups", ShouldAlert: true,
+	}}
+	d := NewDispatcher(&mockEmailSender{}, chat, &mockCallSender{}, links, true, false, nil, true, "", nil).
+		WithFrustrationDetection(detector)
+
+	record := eventbus.Record{Value: []byte(`{"type":"case.comment_added","entityId":"CASE-1","payload":{"name":"Commenter","projectId":"PROJ-1","caseId":"CASE-1","caseNumber":"CS0001","caseTitle":"Migration stalled","caseComment":"this is unacceptable, still no update","commentId":"C-1","recipients":["test-recipient@example.com"],"authorEmail":"customer@acme.com","product":"WSO2 API Manager","team":"Castor","caseType":"ENGAGEMENT","engagementType":"migration"}}`)}
+
+	if err := d.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if len(chat.frustrationCalls) != 1 {
+		t.Fatalf("expected 1 frustration Chat alert, got %d", len(chat.frustrationCalls))
+	}
+	if got := chat.frustrationCalls[0].audience; got != chataudience.Migration {
+		t.Errorf("audience = %q, want %q (migration engagement overrides team routing)", got, chataudience.Migration)
+	}
+}
+
+// TestIsMigrationEngagementComment pins the match rule: case type
+// "engagement" (case/whitespace-insensitive) and engagement type "migration"
+// (same), every other combination false.
+func TestIsMigrationEngagementComment(t *testing.T) {
+	testCases := []struct {
+		name           string
+		caseType       string
+		engagementType string
+		want           bool
+	}{
+		{"exact match", "ENGAGEMENT", "migration", true},
+		{"case/whitespace insensitive", "  engagement ", " Migration ", true},
+		{"wrong case type", "CASE", "migration", false},
+		{"wrong engagement type", "ENGAGEMENT", "consultancy", false},
+		{"both empty", "", "", false},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := events.CommentAddedPayload{CaseType: tc.caseType, EngagementType: tc.engagementType}
+			if got := isMigrationEngagementComment(p); got != tc.want {
+				t.Errorf("isMigrationEngagementComment(%q, %q) = %v, want %v", tc.caseType, tc.engagementType, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -846,6 +1257,7 @@ func TestDispatcher_Handle_CommentAdded_FrustrationDetection_NotRepeatedWhenEmai
 	detector := &mockEscalationDetector{result: escalation.Result{ShouldAlert: true, Reason: "Repeated unanswered follow-ups", FrustratedLevel: 0.91}}
 	d := NewDispatcher(email, chat, &mockCallSender{}, links, true, false, nil, true, "", nil).
 		WithFrustrationDetection(detector)
+	d.now = func() time.Time { return weekdayDaytime }
 
 	record := eventbus.Record{Topic: "case-events", Partition: 1, Offset: 7, Value: []byte(`{"type":"case.comment_added","entityId":"CASE-1","payload":{"name":"Commenter","projectId":"PROJ-1","caseId":"CASE-1","caseNumber":"CS0001","caseTitle":"Something broke","caseComment":"still no update, unacceptable","commentId":"C-1","recipients":["test-recipient@example.com"],"authorEmail":"customer@acme.com","product":"WSO2 API Manager"}}`)}
 
@@ -938,6 +1350,58 @@ func TestDispatcher_Handle_CommentAdded_InternalNote_UsesInternalNoteLayout(t *t
 	}
 	if !strings.Contains(body, "internal only") {
 		t.Error("htmlBody does not contain the note's own content")
+	}
+}
+
+// TestDispatcher_Handle_CommentAdded_InternalNote_NeverEmailsACustomerRecipient
+// is the regression test for a real reported leak: a work note's email was
+// reaching customer-portal recipients. groupByLink already classifies every
+// recipient into its own portal-audience group (role-first, domain
+// fallback — recipientlinks.Resolver's own "roles with internal"
+// classification), so an internal note now keeps only the CSM-portal
+// group before sending, regardless of what entity-service's own Recipients
+// list contained.
+func TestDispatcher_Handle_CommentAdded_InternalNote_NeverEmailsACustomerRecipient(t *testing.T) {
+	mock := &mockEmailSender{}
+	links := &mockLinkResolver{linkFor: func(email string) string {
+		if email == "customer@acme.com" {
+			return "https://customer.example/projects/PROJ-1/support/cases/CASE-1"
+		}
+		return "https://csm.example/cases/CASE-1"
+	}}
+	d := NewDispatcher(mock, &mockGoogleChatSender{}, &mockCallSender{}, links, true, false, nil, true, "", nil)
+
+	record := eventbus.Record{Value: []byte(`{"type":"case.comment_added","entityId":"CASE-1","payload":{"name":"Agent","projectId":"PROJ-1","caseId":"CASE-1","caseNumber":"CS0001001","wso2CaseId":"WSO2-1000","caseTitle":"Something broke","caseComment":"internal only","commentId":"C-1","isInternalNote":true,"recipients":["agent@wso2.com","customer@acme.com"]}}`)}
+
+	if err := d.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if len(mock.calls) != 1 {
+		t.Fatalf("expected exactly 1 email sent (the CSM-portal group only), got %d", len(mock.calls))
+	}
+	to := mock.calls[0].to
+	if len(to) != 1 || to[0] != "agent@wso2.com" {
+		t.Errorf("to = %v, want only [agent@wso2.com] — the customer-portal recipient must never be emailed an internal note", to)
+	}
+}
+
+// TestDispatcher_Handle_CommentAdded_InternalNote_SendsNothingWhenAllRecipientsAreCustomers
+// is the all-external edge case: sendPerGroup over an empty map is a
+// no-op, not an error.
+func TestDispatcher_Handle_CommentAdded_InternalNote_SendsNothingWhenAllRecipientsAreCustomers(t *testing.T) {
+	mock := &mockEmailSender{}
+	links := &mockLinkResolver{linkFor: func(email string) string {
+		return "https://customer.example/projects/PROJ-1/support/cases/CASE-1"
+	}}
+	d := NewDispatcher(mock, &mockGoogleChatSender{}, &mockCallSender{}, links, true, false, nil, true, "", nil)
+
+	record := eventbus.Record{Value: []byte(`{"type":"case.comment_added","entityId":"CASE-1","payload":{"name":"Agent","projectId":"PROJ-1","caseId":"CASE-1","caseNumber":"CS0001001","wso2CaseId":"WSO2-1000","caseTitle":"Something broke","caseComment":"internal only","commentId":"C-1","isInternalNote":true,"recipients":["customer@acme.com"]}}`)}
+
+	if err := d.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if len(mock.calls) != 0 {
+		t.Fatalf("expected 0 emails sent when every recipient is a customer, got %d", len(mock.calls))
 	}
 }
 
@@ -1039,6 +1503,32 @@ func TestDispatcher_Handle_CaseAcknowledged_BlankSeverityRendersUnknownNotEmpty(
 	}
 }
 
+// TestDispatcher_Handle_CaseAcknowledged_SecurityReportAnalysisOmitsSeverity
+// verifies a security_report_analysis ack event posts the dedicated
+// SendSecurityReportAnalysisAcknowledgedAlert card — which has no severity
+// line at all — instead of SendCaseAcknowledgedAlert's own "Unknown"
+// fallback for a type that never carries a severity.
+func TestDispatcher_Handle_CaseAcknowledged_SecurityReportAnalysisOmitsSeverity(t *testing.T) {
+	chat := &mockGoogleChatSender{}
+	d := newTestDispatcher(&mockEmailSender{}, chat, &mockCallSender{})
+
+	record := eventbus.Record{Value: []byte(`{"type":"case.acknowledged","entityId":"CASE-1","payload":{"caseId":"CASE-1","caseNumber":"CS0001001","wso2CaseId":"WSO2-1000","caseType":"SECURITY_REPORT_ANALYSIS","acknowledgerName":"Jane Doe"}}`)}
+
+	if err := d.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if len(chat.caseAcknowledgedCalls) != 0 {
+		t.Errorf("expected SendCaseAcknowledgedAlert NOT to be called for a security_report_analysis case, got %d call(s)", len(chat.caseAcknowledgedCalls))
+	}
+	if len(chat.securityReportAnalysisAcknowledgedCalls) != 1 {
+		t.Fatalf("expected 1 SendSecurityReportAnalysisAcknowledgedAlert call, got %d", len(chat.securityReportAnalysisAcknowledgedCalls))
+	}
+	got := chat.securityReportAnalysisAcknowledgedCalls[0]
+	if got.audience != chataudience.IncidentMonitor || got.caseNumber != "CS0001001" || got.wso2CaseID != "WSO2-1000" || got.acknowledgerName != "Jane Doe" {
+		t.Errorf("unexpected SendSecurityReportAnalysisAcknowledgedAlert args: %+v", got)
+	}
+}
+
 // TestDispatcher_Handle_CaseAcknowledged_ForgetsAfterFullSuccess mirrors
 // TestDispatcher_Handle_CaseCreated_ForgetsAfterFullSuccess: once
 // case.acknowledged's one and only reaction (the Chat alert) succeeds, its
@@ -1091,7 +1581,7 @@ func TestDispatcher_Handle_SeverityChanged(t *testing.T) {
 	chat := &mockGoogleChatSender{}
 	d := newTestDispatcher(mock, chat, &mockCallSender{})
 
-	record := eventbus.Record{Value: []byte(`{"type":"case.severity_changed","entityId":"CASE-1","payload":{"projectId":"PROJ-1","caseId":"CASE-1","caseNumber":"CS0001001","wso2CaseId":"WSO2-1000","caseTitle":"Something broke","oldSeverity":"HIGH","newSeverity":"LOW","product":"api-manager","recipients":["test-recipient@example.com"]}}`)}
+	record := eventbus.Record{Value: []byte(`{"type":"case.severity_changed","entityId":"CASE-1","payload":{"projectId":"PROJ-1","caseId":"CASE-1","caseNumber":"CS0001001","wso2CaseId":"WSO2-1000","caseTitle":"Something broke","oldSeverity":"LOW","newSeverity":"HIGH","product":"api-manager","recipients":["test-recipient@example.com"]}}`)}
 
 	if err := d.Handle(context.Background(), record); err != nil {
 		t.Fatalf("Handle() error = %v", err)
@@ -1104,7 +1594,7 @@ func TestDispatcher_Handle_SeverityChanged(t *testing.T) {
 	if len(gotEmail.to) != 1 || gotEmail.to[0] != testRecipient {
 		t.Errorf("to = %v, want [%s]", gotEmail.to, testRecipient)
 	}
-	if !strings.Contains(gotEmail.htmlBody, "High(S2)") || !strings.Contains(gotEmail.htmlBody, "Low(S4)") {
+	if !strings.Contains(gotEmail.htmlBody, "Low(S4)") || !strings.Contains(gotEmail.htmlBody, "High(S2)") {
 		t.Error("htmlBody does not contain both the old and new severity labels")
 	}
 
@@ -1112,8 +1602,61 @@ func TestDispatcher_Handle_SeverityChanged(t *testing.T) {
 		t.Fatalf("expected 1 Google Chat alert sent, got %d", len(chat.severityChangedCalls))
 	}
 	gotChat := chat.severityChangedCalls[0]
-	if gotChat.audience != chataudience.IncidentMonitor || gotChat.oldSeverityLabel != "High (P2)" || gotChat.newSeverityLabel != "Low (P4)" || gotChat.caseLink != "https://csm.example/cases/CASE-1" {
+	if gotChat.audience != chataudience.IncidentMonitor || gotChat.oldSeverityLabel != "Low (P4)" || gotChat.newSeverityLabel != "High (P2)" || gotChat.caseLink != "https://csm.example/cases/CASE-1" {
 		t.Errorf("unexpected SendSeverityChangedAlert args: %+v", gotChat)
+	}
+	if gotChat.productName != "api-manager" {
+		t.Errorf("SendSeverityChangedAlert productName = %q, want the payload's product %q", gotChat.productName, "api-manager")
+	}
+}
+
+// TestDispatcher_Handle_SeverityChanged_ChatByNewSeverity covers the product
+// rule: a move TO low severity (S4) posts no Incident Monitor chat, a move to
+// any of S0-S3 (including an upgrade out of S4) does. The email reaction is
+// independent and always happens.
+func TestDispatcher_Handle_SeverityChanged_ChatByNewSeverity(t *testing.T) {
+	tests := []struct {
+		name         string
+		oldSev       string
+		newSev       string
+		wantChatSent bool
+	}{
+		{"S2 to S4 skipped", "HIGH", "LOW", false},
+		{"S1 to S4 skipped", "CRITICAL", "LOW", false},
+		{"S0 to S4 skipped", "CATASTROPHIC", "LOW", false},
+		{"S3 to S4 skipped", "MEDIUM", "LOW", false},
+		{"lowercase new severity skipped", "HIGH", " low ", false},
+		{"S4 to S2 sent", "LOW", "HIGH", true},
+		{"S4 to S0 sent", "LOW", "CATASTROPHIC", true},
+		{"S3 to S2 sent", "MEDIUM", "HIGH", true},
+		{"S2 to S0 sent", "HIGH", "CATASTROPHIC", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := &mockEmailSender{}
+			chat := &mockGoogleChatSender{}
+			d := newTestDispatcher(mock, chat, &mockCallSender{})
+
+			payload := fmt.Sprintf(`{"type":"case.severity_changed","entityId":"CASE-1","payload":{"projectId":"PROJ-1","caseId":"CASE-1","caseNumber":"CS0001001","oldSeverity":%q,"newSeverity":%q,"product":"api-manager","recipients":["test-recipient@example.com"]}}`, tt.oldSev, tt.newSev)
+			record := eventbus.Record{Topic: "case-events", Partition: 1, Offset: 7, Value: []byte(payload)}
+
+			if err := d.Handle(context.Background(), record); err != nil {
+				t.Fatalf("Handle() error = %v", err)
+			}
+			wantChats := 0
+			if tt.wantChatSent {
+				wantChats = 1
+			}
+			if got := len(chat.severityChangedCalls); got != wantChats {
+				t.Errorf("chat alerts = %d, want %d", got, wantChats)
+			}
+			if len(mock.calls) != 1 {
+				t.Errorf("emails sent = %d, want 1 (email is independent of the chat rule)", len(mock.calls))
+			}
+			if len(d.done) != 0 {
+				t.Errorf("done map should be empty after full success, has %d entries", len(d.done))
+			}
+		})
 	}
 }
 
@@ -1125,7 +1668,7 @@ func TestDispatcher_Handle_SeverityChanged_ChatFailureStillSendsEmail(t *testing
 	chat := &mockGoogleChatSender{err: errors.New("webhook unreachable")}
 	d := newTestDispatcher(mock, chat, &mockCallSender{})
 
-	record := eventbus.Record{Value: []byte(`{"type":"case.severity_changed","entityId":"CASE-1","payload":{"projectId":"PROJ-1","caseId":"CASE-1","oldSeverity":"HIGH","newSeverity":"LOW","product":"api-manager","recipients":["test-recipient@example.com"]}}`)}
+	record := eventbus.Record{Value: []byte(`{"type":"case.severity_changed","entityId":"CASE-1","payload":{"projectId":"PROJ-1","caseId":"CASE-1","oldSeverity":"LOW","newSeverity":"HIGH","product":"api-manager","recipients":["test-recipient@example.com"]}}`)}
 
 	if err := d.Handle(context.Background(), record); err == nil {
 		t.Fatal("expected the chat error to propagate")
@@ -1145,7 +1688,7 @@ func TestDispatcher_Handle_SeverityChanged_EmailFailureStillSendsChat(t *testing
 	links := &mockLinkResolver{err: errors.New("entity-service unreachable")}
 	d := NewDispatcher(&mockEmailSender{}, chat, &mockCallSender{}, links, true, false, nil, true, "", nil)
 
-	record := eventbus.Record{Value: []byte(`{"type":"case.severity_changed","entityId":"CASE-1","payload":{"projectId":"PROJ-1","caseId":"CASE-1","oldSeverity":"HIGH","newSeverity":"LOW","product":"api-manager","recipients":["test-recipient@example.com"]}}`)}
+	record := eventbus.Record{Value: []byte(`{"type":"case.severity_changed","entityId":"CASE-1","payload":{"projectId":"PROJ-1","caseId":"CASE-1","oldSeverity":"LOW","newSeverity":"HIGH","product":"api-manager","recipients":["test-recipient@example.com"]}}`)}
 
 	if err := d.Handle(context.Background(), record); err == nil {
 		t.Fatal("expected the link-resolution error to propagate")
@@ -1162,7 +1705,7 @@ func TestDispatcher_Handle_SeverityChanged_ForgetsAfterFullSuccess(t *testing.T)
 	chat := &mockGoogleChatSender{}
 	d := newTestDispatcher(mock, chat, &mockCallSender{})
 
-	record := eventbus.Record{Topic: "case-events", Partition: 1, Offset: 42, Value: []byte(`{"type":"case.severity_changed","entityId":"CASE-1","payload":{"projectId":"PROJ-1","caseId":"CASE-1","oldSeverity":"HIGH","newSeverity":"LOW","product":"api-manager","recipients":["test-recipient@example.com"]}}`)}
+	record := eventbus.Record{Topic: "case-events", Partition: 1, Offset: 42, Value: []byte(`{"type":"case.severity_changed","entityId":"CASE-1","payload":{"projectId":"PROJ-1","caseId":"CASE-1","oldSeverity":"LOW","newSeverity":"HIGH","product":"api-manager","recipients":["test-recipient@example.com"]}}`)}
 
 	if err := d.Handle(context.Background(), record); err != nil {
 		t.Fatalf("Handle() error = %v", err)
@@ -1748,11 +2291,35 @@ func (s *blockingCaseAcknowledgedChatSender) SendCaseAcknowledgedAlert(ctx conte
 	return nil
 }
 
-func (s *blockingCaseAcknowledgedChatSender) SendSeverityChangedAlert(ctx context.Context, product, oldSeverityLabel, oldSeverityColor, newSeverityLabel, newSeverityColor, caseNumber, wso2CaseID, title, team, caseLink string) error {
+func (s *blockingCaseAcknowledgedChatSender) SendSecurityReportAnalysisAcknowledgedAlert(ctx context.Context, product, caseNumber, wso2CaseID, caseLink, acknowledgerName string) error {
+	return nil
+}
+
+func (s *blockingCaseAcknowledgedChatSender) SendSeverityChangedAlert(ctx context.Context, product, oldSeverityLabel, oldSeverityColor, newSeverityLabel, newSeverityColor, caseNumber, wso2CaseID, productName, title, team, caseLink string) error {
 	return nil
 }
 
 func (s *blockingCaseAcknowledgedChatSender) SendFrustrationAlert(ctx context.Context, audience, caseNumber, wso2CaseID, productName, reason string, frustrationLevel float64, caseLink string) error {
+	return nil
+}
+
+func (s *blockingCaseAcknowledgedChatSender) SendSRCreatedAlert(ctx context.Context, audience string, a notifications.SRCreatedAlert) error {
+	return nil
+}
+
+func (s *blockingCaseAcknowledgedChatSender) SendSRAcknowledgedAlert(ctx context.Context, audience string, a notifications.SRAcknowledgedAlert) error {
+	return nil
+}
+
+func (s *blockingCaseAcknowledgedChatSender) SendSRCustomerCommentAlert(ctx context.Context, audience string, a notifications.SRCustomerCommentAlert) error {
+	return nil
+}
+
+func (s *blockingCaseAcknowledgedChatSender) SendIncidentCreatedAlert(ctx context.Context, audience string, a notifications.IncidentCreatedAlert) error {
+	return nil
+}
+
+func (s *blockingCaseAcknowledgedChatSender) SendIncidentAssignedAlert(ctx context.Context, audience string, a notifications.IncidentAssignedAlert) error {
 	return nil
 }
 

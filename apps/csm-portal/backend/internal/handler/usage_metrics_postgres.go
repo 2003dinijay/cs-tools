@@ -37,7 +37,7 @@ type entityUsageMetricsClient interface {
 	SearchDeployedProductUsageCounts(ctx context.Context, deployedProductID string, body []byte) ([]byte, error)
 }
 
-// postgresUsageMetricsClient implements usageMetricsServiceNowClient by
+// postgresUsageMetricsClient implements usageMetricsClient by
 // calling entity-service (Postgres) instead of ServiceNow's custom
 // x_wso2_customer_0 scoped-app API directly.
 //
@@ -115,7 +115,7 @@ type usageMetricsProjectTypeahead struct {
 	Number           string `json:"number"`
 }
 
-// GetAllProjects implements usageMetricsServiceNowClient.
+// GetAllProjects implements usageMetricsClient.
 func (c *postgresUsageMetricsClient) GetAllProjects(ctx context.Context, search string) ([]byte, error) {
 	req := entitySearchProjectsRequest{
 		Pagination:  entityPagination{Limit: 30, Offset: 0},
@@ -181,7 +181,7 @@ type snProjectsSearchResponse struct {
 	Limit        int                 `json:"limit"`
 }
 
-// SearchUsageMetricsProjects implements usageMetricsServiceNowClient.
+// SearchUsageMetricsProjects implements usageMetricsClient.
 func (c *postgresUsageMetricsClient) SearchUsageMetricsProjects(ctx context.Context, payload []byte) ([]byte, error) {
 	var in snProjectSearchRequest
 	if err := json.Unmarshal(payload, &in); err != nil {
@@ -232,6 +232,13 @@ type snDeploymentsSearchRequest struct {
 type entityDeploymentsSearchRequest struct {
 	Pagination entityPagination `json:"pagination"`
 	ProjectIDs []string         `json:"projectIds"`
+	// IncludeInactive mirrors entity-service's own
+	// SearchDeploymentsRequest.IncludeInactive -- additive, omitted/false
+	// reproduces entity-service's default (is_active = TRUE only) exactly,
+	// so this field only affects a call site that explicitly sets it (the
+	// customer-health EOL-product check in customer_health_postgres.go).
+	// Usage Metrics itself never sets it.
+	IncludeInactive bool `json:"includeInactive,omitempty"`
 }
 
 // entityDeploymentView mirrors entity-service's domain.DeploymentView, minus
@@ -305,7 +312,7 @@ type snDeploymentsSearchResponse struct {
 	Limit        int                `json:"limit"`
 }
 
-// SearchUsageMetricsDeployments implements usageMetricsServiceNowClient.
+// SearchUsageMetricsDeployments implements usageMetricsClient.
 func (c *postgresUsageMetricsClient) SearchUsageMetricsDeployments(ctx context.Context, payload []byte) ([]byte, error) {
 	var in snDeploymentsSearchRequest
 	if err := json.Unmarshal(payload, &in); err != nil {
@@ -432,7 +439,7 @@ type snDeployedProductsSearchResponse struct {
 	Limit            int                     `json:"limit"`
 }
 
-// SearchUsageMetricsDeployedProducts implements usageMetricsServiceNowClient.
+// SearchUsageMetricsDeployedProducts implements usageMetricsClient.
 func (c *postgresUsageMetricsClient) SearchUsageMetricsDeployedProducts(ctx context.Context, payload []byte) ([]byte, error) {
 	var in snDeployedProductsSearchRequest
 	if err := json.Unmarshal(payload, &in); err != nil {
@@ -524,7 +531,7 @@ type snInstancesSearchResponse struct {
 	TotalRecords int          `json:"totalRecords"`
 }
 
-// SearchUsageMetricsInstances implements usageMetricsServiceNowClient. The
+// SearchUsageMetricsInstances implements usageMetricsClient. The
 // request shape (filters nested under "filters", filters itself optional)
 // already matches entity-service's domain.SearchInstancesRequest exactly, so
 // it is round-tripped through a typed struct only to validate shape, not
@@ -610,7 +617,7 @@ type entityInstanceMetricsResponse struct {
 	EndDate        string                 `json:"endDate"`
 }
 
-// SearchInstanceMetrics implements usageMetricsServiceNowClient.
+// SearchInstanceMetrics implements usageMetricsClient.
 func (c *postgresUsageMetricsClient) SearchInstanceMetrics(ctx context.Context, payload []byte) ([]byte, error) {
 	var req struct {
 		Filters entityUsageMetricsFilters `json:"filters"`
@@ -664,7 +671,7 @@ type entityInstanceUsageResponse struct {
 	EndDate        string                     `json:"endDate"`
 }
 
-// SearchInstanceUsages implements usageMetricsServiceNowClient.
+// SearchInstanceUsages implements usageMetricsClient.
 func (c *postgresUsageMetricsClient) SearchInstanceUsages(ctx context.Context, payload []byte) ([]byte, error) {
 	var req struct {
 		Filters entityUsageMetricsFilters `json:"filters"`
@@ -735,7 +742,7 @@ type snMetricsStatsResponse struct {
 	EndDate      string                    `json:"endDate"`
 }
 
-// GetInstanceMetricsStats implements usageMetricsServiceNowClient.
+// GetInstanceMetricsStats implements usageMetricsClient.
 func (c *postgresUsageMetricsClient) GetInstanceMetricsStats(ctx context.Context, payload []byte) ([]byte, error) {
 	var req struct {
 		Filters entityInstanceStatsFilters `json:"filters"`
@@ -790,7 +797,7 @@ type snUsagesStatsResponse struct {
 	EndDate      string                    `json:"endDate"`
 }
 
-// GetInstanceUsagesStats implements usageMetricsServiceNowClient.
+// GetInstanceUsagesStats implements usageMetricsClient.
 func (c *postgresUsageMetricsClient) GetInstanceUsagesStats(ctx context.Context, payload []byte) ([]byte, error) {
 	var req struct {
 		Filters entityInstanceStatsFilters `json:"filters"`
@@ -874,7 +881,7 @@ type entityDeployedProductChartEntry struct {
 	Instances     []entityDeployedProductMetricsInstance `json:"instances"`
 }
 
-// GetDeployedProductMetrics implements usageMetricsServiceNowClient.
+// GetDeployedProductMetrics implements usageMetricsClient.
 func (c *postgresUsageMetricsClient) GetDeployedProductMetrics(ctx context.Context, deployedProductID string, payload []byte) ([]byte, error) {
 	var req entityDeployedProductMetricsRequest
 	if err := json.Unmarshal(payload, &req); err != nil {
@@ -937,7 +944,7 @@ type entityDeployedProductUsageCountsResponse struct {
 	ChartData       []entityDeployedProductUsageCountsChartEntry `json:"chartData"`
 }
 
-// GetDeployedProductUsageCounts implements usageMetricsServiceNowClient.
+// GetDeployedProductUsageCounts implements usageMetricsClient.
 func (c *postgresUsageMetricsClient) GetDeployedProductUsageCounts(ctx context.Context, deployedProductID string, payload []byte) ([]byte, error) {
 	var req entityDeployedProductMetricsRequest
 	if err := json.Unmarshal(payload, &req); err != nil {

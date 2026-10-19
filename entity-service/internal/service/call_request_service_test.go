@@ -35,6 +35,7 @@ type stubCallRequestRepo struct {
 	updateCallRequest               func(ctx context.Context, req domain.UpdateCallRequestRequest, assigneeID *string, callerEmail string) (domain.UpdateCallRequestResponse, error)
 	setCallRequestSNSysID           func(ctx context.Context, id, snSysID string) error
 	getCallRequestSNSysID           func(ctx context.Context, id string) (*string, error)
+	searchAllCallRequests           func(ctx context.Context, f domain.SearchAllCallRequestsFilters, sortBy domain.CallRequestSort, p domain.Pagination) ([]domain.CallRequestView, int, error)
 }
 
 func (s *stubCallRequestRepo) CreateCallRequest(ctx context.Context, req domain.CreateCallRequestRequest, callerID, callerEmail string) (domain.CreateCallRequestResponse, error) {
@@ -52,7 +53,10 @@ func (s *stubCallRequestRepo) CreateCallRequestFromServiceNow(ctx context.Contex
 func (s *stubCallRequestRepo) SearchCallRequests(context.Context, string, []domain.CallRequestStateType, domain.Pagination) ([]domain.CallRequestView, int, error) {
 	panic("not implemented")
 }
-func (s *stubCallRequestRepo) SearchAllCallRequests(context.Context, domain.SearchAllCallRequestsFilters, domain.CallRequestSort, domain.Pagination) ([]domain.CallRequestView, int, error) {
+func (s *stubCallRequestRepo) SearchAllCallRequests(ctx context.Context, f domain.SearchAllCallRequestsFilters, sortBy domain.CallRequestSort, p domain.Pagination) ([]domain.CallRequestView, int, error) {
+	if s.searchAllCallRequests != nil {
+		return s.searchAllCallRequests(ctx, f, sortBy, p)
+	}
 	panic("not implemented")
 }
 func (s *stubCallRequestRepo) UpdateCallRequest(ctx context.Context, req domain.UpdateCallRequestRequest, assigneeID *string, callerEmail string) (domain.UpdateCallRequestResponse, error) {
@@ -221,10 +225,12 @@ func TestCallRequestService_SearchValidation(t *testing.T) {
 	})
 	requireErrKind(t, "search invalid state", err, &apierror.ValidationError{})
 
+	// assignmentTeamIds is supported (the case's account CRE team), so only a
+	// malformed id is refused here -- a well-formed one goes on to the repository.
 	_, err = svc.SearchAllCallRequests(ctx, domain.SearchAllCallRequestsRequest{
-		Filters: domain.SearchAllCallRequestsFilters{AssignmentTeamIDs: []string{testUUID}},
+		Filters: domain.SearchAllCallRequestsFilters{AssignmentTeamIDs: []string{"not-a-uuid"}},
 	})
-	requireErrKind(t, "search-all assignmentTeamIds is unsupported, not silently ignored", err, &apierror.ValidationError{})
+	requireErrKind(t, "search-all malformed assignmentTeamIds", err, &apierror.ValidationError{})
 
 	_, err = svc.SearchAllCallRequests(ctx, domain.SearchAllCallRequestsRequest{
 		Filters: domain.SearchAllCallRequestsFilters{CaseStates: []domain.CaseState{"bogus"}},
@@ -235,6 +241,63 @@ func TestCallRequestService_SearchValidation(t *testing.T) {
 		SortBy: domain.CallRequestSort{Field: "bogus"},
 	})
 	requireErrKind(t, "search-all invalid sort field", err, &apierror.ValidationError{})
+}
+
+// TestCallRequestService_SearchAll_PassesTeamAndAssigneeFiltersToTheRepo guards the
+// "Calls To Attend" and "My Call Requests" dashboard widgets (digiops-cs#3314). A
+// valid assignmentTeamIds used to be refused with a 400 before it ever reached the
+// repository, which the widget showed as "Could not load this widget"; the
+// validation-error test above passes against that old behaviour too (it also
+// returned a ValidationError), so this one asserts the positive path in the default
+// suite, which has no database: the filters the widgets send arrive at the
+// repository unchanged, and the service does not turn them into an error.
+func TestCallRequestService_SearchAll_PassesTeamAndAssigneeFiltersToTheRepo(t *testing.T) {
+	const otherUUID = "22222222-2222-4222-8222-222222222222"
+	var got domain.SearchAllCallRequestsFilters
+	calls := 0
+	svc := &callRequestService{repo: &stubCallRequestRepo{
+		searchAllCallRequests: func(_ context.Context, f domain.SearchAllCallRequestsFilters, _ domain.CallRequestSort, _ domain.Pagination) ([]domain.CallRequestView, int, error) {
+			calls++
+			got = f
+			return []domain.CallRequestView{{ID: testUUID}}, 1, nil
+		},
+	}}
+
+	want := domain.SearchAllCallRequestsFilters{
+		AssignedUserIDs:   []string{testUUID},
+		AssignmentTeamIDs: []string{otherUUID},
+		ExcludeCaseStates: []domain.CaseState{domain.CaseStateClosed},
+		States:            []domain.CallRequestStateType{domain.CallRequestStatePendingOnWSO2, domain.CallRequestStateNotesPending},
+	}
+	resp, err := svc.SearchAllCallRequests(context.Background(), domain.SearchAllCallRequestsRequest{Filters: want})
+	if err != nil {
+		t.Fatalf("a valid team + assignee filter must not be refused: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("repository called %d times, want exactly 1", calls)
+	}
+	if len(resp.CallRequests) != 1 || resp.Total != 1 {
+		t.Errorf("response = %+v, want the repository's one row and total 1", resp)
+	}
+	if len(got.AssignmentTeamIDs) != 1 || got.AssignmentTeamIDs[0] != otherUUID {
+		t.Errorf("assignmentTeamIds reaching the repository = %v, want [%s]", got.AssignmentTeamIDs, otherUUID)
+	}
+	if len(got.AssignedUserIDs) != 1 || got.AssignedUserIDs[0] != testUUID {
+		t.Errorf("assignedUserIds reaching the repository = %v, want [%s]", got.AssignedUserIDs, testUUID)
+	}
+	if len(got.States) != 2 || len(got.ExcludeCaseStates) != 1 {
+		t.Errorf("states / excludeCaseStates were altered on the way: %+v", got)
+	}
+
+	// A malformed id is still refused up front and never reaches the repository.
+	calls = 0
+	_, err = svc.SearchAllCallRequests(context.Background(), domain.SearchAllCallRequestsRequest{
+		Filters: domain.SearchAllCallRequestsFilters{AssignmentTeamIDs: []string{otherUUID, "not-a-uuid"}},
+	})
+	requireErrKind(t, "one malformed team id among valid ones", err, &apierror.ValidationError{})
+	if calls != 0 {
+		t.Errorf("a refused request still reached the repository %d time(s)", calls)
+	}
 }
 
 func TestCallRequestService_UpdateValidation(t *testing.T) {
@@ -251,7 +314,6 @@ func TestCallRequestService_UpdateValidation(t *testing.T) {
 		{"scheduled needs meetingDate", domain.UpdateCallRequestRequest{ID: testUUID, State: scheduled, DurationMinutes: num(30)}},
 		{"scheduled needs duration", domain.UpdateCallRequestRequest{ID: testUUID, State: scheduled, MeetingDate: str("2026-10-02T10:00:00Z")}},
 		{"meetingDate must be RFC3339", domain.UpdateCallRequestRequest{ID: testUUID, State: scheduled, MeetingDate: str("tomorrow"), DurationMinutes: num(30)}},
-		{"concluded needs notes", domain.UpdateCallRequestRequest{ID: testUUID, State: domain.CallRequestStateConcluded}},
 		{"non-positive actual duration", domain.UpdateCallRequestRequest{ID: testUUID, State: domain.CallRequestStateNotesPending, ActualDurationMin: num(0)}},
 		{"empty utcTimes when provided", domain.UpdateCallRequestRequest{ID: testUUID, State: domain.CallRequestStateCanceled, UTCTimes: []string{}}},
 	}
@@ -263,6 +325,125 @@ func TestCallRequestService_UpdateValidation(t *testing.T) {
 	// Valid input still needs an authenticated caller.
 	_, err := svc.UpdateCallRequest(ctx, domain.UpdateCallRequestRequest{ID: testUUID, State: domain.CallRequestStateCanceled})
 	requireErrKind(t, "update without token", err, &apierror.UnauthorizedError{})
+}
+
+// TestCallRequestService_UpdateCallRequest_ConcludeWithoutNotes covers the one-click
+// "Mark as completed" (digiops-cs#3350): a conclude with no post-call notes is not a
+// validation error any more, reaches the repository as sent, and a conflict the
+// repository reports (the call is not scheduled / notes pending) is passed on as a
+// conflict rather than turned into a 400 or a 500.
+func TestCallRequestService_UpdateCallRequest_ConcludeWithoutNotes(t *testing.T) {
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+	blank := "   "
+	for name, notes := range map[string]*string{"nil notes": nil, "whitespace-only notes": &blank} {
+		t.Run(name, func(t *testing.T) {
+			var got domain.UpdateCallRequestRequest
+			calls := 0
+			svc := &callRequestService{repo: &stubCallRequestRepo{
+				updateCallRequest: func(_ context.Context, r domain.UpdateCallRequestRequest, _ *string, _ string) (domain.UpdateCallRequestResponse, error) {
+					calls++
+					got = r
+					return domain.UpdateCallRequestResponse{Message: "ok"}, nil
+				},
+			}}
+			if _, err := svc.UpdateCallRequest(ctx, domain.UpdateCallRequestRequest{ID: testUUID, State: domain.CallRequestStateConcluded, Notes: notes}); err != nil {
+				t.Fatalf("a conclude without notes must pass validation: %v", err)
+			}
+			if calls != 1 || got.State != domain.CallRequestStateConcluded {
+				t.Errorf("repository calls = %d, state = %q; want 1 call concluding the request", calls, got.State)
+			}
+			if got.Notes != nil {
+				t.Errorf("notes reaching the repository = %q, want none (blank notes must not be written)", *got.Notes)
+			}
+		})
+	}
+
+	t.Run("a repository conflict stays a conflict", func(t *testing.T) {
+		svc := &callRequestService{repo: &stubCallRequestRepo{
+			updateCallRequest: func(context.Context, domain.UpdateCallRequestRequest, *string, string) (domain.UpdateCallRequestResponse, error) {
+				return domain.UpdateCallRequestResponse{}, &apierror.ConflictError{Msg: "only a scheduled call"}
+			},
+		}}
+		_, err := svc.UpdateCallRequest(ctx, domain.UpdateCallRequestRequest{ID: testUUID, State: domain.CallRequestStateConcluded})
+		var conflict *apierror.ConflictError
+		if !errors.As(err, &conflict) {
+			t.Errorf("got %T (%v), want the repository's *apierror.ConflictError passed through", err, err)
+		}
+	})
+}
+
+// Blank notes are only dropped for a conclude (so "Mark as completed" cannot erase the
+// notes a call already has). Every other state keeps exactly what it was sent.
+func TestCallRequestService_UpdateCallRequest_BlankNotesOnlyDroppedForConclude(t *testing.T) {
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+	blank := "   "
+	var got domain.UpdateCallRequestRequest
+	svc := &callRequestService{repo: &stubCallRequestRepo{
+		updateCallRequest: func(_ context.Context, r domain.UpdateCallRequestRequest, _ *string, _ string) (domain.UpdateCallRequestResponse, error) {
+			got = r
+			return domain.UpdateCallRequestResponse{}, nil
+		},
+	}}
+	req := domain.UpdateCallRequestRequest{ID: testUUID, State: domain.CallRequestStateNotesPending, Notes: &blank}
+	if _, err := svc.UpdateCallRequest(ctx, req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Notes == nil || *got.Notes != blank {
+		t.Errorf("notes for a non-conclude state = %v, want them passed through exactly as sent", got.Notes)
+	}
+}
+
+// Under dual-write the Postgres change commits first and ServiceNow is only mirrored
+// after it succeeds: a conclude the repository refuses must never reach the mirror,
+// and one it accepts must reach it exactly as the repository saw it (blank notes
+// already dropped), or ServiceNow could be told to blank notes Postgres kept.
+func TestCallRequestService_UpdateCallRequest_ConcludeMirrorFollowsPostgres(t *testing.T) {
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+	blank := "  "
+	newSvc := func(repoErr error) (*callRequestService, chan domain.UpdateCallRequestRequest) {
+		mirrored := make(chan domain.UpdateCallRequestRequest, 1)
+		repo := &stubCallRequestRepo{
+			updateCallRequest: func(context.Context, domain.UpdateCallRequestRequest, *string, string) (domain.UpdateCallRequestResponse, error) {
+				return domain.UpdateCallRequestResponse{}, repoErr
+			},
+			getCallRequestSNSysID: func(context.Context, string) (*string, error) { return nil, nil },
+		}
+		mirror := &stubMirrorCallRequestService{
+			updateCallRequest: func(_ context.Context, r domain.UpdateCallRequestRequest) (domain.UpdateCallRequestResponse, error) {
+				mirrored <- r
+				return domain.UpdateCallRequestResponse{}, nil
+			},
+		}
+		svc := NewCallRequestServiceWithSNWriteback(repo, stubUserRepo{}, NewSNWritebackDispatcher(&recordingSNWritebackFailures{}), mirror)
+		return svc.(*callRequestService), mirrored
+	}
+
+	t.Run("a refused conclude is never mirrored", func(t *testing.T) {
+		svc, mirrored := newSvc(&apierror.ConflictError{Msg: "not scheduled"})
+		if _, err := svc.UpdateCallRequest(ctx, domain.UpdateCallRequestRequest{ID: testUUID, State: domain.CallRequestStateConcluded}); err == nil {
+			t.Fatal("expected the repository's conflict")
+		}
+		select {
+		case r := <-mirrored:
+			t.Errorf("ServiceNow was sent %+v for a conclude Postgres refused", r)
+		case <-time.After(300 * time.Millisecond):
+		}
+	})
+
+	t.Run("an accepted conclude is mirrored with the blank notes already dropped", func(t *testing.T) {
+		svc, mirrored := newSvc(nil)
+		if _, err := svc.UpdateCallRequest(ctx, domain.UpdateCallRequestRequest{ID: testUUID, State: domain.CallRequestStateConcluded, Notes: &blank}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		select {
+		case r := <-mirrored:
+			if r.State != domain.CallRequestStateConcluded || r.Notes != nil {
+				t.Errorf("mirror got state=%q notes=%v, want concluded with no notes", r.State, r.Notes)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("the accepted conclude was never mirrored")
+		}
+	})
 }
 
 func TestCatalogService_Validation(t *testing.T) {
@@ -302,15 +483,33 @@ func requireErrKind(t *testing.T, name string, err error, want any) {
 	}
 }
 
-func TestCallRequestService_UpdateRejectsCancellationReason(t *testing.T) {
-	svc := &callRequestService{}
-	// Rejected before any caller/repository work, and for every state: silently
-	// dropping a supplied reason would report success while losing it.
+// TestCallRequestService_UpdatePassesCancellationReasonThrough covers the
+// fix for a real, reported bug: cancelling a call request from the Customer
+// Portal always 400'd on Postgres-backed projects, since
+// customer_call.reject_reason did not exist and UpdateCallRequest rejected
+// any request that supplied CancellationReason outright. Now that the
+// column exists (migration 0219), the reason must reach the repository
+// call unchanged, for every state a reason is meaningful on.
+func TestCallRequestService_UpdatePassesCancellationReasonThrough(t *testing.T) {
 	for _, st := range []domain.CallRequestStateType{domain.CallRequestStateCanceled, domain.CallRequestStateCustomerRejected, domain.CallRequestStateWSO2Rejected} {
-		_, err := svc.UpdateCallRequest(context.Background(), domain.UpdateCallRequestRequest{
+		var gotReason *string
+		repo := &stubCallRequestRepo{
+			updateCallRequest: func(ctx context.Context, req domain.UpdateCallRequestRequest, assigneeID *string, callerEmail string) (domain.UpdateCallRequestResponse, error) {
+				gotReason = req.CancellationReason
+				return domain.UpdateCallRequestResponse{}, nil
+			},
+		}
+		svc := &callRequestService{repo: repo}
+		ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+		_, err := svc.UpdateCallRequest(ctx, domain.UpdateCallRequestRequest{
 			ID: testUUID, State: st, CancellationReason: str("no longer needed"),
 		})
-		requireErrKind(t, "cancellationReason on "+string(st), err, &apierror.ValidationError{})
+		if err != nil {
+			t.Fatalf("%s: unexpected error: %v", st, err)
+		}
+		if gotReason == nil || *gotReason != "no longer needed" {
+			t.Errorf("%s: CancellationReason = %v, want \"no longer needed\"", st, gotReason)
+		}
 	}
 }
 

@@ -31,6 +31,20 @@ import (
 // 400 "Invalid request payload." — the real, live maximum is 50, not 100.
 const pageSize = 50
 
+// maxProjectPages and maxSearchPages cap how many pages a paging loop will
+// request, independent of anything the upstream reports. Every loop also stops
+// on an empty page, hasMore: false, or reaching "total", but those all trust
+// the upstream: one that keeps returning non-empty pages with hasMore: true
+// and total: 0 would otherwise keep a run going until the job timeout
+// (CodeRabbit, PR #2545). Reaching a cap is an error, not a quiet stop, so
+// skipped data is visible. 1,000 pages is 50,000 open projects (staging has
+// about 1,900); 200 pages is 10,000 links or invoices for one project or
+// opportunity.
+const (
+	maxProjectPages = 1000
+	maxSearchPages  = 200
+)
+
 // Run performs one full ACP evaluation pass over every open project,
 // paginating through /projects/search. A single project's processProject
 // failure is logged and recorded in Result.Failures, and the sweep
@@ -85,7 +99,7 @@ func Run(ctx context.Context, reader sweepReader, updater projectUpdater, ntf no
 		return result, nil
 	}
 
-	offset := 0
+	offset, pages := 0, 0
 	for {
 		reqBody, err := json.Marshal(searchProjectsRequest{
 			Pagination:    pagination{Limit: pageSize, Offset: offset},
@@ -133,6 +147,10 @@ func Run(ctx context.Context, reader sweepReader, updater projectUpdater, ntf no
 			break
 		}
 
+		pages++
+		if pages >= maxProjectPages {
+			return result, fmt.Errorf("sweep: project search still reports more pages after %d pages; stopping", maxProjectPages)
+		}
 		offset += pageSize
 	}
 

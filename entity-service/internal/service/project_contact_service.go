@@ -49,6 +49,7 @@ func projectContactRowToDomain(row repository.ProjectContactRow) domain.ProjectC
 		// permissive default" posture elsewhere (e.g. nullable boolean
 		// flags read as false only when explicitly set).
 		NotificationsEnabled: true,
+		IsCsIntegrationUser:  row.IsSystemUser,
 		Roles:                row.Roles,
 		AccountRoles:         row.AccountRoles,
 	}

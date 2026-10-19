@@ -19,8 +19,11 @@ import { describe, expect, it } from "vitest";
 import {
   escapeHtml,
   isBlankHtml,
+  looksLikeHtml,
+  sanitizeAnnouncementHtml,
   sanitizeDescriptionHtml,
   sanitizeRichTextHtml,
+  sanitizeStructuredHtml,
   stripLightModeInlineStyles,
 } from "./sanitizeHtml";
 
@@ -191,3 +194,141 @@ describe("escapeHtml", () => {
   });
 });
 
+
+describe("looksLikeHtml", () => {
+  it("detects real markup", () => {
+    expect(looksLikeHtml("<p>hi</p>")).toBe(true);
+    expect(looksLikeHtml("<table><tr><td>a</td></tr></table>")).toBe(true);
+    expect(looksLikeHtml("line one<br>line two")).toBe(true);
+  });
+
+  it("leaves plain text with angle brackets alone", () => {
+    expect(looksLikeHtml("Use <token> in the command")).toBe(false);
+    expect(looksLikeHtml("if a <b and c> d")).toBe(false);
+    expect(looksLikeHtml("1 < 2 and 3 > 2")).toBe(false);
+    expect(looksLikeHtml("kubectl get pod <pod-name> -n <namespace>")).toBe(false);
+  });
+});
+
+describe("sanitizeStructuredHtml", () => {
+  it("keeps table structure and text emphasis", () => {
+    const out = sanitizeStructuredHtml(
+      '<table><tbody><tr><td style="font-weight:bold;width:30%">k</td><td>v</td></tr></tbody></table>',
+    );
+    expect(out).toContain("<table>");
+    expect(out).toContain("font-weight:bold");
+    expect(out).toContain("width:30%");
+  });
+
+  it("drops style elements (and their CSS text), images and form controls", () => {
+    const out = sanitizeStructuredHtml(
+      '<style>body{display:none}</style><img src="https://t.example/p.png"><form action="https://x"><input name="a"><button>go</button></form><p>ok</p>',
+    );
+    expect(out).not.toMatch(/<style|<img|<form|<input|<button/i);
+    expect(out).not.toContain("display:none");
+    expect(out).toContain("<p>ok</p>");
+  });
+
+  it("filters inline CSS to the allowlist (no background, colour, url(), position)", () => {
+    const out = sanitizeStructuredHtml(
+      '<p style="background:url(https://t.example/x);color:red;position:fixed;font-style:italic;width:calc(100% - 1px)">x</p>',
+    );
+    expect(out).toContain("font-style:italic");
+    expect(out).not.toMatch(/background|color|position|url\(|calc/i);
+  });
+
+  it("removes the style attribute when nothing is allowed", () => {
+    expect(sanitizeStructuredHtml('<p style="color:red">x</p>')).toBe("<p>x</p>");
+  });
+
+  it("opens safe links in a new tab and strips javascript: links", () => {
+    const out = sanitizeStructuredHtml('<a href="https://a.example/x">a</a><a href="javascript:alert(1)">b</a>');
+    expect(out).toContain('href="https://a.example/x"');
+    expect(out).toContain('target="_blank"');
+    expect(out).toContain('rel="noopener noreferrer"');
+    expect(out).not.toContain("javascript:");
+  });
+
+  it("does not change what the shared policy does elsewhere (hook is scoped)", () => {
+    expect(sanitizeRichTextHtml('<p style="color:red">x</p>')).toContain("color:red");
+  });
+});
+
+describe("sanitizeAnnouncementHtml", () => {
+  const anchors = (html: string): HTMLAnchorElement[] => [
+    ...new DOMParser().parseFromString(html, "text/html").querySelectorAll("a"),
+  ];
+
+  it("keeps target=_blank and always sets rel=noopener noreferrer", () => {
+    const [a, b] = anchors(
+      sanitizeAnnouncementHtml(
+        '<a href="https://x.test/a" target="_blank">a</a><a href="https://x.test/b" target="_blank" rel="opener">b</a>',
+      ),
+    );
+    for (const link of [a, b]) {
+      expect(link.getAttribute("target")).toBe("_blank");
+      expect(link.getAttribute("rel")).toBe("noopener noreferrer");
+    }
+  });
+
+  it("accepts the keyword in any case", () => {
+    const [a] = anchors(sanitizeAnnouncementHtml('<a href="https://x.test" target="_BLANK">a</a>'));
+    expect(a.getAttribute("target")).toBe("_blank");
+  });
+
+  it("leaves a link without a target alone", () => {
+    const [a] = anchors(sanitizeAnnouncementHtml('<a href="https://x.test">a</a>'));
+    expect(a.hasAttribute("target")).toBe(false);
+  });
+
+  it("drops any other target (_top, _parent, a frame name)", () => {
+    const links = anchors(
+      sanitizeAnnouncementHtml(
+        '<a href="https://x.test/1" target="_top">1</a><a href="https://x.test/2" target="_parent">2</a><a href="https://x.test/3" target="frame">3</a>',
+      ),
+    );
+    expect(links).toHaveLength(3);
+    for (const link of links) expect(link.hasAttribute("target")).toBe(false);
+  });
+
+  it("keeps a target on links only, not on forms or image maps", () => {
+    const out = sanitizeAnnouncementHtml(
+      '<a href="https://x.test" target="_blank">a</a><form action="https://x.test" target="_blank"><input name="q"></form>' +
+        '<map name="m"><area href="https://x.test" target="_blank" shape="rect" coords="0,0,1,1"></map>',
+    );
+    const doc = new DOMParser().parseFromString(out, "text/html");
+    expect(doc.querySelector("a")?.getAttribute("target")).toBe("_blank");
+    expect(doc.querySelectorAll("[target]")).toHaveLength(1);
+  });
+
+  it("still removes scripts, event handlers and javascript: links", () => {
+    const out = sanitizeAnnouncementHtml(
+      '<a href="javascript:alert(1)" target="_blank" onclick="alert(2)">x</a><script>alert(3)</script>',
+    );
+    expect(out).not.toMatch(/javascript:|onclick|<script/i);
+    expect(out).toContain("x");
+  });
+
+  it("keeps the styling the default policy keeps", () => {
+    expect(sanitizeAnnouncementHtml('<div style="padding:15px;border-radius:12px">x</div>')).toContain("border-radius:12px");
+  });
+
+  it("does not change how the shared policy treats target elsewhere", () => {
+    expect(sanitizeRichTextHtml('<a href="https://x.test" target="_blank">a</a>')).not.toContain("target=");
+  });
+
+  it("returns exactly what the default sanitizer returns for HTML with no link target", () => {
+    for (const html of [
+      "plain text & more",
+      "a < b and c > d",
+      "",
+      "<p>Hi &amp; bye</p>",
+      '<a href="https://x.test">no target</a>',
+      '<div style="padding:15px;border-radius:12px"><span>x</span></div><script>alert(1)</script>',
+      "<table><tbody><tr><td>13</td></tr></tbody></table>",
+      '<p>the word target in text, <a href="https://x.test">link</a></p>',
+    ]) {
+      expect(sanitizeAnnouncementHtml(html)).toBe(DOMPurify.sanitize(html));
+    }
+  });
+});

@@ -16,6 +16,7 @@
 
 import { useCallback, useLayoutEffect, useRef, useSyncExternalStore } from "react";
 import type { PostProjectContactOutcome } from "@features/settings/api/usePostProjectContact";
+import { ApiError } from "@utils/ApiError";
 import type {
   CreateProjectContactRequest,
   ProjectContact,
@@ -177,7 +178,11 @@ export function usePendingInvites(options: UsePendingInvitesOptions): UsePending
         // The list could not be read either; report the original failure.
       }
       const message = err instanceof Error ? err.message : String(err);
-      setStatus(email, "failed", message);
+      if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
+        remove(email);
+      } else {
+        setStatus(email, "failed", message);
+      }
       optionsRef.current.onFailed(email, message);
     }
   };

@@ -18,13 +18,17 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"html"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/events"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
 
@@ -67,17 +71,74 @@ type IncidentReportService interface {
 	HandleChange(ctx context.Context, tx repository.IncidentReportTx, c repository.IncidentReportChange) error
 }
 
-type incidentReportService struct{}
+type incidentReportService struct {
+	// workaroundProblemInRequest: DATA_SOURCE=postgres-servicenow-dual-write,
+	// where the workaround problem is created ServiceNow-first by the resolve
+	// request itself (incidentService.createWorkaroundProblem), so this flow
+	// must not create a second, Postgres-only one.
+	workaroundProblemInRequest bool
+	// specialOps publishes incident.special_ops_alert; nil publishes none.
+	// Set with WithSpecialOpsAlerts.
+	specialOps *specialOpsAlerts
+}
 
-// NewIncidentReportService constructs the flow logic.
+// specialOpsAlerts is where incident.special_ops_alert goes (the sre-events
+// publisher) and which groups raise it (every team in the handoff config).
+type specialOpsAlerts struct {
+	publisher EventPublisherService
+	teams     *SpecialistHandoffConfig
+	// groups resolves teams configured without a groupId
+	// (WithSpecialOpsAlertTeamGroups); nil leaves them unmatched.
+	groups repository.SpecialistHandoffGroupRepository
+	// mu guards teams, which resolving writes in place.
+	mu sync.Mutex
+}
+
+// WithSpecialOpsAlerts makes the drainer publish incident.special_ops_alert
+// on publisher whenever an incident's assignment group changes to one of
+// teams' groups (migration 0207 records the change). Without a publisher or
+// any team it is left unchanged.
+func WithSpecialOpsAlerts(svc IncidentReportService, publisher EventPublisherService, teams *SpecialistHandoffConfig) IncidentReportService {
+	if r, ok := svc.(*incidentReportService); ok && publisher != nil && teams != nil && len(teams.Products) > 0 {
+		r.specialOps = &specialOpsAlerts{publisher: publisher, teams: teams}
+	}
+	return svc
+}
+
+// WithSpecialOpsAlertTeamGroups lets the alert match a team configured
+// without a groupId (a Team Schedule team) by resolving its group on demand:
+// whenever a group change matches no team while such a team is unresolved,
+// the alert resolves them before deciding, and a failed lookup is returned so
+// the change is retried. The router resolves its own copy of the
+// configuration at startup; this keeps the alert from missing a handoff that
+// copy took, however its own startup went. Without WithSpecialOpsAlerts it is
+// left unchanged.
+func WithSpecialOpsAlertTeamGroups(svc IncidentReportService, groups repository.SpecialistHandoffGroupRepository) IncidentReportService {
+	if r, ok := svc.(*incidentReportService); ok && r.specialOps != nil {
+		r.specialOps.groups = groups
+	}
+	return svc
+}
+
+// NewIncidentReportService constructs the flow logic for DATA_SOURCE=postgres.
 func NewIncidentReportService() IncidentReportService {
 	return &incidentReportService{}
+}
+
+// NewDualWriteIncidentReportService constructs the flow logic for
+// DATA_SOURCE=postgres-servicenow-dual-write: everything but the workaround
+// problem, which the resolve request creates in both stores.
+func NewDualWriteIncidentReportService() IncidentReportService {
+	return &incidentReportService{workaroundProblemInRequest: true}
 }
 
 // HandleChange implements IncidentReportService. Every recorded change is
 // acted on however late it is drained -- the drainer always runs, so there
 // is no backlog from a switched-off period to guard against.
 func (s *incidentReportService) HandleChange(ctx context.Context, tx repository.IncidentReportTx, c repository.IncidentReportChange) error {
+	if group, ok := groupChangedTo(c.Changes); ok {
+		return s.specialOps.alert(ctx, tx, c, group)
+	}
 	to, ok := stateChangedTo(c.Changes)
 	if !ok || (to != incidentStateInProgress && to != incidentStateResolved) {
 		return nil
@@ -107,7 +168,7 @@ func (s *incidentReportService) HandleChange(ctx context.Context, tx repository.
 			return err
 		}
 		slog.InfoContext(ctx, "incidentreport: wrote incident report", "incidentId", c.IncidentID)
-		if err := postResolutionTasks(ctx, tx, src); err != nil {
+		if err := postResolutionTasks(ctx, tx, src, !s.workaroundProblemInRequest); err != nil {
 			return err
 		}
 	}
@@ -124,6 +185,114 @@ func stateChangedTo(changes map[string]map[string]any) (string, bool) {
 	}
 	to, ok := st["to"].(string)
 	return to, ok
+}
+
+// groupChangedTo reports the new assignment group when the change is one
+// migration 0207 recorded ("" when the group was cleared).
+func groupChangedTo(changes map[string]map[string]any) (string, bool) {
+	g, ok := changes["assignment_group_id"]
+	if !ok {
+		return "", false
+	}
+	to, _ := g["to"].(string)
+	return to, true
+}
+
+// alert publishes incident.special_ops_alert when group belongs to a Special
+// Ops team, and does nothing for any other group or when no alerts are
+// configured. A publish failure is returned, so the row is retried and in
+// the end parked like any other change.
+func (a *specialOpsAlerts) alert(ctx context.Context, tx repository.IncidentReportTx, c repository.IncidentReportChange, group string) error {
+	if a == nil {
+		return nil
+	}
+	product, teams, err := a.teamsFor(ctx, group)
+	if err != nil {
+		return err
+	}
+	if len(teams) == 0 {
+		return nil
+	}
+	previous, _ := c.Changes["assignment_group_id"]["from"].(string)
+	src, err := tx.SpecialOpsAlertSource(ctx, c.IncidentID, group, previous)
+	if errors.Is(err, repository.ErrIncidentNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	team := pickedTeam(teams, src.HandoffNote)
+	if len(teams) > 1 && team == teams[0] && handoffNoteTeam(src.HandoffNote) != team.Key {
+		slog.WarnContext(ctx, "specialops: several Special Ops teams share this group and the handoff note names none of them; alerting the first",
+			"incidentId", c.IncidentID, "group", group, "team", team.Key)
+	}
+	changedBy, _ := c.Snapshot["updated_by"].(string)
+	raw, err := json.Marshal(events.IncidentSpecialOpsAlertPayload{
+		IncidentID: c.IncidentID, Number: src.Number, Subject: src.Subject,
+		Description: strOrEmpty(src.Description), State: strOrEmpty(src.State), Priority: strOrEmpty(src.Priority),
+		Impact: strOrEmpty(src.Impact), Urgency: strOrEmpty(src.Urgency),
+		ServiceID: strOrEmpty(src.ServiceID), ServiceName: strOrEmpty(src.ServiceName),
+		Product: product.Name, TeamKey: team.Key, TeamLabel: team.Label, SMETeam: team.SMETeam,
+		AssignmentGroupID: group, AssignmentGroupName: strOrEmpty(src.GroupName),
+		PreviousAssignmentGroupID: previous, PreviousAssignmentGroupName: strOrEmpty(src.PreviousGroupName),
+		ChangedBy: changedBy, ChangedOn: c.OccurredOn.UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		return fmt.Errorf("special ops alert: encode payload: %w", err)
+	}
+	if err := a.publisher.Publish(ctx, events.TypeIncidentSpecialOpsAlert, c.IncidentID, raw); err != nil {
+		return fmt.Errorf("special ops alert: publish for incident %s: %w", c.IncidentID, err)
+	}
+	slog.InfoContext(ctx, "specialops: published incident.special_ops_alert",
+		"incidentId", c.IncidentID, "number", src.Number, "team", team.Key)
+	return nil
+}
+
+// teamsFor is teamsForGroup, resolving the teams configured without a
+// groupId first when group matches none and any of them is unresolved.
+func (a *specialOpsAlerts) teamsFor(ctx context.Context, group string) (*SpecialistHandoffProduct, []*SpecialistHandoffConfigTeam, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	product, teams := a.teams.teamsForGroup(group)
+	if len(teams) > 0 || a.groups == nil || !a.teams.hasUnresolvedTeams() {
+		return product, teams, nil
+	}
+	if _, err := a.teams.ResolveTeamGroups(ctx, a.groups); err != nil {
+		return nil, nil, fmt.Errorf("special ops alert: resolve the Team Schedule teams' groups: %w", err)
+	}
+	product, teams = a.teams.teamsForGroup(group)
+	return product, teams, nil
+}
+
+// pickedTeam is the team the alert is for: the only team on the group, or,
+// when several share it, the one the handoff's reason note names (the team
+// picked in the dialog). With no note naming one of them, the first.
+func pickedTeam(teams []*SpecialistHandoffConfigTeam, note *string) *SpecialistHandoffConfigTeam {
+	if len(teams) > 1 {
+		if key := handoffNoteTeam(note); key != "" {
+			for _, t := range teams {
+				if t.Key == key {
+					return t
+				}
+			}
+		}
+	}
+	return teams[0]
+}
+
+// handoffNoteTeam is the escalationTeam a handoff reason note names, "" when
+// there is no note, it is not the handoff's JSON or it names no team.
+func handoffNoteTeam(note *string) string {
+	if note == nil {
+		return ""
+	}
+	var blob struct {
+		EscalationTeam *string `json:"escalationTeam"`
+	}
+	if json.Unmarshal([]byte(*note), &blob) != nil || blob.EscalationTeam == nil {
+		return ""
+	}
+	return strings.TrimSpace(*blob.EscalationTeam)
 }
 
 // reportTaskFor is the Create Record step of "Create Incident Report Task".
@@ -407,24 +576,28 @@ const (
 // postResolutionTasks runs the flow's blocks 1-14 for an incident that has
 // just changed to Resolved. src is the incident as it is now, which is what
 // the flow's {{Updated_1.current}} pills read.
-func postResolutionTasks(ctx context.Context, tx repository.IncidentReportTx, src repository.IncidentReportSource) error {
+//
+// The flow's trigger admits only Choreo and Asgardeo incidents. The alert
+// tasks keep that limit; the workaround problem deliberately does not -- an
+// incident on any service resolved with a workaround gets one (a portal
+// decision, not ServiceNow's behaviour). withProblem is false in dual-write,
+// where the resolve request creates that problem instead.
+func postResolutionTasks(ctx context.Context, tx repository.IncidentReportTx, src repository.IncidentReportSource, withProblem bool) error {
 	service := strOrEmpty(src.ServiceID)
-	if service != postResolutionServiceChoreo && service != postResolutionServiceAsgardeo {
-		return nil
-	}
-	slog.InfoContext(ctx, "Incident # - "+src.Number+" - is resolved", "incidentId", src.IncidentID)
-
 	code := strOrEmpty(src.ResolutionCode)
-	for _, t := range alertTasksFor(src, code) {
-		id, number, err := tx.CreateIncidentTask(ctx, t)
-		if err != nil {
-			return err
+	if service == postResolutionServiceChoreo || service == postResolutionServiceAsgardeo {
+		slog.InfoContext(ctx, "Incident # - "+src.Number+" - is resolved", "incidentId", src.IncidentID)
+		for _, t := range alertTasksFor(src, code) {
+			id, number, err := tx.CreateIncidentTask(ctx, t)
+			if err != nil {
+				return err
+			}
+			slog.InfoContext(ctx, "postresolution: created alert task",
+				"incidentId", src.IncidentID, "taskId", id, "taskNumber", number)
 		}
-		slog.InfoContext(ctx, "postresolution: created alert task",
-			"incidentId", src.IncidentID, "taskId", id, "taskNumber", number)
 	}
 
-	if code == "SOLVED_WORK_AROUND" && strOrEmpty(src.ProblemID) == "" {
+	if withProblem && code == "SOLVED_WORK_AROUND" && strOrEmpty(src.ProblemID) == "" {
 		id, number, err := tx.CreateProblem(ctx, problemFor(src))
 		if err != nil {
 			return err
@@ -466,26 +639,67 @@ func alertTasksFor(src repository.IncidentReportSource, code string) []repositor
 	}}
 }
 
-// problemFor is blocks 9 and 11-14: service, impact, urgency and priority
-// copied from the incident, the incident linked, and the group chosen by
-// which of the two services the incident is on. The flow's If compares a
-// transform of the incident to CHOREO / ASGARDEO; the trigger admits only
-// those two services, so the service decides it.
+// problemFor is blocks 9 and 11-14 for the Postgres-only flow: the problem
+// workaroundProblemFields describes, linked to the incident.
 func problemFor(src repository.IncidentReportSource) repository.NewIncidentProblem {
-	group := groupAsgardeoOperationsTeam
-	if strOrEmpty(src.ServiceID) == postResolutionServiceChoreo {
-		group = groupChoreoSpecialOps
-	}
+	f := workaroundProblemFields(src.Number, src.ServiceID, src.AssignmentGroupID, src.Impact, src.Urgency)
 	return repository.NewIncidentProblem{
 		IncidentID:        src.IncidentID,
-		Subject:           "Fix the root cause of " + src.Number,
+		Subject:           f.Subject,
 		ServiceID:         src.ServiceID,
-		Priority:          src.Priority,
-		Impact:            src.Impact,
-		Urgency:           src.Urgency,
-		AssignmentGroupID: &group,
+		Priority:          &f.Priority,
+		Impact:            &f.Impact,
+		Urgency:           &f.Urgency,
+		AssignmentGroupID: f.AssignmentGroupID,
 		CreatedBy:         incidentReportActor,
 	}
+}
+
+// workaroundProblem is what the workaround problem takes from its incident,
+// in both modes: the Postgres-only flow (problemFor) and dual-write's resolve
+// request (incidentService.createWorkaroundProblem).
+type workaroundProblem struct {
+	Subject                   string
+	AssignmentGroupID         *string
+	Impact, Urgency, Priority string
+}
+
+// workaroundProblemFields is blocks 9 and 11-14: service, impact and urgency
+// copied from the incident, and the group chosen by service. The flow's If
+// compares a transform of the incident to CHOREO / ASGARDEO: Choreo gets
+// Choreo Special Ops, Asgardeo Asgardeo Operations Team. Any other service
+// (which the flow's trigger never admits) gets the incident's own assignment
+// group, none if it has none.
+//
+// The flow also copies the incident's priority, but ServiceNow's "Priority
+// Problem Lookup" runs on the insert and overwrites it from impact x urgency
+// (always_replace; discovery script 64) -- so the priority is derived here
+// too, which also covers an incident whose own priority is missing. An
+// absent impact or urgency is ServiceNow's problem default, 3 - Low.
+func workaroundProblemFields(number string, serviceID, groupID, impact, urgency *string) workaroundProblem {
+	group := groupID
+	switch strOrEmpty(serviceID) {
+	case postResolutionServiceChoreo:
+		group = strPtr(groupChoreoSpecialOps)
+	case postResolutionServiceAsgardeo:
+		group = strPtr(groupAsgardeoOperationsTeam)
+	}
+	imp, urg := strOrDefault(impact, "LOW"), strOrDefault(urgency, "LOW")
+	return workaroundProblem{
+		Subject:           "Fix the root cause of " + number,
+		AssignmentGroupID: group,
+		Impact:            imp,
+		Urgency:           urg,
+		Priority:          priorityFromImpactUrgency(imp, urg),
+	}
+}
+
+// strOrDefault is *s, or def for nil or "".
+func strOrDefault(s *string, def string) string {
+	if s == nil || *s == "" {
+		return def
+	}
+	return *s
 }
 
 // strOrEmpty is *s, or "" for nil.

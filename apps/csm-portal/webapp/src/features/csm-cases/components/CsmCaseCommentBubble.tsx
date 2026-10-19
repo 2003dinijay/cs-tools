@@ -39,23 +39,18 @@ import SemanticChip from "@components/SemanticChip";
 import UserRefLink from "@components/UserRefLink";
 import EditorWithSourceToggle from "@components/rich-text-editor/EditorWithSourceToggle";
 import { useCurrentUser } from "@context/current-user/CurrentUserContext";
-import { PORTAL_ROLE } from "@context/current-user/portalAccess";
+import { usePortalAccess } from "@context/current-user/usePortalAccess";
 import { pickAccessibleText } from "@utils/contrastText";
 import { sanitizeRichTextHtml, stripLightModeInlineStyles } from "@utils/sanitizeHtml";
 import { useDarkMode } from "@utils/useDarkMode";
-import { markdownToHtml } from "@utils/renderMarkdown";
 import { initialsOf } from "@utils/userClaims";
 import { useResolvedInlineImageHtml } from "@features/csm-cases/api/useResolvedInlineImageHtml";
 import { replaceCallRequestLinks } from "@features/csm-cases/utils/callRequestLinks";
 import { replaceSnLinks, type SnLinkType } from "@features/csm-cases/utils/snLinkRegistry";
 import {
-  convertCodeTagsToHtml,
   hasDisplayableContent,
-  hasSingleCodeWrapper,
   linkifyBareUrls,
-  stripAllCodeBlocks,
-  stripCodeWrapper,
-  stripCustomerCommentAddedLabel,
+  preprocessCommentBodyHtml,
 } from "@features/csm-cases/utils/commentContent";
 import type {
   CsmCaseComment,
@@ -135,6 +130,7 @@ export default function CsmCaseCommentBubble({
   const isDarkMode = useDarkMode();
   const contentRef = useRef<HTMLDivElement>(null);
   const { user: currentUser } = useCurrentUser();
+  const portalAccess = usePortalAccess();
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState(comment.bodyHtml);
@@ -144,23 +140,15 @@ export default function CsmCaseCommentBubble({
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const isBot = comment.authorRole === "chatbot";
-  // A chatbot (Novera) message body is Markdown; render it to HTML first. Every
-  // other comment body is already rich-text HTML and goes through the same
-  // code-wrapper/label-stripping pipeline the customer portal uses, since bot
-  // replies never carry ServiceNow's [code] wrapper tags or the "Customer
-  // comment added" label.
-  const preprocessed = useMemo(() => {
-    if (isBot) return markdownToHtml(comment.bodyHtml);
-    const raw = comment.bodyHtml ?? "";
-    const isFullCodeWrap = hasSingleCodeWrapper(raw);
-    const codeBlockCount = raw.match(/\[code\]/gi)?.length ?? 0;
-    const afterCode = isFullCodeWrap
-      ? stripCodeWrapper(raw)
-      : codeBlockCount > 1
-        ? stripAllCodeBlocks(raw)
-        : convertCodeTagsToHtml(raw);
-    return stripCustomerCommentAddedLabel(afterCode);
-  }, [comment.bodyHtml, isBot]);
+  // A chatbot (Novera) message body is Markdown, and so is the description of
+  // a record raised from a GitHub issue; those are rendered to HTML first.
+  // Every other comment body is rich-text HTML and goes through the
+  // code-wrapper/label-stripping pipeline the customer portal uses (plus the
+  // laid-out-source whitespace clean-up), since Markdown bodies never carry
+  // ServiceNow's [code] wrapper tags or the "Customer comment added" label.
+  // The pipeline itself lives in `preprocessCommentBodyHtml`, shared with the
+  // PDF export so the two cannot drift.
+  const preprocessed = useMemo(() => preprocessCommentBodyHtml(comment), [comment]);
   const darkModeHtml = isDarkMode
     ? stripLightModeInlineStyles(preprocessed)
     : preprocessed;
@@ -297,20 +285,22 @@ export default function CsmCaseCommentBubble({
 
   const isSystem = comment.authorRole === "system";
 
-  // Author-or-admin check — UI convenience only, the backend re-enforces the
-  // exact same rule on PATCH/DELETE and is the real gate. Case-insensitive to
-  // match how the backend compares the author email. A synthetic (client-
-  // fabricated) or system entry never has a real backend comment id behind
-  // it, so neither can ever be edited/deleted regardless of role.
+  // Author-or-(admin/comment_updater) check — UI convenience only, the
+  // backend re-enforces the exact same rule on PATCH/DELETE and is the real
+  // gate (entity-service's own author-or-admin check, unaffected by the
+  // comment_updater role — see canUpdateDeleteAnyComment's own doc comment).
+  // Case-insensitive to match how the backend compares the author email. A
+  // synthetic (client-fabricated) or system entry never has a real backend
+  // comment id behind it, so neither can ever be edited/deleted regardless
+  // of role.
   const isAuthor =
     !!comment.authorEmail &&
     !!currentUser?.email &&
     comment.authorEmail.toLowerCase() === currentUser.email.toLowerCase();
-  const isAdmin = !!currentUser?.roles?.some(
-    (role) => role.toLowerCase() === PORTAL_ROLE.admin,
-  );
   const canModify =
-    !comment.synthetic && !isSystem && (isAuthor || isAdmin);
+    !comment.synthetic &&
+    !isSystem &&
+    (isAuthor || portalAccess.canUpdateDeleteAnyComment);
   const showEditAffordance =
     canModify && !!onEditComment && !comment.isDeleted;
   const showDeleteAffordance =

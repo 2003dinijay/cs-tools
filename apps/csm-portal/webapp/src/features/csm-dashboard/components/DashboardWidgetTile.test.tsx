@@ -73,6 +73,10 @@ vi.mock("@wso2/oxygen-ui-charts-react", () => ({
     </div>
   ),
   Cell: () => null,
+  // DashboardBarChart renders its own always-visible angled <XAxis> as a
+  // plain child of <BarChart> (see that component's own comment) — nothing
+  // under test reads anything off it, so the mock is a no-op.
+  XAxis: () => null,
   // `data` is a BarChart-level prop (not Bar's own) in the real package —
   // clone it onto the Bar child so the mock below can read it.
   BarChart: ({
@@ -104,6 +108,25 @@ vi.mock("@wso2/oxygen-ui-charts-react", () => ({
         <button key={item.name} type="button" onClick={(e) => onClick?.(item, i, e)}>
           bar:{item.name}:{item.value}
         </button>
+      ))}
+    </div>
+  ),
+  // Shape "line" is not click-through (see DashboardLineChart's own doc
+  // comment) — this stand-in just has to render enough of each line's own
+  // data for a test to assert on, same approach DashboardLineChart.test.tsx
+  // uses for this same package.
+  LineChart: ({
+    data,
+    lines,
+  }: {
+    data: Record<string, unknown>[];
+    lines: { dataKey: string; name?: string }[];
+  }) => (
+    <div>
+      {lines.map((line) => (
+        <div key={line.dataKey} data-testid={`line-${line.dataKey}`}>
+          {line.name}: {data.map((row) => `${row.label}=${row[line.dataKey]}`).join(", ")}
+        </div>
       ))}
     </div>
   ),
@@ -202,6 +225,7 @@ describe("DashboardWidgetTile", () => {
       {
         filters: {},
         pagination: { offset: 0, limit: 1 },
+        countOnly: true,
       },
       { signal: expect.any(AbortSignal) },
     );
@@ -374,6 +398,7 @@ describe("DashboardWidgetTile", () => {
           ],
         },
         pagination: { offset: 0, limit: 1 },
+        countOnly: true,
       },
       { signal: expect.any(AbortSignal) },
     );
@@ -766,6 +791,7 @@ describe("DashboardWidgetTile", () => {
       {
         filters: {},
         pagination: { offset: 0, limit: 1 },
+        countOnly: true,
       },
       { signal: expect.any(AbortSignal) },
     );
@@ -920,6 +946,7 @@ describe("DashboardWidgetTile", () => {
           ],
         },
         pagination: { offset: 0, limit: 1 },
+        countOnly: true,
       },
       { signal: expect.any(AbortSignal) },
     );
@@ -960,6 +987,7 @@ describe("DashboardWidgetTile", () => {
       {
         filters: { filters: [{ field: "creTeam", op: "in", values: ["team-a-group-id"] }] },
         pagination: { offset: 0, limit: 1 },
+        countOnly: true,
       },
       { signal: expect.any(AbortSignal) },
     );
@@ -987,6 +1015,7 @@ describe("DashboardWidgetTile", () => {
       {
         filters: { filters: [{ field: "creTeam", op: "in", values: ["team-b-group-id"] }] },
         pagination: { offset: 0, limit: 1 },
+        countOnly: true,
       },
       { signal: expect.any(AbortSignal) },
     );
@@ -1016,6 +1045,7 @@ describe("DashboardWidgetTile", () => {
       {
         filters: { filters: [{ field: "state", op: "in", values: ["open"] }] },
         pagination: { offset: 0, limit: 1 },
+        countOnly: true,
       },
       { signal: expect.any(AbortSignal) },
     );
@@ -1102,6 +1132,7 @@ describe("DashboardWidgetTile", () => {
           ],
         },
         pagination: { offset: 0, limit: 1 },
+        countOnly: true,
       },
       { signal: expect.any(AbortSignal) },
     );
@@ -1112,6 +1143,35 @@ describe("DashboardWidgetTile", () => {
     const params = new URLSearchParams(probeText.split("?")[1]);
     expect(params.get("severities")).toBe("S1");
     expect(params.get("states")).toBe("open");
+  });
+
+  it("shape bar: groupBy.linkResourceType sends a bucket's click-through to that resourceType's own detail page, not a filtered cases list", async () => {
+    const accountId = "11111111-1111-1111-1111-111111111111";
+    postMock.mockResolvedValue({
+      groups: [{ key: accountId, label: "Acme Corp", count: 7 }],
+      othersCount: 0,
+      totalRecords: 7,
+    });
+
+    renderWithRoutes(
+      <DashboardWidgetTile
+        widgetId="top_customers"
+        displayName="Top customers by open cases"
+        resourceType="case"
+        shape="bar"
+        filters={{ filters: [{ field: "state", op: "notIn", values: ["closed"] }] }}
+        groupBy={{ field: "account", maxGroups: 5, linkResourceType: "account" }}
+      />,
+      "/customers/accounts/:id",
+    );
+
+    await waitFor(() => expect(screen.getByText("bar:Acme Corp:7")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText("bar:Acme Corp:7"));
+    await waitFor(() => expect(screen.getByTestId("location-probe")).toBeInTheDocument());
+    expect(screen.getByTestId("location-probe")).toHaveTextContent(
+      `/customers/accounts/${accountId}`,
+    );
   });
 
   it("shape bar: shows the widget's overall total (sum of every slice) next to its title", async () => {
@@ -1146,6 +1206,52 @@ describe("DashboardWidgetTile", () => {
 
     await waitFor(() => expect(screen.getByText("bar:S1 · Critical:1")).toBeInTheDocument());
     expect(screen.getByText("4")).toBeInTheDocument();
+  });
+
+  it("shape line: issues a single /cases/volume-trend request (not /cases/search) and renders both series", async () => {
+    postMock.mockResolvedValue({
+      days: 2,
+      series: [
+        {
+          label: "Opened",
+          points: [
+            { date: "2026-09-01", count: 3 },
+            { date: "2026-09-02", count: 1 },
+          ],
+        },
+        {
+          label: "Closed",
+          points: [
+            { date: "2026-09-01", count: 0 },
+            { date: "2026-09-02", count: 2 },
+          ],
+        },
+      ],
+    });
+
+    renderWithClient(
+      <DashboardWidgetTile
+        widgetId="case_volume_trend"
+        displayName="Case volume, last 30 days"
+        resourceType="case"
+        shape="line"
+        filters={{ filters: [{ field: "type", op: "in", values: ["case"] }] }}
+        days={2}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByTestId("line-opened")).toBeInTheDocument());
+    expect(screen.getByTestId("line-opened")).toHaveTextContent("Opened: Sep 1=3, Sep 2=1");
+    expect(screen.getByTestId("line-closed")).toHaveTextContent("Closed: Sep 1=0, Sep 2=2");
+    expect(postMock).toHaveBeenCalledWith(
+      "/cases/volume-trend",
+      {
+        filters: { filters: [{ field: "type", op: "in", values: ["case"] }] },
+        days: 2,
+      },
+      { signal: expect.any(AbortSignal) },
+    );
+    expect(screen.getByText("Case volume, last 30 days")).toBeInTheDocument();
   });
 
   it("shape pie: issues one search per slice (own filters merged under the widget's base filters) and renders values + percentages", async () => {
@@ -1196,6 +1302,7 @@ describe("DashboardWidgetTile", () => {
           ],
         },
         pagination: { offset: 0, limit: 1 },
+        countOnly: true,
       },
       { signal: expect.any(AbortSignal) },
     );
@@ -1209,6 +1316,7 @@ describe("DashboardWidgetTile", () => {
           ],
         },
         pagination: { offset: 0, limit: 1 },
+        countOnly: true,
       },
       { signal: expect.any(AbortSignal) },
     );

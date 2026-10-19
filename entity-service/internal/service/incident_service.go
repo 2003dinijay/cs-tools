@@ -18,8 +18,9 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
-	"strings"
+	"strconv"
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
@@ -37,6 +38,48 @@ func incidentStateToEnum(s domain.IncidentState) string {
 		return "CANCELED"
 	}
 	return string(s)
+}
+
+// incidentStateBySNKey is snIncidentStateKeyMap read the other way: ServiceNow's
+// raw numeric incident state to the domain state, for the one filter that
+// arrives as raw keys ("incidentStateKeys"). A key outside it (4, 5, ...) has
+// no state on this data source.
+var incidentStateBySNKey = func() map[int]domain.IncidentState {
+	m := make(map[int]domain.IncidentState, len(snIncidentStateKeyMap))
+	for state, key := range snIncidentStateKeyMap {
+		m[key] = state
+	}
+	return m
+}()
+
+// incidentStatesFromSNKeys maps the raw `incident_state` keys of an
+// "incidentStateKeys" filter onto incident_state_enum labels, preserving the
+// order given and dropping repeats. An unknown key is rejected rather than
+// skipped: a skipped key narrows nothing and an "in" list that ends up empty
+// would read as "no state filter" to the repository, silently widening the
+// result.
+func incidentStatesFromSNKeys(f domain.IncidentFieldFilter) ([]string, error) {
+	var states []string
+	seen := make(map[string]bool, len(f.Values))
+	for _, v := range f.Values {
+		raw, err := parseIncidentFilterNonNegativeIntString(f, v)
+		if err != nil {
+			return nil, err
+		}
+		key, _ := strconv.Atoi(raw) // validated as a non-negative integer above
+		state, ok := incidentStateBySNKey[key]
+		if !ok {
+			return nil, &apierror.ValidationError{Msg: fmt.Sprintf(
+				"filters: field %q value %q has no equivalent incident state on this data source (known keys: 1 New, 2 In Progress, 3 On Hold, 6 Resolved, 7 Closed, 8 Canceled)",
+				f.Field, v)}
+		}
+		label := incidentStateToEnum(state)
+		if !seen[label] {
+			seen[label] = true
+			states = append(states, label)
+		}
+	}
+	return states, nil
 }
 
 // incidentResolutionCodeToEnum maps domain.IncidentResolutionCode to
@@ -104,6 +147,102 @@ func incidentLifecycleUpdateFromRequest(req domain.UpdateIncidentRequest) (u rep
 	return u, ok, nil
 }
 
+// incidentRecordUpdateFromRequest validates and maps the record's own fields
+// of an UPDATE (everything the portal's edit dialog sends beyond the state
+// transition) onto u, with the checks snIncidentService.UpdateIncident makes
+// on the same request. ok reports whether any of them was set.
+func incidentRecordUpdateFromRequest(req domain.UpdateIncidentRequest, u *repository.IncidentLifecycleUpdate) (ok bool, err error) {
+	if req.Priority != nil && !validIncidentPriority[*req.Priority] {
+		return false, &apierror.ValidationError{Msg: "invalid priority: " + string(*req.Priority)}
+	}
+	if req.Category != nil && !validIncidentCategory[*req.Category] {
+		return false, &apierror.ValidationError{Msg: "invalid category: " + string(*req.Category)}
+	}
+	if req.Subcategory != nil && !validIncidentSubcategory[*req.Subcategory] {
+		return false, &apierror.ValidationError{Msg: "invalid subcategory: " + string(*req.Subcategory)}
+	}
+	if req.ContactType != nil && !validIncidentContactType[*req.ContactType] {
+		return false, &apierror.ValidationError{Msg: "invalid contactType: " + string(*req.ContactType)}
+	}
+	if req.Impact != nil && !validIncidentImpact[*req.Impact] {
+		return false, &apierror.ValidationError{Msg: "invalid impact: " + string(*req.Impact)}
+	}
+	if req.Urgency != nil && !validIncidentUrgency[*req.Urgency] {
+		return false, &apierror.ValidationError{Msg: "invalid urgency: " + string(*req.Urgency)}
+	}
+	if req.Environment != nil && *req.Environment != nil && len([]rune(**req.Environment)) > 40 {
+		// ServiceNow's u_enviroment is 40 characters, as is incident.environment.
+		return false, &apierror.ValidationError{Msg: "environment must not exceed 40 characters"}
+	}
+	for field, val := range map[string]*string{
+		"parentId":            req.ParentID,
+		"parentIncidentId":    req.ParentIncidentID,
+		"assignmentGroupId":   req.AssignmentGroupID,
+		"serviceId":           req.ServiceID,
+		"serviceOfferingId":   req.ServiceOfferingID,
+		"configurationItemId": req.ConfigurationItemID,
+		"changeRequestId":     req.ChangeRequestID,
+		"problemId":           req.ProblemID,
+		"causedById":          req.CausedByID,
+	} {
+		if val != nil {
+			if err := validateUUIDs(field, []string{*val}); err != nil {
+				return false, err
+			}
+		}
+	}
+
+	if req.WatchList != nil {
+		if err := validateUUIDs("watchList", *req.WatchList); err != nil {
+			return false, err
+		}
+	}
+
+	label := func(v string) *string { return &v }
+	u.Subject = req.Subject
+	u.ParentID = req.ParentID
+	u.AssignmentGroupID = req.AssignmentGroupID
+	u.ServiceID = req.ServiceID
+	u.ServiceOfferingID = req.ServiceOfferingID
+	u.ConfigurationItemID = req.ConfigurationItemID
+	u.ChangeRequestID = req.ChangeRequestID
+	u.ProblemID = req.ProblemID
+	u.CausedByID = req.CausedByID
+	u.ParentIncidentID = req.ParentIncidentID
+	u.IncidentReport = req.IncidentReport
+	u.Environment = req.Environment
+	u.WatchList = req.WatchList
+	if req.Category != nil {
+		u.Category = label(string(*req.Category))
+	}
+	if req.Subcategory != nil {
+		u.SubcategoryValue = label(snIncidentSubcategoryKeyMap[*req.Subcategory])
+	}
+	if req.ContactType != nil {
+		// The repository maps it to incident_contact_type_enum, as on create.
+		u.ContactType = label(string(*req.ContactType))
+	}
+	if req.Impact != nil {
+		u.Impact = label(string(*req.Impact))
+	}
+	if req.Urgency != nil {
+		u.Urgency = label(string(*req.Urgency))
+	}
+	if req.Priority != nil {
+		u.Priority = label(string(*req.Priority))
+	}
+	u.PriorityFor = priorityFromImpactUrgency
+
+	ok = req.Subject != nil || req.ParentID != nil || req.AssignmentGroupID != nil ||
+		req.Category != nil || req.Subcategory != nil || req.ContactType != nil ||
+		req.Impact != nil || req.Urgency != nil || req.Priority != nil ||
+		req.ServiceID != nil || req.ServiceOfferingID != nil || req.ConfigurationItemID != nil ||
+		req.ChangeRequestID != nil || req.ProblemID != nil || req.CausedByID != nil ||
+		req.ParentIncidentID != nil || req.IncidentReport != nil || req.Environment != nil ||
+		req.WatchList != nil
+	return ok, nil
+}
+
 // incidentPriorityToEnum maps domain.IncidentPriority to
 // incident_priority_enum's real labels. incident_priority_enum has no
 // 'PLANNING' label at all (only CRITICAL/HIGH/MODERATE/LOW), so
@@ -133,7 +272,18 @@ func incidentPriorityToEnum(p domain.IncidentPriority) (string, bool) {
 // SN-raw-integer translation (parsedIncidentFilters.StateKeys). Also maps
 // req.Filters.Priorities (a separate, top-level field, not part of the
 // generic Filters array) the same way.
+//
+// "incidentStateKeys" is ServiceNow's legacy `incident_state` field, which
+// this schema has no column for: there is only `state`. The keys are mapped
+// onto it (1 New, 2 In Progress, ...), the closest thing this data source
+// has, and ANDed with any "state" filter, exactly as the two filters combine
+// on ServiceNow. Dropping it instead (as this parser did) answered 200 with
+// every incident of every state for a request that asked only for the open
+// ones.
 func parseIncidentFieldFiltersPostgres(f domain.SearchIncidentsFilters, now time.Time) (priorities, states, serviceIDs, assignedUserIDs []string, madeSla, slaViolated *bool, createdStartDate, createdEndDate *time.Time, err error) {
+	var stateKeyStates []string
+	stateKeysSupplied := false
+
 	for _, p := range f.Priorities {
 		enumValue, ok := incidentPriorityToEnum(p)
 		if !ok {
@@ -238,6 +388,21 @@ func parseIncidentFieldFiltersPostgres(f domain.SearchIncidentsFilters, now time
 				return nil, nil, nil, nil, nil, nil, nil, nil, err
 			}
 			madeSla = &b
+		case "incidentStateKeys":
+			if f.Op != "in" {
+				return nil, nil, nil, nil, nil, nil, nil, nil, badIncidentFilterCombo(f)
+			}
+			if err := requireIncidentFilterValues(f); err != nil {
+				return nil, nil, nil, nil, nil, nil, nil, nil, err
+			}
+			mapped, err := incidentStatesFromSNKeys(f)
+			if err != nil {
+				return nil, nil, nil, nil, nil, nil, nil, nil, err
+			}
+			stateKeysSupplied = true
+			for _, label := range mapped {
+				stateKeyStates = appendUniqueString(stateKeyStates, label)
+			}
 		case "productName":
 			if f.Op != "in" {
 				return nil, nil, nil, nil, nil, nil, nil, nil, badIncidentFilterCombo(f)
@@ -249,7 +414,45 @@ func parseIncidentFieldFiltersPostgres(f domain.SearchIncidentsFilters, now time
 			// product-name-to-service mapping on this data source.
 		}
 	}
+	if stateKeysSupplied {
+		if len(states) == 0 {
+			states = stateKeyStates
+		} else {
+			// Both filters constrain the same column, so the incident must
+			// satisfy both: keep the states they share.
+			states = intersectStrings(states, stateKeyStates)
+			if len(states) == 0 {
+				// An empty list would mean "no state filter", the opposite of
+				// "no incident can match".
+				return nil, nil, nil, nil, nil, nil, nil, nil, &apierror.ValidationError{Msg: "filters: state and incidentStateKeys select no state in common"}
+			}
+		}
+	}
 	return priorities, states, serviceIDs, assignedUserIDs, madeSla, slaViolated, createdStartDate, createdEndDate, nil
+}
+
+// appendUniqueString appends v to list unless it is already there.
+func appendUniqueString(list []string, v string) []string {
+	for _, existing := range list {
+		if existing == v {
+			return list
+		}
+	}
+	return append(list, v)
+}
+
+// intersectStrings returns the elements of a that are also in b, in a's order.
+func intersectStrings(a, b []string) []string {
+	var out []string
+	for _, v := range a {
+		for _, w := range b {
+			if v == w {
+				out = appendUniqueString(out, v)
+				break
+			}
+		}
+	}
+	return out
 }
 
 type incidentService struct {
@@ -267,6 +470,25 @@ type incidentService struct {
 	// target of its async ServiceNow mirror dispatch (see that method's own
 	// doc comment) once snWriteback below is set.
 	snMirror IncidentService
+	// workaroundProblems creates the workaround problem when UpdateIncident
+	// resolves an incident as Solved (Workaround); dual-write only, set with
+	// WithWorkaroundProblemCreator (see workaround_problem.go).
+	workaroundProblems WorkaroundProblemCreator
+	// handoffIssues file the GitHub issue a specialist handoff opens, by
+	// credential name; a product whose credential has no client still hands
+	// off and reports that no issue was filed. Set with
+	// WithHandoffIssueCreators.
+	handoffIssues SpecialistHandoffIssueClients
+	// handoffConfig routes specialist handoffs; nil hands off nothing
+	// (WithSpecialistHandoffConfig).
+	handoffConfig *SpecialistHandoffConfig
+	// handoffPortalBaseURL is the CSM portal's address, for the incident link
+	// in a handoff's GitHub issue; empty shows the number unlinked
+	// (WithHandoffPortalBaseURL).
+	handoffPortalBaseURL string
+	// handoffNow is the clock a handoff's GitHub issue reads; nil is
+	// time.Now. Tests set it.
+	handoffNow func() time.Time
 	// snWriteback is nil in every mode except
 	// DATA_SOURCE=postgres-servicenow-dual-write, same convention as
 	// caseService's identical field -- see NewCaseServiceWithSNWriteback's
@@ -283,6 +505,11 @@ type incidentService struct {
 	// actually depend on has even been attempted). See
 	// publishIncidentCreatedEvent's doc comment for the full reasoning.
 	eventPublisher EventPublisherService
+	// defaultServiceID is INCIDENT_DEFAULT_SERVICE_ID: the service whose
+	// support group an incident gets when its own service has none
+	// (resolveAssignmentGroup). Empty: such an incident is created unassigned.
+	// Set with WithIncidentDefaultService.
+	defaultServiceID string
 	// updatable is set by the constructors whose instance may write an incident update
 	// (NewIncidentServiceWithPublisher, NewIncidentServiceWithSNMirror). NewIncidentService stays
 	// read-only for updates whatever it is given.
@@ -418,7 +645,7 @@ func (s *incidentService) GetIncidentByID(ctx context.Context, id string) (domai
 	if err := validateUUIDs("id", []string{id}); err != nil {
 		return domain.IncidentView{}, err
 	}
-	return s.repo.GetIncidentByID(ctx, id)
+	return s.incidentView(ctx, id)
 }
 
 // SearchIncidentActivities implements IncidentService.
@@ -449,10 +676,11 @@ func (s *incidentService) SearchIncidentActivities(ctx context.Context, req doma
 // delegates to createIncidentSNFirst -- see that method's own doc comment.
 // Otherwise it is createIncidentPortal, the native Postgres create.
 func (s *incidentService) CreateIncident(ctx context.Context, req domain.CreateIncidentRequest) (domain.CreateIncidentResponse, error) {
-	var err error
-	if req, err = s.withAssignmentGroupFromService(ctx, req); err != nil {
+	decision, err := resolveAssignmentGroup(ctx, req, s.defaultServiceID, s.assignmentGroupLookups())
+	if err != nil {
 		return domain.CreateIncidentResponse{}, err
 	}
+	req = withAssignmentGroup(req, decision)
 	if s.snMirror != nil {
 		// ConfigurationItemID has no backing column on this data source at
 		// all (unlike Subcategory/AssignedEngineerID/WatchList/
@@ -477,32 +705,29 @@ func (s *incidentService) CreateIncident(ctx context.Context, req domain.CreateI
 	return s.createIncidentPortal(ctx, req)
 }
 
-// withAssignmentGroupFromService sets an incident's assignment group to its
-// service's support group.
-//
-// *** THE ONLY PLACE THE GROUP IS CHOSEN. *** The create request has no
-// assignmentGroupId (see domain.CreateIncidentRequest.AssignmentGroupID), so
-// the portal, the microapp, alert-born incidents from sre-alert-core-service
-// and any M2M client all get the same group from one call, read live from the
-// service as ServiceNow's alert business rule does. Done before either create
-// path, so in dual-write mode ServiceNow and Postgres get the same group.
-//
-// A service with no support group leaves the incident unassigned. An invalid
-// service id is left for request validation to reject.
-func (s *incidentService) withAssignmentGroupFromService(ctx context.Context, req domain.CreateIncidentRequest) (domain.CreateIncidentRequest, error) {
-	req.AssignmentGroupID = nil
-	serviceID := strings.TrimSpace(req.ServiceID)
-	if serviceID == "" || validateUUIDs("serviceId", []string{serviceID}) != nil || s.repo == nil {
-		return req, nil
+// assignmentGroupLookups reads services and groups from Postgres for
+// resolveAssignmentGroup (see that function for the rule). In dual-write mode
+// this is the only lookup: the ServiceNow mirror sends the group chosen here
+// and never looks one up itself.
+func (s *incidentService) assignmentGroupLookups() assignmentGroupLookups {
+	if s.repo == nil {
+		// Only a test builds one without a repository; it finds no service and no group.
+		return assignmentGroupLookups{
+			supportGroupOf: func(context.Context, string) (repository.ServiceSupportGroup, error) {
+				return repository.ServiceSupportGroup{}, nil
+			},
+			isSupportGroup: func(context.Context, string) (bool, error) { return false, nil },
+		}
 	}
-	group, err := s.repo.SupportGroupOfService(ctx, serviceID)
-	if err != nil {
-		return req, err
+	return assignmentGroupLookups{
+		supportGroupOf: s.repo.SupportGroupOfService,
+		isSupportGroup: s.repo.IsSupportGroup,
 	}
-	if group != "" {
-		req.AssignmentGroupID = &group
-	}
-	return req, nil
+}
+
+// GetIncidentCreateDefaults implements IncidentService.
+func (s *incidentService) GetIncidentCreateDefaults(ctx context.Context) (domain.IncidentCreateDefaults, error) {
+	return incidentCreateDefaults(ctx, s.defaultServiceID, s.assignmentGroupLookups())
 }
 
 // createIncidentPortal implements CreateIncident's plain-Postgres path
@@ -553,16 +778,25 @@ func (s *incidentService) createIncidentPortal(ctx context.Context, req domain.C
 	return resp, nil
 }
 
-// incidentPriorityFor is ServiceNow's stock priority lookup (dl_u_priority):
-// impact x urgency to priority, as an incident_priority_enum label. The
-// create form's preview (webapp utils/incidentPriorityMatrix.ts) shows the
-// same matrix.
+// incidentPriorityFor is ServiceNow's incident priority lookup (dl_u_priority)
+// -- see priorityFromImpactUrgency. The create form's preview (webapp
+// utils/incidentPriorityMatrix.ts) shows the same matrix.
+func incidentPriorityFor(impact domain.IncidentImpact, urgency domain.IncidentUrgency) string {
+	return priorityFromImpactUrgency(string(impact), string(urgency))
+}
+
+// priorityFromImpactUrgency is ServiceNow's impact x urgency -> priority
+// lookup. Incidents use dl_u_priority ("Priority Lookup"), problems
+// dl_problem_priority ("Priority Problem Lookup"); both run on insert and
+// update, overwrite whatever priority was set, and hold the same nine rows
+// (discovery scripts 64 and 65), so one table serves both. Labels are the
+// shared HIGH/MEDIUM/LOW and CRITICAL..PLANNING enum spellings.
 //
 //	impact \ urgency   HIGH       MEDIUM     LOW
 //	HIGH              CRITICAL   HIGH       MODERATE
 //	MEDIUM            HIGH       MODERATE   LOW
 //	LOW               MODERATE   LOW        PLANNING
-func incidentPriorityFor(impact domain.IncidentImpact, urgency domain.IncidentUrgency) string {
+func priorityFromImpactUrgency(impact, urgency string) string {
 	rank := func(v string) int {
 		switch v {
 		case "HIGH":
@@ -573,7 +807,7 @@ func incidentPriorityFor(impact domain.IncidentImpact, urgency domain.IncidentUr
 			return 2
 		}
 	}
-	return [...]string{"CRITICAL", "HIGH", "MODERATE", "LOW", "PLANNING"}[rank(string(impact))+rank(string(urgency))]
+	return [...]string{"CRITICAL", "HIGH", "MODERATE", "LOW", "PLANNING"}[rank(impact)+rank(urgency)]
 }
 
 // createIncidentSNFirst implements CreateIncident's
@@ -608,7 +842,8 @@ func (s *incidentService) createIncidentSNFirst(ctx context.Context, req domain.
 		return domain.CreateIncidentResponse{}, err
 	}
 
-	resp, err := s.repo.CreateIncidentFromServiceNow(ctx, req, snResp.Incident.ID, snResp.Incident.Number, snResp.Incident.CreatedBy)
+	// ServiceNow derives priority from impact x urgency but does not return it; store the same value so reads and incident.created carry it.
+	resp, err := s.repo.CreateIncidentFromServiceNow(ctx, req, snResp.Incident.ID, snResp.Incident.Number, incidentPriorityFor(req.Impact, req.Urgency), snResp.Incident.CreatedBy)
 	if err != nil {
 		// ServiceNow already has the incident at this point -- this is now
 		// real drift (ServiceNow has it, Postgres doesn't) needing operator
@@ -628,13 +863,13 @@ func (s *incidentService) createIncidentSNFirst(ctx context.Context, req domain.
 	return resp, nil
 }
 
-// UpdateIncident supports two field groups, under
+// UpdateIncident supports three field groups, under
 // DATA_SOURCE=postgres-servicenow-dual-write (s.snWriteback != nil) and on
 // plain DATA_SOURCE=postgres when this instance creates its own incidents
 // (NewIncidentServiceWithPublisher; alert-born SRE incidents need their
 // follow-up alerts as work notes and their engineer's claim). There the
 // writes below are the whole result and there is no ServiceNow mirror. The
-// read-only NewIncidentService still answers 503. The two groups:
+// read-only NewIncidentService still answers 503. The three groups:
 //
 //   - The state transition the portal's incident action bar sends:
 //     State, plus AssignedEngineerID (the "claim" sent with In Progress on
@@ -644,14 +879,21 @@ func (s *incidentService) createIncidentSNFirst(ctx context.Context, req domain.
 //     repository.IncidentLifecycleUpdate for the rules. No state requires an
 //     assignee or group (In Progress included), matching ServiceNow. These
 //     used to be rejected here, so no incident could leave New in this mode.
+//   - The record's own fields, the rest of what the portal's edit dialog
+//     sends: Subject, Category, Subcategory, ContactType, Impact, Urgency,
+//     Priority, ParentID, ParentIncidentID, AssignmentGroupID, ServiceID,
+//     ServiceOfferingID, ConfigurationItemID, ChangeRequestID, ProblemID,
+//     CausedByID, IncidentReport, Environment and WatchList -- the set
+//     snIncidentService.UpdateIncident accepts, with its checks
+//     (incidentRecordUpdateFromRequest). Written in the same transaction.
+//     A change to impact or urgency recomputes priority with ServiceNow's
+//     lookup (priorityFromImpactUrgency); a new category that does not hold
+//     the current subcategory clears it. These used to be rejected here, so
+//     the edit dialog could not save them in this mode.
 //   - WorkNotes and AdditionalComments (below).
 //
-// Every other field (Subject/Priority/Category/Subcategory/ContactType/
-// ParentID/ParentIncidentID/AssignmentGroupID/ServiceID/ServiceOfferingID/
-// ConfigurationItemID/ChangeRequestID/ProblemID/CausedByID/IncidentReport/
-// WatchList) is still rejected with a ValidationError if set, mirroring
-// caseService.UpdateCase's narrow-field-set rejection style -- wiring those
-// up is separate, future work.
+// A field sent as null is not sent, as on the ServiceNow path; only
+// Environment can be cleared.
 //
 // WorkNotes/AdditionalComments each become their own comment row
 // (comment.work_item_id = req.ID, IncidentRepository.CreateIncidentComment)
@@ -689,22 +931,17 @@ func (s *incidentService) UpdateIncident(ctx context.Context, req domain.UpdateI
 	if err := validateUUIDs("id", []string{req.ID}); err != nil {
 		return domain.UpdateIncidentResponse{}, err
 	}
-	if req.Subject != nil || req.Priority != nil || req.Category != nil ||
-		req.Subcategory != nil || req.ContactType != nil ||
-		req.ParentID != nil || req.ParentIncidentID != nil || req.AssignmentGroupID != nil ||
-		req.ServiceID != nil || req.ServiceOfferingID != nil ||
-		req.ConfigurationItemID != nil || req.ChangeRequestID != nil || req.ProblemID != nil ||
-		req.CausedByID != nil || req.IncidentReport != nil || req.WatchList != nil {
-		// Kept under the BFF's 256-byte upstream error excerpt, so the reason
-		// still reaches the portal intact if that cap is ever lowered again.
-		return domain.UpdateIncidentResponse{}, &apierror.ValidationError{Msg: "subject, priority, category, subcategory, contactType, parentId, parentIncidentId, assignmentGroupId, serviceId, serviceOfferingId, configurationItemId, changeRequestId, problemId, causedById, incidentReport and watchList cannot be updated on this data source yet"}
-	}
 	lifecycle, hasLifecycle, err := incidentLifecycleUpdateFromRequest(req)
 	if err != nil {
 		return domain.UpdateIncidentResponse{}, err
 	}
-	if !hasLifecycle && req.WorkNotes == nil && req.AdditionalComments == nil {
-		return domain.UpdateIncidentResponse{}, &apierror.ValidationError{Msg: "at least one of state, assignedEngineerId, resolutionCode, resolutionNotes, resolvedById, workNotes or additionalComments must be provided"}
+	hasRecord, err := incidentRecordUpdateFromRequest(req, &lifecycle)
+	if err != nil {
+		return domain.UpdateIncidentResponse{}, err
+	}
+	if !hasLifecycle && !hasRecord && req.WorkNotes == nil && req.AdditionalComments == nil {
+		// The ServiceNow path's own message for the same request.
+		return domain.UpdateIncidentResponse{}, &apierror.ValidationError{Msg: "at least one field must be provided"}
 	}
 
 	actor, err := s.resolveActor(ctx)
@@ -715,7 +952,8 @@ func (s *incidentService) UpdateIncident(ctx context.Context, req domain.UpdateI
 	// The incident before this change, so a claim or a move out of NEW can be told apart from a
 	// re-send of what it already had (publishIncidentStopSignals). Read only when one could follow.
 	var before domain.IncidentView
-	if s.eventPublisher != nil && (req.State != nil || req.AssignedEngineerID != nil) {
+	if (s.eventPublisher != nil && (req.State != nil || req.AssignedEngineerID != nil)) ||
+		(s.workaroundProblems != nil && req.State != nil) {
 		if b, err := s.repo.GetIncidentByID(ctx, req.ID); err == nil {
 			before = b
 		} else {
@@ -724,11 +962,11 @@ func (s *incidentService) UpdateIncident(ctx context.Context, req domain.UpdateI
 		}
 	}
 
-	if hasLifecycle {
+	if hasLifecycle || hasRecord {
 		if actor.ID != "" {
 			lifecycle.DefaultResolvedByID = &actor.ID
 		}
-		// The notes ride in the state change's transaction: a failed note leaves nothing saved.
+		// The notes ride in the same transaction: a failed note leaves nothing saved.
 		lifecycle.WorkNotes, lifecycle.AdditionalComments = req.WorkNotes, req.AdditionalComments
 		if err := s.repo.UpdateIncidentLifecycle(ctx, req.ID, lifecycle, actor.Email); err != nil {
 			return domain.UpdateIncidentResponse{}, err
@@ -738,39 +976,43 @@ func (s *incidentService) UpdateIncident(ctx context.Context, req domain.UpdateI
 		return domain.UpdateIncidentResponse{}, err
 	}
 
-	view, err := s.repo.GetIncidentByID(ctx, req.ID)
+	view, err := s.incidentView(ctx, req.ID)
 	if err != nil {
 		return domain.UpdateIncidentResponse{}, err
 	}
 	publishIncidentStopSignals(ctx, s.eventPublisher, req, before, view)
 
+	// Dual-write: a resolve with a workaround creates its problem in both stores.
+	problemID := s.createWorkaroundProblem(ctx, req, before, view)
+	if problemID != "" {
+		if v, err := s.incidentView(ctx, req.ID); err == nil {
+			view = v
+		}
+	}
+
 	// Best-effort ServiceNow mirror write, DATA_SOURCE=postgres-servicenow-dual-write
 	// only (guaranteed by the s.snWriteback == nil return just below). Postgres has
-	// already committed both comment rows by this point; this fires after,
-	// asynchronously, and never affects this response. mirrorReq carries only
-	// ID plus the field(s) this call actually set -- never forwards req
-	// itself -- so this can never accidentally carry an unsupported field
-	// into the mirror call.
+	// already committed by this point; this fires after, asynchronously, and
+	// never affects this response. It forwards the request as received: every
+	// field accepted above is one snIncidentService.UpdateIncident accepts too.
+	// Priority goes only as sent, never the value computed above from impact x
+	// urgency -- ServiceNow runs its own lookup on the impact/urgency it gets.
 	if s.snWriteback == nil {
 		// DATA_SOURCE=postgres creating its own incidents: there is no ServiceNow copy to keep in step.
 		return domain.UpdateIncidentResponse{Message: "Incident updated successfully", Incident: view}, nil
 	}
-	mirrorReq := domain.UpdateIncidentRequest{
-		ID:                 req.ID,
-		State:              req.State,
-		AssignedEngineerID: req.AssignedEngineerID,
-		ResolutionCode:     req.ResolutionCode,
-		ResolutionNotes:    req.ResolutionNotes,
-		ResolvedByID:       req.ResolvedByID,
-		WorkNotes:          req.WorkNotes,
-		AdditionalComments: req.AdditionalComments,
+	mirrorReq := req
+	if problemID != "" {
+		// ServiceNow's incident gets the same problem link as Postgres's.
+		mirrorReq.ProblemID = &problemID
 	}
+	// UpdateIncidentRequest keeps ID out of its JSON; the failure record needs it.
+	payload := struct {
+		ID string `json:"id"`
+		domain.UpdateIncidentRequest
+	}{ID: req.ID, UpdateIncidentRequest: mirrorReq}
 	s.snWriteback.Dispatch(ctx, "incident", req.ID, "update",
-		map[string]any{
-			"id": req.ID, "state": req.State, "assignedEngineerId": req.AssignedEngineerID,
-			"resolutionCode": req.ResolutionCode, "resolutionNotes": req.ResolutionNotes, "resolvedById": req.ResolvedByID,
-			"workNotes": req.WorkNotes, "additionalComments": req.AdditionalComments,
-		},
+		payload,
 		func(writeCtx context.Context) error {
 			_, err := s.snMirror.UpdateIncident(writeCtx, mirrorReq)
 			return err
@@ -781,15 +1023,4 @@ func (s *incidentService) UpdateIncident(ctx context.Context, req domain.UpdateI
 		Message:  "Incident updated successfully",
 		Incident: view,
 	}, nil
-}
-
-// HandOffIncidentToSpecialist is not supported for the PostgreSQL data
-// source: this is an inherently ServiceNow-workflow-specific feature (moves
-// the incident to a specialist group, opens a runbook-gap task, files a
-// GitHub issue) with no assignment-group or handoff-tracking concept
-// anywhere in this schema to derive an equivalent from.
-func (s *incidentService) HandOffIncidentToSpecialist(_ context.Context, _ domain.HandOffIncidentToSpecialistRequest) (domain.HandOffIncidentToSpecialistResponse, error) {
-	return domain.HandOffIncidentToSpecialistResponse{}, &apierror.ServiceUnavailableError{
-		Msg: "specialist handoff is not available on this data source: no assignment-group or handoff-tracking concept exists in this schema",
-	}
 }

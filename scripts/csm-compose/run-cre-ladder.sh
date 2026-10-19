@@ -47,7 +47,7 @@ Usage: run-cre-ladder.sh [options]
 What the incident is
   -s, --severity S0..S4     severity (P0..P4 also accepted)               default S0
   -a, --abt TEAM            the ABT it is assigned to; omit for UNASSIGNED
-                            (one of the CRE ABTs in escalation.yaml)
+                            (one of the CRE ABTs in paging-alert.yaml)
 
 When it was reported -- pick one; the engine derives the shift from it
       --shift SHIFT         LK | LK_MORNING | LK_EVENING | LK_WEEKEND | USA | USA_WEEKEND
@@ -119,7 +119,7 @@ TOKEN_URL="http://localhost:9100/oauth2/token"
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 service_dir="${repo_root}/integrations/csm-notification-service"
-config_file="${repo_root}/scripts/csm-compose/escalation.yaml"
+config_file="${repo_root}/scripts/csm-compose/paging-alert.yaml"
 
 # -- flags ------------------------------------------------------------------
 
@@ -239,7 +239,7 @@ export OAUTH2_CLIENT_SECRET="${OAUTH2_CLIENT_SECRET_OVERRIDE:-dev-secret}"
 export OAUTH2_TOKEN_URL="${TOKEN_URL}"
 export CUSTOMER_ENTITY_BASE_URL="${ENTITY_URL}"
 export USE_TEAM_SCHEDULE=1
-# The ABT list from escalation.yaml, so a run follows the file a deployment
+# The ABT list from paging-alert.yaml, so a run follows the file a deployment
 # reads rather than escalation-local's own fallback. The harness does not load
 # the YAML itself yet; this is the one setting it can take from the
 # environment, and the one that decides who LEVEL_0 and LEVEL_2 can reach.
@@ -346,7 +346,7 @@ else
 fi
 [ -n "${LIVE}" ]   && args+=(--live --to "${TO}")
 [ -n "${ELEVATED}" ] && args+=(--kind elevated)
-# The room comes from escalation.yaml's cre.chat.webhookUrlEnv -- the NAME of a
+# The room comes from paging-alert.yaml's cre.chat.webhookUrlEnv -- the NAME of a
 # variable in the service's .env, which the harness loads. This tool does not
 # read the YAML itself, so the name is handed over explicitly.
 case "${CHANNEL}" in

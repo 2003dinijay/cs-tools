@@ -206,6 +206,8 @@ type ProjectContact struct {
 	// Roles are the project roles the membership's groups grant:
 	// PORTAL_USER, SECURITY_CONTACT, LEAD_USER, ADMIN, BUSINESS_CONTACT.
 	Roles []string `json:"roles"`
+
+	IsCsIntegrationUser bool `json:"isCsIntegrationUser"`
 }
 
 type searchProjectContactsRequest struct {

@@ -42,6 +42,8 @@ import {
   formatFileSize,
   getAttachmentFileCategory,
   getInitials,
+  collapseCommentSourceWhitespace,
+  plainTextCommentToHtml,
   hasSingleCodeWrapper,
   stripCodeWrapper,
   stripAllCodeBlocks,
@@ -60,12 +62,21 @@ import { useResolvedInlineImageHtml } from "@features/support/hooks/useResolvedI
 import { useGetAttachmentContent } from "@api/useGetAttachmentContent";
 import { useAttachmentPreview } from "@api/useAttachmentPreview";
 import { stripLightModeInlineStyles } from "@/utils/common";
+import { stripThinkingBlocks } from "@features/support/utils/chat";
+import { NOVERA_DISPLAY_NAME } from "@features/support/constants/chatConstants";
 
 function commentAuthorDisplayName(comment: CaseComment): string {
   if (comment.createdByFullName?.trim()) {
     return comment.createdByFullName.trim();
   }
-  return comment.createdBy?.trim() || "Unknown";
+  if (comment.createdBy?.trim()) {
+    return comment.createdBy.trim();
+  }
+  // An empty createdBy is how the API represents a Novera/bot message (see
+  // isNoveraOrBotSender) -- never show that as "Unknown".
+  return isNoveraOrBotSender(comment.createdBy, comment.type)
+    ? NOVERA_DISPLAY_NAME
+    : "Unknown";
 }
 
 /**
@@ -81,12 +92,20 @@ export default function CommentBubble({
   onImageClick,
   hideAvatar = false,
   userDetails,
+  caseId,
 }: CommentBubbleProps): import("react").JSX.Element {
   const theme = useTheme();
   const isDarkMode = useDarkMode();
   const { downloadAttachment, isDownloading, downloadingId } =
     useGetAttachmentContent();
-  const rawContent = comment.content ?? "";
+  // The case Activity tab merges the linked Novera chat into the timeline, so a
+  // Novera answer can arrive here still carrying its <thinking> reasoning.
+  const isNoveraComment = isNoveraOrBotSender(comment.createdBy, comment.type);
+  const rawContent = isNoveraComment
+    ? stripThinkingBlocks(comment.content ?? "")
+    : plainTextCommentToHtml(
+        collapseCommentSourceWhitespace(comment.content ?? ""),
+      );
   const isFullCodeWrap = hasSingleCodeWrapper(rawContent);
   const codeBlockCount = rawContent.match(/\[code\]/gi)?.length ?? 0;
   const afterCode = isFullCodeWrap
@@ -100,7 +119,7 @@ export default function CommentBubble({
     withoutLabel,
     comment.inlineAttachments,
   );
-  const renderAsMarkdown = isNoveraOrBotSender(comment.createdBy, comment.type);
+  const renderAsMarkdown = isNoveraComment;
   const darkModeHtml = isDarkMode
     ? stripLightModeInlineStyles(withImages)
     : withImages;
@@ -109,7 +128,7 @@ export default function CommentBubble({
     INLINE_COMMENT_HTML_PURIFY,
   );
   const { resolvedHtml: htmlContent, isLoading: isImagesLoading } =
-    useResolvedInlineImageHtml(sanitizedHtml);
+    useResolvedInlineImageHtml(sanitizedHtml, caseId);
   const displayName = useMemo(() => {
     if (isCurrentUser && userDetails) {
       const { firstName, lastName, email } = userDetails;
@@ -142,7 +161,7 @@ export default function CommentBubble({
     return "?";
   }, [isCurrentUser, comment, userDetails]);
 
-  const isNovera = isNoveraOrBotSender(comment.createdBy, comment.type);
+  const isNovera = isNoveraComment;
   const isAttachmentEntry = comment.type?.toLowerCase() === "attachment";
   const attachmentCategory = getAttachmentFileCategory(
     comment.fileName ?? "",
@@ -154,6 +173,7 @@ export default function CommentBubble({
   const { data: imageDataUrl, isLoading: isImagePreviewLoading } =
     useAttachmentPreview(
       isAttachmentEntry && isPreviewableImage ? comment.id : null,
+      caseId,
     );
 
   const renderAttachmentIcon = () => {

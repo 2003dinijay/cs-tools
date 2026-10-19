@@ -66,6 +66,25 @@ func TestAccountRowToView_PopulatesCreAndSreTeam(t *testing.T) {
 	}
 }
 
+// TestAccountRowToView_PopulatesSubRegion pins a real bug: SearchAccounts
+// never selected account.sub_region at all, so a caller filtering accounts
+// by sub-region (a finer geography than Region, e.g. "ASIA"/"NA - WEST"
+// under Region "APAC"/"NA") had no field to filter on and silently matched
+// nothing.
+func TestAccountRowToView_PopulatesSubRegion(t *testing.T) {
+	row := repository.AccountRow{
+		ID:        "account-id",
+		Name:      "Acme",
+		Region:    strPtr("APAC"),
+		SubRegion: strPtr("ASIA"),
+		CreatedBy: "someone@wso2.com",
+	}
+	view := accountRowToView(row)
+	if view.SubRegion == nil || *view.SubRegion != "ASIA" {
+		t.Fatalf("view.SubRegion = %v, want \"ASIA\"", view.SubRegion)
+	}
+}
+
 func TestAccountRowToView_NilTeamsWhenUnset(t *testing.T) {
 	row := repository.AccountRow{ID: "account-id", Name: "Acme", CreatedBy: "someone@wso2.com"}
 

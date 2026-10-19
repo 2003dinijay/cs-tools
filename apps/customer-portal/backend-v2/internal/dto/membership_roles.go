@@ -193,7 +193,6 @@ func flagsFromProjectRoles(roles []string) membershipRoleFlags {
 // Three things the Salesforce-backed list had are not in the database row:
 //   - First and last name are one field there, so the name is split at its
 //     first space. A one-word name lands in LastName, which the page shows.
-//   - There is no integration-user flag, so IsCsIntegrationUser is false.
 //   - There is no account block, so the partner badge is not shown.
 //
 // ID is the user id when a user is linked, otherwise the email, since the
@@ -208,6 +207,7 @@ func MapEntityProjectContact(c entity.ProjectContact) Contact {
 		IsPortalUser:      f.IsPortalUser,
 		IsSecurityContact: f.IsSecurityContact,
 	}
+	out.IsCsIntegrationUser = c.IsCsIntegrationUser
 	if c.ID != nil && *c.ID != "" {
 		out.ID = *c.ID
 	}

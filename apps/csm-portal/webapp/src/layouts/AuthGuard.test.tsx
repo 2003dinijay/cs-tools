@@ -305,12 +305,9 @@ describe("AuthGuard's response to a /users/me failure once signed in", () => {
     ).toBeInTheDocument();
   });
 
-  // The Sales/SA (SPL) audience gate checks plain "viewer", not
-  // "sales_solutions" (see usePortalView.ts's own doc comment) -- "viewer"
-  // is already one of getPortalAccess's 8 checked roles, so a Sales/SA
-  // user holding it passes with no special case needed, and a
-  // sales_solutions-only user (holding neither) has nowhere left to land.
-  it("does NOT show the not-authorized page for a viewer-only user — they're headed for the Sales/SA nav", async () => {
+  // "viewer" is one of getPortalAccess's own checked roles, so a viewer-only
+  // caller passes this gate with no special case needed.
+  it("does NOT show the not-authorized page for a viewer-only user", async () => {
     currentUserState.user = { roles: ["viewer"] };
     let rerender!: ReturnType<typeof renderAuthGuard>["rerender"];
 
@@ -330,7 +327,7 @@ describe("AuthGuard's response to a /users/me failure once signed in", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("shows the not-authorized page for a sales_solutions-only user — without viewer they can't reach SPL either", async () => {
+  it("shows the not-authorized page for a sales_solutions-only user — it grants nothing on its own", async () => {
     currentUserState.user = { roles: ["sales_solutions"] };
     let rerender!: ReturnType<typeof renderAuthGuard>["rerender"];
 

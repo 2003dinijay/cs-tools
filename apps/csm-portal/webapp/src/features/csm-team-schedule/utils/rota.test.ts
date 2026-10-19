@@ -18,8 +18,8 @@
 
 import { describe, expect, it } from "vitest";
 import type { ScheduleAssignment, ScheduleShift } from "../types";
-import { TZ1, TZ1_L1, TZ1_WE, TZ2, TZ2_WE, TZ3, REGULAR } from "../test/fixtures";
-import { escalationGrid, kindsOfferedOn, monthPieces, readerFamily, rosterRange, zoneLabelOn } from "./rota";
+import { MOE_DAY, MOE_NIGHT, TZ1, TZ1_L1, TZ1_WE, TZ2, TZ2_WE, TZ3, REGULAR } from "../test/fixtures";
+import { escalationGrid, familiesRun, kindsOfferedOn, monthPieces, moveKindFor, movesOfferedOn, narrowsToOneRota, readerFamily, rotasForReader, rosterRange, rotaZoneName, zoneColumnOf, zoneDisplayName, zoneLabelOn } from "./rota";
 import {
   dayLabel,
   zoneAbbreviation,
@@ -364,5 +364,141 @@ describe("readerFamily", () => {
   it("is nobody's group with neither role, or both", () => {
     expect(readerFamily(undefined, ["admin"])).toBeUndefined();
     expect(readerFamily(undefined, ["cre_rota_admin", "sre_rota_admin"])).toBeUndefined();
+  });
+
+  // SME, the product special rotations: read from the team type the way SRE
+  // is, so an SME engineer is never quietly taken for CRE.
+  it("reads SME from an SME team, an SME rota admin, or SME teams they edit", () => {
+    expect(readerFamily("sme-moesif", [])).toBe("SME");
+    expect(readerFamily("SME-Asgardeo", ["cre_rota_admin"])).toBe("SME");
+    expect(readerFamily(undefined, ["sme_rota_admin"])).toBe("SME");
+    expect(readerFamily(undefined, [], ["SME", "SME"])).toBe("SME");
+    expect(readerFamily(undefined, ["sme_rota_admin", "sre_rota_admin"])).toBeUndefined();
+    expect(readerFamily(undefined, [], ["SME", "SRE"])).toBeUndefined();
+  });
+});
+
+describe("a rotation's Day and Night zones", () => {
+  it("names them Day and Night, and leaves SRE's time zones as they are", () => {
+    expect(zoneDisplayName("MOE_D")).toBe("Day");
+    expect(zoneDisplayName("IAAS_N")).toBe("Night");
+    expect(zoneDisplayName("TZ1")).toBe("TZ1");
+    expect(zoneLabelOn([MOE_DAY, MOE_NIGHT], "MOE_N", true)).toBe("Night");
+    expect(zoneLabelOn([TZ1_WE], "TZ1", true)).toBe("TZ1"); // a chip short code ("L1") is no crew name
+  });
+
+  it("puts L1, L2 and L3 on each, every day of the week", () => {
+    for (const iso of ["2026-09-21", "2026-09-26"]) {
+      const grid = escalationGrid([MOE_DAY, MOE_NIGHT], iso);
+      // named with the rotation, so several rotations' rows can sit together
+      expect(grid.map((r) => [r.zoneCode, r.label])).toEqual([["MOE_D", "Moesif Day"], ["MOE_N", "Moesif Night"]]);
+      expect(grid[0].tiers.map((t) => t.shift?.code)).toEqual(["SME_MOE_DAY", "SME_MOE_DAY", "SME_MOE_DAY"]);
+    }
+  });
+});
+
+describe("rotaZoneName and zoneColumnOf", () => {
+  it("names a rotation's zone with its rotation, and leaves SRE's time zones alone", () => {
+    expect(rotaZoneName([MOE_DAY, MOE_NIGHT], "MOE_N")).toBe("Moesif Night");
+    expect(rotaZoneName([TZ1], "TZ1")).toBe("TZ1");
+  });
+  it("puts every rotation's Day in one roster column and its Night in another", () => {
+    expect(zoneColumnOf("ASG_D")).toBe(zoneColumnOf("MOE_D"));
+    expect(zoneColumnOf("IAAS_N")).toBe("Night");
+    expect(zoneColumnOf("TZ2")).toBe("TZ2");
+  });
+});
+
+
+describe("a tag worked as another team's normal hours", () => {
+  const BR = {
+    id: "k-br", code: "ALLO_BR", shortCode: "BR", label: "Brazil rotation", bucket: "ALLOCATION" as const,
+    colourToken: "BR", sortOrder: 70, movesToTeamKey: "americas", worksRotaThere: true, showsAsShiftCode: "CRE_AMERICAS",
+  };
+  const MIG = {
+    id: "k-mig", code: "MIGRATION", shortCode: "Mig", label: "Migration", bucket: "ALLOCATION" as const,
+    colourToken: "MIG", sortOrder: 90, movesToTeamKey: "migration", showsAsShiftCode: "CRE_REGULAR",
+  };
+
+  it("is not offered as time away; a plain move is offered as a move, a worked one as its shift", () => {
+    expect(kindsOfferedOn([BR, MIG], "CRE").map((k) => k.code)).toEqual([]);
+    expect(movesOfferedOn([BR, MIG], "CRE").map((k) => k.code)).toEqual(["MIGRATION"]);
+  });
+
+  it("is what picking that shift means for somebody on another team", () => {
+    expect(moveKindFor([BR, MIG], "CRE_AMERICAS", "vega")?.code).toBe("ALLO_BR");
+  });
+
+  it("is not involved for somebody already on that team, nor for any other shift", () => {
+    expect(moveKindFor([BR, MIG], "CRE_AMERICAS", "Americas")).toBeUndefined();
+    // Regular hours is everybody's: Migration, which is not rota work there,
+    // is never picked by choosing it.
+    expect(moveKindFor([BR, MIG], "CRE_REGULAR", "vega")).toBeUndefined();
+  });
+});
+
+describe("rotasForReader", () => {
+  const SRE = ["SRE_SAAS", "SRE_IAAS"];
+  const reader = (over: Partial<Parameters<typeof rotasForReader>[0]>) =>
+    rotasForReader({ familyRotas: SRE, crosses: false, ownTeamKnown: true, editRotas: [], ...over });
+
+  it("shows a SaaS engineer SaaS alone, and an IaaS engineer IaaS alone", () => {
+    expect(reader({ ownRota: "SRE_SAAS" })).toEqual(["SRE_SAAS"]);
+    expect(reader({ ownRota: "SRE_IAAS" })).toEqual(["SRE_IAAS"]);
+  });
+
+  it("adds any rota the reader edits: an SRE rota admin gets both", () => {
+    expect(reader({ ownTeamKnown: false, editRotas: ["SRE_SAAS", "SRE_IAAS"] })).toEqual(SRE);
+    expect(reader({ ownRota: "SRE_SAAS", editRotas: ["SRE_IAAS"] })).toEqual(SRE);
+  });
+
+  it("finds an IaaS lead's rota from what they edit when their profile names no team", () => {
+    expect(reader({ ownTeamKnown: false, editRotas: ["SRE_IAAS"] })).toEqual(["SRE_IAAS"]);
+  });
+
+  it("gives every rota where the reader may cross them: Today, a manager", () => {
+    expect(reader({ ownRota: "SRE_SAAS", crosses: true })).toEqual(SRE);
+  });
+
+  it("shows a team on no rota yet (PaaS) none, not another sub-team's", () => {
+    expect(reader({ ownRota: undefined })).toEqual([]);
+  });
+
+  it("keeps every rota for a reader it cannot place, as before", () => {
+    expect(reader({ ownRota: undefined, ownTeamKnown: false })).toEqual(SRE);
+  });
+});
+
+describe("narrowsToOneRota", () => {
+  it("narrows SRE once it runs more than one rota, whose columns differ", () => {
+    expect(narrowsToOneRota("SRE", 2)).toBe(true);
+    expect(narrowsToOneRota("SRE", 1)).toBe(false);
+  });
+
+  it("never narrows SME: every rotation is a Day and a Night, on one grid", () => {
+    expect(narrowsToOneRota("SME", 7)).toBe(false);
+    expect(narrowsToOneRota("SME", 1)).toBe(false);
+  });
+
+  it("narrows CRE only if it ever runs more than one rota", () => {
+    expect(narrowsToOneRota("CRE", 1)).toBe(false);
+    expect(narrowsToOneRota("CRE", 2)).toBe(true);
+  });
+});
+
+describe("familiesRun", () => {
+  const teams = [
+    { key: "atlas", family: "CRE" as const },
+    { key: "vega", family: "CRE" as const },
+    { key: "apollo", family: "SRE" as const },
+    { key: "u2", family: "SME" as const },
+  ];
+  it("gives each group the reader runs a team in, once", () => {
+    expect(familiesRun(teams, ["atlas", "vega"])).toEqual(["CRE"]);
+    expect(familiesRun(teams, ["Atlas", "apollo", "u2"])).toEqual(["CRE", "SRE", "SME"]);
+  });
+  it("ignores teams the catalogue does not list, and runs nothing for nobody", () => {
+    expect(familiesRun(teams, ["paas", "apollo"])).toEqual(["SRE"]);
+    expect(familiesRun(teams, [])).toEqual([]);
   });
 });

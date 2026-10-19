@@ -209,7 +209,7 @@ func TestProcessProject_SkipsNotifyWhenAlreadyClosedForAnyReason(t *testing.T) {
 func TestProcessProject_CustomerAudienceWindowNotifiesBusinessContact(t *testing.T) {
 	reader := &mockEntityReader{
 		searchProjectContactsFn: func(ctx context.Context, projectID string, body []byte) ([]byte, error) {
-			return []byte(`{"contacts":[{"name":"Bob","email":"bob@customer.example","roles":["business_contact"]}]}`), nil
+			return []byte(`{"contacts":[{"name":"Bob","email":"bob@customer.example","roles":["BUSINESS_CONTACT"]}]}`), nil
 		},
 	}
 	updater := &mockProjectUpdater{}
@@ -275,7 +275,7 @@ func TestProcessProject_CustomerAudienceWindowNotifiesBusinessContact(t *testing
 func TestProcessProject_RecordsIgnoredWhenOnlyCustomerNoticeWasntDelivered(t *testing.T) {
 	reader := &mockEntityReader{
 		searchProjectContactsFn: func(ctx context.Context, projectID string, body []byte) ([]byte, error) {
-			return []byte(`{"contacts":[{"name":"Bob","email":"bob@customer.example","roles":["business_contact"]}]}`), nil
+			return []byte(`{"contacts":[{"name":"Bob","email":"bob@customer.example","roles":["BUSINESS_CONTACT"]}]}`), nil
 		},
 	}
 	updater := &mockProjectUpdater{}
@@ -548,7 +548,7 @@ func TestProcessProject_InvoiceCascadeErrorDoesNotBlockSubscriptionCascade(t *te
 func TestProcessProject_Day0SuccessfulNotifyThenSuspend(t *testing.T) {
 	reader := &mockEntityReader{
 		searchProjectContactsFn: func(ctx context.Context, projectID string, body []byte) ([]byte, error) {
-			return []byte(`{"contacts":[{"name":"Bob","email":"bob@customer.example","roles":["business_contact"]}]}`), nil
+			return []byte(`{"contacts":[{"name":"Bob","email":"bob@customer.example","roles":["BUSINESS_CONTACT"]}]}`), nil
 		},
 	}
 	updater := &mockProjectUpdater{}
@@ -595,8 +595,8 @@ func TestProcessProject_Day0SuccessfulNotifyThenSuspend(t *testing.T) {
 	if err := json.Unmarshal(updater.calls[1].body, &suspendBody); err != nil {
 		t.Fatalf("parse second update body: %v", err)
 	}
-	if suspendBody.EndDateClosureState != "Suspended" {
-		t.Errorf("second call endDateClosureState = %q, want %q", suspendBody.EndDateClosureState, "Suspended")
+	if suspendBody.EndDateClosureState != "Closed" {
+		t.Errorf("second call endDateClosureState = %q, want %q", suspendBody.EndDateClosureState, "Closed")
 	}
 }
 
@@ -642,14 +642,14 @@ func TestProcessProject_Day0RetrySkipsNotifyWhenAlreadyRecorded(t *testing.T) {
 	if err := json.Unmarshal(updater.calls[0].body, &suspendBody); err != nil {
 		t.Fatalf("parse update body: %v", err)
 	}
-	if suspendBody.EndDateClosureState != "Suspended" {
-		t.Errorf("endDateClosureState = %q, want %q", suspendBody.EndDateClosureState, "Suspended")
+	if suspendBody.EndDateClosureState != "Closed" {
+		t.Errorf("endDateClosureState = %q, want %q", suspendBody.EndDateClosureState, "Closed")
 	}
 }
 
 // TestProcessProject_SuspendGuardSkipsAlreadySuspendedProject verifies the
-// suspend guard: if endDateClosureState already reads "Suspended" (from this
-// run's already-fetched data), no UpdateProject call happens at all for
+// suspend guard: if endDateClosureState already reads "Suspended" (what
+// earlier builds of suspend() wrote), no UpdateProject call happens at all for
 // suspend. This is the field suspend() itself writes — closureState is a
 // separate, derived roll-up field this code never sets, so the guard must
 // not be keyed on it (confirmed bug: see EndDateClosureState's doc comment
@@ -680,13 +680,10 @@ func TestProcessProject_SuspendGuardSkipsAlreadySuspendedProject(t *testing.T) {
 }
 
 // TestProcessProject_SuspendGuardSkipsWhenEndDateClosureStateIsClosed
-// verifies the guard also treats "Closed" as already-handled, not just an
-// exact "Suspended" match. Confirmed via a real suspended project fetched
-// directly (Postman, project acac149b-eba1-4714-fcf5-f5dabad0cdb1,
-// closureState="Suspended" but endDateClosureState="Closed") that this field
-// can progress past "Suspended" via a process outside this component — an
-// equality check against "Suspended" alone would miss this real case and
-// re-suspend indefinitely.
+// verifies the guard treats "Closed" as already-handled: it is what suspend()
+// writes now, and what legacy-suspended projects hold (Postman, project
+// acac149b-eba1-4714-fcf5-f5dabad0cdb1, closureState="Suspended",
+// endDateClosureState="Closed"). Without it every run would suspend again.
 func TestProcessProject_SuspendGuardSkipsWhenEndDateClosureStateIsClosed(t *testing.T) {
 	reader := &mockEntityReader{}
 	updater := &mockProjectUpdater{}
@@ -721,7 +718,7 @@ func TestProcessProject_SuspendGuardSkipsWhenEndDateClosureStateIsClosed(t *test
 func TestProcessProject_SuspendProceedsWhenEndDateClosureStateIsExplicitlyOpen(t *testing.T) {
 	reader := &mockEntityReader{
 		searchProjectContactsFn: func(ctx context.Context, projectID string, body []byte) ([]byte, error) {
-			return []byte(`{"contacts":[{"name":"Bob","email":"bob@customer.example","roles":["business_contact"]}]}`), nil
+			return []byte(`{"contacts":[{"name":"Bob","email":"bob@customer.example","roles":["BUSINESS_CONTACT"]}]}`), nil
 		},
 	}
 	updater := &mockProjectUpdater{}

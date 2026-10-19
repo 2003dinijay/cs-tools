@@ -90,6 +90,12 @@ export interface CsmCaseRow {
    */
   engagementType?: string;
   /**
+   * Engagement payment type display label (e.g. "Paid", "FOC"), only
+   * meaningful when `caseType` is `"engagement"`. Carried through unmodified
+   * from the backend, like `engagementType`; see `isFocPaymentType`.
+   */
+  engagementPaymentType?: string;
+  /**
    * Work sub-state of an in-progress case (`ongoing` / `paused`); `null` when
    * the case is not `work_in_progress`. Drives the comment gate and the paused
    * indicator. See {@link commentGateReason}.
@@ -145,9 +151,9 @@ export interface CaseEscalationRecord {
   reason?: string | null;
 }
 
-/** A user notified about the case's current escalation level -- the people
- * authorized to de-escalate it. `id` can be empty when the backing data
- * source couldn't resolve a platform user record; match by `email` then. */
+/** A user on a case's escalation (notified, or one of its ABT team leads).
+ * `id` can be empty when the backing data source couldn't resolve a platform
+ * user record; match by `email` then. */
 export interface CaseEscalationNotifiedUser {
   id?: string | null;
   name?: string | null;
@@ -155,10 +161,12 @@ export interface CaseEscalationNotifiedUser {
 }
 
 /** The response for `GET /cases/{id}/escalations`: the case's full escalation
- * history plus who's authorized to de-escalate its current level. */
+ * history, who was notified of its current level, and its ABT team leads --
+ * the only people authorized to de-escalate it. */
 export interface CaseEscalationHistory {
   escalations: CaseEscalationRecord[];
   currentNotifiedUsers: CaseEscalationNotifiedUser[];
+  teamLeads: CaseEscalationNotifiedUser[];
 }
 
 export interface CsmCasesListResponse {
@@ -206,6 +214,11 @@ export interface CsmCaseComment {
    * the real creator's role isn't known on the frontend, so nothing should be
    * claimed about it. */
   synthetic?: boolean;
+  /** `"markdown"` when {@link bodyHtml} is Markdown rather than rich-text
+   * HTML, so it is rendered through `markdownToHtml` like a chatbot message.
+   * Set on the synthesized description entry of a record raised from a GitHub
+   * issue, whose description is the issue body verbatim. Absent = HTML. */
+  bodyFormat?: "markdown";
   /** True once this comment has been edited at least once. Derived from
    * `BeComment.lastEditedOn` being present — see {@link lastEditedOn} for the
    * actual timestamp used in the "(edited)" marker. */

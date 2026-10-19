@@ -56,9 +56,9 @@ const TYPE_OPTIONS: Array<{ value: IssueTypeValue; label: string }> = [
 ];
 
 const SEVERITY_OPTIONS: Array<{ value: string; label: string }> = [
-  { value: "Priority/Critical", label: "P1 - Critical" },
-  { value: "Priority/High", label: "P2 - High" },
-  { value: "Priority/Medium", label: "P3 - Medium" },
+  { value: "Priority/Critical(P1)", label: "P1 - Critical" },
+  { value: "Priority/High(P2)", label: "P2 - High" },
+  { value: "Priority/Medium(P3)", label: "P3 - Medium" },
 ];
 
 // ---------------------------------------------------------------------------
@@ -112,9 +112,9 @@ export interface CreateGithubIssueDialogProps {
 /**
  * Form for filing an internal GitHub issue from a case (ISSU-020).
  * Subject and Description are always required. Type is Patch or Discussion:
- *   - Discussion: Severity is required. Hotfix Required is hidden.
- *   - Patch: Severity is hidden. Hotfix Required is shown. On a non-cloud
- *     case, Update Level and Public Git Issue are required.
+ *   - Discussion: Severity is required. Hotfix Required and Regression are hidden.
+ *   - Patch: Severity is hidden. Hotfix Required and Regression are shown. On a
+ *     non-cloud case, Update Level and Public Git Issue are required.
  * Migration sends reason "migration"; otherwise reason is "default".
  * The repository comes from GET /products/github-repo for the case product.
  * Submit stays disabled until that lookup returns a mapping.
@@ -175,6 +175,7 @@ export function CreateGithubIssueDialog({
   const showSeverity = type === "Type/Discussion";
   const requireSeverity = type === "Type/Discussion";
   const showHotFix = type === "Type/Patch";
+  const showRegression = type === "Type/Patch";
   // Update Level / Public Git Issue apply to non-cloud projects only — cloud
   // projects route via the repo field instead (see showRepoField).
   const showUpdateLevelAndIssueUrl = !showRepoField;
@@ -227,7 +228,7 @@ export function CreateGithubIssueDialog({
     if (showSeverity && priorityLevel) payload.priorityLevel = priorityLevel;
     if (onboardingInProgress) payload.onboardingInProgress = true;
     if (showHotFix && hotFix) payload.hotFixRequired = true;
-    if (regression) payload.regression = true;
+    if (showRegression && regression) payload.regression = true;
 
     onOpenConfirm?.();
     setConfirmPayload(payload);
@@ -306,7 +307,7 @@ export function CreateGithubIssueDialog({
             required
             disabled={submitting}
             placeholder="What needs to be fixed?"
-            helperText="Case number, product and reporter are appended to the issue body automatically."
+            helperText="Case number, product and your email (as Opened By) are appended to the issue body automatically."
           />
 
           {showSeverity &&
@@ -368,16 +369,18 @@ export function CreateGithubIssueDialog({
             label="Migration"
           />
 
-          <FormControlLabel
-            control={
-              <Switch
-                checked={regression}
-                onChange={(e) => setRegression(e.target.checked)}
-                disabled={submitting}
-              />
-            }
-            label="Regression"
-          />
+          {showRegression && (
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={regression}
+                  onChange={(e) => setRegression(e.target.checked)}
+                  disabled={submitting}
+                />
+              }
+              label="Regression"
+            />
+          )}
 
           {projectStatusFailed ? (
             <Box>
@@ -395,7 +398,7 @@ export function CreateGithubIssueDialog({
                 : repoOptionsLoading
                   ? "Looking up the GitHub repository for this product…"
                   : selectedRepoOption
-                    ? `Repository: ${selectedRepoOption.owner}/${selectedRepoOption.repo} (${selectedRepoOption.displayLabel})`
+                    ? `This issue will be created in: ${selectedRepoOption.owner}/${selectedRepoOption.repo} (${selectedRepoOption.displayLabel})`
                     : "No GitHub repository is mapped for this product."}
             </Typography>
           )}

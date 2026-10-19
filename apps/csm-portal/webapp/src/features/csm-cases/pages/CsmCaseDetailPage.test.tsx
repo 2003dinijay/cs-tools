@@ -14,9 +14,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { JSX } from "react";
+import { useEffect, type JSX } from "react";
 import {
   MemoryRouter,
   Route,
@@ -52,15 +52,6 @@ vi.mock("@api/backend/client", () => ({
       this.status = status;
     }
   },
-}));
-
-// The page calls this as a fire-and-forget side effect (its return value is
-// discarded) purely to keep the case-activity SSE stream alive — it has its
-// own dedicated test file (useCaseActivityStream.test.tsx) and doesn't need
-// to be exercised for real here. Left unmocked, it transitively pulls in
-// useAuthTokens -> useLogger, which throws without a LoggerProvider.
-vi.mock("@features/csm-cases/api/useCaseActivityStream", () => ({
-  useCaseActivityStream: vi.fn(),
 }));
 
 const navigateMock = vi.fn();
@@ -211,10 +202,17 @@ vi.mock("@features/csm-cases/api/useFindMyOngoingCases", () => ({
   useFindMyOngoingCases: () => vi.fn(),
 }));
 const useGetCsmCaseCommentsMock = vi.fn();
+// Defaults to a resolved promise so every pre-existing call site (the
+// comment composer) keeps working unchanged; the Set-fix-ETA share tests
+// override this per test to control success/rejection.
+const postCommentMutateAsyncMock = vi.fn().mockResolvedValue(undefined);
 vi.mock("@features/csm-cases/api/useCsmCaseComments", () => ({
   useGetCsmCaseComments: (id: string | undefined) =>
     useGetCsmCaseCommentsMock(id),
-  usePostCsmCaseComment: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  usePostCsmCaseComment: () => ({
+    mutateAsync: postCommentMutateAsyncMock,
+    isPending: false,
+  }),
   usePatchComment: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useDeleteComment: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
@@ -328,20 +326,28 @@ vi.mock("@features/csm-cases/api/useGetCsmCaseSlas", () => ({
 vi.mock("@features/csm-cases/api/useCreateCaseTask", () => ({
   useCreateCaseTask: () => ({ mutate: vi.fn(), isPending: false }),
 }));
+// The Git-issue success handler adds each tag with `mutateAsync`, so the stub
+// exposes one shared mock the tests below can inspect.
+const addTagMutateAsyncMock = vi.fn();
 vi.mock("@features/csm-cases/api/useCaseTags", () => ({
-  useAddCaseTag: () => ({ mutate: vi.fn(), isPending: false }),
+  useAddCaseTag: () => ({
+    mutate: vi.fn(),
+    mutateAsync: addTagMutateAsyncMock,
+    isPending: false,
+  }),
   useRemoveCaseTag: () => ({
     mutate: vi.fn(),
     isPending: false,
     variables: undefined,
   }),
 }));
+const postGithubIssueMutateMock = vi.fn();
 vi.mock("@features/csm-cases/api/useCsmCaseGithubIssue", () => ({
-  usePostCaseGithubIssue: () => ({ mutate: vi.fn(), isPending: false }),
+  usePostCaseGithubIssue: () => ({ mutate: postGithubIssueMutateMock, isPending: false }),
 }));
 vi.mock("@features/csm-cases/api/useGetCsmCaseEscalations", () => ({
   useGetCsmCaseEscalations: () => ({
-    data: { escalations: [], currentNotifiedUsers: [] },
+    data: { escalations: [], currentNotifiedUsers: [], teamLeads: [] },
     isLoading: false,
     isError: false,
   }),
@@ -421,6 +427,15 @@ vi.mock("@features/csm-cases/components/CaseActionBar", () => ({
       </button>
       <button type="button" onClick={() => onAction({ secondary: "set_fix_eta" })}>
         stub open set fix eta
+      </button>
+      <button type="button" onClick={() => onAction({ secondary: "raise_git_issue" })}>
+        stub open raise git issue
+      </button>
+      <button
+        type="button"
+        onClick={() => onAction("assign_to_me", "work_in_progress")}
+      >
+        stub assign to me
       </button>
       <button type="button" onClick={() => onAction("request_info", "awaiting_info")}>
         stub request info
@@ -505,6 +520,32 @@ vi.mock("@features/csm-cases/components/SetFixEtaDialog", () => ({
       >
         stub save fix eta
       </button>
+      <button
+        type="button"
+        onClick={() =>
+          onSave({
+            bestCaseFixEta: "2099-06-16",
+            addPublicComment: true,
+            product: "WSO2 API Manager",
+            publicTicket: "https://github.com/example/example/issues/1",
+          })
+        }
+      >
+        stub save fix eta with share
+      </button>
+      <button
+        type="button"
+        onClick={() =>
+          onSave({
+            bestCaseFixEta: "2099-06-16",
+            addPublicComment: true,
+            product: '<img src=x onerror=alert(1)>',
+            publicTicket: "Tom & Jerry's <ticket>",
+          })
+        }
+      >
+        stub save fix eta with share (html input)
+      </button>
     </div>
   ),
 }));
@@ -548,8 +589,17 @@ vi.mock("@features/csm-cases/components/LinkedChangeRequestsWidget", () => ({
     <div data-testid="linked-change-requests-widget-probe" />
   ),
 }));
+// Captures the props the page hands the dialog so a test can submit it the way
+// the real dialog does (the dialog's own behaviour is covered in
+// CreateGithubIssueDialog.test.tsx).
+let githubDialogProps: { onSubmit: (payload: Record<string, unknown>) => void } | undefined;
 vi.mock("@features/csm-cases/components/CreateGithubIssueDialog", () => ({
-  CreateGithubIssueDialog: () => null,
+  CreateGithubIssueDialog: (props: {
+    onSubmit: (payload: Record<string, unknown>) => void;
+  }) => {
+    githubDialogProps = props;
+    return <div data-testid="create-github-issue-dialog-probe" />;
+  },
 }));
 // Probe, not `null`: several tests below assert on the comments the page
 // hands this feed (including the synthetic description entry — see
@@ -557,11 +607,16 @@ vi.mock("@features/csm-cases/components/CreateGithubIssueDialog", () => ({
 // author name / body / role-chip-suppression to actually render. The feed's
 // own layout/filtering/sorting is covered in CaseActivitiesFeed.test.tsx.
 vi.mock("@features/csm-cases/components/CaseActivitiesFeed", () => ({
-  default: ({
+  default: function CaseActivitiesFeedProbe({
     comments,
     onEditComment,
     onDeleteComment,
+    entryWindow,
   }: {
+    entryWindow?: {
+      limit: number;
+      onStatusChange?: (s: { total: number; shown: number }) => void;
+    };
     comments: Array<{
       id: string;
       authorName: string;
@@ -571,9 +626,18 @@ vi.mock("@features/csm-cases/components/CaseActivitiesFeed", () => ({
     }>;
     onEditComment?: unknown;
     onDeleteComment?: unknown;
-  }) => (
+  }) {
+    // Stands in for the real feed's status report: pretend the case has 120
+    // entries so the page's "Load all" button has something to hide/show.
+    const shown = Math.min(entryWindow?.limit ?? 120, 120);
+    const onStatusChange = entryWindow?.onStatusChange;
+    useEffect(() => {
+      onStatusChange?.({ total: 120, shown });
+    }, [onStatusChange, shown]);
+    return (
     <div
       data-testid="case-activities-feed-probe"
+      data-limit={String(entryWindow?.limit)}
       data-can-edit={String(!!onEditComment)}
       data-can-delete={String(!!onDeleteComment)}
     >
@@ -587,7 +651,8 @@ vi.mock("@features/csm-cases/components/CaseActivitiesFeed", () => ({
         </div>
       ))}
     </div>
-  ),
+    );
+  },
 }));
 vi.mock("@features/csm-cases/components/CaseMetaBand", () => ({
   default: () => null,
@@ -1139,6 +1204,47 @@ describe("CsmCaseDetailPage — onboarding chip", () => {
     expect(
       await screen.findByText("Onboarding owner: Unassigned"),
     ).toBeInTheDocument();
+  });
+});
+
+describe("CsmCaseDetailPage — auto-closure hold chip", () => {
+  function renderWithAutoclosure(
+    autoclosureStep: string | undefined,
+    autoclosureStateTime: string | undefined,
+  ): void {
+    useGetCsmCaseDetailMock.mockImplementation((id: string | undefined) => ({
+      ...(defaultCaseDetailImpl(id) as object),
+      data: id
+        ? { ...buildCase(id), autoclosureStep, autoclosureStateTime }
+        : undefined,
+    }));
+    renderPage();
+  }
+
+  it("shows the hold chip with its date for a case that is on hold", () => {
+    renderWithAutoclosure("ON_HOLD", "2099-06-15T00:00:00.000Z");
+
+    // The held calendar day, not a date-time shifted into the viewer's
+    // timezone (which reads as the previous evening west of UTC).
+    expect(screen.getByText("On hold until Jun 15, 2099")).toBeInTheDocument();
+  });
+
+  it("shows no hold chip while the case is only counting down to auto-closure", () => {
+    // FIRST_COMMENT / SECOND_COMMENT are later stages of the same sequence,
+    // not a pause; their state time is when the next stage fires, so an "On
+    // hold until" chip would be wrong for the thousands of cases sitting there.
+    for (const step of ["FIRST_COMMENT", "SECOND_COMMENT", "DEFAULT"]) {
+      renderWithAutoclosure(step, "2099-06-15T00:00:00.000Z");
+      expect(screen.queryByText(/On hold until/)).not.toBeInTheDocument();
+      expect(screen.queryByText("On auto-closure hold")).not.toBeInTheDocument();
+      cleanup();
+    }
+  });
+
+  it("shows no hold chip for a case with no auto-closure step at all", () => {
+    renderWithAutoclosure(undefined, undefined);
+
+    expect(screen.queryByText(/On hold until/)).not.toBeInTheDocument();
   });
 });
 
@@ -1746,6 +1852,28 @@ describe("CsmCaseDetailPage — role-based controls", () => {
     }
   });
 
+  it("windows the activity timeline to 50 entries, and 'Load all' (left of Refresh) lifts the window then hides", () => {
+    renderPage();
+    const feed = screen.getByTestId("case-activities-feed-probe");
+    expect(feed).toHaveAttribute("data-limit", "50");
+
+    const loadAll = screen.getByRole("button", { name: "Load all activity timeline entries" });
+    const refresh = screen.getByRole("button", { name: "Refresh activity timeline" });
+    // Immediately to the left of Refresh.
+    expect(
+      loadAll.compareDocumentPosition(refresh) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    fireEvent.click(loadAll);
+    expect(screen.getByTestId("case-activities-feed-probe")).toHaveAttribute(
+      "data-limit",
+      "Infinity",
+    );
+    expect(
+      screen.queryByRole("button", { name: "Load all activity timeline entries" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("a viewer's own note offers no edit or delete (both are write-only on the backend)", () => {
     for (const [role, expected] of [["viewer", "false"], ["cs_engineer", "true"]] as const) {
       currentUserRoles.value = [role];
@@ -1978,6 +2106,45 @@ describe("CsmCaseDetailPage — change case type", () => {
   });
 });
 
+describe("CsmCaseDetailPage — change case type: a refused transfer", () => {
+  function submitTransferAndGetHandlers(): { onError: (err: unknown) => void } {
+    // This file does not clear showErrorMock between tests, so a "generic message"
+    // assertion could otherwise be satisfied by a call an earlier test made.
+    showErrorMock.mockClear();
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /stub open change case type/i }));
+    fireEvent.click(screen.getByRole("button", { name: /stub transfer to engagement/i }));
+    return patchCaseMutateMock.mock.calls.at(-1)?.[1] as { onError: (err: unknown) => void };
+  }
+
+  it("shows the backend's own reason for a 4xx", () => {
+    const handlers = submitTransferAndGetHandlers();
+    handlers.onError(new BackendApiError(409, "This case has attachments that still point at its current type."));
+
+    expect(showErrorMock).toHaveBeenCalledTimes(1);
+    expect(showErrorMock).toHaveBeenCalledWith(
+      "This case has attachments that still point at its current type.",
+      expect.anything(),
+    );
+  });
+
+  it("keeps the generic message for a server error, whose text is not for the engineer", () => {
+    const handlers = submitTransferAndGetHandlers();
+    handlers.onError(new BackendApiError(500, "pq: connection refused"));
+
+    expect(showErrorMock).toHaveBeenCalledTimes(1);
+    expect(showErrorMock).toHaveBeenCalledWith("Could not change the case type.", expect.anything());
+  });
+
+  it("keeps the generic message for an error that is not the backend's", () => {
+    const handlers = submitTransferAndGetHandlers();
+    handlers.onError(new Error("Failed to fetch"));
+
+    expect(showErrorMock).toHaveBeenCalledTimes(1);
+    expect(showErrorMock).toHaveBeenCalledWith("Could not change the case type.", expect.anything());
+  });
+});
+
 describe("CsmCaseDetailPage — Linked change requests widget only shows on service requests", () => {
   it("does not render LinkedChangeRequestsWidget for a plain case, even one carrying stale linkedChangeRequests data", () => {
     // A plain case should never carry `linkedChangeRequests` per the field's
@@ -2032,6 +2199,98 @@ describe("CsmCaseDetailPage — Linked change requests widget only shows on serv
     expect(
       screen.getByTestId("linked-change-requests-widget-probe"),
     ).toBeInTheDocument();
+  });
+});
+
+// "Assign to me" on a stale view: another engineer already moved the case to
+// Work in progress. The assignment PATCH would land even though the follow-up
+// state move is rejected, so the page must re-read the case and refuse before
+// sending any write.
+describe("CsmCaseDetailPage — Assign to me guards against a stale view", () => {
+  beforeEach(() => {
+    patchCaseMutateMock.mockClear();
+    showErrorMock.mockClear();
+  });
+
+  function mockStaleView(fresh: unknown): ReturnType<typeof vi.fn> {
+    const refetch = vi.fn().mockResolvedValue(fresh);
+    useGetCsmCaseDetailMock.mockImplementation((id: string | undefined) => ({
+      ...(defaultCaseDetailImpl(id) as object),
+      refetch,
+    }));
+    return refetch;
+  }
+
+  it("sends no PATCH and names the engineer when the fresh case is already in progress with someone else", async () => {
+    const refetch = mockStaleView({
+      isError: false,
+      data: {
+        ...buildCase("case-1", { state: "work_in_progress" }),
+        assignee: "John Smith",
+        assigneeName: "John Smith",
+        assigneeIsMe: false,
+      },
+    });
+    renderPage();
+
+    fireEvent.click(screen.getByRole("button", { name: /stub assign to me/i }));
+
+    await waitFor(() =>
+      expect(showErrorMock).toHaveBeenCalledWith(
+        "This case is already in progress with John Smith. Refresh to see the latest state.",
+      ),
+    );
+    expect(refetch).toHaveBeenCalled();
+    expect(patchCaseMutateMock).not.toHaveBeenCalled();
+  });
+
+  it("falls back to 'another engineer' when the assignee has no name", async () => {
+    mockStaleView({
+      isError: false,
+      data: buildCase("case-1", { state: "work_in_progress" }),
+    });
+    renderPage();
+
+    fireEvent.click(screen.getByRole("button", { name: /stub assign to me/i }));
+
+    await waitFor(() =>
+      expect(showErrorMock).toHaveBeenCalledWith(
+        "This case is already in progress with another engineer. Refresh to see the latest state.",
+      ),
+    );
+    expect(patchCaseMutateMock).not.toHaveBeenCalled();
+  });
+
+  it("sends no PATCH when the fresh read fails, rather than writing blind", async () => {
+    mockStaleView({
+      isError: true,
+      data: buildCase("case-1", { state: "open" }),
+    });
+    renderPage();
+
+    fireEvent.click(screen.getByRole("button", { name: /stub assign to me/i }));
+
+    await waitFor(() =>
+      expect(showErrorMock).toHaveBeenCalledWith(
+        "Couldn't check the latest state of this case. Please try again.",
+      ),
+    );
+    expect(patchCaseMutateMock).not.toHaveBeenCalled();
+  });
+
+  it("still assigns the case when the fresh read shows it is not in progress", async () => {
+    mockStaleView({ isError: false, data: buildCase("case-1", { state: "open" }) });
+    renderPage();
+
+    fireEvent.click(screen.getByRole("button", { name: /stub assign to me/i }));
+
+    await waitFor(() =>
+      expect(patchCaseMutateMock).toHaveBeenCalledWith(
+        { assigneeEmail: "jane.doe@example.com" },
+        expect.anything(),
+      ),
+    );
+    expect(showErrorMock).not.toHaveBeenCalled();
   });
 });
 
@@ -2184,7 +2443,7 @@ describe("CsmCaseDetailPage — set fix ETA dialog closes on successful save", (
 
     // Share-with-customer off: the payload carries estimates only, no
     // addPublicComment — exactly the reported repro path.
-    fireEvent.click(screen.getByRole("button", { name: /stub save fix eta/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^stub save fix eta$/i }));
     expect(patchCaseMutateMock).toHaveBeenCalledTimes(1);
     const [payload, mutateOptions] = patchCaseMutateMock.mock.calls[0] as [
       Record<string, unknown>,
@@ -2200,6 +2459,166 @@ describe("CsmCaseDetailPage — set fix ETA dialog closes on successful save", (
     expect(
       screen.queryByTestId("set-fix-eta-dialog-probe"),
     ).not.toBeInTheDocument();
+  });
+});
+
+// Reported live (digiops-cs#3319): "Share fix ETA with customer" is
+// ServiceNow-only, and the backend rejects the *entire* PATCH when
+// addPublicComment is present on a deployment that isn't — bundled into one
+// call, that silently blocked saving the ETA dates too, which is what "the
+// ETA is not added to the ticket" actually was. Fixed by sending the ETA and
+// the share as two separate PATCHes, so the ETA always saves on its own.
+describe("CsmCaseDetailPage — fix ETA save and share-with-customer are independent", () => {
+  beforeEach(() => {
+    patchCaseMutateMock.mockClear();
+    postCommentMutateAsyncMock.mockClear();
+    postCommentMutateAsyncMock.mockResolvedValue(undefined);
+  });
+
+  it("saves the ETA via PATCH, then shares it as a real customer-visible comment", async () => {
+    renderPage();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /stub open set fix eta/i }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: /^stub save fix eta with share$/i }),
+    );
+
+    // The only PATCH is the ETA alone, no addPublicComment -- this is the
+    // call that must succeed even when sharing can't.
+    expect(patchCaseMutateMock).toHaveBeenCalledTimes(1);
+    const [etaPayload, etaOptions] = patchCaseMutateMock.mock.calls[0] as [
+      Record<string, unknown>,
+      { onSuccess: () => void },
+    ];
+    expect(etaPayload).toEqual({ bestCaseFixEta: "2099-06-16" });
+
+    await act(async () => {
+      etaOptions.onSuccess();
+      await Promise.resolve();
+    });
+
+    // The dialog closes on the ETA save alone -- it must not wait on the
+    // share, which is a separate, independent request.
+    expect(
+      screen.queryByTestId("set-fix-eta-dialog-probe"),
+    ).not.toBeInTheDocument();
+
+    // The share goes out as a real comment (POST /cases/{id}/comments via
+    // usePostCsmCaseComment), not a second, doomed PATCH.
+    expect(patchCaseMutateMock).toHaveBeenCalledTimes(1);
+    expect(postCommentMutateAsyncMock).toHaveBeenCalledTimes(1);
+    const [commentInput] = postCommentMutateAsyncMock.mock.calls[0] as [
+      { bodyHtml: string; internal: boolean },
+    ];
+    expect(commentInput.internal).toBe(false);
+    expect(commentInput.bodyHtml).toContain("Product: WSO2 API Manager");
+    expect(commentInput.bodyHtml).toContain(
+      "Public git issue: https://github.com/example/example/issues/1",
+    );
+    expect(commentInput.bodyHtml).toContain("Best Case Estimate: 2099-06-16");
+  });
+
+  it("keeps the ETA saved even when the share comment post is rejected", async () => {
+    const shareError = new Error("network error");
+    postCommentMutateAsyncMock.mockRejectedValueOnce(shareError);
+    renderPage();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /stub open set fix eta/i }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: /^stub save fix eta with share$/i }),
+    );
+
+    const [, etaOptions] = patchCaseMutateMock.mock.calls[0] as [
+      unknown,
+      { onSuccess: () => void },
+    ];
+
+    // The ETA's own success toast already fired; the dialog is already
+    // closed. The share comment post failing next must surface its own
+    // error, not reopen the dialog or undo the ETA save.
+    await act(async () => {
+      etaOptions.onSuccess();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(
+      screen.queryByTestId("set-fix-eta-dialog-probe"),
+    ).not.toBeInTheDocument();
+    // The share failure must be reported on its own, distinct from the
+    // already-succeeded ETA save — a future change that silently swallows it
+    // would leave the engineer with no idea the customer was never told.
+    expect(showErrorMock).toHaveBeenCalledWith(
+      "Fix ETA saved, but could not share it with the customer.",
+      shareError,
+    );
+  });
+
+  it("never posts a share comment when share-with-customer is off", async () => {
+    renderPage();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /stub open set fix eta/i }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^stub save fix eta$/i }));
+
+    // Only the plain ETA call -- no share comment follows a save that never
+    // asked to share.
+    expect(patchCaseMutateMock).toHaveBeenCalledTimes(1);
+    const [, etaOptions] = patchCaseMutateMock.mock.calls[0] as [
+      unknown,
+      { onSuccess: () => void },
+    ];
+    await act(async () => {
+      etaOptions.onSuccess();
+      await Promise.resolve();
+    });
+    expect(patchCaseMutateMock).toHaveBeenCalledTimes(1);
+    expect(postCommentMutateAsyncMock).not.toHaveBeenCalled();
+  });
+
+  // CodeRabbit catch: product/publicTicket are free-text form input that
+  // ends up in a customer-visible comment -- unescaped, a value containing
+  // HTML would be stored as live markup rather than literal text.
+  it("escapes HTML-significant characters in product/publicTicket before posting the share comment", async () => {
+    renderPage();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /stub open set fix eta/i }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /stub save fix eta with share \(html input\)/i,
+      }),
+    );
+
+    const [, etaOptions] = patchCaseMutateMock.mock.calls[0] as [
+      unknown,
+      { onSuccess: () => void },
+    ];
+    await act(async () => {
+      etaOptions.onSuccess();
+      await Promise.resolve();
+    });
+
+    expect(postCommentMutateAsyncMock).toHaveBeenCalledTimes(1);
+    const [commentInput] = postCommentMutateAsyncMock.mock.calls[0] as [
+      { bodyHtml: string },
+    ];
+    // Neither raw input survives as live markup...
+    expect(commentInput.bodyHtml).not.toContain("<img src=x onerror=alert(1)>");
+    expect(commentInput.bodyHtml).not.toContain("Tom & Jerry's <ticket>");
+    // ...it's escaped instead.
+    expect(commentInput.bodyHtml).toContain(
+      "Product: &lt;img src=x onerror=alert(1)&gt;",
+    );
+    expect(commentInput.bodyHtml).toContain(
+      "Public git issue: Tom &amp; Jerry&#039;s &lt;ticket&gt;",
+    );
   });
 });
 
@@ -2230,7 +2649,7 @@ describe("CsmCaseDetailPage — fix-ETA stale-callback guard", () => {
     fireEvent.click(
       screen.getByRole("button", { name: /stub open set fix eta/i }),
     );
-    fireEvent.click(screen.getByRole("button", { name: /stub save fix eta/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^stub save fix eta$/i }));
     expect(patchCaseMutateMock).toHaveBeenCalledTimes(1);
     const [, case1Options] = patchCaseMutateMock.mock.calls[0] as [
       unknown,
@@ -2259,5 +2678,244 @@ describe("CsmCaseDetailPage — fix-ETA stale-callback guard", () => {
     ).toBeInTheDocument();
     // …and case-1's toast must not surface on case-2 either.
     expect(screen.queryByText(/fix eta updated/i)).not.toBeInTheDocument();
+  });
+
+  // The share PATCH is a real side effect the engineer asked for -- it must
+  // still fire even once the view has gone stale, unlike the UI feedback
+  // above. A stale view should only suppress a *display* consequence
+  // (closing the dialog, a toast), never skip a request the engineer
+  // actually requested.
+  it("still posts the share comment for a stale ETA save, even though the view moved on", async () => {
+    patchCaseMutateMock.mockClear();
+    postCommentMutateAsyncMock.mockClear();
+    postCommentMutateAsyncMock.mockResolvedValue(undefined);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/cases/case-1"]}>
+          <NavigateBetweenCasesButtons />
+          <LocationProbe />
+          <Routes>
+            <Route path="/cases/:caseId" element={<CsmCaseDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    // Case-1: open the dialog and save with sharing on. The ETA PATCH is
+    // still in flight.
+    fireEvent.click(
+      screen.getByRole("button", { name: /stub open set fix eta/i }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: /^stub save fix eta with share$/i }),
+    );
+    expect(patchCaseMutateMock).toHaveBeenCalledTimes(1);
+    const [, case1EtaOptions] = patchCaseMutateMock.mock.calls[0] as [
+      unknown,
+      { onSuccess: () => void },
+    ];
+
+    // Move to case-2 before case-1's ETA save resolves.
+    fireEvent.click(screen.getByRole("button", { name: /go to case 2/i }));
+    expect(screen.getByTestId("location-probe")).toHaveTextContent(
+      "/cases/case-2",
+    );
+
+    // Case-1's ETA save resolves now, with case-2 on screen -- a stale view.
+    await act(async () => {
+      case1EtaOptions.onSuccess();
+      await Promise.resolve();
+    });
+
+    // The stale view must not get case-1's own UI feedback...
+    expect(screen.queryByText(/fix eta updated/i)).not.toBeInTheDocument();
+    // ...but the share comment it requested must still have been posted.
+    expect(postCommentMutateAsyncMock).toHaveBeenCalledTimes(1);
+    const [commentInput] = postCommentMutateAsyncMock.mock.calls[0] as [
+      { internal: boolean },
+    ];
+    expect(commentInput.internal).toBe(false);
+  });
+});
+
+// Filing a Git issue from the case tags the case afterwards. The page used to
+// build that list inline with a mistyped first tag, and no test ever drove the
+// success handler, so these go through the real page: open the dialog the way
+// the action menu does, submit it, and resolve the Git issue request.
+describe("CsmCaseDetailPage — case tags added once a Git issue is filed", () => {
+  type GithubIssueCallOptions = {
+    onSuccess: (res: unknown) => void;
+    onError: (err: unknown) => void;
+  };
+
+  beforeEach(() => {
+    postGithubIssueMutateMock.mockReset();
+    addTagMutateAsyncMock.mockReset();
+    addTagMutateAsyncMock.mockResolvedValue(undefined);
+    showErrorMock.mockClear();
+    githubDialogProps = undefined;
+  });
+
+  /** Opens the dialog, submits `payload`, and returns what the page sent to the Git issue request. */
+  function submitGithubIssue(payload: Record<string, unknown>): {
+    variables: Record<string, unknown>;
+    options: GithubIssueCallOptions;
+  } {
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /stub open raise git issue/i }));
+    expect(screen.getByTestId("create-github-issue-dialog-probe")).toBeInTheDocument();
+    act(() => {
+      githubDialogProps?.onSubmit(payload);
+    });
+    expect(postGithubIssueMutateMock).toHaveBeenCalledTimes(1);
+    const [variables, options] = postGithubIssueMutateMock.mock.calls[0] as [
+      Record<string, unknown>,
+      GithubIssueCallOptions,
+    ];
+    return { variables, options };
+  }
+
+  const issueCreated = {
+    message: "created",
+    issue: { url: "https://github.com/example/example/issues/1", number: 1, repo: "example" },
+  };
+
+  const addedTags = (): unknown[] => addTagMutateAsyncMock.mock.calls.map(([label]) => label);
+
+  it("sends the submitted payload for this case, and adds no tag until the issue exists", () => {
+    const { variables } = submitGithubIssue({
+      reason: "default",
+      title: "A title",
+      description: "A description",
+    });
+
+    expect(variables).toEqual({
+      caseId: expect.any(String),
+      reason: "default",
+      title: "A title",
+      description: "A description",
+    });
+    expect(addTagMutateAsyncMock).not.toHaveBeenCalled();
+  });
+
+  it("tags the case s_dip, and nothing else, for a plain Git issue", async () => {
+    const { options } = submitGithubIssue({ reason: "default", title: "t", description: "d" });
+
+    await act(async () => {
+      options.onSuccess(issueCreated);
+      await Promise.resolve();
+    });
+
+    expect(addedTags()).toEqual(["s_dip"]);
+    expect(addedTags()).not.toContain("s_dp");
+    expect(showErrorMock).not.toHaveBeenCalled();
+  });
+
+  it("tags the case patch, not s_dip, for a patch Git issue", async () => {
+    const { options } = submitGithubIssue({
+      reason: "default",
+      issueTypeLabel: "Type/Patch",
+      title: "t",
+      description: "d",
+    });
+
+    await act(async () => {
+      options.onSuccess(issueCreated);
+      await Promise.resolve();
+    });
+
+    expect(addedTags()).toEqual(["patch"]);
+    expect(showErrorMock).not.toHaveBeenCalled();
+  });
+
+  it("tags the case s_dip, not patch, for a discussion Git issue", async () => {
+    const { options } = submitGithubIssue({
+      reason: "default",
+      issueTypeLabel: "Type/Discussion",
+      title: "t",
+      description: "d",
+    });
+
+    await act(async () => {
+      options.onSuccess(issueCreated);
+      await Promise.resolve();
+    });
+
+    expect(addedTags()).toEqual(["s_dip"]);
+  });
+
+  it("adds s_rg and migration after patch for a patch regression filed as a migration issue", async () => {
+    const { options } = submitGithubIssue({
+      reason: "migration",
+      regression: true,
+      issueTypeLabel: "Type/Patch",
+      title: "t",
+      description: "d",
+    });
+
+    await act(async () => {
+      options.onSuccess(issueCreated);
+      await Promise.resolve();
+    });
+
+    expect(addedTags()).toEqual(["patch", "s_rg", "migration"]);
+  });
+
+  it("also adds s_rg for a regression and migration for a migration issue, after s_dip", async () => {
+    const { options } = submitGithubIssue({
+      reason: "migration",
+      regression: true,
+      title: "t",
+      description: "d",
+    });
+
+    await act(async () => {
+      options.onSuccess(issueCreated);
+      await Promise.resolve();
+    });
+
+    expect(addedTags()).toEqual(["s_dip", "s_rg", "migration"]);
+  });
+
+  it("adds no tag when the Git issue could not be created", async () => {
+    for (const err of [new Error("upstream down"), new BackendApiError(422, "Product is not routable")]) {
+      postGithubIssueMutateMock.mockReset();
+      const { options } = submitGithubIssue({ reason: "default", title: "t", description: "d" });
+
+      await act(async () => {
+        options.onError(err);
+        await Promise.resolve();
+      });
+
+      expect(addTagMutateAsyncMock).not.toHaveBeenCalled();
+      cleanup();
+    }
+  });
+
+  it("keeps adding the other tags, and names the one that failed, when one tag cannot be added", async () => {
+    addTagMutateAsyncMock.mockImplementation(async (label: string) => {
+      if (label === "s_rg") throw new Error("tag service unavailable");
+    });
+    const { options } = submitGithubIssue({
+      reason: "migration",
+      regression: true,
+      title: "t",
+      description: "d",
+    });
+
+    await act(async () => {
+      options.onSuccess(issueCreated);
+      await Promise.resolve();
+    });
+
+    expect(addedTags()).toEqual(["s_dip", "s_rg", "migration"]);
+    expect(showErrorMock).toHaveBeenCalledTimes(1);
+    expect(showErrorMock).toHaveBeenCalledWith(
+      'The GitHub issue was created, but the case tag "s_rg" could not be added.',
+      expect.any(Error),
+    );
   });
 });

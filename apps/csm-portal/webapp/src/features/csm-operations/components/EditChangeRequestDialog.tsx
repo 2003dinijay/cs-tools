@@ -66,10 +66,18 @@ import {
   changeRequestCategoryValue,
   changeRequestScopeLockedReason,
   customerApprovalLockedReason,
+  customerProjectLockedReason,
+  customerRequirementOnceSavedHelper,
   customerReviewLockedReason,
+  EMERGENCY_CUSTOMER_STEPS_HELPER,
+  isChangeRequestCreationPhase,
+  isEmergencyChangeRequestType,
 } from "@features/csm-operations/utils/changeRequests";
 
 const { DateTimePicker, LocalizationProvider } = DatePickers;
+
+/** The one line saying why an Emergency change's two customer boxes are off (their `aria-describedby`). */
+const EMERGENCY_NOTE_ID = "cr-edit-customer-steps-emergency-note";
 
 interface EditChangeRequestDialogProps {
   cr: BeChangeRequestDetail;
@@ -172,11 +180,26 @@ function useRichTextPlanField(storedHtml?: string | null): RichTextPlanField {
  *
  * Customer Project / Deployments / Deployment products and Category are
  * editable too. The scope fields cascade exactly like the create form
- * (project -> deployments, with deployment products derived and read-only) and
- * are locked once the change request reaches Implement, because the backend
- * refuses the edit from there on. The Customer Group is shown read-only: it is
- * the chosen project's registered contacts, so changing the project changes it
- * and nothing about it is ever sent.
+ * (project -> deployments, with deployment products derived and read-only). The
+ * Customer Project is editable only in New and is READ-ONLY from the moment
+ * approval is requested (the backend refuses the edit in every later state); the
+ * deployments stay editable until the change request reaches Implement, within
+ * that project. The Customer Group is shown read-only: it is the chosen project's
+ * registered contacts, so changing the project changes it and nothing about it is
+ * ever sent.
+ *
+ * The two customer tick boxes are fully editable in New and ADD-ONLY afterwards:
+ * a ticked box is read-only, an unticked one can still be ticked until the gate it
+ * controls is passed (and only with a Customer Project set), with a note that it
+ * cannot be removed once saved. The rule is computed here from the record
+ * (`customerApprovalLockedReason` and friends) exactly as the backend decides it;
+ * the backend remains the authority and its 400 shows in `saveError`.
+ *
+ * An EMERGENCY change acts without customer consent, so both boxes are disabled
+ * and unticked, in every state, with one line saying so. A change of that type
+ * raised before the rule that still has a box ticked in New opens with it off
+ * (saving clears it); after New nothing can untick it (add-only), so a ticked box
+ * is shown as stored, disabled.
  *
  * Deliberately NOT here, even though the backend's write contract accepts
  * them: `priorityKey` (no metadata endpoint yet for the picker),
@@ -185,22 +208,15 @@ function useRichTextPlanField(storedHtml?: string | null): RichTextPlanField {
  * validation rule not worth half-implementing here — see
  * `BePatchChangeRequestPayload`'s doc comment for the full reasoning on each).
  *
- * `isCustomerApproved`/`isCustomerReviewed` are deliberately NOT exposed here
- * even though the BE patch contract still accepts them (see
- * `BePatchChangeRequestPayload`). Traced end to end (webapp -> BFF -> Go
- * entity-service -> Ballerina -> the SN scripted API's dedicated
- * `patchCustomerApproved`/`patchCustomerReviewed` handlers): both are gated
- * (only accepted while the CR is already in the "Customer Approval"/
- * "Customer Review" state) but flipping either is not a boolean-field edit —
- * it drives a real state transition, and the "off" direction is destructive
- * (`isCustomerApproved: false` moves the CR to Cancelled; `isCustomerReviewed:
- * false` moves it to Rollback, a terminal dead end with no reason capture).
- * A switch labelled "Customer approved"/"Customer reviewed" strongly implies
- * a record-keeping boolean, not a one-way cancel/rollback action, so this is
- * exactly the "inventing a capability the source system doesn't expose"
- * pattern the CR approval-mechanics review warned about (no SN UI action
- * exists for either state either). Removed as a UI affordance; the BE/Go
- * plumbing is left in place since nothing else depends on removing it.
+ * `isCustomerApproved`/`isCustomerReviewed` are deliberately NOT exposed here,
+ * and not modeled in `BePatchChangeRequestPayload`: they ARE the customer's
+ * answer (the customer's approval moves the change to Scheduled, their
+ * rejection cancels it; the customer's review closes it or rolls it back),
+ * which only the customer gives, in the Customer Portal. The backend refuses
+ * both from staff outright, so a switch labelled "Customer approved" /
+ * "Customer reviewed" here would only be a way to answer for the customer.
+ * What the customer has confirmed is shown read-only (`hasCustomerApproved` /
+ * `hasCustomerReviewed`).
  */
 export default function EditChangeRequestDialog({
   cr,
@@ -224,10 +240,33 @@ export default function EditChangeRequestDialog({
   const initialIsPlanningVisibleToCustomers = cr.isPlanningVisibleToCustomers ?? false;
   const initialCustomerApprovalRequired = cr.customerApprovalRequired ?? false;
   const initialCustomerReviewRequired = cr.customerReviewRequired ?? false;
-  // Once the gate a checkbox controls has passed the backend refuses the edit
-  // (400), so the control is disabled up front with the reason.
-  const customerApprovalLocked = customerApprovalLockedReason(cr.state);
-  const customerReviewLocked = customerReviewLockedReason(cr.state);
+  // Emergency: no customer steps (see the doc comment above). In New the form seeds
+  // them OFF, so a leftover tick from before the rule is cleared by saving.
+  const isEmergency = isEmergencyChangeRequestType(cr.type);
+  const emergencyClearsCustomerSteps = isEmergency && isChangeRequestCreationPhase(cr.state);
+  // After New the customer's part is add-only (see the rules in utils/changeRequests.ts):
+  // a ticked box is read-only, an unticked one may still be ticked until the gate it
+  // controls has passed and only when a Customer Project is set. The backend refuses
+  // anything else (400) and stays the authority; the control is disabled up front
+  // with the reason, computed here from the same inputs (state, stored value, project).
+  const hasStoredProject = !!cr.project?.id;
+  // An Emergency change's unticked box is off for the Emergency rule (the line under
+  // the boxes), not for one of these reasons; a box a change of that type still has
+  // ticked from before the rule keeps its add-only one.
+  const customerApprovalLocked =
+    isEmergency && !initialCustomerApprovalRequired
+      ? null
+      : customerApprovalLockedReason(cr.state, {
+          stored: initialCustomerApprovalRequired,
+          hasProject: hasStoredProject,
+        });
+  const customerReviewLocked =
+    isEmergency && !initialCustomerReviewRequired
+      ? null
+      : customerReviewLockedReason(cr.state, {
+          stored: initialCustomerReviewRequired,
+          hasProject: hasStoredProject,
+        });
   const [plannedStart, setPlannedStart] = useState(initialPlannedStart);
   const [plannedEnd, setPlannedEnd] = useState(initialPlannedEnd);
   const [assignedTeamId, setAssignedTeamId] = useState(initialAssignedTeamId);
@@ -236,9 +275,11 @@ export default function EditChangeRequestDialog({
   const initialDeploymentIds = useMemo(() => cr.deployments?.map((d) => d.id) ?? [], [cr.deployments]);
   const initialCategory = changeRequestCategoryValue(cr.category);
   const [category, setCategory] = useState<string>(initialCategory);
-  // Customer Project / Deployments / Deployment products,
-  // seeded from the record. Locked (like the customer checkboxes) once the
-  // backend would refuse the edit.
+  // Customer Project / Deployments / Deployment products, seeded from the record.
+  // The project is fixed the moment the change request leaves New; the deployments
+  // stay editable (within that project) until Implement. The backend refuses
+  // anything else, so the controls are disabled up front with the reason.
+  const projectLocked = customerProjectLockedReason(cr.state);
   const scopeLocked = changeRequestScopeLockedReason(cr.state);
   const scope = useChangeRequestScope({
     projectId: cr.project?.id,
@@ -252,10 +293,10 @@ export default function EditChangeRequestDialog({
     initialIsPlanningVisibleToCustomers,
   );
   const [customerApprovalRequired, setCustomerApprovalRequired] = useState(
-    initialCustomerApprovalRequired,
+    !emergencyClearsCustomerSteps && initialCustomerApprovalRequired,
   );
   const [customerReviewRequired, setCustomerReviewRequired] = useState(
-    initialCustomerReviewRequired,
+    !emergencyClearsCustomerSteps && initialCustomerReviewRequired,
   );
   const rollbackPlan = useRichTextPlanField(cr.rollbackPlan);
   const testPlan = useRichTextPlanField(cr.testPlan);
@@ -308,6 +349,8 @@ export default function EditChangeRequestDialog({
     // The scope fields are validated by the backend as a unit, so when any of
     // them changed the whole set goes out together (see BePatchChangeRequestPayload).
     // Deployment products are derived: sent only once the lookup has settled.
+    // A frozen project is never sent changed (its picker is disabled); sending the
+    // stored one along with changed deployments is accepted as a no-op.
     const scopeChanged =
       !scopeLocked &&
       !!scope.projectId &&
@@ -422,24 +465,28 @@ export default function EditChangeRequestDialog({
     checked: boolean,
     onChange: (next: boolean) => void,
     lockedReason: string | null,
+    onceSavedHelper: string | null,
   ): JSX.Element => {
     const control = (
       <FormControlLabel
         sx={{ alignItems: "flex-start", m: 0 }}
-        disabled={isSaving || !!lockedReason}
+        disabled={isSaving || !!lockedReason || isEmergency}
         control={
           <Checkbox
             size="small"
             checked={checked}
             onChange={(e) => onChange(e.target.checked)}
-            inputProps={{ "aria-label": label, "aria-describedby": `${id}-desc` }}
+            inputProps={{
+              "aria-label": label,
+              "aria-describedby": isEmergency ? `${id}-desc ${EMERGENCY_NOTE_ID}` : `${id}-desc`,
+            }}
           />
         }
         label={
           <Box>
             <Typography variant="body1">{label}</Typography>
             <Typography id={`${id}-desc`} variant="body2" color="text.secondary">
-              {lockedReason ?? helperText}
+              {lockedReason ?? (onceSavedHelper ? `${helperText} ${onceSavedHelper}` : helperText)}
             </Typography>
           </Box>
         }
@@ -559,10 +606,17 @@ export default function EditChangeRequestDialog({
             aria-label="Customer project and deployments"
             sx={{ display: "flex", flexDirection: "column", gap: 1 }}
           >
-            {scopeLocked && <Alert severity="info">{scopeLocked}</Alert>}
+            {(projectLocked || scopeLocked) && (
+              // An explanation, not an error: a status, so a save error stays the dialog's one alert.
+              <Alert severity="info" role="status">
+                {projectLocked && <Typography variant="body2">{projectLocked}</Typography>}
+                {scopeLocked && <Typography variant="body2">{scopeLocked}</Typography>}
+              </Alert>
+            )}
             <ChangeRequestScopeFields
               scope={scope}
               disabled={isSaving || !!scopeLocked}
+              projectDisabled={!!projectLocked}
               idPrefix="cr-edit"
               // A saved project can be swapped for another but not removed —
               // the patch has no way to express "no project".
@@ -600,6 +654,7 @@ export default function EditChangeRequestDialog({
             customerApprovalRequired,
             setCustomerApprovalRequired,
             customerApprovalLocked,
+            isEmergency ? null : customerRequirementOnceSavedHelper(cr.state, initialCustomerApprovalRequired),
           )}
           {renderCustomerStepCheckbox(
             "cr-edit-customer-review",
@@ -608,6 +663,12 @@ export default function EditChangeRequestDialog({
             customerReviewRequired,
             setCustomerReviewRequired,
             customerReviewLocked,
+            isEmergency ? null : customerRequirementOnceSavedHelper(cr.state, initialCustomerReviewRequired),
+          )}
+          {isEmergency && (
+            <FormHelperText id={EMERGENCY_NOTE_ID} sx={{ mx: 0 }}>
+              {EMERGENCY_CUSTOMER_STEPS_HELPER}
+            </FormHelperText>
           )}
           <TextField
             label="Rollback duration"

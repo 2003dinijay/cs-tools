@@ -196,7 +196,7 @@ func (s *crNoticeService) approvalNotice(ctx context.Context, change repository.
 		recipients, err = s.repo.GroupMemberEmails(ctx, branch.group)
 	} else {
 		notice.Subject = crSubject(details.Number, branch.suffix, "")
-		recipients, err = s.repo.ProjectContactEmails(ctx, details.ProjectID)
+		recipients, err = s.repo.CustomerNoticeEmails(ctx, change.EntityID, details.ProjectID)
 	}
 	if err != nil {
 		return fmt.Errorf("crnotice: resolve %s recipients: %w", branch.audience, err)
@@ -283,13 +283,13 @@ func (s *crNoticeService) planDateNotice(ctx context.Context, change repository.
 		notice.Kind = events.CRPlanDateAccepted
 		notice.Audience = events.CRAudienceCustomer
 		notice.Subject = crPlanDateSubject(details.Number, "Accepted the plan start date")
-		recipients, err = s.repo.ProjectContactEmails(ctx, details.ProjectID)
+		recipients, err = s.repo.CustomerNoticeEmails(ctx, change.EntityID, details.ProjectID)
 
 	case crTurnWSO2Rejected:
 		notice.Kind = events.CRPlanDateRejected
 		notice.Audience = events.CRAudienceCustomer
 		notice.Subject = crPlanDateSubject(details.Number, "Reject the proposed plan start date")
-		recipients, err = s.repo.ProjectContactEmails(ctx, details.ProjectID)
+		recipients, err = s.repo.CustomerNoticeEmails(ctx, change.EntityID, details.ProjectID)
 	}
 	if err != nil {
 		return fmt.Errorf("crnotice: resolve %s recipients: %w", notice.Audience, err)
@@ -336,6 +336,14 @@ func crChangedToApprovalState(change repository.OutboxChange) (string, bool) {
 // row whose diff contains BOTH columns. Reading the confirmation first would
 // see it cleared and report "no answer" -- silently swallowing every proposal
 // that arrives while an answer is already standing.
+//
+// DISAGREE is ONE turn: WSO2 answers a customer's proposal either with another
+// window (a counter-proposal) or by keeping the plan (a Decline), and both write
+// DISAGREE -- the previous system's own Disagree. So both are crTurnWSO2Rejected and send
+// the same notice (the Disagree notice, "Reject the proposed plan start date");
+// there is no turn, notice kind or table of its own for a Decline, and the mail
+// carries no time, so neither the counter's new window nor "the plan stands" is
+// in it (TestPlanDate_ADeclineSendsTheSameNoticeAsADifferentTime).
 func crPlanDateTurnOf(change repository.OutboxChange) crPlanDateTurn {
 	if _, changed := crChangedTo(change, crColCustomerDate); changed {
 		// state=5: the only state in which the original accepts a customer

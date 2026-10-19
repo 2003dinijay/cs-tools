@@ -45,7 +45,12 @@ const (
 	TypeCaseAssigned     Type = "case.assigned"
 	TypeCaseAcknowledged Type = "case.acknowledged"
 	TypeSeverityChanged  Type = "case.severity_changed"
-	TypeIncidentCreated  Type = "incident.created"
+	// TypeWorkaroundProvided is published whenever a case's
+	// WorkaroundProvided field is set to true via PATCH — see
+	// WorkaroundProvidedPayload's own doc comment for why this exists at
+	// all.
+	TypeWorkaroundProvided Type = "case.workaround_provided"
+	TypeIncidentCreated    Type = "incident.created"
 	// TypeIncidentAcknowledged / TypeIncidentPriorityElevated drive the
 	// incident call-escalation ladder in csm-notification-service. The ladder
 	// starts on incident.created (or a priority elevation) and keeps calling
@@ -135,7 +140,11 @@ type CommentAddedPayload struct {
 
 	CaseTitle   string `json:"caseTitle"`
 	CaseComment string `json:"caseComment"`
-	CommentID   string `json:"commentId"`
+	// CaseCommentTruncated -- see CaseCreatedPayload.DescriptionTruncated's
+	// own doc comment; identical reasoning and fix, applied to a comment's
+	// own body instead of a case description.
+	CaseCommentTruncated bool   `json:"caseCommentTruncated,omitempty"`
+	CommentID            string `json:"commentId"`
 	// IsInternalNote is true when this comment is a work note
 	// (domain.CommentTypeWorkNote) — never customer-visible, and Recipients
 	// is already filtered to wso2.com addresses only for this case (see
@@ -192,6 +201,18 @@ type CommentAddedPayload struct {
 	// at all, which csm-notification-service's own slaEngine needs to tell
 	// apart from a real negative.
 	IsSupportEngineerResponse bool `json:"isSupportEngineerResponse"`
+	// CaseType/EngagementType let csm-notification-service route a
+	// frustration-detection Chat alert to the Migration audience instead of
+	// the usual team/Incident Monitor routing, when the comment landed on a
+	// migration engagement -- the one case this routes by engagement type
+	// rather than by team. CaseType mirrors CaseCreatedPayload.CaseType's own
+	// convention (strings.ToUpper(derefString(cv.Type)), e.g. "ENGAGEMENT");
+	// EngagementType is cv.EngagementType's own lowercase value (e.g.
+	// "migration"), unlike CaseType -- kept as-is since it already matches
+	// domain.EngagementTypeMigration's own spelling. Both empty for every
+	// non-engagement case-like type.
+	CaseType       string `json:"caseType,omitempty"`
+	EngagementType string `json:"engagementType,omitempty"`
 }
 
 // KBArticlePublishedPayload is the Payload shape for
@@ -262,6 +283,35 @@ type CaseAcknowledgedPayload struct {
 	// Team — see CaseCreatedPayload's own doc comment.
 	Team             string `json:"team,omitempty"`
 	AcknowledgerName string `json:"acknowledgerName"`
+	// CaseType — see CaseCreatedPayload's own doc comment (the same
+	// strings.ToUpper(req.Type) convention). security_report_analysis never
+	// carries a severity, so csm-notification-service uses this to render a
+	// dedicated ack card with no severity line instead of "Unknown".
+	CaseType string `json:"caseType,omitempty"`
+}
+
+// WorkaroundProvidedPayload is the Payload shape for
+// TypeWorkaroundProvided — mirrors csm-notification-service's own
+// WorkaroundProvidedPayload. WorkaroundProvided (on UpdateCaseRequest) is
+// the one genuine "a workaround was provided" signal anywhere in the
+// domain model, and entity-service's own Postgres-side SLAEngineService
+// already completes its own workaround clock when it's set to true (see
+// SLAEngineService.CompleteWorkaroundClock's own doc comment) — but that's
+// a different tracker in a different process from
+// csm-notification-service's Redis-based SLA engine (see that repo's own
+// CLAUDE.md, "SLA breach-alerting engine"), and nothing published this
+// signal to it at all before this event existed: unlike response (a
+// qualifying public comment, already carried by case.comment_added's own
+// IsSupportEngineerResponse) and resolution (a status change to Closed,
+// already carried by case.status_changed), a workaround being provided had
+// no event of its own, so that service's own workaround clock could still
+// fire a breach alert well after a workaround had genuinely been provided.
+// No Recipients/email reaction and no Chat alert — this is a pure tracking
+// signal, not a notification. false (a recall) is deliberately never
+// published either, mirroring CompleteWorkaroundClock's own "no uncomplete
+// operation" posture.
+type WorkaroundProvidedPayload struct {
+	CaseID string `json:"caseId"`
 }
 
 // SeverityChangedPayload is the Payload shape for TypeSeverityChanged —
@@ -328,7 +378,23 @@ type CaseCreatedPayload struct {
 	Team        string   `json:"team,omitempty"`
 	CreatedAt   string   `json:"createdAt"`
 	Description string   `json:"description"`
-	Recipients  []string `json:"recipients"`
+	// DescriptionTruncated is true when Description had its embedded
+	// base64-encoded inline image(s) stripped out (replaced with a plain
+	// text placeholder) before this event was published -- a raw case
+	// description containing a pasted screenshot can carry several MB of
+	// base64 image data, which once blew past Event Hub's own per-message
+	// size limit and silently failed this entire publish (see this
+	// service's own stripInlineBase64Images for the fix). csm-notification-
+	// service uses this flag to re-fetch the full, untouched description via
+	// GET /cases/{id} -- outside Kafka's size limit entirely -- when
+	// building the notification EMAIL, so the email still shows the
+	// original image(s); the Google Chat card, which never rendered
+	// embedded images from this field to begin with, simply uses
+	// Description as sent. omitempty: false is the normal, unremarkable
+	// case (nothing was stripped) and must read the same as an older
+	// publisher that never sent this field at all.
+	DescriptionTruncated bool     `json:"descriptionTruncated,omitempty"`
+	Recipients           []string `json:"recipients"`
 }
 
 // IncidentCreatedPayload is the Payload shape for TypeIncidentCreated —
@@ -386,6 +452,11 @@ type IncidentCreatedPayload struct {
 	// escalation specification intends — the same reasoning
 	// SLAClockRegisterPayload.CaseCreatedAt applies to an SLA clock.
 	ReportedAt string `json:"reportedAt,omitempty"`
+	// Category, State, Service and Environment fill the consumer's "Incident Reported" Chat card.
+	Category    string `json:"category,omitempty"`
+	State       string `json:"state,omitempty"`
+	Service     string `json:"service,omitempty"`
+	Environment string `json:"environment,omitempty"`
 }
 
 // IncidentCommentAddedPayload is the Payload shape for
@@ -477,6 +548,16 @@ type IncidentAssignedPayload struct {
 	// AssigneeName is for the escalation's execution summary; omitted when
 	// ServiceNow returned no display name.
 	AssigneeName string `json:"assigneeName,omitempty"`
+	// AssignedOn is when the assignee was set, RFC3339 UTC. Case Paging's
+	// Special Ops (SME) page compares an alert's changedOn against it, so an
+	// assignment handled before the alert it answers still answers it.
+	// csm-notification-service decodes strictly: deploy the version that
+	// knows the field first.
+	AssignedOn string `json:"assignedOn,omitempty"`
+	// Number, Team and UpdatedBy fill the consumer's threaded "Incident Acknowledged" Chat reply.
+	Number    string `json:"number,omitempty"`
+	Team      string `json:"team,omitempty"`
+	UpdatedBy string `json:"updatedBy,omitempty"`
 }
 
 // IncidentAcknowledgedPayload is the Payload shape for

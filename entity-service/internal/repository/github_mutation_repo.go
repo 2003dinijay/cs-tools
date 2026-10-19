@@ -21,9 +21,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 )
 
 // NewChangeRequestFromIssue is what a GitHub issue contributes to a new
@@ -51,6 +54,21 @@ type NewServiceRequestFromIssue struct {
 	// Fields are the template's captured values, stored verbatim.
 	Fields    map[string]string
 	CreatedBy string
+	// ProjectID is the repository's declared project (case.project). Empty
+	// leaves it null, as for a repository mapped only in account_github_repo.
+	ProjectID string
+	// Owner and Repository are the issue's repository, kept on the record so
+	// the outbound triggers reach it without going through the account
+	// (migration 0206).
+	Owner      string
+	Repository string
+	// ServiceNowID, ServiceNowNumber and ServiceNowWSO2ID are the record
+	// ServiceNow created first, under dual-write (its sys_id as a UUID, its CS
+	// number, its WSO2 Case ID). Set, the Postgres row takes them as they are,
+	// as a portal-created record does; empty, the GitHub series numbers it.
+	ServiceNowID     string
+	ServiceNowNumber string
+	ServiceNowWSO2ID string
 }
 
 type NewChangeRequestFromIssue struct {
@@ -74,6 +92,12 @@ type NewChangeRequestFromIssue struct {
 	Catalog string
 	SRType  string
 	Fields  map[string]string
+	// ServiceNowDescription is the description as ServiceNow holds it, for a
+	// record ServiceNow numbered (created ServiceNow-first). Such a record
+	// keeps ServiceNow's text on an edit, as on create; a record of the GitHub
+	// series (SR-GH-/CHG-GH-) keeps the issue's Markdown, which the portal
+	// renders by that prefix. Empty always writes Description.
+	ServiceNowDescription string
 }
 
 // ErrChangeRequestExists means the issue already has one.
@@ -91,7 +115,11 @@ type GithubMutationRepository interface {
 	// UpdateFromIssue applies an edited issue to an existing change request.
 	UpdateFromIssue(ctx context.Context, id string, in NewChangeRequestFromIssue) error
 	// SetState moves a change request, and only if it is not already there --
-	// a redundant write would enqueue an outbound push about nothing.
+	// a redundant write would enqueue an outbound push about nothing. The move is
+	// judged by the same transition graph a staff PATCH {state} obeys: a final
+	// change has no exit, no step is jumped, no approval gate is skipped, and a
+	// change waiting on the customer moves only by the customer's own answer
+	// (checkGithubStateMove) -- an issue event is no way round any of it.
 	SetState(ctx context.Context, id, state string) (changed bool, err error)
 	// AddComment records a comment relayed from GitHub.
 	AddComment(ctx context.Context, changeRequestID, content, createdBy string) error
@@ -144,6 +172,7 @@ func nullable(v string) any {
 	return v
 }
 
+// crvis: GitHub inbound sync under the system identity (M2M-only webhook handlers); no customer identity reaches it
 func (r *githubMutationRepository) CreateFromIssue(ctx context.Context, in NewChangeRequestFromIssue) (string, string, error) {
 	ctx = withGithubSystemIdentity(ctx)
 	var id, number string
@@ -185,6 +214,7 @@ func (r *githubMutationRepository) CreateFromIssue(ctx context.Context, in NewCh
 	return id, number, nil
 }
 
+// crvis: GitHub inbound sync under the system identity (M2M-only webhook handlers); no customer identity reaches it
 func (r *githubMutationRepository) UpdateFromIssue(ctx context.Context, id string, in NewChangeRequestFromIssue) error {
 	ctx = withGithubSystemIdentity(ctx)
 	return r.db.InTx(ctx, func(tx pgx.Tx) error {
@@ -194,11 +224,12 @@ func (r *githubMutationRepository) UpdateFromIssue(ctx context.Context, id strin
 		const updateWorkItem = `
 			UPDATE work_item
 			SET subject     = $2,
-			    description = COALESCE($3, description),
+			    description = COALESCE(CASE WHEN number LIKE 'SR-GH-%' OR number LIKE 'CHG-GH-%' THEN $3
+			                                ELSE COALESCE($5, $3) END, description),
 			    updated_on  = NOW(),
 			    updated_by  = $4
 			WHERE id = $1::uuid`
-		if _, err := tx.Exec(ctx, updateWorkItem, id, in.Subject, nullable(in.Description), in.CreatedBy); err != nil {
+		if _, err := tx.Exec(ctx, updateWorkItem, id, in.Subject, nullable(in.Description), in.CreatedBy, nullable(in.ServiceNowDescription)); err != nil {
 			return fmt.Errorf("github: update work item: %w", err)
 		}
 
@@ -254,8 +285,16 @@ func (r *githubMutationRepository) UpdateFromIssue(ctx context.Context, id strin
 // (approval_stage_approver.updated_by).
 const githubSyncActor = "github-sync"
 
+// crvis: GitHub inbound sync under the system identity (M2M-only webhook handlers); no customer identity reaches it
 func (r *githubMutationRepository) SetState(ctx context.Context, id, state string) (bool, error) {
 	ctx = withGithubSystemIdentity(ctx)
+	// The state is read the way the table of moves is written, and a value that is not a state
+	// of the lifecycle is refused before it reaches a comparison or the enum cast.
+	requested, err := normalizeRequestedChangeRequestState(domain.ChangeRequestState(state))
+	if err != nil {
+		return false, err
+	}
+	state = strings.ToUpper(string(requested))
 	// IS DISTINCT FROM so a move to the state it already holds writes nothing:
 	// the outbound trigger would otherwise enqueue a push announcing a change
 	// that did not happen.
@@ -264,7 +303,31 @@ func (r *githubMutationRepository) SetState(ctx context.Context, id, state strin
 		SET state = $2::change_request_state_enum
 		WHERE id = $1::uuid AND state IS DISTINCT FROM $2::change_request_state_enum`
 	changed := false
-	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
+	err = r.db.InTx(ctx, func(tx pgx.Tx) error {
+		// The move is judged against the state under the row lock the UPDATE below
+		// would take anyway.
+		var current, model *string
+		var reviewRequired bool
+		switch err := tx.QueryRow(ctx, `SELECT state::text, COALESCE(customer_review_required, false), change_model::text FROM change_request WHERE id = $1::uuid FOR UPDATE`, id).Scan(&current, &reviewRequired, &model); {
+		case errors.Is(err, pgx.ErrNoRows):
+			return nil // no such change request: the UPDATE below would match nothing as well
+		case err != nil:
+			return err
+		}
+		// An Emergency change has no customer review gate, whatever its box says.
+		_, reviewRequired = effectiveCustomerGates(stringOrEmpty(model), false, reviewRequired)
+		// A change waiting on the customer (Customer Approval / Customer Review)
+		// moves on only through the customer's own answer, never through a label
+		// or an issue event: refused, not skipped, so the sync sees it.
+		if current != nil && customerStageSpecForState(strings.ToUpper(*current)) != nil && !strings.EqualFold(*current, state) {
+			return &apierror.ValidationError{Msg: fmt.Sprintf(
+				"state %q cannot be set from the GitHub sync: the change request is in %s, which only the customer's own answer (given in the Customer Portal) can move it out of",
+				state, strings.ToLower(*current))}
+		}
+		// And every other move obeys the graph a staff PATCH does.
+		if err := checkGithubStateMove(strings.ToUpper(stringOrEmpty(current)), requested, reviewRequired); err != nil {
+			return err
+		}
 		tag, err := tx.Exec(ctx, query, id, state)
 		if err != nil {
 			return err
@@ -279,9 +342,56 @@ func (r *githubMutationRepository) SetState(ctx context.Context, id, state strin
 		return reconcileStaleApprovers(ctx, tx, id, githubSyncActor)
 	})
 	if err != nil {
+		var ve *apierror.ValidationError
+		if errors.As(err, &ve) {
+			return false, err
+		}
 		return false, fmt.Errorf("github: set state %s on %s: %w", state, id, err)
 	}
 	return changed, nil
+}
+
+// githubSyncMoves are the states an issue event may move a change to: the plain moves of the
+// transition graph. Every other target belongs to the approval flow -- Request Approval (assess),
+// the peer / CAB cascades (authorize, customer_approval, scheduled), the Review stage
+// provisioned on entering review, the customer's review gate (customer_review) -- and
+// returning to new is never a move.
+var githubSyncMoves = map[domain.ChangeRequestState]bool{
+	domain.ChangeRequestStateImplement: true,
+	domain.ChangeRequestStateClosed:    true,
+	domain.ChangeRequestStateCanceled:  true,
+	domain.ChangeRequestStateRollback:  true,
+}
+
+// checkGithubStateMove is the transition graph's verdict on a state the GitHub sync wants to
+// write, for a change in the given (upper-case, "" for NULL) state: the staff graph
+// (checkStaffStateRequest: a final change has no exit, no step is jumped) and legalNextStates
+// (an edge of the table, with the customer-review flag choosing between Closed and Customer
+// Review) -- narrowed to the plain moves githubSyncMoves lists. A write of the state the change
+// is already in is no move and is accepted. Nothing here is a new rule: it is the PATCH's, so
+// that no caller wired to SetState later can do what the PATCH refuses.
+func checkGithubStateMove(current string, requested domain.ChangeRequestState, reviewRequired bool) error {
+	if err := checkStaffStateRequest(current, requested, reviewRequired); err != nil {
+		return err
+	}
+	cur := strings.ToLower(current)
+	if cur == "" {
+		cur = string(domain.ChangeRequestStateNew)
+	}
+	if string(requested) == cur {
+		return nil
+	}
+	for _, next := range legalChangeRequestNextStates(&cur, reviewRequired) {
+		if domain.ChangeRequestState(next) == requested && githubSyncMoves[requested] {
+			return nil
+		}
+	}
+	if !githubSyncMoves[requested] {
+		return &apierror.ValidationError{Msg: fmt.Sprintf(
+			"state %q cannot be set from the GitHub sync: it is reached through the approval flow (Request Approval and the approvals' own cascades), not by an issue event",
+			strings.ToUpper(string(requested)))}
+	}
+	return changeRequestJumpRefusal(strings.ToUpper(cur), requested, reviewRequired)
 }
 
 func (r *githubMutationRepository) AddComment(ctx context.Context, changeRequestID, content, createdBy string) error {
@@ -373,17 +483,22 @@ func isUniqueViolation(err error) bool {
 }
 
 // workItemByIssue returns the id of the work item already holding this issue.
-func (r *githubMutationRepository) workItemByIssue(ctx context.Context, accountID string, issue int) (string, error) {
+func (r *githubMutationRepository) workItemByIssue(ctx context.Context, in NewServiceRequestFromIssue) (string, error) {
 	ctx = withGithubSystemIdentity(ctx)
+	// Mirrors the two unique indexes (0206): by repository when the record
+	// carries one, by account when it does not.
 	const q = `SELECT id::text FROM work_item
-	           WHERE account_id = NULLIF($1, '')::uuid AND github_issue_number = $2`
+	           WHERE github_issue_number = $4
+	             AND ((lower(github_owner) = lower(NULLIF($2, '')) AND lower(github_repository) = lower($3))
+	                  OR (github_owner IS NULL AND NULLIF($2, '') IS NULL AND account_id = NULLIF($1, '')::uuid))
+	           LIMIT 1`
 	var id string
-	if err := r.db.QueryRow(ctx, q, accountID, issue).Scan(&id); err != nil {
+	issue := in.IssueNumber
+	if err := r.db.QueryRow(ctx, q, in.AccountID, in.Owner, in.Repository, issue).Scan(&id); err != nil {
 		return "", fmt.Errorf("github: look up work item for issue %d: %w", issue, err)
 	}
 	return id, nil
 }
-
 
 // CreateServiceRequestFromIssue implements GithubMutationRepository.
 func (r *githubMutationRepository) CreateServiceRequestFromIssue(ctx context.Context, in NewServiceRequestFromIssue) (string, string, error) {
@@ -397,24 +512,31 @@ func (r *githubMutationRepository) CreateServiceRequestFromIssue(ctx context.Con
 		const insertWorkItem = `
 			INSERT INTO work_item (id, created_on, updated_on, created_by, updated_by,
 			                       number, wso2_id, subject, type, description,
-			                       account_id, github_issue_number)
-			VALUES (gen_random_uuid(), NOW(), NOW(), $1, $1,
-			        next_github_service_request_number(),
+			                       account_id, github_issue_number,
+			                       project_id, github_owner, github_repository)
+			VALUES (COALESCE(NULLIF($9, '')::uuid, gen_random_uuid()), NOW(), NOW(), $1, $1,
+			        -- ServiceNow's numbers when it created the record first. COALESCE
+			        -- stops at the first non-null argument, so the GitHub series is not
+			        -- advanced for a record that does not use it.
+			        COALESCE(NULLIF($10, ''), next_github_service_request_number()),
 			        -- Required for SERVICE_REQUEST by work_item_wso2_id_required_by_type.
-			        next_github_service_request_wso2_id(),
+			        COALESCE(NULLIF($11, ''), next_github_service_request_wso2_id()),
 			        $2, 'SERVICE_REQUEST', $3,
-			        NULLIF($4, '')::uuid, $5)
+			        NULLIF($4, '')::uuid, $5,
+			        NULLIF($6, '')::uuid, NULLIF($7, ''), NULLIF($8, ''))
 			RETURNING id::text, number`
 
 		if err := tx.QueryRow(ctx, insertWorkItem,
 			in.CreatedBy, in.Subject, nullable(in.Description), in.AccountID, in.IssueNumber,
+			in.ProjectID, in.Owner, in.Repository,
+			in.ServiceNowID, in.ServiceNowNumber, in.ServiceNowWSO2ID,
 		).Scan(&id, &number); err != nil {
 			// A concurrent delivery for the same issue got here first. GitHub sends
 			// an issue as several events (opened, then labeled), so this is the
 			// ordinary case rather than an exotic one: report the record that won
 			// instead of failing, and let the caller treat it as already existing.
 			if isUniqueViolation(err) {
-				existing, lookupErr := r.workItemByIssue(ctx, in.AccountID, in.IssueNumber)
+				existing, lookupErr := r.workItemByIssue(ctx, in)
 				if lookupErr != nil {
 					return lookupErr
 				}

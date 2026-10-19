@@ -49,6 +49,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -164,4 +165,138 @@ func (c *EntityClient) GetDurationPolicy(ctx context.Context) (map[string]map[st
 		out[p.Severity][p.ClockType] = time.Duration(p.DurationSeconds) * time.Second
 	}
 	return out, nil
+}
+
+// activeSLAClock mirrors the one shape of entity-service's
+// domain.SLAStatus this engine's reconciliation pass actually needs — a
+// deliberately narrow subset (no BusinessElapsedPercent/HasBreached/the
+// onboarding-routing or email-reaction fields: none of them feed
+// RegisterClocks-equivalent state), decoded from the same wire response as
+// every other field on that type.
+type activeSLAClock struct {
+	CaseID     string     `json:"caseId"`
+	ClockType  string     `json:"clockType"`
+	IsPaused   bool       `json:"isPaused"`
+	StartedOn  *time.Time `json:"startedOn"`
+	CaseNumber string     `json:"caseNumber"`
+	WSO2CaseID string     `json:"wso2CaseId"`
+	CaseTitle  string     `json:"caseTitle"`
+	CaseType   string     `json:"caseType"`
+	Product    string     `json:"product"`
+	Team       string     `json:"team"`
+	Priority   string     `json:"priority"`
+	State      string     `json:"state"`
+}
+
+type searchActiveSLAStatusResponse struct {
+	Statuses []activeSLAClock `json:"statuses"`
+	Total    int              `json:"total"`
+	Limit    int              `json:"limit"`
+	Offset   int              `json:"offset"`
+}
+
+// activeSLAStatusPageSize is this client's own page size for
+// GetActiveCSMSLAClocks — well under entity-service's own 2000-row cap
+// (internal/service/sla_status_service.go's maxSLAStatusLimit), chosen
+// purely so one slow page can't single-handedly reproduce the gateway
+// timeout the abandoned poll design hit (see this package's own doc
+// comment above) — this call is scoped to source=csm, a much smaller row
+// set than that design ever had to page through, but there's no reason to
+// risk a single, large round trip when several small ones cost nothing
+// extra at startup.
+const activeSLAStatusPageSize = 200
+
+// GetActiveCSMSLAClocks calls GET /sla-status?source=csm, paging through
+// every currently-open clock this engine's own entity-service counterpart
+// (source='CSM' "sla" rows) is tracking, and returns the full, flattened
+// list. Called once, from Engine.Reconcile, itself called once at process
+// startup (see that method's own doc comment for why) — never on a
+// recurring basis, unlike the poll design this package's own doc comment
+// describes abandoning GET /sla-status for.
+func (c *EntityClient) GetActiveCSMSLAClocks(ctx context.Context) ([]activeSLAClock, error) {
+	var all []activeSLAClock
+	offset := 0
+	for {
+		path := fmt.Sprintf("/sla-status?source=csm&limit=%d&offset=%d", activeSLAStatusPageSize, offset)
+		respBody, err := c.do(ctx, http.MethodGet, path, nil)
+		if err != nil {
+			return nil, fmt.Errorf("slaengine: fetch active csm sla clocks (offset %d): %w", offset, err)
+		}
+		var resp searchActiveSLAStatusResponse
+		if err := json.Unmarshal(respBody, &resp); err != nil {
+			return nil, fmt.Errorf("slaengine: decode active csm sla clocks response (offset %d): %w", offset, err)
+		}
+		all = append(all, resp.Statuses...)
+		offset += len(resp.Statuses)
+		if len(resp.Statuses) == 0 || offset >= resp.Total {
+			break
+		}
+	}
+	return all, nil
+}
+
+// clockState mirrors entity-service's domain.SLAClockState — the full,
+// current state of one (work item, clock target) "sla" row, regardless of
+// whether it is currently active. Found is false, every other field at its
+// zero value, when no row exists for this (workItemID, target, source) at
+// all — see GetClockState's own doc comment for why that distinction
+// matters here specifically.
+type clockState struct {
+	Found       bool       `json:"found"`
+	IsActive    bool       `json:"isActive"`
+	Stage       string     `json:"stage"`
+	HasBreached bool       `json:"hasBreached"`
+	StartedOn   *time.Time `json:"startedOn"`
+}
+
+// GetClockState calls GET /sla-status/clock-state?workItemId=<caseID>&target=<clockType>&source=csm
+// and returns entity-service's own durable record for this exact clock,
+// right before a breach alert for it is actually sent (Engine.
+// sendBreachAlert) — a last, authoritative check against the real source of
+// truth, independent of whatever this engine's own Redis copy of the
+// clock's alertedTier cursor says. This exists because that Redis cursor is
+// not always reliably advanced: ApplyStateEffects'/CompleteResponseClock's
+// own AdvanceAlertedTier write on a case closing or a qualifying comment
+// landing is a separate, non-atomic Redis write from whatever triggered it
+// (a Kafka-consumed case.* event), and a confirmed, reproduced incident
+// showed it can be silently lost with no retry — see this package's own
+// CLAUDE.md, "ApplyStateEffects" — leaving stale wake entries to fire a
+// false breach alert later for a clock that had, in truth, already
+// completed cleanly in entity-service's own record.
+//
+// Deliberately NOT a simple bool: a CodeRabbit review on the first version
+// of this check (a plain "is this clock type still in the active list"
+// query) caught two real correctness gaps that a bare true/false answer
+// can't fix:
+//  1. entity-service's CSM clock registration is itself best-effort (see
+//     SLAEngineService's own doc comment) and runs on a different trigger
+//     than this engine's own Redis registration -- a work item with NO row
+//     at all for this clock (Found=false) could mean either "genuinely
+//     never registered there" (unconfirmed, not evidence of resolution) or
+//     a coincidental, momentary gap; neither should be read as "resolved".
+//  2. A severity revision cancels the old clock and registers a fresh one
+//     for the same (work item, target) pair -- an "any active row of this
+//     type" check would accept the NEW incarnation as confirming the OLD,
+//     Redis-tracked one (the one the firing wake entry is actually about)
+//     is still fine, which it says nothing about. StartedOn lets the call
+//     site compare incarnations instead of just clock types.
+//
+// See the call site's own doc comment (Engine.sendBreachAlert) for exactly
+// how Found/IsActive/Stage/HasBreached/StartedOn are combined into a
+// suppress/send decision — this method itself makes no such decision, it
+// only reports what entity-service's record says. A decode/transport
+// failure returns a zero clockState and the error; the call site's own doc
+// comment explains why that fails open (sends anyway) rather than
+// suppressing a possibly-real alert over a transient entity-service hiccup.
+func (c *EntityClient) GetClockState(ctx context.Context, caseID, clockType string) (clockState, error) {
+	path := fmt.Sprintf("/sla-status/clock-state?workItemId=%s&target=%s&source=csm", url.QueryEscape(caseID), url.QueryEscape(clockType))
+	respBody, err := c.do(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return clockState{}, fmt.Errorf("slaengine: get clock state (case %s, %s): %w", caseID, clockType, err)
+	}
+	var resp clockState
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return clockState{}, fmt.Errorf("slaengine: decode clock state response (case %s, %s): %w", caseID, clockType, err)
+	}
+	return resp, nil
 }

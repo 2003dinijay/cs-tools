@@ -35,6 +35,7 @@ type fakeCaseStatsRepo struct {
 	windowPrevious  int
 	avgSeconds      float64
 	slaCount        int
+	avgCalls        int
 	caseTypes       map[string]int
 
 	// Captured filters, so a test can assert which ones each aggregation was
@@ -63,6 +64,7 @@ func (f *fakeCaseStatsRepo) ClosedByCreatedWindow(context.Context, repository.Pr
 }
 
 func (f *fakeCaseStatsRepo) AverageResponseSeconds(context.Context, string) (float64, int, error) {
+	f.avgCalls++
 	return f.avgSeconds, f.slaCount, nil
 }
 
@@ -164,6 +166,57 @@ func TestGetProjectCaseStats_RowsWithoutSeverityStillCount(t *testing.T) {
 		if item.Count != nil && *item.Count != 0 {
 			t.Errorf("severityCount[%s] = %d, want 0 -- a row with no severity must not be bucketed", item.ID, *item.Count)
 		}
+	}
+}
+
+// A row with no state of its own type (an extension row that is missing, or that
+// belongs to another type: the repository reports it with an empty State) is in
+// no list filtered by state, so a card that links to such a list must leave it
+// out of active/outstanding. It is still an item of the project, so totalCount
+// keeps it.
+func TestGetProjectCaseStats_RowsWithoutAStateAreNotOutstanding(t *testing.T) {
+	repo := &fakeCaseStatsRepo{stateSeverity: []repository.StateSeverityCount{
+		{State: "OPEN", Severity: "S1", Count: 3},
+		{State: "", Severity: "", Count: 24},
+		{State: "CLOSED", Severity: "S3", Count: 10},
+	}}
+
+	resp, err := NewProjectCaseStatsService(repo, caseStatsEnums(), alwaysUnrestrictedAccess{}).
+		GetProjectCaseStats(context.Background(), testUUID, domain.ProjectCaseStatsRequest{})
+	if err != nil {
+		t.Fatalf("GetProjectCaseStats: %v", err)
+	}
+
+	if resp.TotalCount != 37 {
+		t.Errorf("totalCount = %d, want 37 -- the stateless rows are still items of the project", resp.TotalCount)
+	}
+	if resp.ActiveCount != 3 || resp.OutstandingCount != 3 {
+		t.Errorf("activeCount/outstandingCount = %d/%d, want 3/3 -- a row with no state is neither outstanding nor closed",
+			resp.ActiveCount, resp.OutstandingCount)
+	}
+	if resp.ActionRequiredCount != 0 || resp.ResolvedCount.Total != 10 {
+		t.Errorf("actionRequired/resolved = %d/%d, want 0/10", resp.ActionRequiredCount, resp.ResolvedCount.Total)
+	}
+}
+
+// The outstanding-engagements breakdown follows the same rule as the state counts.
+func TestGetProjectCaseStats_EngagementRowsWithoutAStateAreNotOutstanding(t *testing.T) {
+	repo := &fakeCaseStatsRepo{engagementTypes: []repository.StateEngagementTypeCount{
+		{State: "OPEN", EngagementType: "MIGRATION", Count: 2},
+		{State: "", EngagementType: "MIGRATION", Count: 5},
+		{State: "CLOSED", EngagementType: "MIGRATION", Count: 3},
+	}}
+
+	resp, err := NewProjectCaseStatsService(repo, caseStatsEnums(), alwaysUnrestrictedAccess{}).
+		GetProjectCaseStats(context.Background(), testUUID, domain.ProjectCaseStatsRequest{})
+	if err != nil {
+		t.Fatalf("GetProjectCaseStats: %v", err)
+	}
+	if got := countFor(t, resp.OutstandingEngagementTypeCount, "MIGRATION"); got != 2 {
+		t.Errorf("outstandingEngagementTypeCount[MIGRATION] = %d, want 2", got)
+	}
+	if got := countFor(t, resp.EngagementTypeCount, "MIGRATION"); got != 10 {
+		t.Errorf("engagementTypeCount[MIGRATION] = %d, want 10 -- the all-states breakdown keeps every row", got)
 	}
 }
 
@@ -402,5 +455,83 @@ func TestGetProjectCaseStats_ScopeErrorPropagates(t *testing.T) {
 	}
 	if repo.stateSeverityFilter.ProjectID != "" {
 		t.Errorf("repository was queried despite scope resolution failing")
+	}
+}
+
+type fakeAvgSource struct {
+	hours   float64
+	err     error
+	calls   int
+	gotProj string
+}
+
+func (f *fakeAvgSource) AverageResponseTime(_ context.Context, projectID string) (float64, error) {
+	f.calls++
+	f.gotProj = projectID
+	return f.hours, f.err
+}
+
+func TestGetProjectCaseStats_AverageResponseSourceReplacesLocalQuery(t *testing.T) {
+	repo := &fakeCaseStatsRepo{avgSeconds: 7200, slaCount: 3}
+	src := &fakeAvgSource{hours: 4.25}
+
+	resp, err := NewProjectCaseStatsService(repo, caseStatsEnums(), alwaysUnrestrictedAccess{}, WithAverageResponseSource(src)).
+		GetProjectCaseStats(context.Background(), testUUID, domain.ProjectCaseStatsRequest{})
+	if err != nil {
+		t.Fatalf("GetProjectCaseStats: %v", err)
+	}
+	if resp.AverageResponseTime != 4.25 {
+		t.Errorf("averageResponseTime = %v, want 4.25 from the source", resp.AverageResponseTime)
+	}
+	if src.calls != 1 || src.gotProj != testUUID {
+		t.Errorf("source calls = %d project = %q, want 1 call for %q", src.calls, src.gotProj, testUUID)
+	}
+	if repo.avgCalls != 0 {
+		t.Errorf("local AverageResponseSeconds ran %d times, want 0", repo.avgCalls)
+	}
+	if resp.ChangeRate.AverageResponseTime != 0 {
+		t.Errorf("changeRate.averageResponseTime = %v, want 0", resp.ChangeRate.AverageResponseTime)
+	}
+}
+
+func TestGetProjectCaseStats_AverageResponseSourceErrorPropagates(t *testing.T) {
+	sentinel := errors.New("upstream unavailable")
+	repo := &fakeCaseStatsRepo{avgSeconds: 7200, slaCount: 3}
+
+	_, err := NewProjectCaseStatsService(repo, caseStatsEnums(), alwaysUnrestrictedAccess{},
+		WithAverageResponseSource(&fakeAvgSource{err: sentinel})).
+		GetProjectCaseStats(context.Background(), testUUID, domain.ProjectCaseStatsRequest{})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("error = %v, want the source error; it must not be swallowed into 0", err)
+	}
+}
+
+func TestGetProjectCaseStats_NoAverageResponseSourceKeepsLocalQuery(t *testing.T) {
+	repo := &fakeCaseStatsRepo{avgSeconds: 7200, slaCount: 3}
+
+	resp, err := NewProjectCaseStatsService(repo, caseStatsEnums(), alwaysUnrestrictedAccess{}, WithAverageResponseSource(nil)).
+		GetProjectCaseStats(context.Background(), testUUID, domain.ProjectCaseStatsRequest{})
+	if err != nil {
+		t.Fatalf("GetProjectCaseStats: %v", err)
+	}
+	if resp.AverageResponseTime != 2 || repo.avgCalls != 1 {
+		t.Errorf("averageResponseTime = %v, local calls = %d, want 2 and 1", resp.AverageResponseTime, repo.avgCalls)
+	}
+}
+
+// A customer-scoped caller keeps this data source's own numbers, same
+// carve-out as the SLA case-search delegate.
+func TestGetProjectCaseStats_AverageResponseSourceSkippedForScopedCaller(t *testing.T) {
+	repo := &fakeCaseStatsRepo{avgSeconds: 7200, slaCount: 3}
+	src := &fakeAvgSource{hours: 9}
+	access := stubAccess{scope: AccessScope{ProjectIDs: []string{testUUID}}}
+
+	resp, err := NewProjectCaseStatsService(repo, caseStatsEnums(), access, WithAverageResponseSource(src)).
+		GetProjectCaseStats(context.Background(), testUUID, domain.ProjectCaseStatsRequest{})
+	if err != nil {
+		t.Fatalf("GetProjectCaseStats: %v", err)
+	}
+	if src.calls != 0 || repo.avgCalls != 1 || resp.AverageResponseTime != 2 {
+		t.Errorf("source calls = %d, local calls = %d, avg = %v; want 0, 1, 2", src.calls, repo.avgCalls, resp.AverageResponseTime)
 	}
 }

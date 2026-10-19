@@ -84,15 +84,27 @@ function StubCaseDetailPage() {
   );
 }
 
-// useCurrentLocationTab (the pinned tab) reads the portal view; the real hook
-// pulls in the signed-in-user context, which needs backend config this test
-// doesn't set up. The CS view is what every test here exercises.
-vi.mock("@context/current-user/usePortalView", () => ({
-  usePortalView: () => "cs-abt",
+// The workspace host mounts the live-update stream; it needs runtime config and
+// auth that these routing tests have no stand-in for, and has its own tests
+// (`useCaseTabsLiveUpdates.test.tsx`).
+vi.mock("@features/case-tabs/hooks/useCaseTabsLiveUpdates", () => ({
+  useCaseTabsLiveUpdates: vi.fn(),
 }));
+
 vi.mock("@features/case-tabs/tabPageRegistry", () => ({
   pageComponentForKind: () => StubCaseDetailPage,
 }));
+
+/** Stands in for the live-update stream: reports an update for `caseId` the
+ * way `useCaseTabsLiveUpdates` does, through the real controller. */
+function UpdateSimulator({ caseId, activeTabVisible }: { caseId: string; activeTabVisible?: boolean }) {
+  const { markTabUpdated } = useCaseTabsController();
+  return (
+    <button onClick={() => markTabUpdated(caseId, activeTabVisible)}>
+      update-{caseId}-{String(activeTabVisible)}
+    </button>
+  );
+}
 
 function Opener({ caseId }: { caseId: string }) {
   const { openTab } = useCaseTabsController();
@@ -161,6 +173,52 @@ describe("case tabs — real BrowserRouter integration", () => {
     // permanent pinned "current location" tab (see `useCurrentLocationTab`).
     expect(screen.getByRole("tablist", { name: "Open cases" })).toBeInTheDocument();
     expect(screen.getByText("CS0001")).toBeInTheDocument();
+  });
+
+  it("an update for a background tab blinks it until it is activated; the active tab never blinks", async () => {
+    function AppWithUpdates() {
+      window.history.pushState({}, "", "/cases/CS0001");
+      return (
+        <BrowserRouter>
+          <ErrorBannerProvider>
+            <CaseTabsBehaviorProvider>
+              <CaseTabsProvider>
+                <NavigateButton to="/cases/CS0002" label="go-to-cs0002" />
+                <UpdateSimulator caseId="CS0001" />
+                <UpdateSimulator caseId="CS0002" />
+                <CaseTabStripBar />
+                <CaseTabsContentHost />
+                <Routes>
+                  <Route path="/cases/:caseId" element={<CaseDetailRouteSync kind="case" />} />
+                </Routes>
+              </CaseTabsProvider>
+            </CaseTabsBehaviorProvider>
+          </ErrorBannerProvider>
+        </BrowserRouter>
+      );
+    }
+    render(<AppWithUpdates />);
+    await waitFor(() => screen.getByTestId("stub-page-case-id"));
+    fireEvent.click(screen.getByText("go-to-cs0002")); // CS0002 active, CS0001 in background
+    await waitFor(() => expect(screen.getAllByRole("tab")).toHaveLength(3));
+
+    const flagged = () =>
+      screen.getAllByRole("tab").filter((t) => t.getAttribute("data-has-update") === "true");
+
+    // Update for the on-screen tab: nothing blinks.
+    fireEvent.click(screen.getByText("update-CS0002-undefined"));
+    expect(flagged()).toHaveLength(0);
+
+    // Update for the background tab: it blinks, and only it.
+    fireEvent.click(screen.getByText("update-CS0001-undefined"));
+    expect(flagged()).toHaveLength(1);
+    expect(flagged()[0]).toHaveAttribute("aria-selected", "false");
+
+    // Activating it clears the flag.
+    fireEvent.click(flagged()[0]);
+    await waitFor(() => expect(flagged()).toHaveLength(0));
+    // Two open tabs would otherwise be rehydrated into the next test.
+    sessionStorage.clear();
   });
 
   // Regression test for bug: a tab's chip label stayed on the raw caseId

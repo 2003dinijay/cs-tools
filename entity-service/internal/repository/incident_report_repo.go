@@ -49,6 +49,27 @@ type IncidentReportChange struct {
 	OccurredOn time.Time
 	// Attempts is how many earlier passes failed on this row.
 	Attempts int
+	// Snapshot is the row's recorded snapshot. For an assignment group change
+	// (migration 0207) it is {"updated_by", "updated_on"}: who changed the
+	// group, and when.
+	Snapshot map[string]any
+}
+
+// SpecialOpsAlertSource is what incident.special_ops_alert reads off the
+// incident, inside the change's own transaction: the incident as it is now,
+// and the names of the two groups the recorded change moved between.
+type SpecialOpsAlertSource struct {
+	IncidentID, Number, Subject  string
+	Description                  *string
+	State, Priority              *string
+	Impact, Urgency              *string
+	ServiceID, ServiceName       *string
+	GroupName, PreviousGroupName *string
+	// HandoffNote is the newest specialist handoff reason work note on the
+	// incident (the JSON {"reasonCode":...,"escalationTeam":...} the
+	// handoff writes in the transaction that moves the group), nil when
+	// there is none. It names the team picked in the dialog.
+	HandoffNote *string
 }
 
 // IncidentReportSource is what the incident Resolved/In Progress flows read
@@ -115,6 +136,10 @@ type NewIncidentProblem struct {
 // commit or roll back together.
 type IncidentReportTx interface {
 	IncidentSource(ctx context.Context, incidentID string) (IncidentReportSource, error)
+	// SpecialOpsAlertSource reads the incident and the names of groupID and
+	// previousGroupID (either may be empty). ErrIncidentNotFound if the
+	// incident is gone.
+	SpecialOpsAlertSource(ctx context.Context, incidentID, groupID, previousGroupID string) (SpecialOpsAlertSource, error)
 	// CreateReportTask inserts the work_item + incident_task pair and returns
 	// the new task's id and number.
 	CreateReportTask(ctx context.Context, task NewIncidentReportTask) (id, number string, err error)
@@ -202,19 +227,19 @@ func (r *incidentReportRepository) ProcessChange(ctx context.Context, outboxID i
 	processed := false
 	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
 		var (
-			c          IncidentReportChange
-			changesRaw []byte
+			c                       IncidentReportChange
+			changesRaw, snapshotRaw []byte
 		)
 		// SKIP LOCKED: a row another replica is processing right now is not
 		// waited on -- it is that replica's. published_on IS NULL re-checks
 		// under the lock, so a row finished between PendingChanges and here
 		// is skipped rather than applied twice.
 		err := tx.QueryRow(ctx, `
-			SELECT id, entity_id, changes, occurred_on, attempts
+			SELECT id, entity_id, changes, snapshot, occurred_on, attempts
 			FROM event_outbox
 			WHERE id = $1 AND published_on IS NULL
 			FOR UPDATE SKIP LOCKED`, outboxID).
-			Scan(&c.OutboxID, &c.IncidentID, &changesRaw, &c.OccurredOn, &c.Attempts)
+			Scan(&c.OutboxID, &c.IncidentID, &changesRaw, &snapshotRaw, &c.OccurredOn, &c.Attempts)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
@@ -224,6 +249,9 @@ func (r *incidentReportRepository) ProcessChange(ctx context.Context, outboxID i
 		if err := json.Unmarshal(changesRaw, &c.Changes); err != nil {
 			return fmt.Errorf("incidentreport: decode changes for outbox %d: %w", outboxID, err)
 		}
+		// The snapshot only informs the alert; one that does not decode as an
+		// object leaves it empty rather than failing the row.
+		_ = json.Unmarshal(snapshotRaw, &c.Snapshot)
 		if err := fn(ctx, incidentReportTx{tx: tx}, c); err != nil {
 			return err
 		}
@@ -286,6 +314,34 @@ func (t incidentReportTx) IncidentSource(ctx context.Context, incidentID string)
 	return s, nil
 }
 
+// SpecialOpsAlertSource implements IncidentReportTx.
+func (t incidentReportTx) SpecialOpsAlertSource(ctx context.Context, incidentID, groupID, previousGroupID string) (SpecialOpsAlertSource, error) {
+	s := SpecialOpsAlertSource{IncidentID: incidentID}
+	err := t.tx.QueryRow(ctx, `
+		SELECT wi.number, wi.subject, wi.description, i.state::text, i.priority::text,
+		       i.impact::text, i.urgency::text, i.service_id::text, svc.name,
+		       (SELECT g.name FROM "group" g WHERE g.id = NULLIF($2, '')::uuid),
+		       (SELECT g.name FROM "group" g WHERE g.id = NULLIF($3, '')::uuid),
+		       (SELECT c.content FROM comment c
+		         WHERE c.work_item_id = i.id AND c.type = 'WORK_NOTE'::comment_type_enum
+		           AND c.content LIKE '%"reasonCode"%'
+		         ORDER BY c.created_on DESC, c.id DESC LIMIT 1)
+		FROM incident i
+		JOIN work_item wi ON wi.id = i.id
+		LEFT JOIN service svc ON svc.id = i.service_id
+		WHERE i.id = $1`, incidentID, groupID, previousGroupID).
+		Scan(&s.Number, &s.Subject, &s.Description, &s.State, &s.Priority,
+			&s.Impact, &s.Urgency, &s.ServiceID, &s.ServiceName, &s.GroupName, &s.PreviousGroupName,
+			&s.HandoffNote)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return SpecialOpsAlertSource{}, ErrIncidentNotFound
+	}
+	if err != nil {
+		return SpecialOpsAlertSource{}, fmt.Errorf("incidentreport: read incident %s for the special ops alert: %w", incidentID, err)
+	}
+	return s, nil
+}
+
 // CreateReportTask implements IncidentReportTx: priority 1 - Critical, type
 // Incident Report.
 func (t incidentReportTx) CreateReportTask(ctx context.Context, task NewIncidentReportTask) (string, string, error) {
@@ -309,8 +365,8 @@ func (t incidentReportTx) CreateIncidentTask(ctx context.Context, task NewIncide
 
 // insertIncidentTask inserts one work_item + incident_task pair.
 //
-// The number comes from next_portal_work_item_number() (migration 0140), the
-// series every record created in this service rather than synced uses.
+// The number is ServiceNow's TASK format, from migration 0180's TASK series
+// (next_work_item_number), started above ServiceNow's range by 0201.
 // wso2_id stays NULL: work_item_wso2_id_required_by_type does not cover
 // INCIDENT_TASK. state OPEN / active mirror ServiceNow's defaults for a new
 // incident_task, since the flows' Create Record steps leave both unset.
@@ -331,7 +387,7 @@ func (t incidentReportTx) insertIncidentTask(ctx context.Context, incidentID, su
 			)
 			VALUES (
 				gen_random_uuid(), NOW(), NOW(), $1, $1,
-				next_portal_work_item_number(), $2, 'INCIDENT_TASK'::work_item_type_enum,
+				next_work_item_number('INCIDENT_TASK'), $2, 'INCIDENT_TASK'::work_item_type_enum,
 				(SELECT g.id FROM "group" g WHERE g.id = $3::uuid), $4::uuid
 			)
 			RETURNING id, number

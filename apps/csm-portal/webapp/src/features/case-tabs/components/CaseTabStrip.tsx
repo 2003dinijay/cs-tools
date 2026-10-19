@@ -15,13 +15,15 @@
 // under the License.
 
 import { Box, Chip, IconButton, Menu, MenuItem, Tooltip } from "@wso2/oxygen-ui";
-import { MoreVertical } from "@wso2/oxygen-ui-icons-react";
+import { CircleX, MoreVertical } from "@wso2/oxygen-ui-icons-react";
 import {
+  Fragment,
   useRef,
   useState,
   type JSX,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
+  type ReactElement,
 } from "react";
 import type { CaseTabState } from "@context/case-tabs/caseTabsTypes";
 import { tabDisplayLabel } from "@features/case-tabs/utils/tabDisplayLabel";
@@ -31,6 +33,12 @@ export interface PinnedTabProps {
   label: string;
   active: boolean;
   onClick: () => void;
+  /** A fixed "you are here" glyph (a grid/dashboard icon today), the same
+   * for every page this tab can represent — not derived from whichever nav
+   * section's own icon the current route happens to use, so the pinned tab
+   * stays visually stable regardless of what `label` says. Optional only so
+   * this component's own tests can render the plain chip without one. */
+  icon?: ReactElement;
 }
 
 export interface CaseTabStripProps {
@@ -82,43 +90,13 @@ const TAB_CORNER_RADIUS = "8px 8px 0 0";
 /** Taller than a stock `size="small"` Chip's own 24px — closer to a real
  * browser tab's proportions, which read noticeably taller/more substantial
  * than a small metadata chip. */
-const TAB_HEIGHT = 32;
+const TAB_HEIGHT = 34;
 
-/**
- * The active tab's fill — the one place in this component that genuinely has
- * to branch on light vs. dark, because "the active tab is the lightest thing
- * in the strip" needs a *different* color in each, not a different token:
- *  - Light theme: solid white on a grey strip, exactly like a real browser's
- *    — anything translucent barely lifts off an already-light strip and was
- *    reported live as not white enough.
- *  - Dark theme: a solid grey. White here (translucent or not) renders as a
- *    glaring block against a navy strip — reported live — while a wash faint
- *    enough to avoid that stops reading as a distinct tab at all. Grey sits
- *    between the two: clearly lighter than the strip, still dark enough to
- *    keep the ambient near-white label legible on top of it.
- *
- * A literal color rather than a palette token because no token means "lighter
- * than the ambient surface in either mode" — the `background.*` tokens flip
- * their absolute lightness between the two themes (an earlier version used
- * `background.default`, which made the active tab the DARKEST thing in the
- * strip under the dark theme), and `action.selected` is an overlay tuned for
- * a subtle table-row highlight, too faint to pick the open tab out at a
- * glance. Both of those were reported live too.
- *
- * Scoped with `applyStyles("dark", …)` rather than a `palette.mode === "dark"`
- * check. This app drives theming through MUI CssVars, where `palette.mode`
- * stays pinned to the default scheme no matter which one is actually showing —
- * so a mode check here always took the light branch, and the dark theme
- * rendered a white tab with a white (invisible) label on it. `applyStyles`
- * emits a scheme-scoped selector instead, which is the mechanism the rest of
- * this app's per-scheme styling already uses (see `CaseMetaBand`, the a11y
- * theme overrides). Never reach for `palette.mode` in this codebase.
- *
- * Typed structurally rather than against the theme type — these two members
- * are all this needs, and MUI passes the real theme at call time.
+/** Give the active case tab a distinct gray fill in either color scheme.
+ * Use scheme selectors because the portal switches themes through CSS variables.
  */
 type ColorSchemeAwareTheme = {
-  palette: { grey: { 700: string }; common: { white: string } };
+  palette: { grey: { 300: string } };
   applyStyles: (
     scheme: "dark" | "light",
     styles: Record<string, unknown>,
@@ -127,8 +105,8 @@ type ColorSchemeAwareTheme = {
 
 function activeTabFillStyles(theme: ColorSchemeAwareTheme): Record<string, unknown> {
   return {
-    backgroundColor: theme.palette.common.white,
-    ...theme.applyStyles("dark", { backgroundColor: theme.palette.grey[700] }),
+    backgroundColor: theme.palette.grey[300],
+    ...theme.applyStyles("dark", { backgroundColor: "#555d6b" }),
   };
 }
 
@@ -137,8 +115,7 @@ function activeTabFillStyles(theme: ColorSchemeAwareTheme): Record<string, unkno
  * "folder tab" shape (not a fully-rounded pill), a taller-than-stock height,
  * and — for the *active* tab only — `activeTabFillStyles` (see its own
  * comment for why that one is per-scheme) plus a theme-accent bottom rule
- * sitting on the strip's own divider line, so it reads as continuous with the
- * page below it. An inactive tab is fully transparent, showing the strip's
+ * along its bottom edge. An inactive tab is fully transparent, showing the strip's
  * own tinted toolbar backdrop through untouched.
  *
  * Returns an `sx` *callback*, not a plain object, because that fill has to be
@@ -158,6 +135,16 @@ function tabChipSx(active: boolean): (theme: ColorSchemeAwareTheme) => Record<st
     flexShrink: 0,
     maxWidth: 220,
     height: TAB_HEIGHT,
+    fontSize: "0.8125rem",
+    color: active ? "text.primary" : "text.secondary",
+    "& .MuiChip-label": { px: 1.25 },
+    "& .MuiChip-deleteIcon": {
+      width: 14,
+      height: 14,
+      color: "text.secondary",
+      marginRight: 1.25,
+      marginLeft: 0,
+    },
     cursor: "pointer",
     borderRadius: TAB_CORNER_RADIUS,
     ...(active
@@ -169,22 +156,8 @@ function tabChipSx(active: boolean): (theme: ColorSchemeAwareTheme) => Record<st
           // of the emphasis, so the fill doesn't have to do it alone.
           ...activeTabFillStyles(theme),
           fontWeight: 600,
-          // A theme-accent rule along the bottom edge — a second, unambiguous
-          // "this one is open" signal beyond the fill color alone, and the
-          // reason the strip itself has NO bottom padding (see this
-          // component's own strip `Box`): tabs sit flush on the strip's
-          // bottom edge, so this rule lands directly on the strip's own
-          // divider line and reads as one accent line rather than a second
-          // line floating above it.
-          //
-          // An earlier version instead kept the strip's padding and pushed
-          // this chip down over it with `position: relative; bottom: -9px`.
-          // That is exactly the 9px the tablist's own `overflowY: "hidden"`
-          // clips away, so the border silently never painted at all — the two
-          // rules were added for unrelated reasons and quietly cancelled each
-          // other. Keep this tab inside its container's own box; don't
-          // reintroduce a negative offset here.
-          borderBottom: "2px solid",
+          // Accent the flat bottom edge of the active case tab.
+          borderBottom: "3px solid",
           borderBottomColor: "primary.main",
           // No additional hover treatment: this tab is already the most
           // prominent one, so hovering it shouldn't visibly change further.
@@ -202,6 +175,46 @@ function tabChipSx(active: boolean): (theme: ColorSchemeAwareTheme) => Record<st
           "&:hover": { bgcolor: "action.hover" },
         }),
   });
+}
+
+/** Standard visually-hidden styles: read by screen readers, invisible on screen. */
+const VISUALLY_HIDDEN_SX = {
+  border: 0,
+  clip: "rect(0 0 0 0)",
+  height: "1px",
+  margin: "-1px",
+  overflow: "hidden",
+  padding: 0,
+  position: "absolute",
+  whiteSpace: "nowrap",
+  width: "1px",
+} as const;
+
+/** A tab's label with the cues for an unseen update: a small static dot
+ * (hidden from assistive tech) and screen-reader text, since
+ * the chip's accessible name is its content. */
+function UpdatedTabLabel({ label }: { label: string }): JSX.Element {
+  return (
+    <>
+      <Box
+        component="span"
+        aria-hidden="true"
+        sx={{
+          display: "inline-block",
+          width: 6,
+          height: 6,
+          borderRadius: "50%",
+          bgcolor: "primary.main",
+          mr: 0.75,
+          verticalAlign: "middle",
+        }}
+      />
+      {label}
+      <Box component="span" sx={VISUALLY_HIDDEN_SX}>
+        {" has new updates"}
+      </Box>
+    </>
+  );
 }
 
 /**
@@ -325,24 +338,12 @@ export default function CaseTabStrip({
         display: "flex",
         alignItems: "center",
         gap: 0.5,
-        px: 3,
-        pt: 1,
-        // No bottom padding, so the tabs sit flush on the strip's own bottom
-        // edge and the active tab's accent rule (see `tabChipSx`) lands
-        // directly on the divider below instead of floating above it as a
-        // separate second line — which is how it read while this was a
-        // symmetric `py: 1`.
-        pb: 0,
-        // A recessed "toolbar" backdrop: a *darkening* overlay, so the strip
-        // stays in the same family as the page content below it under either
-        // theme. Deliberately not `action.hover`, which lightens under the
-        // dark theme — that turned the whole strip into a pale slate band
-        // floating above a much darker page, a far heavier separation than a
-        // tab strip should draw, and it left the active tab's own light fill
-        // with almost nothing to stand out against.
-        bgcolor: "rgba(0, 0, 0, 0.18)",
-        borderBottom: 1,
-        borderColor: "divider",
+        px: 2,
+        py: 1,
+        mx: 3,
+        mt: 1.5,
+        borderRadius: 2,
+        bgcolor: "background.paper",
         flexShrink: 0,
       }}
     >
@@ -359,10 +360,7 @@ export default function CaseTabStrip({
         sx={{
           display: "flex",
           alignItems: "center",
-          // Adjacent tabs touch — no gap between them — matching a real
-          // browser tab strip; each tab's own distinct fill (see
-          // `tabChipSx`) is what visually separates one from the next.
-          gap: 0,
+          gap: 0.5,
           overflowX: "auto",
           // Explicit, not left to default: per the CSS overflow spec, a box
           // with `overflow-x` set to anything other than `visible` and no
@@ -383,72 +381,166 @@ export default function CaseTabStrip({
         }}
       >
         {pinnedTab && (
-          <Tooltip title={pinnedTab.label}>
-            {/* No `onDelete` and no `onContextMenu` — this tab is permanent,
-                not part of the closable case-tab set (see
-                `useCurrentLocationTab`'s doc comment), so it's excluded from
-                both context-menu actions and never itself a right-click
-                target. Also no `id`/`aria-controls` (unlike a case tab
-                below): unlike those, it has no discrete "panel" element
-                anywhere for that to point at — its content is just
-                whatever route is currently live. */}
-            <Chip
-              ref={setChipRef(PINNED_KEY)}
-              size="small"
-              role="tab"
-              aria-selected={pinnedTab.active}
-              tabIndex={activeKey === PINNED_KEY ? 0 : -1}
-              label={pinnedTab.label}
-              variant="filled"
-              onClick={pinnedTab.onClick}
-              sx={[tabChipSx(pinnedTab.active), { fontStyle: "italic" }]}
+          <>
+            <Tooltip title={pinnedTab.label}>
+              {/* A plain bordered box, NOT a `Chip` — a `Chip` carries its
+                  own built-in pill/oval identity (full-height rounding,
+                  compact label padding) that survives even a heavy `sx`
+                  override, and reads as "a chip" regardless of border radius
+                  tweaks (confirmed live, repeatedly, against reference
+                  screenshots that show a rectangular box). No `onDelete` and
+                  no `onContextMenu` — this tab is permanent, not part of the
+                  closable case-tab set (see `useCurrentLocationTab`'s doc
+                  comment), so it's excluded from both context-menu actions
+                  and never itself a right-click target. Also no
+                  `id`/`aria-controls` (unlike a case tab below): unlike
+                  those, it has no discrete "panel" element anywhere for that
+                  to point at — its content is just whatever route is
+                  currently live. */}
+              <Box
+                ref={setChipRef(PINNED_KEY)}
+                role="tab"
+                aria-selected={pinnedTab.active}
+                tabIndex={activeKey === PINNED_KEY ? 0 : -1}
+                onClick={pinnedTab.onClick}
+                // Keep the page anchor bordered in both states.
+                sx={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 0.75,
+                  flexShrink: 0,
+                  minWidth: 0,
+                  maxWidth: 220,
+                  height: TAB_HEIGHT,
+                  px: 1.25,
+                  cursor: "pointer",
+                  // A modest, uniform corner radius — not a Chip's own
+                  // height-matched full rounding, which is what reads as a
+                  // "pill" rather than a "box".
+                  borderRadius: "6px",
+                  border: 1,
+                  borderColor: pinnedTab.active ? "text.disabled" : "divider",
+                  bgcolor: pinnedTab.active ? "action.hover" : "transparent",
+                  fontWeight: 500,
+                  fontSize: "0.8125rem",
+                  color: pinnedTab.active ? "text.primary" : "text.disabled",
+                  "&:hover": { bgcolor: "action.hover" },
+                  "& svg": {
+                    width: 16,
+                    height: 16,
+                    color: pinnedTab.active ? "primary.main" : "text.disabled",
+                    flexShrink: 0,
+                  },
+                  "&:focus-visible": {
+                    outline: "2px solid",
+                    outlineColor: "primary.main",
+                    outlineOffset: -2,
+                  },
+                }}
+              >
+                {pinnedTab.icon}
+                <Box
+                  component="span"
+                  sx={{
+                    minWidth: 0,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {pinnedTab.label}
+                </Box>
+              </Box>
+            </Tooltip>
+            {/* Separates the one permanent tab from the closable case tabs
+                it sits beside — without it the pinned tab reads as just
+                another tab in the same set, rather than a fixed anchor the
+                others are opened next to. Only rendered alongside a real
+                pinned tab (never floating on its own), and sized to the
+                strip's own tab height rather than stretching to the strip's
+                full height, which would run past the active tab's bottom
+                accent rule (see `tabChipSx`). */}
+            <Box
+              aria-hidden
+              data-testid="pinned-tab-divider"
+              sx={{
+                width: "1px",
+                height: TAB_HEIGHT - 8,
+                bgcolor: "text.disabled",
+                opacity: 0.6,
+                mx: 1,
+                flexShrink: 0,
+              }}
             />
-          </Tooltip>
+          </>
         )}
-        {tabs.map((tab) => {
+        {tabs.map((tab, index) => {
           const active = tab.id === activeTabId;
           const label = tabDisplayLabel(tab);
+          // A tab that is on screen never shows the cue, whatever the flag
+          // says (the pinned view passes a null `activeTabId`, so a flagged
+          // tab only ever reaches here as not-active).
+          const hasUpdate = !!tab.hasUpdate && !active;
           return (
-            <Tooltip key={tab.id} title={tabTooltip(tab)}>
-              <Chip
-                ref={setChipRef(tab.id)}
-                id={tabElementId(tab.id)}
-                aria-controls={tabPanelElementId(tab.id)}
-                size="small"
-                role="tab"
-                aria-selected={active}
-                tabIndex={activeKey === tab.id ? 0 : -1}
-                label={label}
-                variant="filled"
-                onClick={() => onActivate(tab.id)}
-                onContextMenu={(e: ReactMouseEvent<HTMLElement>) => {
-                  e.stopPropagation();
-                  openContextMenu(e, { kind: "tab", tabId: tab.id });
-                }}
-                onDelete={(e) => {
-                  // Chip's onDelete already receives a synthetic event whose
-                  // propagation stopping is handled by oxygen-ui internally;
-                  // stopPropagation here too so a delete click never also
-                  // triggers the Chip's own onClick (which would activate the
-                  // tab that's about to close).
-                  e.stopPropagation();
-                  onRequestClose(tab.id);
-                }}
-                // Deliberately NO `aria-label` here — `aria-label` sets the
-                // ACCESSIBLE NAME of this whole `role="tab"` chip, not just
-                // its delete affordance; a `Close ${label}` value made a
-                // screen reader announce the entire tab as "Close CS0001"
-                // instead of "CS0001". Falls back to the chip's own visible
-                // text (the label) as its accessible name instead, same as
-                // any other unlabelled Chip. The delete icon itself has no
-                // separate accessible name of its own — same limitation as
-                // this codebase's other Chip-with-onDelete usage (see this
-                // file's own test for how it's exercised: by test id, not by
-                // an accessible name, until oxygen-ui/MUI's `Chip` exposes
-                // one for `deleteIcon` directly).
-                sx={tabChipSx(active)}
-              />
-            </Tooltip>
+            <Fragment key={tab.id}>
+              {index > 0 && (
+                <Box
+                  aria-hidden
+                  sx={{
+                    width: "1px",
+                    height: TAB_HEIGHT - 8,
+                    bgcolor: "text.disabled",
+                    opacity: 0.6,
+                    mx: 1,
+                    flexShrink: 0,
+                  }}
+                />
+              )}
+              <Tooltip
+                title={hasUpdate ? `${tabTooltip(tab)} (has new updates)` : tabTooltip(tab)}
+              >
+                <Chip
+                  ref={setChipRef(tab.id)}
+                  id={tabElementId(tab.id)}
+                  aria-controls={tabPanelElementId(tab.id)}
+                  size="small"
+                  role="tab"
+                  aria-selected={active}
+                  tabIndex={activeKey === tab.id ? 0 : -1}
+                  label={hasUpdate ? <UpdatedTabLabel label={label} /> : label}
+                  data-has-update={hasUpdate ? "true" : undefined}
+                  variant="filled"
+                  deleteIcon={<CircleX data-testid="CancelIcon" />}
+                  onClick={() => onActivate(tab.id)}
+                  onContextMenu={(e: ReactMouseEvent<HTMLElement>) => {
+                    e.stopPropagation();
+                    openContextMenu(e, { kind: "tab", tabId: tab.id });
+                  }}
+                  onDelete={(e) => {
+                    // Chip's onDelete already receives a synthetic event whose
+                    // propagation stopping is handled by oxygen-ui internally;
+                    // stopPropagation here too so a delete click never also
+                    // triggers the Chip's own onClick (which would activate the
+                    // tab that's about to close).
+                    e.stopPropagation();
+                    onRequestClose(tab.id);
+                  }}
+                  // Deliberately NO `aria-label` here — `aria-label` sets the
+                  // ACCESSIBLE NAME of this whole `role="tab"` chip, not just
+                  // its delete affordance; a `Close ${label}` value made a
+                  // screen reader announce the entire tab as "Close CS0001"
+                  // instead of "CS0001". Falls back to the chip's own visible
+                  // text (the label) as its accessible name instead, same as
+                  // any other unlabelled Chip. The delete icon itself has no
+                  // separate accessible name of its own — same limitation as
+                  // this codebase's other Chip-with-onDelete usage (see this
+                  // file's own test for how it's exercised: by test id, not by
+                  // an accessible name, until oxygen-ui/MUI's `Chip` exposes
+                  // one for `deleteIcon` directly).
+                  sx={tabChipSx(active)}
+                />
+              </Tooltip>
+            </Fragment>
           );
         })}
       </Box>

@@ -25,6 +25,8 @@
 -- are SELF-HEALING instead (upserted / deleted and re-inserted), so an
 -- already-seeded database converges to the current fixtures on a re-run -- and
 -- the fixtures are put back to their starting state each time (see there).
+-- So are the customer portal entitlements of the local project type (the
+-- project_type UPDATE below) and the project type of "Lumen Works Platform".
 
 BEGIN;
 
@@ -47,9 +49,30 @@ INSERT INTO user_role (id, created_on, updated_on, user_id, role_id) VALUES
 ON CONFLICT (id) DO NOTHING;
 
 -- Account + project + deployment.
-INSERT INTO account (id, created_on, updated_on, created_by, updated_by, name, number, sf_id, customer_success_manager_id, country, city, drive_location) VALUES
-  ('00000000-0000-0000-0000-000000000301', now(), now(), 'seed', 'seed', 'Example Corp', 'ACC-0001', 'SF-0001', '00000000-0000-0000-0000-000000000001', 'United States', 'Mountain View', 'https://drive.example.com/example-corp')
-ON CONFLICT (id) DO NOTHING;
+INSERT INTO account (id, created_on, updated_on, created_by, updated_by, name, number, sf_id, customer_success_manager_id, country, city, drive_location, life_cycle) VALUES
+  ('00000000-0000-0000-0000-000000000301', now(), now(), 'seed', 'seed', 'Example Corp', 'ACC-0001', 'SF-0001', '00000000-0000-0000-0000-000000000001', 'United States', 'Mountain View', 'https://drive.example.com/example-corp', 'Customer')
+ON CONFLICT (id) DO UPDATE SET life_cycle = COALESCE(account.life_cycle, EXCLUDED.life_cycle);
+
+-- Customer portal entitlements of the local project type. The customer portal shows its
+-- Operations menu (Service requests, Change requests) only when the project's type grants
+-- read access to them -- GET /projects/{id}/features, read from project_type
+-- (has_service_request_read_access / has_change_request_read_access, migration 0130) -- and
+-- the local "Subscription" fixture row (a3, the type of the seeded projects below; see
+-- fixtures/0031_project_type_table.sql) is created with every flag FALSE, so a customer of
+-- project 401 would see no Operations menu and could never reach a change request to
+-- approve. (ServiceNow's own "Subscription" does not grant these either; this is a local
+-- stand-in, which is why it is only touched while it is still the local fixture row.)
+-- An UPDATE, not an INSERT ... ON CONFLICT DO NOTHING: the row already exists on a
+-- database seeded earlier, and has to be corrected there too. Only the two flags a
+-- customer needs for Operations are set; every other flag of the row, and every other
+-- project type, stays as the migration left it.
+UPDATE project_type
+SET has_change_request_read_access = TRUE,
+    has_service_request_read_access = TRUE,
+    updated_on = now()
+WHERE id = '00000000-0000-0000-0000-0000000000a3'
+  AND created_by = 'local-fixture'
+  AND (NOT has_change_request_read_access OR NOT has_service_request_read_access);
 
 -- project_type_id is set (a3 = "Subscription", from the project_type fixture) because the
 -- customer portal treats a project with no type as "type not loaded" and then offers no
@@ -166,14 +189,17 @@ WHERE id = '00000000-0000-0000-0000-000000000903';
 -- seed data use them).
 --
 --   WSO2 staff (INTERNAL, role 'internal') -- the approvers of the internal
---   stages (Peer, CAB, ECAB, Review):
+--   stages (Peer, CAB, Review; an Emergency change has the one CAB stage):
 --     alice.perera@example.com    Alice Perera
 --     bob.fernando@example.com    Bob Fernando
 --     carol.silva@example.com     Carol Silva
 --   They are members of "Example Corp ABT" (group 901, the assigned group of
---   every fixture below), of "CAB Approval", of "ECAB Approval" and of
---   "Devops Approval" (the peer approval fallback group, seeded here so the
---   fallback can be exercised locally).
+--   every fixture below), of "CAB Approval" and of "Devops Approval" (the peer
+--   approval fallback group, seeded here so the fallback can be exercised
+--   locally). The membership of those two groups is a data matter (an operations
+--   matter: there is no screen for it): without rows like these, Request Approval on a
+--   Normal change (its CAB stage) or an Emergency change (its only stage, also the
+--   CAB's) is refused with "the \"CAB Approval\" group has no members ...".
 --
 --   Customers (EXTERNAL, role 'customer') -- registered contacts of project 401
 --   "Example Corp Production", i.e. the Customer Group asked at Customer
@@ -217,24 +243,27 @@ INSERT INTO team_member (id, created_on, updated_on, created_by, updated_by, tea
   ('00000000-0000-0000-0000-000000000906', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000000901', '00000000-0000-0000-0000-000000000013', '00000000-0000-0000-0000-000000000901')
 ON CONFLICT (id) DO UPDATE SET team_id = EXCLUDED.team_id, user_id = EXCLUDED.user_id, group_id = EXCLUDED.group_id;
 
--- CAB Approval / ECAB Approval membership (migration 0188 creates the two
--- groups, empty). A Normal change cannot be sent for approval, and its peer
--- approval cannot cascade to CAB, unless the CAB group has an eligible (active,
--- internal) member -- so the three internal personas sit in both groups, which
--- lets the fixtures run the full Request Approval -> Peer -> CAB -> Scheduled
--- (Normal) and Request Approval -> ECAB -> Scheduled (Emergency) flows locally.
+-- CAB Approval membership (migration 0188 creates the group, empty). A Normal
+-- change cannot be sent for approval, and its peer approval cannot cascade to CAB,
+-- unless the CAB group has an eligible (active, internal) member -- and an Emergency
+-- change, whose ONE stage is the CAB's too (the previous system has no Emergency CAB), cannot
+-- be sent for approval at all -- so the three internal personas sit in the group,
+-- which lets the fixtures run the full Request Approval -> Peer -> CAB -> Scheduled
+-- (Normal) and Request Approval -> CAB -> Scheduled (Emergency) flows locally.
 -- (jane.doe and john.smith held these seats before; their rows 1101-1104 are
--- removed so an already-seeded database converges.)
+-- removed so an already-seeded database converges. Rows 1121-1123 seated the same
+-- three personas in the "ECAB Approval" group migration 0188 also created; nothing
+-- resolves that group any more, so they are removed too, and the group is left
+-- as it is.)
 DELETE FROM team_member WHERE id IN (
   '00000000-0000-0000-0000-000000001101', '00000000-0000-0000-0000-000000001102',
-  '00000000-0000-0000-0000-000000001103', '00000000-0000-0000-0000-000000001104');
+  '00000000-0000-0000-0000-000000001103', '00000000-0000-0000-0000-000000001104',
+  '00000000-0000-0000-0000-000000001121', '00000000-0000-0000-0000-000000001122',
+  '00000000-0000-0000-0000-000000001123');
 INSERT INTO team_member (id, created_on, updated_on, created_by, updated_by, team_id, user_id, group_id) VALUES
   ('00000000-0000-0000-0000-000000001111', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000000901', '00000000-0000-0000-0000-000000000011', '00000000-0000-4000-8000-00000000ca01'),
   ('00000000-0000-0000-0000-000000001112', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000000901', '00000000-0000-0000-0000-000000000012', '00000000-0000-4000-8000-00000000ca01'),
-  ('00000000-0000-0000-0000-000000001113', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000000901', '00000000-0000-0000-0000-000000000013', '00000000-0000-4000-8000-00000000ca01'),
-  ('00000000-0000-0000-0000-000000001121', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000000901', '00000000-0000-0000-0000-000000000011', '00000000-0000-4000-8000-00000000eca1'),
-  ('00000000-0000-0000-0000-000000001122', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000000901', '00000000-0000-0000-0000-000000000012', '00000000-0000-4000-8000-00000000eca1'),
-  ('00000000-0000-0000-0000-000000001123', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000000901', '00000000-0000-0000-0000-000000000013', '00000000-0000-4000-8000-00000000eca1')
+  ('00000000-0000-0000-0000-000000001113', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000000901', '00000000-0000-0000-0000-000000000013', '00000000-0000-4000-8000-00000000ca01')
 ON CONFLICT (id) DO UPDATE SET team_id = EXCLUDED.team_id, user_id = EXCLUDED.user_id, group_id = EXCLUDED.group_id;
 
 -- Devops Approval: the peer approval fallback group (domain.PeerApprovalFallbackGroupName),
@@ -288,9 +317,9 @@ INSERT INTO "user" (id, created_on, updated_on, created_by, updated_by, user_nam
   ('00000000-0000-0000-0000-000000000003', now(), now(), 'seed', 'seed', 'sam.other@othercorp.example', 'Sam Other', 'Sam', 'Other', 'sam.other@othercorp.example', true, false)
 ON CONFLICT (id) DO NOTHING;
 
-INSERT INTO account (id, created_on, updated_on, created_by, updated_by, name, number, sf_id, customer_success_manager_id, country, city, drive_location) VALUES
-  ('00000000-0000-0000-0000-000000000302', now(), now(), 'seed', 'seed', 'Other Corp', 'ACC-0002', 'SF-0002', '00000000-0000-0000-0000-000000000001', 'United Kingdom', 'London', 'https://drive.example.com/other-corp')
-ON CONFLICT (id) DO NOTHING;
+INSERT INTO account (id, created_on, updated_on, created_by, updated_by, name, number, sf_id, customer_success_manager_id, country, city, drive_location, life_cycle) VALUES
+  ('00000000-0000-0000-0000-000000000302', now(), now(), 'seed', 'seed', 'Other Corp', 'ACC-0002', 'SF-0002', '00000000-0000-0000-0000-000000000001', 'United Kingdom', 'London', 'https://drive.example.com/other-corp', 'Customer')
+ON CONFLICT (id) DO UPDATE SET life_cycle = COALESCE(account.life_cycle, EXCLUDED.life_cycle);
 
 INSERT INTO project (id, created_on, updated_on, created_by, updated_by, key, sf_id, name, account_id, is_active, project_type_id) VALUES
   ('00000000-0000-0000-0000-000000000402', now(), now(), 'seed', 'seed', 'OTHERCORP-PROJ-1', 'SF-PROJ-0002', 'Other Corp Production', '00000000-0000-0000-0000-000000000302', true, '00000000-0000-0000-0000-0000000000a3')
@@ -366,6 +395,22 @@ INSERT INTO "user" (id, created_on, updated_on, created_by, updated_by, user_nam
   ('00000000-0000-0000-0000-000000000023', now(), now(), 'seed', 'seed', 'mira.santos@lumenworks.example', 'Mira Santos', 'Mira', 'Santos', 'mira.santos@lumenworks.example', true, false),
   ('00000000-0000-0000-0000-000000000024', now(), now(), 'seed', 'seed', 'noel.prasad@lumenworks.example', 'Noel Prasad', 'Noel', 'Prasad', 'noel.prasad@lumenworks.example', true, false)
 ON CONFLICT (id) DO NOTHING;
+
+-- The generator also gives every project a RANDOM project type, and only some types let a
+-- customer see Operations in the customer portal (see the project_type entitlements near the
+-- top): "Lumen Works Platform" can come out as e.g. "Cloud Support", whose customers (mira,
+-- noel) would then see no Change requests at all. So a Lumen Works Platform whose type does
+-- not grant change request read access is put on "Subscription" (a3). A type that already
+-- grants it ("Managed Cloud Subscription", or a3 itself) is left alone.
+UPDATE project
+SET project_type_id = '00000000-0000-0000-0000-0000000000a3', updated_on = now()
+WHERE id = (
+    SELECT id FROM project
+    WHERE name = 'Lumen Works Platform' AND account_id IS NOT NULL
+    ORDER BY created_on, id LIMIT 1)
+  AND NOT EXISTS (
+    SELECT 1 FROM project_type pt
+    WHERE pt.id = project.project_type_id AND pt.has_change_request_read_access);
 
 -- No created_by on purpose (see the personas above).
 INSERT INTO user_role (id, created_on, updated_on, user_id, role_id) VALUES
@@ -463,6 +508,19 @@ ON CONFLICT (id) DO NOTHING;
 -- The customer stages have no assignment group (the Customer Group is the
 -- project's contacts, not a "group" row) and carry an explicit checkpoint_label
 -- (migration 0179), which is how they are recognised.
+--
+-- WHAT A CUSTOMER SEES OF THESE (entity-service/CLAUDE.md, "Customer visibility and
+-- the cutover"; the local stack runs with CR_STRICT_VISIBILITY_FROM far in the
+-- past, so every fixture here is strict): a change request is visible to a customer
+-- only when it was DESIGNATED to them -- they hold an approver row, in any state, on
+-- one of its "Customer Approval" / "Customer Review" stages. That is exactly the
+-- approver rows of CHG-FIXED-007 and -008 below: dave and erin see those two, in every
+-- state the specs walk them through (their rows turn APPROVED / REJECTED / CANCELLED,
+-- never away). Every other fixture -- New, Assess, Authorize, the Review one with
+-- Customer Review ticked but not yet asked -- has no customer-stage row, so a customer
+-- does not see it (absent from the list and its counts, 404 by id). A fixture that must
+-- be visible to a customer needs a customer-stage approver row for them (CANCELLED
+-- counts: it is what the sibling of a contact who answered holds).
 DELETE FROM approval_stage_approver WHERE work_item_id IN (
   '00000000-0000-0000-0000-000000001001', '00000000-0000-0000-0000-000000001002',
   '00000000-0000-0000-0000-000000001003', '00000000-0000-0000-0000-000000001004',
@@ -506,32 +564,33 @@ ON CONFLICT (id) DO UPDATE SET
   requested_by_user_id = EXCLUDED.requested_by_user_id, justification = EXCLUDED.justification,
   customer_approval_required = EXCLUDED.customer_approval_required,
   customer_review_required = EXCLUDED.customer_review_required,
-  -- whatever a spec or a manual walk-through stamped on the way
+  -- whatever a spec or a manual walk-through stamped on the way (a customer's proposed time and WSO2's answer to it included)
   approval = NULL, is_customer_approval_required = NULL, is_customer_review_required = NULL,
   start_on = NULL, end_on = NULL, closed_by_user_id = NULL, closed_on = NULL,
-  is_on_hold = NULL, on_hold_reason = NULL, customer_group_id = NULL;
+  is_on_hold = NULL, on_hold_reason = NULL, customer_group_id = NULL,
+  customer_updated_on = NULL, customer_updated_date_confirmation = NULL;
 
 INSERT INTO approval_stage (id, created_on, updated_on, created_by, updated_by, work_item_id, assignment_group_id, raw_status, checkpoint_label) VALUES
-  ('00000000-0000-0000-0000-000000001005', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001003', '00000000-0000-0000-0000-000000000901', 'requested', 'Peer Approval'),
-  ('00000000-0000-0000-0000-000000001008', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001004', '00000000-0000-0000-0000-000000000901', 'approved', 'Peer Approval'),
-  ('00000000-0000-0000-0000-000000001305', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001303', NULL, 'requested', 'Customer Approval'),
-  ('00000000-0000-0000-0000-000000001306', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001304', NULL, 'requested', 'Customer Review');
+  ('00000000-0000-0000-0000-000000001005', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001003', '00000000-0000-0000-0000-000000000901', 'REQUESTED', 'Peer Approval'),
+  ('00000000-0000-0000-0000-000000001008', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001004', '00000000-0000-0000-0000-000000000901', 'APPROVED', 'Peer Approval'),
+  ('00000000-0000-0000-0000-000000001305', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001303', NULL, 'REQUESTED', 'Customer Approval'),
+  ('00000000-0000-0000-0000-000000001306', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001304', NULL, 'REQUESTED', 'Customer Review');
 
--- raw_status/status use the approval flow's lowercase vocabulary ("requested",
--- not "REQUESTED"; migration 0089's own doc comment).
-INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, status) VALUES
+-- approval_stage_approver.state stores UPPER_SNAKE_CASE values after migration
+-- 0138 renamed the column from status and normalised existing rows.
+INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, state) VALUES
   -- CHG-FIXED-003: alice, bob, carol all REQUESTED
-  ('00000000-0000-0000-0000-000000001006', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001005', '00000000-0000-0000-0000-000000001003', '00000000-0000-0000-0000-000000000011', 'requested'),
-  ('00000000-0000-0000-0000-000000001007', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001005', '00000000-0000-0000-0000-000000001003', '00000000-0000-0000-0000-000000000012', 'requested'),
-  ('00000000-0000-0000-0000-000000001011', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001005', '00000000-0000-0000-0000-000000001003', '00000000-0000-0000-0000-000000000013', 'requested'),
+  ('00000000-0000-0000-0000-000000001006', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001005', '00000000-0000-0000-0000-000000001003', '00000000-0000-0000-0000-000000000011', 'REQUESTED'),
+  ('00000000-0000-0000-0000-000000001007', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001005', '00000000-0000-0000-0000-000000001003', '00000000-0000-0000-0000-000000000012', 'REQUESTED'),
+  ('00000000-0000-0000-0000-000000001011', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001005', '00000000-0000-0000-0000-000000001003', '00000000-0000-0000-0000-000000000013', 'REQUESTED'),
   -- CHG-FIXED-004: alice approved, bob and carol cancelled
-  ('00000000-0000-0000-0000-000000001009', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001008', '00000000-0000-0000-0000-000000001004', '00000000-0000-0000-0000-000000000011', 'approved'),
-  ('00000000-0000-0000-0000-000000001010', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001008', '00000000-0000-0000-0000-000000001004', '00000000-0000-0000-0000-000000000012', 'cancelled'),
-  ('00000000-0000-0000-0000-000000001012', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001008', '00000000-0000-0000-0000-000000001004', '00000000-0000-0000-0000-000000000013', 'cancelled'),
+  ('00000000-0000-0000-0000-000000001009', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001008', '00000000-0000-0000-0000-000000001004', '00000000-0000-0000-0000-000000000011', 'APPROVED'),
+  ('00000000-0000-0000-0000-000000001010', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001008', '00000000-0000-0000-0000-000000001004', '00000000-0000-0000-0000-000000000012', 'CANCELLED'),
+  ('00000000-0000-0000-0000-000000001012', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001008', '00000000-0000-0000-0000-000000001004', '00000000-0000-0000-0000-000000000013', 'CANCELLED'),
   -- CHG-FIXED-007 (Customer Approval) / CHG-FIXED-008 (Customer Review): dave, erin REQUESTED
-  ('00000000-0000-0000-0000-000000001307', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001305', '00000000-0000-0000-0000-000000001303', '00000000-0000-0000-0000-000000000021', 'requested'),
-  ('00000000-0000-0000-0000-000000001308', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001305', '00000000-0000-0000-0000-000000001303', '00000000-0000-0000-0000-000000000022', 'requested'),
-  ('00000000-0000-0000-0000-000000001309', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001306', '00000000-0000-0000-0000-000000001304', '00000000-0000-0000-0000-000000000021', 'requested'),
-  ('00000000-0000-0000-0000-000000001310', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001306', '00000000-0000-0000-0000-000000001304', '00000000-0000-0000-0000-000000000022', 'requested');
+  ('00000000-0000-0000-0000-000000001307', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001305', '00000000-0000-0000-0000-000000001303', '00000000-0000-0000-0000-000000000021', 'REQUESTED'),
+  ('00000000-0000-0000-0000-000000001308', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001305', '00000000-0000-0000-0000-000000001303', '00000000-0000-0000-0000-000000000022', 'REQUESTED'),
+  ('00000000-0000-0000-0000-000000001309', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001306', '00000000-0000-0000-0000-000000001304', '00000000-0000-0000-0000-000000000021', 'REQUESTED'),
+  ('00000000-0000-0000-0000-000000001310', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001306', '00000000-0000-0000-0000-000000001304', '00000000-0000-0000-0000-000000000022', 'REQUESTED');
 
 COMMIT;

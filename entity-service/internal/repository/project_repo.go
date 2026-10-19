@@ -18,9 +18,11 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"regexp"
 	"slices"
 	"sort"
@@ -95,12 +97,13 @@ func NewProjectRepository(db *Scoped) ProjectRepository {
 }
 
 // projectClosureColumns selects the overall and sub closure states in ServiceNow's
-// Title Case ("Pending Notified"), then the compliance violation date as yyyy-MM-dd.
+// Title Case ("Pending Notified"), the compliance violation date as yyyy-MM-dd, then ACP's suspension state.
 const projectClosureColumns = `INITCAP(REPLACE(p.wso2_closure_state::TEXT, '_', ' ')),
 	INITCAP(REPLACE(p.end_date_closure_state::TEXT, '_', ' ')),
 	INITCAP(REPLACE(p.invoice_due_date_closure_state::TEXT, '_', ' ')),
 	INITCAP(REPLACE(p.compliance_violation_closure_state::TEXT, '_', ' ')),
-	TO_CHAR(p.compliance_violation_date, 'YYYY-MM-DD')`
+	TO_CHAR(p.compliance_violation_date, 'YYYY-MM-DD'),
+	p.suspension_process_state`
 
 // accountIsPartnerColumn is NULL without a linked account (alias a), else the
 // same classification rule the Salesforce membership mapping uses.
@@ -157,6 +160,14 @@ func buildProjectSearchWhere(req domain.SearchProjectsRequest, scope SearchScope
 	if len(req.ExcludeProjectKeys) > 0 {
 		where += fmt.Sprintf(" AND p.key <> ALL($%d::text[])", argIdx)
 		filterArgs = append(filterArgs, req.ExcludeProjectKeys)
+		argIdx++
+	}
+
+	// sf_id is nullable (migration 0095 dropped NOT NULL) and a NULL never
+	// matches ANY(), so projects with no Salesforce id are simply not returned.
+	if len(req.SfIDs) > 0 {
+		where += fmt.Sprintf(" AND p.sf_id = ANY($%d::text[])", argIdx)
+		filterArgs = append(filterArgs, req.SfIDs)
 		argIdx++
 	}
 
@@ -274,7 +285,11 @@ func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProje
 		        p.start_date, p.end_date, p.created_on, p.updated_on,
 		        `+projectClosureColumns+`,
 		        INITCAP(REPLACE(p.onboarding_status::TEXT, '_', '-')),
+		        p.onboarding_go_live_date,
 		        a.id, a.name, a.region, a.sub_region, `+accountIsPartnerColumn+`,
+		        onb.id,
+		        COALESCE(onb.name, NULLIF(TRIM(CONCAT_WS(' ', onb.first_name, onb.last_name)), '')),
+		        onb.email,
 		        (SELECT COUNT(*) FROM work_item wi
 		           LEFT JOIN "case" c ON c.id = wi.id`+caseLikeJoins+`
 		          WHERE wi.project_id = p.id
@@ -283,6 +298,7 @@ func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProje
 		 FROM project p
 		 LEFT JOIN project_type pt ON pt.id = p.project_type_id
 		 LEFT JOIN account a ON a.id = p.account_id
+		 LEFT JOIN "user" onb ON onb.id = p.onboarding_owner_id
 		 %s
 		 ORDER BY %s
 		 LIMIT $%d OFFSET $%d`,
@@ -343,14 +359,16 @@ func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProje
 			// own declared constraint, not a wider contract change every
 			// other reader of Project.SfID would also have to handle.
 			var sfID, aID, aName *string
+			var ownerID, ownerName, ownerEmail *string
 			var acct domain.ProjectSearchAccountRef
 			if err := rows.Scan(
 				&p.ID, &p.AccountID, &sfID, &name, &p.Key, &projectTypeName,
 				&p.StartDate, &p.EndDate, &p.CreatedOn, &p.UpdatedOn,
 				&p.ClosureState, &p.EndDateClosureState, &p.InvoiceDueDateClosureState,
-				&p.ComplianceViolationClosureState, &p.ComplianceViolationDate,
-				&p.OnboardingStatus,
+				&p.ComplianceViolationClosureState, &p.ComplianceViolationDate, &p.SuspensionProcessState,
+				&p.OnboardingStatus, &p.GoLiveDate,
 				&aID, &aName, &acct.Region, &acct.SubRegion, &acct.IsPartner,
+				&ownerID, &ownerName, &ownerEmail,
 				&p.ActiveCasesCount,
 			); err != nil {
 				return fmt.Errorf("scan project: %w", err)
@@ -366,6 +384,7 @@ func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProje
 			if projectTypeName != nil {
 				p.SubscriptionType = projectTypeNameToSubscriptionType(*projectTypeName)
 			}
+			p.OnboardingOwner = onboardingOwnerRef(ownerID, ownerName, ownerEmail)
 			// ClosureStatus still has no real column -- see this
 			// repository's own doc comment.
 			result = append(result, p)
@@ -439,6 +458,11 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 	// leaving HasSr at its Go zero value (false) for every project
 	// regardless of type, which is what this data source used to do.
 	var hasSr *bool
+	// Cloud Support overrides hasSr with the project's own is_pdp_subscription
+	// (see srAccessForProject), the same rule the project-metadata features use.
+	var isPdpSubscription *bool
+	// onboarding owner id/name/email: all NULL when the project has no owner.
+	var ownerID, ownerName, ownerEmail *string
 	// tou/amu: this view's Account.OwnerEmail/TechnicalOwnerEmail were
 	// previously left at their zero value unconditionally -- both are real
 	// columns' worth of data, just not this project's own; they're the
@@ -484,7 +508,11 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 		        EXTRACT(EPOCH FROM p.total_onboarding_duration) / 3600,
 		        EXTRACT(EPOCH FROM p.consumed_onboarding_duration) / 3600,
 		        EXTRACT(EPOCH FROM p.remaining_onboarding_duration) / 3600,
-		        tou.email, amu.email
+		        tou.email, amu.email,
+		        onb.id,
+		        COALESCE(onb.name, NULLIF(TRIM(CONCAT_WS(' ', onb.first_name, onb.last_name)), '')),
+		        onb.email,
+		        p.is_pdp_subscription
 		 FROM project p
 		 LEFT JOIN account a ON p.account_id = a.id
 		 LEFT JOIN project_type pt ON pt.id = p.project_type_id
@@ -501,6 +529,7 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 		 -- against. Verify against a real payload before trusting it further.
 		 LEFT JOIN "user" tou ON tou.id = a.technical_owner_id
 		 LEFT JOIN "user" amu ON amu.id = a.account_manager_id
+		 LEFT JOIN "user" onb ON onb.id = p.onboarding_owner_id
 		 WHERE p.id = $1`+scopeClause, scopeArgs...,
 	).Scan(
 		&v.ID, &sfID, &name, &v.Key,
@@ -510,13 +539,15 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 		&supportTier,
 		&projectTypeName, &hasSr, &verificationEnabled,
 		&v.ClosureState, &v.EndDateClosureState, &v.InvoiceDueDateClosureState,
-		&v.ComplianceViolationClosureState, &v.ComplianceViolationDate,
+		&v.ComplianceViolationClosureState, &v.ComplianceViolationDate, &v.SuspensionProcessState,
 		&v.OnboardingStatus, &v.Account.IsPartner,
 		&v.GoLivePlanDate, &v.GoLiveDate, &v.OnboardingExpiryDate,
 		&v.TotalQueryHours, &v.RemainingQueryHours,
 		&v.ConsumedQueryHours,
 		&v.TotalOnboardingHours, &v.ConsumedOnboardingHours, &v.RemainingOnboardingHours,
 		&v.Account.TechnicalOwnerEmail, &v.Account.OwnerEmail,
+		&ownerID, &ownerName, &ownerEmail,
+		&isPdpSubscription,
 	)
 	v.Name = stringOrEmpty(name)
 	// v.Account.Tier is sourced from account.support_tier (migration 0101).
@@ -549,9 +580,33 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 	v.Account.Tier = stringOrEmpty(supportTier)
 	if projectTypeName != nil {
 		v.SubscriptionType = projectTypeNameToSubscriptionType(*projectTypeName)
+		v.HasSr = srAccessForProject(*projectTypeName, hasSr != nil && *hasSr, isPdpSubscription)
 	}
-	v.HasSr = hasSr != nil && *hasSr
+	v.OnboardingOwner = onboardingOwnerRef(ownerID, ownerName, ownerEmail)
+	// The backing data source stores a sign-inverted consumed balance for some
+	// projects; normalise at read, leaving the stored value untouched.
+	v.ConsumedQueryHours = absHours(v.ConsumedQueryHours)
+	v.ConsumedOnboardingHours = absHours(v.ConsumedOnboardingHours)
 	return v, nil
+}
+
+// onboardingOwnerRef builds a PersonRef from the joined owner columns, nil when
+// no owner is assigned. A blank name or NULL email yields an empty name / nil
+// email rather than dropping the owner.
+func onboardingOwnerRef(id, name, email *string) *domain.PersonRef {
+	if id == nil || *id == "" {
+		return nil
+	}
+	return &domain.PersonRef{ID: *id, Name: stringOrEmpty(name), Email: email}
+}
+
+// absHours returns the absolute value of h, preserving nil.
+func absHours(h *float64) *float64 {
+	if h == nil {
+		return nil
+	}
+	a := math.Abs(*h)
+	return &a
 }
 
 // UpdateProject implements ProjectRepository.
@@ -608,12 +663,13 @@ func updateProjectTx(ctx context.Context, tx pgx.Tx, id string, req domain.Proje
 		    invoice_due_date_closure_state = COALESCE($3::invoice_due_date_closure_state_enum, invoice_due_date_closure_state),
 		    compliance_violation_closure_state = COALESCE($4::compliance_violation_closure_state_enum, compliance_violation_closure_state),
 		    verification_enabled = COALESCE($6::boolean, verification_enabled),
+		    suspension_process_state = COALESCE($7::jsonb, suspension_process_state),
 		    updated_on = NOW(),
 		    updated_by = $5
 		WHERE id = $1
 		RETURNING id, updated_on, updated_by, verification_enabled`,
 		id, closureEnumLabel(req.EndDateClosureState), closureEnumLabel(req.InvoiceDueDateClosureState),
-		closureEnumLabel(req.ComplianceViolationClosureState), updatedBy, req.VerificationEnabled,
+		closureEnumLabel(req.ComplianceViolationClosureState), updatedBy, req.VerificationEnabled, suspensionStateArg(req.SuspensionProcessState),
 	).Scan(&res.ID, &res.UpdatedOn, &res.UpdatedBy, &res.VerificationEnabled)
 	if err != nil {
 		if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) && pgErr.Code == "22P02" {
@@ -634,7 +690,7 @@ func updateProjectTx(ctx context.Context, tx pgx.Tx, id string, req domain.Proje
 	var complianceDate *string
 	err = tx.QueryRow(ctx, `SELECT `+projectClosureColumns+` FROM project p WHERE p.id = $1`, id).Scan(
 		&res.ClosureState, &res.EndDateClosureState, &res.InvoiceDueDateClosureState,
-		&res.ComplianceViolationClosureState, &complianceDate,
+		&res.ComplianceViolationClosureState, &complianceDate, &res.SuspensionProcessState,
 	)
 	if err != nil {
 		return domain.ProjectUpdateResult{}, fmt.Errorf("update project: read closure states: %w", err)
@@ -665,8 +721,16 @@ func updateProjectTx(ctx context.Context, tx pgx.Tx, id string, req domain.Proje
 		}
 	}
 
-	// SuspensionProcessState has no column, so it stays nil.
 	return res, nil
+}
+
+// suspensionStateArg passes the object as text so pgx sends it as jsonb input; nil keeps the stored value.
+func suspensionStateArg(v json.RawMessage) *string {
+	if v == nil {
+		return nil
+	}
+	s := string(v)
+	return &s
 }
 
 // wso2ClosureStateRule derives project.wso2_closure_state from the three sub-states.

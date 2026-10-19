@@ -41,3 +41,19 @@ export function usePortalAccess(): PortalAccess {
   }
   return useMemo(() => getPortalAccess(roles), [roles]);
 }
+
+/**
+ * The signed-in user's platform id, for chrome that needs to key browser-local
+ * state per user (e.g. the Feature Preview overrides — see
+ * `featurePreview.ts`). Same pre-sign-in safety as {@link usePortalAccess}:
+ * safe to call from the sidebar/quick-nav, which render before
+ * `CurrentUserProvider` mounts — reports `undefined` rather than throwing
+ * there, and picks up the real id once the provider mounts.
+ */
+export function useSafeCurrentUserId(): string | undefined {
+  try {
+    return useCurrentUser().user?.id;
+  } catch {
+    return undefined;
+  }
+}

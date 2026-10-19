@@ -276,7 +276,8 @@ func (h *CaseHandler) GetCase(w http.ResponseWriter, r *http.Request) {
 	writeJSONValue(w, http.StatusOK, dto.MapCaseDetails(result))
 }
 
-// CreateCase handles POST /cases.
+// CreateCase handles POST /cases. The body may carry inline base64 attachments,
+// so it is read with maxAttachmentBodyBytes rather than the blanket 1 MiB cap.
 func (h *CaseHandler) CreateCase(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserInfoFromContext(r.Context())
 	if user == nil {
@@ -284,7 +285,7 @@ func (h *CaseHandler) CreateCase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, ok := readJSONBody(w, r)
+	body, ok := readJSONBodyWithLimit(w, r, maxAttachmentBodyBytes)
 	if !ok {
 		return
 	}
@@ -383,6 +384,18 @@ func (h *CaseHandler) PatchCase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	entityReq := dto.BuildEntityUpdateCaseRequest(id, req)
+
+	// No state-transition legality check here on purpose: entity-service is
+	// the single, authoritative enforcer of which from->to state moves are
+	// legal for a given caller (see its own CLAUDE.md, "Case state-transition
+	// legality") -- it rejects an illegal move with 400 regardless of which
+	// BFF forwarded the request, so this backend does not duplicate that
+	// table. An earlier version of this handler carried its own copy of the
+	// legacy customer-facing rule set; removed once entity-service's own
+	// enforcement landed, rather than kept as a second, potentially
+	// drifting copy of the same rule.
+
 	// req.WatchList carries project-contact emails, not entity-service user
 	// ids — resolve before forwarding (see resolveWatchListUserIDs). Only
 	// meaningful when WatchList is actually the field being set (StateKey is
@@ -406,10 +419,10 @@ func (h *CaseHandler) PatchCase(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "None of the provided watch list users could be found.")
 			return
 		}
-		req.WatchList = resolvedIDs
+		entityReq.WatchList = resolvedIDs
 	}
 
-	result, err := h.entity.UpdateCase(r.Context(), id, dto.BuildEntityUpdateCaseRequest(id, req))
+	result, err := h.entity.UpdateCase(r.Context(), id, entityReq)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity UpdateCase failed", "userID", user.UserID, "caseID", id, "err", summarizeErr(err))
 		mapUpstreamError(w, err, "Failed to update case.")
@@ -482,6 +495,14 @@ func (h *CaseHandler) SearchCaseActivities(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
 		return
 	}
+	// Always forced server-side, never left to the request body: a customer
+	// must never see a WORK_NOTE-type comment, in the page OR in totalRecords
+	// -- same "restrict, don't mirror" rule as BuildEntityCreateCaseCommentRequest
+	// forcing type: comment. dto.MapSearchCaseActivities still filters the
+	// array client-side too (defense in depth), but entity-service excluding
+	// them here is what makes totalRecords agree with what's actually shown.
+	excludeWorkNotes := true
+	req.ExcludeWorkNotes = &excludeWorkNotes
 
 	result, err := h.entity.SearchCaseActivities(r.Context(), id, req)
 	if err != nil {

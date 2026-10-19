@@ -360,3 +360,27 @@ func TestRun_ScopedToProjectIDSkipsExcludedProjectWithoutFetching(t *testing.T) 
 		t.Errorf("ProjectsExcluded = %d, want 1", result.ProjectsExcluded)
 	}
 }
+
+// TestRun_StopsAtMaxProjectPagesWhenUpstreamNeverEnds: with total: 0 the
+// "total" bound can't apply, so an upstream that always answers hasMore: true
+// with a non-empty page must still be stopped by the page cap, as an error.
+func TestRun_StopsAtMaxProjectPagesWhenUpstreamNeverEnds(t *testing.T) {
+	calls := 0
+	reader := &mockEntityReader{
+		searchProjectsFn: func(ctx context.Context, body []byte) ([]byte, error) {
+			calls++
+			if calls > maxProjectPages+5 {
+				return []byte(`{"projects":[],"hasMore":false}`), nil // test safety stop
+			}
+			return []byte(`{"projects":[{"id":"p","endDate":null}],"total":0,"hasMore":true}`), nil
+		},
+	}
+
+	_, err := Run(context.Background(), reader, &mockProjectUpdater{}, &mockNotifier{}, time.Now(), "", nil)
+	if err == nil {
+		t.Fatal("Run() error = nil, want an error when the page cap is reached")
+	}
+	if calls != maxProjectPages {
+		t.Errorf("SearchProjects called %d times, want %d (the page cap)", calls, maxProjectPages)
+	}
+}

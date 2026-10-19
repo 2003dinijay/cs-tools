@@ -212,11 +212,18 @@ func validateSearchQuery(q string) error {
 
 type userService struct {
 	repo repository.UserRepository
+	// access gates UpdateUser to internal callers only -- see that method's
+	// own doc comment for why this write needs stricter gating than PatchMe
+	// (a user editing their own profile). nil is safe for every other
+	// method, which never reads it -- only tests that don't exercise
+	// UpdateUser pass nil.
+	access AccessService
 }
 
-// NewUserService constructs a UserService backed by the given repository.
-func NewUserService(repo repository.UserRepository) UserService {
-	return &userService{repo: repo}
+// NewUserService constructs a UserService backed by the given repository and
+// access service.
+func NewUserService(repo repository.UserRepository, access AccessService) UserService {
+	return &userService{repo: repo, access: access}
 }
 
 // GetUser implements UserService.
@@ -255,6 +262,9 @@ func (s *userService) SearchUsers(ctx context.Context, req domain.SearchUsersReq
 		return domain.SearchUsersResponse{}, err
 	}
 	if err := validateUUIDs("groupIds", req.Filters.GroupIDs); err != nil {
+		return domain.SearchUsersResponse{}, err
+	}
+	if err := validateUUIDs("teamIds", req.Filters.TeamIDs); err != nil {
 		return domain.SearchUsersResponse{}, err
 	}
 	if req.SortBy.Field != "" && !validUserSortField[req.SortBy.Field] {
@@ -346,17 +356,33 @@ func (s *userService) GetMe(ctx context.Context) (domain.GetUserMeResponse, erro
 		FirstName: &firstName,
 		LastName:  user.LastName,
 		TimeZone:  user.Timezone,
+		Phone:     user.Phone,
 		Roles:     roles,
 		Groups:    groups,
 	}, nil
 }
 
 // GetUsersByIDs implements UserService.
+//
+// Ids that are not UUIDs are dropped rather than rejected. Callers build the
+// list from records whose user reference is not always a user id -- a KB
+// article's updated_by, for one, is free text (an email address, a system
+// name) -- and "user".id is a UUID column, so such a value can never match a
+// row. Passing it through makes Postgres reject the whole query ("invalid
+// input syntax for type uuid"), which fails the lookup for every valid id in
+// the same batch; a 400 (as validateUUIDs does for a single id) would fail it
+// just the same. Skipping gives the answer a query would have: no match.
 func (s *userService) GetUsersByIDs(ctx context.Context, ids []string) (domain.GetUsersByIDsResponse, error) {
-	if len(ids) == 0 {
+	validIDs := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if validate.IsUUID(id) {
+			validIDs = append(validIDs, id)
+		}
+	}
+	if len(validIDs) == 0 {
 		return domain.GetUsersByIDsResponse{Users: []domain.User{}}, nil
 	}
-	users, err := s.repo.GetUsersByIDs(ctx, ids)
+	users, err := s.repo.GetUsersByIDs(ctx, validIDs)
 	if err != nil {
 		return domain.GetUsersByIDsResponse{}, err
 	}
@@ -367,9 +393,24 @@ func (s *userService) GetUsersByIDs(ctx context.Context, ids []string) (domain.G
 // does (x-user-id-token's email claim -> GetUserByEmail), so there is no
 // caller-supplied id to trust -- a user can only ever update their own
 // timezone through this endpoint.
+// maxPhoneLen is the width of "user".phone (migration 0141); checked up front
+// so an over-long value is a 400, not a database error.
+const maxPhoneLen = 32
+
 func (s *userService) PatchMe(ctx context.Context, req domain.PatchUserMeRequest) (domain.PatchUserMeResponse, error) {
-	if req.TimeZone == "" {
-		return domain.PatchUserMeResponse{}, &apierror.ValidationError{Msg: "timeZone is required"}
+	var timezone, phone *string
+	if req.TimeZone != "" {
+		timezone = &req.TimeZone
+	}
+	if req.Phone != nil {
+		trimmed := strings.TrimSpace(*req.Phone)
+		if utf8.RuneCountInString(trimmed) > maxPhoneLen {
+			return domain.PatchUserMeResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("phone must be at most %d characters", maxPhoneLen)}
+		}
+		phone = &trimmed
+	}
+	if timezone == nil && phone == nil {
+		return domain.PatchUserMeResponse{}, &apierror.ValidationError{Msg: "at least one of timeZone or phone is required"}
 	}
 	token := middleware.UserIDTokenFromContext(ctx)
 	if token == "" {
@@ -384,7 +425,7 @@ func (s *userService) PatchMe(ctx context.Context, req domain.PatchUserMeRequest
 		return domain.PatchUserMeResponse{}, err
 	}
 
-	updatedOn, err := s.repo.UpdateUserTimeZone(ctx, user.ID, req.TimeZone)
+	updated, err := s.repo.UpdateUserProfile(ctx, user.ID, timezone, phone)
 	if err != nil {
 		return domain.PatchUserMeResponse{}, err
 	}
@@ -394,7 +435,64 @@ func (s *userService) PatchMe(ctx context.Context, req domain.PatchUserMeRequest
 		User: domain.PatchUserMeUpdated{
 			ID:        user.ID,
 			UpdatedBy: email,
-			UpdatedOn: updatedOn.UTC().Format(time.RFC3339),
+			UpdatedOn: updated.UpdatedOn.UTC().Format(time.RFC3339),
+			TimeZone:  updated.Timezone,
+			Phone:     updated.Phone,
+		},
+	}, nil
+}
+
+// UpdateUser implements UserService. Unlike PatchMe, userID comes from the
+// caller (a portal admin acting on someone else's profile), not resolved
+// from the caller's own token -- so this is gated to internal callers only,
+// never reachable by an ordinary authenticated end user for an arbitrary id.
+// Fine-grained authorization beyond "internal service" (e.g. Asgardeo admin
+// only) is the caller's job (apps/csm-portal/backend), same posture as
+// TeamService.AssignTeamLead.
+func (s *userService) UpdateUser(ctx context.Context, userID string, req domain.UpdateUserRequest) (domain.PatchUserMeResponse, error) {
+	if err := RequireInternalCaller(ctx, s.access, "updating another user's profile is only available to internal services"); err != nil {
+		return domain.PatchUserMeResponse{}, err
+	}
+	if err := validateUUIDs("id", []string{userID}); err != nil {
+		return domain.PatchUserMeResponse{}, err
+	}
+	var timezone, phone *string
+	if req.TimeZone != nil {
+		if trimmedTZ := strings.TrimSpace(*req.TimeZone); trimmedTZ != "" {
+			timezone = &trimmedTZ
+		}
+	}
+	if req.Phone != nil {
+		trimmed := strings.TrimSpace(*req.Phone)
+		if utf8.RuneCountInString(trimmed) > maxPhoneLen {
+			return domain.PatchUserMeResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("phone must be at most %d characters", maxPhoneLen)}
+		}
+		phone = &trimmed
+	}
+	if timezone == nil && phone == nil {
+		return domain.PatchUserMeResponse{}, &apierror.ValidationError{Msg: "at least one of timeZone or phone is required"}
+	}
+
+	updated, err := s.repo.UpdateUserProfile(ctx, userID, timezone, phone)
+	if err != nil {
+		return domain.PatchUserMeResponse{}, err
+	}
+
+	actor := "internal"
+	if token := middleware.UserIDTokenFromContext(ctx); token != "" {
+		if email, err := emailFromJWT(token); err == nil {
+			actor = email
+		}
+	}
+
+	return domain.PatchUserMeResponse{
+		Message: "User updated successfully",
+		User: domain.PatchUserMeUpdated{
+			ID:        userID,
+			UpdatedBy: actor,
+			UpdatedOn: updated.UpdatedOn.UTC().Format(time.RFC3339),
+			TimeZone:  updated.Timezone,
+			Phone:     updated.Phone,
 		},
 	}, nil
 }
@@ -428,4 +526,3 @@ func (s *userService) CreateUser(ctx context.Context, req domain.CreateUserReque
 
 	return s.repo.CreateUser(ctx, req, actor)
 }
-

@@ -82,6 +82,7 @@ type countingUserService struct {
 	getUser      func(id string) (domain.UserDetail, error)
 	getMe        func() (domain.GetUserMeResponse, error)
 	patchMe      func() (domain.PatchUserMeResponse, error)
+	updateUser   func(userID string, req domain.UpdateUserRequest) (domain.PatchUserMeResponse, error)
 	createUser   func(req domain.CreateUserRequest) (domain.User, error)
 }
 
@@ -101,6 +102,10 @@ func (s *countingUserService) PatchMe(context.Context, domain.PatchUserMeRequest
 
 func (s *countingUserService) CreateUser(_ context.Context, req domain.CreateUserRequest) (domain.User, error) {
 	return s.createUser(req)
+}
+
+func (s *countingUserService) UpdateUser(_ context.Context, userID string, req domain.UpdateUserRequest) (domain.PatchUserMeResponse, error) {
+	return s.updateUser(userID, req)
 }
 
 func TestCachedUserService_GetUser_MissFillsThenHitSkipsInner(t *testing.T) {
@@ -228,6 +233,9 @@ func TestCachedUserService_FailedWritesDoNotInvalidate(t *testing.T) {
 	inner := &countingUserService{
 		patchMe:    func() (domain.PatchUserMeResponse, error) { return domain.PatchUserMeResponse{}, failure },
 		createUser: func(domain.CreateUserRequest) (domain.User, error) { return domain.User{}, failure },
+		updateUser: func(string, domain.UpdateUserRequest) (domain.PatchUserMeResponse, error) {
+			return domain.PatchUserMeResponse{}, failure
+		},
 	}
 	cache := newFakeUserCache()
 	svc := NewCachedUserService(inner, cache)
@@ -235,8 +243,31 @@ func TestCachedUserService_FailedWritesDoNotInvalidate(t *testing.T) {
 
 	_, _ = svc.PatchMe(ctx, domain.PatchUserMeRequest{TimeZone: "x"})
 	_, _ = svc.CreateUser(ctx, domain.CreateUserRequest{Email: "new@example.com"})
+	_, _ = svc.UpdateUser(ctx, cachedTestUserID, domain.UpdateUserRequest{})
 	if len(cache.invalidated) != 0 {
-		t.Errorf("invalidated = %+v after two failed writes, want none", cache.invalidated)
+		t.Errorf("invalidated = %+v after three failed writes, want none", cache.invalidated)
+	}
+}
+
+// TestCachedUserService_UpdateUser_InvalidatesByID proves PATCH /users/{id}
+// (an admin updating someone else's profile) invalidates the target's
+// cached entries by id, closing a gap that would otherwise serve a stale
+// GET /users/{id} (e.g. a stale phone number) until the TTL expires -- see
+// UpdateUser's own doc comment for why id alone (no email) is still enough.
+func TestCachedUserService_UpdateUser_InvalidatesByID(t *testing.T) {
+	inner := &countingUserService{updateUser: func(userID string, _ domain.UpdateUserRequest) (domain.PatchUserMeResponse, error) {
+		return domain.PatchUserMeResponse{User: domain.PatchUserMeUpdated{ID: userID}}, nil
+	}}
+	cache := newFakeUserCache()
+	svc := NewCachedUserService(inner, cache)
+
+	phone := "+15555550123"
+	if _, err := svc.UpdateUser(context.Background(), cachedTestUserID, domain.UpdateUserRequest{Phone: &phone}); err != nil {
+		t.Fatal(err)
+	}
+	want := domain.AffectedUser{ID: cachedTestUserID, Email: ""}
+	if len(cache.invalidated) != 1 || cache.invalidated[0] != want {
+		t.Errorf("invalidated = %+v, want [%+v]", cache.invalidated, want)
 	}
 }
 

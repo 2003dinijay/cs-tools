@@ -67,8 +67,8 @@ func main() {
 	// no consumer). When set, the service:
 	//   - creates a BroadcastHub for in-process pub-sub
 	//   - starts a Consumer in its own per-replica consumer group (LatestOffset)
-	//   - runs the caseevents.Handler to fan case.comment_added / status_changed
-	//     to the BroadcastHub
+	//   - runs the caseevents.Handler to fan comment/status/assignee/severity/
+	//     acknowledge events to the BroadcastHub
 	var caseEventsConsumer *eventbus.Consumer
 	var activityHub *stream.BroadcastHub
 
@@ -169,6 +169,7 @@ func main() {
 	if activityHub != nil {
 		streamMux := http.NewServeMux()
 		streamMux.HandleFunc("GET /cases/{id}/activities/stream", streamHandler.StreamCaseActivities)
+		streamMux.HandleFunc("GET /cases/activities/stream", streamHandler.StreamMultipleCaseActivities)
 
 		streamAddr := ":" + mustPort("STREAM_PORT", "9092")
 		streamLn, err = (&net.ListenConfig{}).Listen(ctx, "tcp", streamAddr)

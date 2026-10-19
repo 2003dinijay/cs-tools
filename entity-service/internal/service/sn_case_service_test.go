@@ -29,6 +29,7 @@ import (
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/events"
 	integrationservice "github.com/wso2-open-operations/cs-tools/entity-service/internal/servicenow-integration-service"
 )
 
@@ -52,7 +53,7 @@ func newTestCaseClient(t *testing.T, apiHandler http.HandlerFunc) *integrationse
 		TokenURL:     srv.URL + "/oauth2/token",
 		ClientID:     "test-client",
 		ClientSecret: "test-secret",
-	})
+	}, 45*time.Second)
 }
 
 // sysid32 pads/truncates a repeated hex rune to exactly 32 characters, the
@@ -1335,6 +1336,71 @@ func TestSNCaseService_UpdateCase_CombinableFieldsCombineInSingleRequest(t *test
 		if got != want {
 			t.Fatalf("payload field %q: got %v, want %v", field, got, want)
 		}
+	}
+}
+
+// TestSNCaseService_UpdateCase_PublishesWorkaroundProvided is the
+// ServiceNow-data-source counterpart of
+// TestCaseService_UpdateCase_PublishesWorkaroundProvided (case_service_test.go):
+// setting workaroundProvided:true via PATCH must publish case.workaround_provided
+// regardless of which data source handled the write, since
+// csm-notification-service's own Redis-based SLA engine is the same single
+// consumer either way.
+func TestSNCaseService_UpdateCase_PublishesWorkaroundProvided(t *testing.T) {
+	workaroundProvided := true
+
+	client := newTestCaseClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"message": "Case updated successfully.",
+			"case": {"id": "` + testWLCaseSysid + `", "updatedOn": "2026-01-02 10:00:00", "updatedBy": "engineer@example.com"}
+		}`))
+	})
+
+	pub := &mockEventPublisher{}
+	svc := NewServiceNowCaseService(client, nil, pub, nil, nil, "", nil)
+	req := domain.UpdateCaseRequest{ID: testDeploymentUUID, WorkaroundProvided: &workaroundProvided}
+
+	if _, err := svc.UpdateCase(contextWithUserIDToken("token"), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	call, found := findPublishCall(pub.calls, events.TypeWorkaroundProvided)
+	if !found {
+		t.Fatalf("expected a case.workaround_provided publish, got %v", publishedTypes(pub.calls))
+	}
+	var payload events.WorkaroundProvidedPayload
+	if err := json.Unmarshal(call.payload, &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if payload.CaseID != testDeploymentUUID {
+		t.Errorf("payload caseId = %q, want %q", payload.CaseID, testDeploymentUUID)
+	}
+}
+
+// TestSNCaseService_UpdateCase_DoesNotPublishWorkaroundProvidedOnRecall is
+// the negative counterpart -- false (a recall) must not publish either.
+func TestSNCaseService_UpdateCase_DoesNotPublishWorkaroundProvidedOnRecall(t *testing.T) {
+	workaroundProvided := false
+
+	client := newTestCaseClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"message": "Case updated successfully.",
+			"case": {"id": "` + testWLCaseSysid + `", "updatedOn": "2026-01-02 10:00:00", "updatedBy": "engineer@example.com"}
+		}`))
+	})
+
+	pub := &mockEventPublisher{}
+	svc := NewServiceNowCaseService(client, nil, pub, nil, nil, "", nil)
+	req := domain.UpdateCaseRequest{ID: testDeploymentUUID, WorkaroundProvided: &workaroundProvided}
+
+	if _, err := svc.UpdateCase(contextWithUserIDToken("token"), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, found := findPublishCall(pub.calls, events.TypeWorkaroundProvided); found {
+		t.Errorf("expected no case.workaround_provided publish for a recall, got %v", publishedTypes(pub.calls))
 	}
 }
 
@@ -2869,7 +2935,7 @@ func TestSNCaseService_PatchCaseFields_NoGetCaseByIDOrEventPublish(t *testing.T)
 			publisher := &mockEventPublisher{}
 			svc := NewServiceNowCaseService(client, nil, publisher, nil, nil, "", nil).(*snCaseService)
 
-			result, err := svc.patchCaseFields(contextWithUserIDToken("token"), testDeploymentUUID, tt.state, tt.severity, tt.workState, nil, nil)
+			result, err := svc.patchCaseFields(contextWithUserIDToken("token"), testDeploymentUUID, tt.state, tt.severity, tt.workState, nil, nil, false)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -2895,6 +2961,60 @@ func TestSNCaseService_PatchCaseFields_NoGetCaseByIDOrEventPublish(t *testing.T)
 	}
 }
 
+// TestSNCaseService_PatchCaseFields_AsSystemUserOmitsUserIDToken is the
+// regression guard for the production incident on case CS0378899:
+// ServiceNow's scripted API rejected resolutionCode/cause/closeNotes
+// outright when a mirror PATCH forwarded the acting caller's own
+// x-user-id-token ("resolutionCode, cause, and closeNotes cannot be
+// provided by this user"). This exercises patchCaseFields itself, at the
+// level below UpdateCase's own defaulting decision (which, as of
+// 2026-10-13, no longer defaults these fields for an external caller at
+// all -- see UpdateCase's own doc comment): whatever resolution values a
+// caller does end up supplying, asSystemUser=true must omit
+// x-user-id-token from the outgoing request entirely -- the same "no user
+// token" shape SNGithubCases already uses for its own M2M writes -- while
+// still sending every field asked for (nothing is silently dropped, only
+// the acting identity changes).
+func TestSNCaseService_PatchCaseFields_AsSystemUserOmitsUserIDToken(t *testing.T) {
+	state := domain.CaseStateClosed
+	code := domain.CaseResolutionCodeSolvedByCustomer
+	cause := domain.CaseCauseUnknown
+	notes := "Closed by the customer."
+	resolution := &caseResolutionFields{Code: &code, Cause: &cause, CloseNotes: &notes}
+
+	var gotUserIDTokenHeader string
+	var gotHeaderPresent bool
+	var gotBody map[string]any
+	client := newTestCaseClient(t, func(w http.ResponseWriter, r *http.Request) {
+		gotUserIDTokenHeader, gotHeaderPresent = r.Header.Get("x-user-id-token"), r.Header.Get("x-user-id-token") != ""
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"message": "Case updated successfully.",
+			"case": {"id": "` + testWLCaseSysid + `", "updatedOn": "2026-01-02 10:00:00", "updatedBy": "system@example.com"}
+		}`))
+	})
+	svc := NewServiceNowCaseService(client, nil, &mockEventPublisher{}, nil, nil, "", nil).(*snCaseService)
+
+	if _, err := svc.patchCaseFields(contextWithUserIDToken("customers-own-token"), testDeploymentUUID, &state, nil, nil, nil, resolution, true); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotHeaderPresent {
+		t.Errorf("x-user-id-token header = %q, want it omitted entirely when asSystemUser=true", gotUserIDTokenHeader)
+	}
+	if _, ok := gotBody["resolutionCode"]; !ok {
+		t.Errorf("resolutionCode missing from payload: %+v", gotBody)
+	}
+	if _, ok := gotBody["cause"]; !ok {
+		t.Errorf("cause missing from payload: %+v", gotBody)
+	}
+	if gotBody["closeNotes"] != notes {
+		t.Errorf("closeNotes = %v, want %q", gotBody["closeNotes"], notes)
+	}
+}
+
 // --- patchCaseFieldsBundle (DATA_SOURCE=postgres-servicenow-dual-write mirror only) ---
 
 // TestSNCaseService_PatchCaseFieldsBundle_SendsAllSupportedFieldsWhenPresent
@@ -2909,6 +3029,7 @@ func TestSNCaseService_PatchCaseFieldsBundle_SendsAllSupportedFieldsWhenPresent(
 	mostLikely := "2026-08-03"
 	worstCase := "2026-08-04"
 	workaroundProvided := true
+	holdUntil := time.Date(2026, 10, 22, 18, 29, 0, 0, time.UTC)
 
 	var gotBody map[string]any
 	requestCount := 0
@@ -2935,6 +3056,7 @@ func TestSNCaseService_PatchCaseFieldsBundle_SendsAllSupportedFieldsWhenPresent(
 		MostLikelyFixEta:   &mostLikely,
 		WorstCaseFixEta:    &worstCase,
 		WorkaroundProvided: &workaroundProvided,
+		AutocloseHoldUntil: &holdUntil,
 	}
 
 	if err := svc.patchCaseFieldsBundle(contextWithUserIDToken("token"), testDeploymentUUID, req); err != nil {
@@ -2953,6 +3075,9 @@ func TestSNCaseService_PatchCaseFieldsBundle_SendsAllSupportedFieldsWhenPresent(
 		"mostLikelyFixEta":   mostLikely,
 		"worstCaseFixEta":    worstCase,
 		"workaroundProvided": workaroundProvided,
+		// Date only, in UTC: the integration service constrains it to
+		// YYYY-MM-DD, the same shape UpdateCase's own hold sends.
+		"autocloseHoldUntil": "2026-10-22",
 	}
 	for field, wantVal := range want {
 		got, ok := gotBody[field]
@@ -2968,6 +3093,43 @@ func TestSNCaseService_PatchCaseFieldsBundle_SendsAllSupportedFieldsWhenPresent(
 	// own doc comment.
 	if _, ok := gotBody["description"]; ok {
 		t.Errorf("description must never be sent by patchCaseFieldsBundle, got %v", gotBody["description"])
+	}
+}
+
+// TestSNCaseService_PatchCaseFieldsBundle_HoldAloneIsEnoughToPatch proves a
+// request whose only mirrorable field is autocloseHoldUntil still reaches
+// ServiceNow: the early "nothing to mirror" return must not swallow the one
+// hold PATCH the CSM portal's "Hold auto-closure" action sends (digiops-cs#3318).
+func TestSNCaseService_PatchCaseFieldsBundle_HoldAloneIsEnoughToPatch(t *testing.T) {
+	holdUntil := time.Date(2026, 10, 22, 0, 0, 0, 0, time.UTC)
+
+	var gotBody map[string]any
+	requestCount := 0
+	client := newTestCaseClient(t, func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"message": "Case updated successfully.",
+			"case": {"id": "` + testWLCaseSysid + `", "updatedOn": "2026-01-02 10:00:00", "updatedBy": "engineer@example.com"}
+		}`))
+	})
+	svc := NewServiceNowCaseService(client, nil, nil, nil, nil, "", nil).(*snCaseService)
+
+	req := domain.UpdateCaseRequest{ID: testDeploymentUUID, AutocloseHoldUntil: &holdUntil}
+	if err := svc.patchCaseFieldsBundle(contextWithUserIDToken("token"), testDeploymentUUID, req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if requestCount != 1 {
+		t.Fatalf("expected exactly 1 PATCH, got %d", requestCount)
+	}
+	if got := gotBody["autocloseHoldUntil"]; got != "2026-10-22" {
+		t.Errorf("autocloseHoldUntil = %v, want 2026-10-22", got)
+	}
+	if len(gotBody) != 1 {
+		t.Errorf("only autocloseHoldUntil should be sent, got %v", gotBody)
 	}
 }
 
@@ -3001,7 +3163,7 @@ func TestSNCaseService_PatchCaseFieldsBundle_OmitsFieldsNotInRequest(t *testing.
 		t.Fatalf("title = %v (present=%v), want %q", got, ok, subject)
 	}
 	for _, field := range []string{"deploymentId", "deployedProductId", "relatedCaseId", "description",
-		"bestCaseFixEta", "mostLikelyFixEta", "worstCaseFixEta", "workaroundProvided"} {
+		"bestCaseFixEta", "mostLikelyFixEta", "worstCaseFixEta", "workaroundProvided", "autocloseHoldUntil"} {
 		if got, ok := gotBody[field]; ok {
 			t.Errorf("field %q must be omitted when not part of this update, got %v", field, got)
 		}

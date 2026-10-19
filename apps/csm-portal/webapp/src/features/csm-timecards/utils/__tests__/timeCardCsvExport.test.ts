@@ -38,7 +38,7 @@ function card(overrides: Partial<CsmTimeCard> = {}): CsmTimeCard {
 describe("timeCardsToCsv", () => {
   it("emits just the header for an empty list", () => {
     expect(timeCardsToCsv([])).toBe(
-      "Work date,Case,Project,Engineer,State,Billable,Minutes,Approved by,Rejection reason",
+      '"Work date","Case","Project","Engineer","State","Billable","Minutes","Approved by","Rejection reason"',
     );
   });
 
@@ -47,7 +47,7 @@ describe("timeCardsToCsv", () => {
     const lines = csv.split("\r\n");
     expect(lines).toHaveLength(2);
     expect(lines[1]).toBe(
-      "2026-06-27,CS0352584,Acme Corp,Jane Doe,Submitted,Yes,90,,",
+      '"2026-06-27","CS0352584","Acme Corp","Jane Doe","Submitted","Yes","90","",""',
     );
   });
 
@@ -55,7 +55,7 @@ describe("timeCardsToCsv", () => {
     const csv = timeCardsToCsv([
       card({ state: "approved", approvedByName: "Lead Person" }),
     ]);
-    expect(csv).toContain("Approved,Yes,90,Lead Person,");
+    expect(csv).toContain('"Approved","Yes","90","Lead Person",""');
   });
 
   // ServiceNow records no rejecter identity, so a rejected card carries only the
@@ -64,10 +64,15 @@ describe("timeCardsToCsv", () => {
     const csv = timeCardsToCsv([
       card({ state: "rejected", rejectionReason: "Break down the debug time." }),
     ]);
-    expect(csv).toContain("Rejected,Yes,90,,Break down the debug time.");
+    expect(csv).toContain('"Rejected","Yes","90","","Break down the debug time."');
   });
 
-  it("quotes a field that contains a comma", () => {
+  it("neutralizes a free-text field that would be read as a formula", () => {
+    const csv = timeCardsToCsv([card({ rejectionReason: "=1+1", state: "rejected" })]);
+    expect(csv).toContain(`"'=1+1"`);
+  });
+
+  it("keeps a field that contains a comma in one quoted cell", () => {
     const csv = timeCardsToCsv([card({ projectName: "Acme, Inc." })]);
     expect(csv).toContain('"Acme, Inc."');
   });

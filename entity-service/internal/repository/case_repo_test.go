@@ -29,6 +29,32 @@ import (
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 )
 
+// TestCreateCaseQueriesPersistRelatedCaseID locks the Overview link: a type
+// "case" insert writes "case".related_case_id, and the other case-like inserts
+// do not (that column exists only on "case").
+func TestCreateCaseQueriesPersistRelatedCaseID(t *testing.T) {
+	if !strings.Contains(createCasePortalQuery, "related_case_id") || !strings.Contains(createCasePortalQuery, "NULLIF($10, '')::uuid") {
+		t.Fatal("createCasePortalQuery must store relatedCaseId in related_case_id")
+	}
+	if !strings.Contains(createCaseFromServiceNowQuery, "related_case_id") || !strings.Contains(createCaseFromServiceNowQuery, "$13::uuid") {
+		t.Fatal("createCaseFromServiceNowQuery must store relatedCaseId in related_case_id")
+	}
+	for name, query := range map[string]string{
+		"announcement portal":        createAnnouncementPortalQuery,
+		"service request portal":     createServiceRequestPortalQuery,
+		"engagement portal":          createEngagementPortalQuery,
+		"security report portal":     createSecurityReportAnalysisPortalQuery,
+		"announcement servicenow":    createAnnouncementFromServiceNowQuery,
+		"service request servicenow": createServiceRequestFromServiceNowQuery,
+		"engagement servicenow":      createEngagementFromServiceNowQuery,
+		"security report servicenow": createSecurityReportAnalysisFromServiceNowQuery,
+	} {
+		if strings.Contains(query, "related_case_id") {
+			t.Fatalf("%s insert must not write related_case_id", name)
+		}
+	}
+}
+
 func TestOnboardingStatusEnumLabels(t *testing.T) {
 	// The dashboard sends ServiceNow's spellings; each must land on the enum
 	// label, regardless of case or separator.
@@ -149,6 +175,118 @@ func TestFetchCaseWatchers_NullEmailDoesNotPanic(t *testing.T) {
 	}
 	if got[1].User == nil || got[1].User.Email != "" {
 		t.Errorf("watcher[1].User.Email (NULL in DB) = %v, want \"\"", got[1].User)
+	}
+}
+
+type fakeCaseLinkedRow struct {
+	id, number, subject string
+}
+
+type fakeCaseLinkedRows struct {
+	rows []fakeCaseLinkedRow
+	idx  int
+}
+
+func (f *fakeCaseLinkedRows) Close()                                       {}
+func (f *fakeCaseLinkedRows) Err() error                                   { return nil }
+func (f *fakeCaseLinkedRows) CommandTag() pgconn.CommandTag                { return pgconn.CommandTag{} }
+func (f *fakeCaseLinkedRows) FieldDescriptions() []pgconn.FieldDescription { return nil }
+func (f *fakeCaseLinkedRows) Values() ([]any, error)                       { return nil, nil }
+func (f *fakeCaseLinkedRows) RawValues() [][]byte                          { return nil }
+func (f *fakeCaseLinkedRows) Conn() *pgx.Conn                              { return nil }
+func (f *fakeCaseLinkedRows) TypeMap() *pgtype.Map                         { return nil }
+
+func (f *fakeCaseLinkedRows) Next() bool {
+	if f.idx >= len(f.rows) {
+		return false
+	}
+	f.idx++
+	return true
+}
+
+func (f *fakeCaseLinkedRows) Scan(dest ...any) error {
+	row := f.rows[f.idx-1]
+	*dest[0].(*string) = row.id
+	*dest[1].(*string) = row.number
+	*dest[2].(*string) = row.subject
+	return nil
+}
+
+type fakeCaseLinkedQuerier struct {
+	rows      *fakeCaseLinkedRows
+	lastQuery string
+	lastArgs  []any
+}
+
+func (f *fakeCaseLinkedQuerier) Query(_ context.Context, sql string, args ...any) (pgx.Rows, error) {
+	f.lastQuery = sql
+	f.lastArgs = args
+	return f.rows, nil
+}
+
+func TestFetchCaseLinkedChangeRequests_MapsRowsAndFilters(t *testing.T) {
+	rows := &fakeCaseLinkedRows{rows: []fakeCaseLinkedRow{
+		{id: "cr-1", number: "CHG0000001", subject: "Upgrade DB"},
+		{id: "cr-2", number: "CHG0000002", subject: ""},
+	}}
+	q := &fakeCaseLinkedQuerier{rows: rows}
+	repo := &caseRepo{vis: CRVisibility{}}
+
+	// Unrestricted caller
+	ctxUnrestricted := WithCallerIdentity(context.Background(), SearchScope{Unrestricted: true})
+	got, err := repo.fetchCaseLinkedChangeRequests(ctxUnrestricted, q, "case-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d linked change requests, want 2", len(got))
+	}
+	if strings.Contains(q.lastQuery, "project_contact") || strings.Contains(q.lastQuery, "FALSE") {
+		t.Errorf("expected no visibility filter in query for unrestricted caller, got: %s", q.lastQuery)
+	}
+	if len(q.lastArgs) != 1 || q.lastArgs[0] != "case-1" {
+		t.Errorf("expected query args for unrestricted caller to carry only case-1, got: %+v", q.lastArgs)
+	}
+
+	if got[0].ID != "cr-1" || got[0].Number != "CHG0000001" || got[0].Name == nil || *got[0].Name != "Upgrade DB" {
+		t.Errorf("got[0] = %+v, want ID cr-1, Number CHG0000001, Name 'Upgrade DB'", got[0])
+	}
+	if got[1].ID != "cr-2" || got[1].Number != "CHG0000002" || got[1].Name != nil {
+		t.Errorf("got[1] = %+v, want ID cr-2, Number CHG0000002, Name nil", got[1])
+	}
+
+	// Restricted caller: visibility clause is injected into query
+	scope := SearchScope{ViewerEmail: "customer@example.com"}
+	ctx := WithCallerIdentity(context.Background(), scope)
+	rows2 := &fakeCaseLinkedRows{rows: []fakeCaseLinkedRow{}}
+	q2 := &fakeCaseLinkedQuerier{rows: rows2}
+	_, err = repo.fetchCaseLinkedChangeRequests(ctx, q2, "case-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(q2.lastQuery, "project_contact") {
+		t.Errorf("expected visibility clause in query for restricted caller, got: %s", q2.lastQuery)
+	}
+	if len(q2.lastArgs) < 2 || q2.lastArgs[0] != "case-1" || q2.lastArgs[1] != "customer@example.com" {
+		t.Errorf("expected query args to carry case-1 and customer@example.com, got: %+v", q2.lastArgs)
+	}
+}
+
+func TestFetchCaseLinkedServiceRequests_MapsRows(t *testing.T) {
+	rows := &fakeCaseLinkedRows{rows: []fakeCaseLinkedRow{
+		{id: "sr-1", number: "CS0001001", subject: "Cert Renewal"},
+	}}
+	q := &fakeCaseLinkedQuerier{rows: rows}
+
+	got, err := fetchCaseLinkedServiceRequests(context.Background(), q, "case-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d linked service requests, want 1", len(got))
+	}
+	if got[0].ID != "sr-1" || got[0].Number != "CS0001001" || got[0].Name != "Cert Renewal" {
+		t.Errorf("got[0] = %+v, want ID sr-1, Number CS0001001, Name 'Cert Renewal'", got[0])
 	}
 }
 
@@ -412,3 +550,26 @@ func TestExtensionUpdateQueriesWriteWorkStateAndResolutionCode(t *testing.T) {
 	}
 }
 
+// work_state is only valid while state is work_in_progress: every case-like
+// update query must derive it from the state change in the same statement, and
+// the one-Ongoing guard must only count work_in_progress items. The real
+// behavior is covered by case_work_state_integration_test.go (needs Postgres);
+// this pins the SQL shape so the rule cannot be dropped from one table's query.
+func TestWorkStateFollowsStateInUpdateQueries(t *testing.T) {
+	queries := map[string]string{
+		"case":                     updateCaseQuery,
+		"service_request":          updateServiceRequestQuery,
+		"engagement":               updateEngagementQuery,
+		"security_report_analysis": updateSecurityReportAnalysisQuery,
+	}
+	for name, q := range queries {
+		for _, want := range []string{
+			"WHEN $2 = 'AWAITING_INFO' THEN 'PAUSED'::case_work_state_enum",
+			"WHEN $2 <> '' AND $2 <> 'WORK_IN_PROGRESS' THEN NULL",
+		} {
+			if !strings.Contains(q, want) {
+				t.Errorf("%s update query is missing %q", name, want)
+			}
+		}
+	}
+}

@@ -60,8 +60,8 @@ export default function CsmCasesPage(): JSX.Element {
       // changeable — `defaultCaseTypes` only seeds the initial selection
       // when the URL carries no `types` param at all; picking a different
       // type (or clearing back to no selection, which falls through to
-      // "every type" via `CsmIssuesView`'s own `ALL_CASE_TYPES` fallback)
-      // genuinely narrows/broadens the results, per digiops-cs#2907.
+      // every type this caller can see, via `CsmIssuesView`'s own
+      // `visibleCaseTypes` fallback) genuinely narrows/broadens the results.
       // `lockedFilters.caseTypes` is kept in lockstep purely so the severity
       // filter/column stay visible (that hint is keyed off `lockedFilters`,
       // not the live selection or `defaultCaseTypes` — see

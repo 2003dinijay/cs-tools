@@ -99,13 +99,35 @@ func (s *snCommentSearchService) SearchComments(ctx context.Context, req domain.
 		if !ok {
 			commentType = domain.CommentTypeComment
 		}
+		// Inline attachments: same mapping as snCaseService.SearchCaseComments
+		// (sn_case_service.go) -- sysid -> UUID like every other inbound ID, a
+		// bad timestamp on one image leaves that entry's CreatedOn nil rather
+		// than failing the whole comment.
+		var inlineAttachments []domain.InlineAttachment
+		for _, ia := range c.InlineAttachments {
+			entry := domain.InlineAttachment{
+				ID:          sysidToUUID(ia.ID),
+				FileName:    ia.FileName,
+				ContentType: ia.ContentType,
+				DownloadURL: ia.DownloadURL,
+				CreatedBy:   ia.CreatedBy,
+			}
+			if ia.CreatedOn != "" {
+				if parsed, err := time.Parse(snCreatedOnLayout, ia.CreatedOn); err == nil {
+					entry.CreatedOn = &parsed
+				}
+			}
+			inlineAttachments = append(inlineAttachments, entry)
+		}
 		comments = append(comments, domain.Comment{
-			ID:          sysidToUUID(c.ID),
-			ReferenceID: sysidToUUID(c.ReferenceID),
-			Content:     c.Content,
-			Type:        commentType,
-			CreatedOn:   createdAt,
-			CreatedBy:   snUserReference(c.CreatedByUser, c.CreatedBy, c.CreatedByFullName),
+			ID:                   sysidToUUID(c.ID),
+			ReferenceID:          sysidToUUID(c.ReferenceID),
+			Content:              c.Content,
+			Type:                 commentType,
+			CreatedOn:            createdAt,
+			CreatedBy:            snUserReference(c.CreatedByUser, c.CreatedBy, c.CreatedByFullName),
+			HasInlineAttachments: c.HasInlineAttachments,
+			InlineAttachments:    inlineAttachments,
 		})
 	}
 
@@ -236,6 +258,16 @@ func (s *snCommentSearchService) publishIncidentCommentAdded(ctx context.Context
 // unavailableTaskService/unavailableFeedbackService and
 // SyncProductVulnerabilities elsewhere in this codebase.
 const commentEditDeleteUnsupportedOnSNMsg = "editing or deleting a comment is not supported by the ServiceNow data source"
+
+// GetComment implements CommentService. Always rejected -- see
+// commentEditDeleteUnsupportedOnSNMsg. (This data source has no single-comment
+// fetch at all today, edit/delete or otherwise -- rejecting rather than
+// silently returning nothing keeps this service's behavior uniform with
+// UpdateComment/DeleteComment below, the only other callers of this method's
+// purpose.)
+func (s *snCommentSearchService) GetComment(_ context.Context, _ string) (domain.Comment, error) {
+	return domain.Comment{}, &apierror.ServiceUnavailableError{Msg: commentEditDeleteUnsupportedOnSNMsg}
+}
 
 // UpdateComment implements CommentService. Always rejected -- see
 // commentEditDeleteUnsupportedOnSNMsg.

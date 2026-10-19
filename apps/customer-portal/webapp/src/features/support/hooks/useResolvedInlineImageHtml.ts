@@ -39,22 +39,49 @@ function extractIixAttachmentIds(html: string): string[] {
   return ids;
 }
 
+/** Formats a 32-hex sys_id as a hyphenated UUID; anything else is returned as is. */
+function toDisplayUuid(id: string): string {
+  const hex = id.replace(/-/g, "").toLowerCase();
+  return /^[a-f0-9]{32}$/.test(hex)
+    ? `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+    : id;
+}
+
+/**
+ * Replacement for an inline image that could not be loaded. Never carries the
+ * original src (a ServiceNow URL the browser could not use anyway); shows the
+ * attachment id instead so the customer can quote it to support.
+ */
+function unavailableImageHtml(refId: string): string {
+  const uuid = toDisplayUuid(refId).replace(/[^a-zA-Z0-9-]/g, "");
+  return `<span data-unresolved="true" style="display:inline-block;padding:4px 8px;border:1px dashed currentColor;border-radius:4px;opacity:0.7;font-size:0.85em">Image not available, failed to load (ID: ${uuid})</span>`;
+}
+
 /**
  * Resolves inline image data URLs for all `.iix` img src references in an HTML string.
  * Fetches images via the authenticated backend and replaces src attributes with data URLs.
  *
  * @param html - Sanitized HTML string potentially containing `.iix` img src URLs.
+ * @param caseId - The case this comment belongs to. Forwarded to the backend
+ * as an authorization hint: an attachment pasted inline into a comment has
+ * its own referenceId set to the comment's id, not the case's, so without
+ * this hint the backend has no way to resolve it to a case at all and the
+ * image 404s even when the caller can see the case.
  * @returns `{ resolvedHtml: string, isLoading: boolean }`
  */
 export function useResolvedInlineImageHtml(
   html: string,
+  caseId?: string | null,
 ): { resolvedHtml: string; isLoading: boolean } {
   const idsFromHtml = useMemo(() => extractIixAttachmentIds(html), [html]);
 
-  const { dataUrls, isLoading } = useAttachmentPreviews(idsFromHtml);
+  const { dataUrls, isLoading } = useAttachmentPreviews(idsFromHtml, caseId);
 
   const resolvedHtml = useMemo(() => {
-    if (!dataUrls.size) return html;
+    // Nothing to resolve. Not "no data URLs": when every fetch failed the
+    // unresolved images must still be replaced below, or the original
+    // (unfetchable) ServiceNow src stays in the page.
+    if (!idsFromHtml.length) return html;
     return html.replace(
       /<img([^>]*?)\s+src\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))([^>]*)>/gi,
       (_match, before, doubleSrc, singleSrc, bareSrc, after) => {
@@ -68,14 +95,11 @@ export function useResolvedInlineImageHtml(
             ([id]) => src.includes(id) || id.includes(refId),
           )?.[1];
         const quote = doubleSrc !== undefined ? '"' : singleSrc !== undefined ? "'" : '"';
-        if (!dataUrl) {
-          // Strip the unresolved .iix src so the browser does not attempt an unauthenticated request.
-          return `<img${before} src=${quote}${quote} data-unresolved="true"${after}>`;
-        }
+        if (!dataUrl) return unavailableImageHtml(refId);
         return `<img${before} src=${quote}${dataUrl}${quote}${after}>`;
       },
     );
-  }, [html, dataUrls]);
+  }, [html, dataUrls, idsFromHtml]);
 
   const hasInlineImages = idsFromHtml.length > 0;
 

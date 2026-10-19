@@ -19,7 +19,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -45,6 +44,12 @@ import (
 	"alert-core-service/internal/poll"
 	"alert-core-service/internal/postgres"
 	"alert-core-service/internal/store"
+)
+
+// dbProbeTimeout bounds GET /dbz's ping, and dbProbeEvery is how long one result is reused.
+const (
+	dbProbeTimeout = 2 * time.Second
+	dbProbeEvery   = time.Second
 )
 
 // lockPoolHeadroom covers the retention job's lock and connection churn beyond notify.delivery_concurrency delivery workers.
@@ -103,22 +108,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	warnRemovedRoutingEnv(logger)
 	csmClient := csmClientFromEnv(logger, depCfg.Notify.HTTPTimeout.Duration())
 	notifyCfg := notify.Config{
-		CallerID:         os.Getenv("CSM_CALLER_ID"),
-		UnknownServiceID: os.Getenv("CSM_UNKNOWN_SERVICE_ID"),
-		// Optional: the group an incident is assigned to when nothing more specific routes it.
-		DefaultAssignmentGroupID: os.Getenv("CSM_DEFAULT_ASSIGNMENT_GROUP_ID"),
-		AssignmentGroupRoutes:    assignmentGroupRoutes(logger),
-		ServiceCacheTTL:          depCfg.Notify.ServiceCacheTTL.Duration(),
-		MaxAttempts:              depCfg.Notify.MaxAttempts,
-		RetryBaseDelay:           depCfg.Notify.RetryBaseDelay.Duration(),
-		HTTPTimeout:              depCfg.Notify.HTTPTimeout.Duration(),
-		ChatThreadingEnabled:     depCfg.Notify.ChatThreadingEnabled,
-	}
-	if err := notify.ValidateGroupIDs(notifyCfg); err != nil {
-		logger.Error("invalid assignment group configuration", "error", err)
-		os.Exit(1)
+		CallerID:             os.Getenv("CSM_CALLER_ID"),
+		DefaultServiceID:     os.Getenv(defaultServiceIDEnv),
+		ServiceCacheTTL:      depCfg.Notify.ServiceCacheTTL.Duration(),
+		MaxAttempts:          depCfg.Notify.MaxAttempts,
+		RetryBaseDelay:       depCfg.Notify.RetryBaseDelay.Duration(),
+		HTTPTimeout:          depCfg.Notify.HTTPTimeout.Duration(),
+		ChatThreadingEnabled: depCfg.Notify.ChatThreadingEnabled,
 	}
 	notifier := notify.New(base.With("component", "notify"), csmClient, notifyCfg)
 	eng := engine.New(base.With("component", "engine"), incidents, notifier, engine.Config{
@@ -169,6 +168,16 @@ func main() {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		if err := pool.Ping(r.Context()); err != nil {
 			logger.Warn("health check failed: postgres unreachable", "error", err)
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	// dbz reports only whether Postgres is reachable, reusing one ping per dbProbeEvery so frequent probes can't drain the pool.
+	dbProbe := postgres.NewProbe(pool, dbProbeTimeout, dbProbeEvery)
+	mux.HandleFunc("GET /dbz", func(w http.ResponseWriter, r *http.Request) {
+		if err := dbProbe.Check(r.Context()); err != nil {
+			logger.Warn("db health check failed: postgres unreachable", "error", err)
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
@@ -227,19 +236,25 @@ func main() {
 	}
 }
 
-// assignmentGroupRoutes reads CSM_ASSIGNMENT_GROUP_ROUTES, a JSON object of routing key -> CSM group id.
-// Optional; one that does not parse stops startup rather than routing every incident to the default.
-func assignmentGroupRoutes(logger *slog.Logger) map[string]string {
-	raw := strings.TrimSpace(os.Getenv("CSM_ASSIGNMENT_GROUP_ROUTES"))
-	if raw == "" {
-		return nil
+// defaultServiceIDEnv names the Default service, which incidents for alerts with no or an unknown service are
+// raised against. It must match entity-service's own INCIDENT_DEFAULT_SERVICE_ID.
+const defaultServiceIDEnv = "INCIDENT_DEFAULT_SERVICE_ID"
+
+// removedRoutingEnvVars configured alert-core's own assignment-group routing, which is gone: entity-service
+// now assigns the group from the incident's service.
+var removedRoutingEnvVars = []string{"CSM_DEFAULT_ASSIGNMENT_GROUP_ID", "CSM_ASSIGNMENT_GROUP_ROUTES"}
+
+// warnRemovedRoutingEnv logs once if any removedRoutingEnvVars entry is still set; it never stops startup.
+func warnRemovedRoutingEnv(logger *slog.Logger) {
+	var set []string
+	for _, name := range removedRoutingEnvVars {
+		if os.Getenv(name) != "" {
+			set = append(set, name)
+		}
 	}
-	var routes map[string]string
-	if err := json.Unmarshal([]byte(raw), &routes); err != nil {
-		logger.Error("CSM_ASSIGNMENT_GROUP_ROUTES is not a JSON object of string to string", "error", err)
-		os.Exit(1)
+	if len(set) > 0 {
+		logger.Warn("assignment group settings are no longer used; entity-service assigns the group from the service", "set", set)
 	}
-	return routes
 }
 
 // csmEnvVars must all be set to enable CSM delivery; otherwise incidents are tracked locally and surfaced via Chat only.
@@ -249,7 +264,7 @@ var csmEnvVars = []string{
 	"CSM_INTEGRATION_CLIENT_ID",
 	"CSM_INTEGRATION_CLIENT_SECRET",
 	"CSM_CALLER_ID",
-	"CSM_UNKNOWN_SERVICE_ID",
+	defaultServiceIDEnv,
 }
 
 // csmClientFromEnv returns nil, disabling CSM, unless every csmEnvVars entry is set.
@@ -268,7 +283,10 @@ func csmClientFromEnv(logger *slog.Logger, httpTimeout time.Duration) *csm.Clien
 		logger.Error("CSM partially configured, disabling CSM delivery", "missing", missing)
 		return nil
 	}
+	logger.Info("CSM delivery enabled", "endpoint", os.Getenv("CSM_INTEGRATION_BASE_URL"),
+		"token_url", os.Getenv("CSM_INTEGRATION_TOKEN_URL"), "http_timeout", httpTimeout.String())
 	return csm.NewClient(csm.Config{
+		Logger:       logger.With("component", "csm"),
 		BaseURL:      os.Getenv("CSM_INTEGRATION_BASE_URL"),
 		TokenURL:     os.Getenv("CSM_INTEGRATION_TOKEN_URL"),
 		ClientID:     os.Getenv("CSM_INTEGRATION_CLIENT_ID"),

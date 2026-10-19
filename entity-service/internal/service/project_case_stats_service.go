@@ -47,6 +47,11 @@ const (
 // same numbers during the migration.
 var caseStatsResolvedStates = []string{caseStateClosed, caseStateSolutionProposed}
 
+// caseStatsActionRequiredStates are the case states waiting on the customer:
+// the project's actionRequiredCount, and the Action Required number the
+// project list shows (see globalService.GlobalSearch).
+var caseStatsActionRequiredStates = []string{caseStateAwaitingInfo, caseStateSolutionProposed}
+
 // projectCaseStatsService is the Postgres-backed ProjectCaseStatsService.
 //
 // It reproduces ServiceNow's ProjectStatsUtils.getProjectScopeCaseStats
@@ -72,6 +77,36 @@ type projectCaseStatsService struct {
 	repo    repository.ProjectCaseStatsRepository
 	refRepo repository.ReferenceDataRepository
 	access  AccessService
+	// avgResponse, when non-nil, supplies averageResponseTime for internal
+	// callers instead of the local SLA table. See AverageResponseSource.
+	avgResponse AverageResponseSource
+}
+
+// AverageResponseSource supplies a project's average response time, in hours,
+// from somewhere other than this data source's own SLA table. It is wired when
+// SLA_DATA_SOURCE points SLA reads at the external backing system while the
+// rest of the entities stay on Postgres: a deployment whose SLA rows are not
+// synced locally (or are in a state the local query does not count) would
+// otherwise report 0.
+//
+// The figure must match what the local query would have produced, i.e. it
+// ignores the caseTypes and createdBy filters. An error is propagated to the
+// caller as is: a failing source fails the request rather than silently
+// reporting 0, which would read as "no SLA data" on the dashboard.
+type AverageResponseSource interface {
+	AverageResponseTime(ctx context.Context, projectID string) (hours float64, err error)
+}
+
+// ProjectCaseStatsOption customises NewProjectCaseStatsService.
+type ProjectCaseStatsOption func(*projectCaseStatsService)
+
+// WithAverageResponseSource makes averageResponseTime come from src instead of
+// the local SLA table, and skips the local AverageResponseSeconds query.
+// Applies only to internal (unrestricted) callers, the same carve-out as the
+// SLA case-search delegate: a customer-scoped caller keeps this data source's
+// own row-level security and numbers. A nil src is a no-op.
+func WithAverageResponseSource(src AverageResponseSource) ProjectCaseStatsOption {
+	return func(s *projectCaseStatsService) { s.avgResponse = src }
 }
 
 // NewProjectCaseStatsService constructs a Postgres-backed ProjectCaseStatsService.
@@ -79,8 +114,13 @@ func NewProjectCaseStatsService(
 	repo repository.ProjectCaseStatsRepository,
 	refRepo repository.ReferenceDataRepository,
 	access AccessService,
+	opts ...ProjectCaseStatsOption,
 ) ProjectCaseStatsService {
-	return &projectCaseStatsService{repo: repo, refRepo: refRepo, access: access}
+	s := &projectCaseStatsService{repo: repo, refRepo: refRepo, access: access}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // GetProjectCaseStats implements ProjectCaseStatsService.
@@ -106,9 +146,11 @@ func (s *projectCaseStatsService) GetProjectCaseStats(
 
 	// Scope before existence: the id is caller-controlled, so a project the
 	// caller may not see must be indistinguishable from one that is not there.
-	if _, err := authorizeProject(ctx, s.access, projectID); err != nil {
+	scope, err := authorizeProject(ctx, s.access, projectID)
+	if err != nil {
 		return domain.ProjectCaseStatsResponse{}, err
 	}
+	useExternalAvg := s.avgResponse != nil && scope.Unrestricted
 
 	found, _, err := s.refRepo.GetProjectByID(ctx, projectID)
 	if err != nil {
@@ -145,6 +187,7 @@ func (s *projectCaseStatsService) GetProjectCaseStats(
 		previous        int
 		avgSeconds      float64
 		slaCount        int
+		avgHours        float64
 		caseTypeCounts  map[string]int
 	)
 
@@ -182,6 +225,10 @@ func (s *projectCaseStatsService) GetProjectCaseStats(
 	})
 	g.Go(func() error {
 		var err error
+		if useExternalAvg {
+			avgHours, err = s.avgResponse.AverageResponseTime(gctx, projectID)
+			return err
+		}
 		avgSeconds, slaCount, err = s.repo.AverageResponseSeconds(gctx, projectID)
 		return err
 	})
@@ -215,14 +262,17 @@ func (s *projectCaseStatsService) GetProjectCaseStats(
 		incrementCount(resp.SeverityCount, row.Severity, row.Count)
 
 		// Active and outstanding are deliberately the same set: every state
-		// except CLOSED. See the type's doc comment.
-		if row.State != caseStateClosed {
+		// except CLOSED. See the type's doc comment. A row with no state of
+		// its own type (an extension row that is missing, or that belongs to
+		// another type; see caseLikeOwnStateColumn) is neither: no list can
+		// show it, so a card that links to a list must not count it.
+		if row.State != "" && row.State != caseStateClosed {
 			resp.ActiveCount += row.Count
 			resp.OutstandingCount += row.Count
 			incrementCount(resp.OutstandingSeverityCount, row.Severity, row.Count)
 		}
 
-		if row.State == caseStateAwaitingInfo || row.State == caseStateSolutionProposed {
+		if containsString(caseStatsActionRequiredStates, row.State) {
 			resp.ActionRequiredCount += row.Count
 		}
 
@@ -233,7 +283,9 @@ func (s *projectCaseStatsService) GetProjectCaseStats(
 
 	for _, row := range engagementTypes {
 		incrementCount(resp.EngagementTypeCount, row.EngagementType, row.Count)
-		if row.State != caseStateClosed {
+		// Same rule as the state counts above: a row with no state of its own
+		// type is not outstanding.
+		if row.State != "" && row.State != caseStateClosed {
 			incrementCount(resp.OutstandingEngagementTypeCount, row.EngagementType, row.Count)
 		}
 	}
@@ -243,7 +295,10 @@ func (s *projectCaseStatsService) GetProjectCaseStats(
 
 	resp.ChangeRate.ResolvedEngagements = percentChange(current, previous)
 
-	if slaCount > 0 {
+	if useExternalAvg {
+		// Already in hours and already rounded by the source.
+		resp.AverageResponseTime = avgHours
+	} else if slaCount > 0 {
 		// ServiceNow floors the per-SLA mean to whole seconds before
 		// converting, so the same input yields the same hours figure here.
 		resp.AverageResponseTime = roundToTwoDecimals(math.Floor(avgSeconds) / 3600)

@@ -51,6 +51,26 @@ describe("useResolvedInlineImageHtml", () => {
     expect(result.current.isLoading).toBe(false);
   });
 
+  it("replaces every image with a not-available note, showing the UUID, when all fetches fail", () => {
+    vi.mocked(useAttachmentPreviews).mockReturnValue({
+      dataUrls: new Map(),
+      isLoading: false,
+    });
+
+    const { result } = renderHook(() =>
+      useResolvedInlineImageHtml(
+        '<img src="https://wso2.service-now.com/d29f3f669773c350182338f11153af3f.iix">',
+      ),
+    );
+
+    expect(result.current.resolvedHtml).not.toContain("service-now");
+    expect(result.current.resolvedHtml).not.toContain("<img");
+    expect(result.current.resolvedHtml).toContain("Image not available");
+    expect(result.current.resolvedHtml).toContain(
+      "ID: d29f3f66-9773-c350-1823-38f11153af3f",
+    );
+  });
+
   it("keeps loading false when html has no inline images", () => {
     vi.mocked(useAttachmentPreviews).mockReturnValue({
       dataUrls: new Map(),
@@ -120,7 +140,9 @@ describe("useResolvedInlineImageHtml", () => {
         useResolvedInlineImageHtml(`<img src="/${UUID}">`),
       );
       expect(result.current.resolvedHtml).toContain('data-unresolved="true"');
-      expect(result.current.resolvedHtml).not.toContain(UUID);
+      expect(result.current.resolvedHtml).not.toContain("<img");
+      // The id is shown (as a UUID) in the "not available" note, not as a src.
+      expect(result.current.resolvedHtml).toContain(`ID: ${UUID}`);
     });
 
     it.each([
