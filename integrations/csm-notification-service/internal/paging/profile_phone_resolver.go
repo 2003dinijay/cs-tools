@@ -91,8 +91,10 @@ type profilePhone struct {
 // no phone numbers, and a call-channel plan drops anyone without one
 // (NO_NUMBER). People keep their own number current in the portal, so the
 // ladder reads it from there rather than keeping a second copy that goes
-// stale. A number already on the recipient -- one named in paging-alert.yaml,
-// such as a head -- is an explicit override and is never replaced.
+// stale. Their CSM profile number comes first: a number already on the
+// recipient -- the phone book, one named in paging-alert.yaml, the roster -- is
+// a fallback it replaces. Only INCIDENT_ESCALATION_TEST_CALL_TO (PhoneFixed),
+// which routes every call to one tester, is never replaced.
 //
 // CSM answers first, for the whole batch in one request (entity-service: the
 // profile number in "user".phone, else the paging-only number). Asgardeo is
@@ -124,8 +126,9 @@ func NewProfilePhoneResolver(inner Resolver, lookup PhoneLookup) *ProfilePhoneRe
 }
 
 // WithPagingContacts returns p reading the number to call from CSM: the
-// profile number, else the paging-only one. A number named in
-// paging-alert.yaml wins over both. A nil lookup leaves only Asgardeo.
+// profile number, else the paging-only one. The profile number wins over a
+// number from the phone book or paging-alert.yaml; the paging-only one comes
+// after them. A nil lookup leaves only Asgardeo.
 func (p *ProfilePhoneResolver) WithPagingContacts(l PagingContactLookup) *ProfilePhoneResolver {
 	p.paging = l
 	return p
@@ -140,15 +143,23 @@ func (p *ProfilePhoneResolver) Resolve(ctx context.Context, level Level, rc Rout
 	return p.fill(ctx, recipients), nil
 }
 
-// fill gives every recipient without a number one: the number CSM has for
-// them (one lookup for the whole batch), else -- for those CSM has none for --
-// their profile number in Asgardeo.
+// fill gives every recipient the number to call, first match wins:
+//
+//	PhoneFixed (INCIDENT_ESCALATION_TEST_CALL_TO)   kept as it is
+//	their CSM profile number                        "user".phone, when E.164
+//	a number they already carry                     the phone book, a number in
+//	                                                paging-alert.yaml, the roster
+//	their alert-only number in CSM                  the Case Alerts tab's
+//	their Asgardeo profile number                   one lookup per person
+//
+// CSM answers for the whole batch in one request; Asgardeo is asked only
+// about people who still have no number.
 func (p *ProfilePhoneResolver) fill(ctx context.Context, recipients []Recipient) []Recipient {
 	out := make([]Recipient, len(recipients))
 	copy(out, recipients)
 	var missing []int
 	for i := range out {
-		if strings.TrimSpace(out[i].Phone) != "" || strings.TrimSpace(out[i].Email) == "" {
+		if out[i].PhoneFixed || strings.TrimSpace(out[i].Email) == "" {
 			continue
 		}
 		missing = append(missing, i)
@@ -159,29 +170,44 @@ func (p *ProfilePhoneResolver) fill(ctx context.Context, recipients []Recipient)
 	answers := p.dialNumbers(ctx, out, missing)
 	for _, i := range missing {
 		a := answers[strings.ToLower(strings.TrimSpace(out[i].Email))]
-		if a.Source != "" {
+		if a.Source == DialSourceProfile {
 			if e164.MatchString(a.Number) {
 				out[i].Phone = a.Number
 				slog.DebugContext(ctx, "incident escalation: calling the recipient's number stored in CSM",
-					"recipient", out[i].Name, "source", a.Source)
+					"recipientId", out[i].LogID(), "source", a.Source)
 				continue
 			}
 			slog.WarnContext(ctx, "incident escalation: recipient's number in CSM is not E.164; not dialling it",
-				"recipient", out[i].Name, "source", a.Source)
+				"recipientId", out[i].LogID(), "source", a.Source)
+		}
+		// No valid profile number: a number they already carry (the phone
+		// book, paging-alert.yaml, the roster) comes next.
+		if strings.TrimSpace(out[i].Phone) != "" {
+			continue
+		}
+		if a.Source != "" && a.Source != DialSourceProfile {
+			if e164.MatchString(a.Number) {
+				out[i].Phone = a.Number
+				slog.DebugContext(ctx, "incident escalation: calling the recipient's number stored in CSM",
+					"recipientId", out[i].LogID(), "source", a.Source)
+				continue
+			}
+			slog.WarnContext(ctx, "incident escalation: recipient's number in CSM is not E.164; not dialling it",
+				"recipientId", out[i].LogID(), "source", a.Source)
 		}
 		// CSM has no number for them, or an older entity-service gave only the
 		// paging-only one, which comes after the profile: ask Asgardeo.
 		if p.lookup != nil {
-			out[i].Phone = p.number(ctx, out[i].Email, out[i].Name)
+			out[i].Phone = p.number(ctx, out[i])
 		}
 		if out[i].Phone == "" && a.Source == "" && a.Number != "" {
 			if e164.MatchString(a.Number) {
 				out[i].Phone = a.Number
 				slog.InfoContext(ctx, "incident escalation: no profile number; using the recipient's paging number",
-					"recipient", out[i].Name)
+					"recipientId", out[i].LogID())
 			} else {
 				slog.WarnContext(ctx, "incident escalation: recipient's paging number is not E.164; not dialling it",
-					"recipient", out[i].Name)
+					"recipientId", out[i].LogID())
 			}
 		}
 	}
@@ -285,13 +311,18 @@ func (p *ProfilePhoneResolver) LeadPool(ctx context.Context) ([]Recipient, error
 	return p.fill(ctx, pool), nil
 }
 
+// Unwrap is the wrapped resolver, for a reader that needs people but not
+// their numbers (the rung email): asking through the wrapper would look up a
+// number for everyone for nothing.
+func (p *ProfilePhoneResolver) Unwrap() Resolver { return p.inner }
+
 // errNoLeadPool: the wrapped resolver cannot name a lead pool.
 var errNoLeadPool = errors.New("resolver has no lead pool")
 
 // number is one person's profile number, or "" when there is none to dial.
-// The number itself is never logged.
-func (p *ProfilePhoneResolver) number(ctx context.Context, email, name string) string {
-	key := strings.ToLower(strings.TrimSpace(email))
+// The number itself is never logged, and the person is named by LogID.
+func (p *ProfilePhoneResolver) number(ctx context.Context, r Recipient) string {
+	key := strings.ToLower(strings.TrimSpace(r.Email))
 	now := p.now()
 
 	p.mu.Lock()
@@ -308,14 +339,14 @@ func (p *ProfilePhoneResolver) number(ctx context.Context, email, name string) s
 	switch {
 	case err != nil:
 		slog.WarnContext(ctx, "incident escalation: could not read a recipient's profile phone number",
-			"recipient", name, "err", err)
+			"recipientId", r.LogID(), "err", err)
 		number, ttl = "", profilePhoneFailTTL
 	case number == "":
 		slog.InfoContext(ctx, "incident escalation: recipient has no mobile number on their CSM Portal profile",
-			"recipient", name)
+			"recipientId", r.LogID())
 	case !e164.MatchString(number):
 		slog.WarnContext(ctx, "incident escalation: recipient's profile phone number is not E.164; not dialling it",
-			"recipient", name)
+			"recipientId", r.LogID())
 		number = ""
 	}
 

@@ -365,8 +365,8 @@ ticker, with Redis as its only durable state — the same `REDIS_URL`/
   other delivery decision does, and it is **exclusive** — `Channel.Uses`
   reports false for `log` against `both`, so a log ladder wires that notifier
   and nothing else; a live ladder that also emitted "would notify" lines would
-  read like a dry run mid-page. It logs the recipient's **name only**, never
-  an address or a number. **A chat card does not wake anyone**
+  read like a dry run mid-page. It logs the recipient's `recipientId`
+  (`Recipient.LogID`), never a name, address or number. **A chat card does not wake anyone**
   - the initial Chat alert already exists and the ladder exists because it
   was not enough overnight - so `chat` alone is a real reduction in what the
   feature does. Where it earns its place is alongside the calls, giving the
@@ -671,7 +671,9 @@ an error -- its lead would still be called on every CRE ladder's
 **Numbers**: the rota holds none. `INCIDENT_ESCALATION_PHONES` (JSON, e-mail ->
 E.164) or `INCIDENT_ESCALATION_TEST_CALL_TO` (every call to one number) fill
 them through `TeamScheduleResolver.WithPhoneBook`. A chat-only ladder needs
-neither.
+neither. The phone book is a fallback: a valid CSM profile number replaces its
+entry (`ProfilePhoneResolver`); `TEST_CALL_TO` is never replaced, and the
+roster resolver applies it too (`RosterResolver.WithTestCallTo`).
 
 **Where alert-born incidents come from.** `sre-alert-core-service` creates the
 CSM incident (`engine.deliverAndPersist` -> `notify.NotifyCSM` -> `POST
@@ -733,9 +735,12 @@ lookup; it exists until `"user".phone` has been filled from Asgardeo, and
 Asgardeo; the onboarding flow keeps its own use of `SCIM_BASE_URL`). The CSM
 portal backend reads the same variable for the Case Paging readiness strip. A CSM lookup that fails falls back to Asgardeo for
 everyone. An older entity-service sends only the paging-only number (no
-`dialSource`); it is then used after the Asgardeo profile, as before. Order: a
-number in `paging-alert.yaml`, then the phone book, then CSM's number, then
-Asgardeo's. A lookup that fails, times out or is not E.164 leaves that one
+`dialSource`); it is then used after the Asgardeo profile, as before. Order
+(first match wins): `INCIDENT_ESCALATION_TEST_CALL_TO` (`Recipient.PhoneFixed`,
+never replaced), then the person's **CSM profile number**, then a number they
+already carry (the phone book, `paging-alert.yaml`, the roster), then their
+alert-only number in CSM, then Asgardeo's. Until 2026-10-18 the configured
+number came first and an old phone-book entry beat a corrected profile. A lookup that fails, times out or is not E.164 leaves that one
 person `NO_NUMBER` and never fails the tier. `phones.source: none` turns it all
 off. Applies to the CRE and SRE ladders and the SME page alike. Nothing is
 persisted outside the plan, and the number is never logged.
@@ -752,6 +757,27 @@ every 20 s up to 3 min (still in progress at the end is `completed`, anything
 else `no-answer`), and PUTs `completed`/`no-answer`/`busy`/`failed` to
 `/team-schedule/paging-contacts/{userId}/test-result` (three attempts). A
 restart during the wait leaves the status `pending` (accepted for phase 1).
+
+**Call outcomes** (`call_outcome.go`, `ALERTING_CALL_OUTCOME_CHECK`, default
+off): a rung's call is logged `ALERT TRIGGERED ... status=queued`, which only
+says Twilio took it. With the flag on, `Engine.WithCallOutcomeWatcher` gives
+both engines one `CallOutcomeWatcher`, and every call `placeVia` places (a
+`ChannelCall` delivery with a sid) is asked of Twilio the same way a test call
+is -- after 60 s, every 20 s, up to 3 min -- then logged once as
+`escalation: call outcome` with `callSid`, `result`
+(`completed`/`no-answer`/`busy`/`failed`/`canceled`, or `unresolved` with the
+last `twilioStatus`), at info when answered and warn otherwise. Logging only:
+the ladder never reads it. Not a `StatusCallback` on purpose -- that needs a
+public route this service does not have. `completed` means Twilio connected
+the call; a voicemail pickup is `completed` too. A restart during the wait
+loses that line.
+
+**People in logs are ids.** Every paging log line names a person as
+`recipientId` = `Recipient.LogID()`: the CSM user id the Team Schedule gave
+(`Recipient.UserID`, filled from on-duty assignments and team members), else
+`e:` + 12 hex of the SHA-256 of the lower-cased email (heads and leads named in
+configuration have no user id), never a name, email or number. Chat cards and
+the execution summary still name people; they are for people to read.
 
 **Calls switch on when the ABT lead pool is verified.** Before any call is
 placed, `applySafety` asks the resolver for its whole lead pool
@@ -771,7 +797,54 @@ without a lead pool (the hand-maintained roster, whose entries carry numbers)
 is not checked. To keep calls off entirely regardless, use `channel: chat` or
 `log`.
 
-**Not built**: the email at each rung (section 10.0), the two
+**Rung email** (`rung_email.go`, `cre.email`, off unless `enabled`): one email
+per rung of a customer case's CRE chain, sent when the rung opens; LEVEL_0 gets
+none. Recipients (agreed 2026-10-13/15): L1 To the case's ABT team lead
+(`TeamLeadResolver`) Cc that team's list, L2 To every ABT team lead (`LeadPool`)
+Cc every ABT team list; at night (USA/USA_WEEKEND) L1 and L2 **add** the
+Americas -- L1 also To the Americas team leads, L2 also To the America Team
+lead (the night calls' own rungs), both also Cc the Americas team list; L3 To
+the CRE head Cc
+`creTeamList`, L4 To the CS head Cc `csTeamList`. Lists are
+`cre.email.teamLists` (team key -> address; the case team through
+`teams.aliases`); a list not configured sends with no Cc. Every rung of a chain
+shares one subject, `[Case Alerts] S0 CS0099001 not acknowledged`, so a case's
+emails group into one Gmail conversation (the email service sets no threading
+headers, and Gmail splits on a changed subject; agreed 2026-10-15); the body's
+first line names the rung (`S0 alert at L1 for Atlas ABT Team Lead`, night
+adding `and Americas Team Leads`), each email lists the rungs already emailed,
+and it signs off "CSM Case Alerts". It
+is not a notifier: a notifier delivers one attempt to one person (an L2 email
+would go once per lead), and a call plan drops people without a number and
+holds every call until the leads are verified. So `schedule` records what each
+rung resolved to (`recordingResolver`, no second lookup), `planEmails` adds
+`Plan.Emails` **before** `applySafety` (held calls do not hold the emails;
+`safety.maxLevel` is honoured), and each email has its own wake entry
+(`<caseId>|email|<n>`) on the same clock, dropped with the calls by an
+acknowledgement, a closed case or a severity change (which starts a new series).
+`LadderState.EmailSent` is parallel to `Plan.Emails`; `AllSettled` waits for
+both. Sending follows `EMAIL_SENDING_ENABLED`/`EMAIL_DEBUG_MODE`, **not**
+`CALL_SENDING_ENABLED`; a transient failure retries each tick for
+`emailGiveUpAfter` (15m), a 4xx is not retried. Logs carry counts, never
+addresses. Not on the work note yet. The template is
+`notifications/templates/case_paging.html` (agreed 2026-10-15): a bar and rung
+callout in the severity's colour, the WSO2 logo, the rung line first, then
+rows for case number, WSO2 case ID, short description, severity, account, team,
+escalation level (coloured L1 blue to L4 red), created, waiting for, already
+notified, next escalation, and a "View case" button; tables and inline styles
+only, ASCII only. It never shows a customer escalation (`case.escalated` is a
+separate flow). Every rung's email opens "Case <n> (<sev>) is still in open
+state and response SLA remaining time is <t>" ("...was breached <t> ago" once
+past it), counted from the chain's start against the `response` clock of the
+SLA duration policy the SLA engine fetches at startup (`RungEmailSending.SLADurations`),
+else WSO2's published defaults (S0 15m, S1 1h, S2 4h, S3 6h, S4 24h, as migration
+0192 seeds them). `cre.email` lives in the file -- both `paging-alert.yaml` and
+`paging-alert.minimal.yaml` -- never on the Alert Settings tab: it is a switch
+and a few addresses, and `MergeCaseAlertSettings` keeps it as the file has it
+(`TestRungEmail_ConfigSurvivesSavedSettings`). Leave its lists out rather than
+empty in the shipped files, so the two load alike.
+
+**Not built**: the two
 erroneous-scenario emails (section 12.0), LEVEL_0 availability filtering
 (section 8.0), a ServiceNow-backed `Resolver`. **No longer relevant**: `abtEligible` was never populated by any publisher, so
 every incident used to route as `UNKNOWN_ABT`. The updated rule table does not

@@ -416,8 +416,8 @@ Requires Redis. The ladder starts only if escalation is enabled, a resolver can 
 | `INCIDENT_ESCALATION_CHANNEL` | `call` | `call`, `chat`, `both` or `log` (log only prints who would be reached). The file's per-ladder channel wins when present. An invalid value disables the ladder. | `log` |
 | `INCIDENT_ESCALATION_RESOLVER` | roster | `team-schedule` resolves rungs from the entity service's Team Schedule (needs `CUSTOMER_ENTITY_BASE_URL`); anything else uses the roster. | `team-schedule` |
 | `INCIDENT_ESCALATION_ROSTER` | none | JSON roster of level to recipients, used by the roster resolver. Contains phone numbers (secret). Invalid JSON stops the ladder. | `{"default":{"LEVEL_1":[<recipient>]}}` |
-| `INCIDENT_ESCALATION_PHONES` | none | JSON object, lower-case email to E.164 number, for the Team Schedule resolver. | `{"jane.doe@example.com":"+15550100002"}` |
-| `INCIDENT_ESCALATION_TEST_CALL_TO` | none | If set, every call goes to this number instead (safe rehearsal). | `+15550100003` |
+| `INCIDENT_ESCALATION_PHONES` | none | JSON object, lower-case email to E.164 number, for the Team Schedule resolver. A fallback: a valid CSM profile number is used first. | `{"jane.doe@example.com":"+15550100002"}` |
+| `INCIDENT_ESCALATION_TEST_CALL_TO` | none | If set, every call goes to this number instead (safe rehearsal); nothing replaces it, not even a CSM profile number. | `+15550100003` |
 | `INCIDENT_ESCALATION_SRE_L4` | off (exact `true`) | Include level 4 in the SRE ladder when no file is used. | `true` |
 | `INCIDENT_ESCALATION_SSML` | off (exact `true`) | Use SSML for call speech. | `true` |
 | `INCIDENT_ESCALATION_CHAT_AUDIENCE` | none | Chat audience a rung posts to when the incident names no product. | `Incident Monitor` |
@@ -430,6 +430,7 @@ Requires Redis. The ladder starts only if escalation is enabled, a resolver can 
 | `PAGING_CONFIG_SOURCE` | `db` | `db` uses ladder settings saved in the entity service (Team Schedule alert settings) over the file's; `off` uses file and env only; `shadow` reads them, logs differences and keeps the file's. Unknown values act as `off`. Read once at start. Needs `CUSTOMER_ENTITY_BASE_URL`. | `off` |
 | `PAGING_CONFIG_WAIT` | `2m` | How long a `db` start retries the entity service (`0` tries once). On failure it uses the last settings stored in Redis, else the file's. | `30s` |
 | `PAGING_PHONE_SCIM_FALLBACK` | on | `false` stops asking the identity-admin service for numbers the entity service lacks. | `false` |
+| `ALERTING_CALL_OUTCOME_CHECK` | off | Log how each placed paging call ended (`escalation: call outcome`, `result=completed\|no-answer\|busy\|failed\|unresolved`), read from Twilio after the ring timeout. Logging only. | `true` |
 
 ### Server
 

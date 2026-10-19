@@ -16893,6 +16893,17 @@ components:
             Excludes projects whose Key is any of the given values (exact,
             case-sensitive match). Unrelated to closure state or subscription
             type. Supported on both data sources.
+        sfIds:
+          type: array
+          items:
+            type: string
+          description: >-
+            Only projects whose Salesforce id is any of the given values
+            (exact, case-sensitive match; empty or padded values are rejected
+            with 400). Supported on both data sources: SQL filter on
+            Postgres; applied in Go on ServiceNow by paging through every
+            match (503 if that exceeds the page bound), and a project the
+            ServiceNow response carries no sfId for is never returned.
 
     ProjectAccountRef:
       type: object
@@ -23876,7 +23887,7 @@ components:
       required: [ladder, groupName]
       properties:
         ladder: { type: string, enum: [CRE, SRE] }
-        groupName: { type: string, maxLength: 255 }
+        groupName: { type: string, maxLength: 255, description: "A CSM Portal team's name: a CRE team for CRE, an SRE or SME team for SRE. SRE also takes an assignment group no CSM Portal team has (WSO2 IaaS Team), but never a CRE team's name." }
         teamKey: { type: string }
         rotaCode: { type: string, description: "SRE only. An active SRE rota, e.g. SRE_SAAS." }
         enabled: { type: boolean, default: true }

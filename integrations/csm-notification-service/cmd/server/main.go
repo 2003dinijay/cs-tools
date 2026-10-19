@@ -546,6 +546,10 @@ func main() {
 	var redisClient *redis.Client
 	var slaProducer *eventbus.Producer
 	var escalationConsumers []*eventbus.Consumer
+	// slaDurations is the SLA duration policy fetched below, kept for the
+	// Case Alerts rung email's "response SLA remaining time"; nil when the
+	// fetch failed (the email then uses the published defaults).
+	var slaDurations map[string]map[string]time.Duration
 	redisURL := os.Getenv("REDIS_URL")
 	redisAddr := os.Getenv("REDIS_ADDR")
 	if redisURL != "" || redisAddr != "" {
@@ -616,6 +620,7 @@ func main() {
 		if err != nil {
 			slog.Error("slaengine: failed to fetch sla duration policy at startup, sla tracking is disabled for this run", "err", err)
 		} else {
+			slaDurations = durations
 			slaEngine := slaengine.NewEngine(slaengine.NewStore(redisClient), slaProducer, googleChatClient, linkResolver, durations, slaEntityClient, slaEmailSendingEnabled)
 			dispatcher = dispatcher.WithSLAEngine(slaEngine)
 
@@ -949,16 +954,20 @@ func main() {
 			// Off by default: the rung model the schedule resolver implements
 			// is still an assumption awaiting confirmation, and a deployment
 			// should opt into it knowingly rather than inherit it on upgrade.
-			var escalationResolver paging.Resolver = paging.NewRosterResolver(roster)
+			// INCIDENT_ESCALATION_TEST_CALL_TO rings every roster recipient on
+			// one number, fixed, so a rehearsal never reaches a real phone.
+			var escalationResolver paging.Resolver = paging.NewRosterResolver(roster).
+				WithTestCallTo(os.Getenv("INCIDENT_ESCALATION_TEST_CALL_TO"))
 			if os.Getenv("INCIDENT_ESCALATION_RESOLVER") == "team-schedule" {
 				if escalationNotes == nil {
 					slog.Error("INCIDENT_ESCALATION_RESOLVER=team-schedule needs CUSTOMER_ENTITY_BASE_URL; " +
 						"falling back to the configured roster")
 				} else {
-					// The rota holds no phone numbers: they come from
-					// INCIDENT_ESCALATION_PHONES (e-mail -> E.164), or every
-					// call goes to INCIDENT_ESCALATION_TEST_CALL_TO. A chat-only
-					// ladder needs neither.
+					// The rota holds no phone numbers. INCIDENT_ESCALATION_PHONES
+					// (e-mail -> E.164) is a fallback behind the CSM profile
+					// number (ProfilePhoneResolver, below); every call goes to
+					// INCIDENT_ESCALATION_TEST_CALL_TO when it is set. A
+					// chat-only ladder needs neither.
 					phones, perr := paging.ParsePhoneBook(os.Getenv("INCIDENT_ESCALATION_PHONES"), os.Getenv("INCIDENT_ESCALATION_TEST_CALL_TO"))
 					if perr != nil {
 						// Not logging perr: the decode error can quote numbers.
@@ -1032,6 +1041,14 @@ func main() {
 			// its own consumer group and its own store namespace, because a
 			// P0 CRE incident climbs both ladders at the same time and the
 			// two must not mistake each other for a redelivery.
+			// ALERTING_CALL_OUTCOME_CHECK (default false): log how each placed
+			// call ended, asked of Twilio after the ring timeout -- the log
+			// otherwise stops at "queued". Shared by both engines; logging only.
+			var callOutcomes *paging.CallOutcomeWatcher
+			if envBool("ALERTING_CALL_OUTCOME_CHECK", false) {
+				callOutcomes = paging.NewCallOutcomeWatcher(ctx, twilioClient)
+			}
+
 			ladders := []struct {
 				kind    paging.Ladder
 				name    string
@@ -1097,12 +1114,29 @@ func main() {
 						// code -- not configurable (see paging.Config).
 					},
 				)
+				escalationEngine.WithCallOutcomeWatcher(callOutcomes)
 
 				if l.kind == paging.LadderSRE && escalationCfg.SME.Enabled {
 					// The SME page runs on the dispatcher's sre-events
 					// consumer, not on this engine's: the engine ignores
 					// incident.special_ops_alert even when it reads that topic.
 					smePager = escalationEngine
+				}
+
+				// The rung email (cre.email): one email per rung, L1 to L4.
+				// It follows the service's email switches, not
+				// CALL_SENDING_ENABLED, so silencing the phones leaves it on
+				// and a debug run redirects it like every other email.
+				if l.kind == paging.LadderCRE && l.cfg.Email.Enabled {
+					escalationEngine.WithRungEmail(emailClient, paging.RungEmailSending{
+						Enabled:         emailSendingEnabled,
+						DebugMode:       emailDebugMode,
+						DebugRecipients: emailDebugRecipients,
+						SLADurations:    slaDurations,
+					})
+					slog.Info("case paging: rung emails are on for the CRE ladder",
+						"teamLists", len(l.cfg.Email.TeamLists), "emailSendingEnabled", emailSendingEnabled,
+						"emailDebugMode", emailDebugMode, "responseSLAFrom", map[bool]string{true: "sla-duration-policy", false: "published defaults"}[slaDurations != nil])
 				}
 
 				escalationCount := envInt("INCIDENT_ESCALATION_CONSUMER_COUNT", 1)
@@ -1149,7 +1183,8 @@ func main() {
 					"ladder", l.name,
 					"channel", string(channel),
 					"ssml", os.Getenv("INCIDENT_ESCALATION_SSML") == "true",
-					"sending", callSendingEnabled)
+					"sending", callSendingEnabled,
+					"callOutcomeCheck", callOutcomes != nil)
 				if l.kind == paging.LadderSRE && escalationCfg.SME.Enabled {
 					slog.Info("case paging: incident.special_ops_alert pages the SME through the SRE engine",
 						"channel", string(escalationCfg.SME.Channel))
