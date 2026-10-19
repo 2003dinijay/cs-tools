@@ -856,6 +856,100 @@ func (e *Engine) admit(ctx context.Context, t *Trigger) bool {
 	return true
 }
 
+// postNoOneOnCall tells the team's Chat space that nobody could be paged for a
+// fresh trigger, reusing the stopped-ladder card: with nobody to call, the
+// room would otherwise hear nothing at all. Best effort, like every other
+// ladder post: a failure is logged, never returned, because a returned error
+// retries the whole trigger and would append the work note again.
+//
+// One post per trigger. A claim keyed by the trigger time dedupes a
+// redelivered record, and a trigger older than staleTriggerGrace posts nothing
+// (a replay after a restart is not news), so the claim only has to outlive
+// that window.
+func (e *Engine) postNoOneOnCall(ctx context.Context, plan Plan, why string) {
+	t := plan.Trigger
+	if !e.cfg.CallSendingEnabled || e.channelFor(t) == ChannelLog || e.now().Sub(t.At) > staleTriggerGrace {
+		return
+	}
+	rooms := e.emptyPlanRooms(plan)
+	if len(rooms) == 0 {
+		slog.WarnContext(ctx, "escalation: no Chat space for the no-one-on-call alert; none posted",
+			"incidentId", t.IncidentID, "team", t.Team)
+		return
+	}
+	claim := fmt.Sprintf("empty-plan|%s@%d", t.IncidentID, t.At.UnixNano())
+	switch claimed, err := e.store.ClaimCall(ctx, claim, 2*staleTriggerGrace); {
+	case err != nil:
+		// Fail open: an alert twice beats an alert never.
+		slog.WarnContext(ctx, "escalation: could not claim the no-one-on-call alert; posting anyway",
+			"incidentId", t.IncidentID, "err", err)
+	case !claimed:
+		slog.InfoContext(ctx, "escalation: no-one-on-call alert already posted for this trigger",
+			"incidentId", t.IncidentID)
+		return
+	}
+
+	record, label := "incident", "View incident"
+	if t.isCase() {
+		record, label = "case", "View case"
+	}
+	msg := notifications.EscalationStopped{
+		Chain:       chainLabel(t),
+		IncidentRef: t.caseRef(),
+		Title:       t.Title,
+		Priority:    t.Priority,
+		Outcome:     "No one on call",
+		Detail: fmt.Sprintf("No reachable recipient for this %s, so nobody was paged. Priority %s, team %s. Reason: %s.",
+			record, orNone(t.Priority), orNone(t.Team), why),
+		ThreadKey:   t.chatThreadKey(),
+		PortalLabel: label,
+	}
+	for _, r := range rooms {
+		room := r.roomFor()
+		var links incidentLinker = e.links
+		if r.links != nil {
+			links = r.links
+		}
+		msg.Audience, msg.Reply = room, r.reply || e.sreReplies(t)
+		msg.PortalURL = links.IncidentLink(t.IncidentID)
+		if t.isCase() {
+			msg.PortalURL = links.CaseLink(t.IncidentID)
+		}
+		if err := r.chat.SendEscalationStopped(ctx, msg); err != nil {
+			slog.ErrorContext(ctx, "escalation: the no-one-on-call alert was not posted",
+				"incidentId", t.IncidentID, "audience", room, "err", err)
+			continue
+		}
+		slog.InfoContext(ctx, "escalation: no-one-on-call alert posted", "incidentId", t.IncidentID, "audience", room)
+	}
+}
+
+// emptyPlanRooms is where the no-one-on-call alert goes: the rooms the ladder's
+// own cards would have gone to (the incident's space, else its team's), else
+// the incident's INCIDENT_CHAT_SPACES space, else the Incident Monitor
+// audience. A room the deployment has no space for is skipped.
+func (e *Engine) emptyPlanRooms(plan Plan) []chatNotifier {
+	var out []chatNotifier
+	add := func(n chatNotifier) {
+		room := n.roomFor()
+		if n.chat.HasAudienceSpace(room) && !slices.ContainsFunc(out, func(o chatNotifier) bool { return o.roomFor() == room }) {
+			out = append(out, n)
+		}
+	}
+	for _, n := range e.cardRooms(plan) {
+		add(n)
+	}
+	if len(out) == 0 {
+		for _, r := range e.incidentRooms(plan.Trigger) {
+			add(chatNotifier{chat: r.chat, links: e.links, audience: r.room, reply: r.reply})
+		}
+	}
+	if len(out) == 0 && e.incidentChat != nil {
+		add(chatNotifier{chat: e.incidentChat, links: e.links, audience: chataudience.IncidentMonitor})
+	}
+	return out
+}
+
 // staleTriggerGrace is how old a trigger must be before a ladder that has
 // fully elapsed is dropped as a replay. It is far longer than the delay
 // between an event being raised and this engine evaluating it (consumer lag,
@@ -938,6 +1032,7 @@ func (e *Engine) schedule(ctx context.Context, t Trigger, replace bool) error {
 			"shift", string(t.Routing.Shift), "product", t.Routing.Product, "team", t.Routing.AssignedCRETeam,
 			"why", why)
 		e.writeNote(ctx, plan, nil, nil, nil, "")
+		e.postNoOneOnCall(ctx, plan, why)
 		return nil
 	}
 
