@@ -621,6 +621,16 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: >-
+            Either Pending Verification is not enabled for this work item's
+            project, or addedReason is AUTO_CLOSED and the caller is not an
+            internal service — MANUAL entries remain available to any
+            project member.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "404":
           description: Not found.
           content:
@@ -673,6 +683,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Pending Verification is not enabled for this project.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "500":
           description: Internal server error.
           content:
@@ -704,6 +720,12 @@ paths:
                 $ref: '#/components/schemas/VerifyPendingVerificationResponse'
         "400":
           description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Pending Verification is not enabled for this project.
           content:
             application/json:
               schema:
