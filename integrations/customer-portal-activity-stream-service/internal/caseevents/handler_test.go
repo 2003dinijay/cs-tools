@@ -154,3 +154,60 @@ func TestHandle_NilHub_DoesNotPanic(t *testing.T) {
 		t.Errorf("Handle() error = %v, want nil", err)
 	}
 }
+
+func TestHandle_CommentAdded_InternalNoteNotBroadcast(t *testing.T) {
+	hub := &mockHub{}
+	h := NewHandler(hub)
+	record := eventbus.Record{
+		Value: []byte(`{"type":"case.comment_added","entityId":"CASE-1","payload":{"timestamp":"2026-08-13T00:00:00Z","isInternalNote":true}}`),
+	}
+	if err := h.Handle(t.Context(), record); err != nil {
+		t.Fatalf("Handle() error = %v, want nil", err)
+	}
+	if len(hub.calls) != 0 {
+		t.Fatalf("hub.Publish called %d times for an internal note, want 0", len(hub.calls))
+	}
+}
+
+func TestHandle_CommentAdded_NotInternalOrAbsentFlagBroadcast(t *testing.T) {
+	cases := map[string]string{
+		"explicit false": `{"timestamp":"2026-08-13T00:00:00Z","isInternalNote":false}`,
+		"absent field":   `{"timestamp":"2026-08-13T00:00:00Z"}`,
+		"empty payload":  `{}`,
+		"null payload":   `null`,
+		"malformed flag": `{"timestamp":"2026-08-13T00:00:00Z","isInternalNote":"yes"}`,
+	}
+	for name, payload := range cases {
+		t.Run(name, func(t *testing.T) {
+			hub := &mockHub{}
+			h := NewHandler(hub)
+			record := eventbus.Record{
+				Value: []byte(`{"type":"case.comment_added","entityId":"CASE-1","payload":` + payload + `}`),
+			}
+			if err := h.Handle(t.Context(), record); err != nil {
+				t.Fatalf("Handle() error = %v, want nil", err)
+			}
+			if len(hub.calls) != 1 {
+				t.Fatalf("hub.Publish called %d times, want 1", len(hub.calls))
+			}
+		})
+	}
+}
+
+func TestHandle_OtherTypesIgnoreInternalNoteFlag(t *testing.T) {
+	for _, typ := range []string{"case.status_changed", "case.assigned", "case.severity_changed", "case.acknowledged"} {
+		t.Run(typ, func(t *testing.T) {
+			hub := &mockHub{}
+			h := NewHandler(hub)
+			record := eventbus.Record{
+				Value: []byte(`{"type":"` + typ + `","entityId":"CASE-6","payload":{"timestamp":"2026-08-13T00:00:00Z","isInternalNote":true}}`),
+			}
+			if err := h.Handle(t.Context(), record); err != nil {
+				t.Fatalf("Handle() error = %v, want nil", err)
+			}
+			if len(hub.calls) != 1 {
+				t.Fatalf("hub.Publish called %d times, want 1", len(hub.calls))
+			}
+		})
+	}
+}
