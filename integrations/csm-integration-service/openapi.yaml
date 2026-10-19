@@ -2037,6 +2037,11 @@ components:
           description: >
             When true, also includes deactivated deployments. Omitted or false
             returns active deployments only.
+        projectSfIds:
+          type: array
+          items:
+            type: string
+          description: Only deployments of the projects whose Salesforce id is any of the given values (exact, case-sensitive; empty or padded values are rejected with 400, at most 100). Combines with projectIds.
 
     SearchDeploymentsResponse:
       type: object
@@ -2070,6 +2075,11 @@ components:
           items:
             type: string
           description: Optional filter by product category (e.g. "pdp"). Combines with deploymentIds rather than replacing it. Values are matched case-insensitively against the deployed product's category. The category returned on each deployed product is the same lower-case code.
+        projectSfIds:
+          type: array
+          items:
+            type: string
+          description: Only deployed products of the projects whose Salesforce id is any of the given values (exact, case-sensitive; empty or padded values are rejected with 400, at most 100). Combines with deploymentIds.
 
     SearchDeployedProductsResponse:
       type: object
@@ -2157,6 +2167,10 @@ components:
           nullable: true
         project:
           $ref: '#/components/schemas/EntityRef'
+        projectSfId:
+          type: string
+          nullable: true
+          description: Salesforce id of the deployment's project; null when the project has none.
         createdOn:
           type: string
           format: date-time
@@ -2192,6 +2206,10 @@ components:
         category:
           type: string
           nullable: true
+        projectSfId:
+          type: string
+          nullable: true
+          description: Salesforce id of the deployed product's project; null when the project has none.
         description:
           type: string
           nullable: true
