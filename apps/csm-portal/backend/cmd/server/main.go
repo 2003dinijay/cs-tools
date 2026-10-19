@@ -611,6 +611,12 @@ func main() {
 	route("DELETE /team-schedule/rota-access/admins/{family}/{userId}", handler.PermAdmin, rotaAccessHandler.DeleteRotaAdmin)
 	route("PUT /team-schedule/rota-access/markers/{teamKey}/{userId}", handler.PermWrite, rotaAccessHandler.PutRotaMarker)
 	route("DELETE /team-schedule/rota-access/markers/{teamKey}/{userId}", handler.PermWrite, rotaAccessHandler.DeleteRotaMarker)
+	// Rota Reminders card on the Rota access tab: a family's rota reminder
+	// settings. Changed by a CSM admin or the family's rota admin, who is no
+	// portal admin, so PermWrite and entity-service decides.
+	rotaReminderSettingsHandler := handler.NewRotaReminderSettingsHandler(customerEntityClient)
+	route("GET /team-schedule/reminder-settings/{family}", handler.PermView, rotaReminderSettingsHandler.GetRotaReminderSettings)
+	route("PUT /team-schedule/reminder-settings/{family}", handler.PermWrite, rotaReminderSettingsHandler.PutRotaReminderSettings)
 	// Alert Settings tab settings: chat rooms, group routes and ladder values.
 	// entity-service decides who may see or change them; the runtime read with
 	// the webhook URLs opened is for csm-notification-service only and is not
