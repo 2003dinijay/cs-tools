@@ -90,7 +90,7 @@ import {
 } from "../utils/rota";
 import { isSettled, sitsAboveTeamLeads } from "../utils/myWeek";
 import { zoneColour } from "../utils/rotaHues";
-import { onItsStandingCard, standingDayRows } from "../utils/standingDay";
+import { atTeamOrdinaryHours, atWorkOnTheDay, onItsStandingCard, standingDayRows } from "../utils/standingDay";
 import { SCHEDULE_THEME_VARS } from "../utils/useScheduleTheme";
 import ScheduleSkeleton, { TabStripSkeleton } from "../components/ScheduleSkeleton";
 import { rotaIsLoading } from "../utils/rotaLoading";
@@ -223,14 +223,29 @@ export default function CsmTeamSchedulePage(): JSX.Element {
   const [weekFromPaging, setWeekFromPaging] = useState(false);
 
   const { user } = useCurrentUser();
-  // The clock this reader is on, and the only source of it: their CSM profile
-  // timezone, through the portal's own resolver. Set it there once and every
-  // view follows, including after a move from Colombo to San Francisco.
+  // The clock this reader is on: their CSM profile timezone, through the
+  // portal's own resolver. Set it there once and every view follows,
+  // including after a move from Colombo to San Francisco.
   //
-  // There is deliberately no picker on this page. A second control could
-  // disagree with the profile, and then two people comparing the same rota
-  // over a call have no way of knowing whose clock they are each reading.
+  // Today alone can be read on another clock (IST or PDT), since the Sri Lankan
+  // day and the Americas day meet on it and each side reads it on its own
+  // clock. The choice starts on the profile's every time the page opens and is
+  // not remembered, so two people comparing the rota over a call are on their
+  // profile clocks unless one of them has just switched -- and the axis says
+  // which clock it is.
   const tz = resolveDisplayTimeZone(user?.timeZone);
+  const [todayClock, setTodayClock] = useState<string | null>(null);
+  const dayTz = todayClock ?? tz;
+  const clockOptions = useMemo(() => {
+    const fixed = [
+      { value: "Asia/Colombo", label: "IST" },
+      // Americas regular hours are 08:00-18:00 on this clock, all year.
+      { value: "Etc/GMT+7", label: "PDT" },
+    ];
+    return fixed.some((o) => o.value === tz)
+      ? fixed
+      : [{ value: tz, label: `${zoneAbbreviation(tz)} (your profile)` }, ...fixed];
+  }, [tz]);
   const catalogue = useScheduleCatalogue();
 
   /** The teams of the group on screen, in the order the catalogue gives them.
@@ -1153,13 +1168,15 @@ export default function CsmTeamSchedulePage(): JSX.Element {
     // A zone with a crew on during the reader's day keeps its lane whatever
     // the day is called where its rota is written: a Sunday evening in
     // Chicago is Monday morning in the office, and that weekday crew is on.
+    // Read on the clock the day is drawn on (Today's IST / PDT choice), so a
+    // lane is kept for exactly the crews the ladder places.
     for (const a of rows) {
       const zone = a.zoneCode ?? shifts.get(a.shiftCode)?.zoneCode;
-      if (zone && placeOnDay(a, anchor, tz)) staffed.add(zone);
+      if (zone && placeOnDay(a, anchor, dayTz)) staffed.add(zone);
     }
     const kept = own.filter((z) => staffed.has(z.code));
     return kept.length > 0 ? kept : own;
-  }, [anchor, shifts, zones, family, rota, rows, tz]);
+  }, [anchor, shifts, zones, family, rota, rows, dayTz]);
 
   /** Leave and allocations over the day being viewed, for the off-rota column.
    *  The day view reads the rota days either side as well; those are only for
@@ -1201,7 +1218,20 @@ export default function CsmTeamSchedulePage(): JSX.Element {
           colour: "var(--muted)",
           // Each standing window's card lists only the teams whose ordinary
           // day it is: Americas cover the Americas team, regular hours the ABTs.
-          assignments: [...rows, ...standing].filter((a) => onItsStandingCard(a, shifts, allCreTeams)),
+          // Stored Americas cover days are drawn at the team's own hours, and
+          // a stored row of someone on leave or an allocation that day is left
+          // out: they are under Off rota, not at work.
+          assignments: [
+            ...atTeamOrdinaryHours(
+              atWorkOnTheDay(rows, absences.data?.absences ?? [], catalogue.data?.absenceKinds ?? []),
+              shifts,
+              allCreTeams,
+            ),
+            ...standing,
+          ].filter((a) => onItsStandingCard(a, shifts, allCreTeams)),
+          // The Sri Lankan day and the Americas day meet twice a day; where
+          // they overlap each keeps a column of its own.
+          regions: true,
         },
       ];
     }
@@ -1226,7 +1256,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
         layout: "zone" as const,
       };
     });
-  }, [anchor, family, rows, shifts, zonesOnDay, shownTeamKey, rotaScoped, scopeRota, teamsOf, catalogue.data?.teams, readFrom, anchorIso, readTo, absences.data?.absences]);
+  }, [anchor, family, rows, shifts, zonesOnDay, shownTeamKey, rotaScoped, scopeRota, teamsOf, catalogue.data?.teams, readFrom, anchorIso, readTo, absences.data?.absences, catalogue.data?.absenceKinds]);
 
   /** The teams the edit bar says this reader can change, by name and in the
    *  catalogue's order. A rota admin can change every team of the group, and
@@ -1622,8 +1652,10 @@ export default function CsmTeamSchedulePage(): JSX.Element {
           ) : view === "today" ? (
             <DayLadder
               day={anchor}
-              tz={tz}
-              zoneLabel={zoneAbbreviation(tz)}
+              tz={dayTz}
+              zoneLabel={zoneAbbreviation(dayTz)}
+              clockOptions={clockOptions}
+              onClockChange={setTodayClock}
               lanes={lanes}
               shifts={shifts}
               zones={zones}

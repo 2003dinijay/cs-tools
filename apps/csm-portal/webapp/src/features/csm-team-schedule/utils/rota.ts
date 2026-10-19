@@ -42,6 +42,9 @@ const LOCAL_ZONE_NAMES: Record<string, string> = {
   "Asia/Colombo": "IST",
   "Asia/Kolkata": "IST",
   "America/Sao_Paulo": "BRT",
+  // Americas regular hours: 08:00-18:00 on a fixed UTC-7 clock, the PDT offset
+  // kept all year (Intl would print "GMT-7").
+  "Etc/GMT+7": "PDT",
 };
 
 export function zoneAbbreviation(tz: string): string {
