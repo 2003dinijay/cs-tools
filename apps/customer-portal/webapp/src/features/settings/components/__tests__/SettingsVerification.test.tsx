@@ -57,6 +57,24 @@ describe("SettingsVerification", () => {
     expect(mutateMock).toHaveBeenCalledWith({ verificationEnabled: true }, expect.any(Object));
   });
 
+  // Regression test for the CodeRabbit finding: a React Query *disabled*
+  // query (e.g. a brief authentication-loading transition after the
+  // component has already mounted) reports isLoading=false and isError=false
+  // with no data at all -- neither of the two existing guards catches that,
+  // so the switch stayed enabled and showed "Inactive" even though the
+  // project's real verificationEnabled value was never actually fetched.
+  it("disables the switch when project details are unavailable but not reported as loading or erroring", () => {
+    mockUseGetProjectDetails.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: false,
+    });
+
+    render(<SettingsVerification projectId="p-1" canEdit />);
+
+    expect(screen.getByRole("switch")).toBeDisabled();
+  });
+
   it("disables the switch while project details are loading", () => {
     mockUseGetProjectDetails.mockReturnValue({
       data: undefined,

@@ -104,6 +104,7 @@ export default function SettingsVerification({
 
   const disabledForSwitches =
     !canEdit ||
+    !projectDetails ||
     isProjectDetailsLoading ||
     isProjectDetailsError ||
     patchProject.isPending;
