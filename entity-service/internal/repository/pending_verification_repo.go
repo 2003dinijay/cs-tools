@@ -112,6 +112,27 @@ const pendingVerificationCountFromJoin = `
 	FROM pending_verification pv
 	JOIN work_item wi ON pv.work_item_id = wi.id`
 
+// pendingVerificationSeverityFromEnum maps "case".severity's raw
+// case_severity_enum label ('S0'..'S4') to domain.CaseSeverity's own
+// lowercase word (catastrophic..low) via the same caseSeverityFromEnum
+// table case_repo.go's GetCaseByID/SearchCases already use for their own
+// Severity field -- this table was previously left unmapped, returning the
+// raw DB label directly, which disagreed with every other case severity
+// response in this API. nil (not the raw value) when unmapped, matching
+// GetCaseByID's own "unmapped means absent" posture rather than surfacing
+// a non-domain value as if it were a real one.
+func pendingVerificationSeverityFromEnum(raw *string) *string {
+	if raw == nil {
+		return nil
+	}
+	mapped, ok := caseSeverityFromEnum[*raw]
+	if !ok {
+		return nil
+	}
+	s := string(mapped)
+	return &s
+}
+
 func scanPendingVerification(row pgx.Row) (domain.PendingVerification, error) {
 	var pv domain.PendingVerification
 	var severity *string
@@ -123,7 +144,7 @@ func scanPendingVerification(row pgx.Row) (domain.PendingVerification, error) {
 	); err != nil {
 		return domain.PendingVerification{}, err
 	}
-	pv.Severity = severity
+	pv.Severity = pendingVerificationSeverityFromEnum(severity)
 	if previousStatus != nil {
 		s := domain.PendingVerificationPreviousStatus(*previousStatus)
 		pv.PreviousStatus = &s

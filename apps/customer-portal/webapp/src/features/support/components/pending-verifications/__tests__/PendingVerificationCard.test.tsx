@@ -76,8 +76,11 @@ describe("PendingVerificationCard", () => {
     expect(screen.queryByText(/^From /)).not.toBeInTheDocument();
   });
 
+  // entity-service sends the lowercase domain word (matching every other
+  // case severity field in this API), not the raw "S1" DB code -- the
+  // display label is still reconstructed as "S1 — Critical".
   it("shows a severity chip when severity is present", () => {
-    renderCard({ record: { ...baseRecord, severity: "S1" } });
+    renderCard({ record: { ...baseRecord, severity: "critical" } });
 
     expect(screen.getByText(/^S1/)).toBeInTheDocument();
   });

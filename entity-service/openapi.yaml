@@ -29472,7 +29472,10 @@ components:
         severity:
           type: string
           nullable: true
-          description: Bare code (e.g. "S1") — only ever set for Case-like record types.
+          description: >-
+            Lowercase domain severity (e.g. "critical"), the same vocabulary
+            Case.severity/CaseView.severity use — never set for a non-Case
+            record type.
         recordType:
           type: string
           enum: [CASE, ENGAGEMENT, SECURITY_REPORT_ANALYSIS, SERVICE_REQUEST, ANNOUNCEMENT, CHANGE_REQUEST]

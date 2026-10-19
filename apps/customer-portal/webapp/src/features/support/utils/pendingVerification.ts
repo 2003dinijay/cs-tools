@@ -74,16 +74,29 @@ export function buildPendingVerificationRecordPath(
   }
 }
 
-// Bare severity code ("S1") → this app's own established severity legend key
-// (SEVERITY_LEGEND_ORDER, src/features/dashboard/constants/dashboard.ts),
-// positionally derived from that same real, existing order — S0=Catastrophic
-// through S4=Low. Not a guessed mapping.
-const SEVERITY_CODE_TO_LEGEND_KEY: Record<string, SeverityLegendKey> = {
-  S0: SeverityLegendKey.Catastrophic,
-  S1: SeverityLegendKey.Critical,
-  S2: SeverityLegendKey.High,
-  S3: SeverityLegendKey.Medium,
-  S4: SeverityLegendKey.Low,
+// Lowercase domain severity ("critical") → this app's own established
+// severity legend key (SEVERITY_LEGEND_ORDER,
+// src/features/dashboard/constants/dashboard.ts). entity-service used to
+// send the bare case_severity_enum code ("S1") directly; it now maps
+// through the same domain vocabulary every other case severity field in
+// this API uses (catastrophic/critical/high/medium/low), so this keys off
+// that instead. SEVERITY_DOMAIN_TO_CODE is the reverse, used only to
+// reconstruct the existing "S1 — Critical" display label — the API
+// contract changed, the UI did not.
+const SEVERITY_DOMAIN_TO_LEGEND_KEY: Record<string, SeverityLegendKey> = {
+  catastrophic: SeverityLegendKey.Catastrophic,
+  critical: SeverityLegendKey.Critical,
+  high: SeverityLegendKey.High,
+  medium: SeverityLegendKey.Medium,
+  low: SeverityLegendKey.Low,
+};
+
+const SEVERITY_DOMAIN_TO_CODE: Record<string, string> = {
+  catastrophic: "S0",
+  critical: "S1",
+  high: "S2",
+  medium: "S3",
+  low: "S4",
 };
 
 export interface SeverityDisplay {
@@ -92,20 +105,21 @@ export interface SeverityDisplay {
 }
 
 /**
- * Formats a bare severity code (e.g. "S1") into this app's real display
- * label + legend color (e.g. "S1 — Critical", red) — reusing the same
- * SEVERITY_LEGEND_ORDER the dashboard's own severity legend/chips use,
+ * Formats a lowercase domain severity (e.g. "critical") into this app's real
+ * display label + legend color (e.g. "S1 — Critical", red) — reusing the
+ * same SEVERITY_LEGEND_ORDER the dashboard's own severity legend/chips use,
  * rather than a separately-invented mapping.
  *
- * @param {string} [code] - Bare severity code from the API (e.g. "S1").
+ * @param {string} [severity] - Lowercase domain severity from the API (e.g. "critical").
  * @returns {SeverityDisplay | null} Formatted label + color, or null if unrecognized.
  */
-export function getSeverityDisplay(code?: string): SeverityDisplay | null {
-  if (!code) return null;
-  const key = SEVERITY_CODE_TO_LEGEND_KEY[code.trim().toUpperCase()];
+export function getSeverityDisplay(severity?: string): SeverityDisplay | null {
+  if (!severity) return null;
+  const domainSeverity = severity.trim().toLowerCase();
+  const key = SEVERITY_DOMAIN_TO_LEGEND_KEY[domainSeverity];
   if (!key) return null;
   const entry = SEVERITY_LEGEND_ORDER.find((item) => item.key === key);
   if (!entry) return null;
   const word = entry.displayName.split(" - ")[1] ?? entry.label;
-  return { label: `${code.trim().toUpperCase()} — ${word}`, color: entry.color };
+  return { label: `${SEVERITY_DOMAIN_TO_CODE[domainSeverity]} — ${word}`, color: entry.color };
 }
