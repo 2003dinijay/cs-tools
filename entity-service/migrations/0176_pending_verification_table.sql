@@ -14,16 +14,18 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Renamed from the old-style 000075_pending_verification_table.up.sql
--- (its .down.sql counterpart is deleted, not mirrored here) -- that
--- six-digit name sorted before 0001 (`"0000" < "0001"`), so make migrate
--- tried to run this CREATE TABLE ... REFERENCES work_item(id) on a fresh
--- database before work_item existed, and separately applied the paired
--- .down.sql (DROP TABLE/TYPE) as an ordinary migration, since the runner
--- globs every *.sql file with no up/down distinction. See the top-level
--- CLAUDE.md's "Migrations are keyed by filename" for why a bare rename is
--- still safe here: this file guards both CREATE TYPEs so re-running it
--- against staging, which already applied the old filename, is a no-op.
+-- Renamed from the old-style 000075_pending_verification_table.up.sql (its
+-- .down.sql counterpart is deleted, not mirrored here). Six-digit
+-- 0NNNNN_*.up.sql/.down.sql names are this repo's legacy, pre-NNNN-scheme
+-- convention -- entity-service's Makefile migrate target globs only the
+-- four-digit NNNN_*.sql files first, then the dedicated 1NNNNN_*.sql RLS
+-- track, then the six-digit 0NNNNN_*.up.sql stragglers last (.down.sql
+-- files are never globbed by anything in this repo at all); a brand new
+-- 2026 migration should never have used that legacy convention in the
+-- first place. See the top-level CLAUDE.md's "Migrations are keyed by
+-- filename" for why a bare rename is still safe here: this file guards
+-- both CREATE TYPEs so re-running it against an environment that already
+-- recorded the old filename as applied is a no-op.
 DO $$ BEGIN
     CREATE TYPE pending_verification_added_reason_enum AS ENUM ('AUTO_CLOSED', 'MANUAL');
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
