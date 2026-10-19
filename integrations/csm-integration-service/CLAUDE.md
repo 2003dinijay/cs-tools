@@ -218,9 +218,11 @@ rejects a body with no JSON object); the `{id}` in the versions path must be a U
 **One deliberate deviation from "bytes through":** each response's enum-valued
 field is upper-cased here, without changing entity-service — product `class`,
 version `currentSupportStatus`, deployment `type`, and deployed-product
-`category` (`upperEnumFields`). Everything else is kept as received, but the body
-is decoded and re-encoded, so key order may differ and a non-JSON upstream body is
-a 500. Request filters are not rewritten.
+`category` (`upperEnumFields`).
+Everything else is kept exactly as received, including member order and number
+text — only those string values are rewritten in place. A body that is not a
+single JSON object (null, another type, or trailing data) is a 500. Request
+filters are not rewritten.
 
 An earlier revision exposed these as `GET` endpoints that reshaped entity-service
 responses into a legacy format (name ordering, in-memory version sorting, `sfIds`

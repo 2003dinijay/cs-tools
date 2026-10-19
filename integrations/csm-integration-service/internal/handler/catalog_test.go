@@ -174,6 +174,18 @@ func TestCatalog_UpperEnumFieldsLeavesTheRestAlone(t *testing.T) {
 	}
 }
 
+func TestCatalog_UpperEnumFieldsKeepsMemberOrder(t *testing.T) {
+	in := `{"total":2,"hasMore":true,"deployments":[{"type":"qa","id":"x","projectSfId":null},{"id":"y","type":"primary_production"}],"limit":1}`
+	want := `{"total":2,"hasMore":true,"deployments":[{"type":"QA","id":"x","projectSfId":null},{"id":"y","type":"PRIMARY_PRODUCTION"}],"limit":1}`
+	out, err := upperEnumFields([]byte(in), "deployments", "type")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(out) != want {
+		t.Errorf("order or content changed:\n got %s\nwant %s", out, want)
+	}
+}
+
 func TestCatalog_NonJSONUpstreamBodyIs500(t *testing.T) {
 	m := &mockCatalogClient{products: func([]byte) ([]byte, error) { return []byte(`not json`), nil }}
 	assertStatus(t, serveCatalog(m, "/products/search", `{}`), http.StatusInternalServerError)
