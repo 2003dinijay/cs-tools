@@ -173,7 +173,8 @@ func (f *fakePagingContacts) DialNumbers(_ context.Context, emails []string) (ma
 
 // CSM's number comes first, for the whole batch in one lookup; Asgardeo is
 // asked only about people CSM has no number for; a failed CSM lookup falls
-// back to Asgardeo for everyone.
+// back to Asgardeo for everyone. A configured number (here a head's, from
+// paging-alert.yaml) is a fallback: the CSM profile number replaces it.
 func TestProfilePhoneResolver_NumbersFromCSM(t *testing.T) {
 	ctx := context.Background()
 	inner := StaticResolver{ByLevel: map[Level][]Recipient{Level0: {
@@ -205,7 +206,7 @@ func TestProfilePhoneResolver_NumbersFromCSM(t *testing.T) {
 		"bad@example.com":  "+94770000093", // CSM's is not E.164: Asgardeo's
 		"asg@example.com":  "+94770000004", // CSM has none: Asgardeo's
 		"n@example.com":    "",             // neither: NO_NUMBER, as before
-		"head@example.com": "+94770000099", // named in paging-alert.yaml: wins over both
+		"head@example.com": "+94770000014", // CSM profile number wins over the one in paging-alert.yaml
 	} {
 		if p[email] != want {
 			t.Errorf("%s = %q, want %q", email, p[email], want)
@@ -214,8 +215,8 @@ func TestProfilePhoneResolver_NumbersFromCSM(t *testing.T) {
 	if contacts.calls != 1 {
 		t.Errorf("%d CSM lookups; want one batch", contacts.calls)
 	}
-	if strings.Join(contacts.asked, ",") != "p@example.com,pg@example.com,bad@example.com,asg@example.com,n@example.com" {
-		t.Errorf("CSM asked for %v; want everyone without a number", contacts.asked)
+	if strings.Join(contacts.asked, ",") != "p@example.com,pg@example.com,bad@example.com,asg@example.com,n@example.com,head@example.com" {
+		t.Errorf("CSM asked for %v; want everyone with an email", contacts.asked)
 	}
 	lookup.mu.Lock()
 	var asked []string

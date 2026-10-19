@@ -420,6 +420,13 @@ func (r TeamScheduleResolver) Resolve(ctx context.Context, level Level, rc Routi
 		}
 	}
 	for i := range out {
+		if r.phones.TestCallTo != "" {
+			// TEST_CALL_TO routes every call to one tester -- even someone
+			// with a number of their own in paging-alert.yaml -- and nothing
+			// may replace it, not even the person's own profile number.
+			out[i].Phone, out[i].PhoneFixed = r.phones.TestCallTo, true
+			continue
+		}
 		if out[i].Phone == "" {
 			out[i].Phone = r.phones.NumberFor(out[i].Email)
 		}

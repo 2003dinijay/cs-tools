@@ -327,6 +327,12 @@ type Recipient struct {
 	// never by name or email. Optional: a ladder stored before this existed
 	// decodes with it empty.
 	UserID string
+	// PhoneFixed marks a Phone that must not be replaced: one from
+	// INCIDENT_ESCALATION_TEST_CALL_TO, which sends every call to one number
+	// (a test environment's tester). Any other Phone -- the phone book, a
+	// number in paging-alert.yaml, the roster -- is a fallback that a valid
+	// CSM profile number replaces (ProfilePhoneResolver).
+	PhoneFixed bool
 	// Phone is empty when the user profile has no mobile number. The
 	// specification's execution summary logs that case as
 	// [LEVEL_n][ERROR][NO_NUMBER][email] and carries on — a missing number
