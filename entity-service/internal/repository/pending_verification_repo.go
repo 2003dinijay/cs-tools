@@ -335,7 +335,12 @@ func dedupeAddedReasonClause(f domain.PendingVerificationSearchFilters, argOffse
 	if f.AddedReason == nil {
 		return "", nil
 	}
-	return fmt.Sprintf(" AND added_reason = $%d::pending_verification_added_reason_enum", argOffset+1), []any{*f.AddedReason}
+	// added_reason is the raw enum column in the count/type-counts queries'
+	// "latest" CTEs, but TEXT in the data query's subquery (pendingVerificationColumns
+	// casts it, aliased to the same name) -- comparing as ::TEXT on both sides
+	// is valid for either shape, where comparing the bare enum literal against
+	// a TEXT column is not (Postgres has no implicit text = enum operator).
+	return fmt.Sprintf(" AND added_reason::TEXT = $%d", argOffset+1), []any{string(*f.AddedReason)}
 }
 
 // Search implements PendingVerificationRepository.

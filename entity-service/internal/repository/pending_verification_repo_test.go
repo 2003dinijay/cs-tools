@@ -77,18 +77,18 @@ func TestDedupeAddedReasonClause(t *testing.T) {
 			wantArgs:   nil,
 		},
 		{
-			name:       "AddedReason set with argOffset 0 numbers its placeholder $1",
+			name:       "AddedReason set with argOffset 0 numbers its placeholder $1 and compares as text",
 			filters:    domain.PendingVerificationSearchFilters{AddedReason: &autoClosed},
 			argOffset:  0,
-			wantClause: " AND added_reason = $1::pending_verification_added_reason_enum",
-			wantArgs:   []any{autoClosed},
+			wantClause: " AND added_reason::TEXT = $1",
+			wantArgs:   []any{string(autoClosed)},
 		},
 		{
 			name:       "AddedReason set with a non-zero argOffset numbers its placeholder accordingly",
 			filters:    domain.PendingVerificationSearchFilters{AddedReason: &autoClosed},
 			argOffset:  3,
-			wantClause: " AND added_reason = $4::pending_verification_added_reason_enum",
-			wantArgs:   []any{autoClosed},
+			wantClause: " AND added_reason::TEXT = $4",
+			wantArgs:   []any{string(autoClosed)},
 		},
 	}
 	for _, tt := range tests {
