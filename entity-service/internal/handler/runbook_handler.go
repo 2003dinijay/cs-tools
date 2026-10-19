@@ -34,6 +34,9 @@ func NewRunbookHandler(svc service.RunbookService) *RunbookHandler {
 	return &RunbookHandler{svc: svc}
 }
 
+// maxRunbookImportBodySize fits the largest valid import: 5000 entries of a 1000-character alert name and a 2000-character link.
+const maxRunbookImportBodySize = 32 << 20
+
 func writeRunbookJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -90,7 +93,7 @@ func (h *RunbookHandler) DeleteRunbook(w http.ResponseWriter, r *http.Request) {
 // ImportRunbooks handles POST /runbooks/import.
 func (h *RunbookHandler) ImportRunbooks(w http.ResponseWriter, r *http.Request) {
 	var req domain.ImportRunbooksRequest
-	if !decodeRequest(w, r, &req) {
+	if !decodeRequestWithLimit(w, r, &req, maxRunbookImportBodySize, "import too large: send at most 32 MiB") {
 		return
 	}
 	resp, err := h.svc.Import(r.Context(), req)

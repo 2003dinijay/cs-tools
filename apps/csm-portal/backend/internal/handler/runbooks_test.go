@@ -108,3 +108,24 @@ func TestRunbookHandler_UnauthenticatedIs401(t *testing.T) {
 		t.Fatalf("status = %d, want 401", w.Code)
 	}
 }
+
+func TestRunbookHandler_ImportAcceptsBodiesOverTheGeneralLimit(t *testing.T) {
+	fake := &fakeRunbookClient{}
+	var b strings.Builder
+	b.WriteString(`{"runbooks":[`)
+	for i := 0; i < 1000; i++ {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		b.WriteString(`{"alertName":"` + strings.Repeat("a", 1000) + `","runbookUrl":"https://docs.example.com/` + strings.Repeat("x", 900) + `"}`)
+	}
+	b.WriteString(`]}`)
+	if b.Len() <= maxRequestBodyBytes {
+		t.Fatalf("test body is %d bytes; it must exceed the general %d byte limit", b.Len(), maxRequestBodyBytes)
+	}
+	w := httptest.NewRecorder()
+	NewRunbookHandler(fake).ImportRunbooks(w, withUser(httptest.NewRequest(http.MethodPost, "/runbooks/import", strings.NewReader(b.String()))))
+	if w.Code != http.StatusOK || fake.body == nil {
+		t.Fatalf("status = %d, forwarded = %v; want 200 and the import forwarded", w.Code, fake.body != nil)
+	}
+}

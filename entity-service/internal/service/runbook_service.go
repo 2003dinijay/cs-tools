@@ -120,10 +120,7 @@ func (s *runbookService) Import(ctx context.Context, req domain.ImportRunbooksRe
 }
 
 func validateRunbookID(id string) error {
-	if !uuidRe.MatchString(id) {
-		return &apierror.ValidationError{Msg: "id must be a UUID"}
-	}
-	return nil
+	return validateUUIDs("id", []string{id})
 }
 
 // normalizeRunbook trims both fields, turns a blank link into nil and checks what is left.

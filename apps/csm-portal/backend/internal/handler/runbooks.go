@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -28,8 +29,12 @@ import (
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 )
 
-// maxRunbookImportEntries mirrors entity-service's own cap so an oversized import is refused here first.
-const maxRunbookImportEntries = 5000
+const (
+	// maxRunbookImportEntries mirrors entity-service's own cap so an oversized import is refused here first.
+	maxRunbookImportEntries = 5000
+	// maxRunbookImportBodyBytes matches entity-service's import limit: 5000 entries with the longest alert name and link fit.
+	maxRunbookImportBodyBytes = 32 << 20
+)
 
 // entityRunbookClient is the entity-service calls the Runbooks tab needs.
 type entityRunbookClient interface {
@@ -108,8 +113,21 @@ func (h *RunbookHandler) DeleteRunbook(w http.ResponseWriter, r *http.Request) {
 
 // ImportRunbooks handles POST /runbooks/import.
 func (h *RunbookHandler) ImportRunbooks(w http.ResponseWriter, r *http.Request) {
-	body, callerID, ok := readScheduleBody(w, r)
-	if !ok {
+	user := middleware.UserInfoFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
+		return
+	}
+	callerID := user.UserID
+	r.Body = http.MaxBytesReader(w, r.Body, maxRunbookImportBodyBytes)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, ErrMsgTooLarge)
+			return
+		}
+		writeError(w, http.StatusBadRequest, errMsgReadBody)
 		return
 	}
 	var req struct {
