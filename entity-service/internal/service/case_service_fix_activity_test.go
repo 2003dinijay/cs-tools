@@ -97,63 +97,6 @@ func TestCaseService_UpdateCase_WorkaroundRecallWhenUnsetLogsNothing(t *testing.
 	}
 }
 
-func TestCaseService_UpdateCase_FixEtaLogsOnlyChanges(t *testing.T) {
-	f := newFixActivityFixture(domain.CaseView{
-		ID:               testDeploymentUUID,
-		BestCaseFixEta:   strPtr("2026-10-20"),
-		MostLikelyFixEta: strPtr("2026-10-25"),
-	})
-	req := domain.UpdateCaseRequest{
-		ID:               testDeploymentUUID,
-		BestCaseFixEta:   strPtr("2026-10-20"), // unchanged
-		MostLikelyFixEta: strPtr("2026-10-27"), // changed
-		WorstCaseFixEta:  strPtr("2026-11-01"), // previously unset
-	}
-	if _, err := fixActivityService(f.repo).UpdateCase(fixActivityUserCtx(t), req); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	want := []recordedActivity{
-		{"most_likely_eta", "2026-10-25", "2026-10-27", "jane.doe@example.com"},
-		{"worst_case_eta", "", "2026-11-01", "jane.doe@example.com"},
-	}
-	if len(f.activity) != len(want) {
-		t.Fatalf("activity = %+v, want %+v", f.activity, want)
-	}
-	for i := range want {
-		if f.activity[i] != want[i] {
-			t.Errorf("activity[%d] = %+v, want %+v", i, f.activity[i], want[i])
-		}
-	}
-}
-
-// An M2M caller (no end-user token) is attributed to its client id rather
-// than dropped.
-func TestCaseService_UpdateCase_FixEtaM2MCallerAttributedToClientID(t *testing.T) {
-	f := newFixActivityFixture(domain.CaseView{ID: testDeploymentUUID})
-	ctx := auth.WithIdentity(context.Background(), auth.Identity{ClientID: "integration-client"})
-	svc := NewCaseService(f.repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, nil)
-	if _, err := svc.UpdateCase(ctx, domain.UpdateCaseRequest{ID: testDeploymentUUID, BestCaseFixEta: strPtr("2026-10-20")}); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	want := recordedActivity{"best_case_eta", "", "2026-10-20", "integration-client"}
-	if len(f.activity) != 1 || f.activity[0] != want {
-		t.Errorf("activity = %+v, want [%+v]", f.activity, want)
-	}
-}
-
-func TestCaseService_UpdateCase_FixEtaBeforeReadFailureStillUpdates(t *testing.T) {
-	f := newFixActivityFixture(domain.CaseView{})
-	f.repo.getCaseByID = func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
-		return domain.CaseView{}, context.DeadlineExceeded
-	}
-	if _, err := fixActivityService(f.repo).UpdateCase(fixActivityUserCtx(t), domain.UpdateCaseRequest{ID: testDeploymentUUID, BestCaseFixEta: strPtr("2026-10-20")}); err != nil {
-		t.Fatalf("update must not fail on a before-state read error: %v", err)
-	}
-	if len(f.activity) != 0 {
-		t.Errorf("activity = %+v, want none", f.activity)
-	}
-}
-
 func TestCaseService_UpdateCase_MarkFixIssuedLogsActivity(t *testing.T) {
 	issued := time.Date(2026, 10, 19, 10, 15, 0, 0, time.UTC)
 	tests := []struct {

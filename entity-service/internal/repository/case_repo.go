@@ -4864,9 +4864,6 @@ var caseActivityFieldChangeLabelOverrides = map[string]string{
 	"acknowledged_by_user_id": "Acknowledged by",
 	"parent_id":               "Parent case",
 	"workaround_provided_on":  "Workaround Provided",
-	"best_case_eta":           "Best Case Fix ETA",
-	"most_likely_eta":         "Most Likely Fix ETA",
-	"worst_case_eta":          "Worst Case Fix ETA",
 	"fix_issued_on":           "Update Released",
 }
 

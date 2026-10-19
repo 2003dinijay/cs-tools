@@ -3013,12 +3013,10 @@ func (s *caseService) updateCaseFields(ctx context.Context, req domain.UpdateCas
 		return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "workaroundProvided requires an authenticated end-user caller: a pure M2M caller has no user record to attribute it to"}
 	}
 
-	// before is read only when an activity-logged field is in play: the
-	// update path has no before-state of its own, and the ETA entries need
-	// the prior value to log only a genuine change. A failed read is logged
-	// and skips those entries, never the update.
+	// before is read only for a workaround change: the recall entry needs the
+	// prior timestamp. A failed read is logged and never fails the update.
 	var before *domain.CaseView
-	if req.WorkaroundProvided != nil || req.BestCaseFixEta != nil || req.MostLikelyFixEta != nil || req.WorstCaseFixEta != nil {
+	if req.WorkaroundProvided != nil {
 		if cv, err := s.GetCaseByID(ctx, req.ID); err != nil {
 			slog.ErrorContext(ctx, "update case: read before-state for activity entries failed", "caseId", req.ID, "error", err)
 		} else {
@@ -3127,37 +3125,22 @@ func (s *caseService) updateCaseFields(ctx context.Context, req domain.UpdateCas
 	return domain.UpdateCaseResponse{Message: "Case updated successfully", Case: resp}, nil
 }
 
-// recordCaseFieldsActivity logs the activity-feed entries for updateCaseFields'
-// workaround and fix-ETA fields. ETAs are logged only on a real change
-// (old empty when previously unset), so they need before; workaround set/
-// recall store the timestamp, which the feed renders as a date-time.
+// recordCaseFieldsActivity logs the activity-feed entry for updateCaseFields'
+// workaround field: set stores the new timestamp, recall stores the prior one
+// as old (and nothing when it was not set), which the feed renders as a
+// date-time.
 func (s *caseService) recordCaseFieldsActivity(ctx context.Context, req domain.UpdateCaseRequest, before *domain.CaseView, updatedOn time.Time, actorEmail string) {
-	if req.WorkaroundProvided != nil {
-		var prev string
-		if before != nil && before.WorkaroundProvidedOn != nil {
-			prev = before.WorkaroundProvidedOn.UTC().Format(time.RFC3339)
-		}
-		if *req.WorkaroundProvided {
-			s.recordFieldChangeActivity(ctx, req.ID, "workaround_provided_on", prev, updatedOn.UTC().Format(time.RFC3339), actorEmail)
-		} else if prev != "" {
-			s.recordFieldChangeActivity(ctx, req.ID, "workaround_provided_on", prev, "", actorEmail)
-		}
-	}
-	if before == nil {
+	if req.WorkaroundProvided == nil {
 		return
 	}
-	for _, e := range []struct {
-		field    string
-		new, old *string
-	}{
-		{"best_case_eta", req.BestCaseFixEta, before.BestCaseFixEta},
-		{"most_likely_eta", req.MostLikelyFixEta, before.MostLikelyFixEta},
-		{"worst_case_eta", req.WorstCaseFixEta, before.WorstCaseFixEta},
-	} {
-		if e.new == nil || *e.new == derefString(e.old) {
-			continue
-		}
-		s.recordFieldChangeActivity(ctx, req.ID, e.field, derefString(e.old), *e.new, actorEmail)
+	var prev string
+	if before != nil && before.WorkaroundProvidedOn != nil {
+		prev = before.WorkaroundProvidedOn.UTC().Format(time.RFC3339)
+	}
+	if *req.WorkaroundProvided {
+		s.recordFieldChangeActivity(ctx, req.ID, "workaround_provided_on", prev, updatedOn.UTC().Format(time.RFC3339), actorEmail)
+	} else if prev != "" {
+		s.recordFieldChangeActivity(ctx, req.ID, "workaround_provided_on", prev, "", actorEmail)
 	}
 }
 

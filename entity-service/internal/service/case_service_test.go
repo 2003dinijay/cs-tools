@@ -1384,9 +1384,6 @@ func TestCaseService_UpdateCase_UpdatesFieldsBundle(t *testing.T) {
 	bestCaseFixEta := "2026-10-01"
 	var gotReq domain.UpdateCaseRequest
 	repo := &stubCaseRepo{
-		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
-			return domain.CaseView{}, nil
-		},
 		updateCaseFields: func(_ context.Context, req domain.UpdateCaseRequest, actorID, actorEmail string) (time.Time, error) {
 			gotReq = req
 			return time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC), nil
@@ -1431,9 +1428,6 @@ func TestCaseService_UpdateCase_AcceptsAutocloseHold(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var gotReq domain.UpdateCaseRequest
 			repo := &stubCaseRepo{
-				getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
-					return domain.CaseView{}, nil
-				},
 				updateCaseFields: func(_ context.Context, req domain.UpdateCaseRequest, _, _ string) (time.Time, error) {
 					gotReq = req
 					return time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC), nil
@@ -1478,9 +1472,6 @@ func TestCaseService_UpdateCase_AutocloseHoldIsMirroredToServiceNow(t *testing.T
 	failures := &recordingSNWritebackFailures{}
 	dispatcher := NewSNWritebackDispatcher(failures)
 	repo := &stubCaseRepo{
-		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
-			return domain.CaseView{}, nil
-		},
 		updateCaseFields: func(_ context.Context, _ domain.UpdateCaseRequest, _, _ string) (time.Time, error) {
 			return time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC), nil
 		},
@@ -1551,9 +1542,6 @@ func TestCaseService_UpdateCase_AutocloseHoldReachesServiceNowOverHTTP(t *testin
 	mirror := NewServiceNowCaseService(client, nil, nil, nil, nil, "", nil)
 
 	repo := &stubCaseRepo{
-		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
-			return domain.CaseView{}, nil
-		},
 		updateCaseFields: func(_ context.Context, _ domain.UpdateCaseRequest, _, _ string) (time.Time, error) {
 			return time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC), nil
 		},
@@ -1605,9 +1593,6 @@ func TestCaseService_UpdateCase_M2MCallerCanSetCombinableFields(t *testing.T) {
 	bestCaseFixEta := "2026-10-15"
 	var gotActorID, gotActorEmail string
 	repo := &stubCaseRepo{
-		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
-			return domain.CaseView{}, nil
-		},
 		updateCaseFields: func(_ context.Context, req domain.UpdateCaseRequest, actorID, actorEmail string) (time.Time, error) {
 			gotActorID, gotActorEmail = actorID, actorEmail
 			return time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC), nil
