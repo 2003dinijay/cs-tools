@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -75,13 +76,20 @@ func readSearchBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
 // object in the response's list under listKey (e.g. "products"), leaving
 // everything else as received: numbers keep their exact text, nulls and
 // non-string values are untouched, and a response without that list passes
-// through unchanged. It errors only when body is not a JSON object.
+// through unchanged. It errors unless body is exactly one JSON object (not null,
+// not another type, and with nothing after it).
 func upperEnumFields(body []byte, listKey string, fields ...string) ([]byte, error) {
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
 	var doc map[string]any
 	if err := dec.Decode(&doc); err != nil {
 		return nil, err
+	}
+	if doc == nil {
+		return nil, errors.New("response is null, not a JSON object")
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, errors.New("response has data after the JSON object")
 	}
 	items, _ := doc[listKey].([]any)
 	for _, it := range items {

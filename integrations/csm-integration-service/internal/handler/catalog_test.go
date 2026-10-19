@@ -158,8 +158,19 @@ func TestCatalog_UpperEnumFieldsLeavesTheRestAlone(t *testing.T) {
 	if out, err := upperEnumFields([]byte(`{"total":0}`), "deployedProducts", "category"); err != nil || string(out) != `{"total":0}` {
 		t.Errorf("no list: out=%s err=%v", out, err)
 	}
-	if _, err := upperEnumFields([]byte(`[1]`), "deployedProducts", "category"); err == nil {
-		t.Error("expected an error for a non-object body")
+	for name, body := range map[string]string{
+		"array":         `[1]`,
+		"null":          `null`,
+		"trailing data": `{"total":0} {"total":1}`,
+		"trailing junk": `{"total":0} x`,
+		"empty":         ``,
+	} {
+		if _, err := upperEnumFields([]byte(body), "deployedProducts", "category"); err == nil {
+			t.Errorf("%s: expected an error", name)
+		}
+	}
+	if _, err := upperEnumFields([]byte("{\"total\":0}\n  "), "deployedProducts", "category"); err != nil {
+		t.Errorf("trailing whitespace must be accepted: %v", err)
 	}
 }
 
