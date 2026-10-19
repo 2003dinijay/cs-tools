@@ -58,7 +58,11 @@ func ManualReminder(rota RotaReader, store ReminderStore, queue RequestQueue, em
 				return nil
 			}
 			status, result := "SENT", ""
-			sent, err := sendManual(ctx, rota, store, email, weekdayCfg, weekendCfg, req.Kind)
+			weekday, weekend := weekdayCfg, weekendCfg
+			if req.Test {
+				weekday, weekend = asTest(weekday, req.RequestedBy), asTest(weekend, req.RequestedBy)
+			}
+			sent, err := sendManual(ctx, rota, store, email, weekday, weekend, req.Kind)
 			switch {
 			case err != nil:
 				status, result = "FAILED", err.Error()
@@ -69,7 +73,10 @@ func ManualReminder(rota RotaReader, store ReminderStore, queue RequestQueue, em
 			default:
 				result = fmt.Sprintf("Sent %d emails.", sent)
 			}
-			slog.InfoContext(ctx, "rota reminder: sent by hand", "kind", req.Kind, "requestedBy", req.RequestedBy, "status", status, "result", result)
+			if req.Test && err == nil && sent > 0 {
+				result = strings.TrimSuffix(result, ".") + " to " + req.RequestedBy + " (test)."
+			}
+			slog.InfoContext(ctx, "rota reminder: sent by hand", "kind", req.Kind, "test", req.Test, "requestedBy", req.RequestedBy, "status", status, "result", result)
 			if err := queue.ReportReminderRequest(ctx, weekendCfg.Family, req.ID, status, result); err != nil {
 				return fmt.Errorf("rotareminder: report rota reminder request %s: %w", req.ID, err)
 			}
@@ -134,4 +141,14 @@ func (c *countingSender) SendEmailWithAttachments(ctx context.Context, to, cc []
 		c.n++
 	}
 	return err
+}
+
+// asTest is cfg for "Send a test to me": everything, alerts included, goes
+// only to the person who asked, and nothing is copied or recorded.
+func asTest(cfg Config, to string) Config {
+	cfg.Test = true
+	cfg.RedirectTo = []string{to}
+	cfg.Copy = nil
+	cfg.AlertTo, cfg.AlertCc = []string{to}, nil
+	return cfg
 }

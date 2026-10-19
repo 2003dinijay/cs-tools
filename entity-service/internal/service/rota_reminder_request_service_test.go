@@ -32,8 +32,11 @@ type fakeReminderRequestRepo struct {
 	cooldown          time.Duration
 }
 
-func (f *fakeReminderRequestRepo) Create(_ context.Context, actor, family, kind string, cooldown time.Duration) (domain.RotaReminderRequest, error) {
+func (f *fakeReminderRequestRepo) Create(_ context.Context, actor, family, kind string, test bool, cooldown time.Duration) (domain.RotaReminderRequest, error) {
 	f.created, f.cooldown = actor+" "+family+" "+kind, cooldown
+	if test {
+		f.created += " test"
+	}
 	return domain.RotaReminderRequest{Family: family, Kind: kind, Status: "QUEUED", RequestedBy: actor}, nil
 }
 
@@ -115,5 +118,16 @@ func TestRotaReminderRequest_TheTaskClaimsAndReports(t *testing.T) {
 	if _, err := svc.Report(serviceCtx(), "cre", id, domain.ReportRotaReminderRequest{Status: "failed", Result: "mail\nservice   down"}); err != nil ||
 		repo.reported != "CRE "+id+" FAILED mail service down" {
 		t.Errorf("reported %q: %v", repo.reported, err)
+	}
+}
+
+// A test has its own, shorter gap.
+func TestRotaReminderRequest_ATestIsItsOwnRequest(t *testing.T) {
+	repo := &fakeReminderRequestRepo{}
+	if _, err := newReminderRequests(repo, "CRE").Create(callerWithRoles("ann@example.com"), "CRE", domain.CreateRotaReminderRequest{Kind: "weekday", Test: true}); err != nil {
+		t.Fatal(err)
+	}
+	if repo.created != "ann@example.com CRE weekday test" || repo.cooldown != 2*time.Minute {
+		t.Errorf("created %q with cooldown %v", repo.created, repo.cooldown)
 	}
 }

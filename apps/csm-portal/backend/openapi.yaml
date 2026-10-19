@@ -12909,6 +12909,9 @@ paths:
               required: [kind]
               properties:
                 kind: { type: string, enum: [weekday, weekend] }
+                test:
+                  type: boolean
+                  description: Send it only to the person asking, as a test copy; their own queue, 2 minutes apart.
       responses:
         "201":
           description: Queued.

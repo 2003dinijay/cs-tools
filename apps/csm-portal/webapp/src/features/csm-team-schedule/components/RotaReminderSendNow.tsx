@@ -42,11 +42,14 @@ const ROTATIONS: Record<RotaReminderKind, readonly Rotation[]> = {
 };
 
 const OPTIONS: readonly { kind: RotaReminderKind; label: string }[] = [
-  { kind: "weekday", label: "Next working day (Morning and Evening)" },
-  { kind: "weekend", label: "The weekend" },
+  { kind: "weekday", label: "Next working day" },
+  { kind: "weekend", label: "Weekend" },
 ];
 
 const KIND_LABEL: Record<RotaReminderKind, string> = { weekday: "Weekday", weekend: "Weekend" };
+
+/** What the last ask said, once it was taken: a real one, or a test copy. */
+type Notice = "queued" | "test";
 
 interface PreviewDay {
   date: string;
@@ -85,35 +88,41 @@ function buildPreview(
   return { days: perDay, people: everyone.size };
 }
 
-function previewLine(r: { label: string; names: string[] }): string {
-  return r.names.length === 0 ? `${r.label}: nobody` : `${r.label} (${r.names.length}): ${r.names.join(", ")}`;
+/** The people on a rotation as "3 · Ann, Ben, Cid", or "nobody". */
+function peopleCell(names: readonly string[]): string {
+  return names.length === 0 ? "nobody" : `${names.length} · ${names.join(", ")}`;
 }
 
 function when(iso: string): string {
   return new Date(iso).toLocaleString();
 }
 
-function requestLine(r: RotaReminderRequest): string {
-  const head = `${KIND_LABEL[r.kind]} · asked by ${r.requestedBy} on ${when(r.requestedOn)}`;
+function whatCell(r: RotaReminderRequest): string {
+  return `${r.test ? "Test · " : ""}${KIND_LABEL[r.kind]}`;
+}
+
+function statusCell(r: RotaReminderRequest): string {
   switch (r.status) {
     case "QUEUED":
-      return `${head} · Waiting to be sent`;
+      return "Waiting to be sent";
     case "SENDING":
-      return `${head} · Sending…`;
+      return "Sending…";
     case "SENT":
-      return `${head} · Sent${r.handledOn ? ` on ${when(r.handledOn)}` : ""}${r.result ? `: ${r.result}` : ""}`;
+      return `Sent${r.handledOn ? ` on ${when(r.handledOn)}` : ""}${r.result ? `: ${r.result}` : ""}`;
     case "FAILED":
-      return `${head} · Failed${r.result ? `: ${r.result}` : ""}`;
+      return `Failed${r.result ? `: ${r.result}` : ""}`;
   }
 }
 
 /**
- * The "Send now" part of the CRE rota reminders card: asks for the weekday or
+ * The "Send now" panel of the CRE rota reminders card: asks for the weekday or
  * the weekend reminders, and their calendar invitations, to go out now rather
  * than at their usual time. It shows who would be emailed first and asks once
  * more before it asks. The ask is queued: the scheduled task sends it at its
- * next run. The server decides who may ask and how often, and answers a
- * refusal in words, shown as it is.
+ * next run. "Send a test to me" asks for the same reminder to reach only the
+ * person asking, with no confirmation, since it cannot reach anybody else. The
+ * server decides who may ask and how often, and answers a refusal in words,
+ * shown as it is.
  */
 export default function RotaReminderSendNow(): JSX.Element {
   const uid = useId();
@@ -122,7 +131,7 @@ export default function RotaReminderSendNow(): JSX.Element {
 
   const [kind, setKind] = useState<RotaReminderKind>("weekday");
   const [confirming, setConfirming] = useState(false);
-  const [queued, setQueued] = useState(false);
+  const [notice, setNotice] = useState<Notice | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const days = reminderDays(kind, new Date());
@@ -134,29 +143,34 @@ export default function RotaReminderSendNow(): JSX.Element {
   const roster = useReminderPreview(from, to, true);
 
   const recent = requests.data ?? [];
-  const waiting = recent.some((r) => r.kind === kind && (r.status === "QUEUED" || r.status === "SENDING"));
+  // A test copy reaches only the person who asked and changes nothing real, so
+  // a waiting one does not hold the real reminder back.
+  const waiting = recent.some(
+    (r) => !r.test && r.kind === kind && (r.status === "QUEUED" || r.status === "SENDING"),
+  );
 
   const preview = roster.data ? buildPreview(kind, days, roster.data.assignments) : null;
   const nobody = preview !== null && preview.people === 0;
   const canAsk = preview !== null && !nobody && !waiting && !send.isPending;
+  const whenText = describeDays(days);
 
   const pick = (next: RotaReminderKind): void => {
     setKind(next);
     setConfirming(false);
-    setQueued(false);
+    setNotice(null);
     setError(null);
   };
 
   const ask = (): void => {
     if (!canAsk) return;
     setError(null);
-    setQueued(false);
+    setNotice(null);
     send.mutate(
-      { kind },
+      { kind, test: false },
       {
         onSuccess: () => {
           setConfirming(false);
-          setQueued(true);
+          setNotice("queued");
         },
         onError: (err) => {
           setConfirming(false);
@@ -166,42 +180,54 @@ export default function RotaReminderSendNow(): JSX.Element {
     );
   };
 
+  const askTest = (): void => {
+    if (send.isPending) return;
+    setError(null);
+    setNotice(null);
+    send.mutate(
+      { kind, test: true },
+      {
+        onSuccess: () => setNotice("test"),
+        onError: (err) => setError(err.message || "The test was not requested."),
+      },
+    );
+  };
+
   return (
-    <section className="rrs-send" aria-labelledby={headingId}>
+    <section className="rrs-panel rrs-send" aria-labelledby={headingId}>
       <h4 id={headingId}>Send now</h4>
       <p className="cp-help">
-        Sends the reminders and calendar invitations now, whatever the on/off switches above say. They go out at the
-        scheduled task&apos;s next run, within the hour.
+        Sends the reminders and calendar invitations now, whatever the on/off switches in Settings say. They go out at
+        the scheduled task&apos;s next run, within the hour.
       </p>
 
       <fieldset className="rrs-kinds">
         <legend>What to send</legend>
-        {OPTIONS.map((o) => (
-          <div className="rrs-opt" key={o.kind}>
-            <label className="cas-check" htmlFor={id(o.kind)}>
+        <div className="seg rrs-seg">
+          {OPTIONS.map((o) => (
+            <label key={o.kind} className={kind === o.kind ? "on" : undefined}>
               <input
-                id={id(o.kind)}
                 type="radio"
                 name={id("kind")}
                 value={o.kind}
                 checked={kind === o.kind}
-                aria-describedby={id(`${o.kind}-when`)}
+                aria-describedby={kind === o.kind ? id("when") : undefined}
                 onChange={() => pick(o.kind)}
               />
               {o.label}
             </label>
-            <span className="rrs-when" id={id(`${o.kind}-when`)}>
-              {describeDays(reminderDays(o.kind, new Date()))}
-            </span>
-          </div>
-        ))}
-      </fieldset>
-      {kind === "weekend" ? (
-        <p className="cp-help">
-          Sent even if the weekend is not fully marked: what is missing is listed and the CRE rota admins are told.
-          Sending again updates the same calendar events.
+          ))}
+        </div>
+        <p className="rrs-when" id={id("when")}>
+          {whenText}
         </p>
-      ) : null}
+        {kind === "weekend" ? (
+          <p className="cp-help">
+            Sent even if the weekend is not fully marked: what is missing is listed and the CRE rota admins are told.
+            Sending again updates the same calendar events.
+          </p>
+        ) : null}
+      </fieldset>
 
       {roster.isLoading ? <p className="cp-help">Loading who is on the rota…</p> : null}
       {roster.isError ? (
@@ -210,20 +236,28 @@ export default function RotaReminderSendNow(): JSX.Element {
         </div>
       ) : null}
       {preview ? (
-        <div className="rrs-days">
-          {preview.days.map((d) => {
-            const name = describeDays([d.date]);
-            return (
-              <div className="rrs-day" role="group" aria-label={name} key={d.date}>
-                <div className="rrs-day-name">{name}</div>
-                <ul className="rrs-lines">
-                  {d.rotations.map((r) => (
-                    <li key={r.label}>{previewLine(r)}</li>
-                  ))}
-                </ul>
-              </div>
-            );
-          })}
+        <div className="rrs-tblwrap">
+          <table className="rrs-preview" aria-labelledby={id("who")}>
+            <caption id={id("who")}>Who gets it</caption>
+            <thead>
+              <tr>
+                <th scope="col">Day</th>
+                <th scope="col">Rotation</th>
+                <th scope="col">People</th>
+              </tr>
+            </thead>
+            <tbody>
+              {preview.days.flatMap((d) =>
+                d.rotations.map((r) => (
+                  <tr key={`${d.date}-${r.label}`}>
+                    <td>{describeDays([d.date])}</td>
+                    <td>{r.label}</td>
+                    <td>{peopleCell(r.names)}</td>
+                  </tr>
+                )),
+              )}
+            </tbody>
+          </table>
           <p className="cp-help">People on leave are left out.</p>
         </div>
       ) : null}
@@ -245,12 +279,15 @@ export default function RotaReminderSendNow(): JSX.Element {
         </div>
       ) : (
         <div className="rrs-acts">
+          <button type="button" className="btn sm" disabled={send.isPending} onClick={askTest}>
+            Send a test to me
+          </button>
           <button
             type="button"
             className="btn sm primary"
             disabled={!canAsk}
             onClick={() => {
-              setQueued(false);
+              setNotice(null);
               setError(null);
               setConfirming(true);
             }}
@@ -266,17 +303,37 @@ export default function RotaReminderSendNow(): JSX.Element {
         </div>
       ) : null}
       <div aria-live="polite">
-        {queued ? <p className="cas-status ok">Queued. It goes out at the scheduled task&apos;s next run.</p> : null}
+        {notice === "queued" ? (
+          <p className="cas-status ok">Queued. It goes out at the scheduled task&apos;s next run.</p>
+        ) : null}
+        {notice === "test" ? (
+          <p className="cas-status ok">Test queued: it goes only to you, at the scheduled task&apos;s next run.</p>
+        ) : null}
       </div>
 
       {recent.length > 0 ? (
-        <div>
+        <div className="rrs-tblwrap">
           <h5 id={id("recent")}>Recent</h5>
-          <ul className="rrs-recent" aria-labelledby={id("recent")}>
-            {recent.map((r) => (
-              <li key={r.id}>{requestLine(r)}</li>
-            ))}
-          </ul>
+          <table className="rrs-recent" aria-labelledby={id("recent")}>
+            <thead>
+              <tr>
+                <th scope="col">When</th>
+                <th scope="col">What</th>
+                <th scope="col">By</th>
+                <th scope="col">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {recent.map((r) => (
+                <tr key={r.id}>
+                  <td>{when(r.requestedOn)}</td>
+                  <td>{whatCell(r)}</td>
+                  <td>{r.requestedBy}</td>
+                  <td>{statusCell(r)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       ) : null}
     </section>

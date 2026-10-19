@@ -184,7 +184,7 @@ func RenderRotaReminder(data RotaReminderData) string {
 	var b strings.Builder
 	b.WriteString(`<div style="font-family:Arial, Helvetica, sans-serif; font-size:14px; line-height:20px;">` + "\n")
 	if len(data.IntendedFor) > 0 {
-		fmt.Fprintf(&b, "<p><i>[Test copy] Rota reminders are redirected in this environment. This email would have been sent to: %s.</i></p>\n",
+		fmt.Fprintf(&b, "<p><i>[Test copy] Not sent to the rota. This email would have been sent to: %s.</i></p>\n",
 			escapeHTML(strings.Join(data.IntendedFor, ", ")))
 	}
 	fmt.Fprintf(&b, "<p>%s</p>\n<p>%s</p>\n", escapeHTML(data.Greeting), escapeHTML(data.Intro))
@@ -256,7 +256,7 @@ func RenderWeekendRota(data WeekendRotaData) string {
 	var b strings.Builder
 	b.WriteString(`<div style="font-family:Arial, Helvetica, sans-serif; font-size:14px; line-height:20px;">` + "\n")
 	if len(data.IntendedFor) > 0 {
-		fmt.Fprintf(&b, "<p><i>[Test copy] Rota reminders are redirected in this environment. This email would have been sent to: %s.</i></p>\n",
+		fmt.Fprintf(&b, "<p><i>[Test copy] Not sent to the rota. This email would have been sent to: %s.</i></p>\n",
 			escapeHTML(strings.Join(data.IntendedFor, ", ")))
 	}
 	fmt.Fprintf(&b, "<p>Hello team,</p>\n<p>%s</p>\n", escapeHTML(data.Intro))

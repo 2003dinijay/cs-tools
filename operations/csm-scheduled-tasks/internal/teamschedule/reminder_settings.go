@@ -71,6 +71,7 @@ type ReminderRequest struct {
 	ID          string `json:"id"`
 	Family      string `json:"family"`
 	Kind        string `json:"kind"`
+	Test        bool   `json:"test"`
 	RequestedBy string `json:"requestedBy"`
 }
 

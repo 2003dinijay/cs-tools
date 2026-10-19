@@ -126,3 +126,44 @@ func TestManual_FailuresAreReported(t *testing.T) {
 		t.Fatal("a failed claim passed")
 	}
 }
+
+// A test goes only to the person who asked, marked in its subject, with test
+// event ids, and never touches the weekend's record: the real reminders still
+// announce the weekend afterwards.
+func TestManual_ATestGoesOnlyToWhoAsked(t *testing.T) {
+	weekday, weekend := manualConfigs("2026-10-19 10:00")
+	weekend.Copy = []string{"lead@example.com"}
+	store := &fakeStore{getErr: errors.New("a test must not read the record")}
+	queue := &fakeQueue{waiting: []teamschedule.ReminderRequest{{ID: "t1", Kind: "weekend", Test: true, RequestedBy: "zoe@example.com"}}}
+	mail := &fakeEmail{}
+	if err := ManualReminder(&fakeRota{assignments: fullWeekend()}, store, queue, mail, weekday, weekend)(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(mail.sent) != 5 || queue.reports[0] != "t1 SENT Sent 5 emails to zoe@example.com (test)." || len(store.recorded) != 0 {
+		t.Fatalf("sent %d, reports %v, recorded %d", len(mail.sent), queue.reports, len(store.recorded))
+	}
+	for _, m := range mail.sent {
+		if strings.Join(m.to, ",") != "zoe@example.com" || len(m.cc) != 0 || !strings.HasPrefix(m.subject, "[Test] [CRE Rota]") ||
+			!strings.Contains(m.body, "[Test copy] Not sent to the rota.") {
+			t.Errorf("%q to %v cc %v", m.subject, m.to, m.cc)
+		}
+		for _, a := range m.attachments {
+			ics := unfolded(a.Content)
+			if !strings.Contains(ics, "-test@csm-team-schedule") || !strings.Contains(ics, "mailto:zoe@example.com") || strings.Contains(ics, "mailto:ann@example.com") {
+				t.Errorf("invite:\n%s", ics)
+			}
+		}
+	}
+
+	// The real weekend notice afterwards is unaffected: it reads the record,
+	// finds nothing, and announces the weekend with the real event ids.
+	real := &fakeStore{}
+	mail = &fakeEmail{}
+	cfg := weekendConfig("2026-10-19 20:00", "rota_weekend_notice")
+	if err := WeekendNotice(&fakeRota{assignments: fullWeekend()}, real, mail, cfg)(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(mail.sent) != 5 || len(real.recorded) != 1 || strings.Contains(string(mail.sent[1].attachments[0].Content), "-test@") {
+		t.Fatalf("real notice: sent %d, recorded %d", len(mail.sent), len(real.recorded))
+	}
+}

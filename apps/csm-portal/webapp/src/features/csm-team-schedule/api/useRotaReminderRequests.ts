@@ -55,10 +55,11 @@ export function useRotaReminderRequests(family: RotaFamily): UseQueryResult<Rota
 }
 
 /**
- * Asks for a group's weekday or weekend reminders to go out now. The server
- * refuses (400, 403, 409 one is already waiting, 429 asked too recently) in
- * words, which surface as the error's message. Afterwards the list is read
- * again, whether the ask worked or not.
+ * Asks for a group's weekday or weekend reminders to go out now. With
+ * `test: true` the reminder goes only to the person asking, never to the rota.
+ * The server refuses (400, 403, 409 one is already waiting, 429 asked too
+ * recently) in words, which surface as the error's message. Afterwards the list
+ * is read again, whether the ask worked or not.
  */
 export function useSendRotaReminder(
   family: RotaFamily,

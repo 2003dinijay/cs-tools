@@ -92,6 +92,7 @@ function request(over: Partial<RotaReminderRequest>): RotaReminderRequest {
     id: "r1",
     family: "CRE",
     kind: "weekend",
+    test: false,
     status: "QUEUED",
     requestedBy: "ann@example.com",
     requestedOn: "2026-10-21T05:00:00Z",
@@ -102,9 +103,18 @@ function request(over: Partial<RotaReminderRequest>): RotaReminderRequest {
 const when = (iso: string): string => new Date(iso).toLocaleString();
 
 const sendButton = () => screen.getByRole("button", { name: "Send now" });
+const testButton = () => screen.getByRole("button", { name: "Send a test to me" });
 const pickWeekend = (): void => {
-  fireEvent.click(screen.getByRole("radio", { name: "The weekend" }));
+  fireEvent.click(screen.getByRole("radio", { name: "Weekend" }));
 };
+
+/** The body rows of a table, each as the text of its cells. */
+function bodyRows(table: HTMLElement): string[][] {
+  return within(table)
+    .getAllByRole("row")
+    .slice(1)
+    .map((row) => within(row).getAllByRole("cell").map((cell) => cell.textContent ?? ""));
+}
 
 beforeEach(() => {
   // Only the clock is fake, so nothing else waits on a timer.
@@ -124,32 +134,46 @@ afterEach(() => {
 });
 
 describe("RotaReminderSendNow", () => {
-  it("offers the next working day and the weekend, each with its dates", () => {
+  it("offers the next working day and the weekend as one choice, each with its dates", () => {
     render(<RotaReminderSendNow />);
-    expect(screen.getByRole("heading", { name: "Send now" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Send now", level: 4 })).toBeInTheDocument();
     expect(
       screen.getByText(
-        "Sends the reminders and calendar invitations now, whatever the on/off switches above say. They go out at the scheduled task's next run, within the hour.",
+        "Sends the reminders and calendar invitations now, whatever the on/off switches in Settings say. They go out at the scheduled task's next run, within the hour.",
       ),
     ).toBeInTheDocument();
 
     expect(screen.getByRole("group", { name: "What to send" })).toBeInTheDocument();
-    const weekday = screen.getByRole("radio", { name: "Next working day (Morning and Evening)" });
-    const weekend = screen.getByRole("radio", { name: "The weekend" });
+    const weekday = screen.getByRole("radio", { name: "Next working day" });
+    const weekend = screen.getByRole("radio", { name: "Weekend" });
     expect(weekday).toBeChecked();
     expect(weekend).not.toBeChecked();
     expect(weekday).toHaveAccessibleDescription("Thursday, 22 October");
+    // Said once under the choice (the table lists each day on its own rows).
+    expect(screen.getByText("Thursday, 22 October", { selector: "p" })).toBeInTheDocument();
+
+    pickWeekend();
+    expect(weekend).toBeChecked();
+    expect(weekday).not.toBeChecked();
     expect(weekend).toHaveAccessibleDescription("Saturday, 24 and Sunday, 25 October");
+    expect(screen.getByText("Saturday, 24 and Sunday, 25 October", { selector: "p" })).toBeInTheDocument();
   });
 
-  it("previews the next working day's rotations, with nobody on a rotation said so", () => {
+  it("previews the next working day as a table of day, rotation and people", () => {
     render(<RotaReminderSendNow />);
     expect(previewArgs).toHaveBeenLastCalledWith(THU, THU, true);
 
-    const day = within(screen.getByRole("group", { name: "Thursday, 22 October" }));
-    expect(day.getByText("Morning (1): Fay")).toBeInTheDocument();
-    expect(day.getByText("Morning on-call: nobody")).toBeInTheDocument();
-    expect(day.getByText("Evening (2): Gus, Hal")).toBeInTheDocument();
+    const table = screen.getByRole("table", { name: "Who gets it" });
+    expect(within(table).getAllByRole("columnheader").map((h) => h.textContent)).toEqual([
+      "Day",
+      "Rotation",
+      "People",
+    ]);
+    expect(bodyRows(table)).toEqual([
+      ["Thursday, 22 October", "Morning", "1 · Fay"],
+      ["Thursday, 22 October", "Morning on-call", "nobody"],
+      ["Thursday, 22 October", "Evening", "2 · Gus, Hal"],
+    ]);
     expect(screen.getByText("People on leave are left out.")).toBeInTheDocument();
     expect(
       screen.queryByText(/^Sent even if the weekend is not fully marked/),
@@ -161,15 +185,14 @@ describe("RotaReminderSendNow", () => {
     pickWeekend();
     expect(previewArgs).toHaveBeenLastCalledWith(SAT, SUN, true);
 
-    const sat = within(screen.getByRole("group", { name: "Saturday, 24 October" }));
-    expect(sat.getByText("LK Weekend (3): Ann, Ben, Cid")).toBeInTheDocument();
-    expect(sat.getByText("Americas Weekend (1): Dee")).toBeInTheDocument();
-    expect(sat.getByText("LK On-call: nobody")).toBeInTheDocument();
-
-    const sun = within(screen.getByRole("group", { name: "Sunday, 25 October" }));
-    expect(sun.getByText("LK Weekend (2): Ann, Ben")).toBeInTheDocument();
-    expect(sun.getByText("Americas Weekend (1): Dee")).toBeInTheDocument();
-    expect(sun.getByText("LK On-call (1): Eve")).toBeInTheDocument();
+    expect(bodyRows(screen.getByRole("table", { name: "Who gets it" }))).toEqual([
+      ["Saturday, 24 October", "LK Weekend", "3 · Ann, Ben, Cid"],
+      ["Saturday, 24 October", "Americas Weekend", "1 · Dee"],
+      ["Saturday, 24 October", "LK On-call", "nobody"],
+      ["Sunday, 25 October", "LK Weekend", "2 · Ann, Ben"],
+      ["Sunday, 25 October", "Americas Weekend", "1 · Dee"],
+      ["Sunday, 25 October", "LK On-call", "1 · Eve"],
+    ]);
 
     expect(
       screen.getByText(
@@ -194,6 +217,7 @@ describe("RotaReminderSendNow", () => {
     roster.isLoading = true;
     const { unmount } = render(<RotaReminderSendNow />);
     expect(screen.getByText("Loading who is on the rota…")).toBeInTheDocument();
+    expect(screen.queryByRole("table", { name: "Who gets it" })).not.toBeInTheDocument();
     expect(sendButton()).toBeDisabled();
     unmount();
 
@@ -211,10 +235,11 @@ describe("RotaReminderSendNow", () => {
     expect(mutate).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "Yes, send" })).toBeEnabled();
     expect(screen.queryByRole("button", { name: "Send now" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Send a test to me" })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Yes, send" }));
     expect(mutate).toHaveBeenCalledTimes(1);
-    expect(mutate.mock.calls[0]?.[0]).toEqual({ kind: "weekend" });
+    expect(mutate.mock.calls[0]?.[0]).toEqual({ kind: "weekend", test: false });
   });
 
   it("sends the next working day's reminders as weekday", () => {
@@ -222,7 +247,7 @@ describe("RotaReminderSendNow", () => {
     fireEvent.click(sendButton());
     expect(screen.getByText("Email 3 people now?")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Yes, send" }));
-    expect(mutate.mock.calls[0]?.[0]).toEqual({ kind: "weekday" });
+    expect(mutate.mock.calls[0]?.[0]).toEqual({ kind: "weekday", test: false });
   });
 
   it("does not send on Cancel, and offers Send now again", () => {
@@ -233,6 +258,7 @@ describe("RotaReminderSendNow", () => {
     expect(mutate).not.toHaveBeenCalled();
     expect(screen.queryByText(/^Email \d+ (people|person) now\?$/)).not.toBeInTheDocument();
     expect(sendButton()).toBeEnabled();
+    expect(testButton()).toBeEnabled();
   });
 
   it("says it is queued once the ask is taken", () => {
@@ -273,7 +299,7 @@ describe("RotaReminderSendNow", () => {
     expect(sendButton()).toBeDisabled();
     expect(screen.getByText("A weekend reminder is already waiting to be sent.")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("radio", { name: "Next working day (Morning and Evening)" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Next working day" }));
     expect(sendButton()).toBeEnabled();
   });
 
@@ -290,7 +316,82 @@ describe("RotaReminderSendNow", () => {
     expect(sendButton()).toBeDisabled();
   });
 
-  it("lists recent asks with where each one is", () => {
+  describe("Send a test to me", () => {
+    it("asks for a test of the chosen kind at once, with no confirmation", () => {
+      render(<RotaReminderSendNow />);
+      pickWeekend();
+      fireEvent.click(testButton());
+
+      expect(mutate).toHaveBeenCalledTimes(1);
+      expect(mutate.mock.calls[0]?.[0]).toEqual({ kind: "weekend", test: true });
+      expect(screen.queryByRole("button", { name: "Yes, send" })).not.toBeInTheDocument();
+      expect(screen.queryByText(/^Email \d+ (people|person) now\?$/)).not.toBeInTheDocument();
+    });
+
+    it("asks for the weekday test when the next working day is chosen", () => {
+      render(<RotaReminderSendNow />);
+      fireEvent.click(testButton());
+      expect(mutate.mock.calls[0]?.[0]).toEqual({ kind: "weekday", test: true });
+    });
+
+    it("says the test is queued, and goes only to the person asking", () => {
+      mutate.mockImplementation((_body: unknown, opts?: Callbacks) =>
+        opts?.onSuccess?.(request({ test: true })),
+      );
+      render(<RotaReminderSendNow />);
+      fireEvent.click(testButton());
+
+      expect(
+        screen.getByText("Test queued: it goes only to you, at the scheduled task's next run."),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/^Queued\./)).not.toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+
+    it("shows the server's words when it refuses the test", () => {
+      mutate.mockImplementation((_body: unknown, opts?: Callbacks) =>
+        opts?.onError?.(new Error("a test was asked for less than 2 minutes ago")),
+      );
+      render(<RotaReminderSendNow />);
+      fireEvent.click(testButton());
+
+      expect(screen.getByRole("alert")).toHaveTextContent("a test was asked for less than 2 minutes ago");
+      expect(screen.queryByText(/^Test queued/)).not.toBeInTheDocument();
+    });
+
+    it("stays available while a real reminder of that kind is waiting", () => {
+      requests.data = [request({ kind: "weekend", status: "QUEUED" })];
+      render(<RotaReminderSendNow />);
+      pickWeekend();
+      expect(sendButton()).toBeDisabled();
+      expect(testButton()).toBeEnabled();
+
+      fireEvent.click(testButton());
+      expect(mutate.mock.calls[0]?.[0]).toEqual({ kind: "weekend", test: true });
+    });
+
+    it("does not need anybody to be on the rota", () => {
+      setRoster([]);
+      render(<RotaReminderSendNow />);
+      expect(sendButton()).toBeDisabled();
+      expect(testButton()).toBeEnabled();
+    });
+
+    it("is held while an ask is on its way", () => {
+      sending.pending = true;
+      render(<RotaReminderSendNow />);
+      expect(testButton()).toBeDisabled();
+    });
+
+    it("is not held back by a waiting test, and a waiting test does not hold Send now", () => {
+      requests.data = [request({ kind: "weekday", test: true, status: "QUEUED" })];
+      render(<RotaReminderSendNow />);
+      expect(sendButton()).toBeEnabled();
+      expect(screen.queryByText(/is already waiting to be sent\.$/)).not.toBeInTheDocument();
+    });
+  });
+
+  it("lists recent asks in a table with where each one is", () => {
     requests.data = [
       request({ id: "a", kind: "weekend", status: "QUEUED", requestedBy: "ann@example.com" }),
       request({ id: "b", kind: "weekday", status: "SENDING", requestedBy: "ben@example.com" }),
@@ -308,25 +409,39 @@ describe("RotaReminderSendNow", () => {
     render(<RotaReminderSendNow />);
 
     expect(screen.getByRole("heading", { name: "Recent" })).toBeInTheDocument();
-    const list = within(screen.getByRole("list", { name: "Recent" }));
+    const table = screen.getByRole("table", { name: "Recent" });
+    expect(within(table).getAllByRole("columnheader").map((h) => h.textContent)).toEqual([
+      "When",
+      "What",
+      "By",
+      "Status",
+    ]);
     const asked = when("2026-10-21T05:00:00Z");
-    expect(list.getByText(`Weekend · asked by ann@example.com on ${asked} · Waiting to be sent`)).toBeInTheDocument();
-    expect(list.getByText(`Weekday · asked by ben@example.com on ${asked} · Sending…`)).toBeInTheDocument();
-    expect(
-      list.getByText(
-        `Weekend · asked by cid@example.com on ${asked} · Sent on ${when("2026-10-20T10:00:00Z")}: 12 emails sent`,
-      ),
-    ).toBeInTheDocument();
-    expect(
-      list.getByText(`Weekday · asked by dee@example.com on ${asked} · Sent on ${when("2026-10-19T10:00:00Z")}`),
-    ).toBeInTheDocument();
-    expect(
-      list.getByText(`Weekday · asked by eve@example.com on ${asked} · Failed: mail server down`),
-    ).toBeInTheDocument();
+    expect(bodyRows(table)).toEqual([
+      [asked, "Weekend", "ann@example.com", "Waiting to be sent"],
+      [asked, "Weekday", "ben@example.com", "Sending…"],
+      [asked, "Weekend", "cid@example.com", `Sent on ${when("2026-10-20T10:00:00Z")}: 12 emails sent`],
+      [asked, "Weekday", "dee@example.com", `Sent on ${when("2026-10-19T10:00:00Z")}`],
+      [asked, "Weekday", "eve@example.com", "Failed: mail server down"],
+    ]);
   });
 
-  it("shows no Recent list when nothing was asked for", () => {
+  it("marks a test request in the recent table", () => {
+    requests.data = [
+      request({ id: "t", kind: "weekend", test: true, status: "SENT", handledOn: "2026-10-21T06:00:00Z" }),
+      request({ id: "r", kind: "weekday", test: false, status: "QUEUED" }),
+    ];
+    render(<RotaReminderSendNow />);
+
+    const table = within(screen.getByRole("table", { name: "Recent" }));
+    expect(table.getByRole("cell", { name: "Test · Weekend" })).toBeInTheDocument();
+    expect(table.getByRole("cell", { name: "Weekday" })).toBeInTheDocument();
+    expect(table.queryByRole("cell", { name: "Test · Weekday" })).not.toBeInTheDocument();
+  });
+
+  it("shows no Recent table when nothing was asked for", () => {
     render(<RotaReminderSendNow />);
     expect(screen.queryByRole("heading", { name: "Recent" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("table", { name: "Recent" })).not.toBeInTheDocument();
   });
 });

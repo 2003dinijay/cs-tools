@@ -234,6 +234,14 @@ schedules assume `TZ=UTC` like every other here.
   never reported (the run died) is claimed again after 30 minutes, so in that rare case its
   emails go out twice. How soon it is sent is the driver's cadence (`DRIVER_INTERVAL`, an hour by
   default); its schedule (`*/5 * * * *`) is finer than the driver, so it is due at every tick.
+- **"Send a test to me".** The same queue with `test: true` (its own queue per person, 2 minutes
+  apart, never held up by a real request). The run sends exactly what Send now would, but every
+  email -- admins' and failure alerts included -- goes only to the person who asked, with
+  "[Test]" in the subject and the "[Test copy] Not sent to the rota. ... would have been sent
+  to: ..." line; nothing is copied; invitations carry test event ids (`...-test@csm-team-schedule`),
+  so a test event never stands in for or blocks the real one; and the weekend's send record is
+  neither read nor written, so the real reminders are unaffected. Works in every environment,
+  production included, and needs no `ROTA_REMINDER_REDIRECT_TO`.
 - **Only a fully marked weekend is announced.** `ROTA_REMINDER_WEEKEND_REQUIRED` (default
   `CRE_WEEKEND=3,CRE_WEEKEND_NIGHT=1`) is how many people each shift needs on each day; the on-call
   variant does not count. Until that holds, `rota_weekend_notice` emails the family's rota admins

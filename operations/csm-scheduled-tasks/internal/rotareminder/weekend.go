@@ -110,9 +110,14 @@ func weekend(ctx context.Context, rota RotaReader, store ReminderStore, sender E
 	days := []time.Time{sat, sun}
 	period := sat.Format(dateLayout)
 
-	rec, err := store.GetReminder(ctx, cfg.Family, weekendKind, period)
-	if err != nil {
-		return fmt.Errorf("rotareminder: read what was sent for the weekend of %s: %w", period, err)
+	// A test neither reads nor writes the record: it is not a send to the
+	// rota, and must not change what the real reminders do.
+	var rec *teamschedule.ReminderRecord
+	if !cfg.Test {
+		var err error
+		if rec, err = store.GetReminder(ctx, cfg.Family, weekendKind, period); err != nil {
+			return fmt.Errorf("rotareminder: read what was sent for the weekend of %s: %w", period, err)
+		}
 	}
 	if !final && rec != nil {
 		slog.InfoContext(ctx, "rota reminder: the weekend was already announced; nothing sent", "weekend", period, "sentOn", rec.LastSentOn)
@@ -207,7 +212,7 @@ func weekend(ctx context.Context, rota RotaReader, store ReminderStore, sender E
 		// A window that has begun is not touched; one that is gone from the
 		// rota is withdrawn from everybody who was sent it.
 		for _, w := range started {
-			uid := inviteUID(cfg.Family, w.date, w.base)
+			uid := cfg.inviteUID(w.date, w.base)
 			current[uid] = true
 			if old, ok := previous[uid]; ok {
 				invites = append(invites, old)
@@ -230,7 +235,9 @@ func weekend(ctx context.Context, rota RotaReader, store ReminderStore, sender E
 	if sentBy == "" {
 		sentBy = "rota reminder"
 	}
-	if err := store.RecordReminder(ctx, cfg.Family, weekendKind, period, invites, sentBy); err != nil {
+	if cfg.Test {
+		slog.InfoContext(ctx, "rota reminder: weekend test sent; not recorded", "weekend", period, "to", cfg.RedirectTo)
+	} else if err := store.RecordReminder(ctx, cfg.Family, weekendKind, period, invites, sentBy); err != nil {
 		// The emails went out; failing the run would send them again.
 		failed = append(failed, failure{label: "recording the send (the next evening may send it again)", err: err})
 	}
@@ -285,5 +292,5 @@ func send(ctx context.Context, sender EmailSender, cfg Config, email shiftEmail)
 	if len(cfg.RedirectTo) > 0 {
 		to, cc = cfg.RedirectTo, nil
 	}
-	return sender.SendEmailWithAttachments(ctx, to, cc, email.subject, email.body, email.attachments)
+	return sender.SendEmailWithAttachments(ctx, to, cc, cfg.subject(email.subject), email.body, email.attachments)
 }

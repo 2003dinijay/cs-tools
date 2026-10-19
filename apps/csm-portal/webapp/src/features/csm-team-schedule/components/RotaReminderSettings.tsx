@@ -239,168 +239,200 @@ export default function RotaReminderSettings(): JSX.Element {
 
   return (
     <section className="ra-sec" aria-labelledby={headingId}>
-      {heading}
-      <p className="rrs-intro">Emails and calendar invitations sent to the people on each rotation.</p>
+      <div className="rrs-head">
+        <div className="rrs-title">
+          {heading}
+          <p className="rrs-intro">Emails and calendar invitations sent to the people on each rotation.</p>
+        </div>
+        <span className={loaded === null ? "rrs-badge" : "rrs-badge saved"}>
+          {loaded === null ? "Built-in settings" : "Saved"}
+        </span>
+      </div>
       {loaded === null ? (
-        <p className="cas-status info">
-          Not saved yet: the reminders use their built-in settings, shown below. Saving makes them editable here.
-        </p>
+        <p className="cp-help rrs-meta">Using the built-in settings. Save to change them.</p>
       ) : (
-        <p className="cp-help">
+        <p className="cp-help rrs-meta">
           Last changed by {loaded.updatedBy}
           {changedOn ? ` on ${changedOn}` : ""}
         </p>
       )}
 
-      <form className="rrs" noValidate onSubmit={submit}>
-        <div className="rrs-checks">
-          <div>
-            <label className="cas-check" htmlFor={id("weekday")}>
-              <input
-                id={id("weekday")}
-                type="checkbox"
-                checked={form.weekdayEnabled}
-                aria-describedby={id("weekday-help")}
-                onChange={(e) => edit({ weekdayEnabled: e.target.checked })}
-              />
-              Send weekday reminders
-            </label>
-            <p className="cp-help" id={id("weekday-help")}>
-              Morning and Evening, emailed the working day before at 15:00 IST.
-            </p>
-          </div>
-          <div>
-            <label className="cas-check" htmlFor={id("weekend")}>
-              <input
-                id={id("weekend")}
-                type="checkbox"
-                checked={form.weekendEnabled}
-                aria-describedby={id("weekend-help")}
-                onChange={(e) => edit({ weekendEnabled: e.target.checked })}
-              />
-              Send weekend reminders
-            </label>
-            <p className="cp-help" id={id("weekend-help")}>
-              Sunday to Thursday at 20:00 IST once the weekend is fully marked, and again on Friday at 15:00 IST.
-            </p>
-          </div>
-          <div>
-            <label className="cas-check" htmlFor={id("invites")}>
-              <input
-                id={id("invites")}
-                type="checkbox"
-                checked={form.invitesEnabled}
-                aria-describedby={id("invites-help")}
-                onChange={(e) => edit({ invitesEnabled: e.target.checked })}
-              />
-              Attach calendar invitations
-            </label>
-            <p className="cp-help" id={id("invites-help")}>
-              Everybody on a rotation is a guest of its event, so they can start a group chat from it.
-            </p>
-          </div>
-        </div>
+      <div className="rrs-grid2">
+        <section className="rrs-panel" aria-labelledby={id("settings-h")}>
+          <h4 id={id("settings-h")}>Settings</h4>
+          <form className="rrs" noValidate onSubmit={submit}>
+            <fieldset className="rrs-group">
+              <legend>Automatic reminders</legend>
+              <div className="rrs-checks">
+                <div>
+                  <label className="cas-check" htmlFor={id("weekday")}>
+                    <input
+                      id={id("weekday")}
+                      type="checkbox"
+                      checked={form.weekdayEnabled}
+                      aria-describedby={id("weekday-help")}
+                      onChange={(e) => edit({ weekdayEnabled: e.target.checked })}
+                    />
+                    Send weekday reminders
+                  </label>
+                  <p className="cp-help" id={id("weekday-help")}>
+                    Morning and Evening, emailed the working day before at 15:00 IST.
+                  </p>
+                </div>
+                <div>
+                  <label className="cas-check" htmlFor={id("weekend")}>
+                    <input
+                      id={id("weekend")}
+                      type="checkbox"
+                      checked={form.weekendEnabled}
+                      aria-describedby={id("weekend-help")}
+                      onChange={(e) => edit({ weekendEnabled: e.target.checked })}
+                    />
+                    Send weekend reminders
+                  </label>
+                  <p className="cp-help" id={id("weekend-help")}>
+                    Sunday to Thursday at 20:00 IST once the weekend is fully marked, and again on Friday at 15:00
+                    IST.
+                  </p>
+                </div>
+                <div>
+                  <label className="cas-check" htmlFor={id("invites")}>
+                    <input
+                      id={id("invites")}
+                      type="checkbox"
+                      checked={form.invitesEnabled}
+                      aria-describedby={id("invites-help")}
+                      onChange={(e) => edit({ invitesEnabled: e.target.checked })}
+                    />
+                    Attach calendar invitations
+                  </label>
+                  <p className="cp-help" id={id("invites-help")}>
+                    Everybody on a rotation is a guest of its event, so they can start a group chat from it.
+                  </p>
+                </div>
+              </div>
+            </fieldset>
 
-        <div>
-          <div className="rrs-grid">
-            <div className="rrs-field">
-              <label htmlFor={id("lk")}>People needed on LK Weekend each day</label>
-              <input
-                id={id("lk")}
-                type="number"
-                min={0}
-                max={MAX_PEOPLE}
-                step={1}
-                inputMode="numeric"
-                value={form.lkWeekend}
-                aria-describedby={id("people-help")}
-                onChange={(e) => edit({ lkWeekend: e.target.value })}
-              />
-            </div>
-            <div className="rrs-field">
-              <label htmlFor={id("americas")}>People needed on Americas Weekend each day</label>
-              <input
-                id={id("americas")}
-                type="number"
-                min={0}
-                max={MAX_PEOPLE}
-                step={1}
-                inputMode="numeric"
-                value={form.americasWeekend}
-                aria-describedby={id("people-help")}
-                onChange={(e) => edit({ americasWeekend: e.target.value })}
-              />
-            </div>
-          </div>
-          <p className="cp-help" id={id("people-help")}>
-            Until both are met the weekend is not announced and the CRE rota admins are asked to finish the rota.
-            On-call does not count.
-          </p>
-        </div>
+            <fieldset className="rrs-group">
+              <legend>Weekend rota</legend>
+              <div>
+                <div className="rrs-grid">
+                  <div className="rrs-field">
+                    <label htmlFor={id("lk")}>People needed on LK Weekend each day</label>
+                    <input
+                      id={id("lk")}
+                      type="number"
+                      min={0}
+                      max={MAX_PEOPLE}
+                      step={1}
+                      inputMode="numeric"
+                      value={form.lkWeekend}
+                      aria-describedby={id("people-help")}
+                      onChange={(e) => edit({ lkWeekend: e.target.value })}
+                    />
+                  </div>
+                  <div className="rrs-field">
+                    <label htmlFor={id("americas")}>People needed on Americas Weekend each day</label>
+                    <input
+                      id={id("americas")}
+                      type="number"
+                      min={0}
+                      max={MAX_PEOPLE}
+                      step={1}
+                      inputMode="numeric"
+                      value={form.americasWeekend}
+                      aria-describedby={id("people-help")}
+                      onChange={(e) => edit({ americasWeekend: e.target.value })}
+                    />
+                  </div>
+                </div>
+                <p className="cp-help" id={id("people-help")}>
+                  Until both are met the weekend is not announced and the CRE rota admins are asked to finish the
+                  rota. On-call does not count.
+                </p>
+              </div>
 
-        <fieldset className="rrs-win" aria-describedby={id("window-help")}>
-          <legend>Americas Weekend and LK On-call hours</legend>
-          <div className="rrs-times">
-            <div className="rrs-field">
-              <label htmlFor={id("start")}>Start</label>
-              <input
-                id={id("start")}
-                type="time"
-                value={form.start}
-                onChange={(e) => edit({ start: e.target.value })}
-              />
-            </div>
-            <div className="rrs-field">
-              <label htmlFor={id("end")}>End</label>
-              <input id={id("end")} type="time" value={form.end} onChange={(e) => edit({ end: e.target.value })} />
-            </div>
-            <div className="rrs-field">
-              <label htmlFor={id("zone")}>Time zone</label>
-              <select id={id("zone")} value={form.timeZone} onChange={(e) => edit({ timeZone: e.target.value })}>
-                {zones.map((z) => (
-                  <option key={z} value={z}>
-                    {z}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-          <p className="cp-help" id={id("window-help")}>
-            Kept on this clock: in IST and UTC the window moves by an hour when US daylight saving changes.
-          </p>
-        </fieldset>
+              <fieldset className="rrs-win" aria-describedby={id("window-help")}>
+                <legend>Americas Weekend and LK On-call hours</legend>
+                <div className="rrs-times">
+                  <div className="rrs-field">
+                    <label htmlFor={id("start")}>Start</label>
+                    <input
+                      id={id("start")}
+                      type="time"
+                      value={form.start}
+                      onChange={(e) => edit({ start: e.target.value })}
+                    />
+                  </div>
+                  <div className="rrs-field">
+                    <label htmlFor={id("end")}>End</label>
+                    <input
+                      id={id("end")}
+                      type="time"
+                      value={form.end}
+                      onChange={(e) => edit({ end: e.target.value })}
+                    />
+                  </div>
+                  <div className="rrs-field">
+                    <label htmlFor={id("zone")}>Time zone</label>
+                    <select
+                      id={id("zone")}
+                      value={form.timeZone}
+                      onChange={(e) => edit({ timeZone: e.target.value })}
+                    >
+                      {zones.map((z) => (
+                        <option key={z} value={z}>
+                          {z}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <p className="cp-help" id={id("window-help")}>
+                  Kept on this clock: in IST and UTC the window moves by an hour when US daylight saving changes.
+                </p>
+              </fieldset>
+            </fieldset>
 
-        <div className="rrs-field">
-          <label htmlFor={id("copy")}>Also copy every reminder to</label>
-          <textarea
-            id={id("copy")}
-            rows={3}
-            value={form.copyTo}
-            aria-describedby={id("copy-help")}
-            onChange={(e) => edit({ copyTo: e.target.value })}
-          />
-          <p className="cp-help" id={id("copy-help")}>
-            Email addresses, separated by commas or new lines. Optional.
-          </p>
-        </div>
+            <fieldset className="rrs-group">
+              <legend>Copies</legend>
+              <div className="rrs-field">
+                <label htmlFor={id("copy")}>Also copy every reminder to</label>
+                <textarea
+                  id={id("copy")}
+                  rows={3}
+                  value={form.copyTo}
+                  aria-describedby={id("copy-help")}
+                  onChange={(e) => edit({ copyTo: e.target.value })}
+                />
+                <p className="cp-help" id={id("copy-help")}>
+                  Email addresses, separated by commas or new lines. Optional.
+                </p>
+              </div>
+            </fieldset>
 
-        {error ? (
-          <div className="ra-err" role="alert">
-            {error}
-          </div>
-        ) : null}
-
-        <div className="rrs-acts">
-          <button type="button" className="btn sm" disabled={!dirty} onClick={discard}>
-            Discard changes
-          </button>
-          <button type="submit" className="btn sm primary" disabled={!dirty || save.isPending}>
-            {save.isPending ? "Saving…" : "Save reminder settings"}
-          </button>
-        </div>
-        <div aria-live="polite">{justSaved ? <p className="cas-status ok">Saved.</p> : null}</div>
-      </form>
-      <RotaReminderSendNow />
+            <div className="rrs-foot">
+              <div className="rrs-msg">
+                {error ? (
+                  <div className="ra-err" role="alert">
+                    {error}
+                  </div>
+                ) : null}
+                <div aria-live="polite">{justSaved ? <p className="cas-status ok">Saved.</p> : null}</div>
+              </div>
+              <div className="rrs-acts">
+                <button type="button" className="btn sm" disabled={!dirty} onClick={discard}>
+                  Discard changes
+                </button>
+                <button type="submit" className="btn sm primary" disabled={!dirty || save.isPending}>
+                  {save.isPending ? "Saving…" : "Save reminder settings"}
+                </button>
+              </div>
+            </div>
+          </form>
+        </section>
+        <RotaReminderSendNow />
+      </div>
     </section>
   );
 }

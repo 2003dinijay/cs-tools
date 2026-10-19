@@ -24,6 +24,9 @@
 --           'weekend' (the coming weekend, sent even if not fully marked)
 --   status  QUEUED -> SENDING (claimed) -> SENT or FAILED. A SENDING request
 --           not reported within 30 minutes is claimed again.
+--   test    "Send a test to me": sent only to requested_by, marked as a
+--           test copy, with test calendar event ids; not recorded, so the
+--           real reminders are not affected.
 --
 -- id keys the Team Schedule audit trigger (team_schedule_audit_row), so who
 -- asked and what happened is in team_schedule_audit too.
@@ -34,6 +37,7 @@ CREATE TABLE IF NOT EXISTS team_schedule_reminder_request (
     family       VARCHAR(16)  NOT NULL,
     kind         VARCHAR(16)  NOT NULL,
     status       VARCHAR(16)  NOT NULL DEFAULT 'QUEUED',
+    test         BOOLEAN      NOT NULL DEFAULT FALSE,
     requested_by VARCHAR(255) NOT NULL,
     requested_on TIMESTAMPTZ  NOT NULL DEFAULT now(),
     claimed_on   TIMESTAMPTZ,
@@ -47,6 +51,10 @@ CREATE TABLE IF NOT EXISTS team_schedule_reminder_request (
     CONSTRAINT team_schedule_reminder_request_kind_check CHECK (kind IN ('weekday', 'weekend')),
     CONSTRAINT team_schedule_reminder_request_status_check CHECK (status IN ('QUEUED', 'SENDING', 'SENT', 'FAILED'))
 );
+
+-- For a database that applied this file before test was added (it was not
+-- released then): the column, as above.
+ALTER TABLE team_schedule_reminder_request ADD COLUMN IF NOT EXISTS test BOOLEAN NOT NULL DEFAULT FALSE;
 
 CREATE INDEX IF NOT EXISTS team_schedule_reminder_request_family_on_idx
     ON team_schedule_reminder_request (family, requested_on DESC);

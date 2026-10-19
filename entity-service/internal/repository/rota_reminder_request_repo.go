@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -36,7 +37,9 @@ type RotaReminderRequestRepository interface {
 	// still waiting (ConflictError) or was asked for within cooldown
 	// (TooManyRequestsError). Checked and written under one lock, so two
 	// presses at once queue one request.
-	Create(ctx context.Context, actor, family, kind string, cooldown time.Duration) (domain.RotaReminderRequest, error)
+	// A test is its own queue per person: a test never holds up the real
+	// reminders or somebody else's test.
+	Create(ctx context.Context, actor, family, kind string, test bool, cooldown time.Duration) (domain.RotaReminderRequest, error)
 	// List is the family's latest requests, newest first.
 	List(ctx context.Context, family string, limit int) ([]domain.RotaReminderRequest, error)
 	// Claim marks the family's oldest waiting request SENDING and returns it:
@@ -54,11 +57,11 @@ func NewRotaReminderRequestRepository(db *pgxpool.Pool) RotaReminderRequestRepos
 	return &rotaReminderRequestRepository{db: db}
 }
 
-const rotaReminderRequestColumns = `id::text, family, kind, status, requested_by, requested_on, claimed_on, handled_on, COALESCE(result, '')`
+const rotaReminderRequestColumns = `id::text, family, kind, status, test, requested_by, requested_on, claimed_on, handled_on, COALESCE(result, '')`
 
 func scanRotaReminderRequest(row pgx.Row) (domain.RotaReminderRequest, error) {
 	var out domain.RotaReminderRequest
-	err := row.Scan(&out.ID, &out.Family, &out.Kind, &out.Status, &out.RequestedBy, &out.RequestedOn, &out.ClaimedOn, &out.HandledOn, &out.Result)
+	err := row.Scan(&out.ID, &out.Family, &out.Kind, &out.Status, &out.Test, &out.RequestedBy, &out.RequestedOn, &out.ClaimedOn, &out.HandledOn, &out.Result)
 	return out, err
 }
 
@@ -77,28 +80,44 @@ func (r *rotaReminderRequestRepository) inTx(ctx context.Context, actor string, 
 	return tx.Commit(ctx)
 }
 
-func (r *rotaReminderRequestRepository) Create(ctx context.Context, actor, family, kind string, cooldown time.Duration) (domain.RotaReminderRequest, error) {
+func (r *rotaReminderRequestRepository) Create(ctx context.Context, actor, family, kind string, test bool, cooldown time.Duration) (domain.RotaReminderRequest, error) {
 	var out domain.RotaReminderRequest
 	err := r.inTx(ctx, actor, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('rota-reminder-request:' || $1 || ':' || $2, 0))`, family, kind); err != nil {
+		// A real request is one queue per family and kind; a test, one per
+		// family, kind and person.
+		owner := ""
+		if test {
+			owner = actor
+		}
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('rota-reminder-request:' || $1 || ':' || $2 || ':' || $3 || ':' || $4, 0))`,
+			family, kind, strconv.FormatBool(test), owner); err != nil {
 			return fmt.Errorf("lock: %w", err)
 		}
 		last, err := scanRotaReminderRequest(tx.QueryRow(ctx, `SELECT `+rotaReminderRequestColumns+`
-			FROM team_schedule_reminder_request WHERE family = $1 AND kind = $2
-			ORDER BY requested_on DESC LIMIT 1`, family, kind))
+			FROM team_schedule_reminder_request
+			WHERE family = $1 AND kind = $2 AND test = $3 AND ($4 = '' OR LOWER(requested_by) = LOWER($4))
+			ORDER BY requested_on DESC LIMIT 1`, family, kind, test, owner))
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
 		case err != nil:
 			return fmt.Errorf("read the last request: %w", err)
 		case last.Status == "QUEUED" || last.Status == "SENDING":
-			return &apierror.ConflictError{Msg: fmt.Sprintf("a %s reminder asked for by %s is already waiting to be sent", kind, last.RequestedBy)}
+			what := "a " + kind + " reminder"
+			if test {
+				what = "your " + kind + " test"
+			}
+			return &apierror.ConflictError{Msg: fmt.Sprintf("%s asked for by %s is already waiting to be sent", what, last.RequestedBy)}
 		case time.Since(last.RequestedOn) < cooldown:
-			return &apierror.TooManyRequestsError{Msg: fmt.Sprintf("a %s reminder was asked for less than %d minutes ago; try again later", kind, int(cooldown.Minutes()))}
+			what := "a " + kind + " reminder was"
+			if test {
+				what = "your " + kind + " test was"
+			}
+			return &apierror.TooManyRequestsError{Msg: fmt.Sprintf("%s asked for less than %d minutes ago; try again later", what, int(cooldown.Minutes()))}
 		}
 		out, err = scanRotaReminderRequest(tx.QueryRow(ctx, `
-			INSERT INTO team_schedule_reminder_request (family, kind, requested_by, created_by, updated_by)
-			VALUES ($1, $2, $3, $3, $3)
-			RETURNING `+rotaReminderRequestColumns, family, kind, actor))
+			INSERT INTO team_schedule_reminder_request (family, kind, test, requested_by, created_by, updated_by)
+			VALUES ($1, $2, $3, $4, $4, $4)
+			RETURNING `+rotaReminderRequestColumns, family, kind, test, actor))
 		return err
 	})
 	var conflict *apierror.ConflictError

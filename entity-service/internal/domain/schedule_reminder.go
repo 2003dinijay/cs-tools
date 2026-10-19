@@ -98,6 +98,7 @@ type RotaReminderRequest struct {
 	Family      string     `json:"family"`
 	Kind        string     `json:"kind"`
 	Status      string     `json:"status"`
+	Test        bool       `json:"test"`
 	RequestedBy string     `json:"requestedBy"`
 	RequestedOn time.Time  `json:"requestedOn"`
 	ClaimedOn   *time.Time `json:"claimedOn,omitempty"`
@@ -108,6 +109,8 @@ type RotaReminderRequest struct {
 // CreateRotaReminderRequest asks for a rota reminder to be sent now.
 type CreateRotaReminderRequest struct {
 	Kind string `json:"kind"`
+	// Test sends it only to the person asking, as a test copy.
+	Test bool `json:"test"`
 }
 
 // ReportRotaReminderRequest is how a claimed request went: SENT or FAILED,

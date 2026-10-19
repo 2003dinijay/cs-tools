@@ -180,6 +180,7 @@ func (h *RotaReminderRequestHandler) CreateRotaReminderRequest(w http.ResponseWr
 	family := r.PathValue("family")
 	var in struct {
 		Kind string `json:"kind"`
+		Test bool   `json:"test"`
 	}
 	if !rotaFamilyRe.MatchString(family) || json.Unmarshal(body, &in) != nil || (in.Kind != "weekday" && in.Kind != "weekend") {
 		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)

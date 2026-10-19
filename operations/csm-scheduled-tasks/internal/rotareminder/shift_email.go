@@ -388,7 +388,7 @@ func windowInvite(cfg Config, w *window, stamp time.Time) Invite {
 		onIt = append(onIt, fmt.Sprintf("%s (%s)", a.Engineer.Name, cfg.Rotations[a.ShiftCode]))
 	}
 	inv := Invite{
-		UID:     inviteUID(cfg.Family, w.date, w.base),
+		UID:     cfg.inviteUID(w.date, w.base),
 		Summary: cfg.Family + " " + title,
 		Description: fmt.Sprintf("%s, %s, %s.\nOn this rotation: %s.\n\nNo reply is needed. If you are unable to cover your shift, "+
 			"please arrange a swap with your team lead and have the Team Schedule updated accordingly.",

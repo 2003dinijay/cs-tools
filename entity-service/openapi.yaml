@@ -8396,6 +8396,13 @@ paths:
                   type: string
                   enum: [weekday, weekend]
                   description: weekday is the next working day's Morning and Evening; weekend the coming weekend, sent even if not fully marked.
+                test:
+                  type: boolean
+                  default: false
+                  description: >
+                    Send it only to the person asking, marked as a test copy, with test
+                    calendar event ids; not recorded, so the real reminders are not
+                    affected. Its own queue per person, 2 minutes apart.
       responses:
         "201":
           description: Queued.
@@ -24251,7 +24258,7 @@ components:
               format: date-time
     RotaReminderRequest:
       type: object
-      required: [id, family, kind, status, requestedBy, requestedOn]
+      required: [id, family, kind, status, test, requestedBy, requestedOn]
       properties:
         id:
           type: string
@@ -24265,6 +24272,8 @@ components:
         status:
           type: string
           enum: [QUEUED, SENDING, SENT, FAILED]
+        test:
+          type: boolean
         requestedBy:
           type: string
         requestedOn:

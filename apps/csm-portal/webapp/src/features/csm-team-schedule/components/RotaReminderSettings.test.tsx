@@ -16,7 +16,7 @@
  * under the License.
  */
 
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import type { RotaReminderSettings as Settings, SaveRotaReminderSettings } from "../types";
@@ -84,7 +84,10 @@ describe("RotaReminderSettings", () => {
   it("shows the built-in settings, and says nothing is saved yet, when nothing was saved", () => {
     render(<RotaReminderSettings />);
     expect(screen.getByRole("heading", { name: "CRE rota reminders" })).toBeInTheDocument();
-    expect(screen.getByText(/^Not saved yet: the reminders use their built-in settings/)).toBeInTheDocument();
+    expect(screen.getByText("Built-in settings")).toBeInTheDocument();
+    expect(screen.queryByText("Saved")).not.toBeInTheDocument();
+    expect(screen.getByText("Using the built-in settings. Save to change them.")).toBeInTheDocument();
+    expect(screen.queryByText(/^Last changed by/)).not.toBeInTheDocument();
 
     expect(screen.getByRole("checkbox", { name: "Send weekday reminders" })).toBeChecked();
     expect(screen.getByRole("checkbox", { name: "Send weekend reminders" })).toBeChecked();
@@ -103,9 +106,33 @@ describe("RotaReminderSettings", () => {
   it("shows who last changed saved settings, and no built-in note", () => {
     settings.data = LOADED;
     render(<RotaReminderSettings />);
+    expect(screen.getByText("Saved")).toBeInTheDocument();
+    expect(screen.queryByText("Built-in settings")).not.toBeInTheDocument();
     expect(screen.getByText(/Last changed by ana@example\.test on/)).toBeInTheDocument();
-    expect(screen.queryByText(/^Not saved yet/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Using the built-in settings/)).not.toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: "Send weekend reminders" })).not.toBeChecked();
+  });
+
+  it("groups the settings under Settings, in Automatic reminders, Weekend rota and Copies", () => {
+    render(<RotaReminderSettings />);
+    expect(screen.getByRole("heading", { name: "Settings", level: 4 })).toBeInTheDocument();
+
+    const automatic = within(screen.getByRole("group", { name: "Automatic reminders" }));
+    expect(automatic.getByRole("checkbox", { name: "Send weekday reminders" })).toBeInTheDocument();
+    expect(automatic.getByRole("checkbox", { name: "Send weekend reminders" })).toBeInTheDocument();
+    expect(automatic.getByRole("checkbox", { name: "Attach calendar invitations" })).toBeInTheDocument();
+
+    const weekend = within(screen.getByRole("group", { name: "Weekend rota" }));
+    expect(weekend.getByLabelText("People needed on LK Weekend each day")).toBeInTheDocument();
+    expect(weekend.getByLabelText("People needed on Americas Weekend each day")).toBeInTheDocument();
+    const hours = within(weekend.getByRole("group", { name: "Americas Weekend and LK On-call hours" }));
+    expect(hours.getByLabelText("Start")).toBeInTheDocument();
+    expect(hours.getByLabelText("End")).toBeInTheDocument();
+    expect(hours.getByLabelText("Time zone")).toBeInTheDocument();
+
+    const copies = within(screen.getByRole("group", { name: "Copies" }));
+    expect(copies.getByLabelText("Also copy every reminder to")).toBeInTheDocument();
+    expect(copyField()).toHaveAttribute("rows", "3");
   });
 
   it("saves the whole body: both windows set, other saved codes kept, addresses trimmed and deduped", () => {

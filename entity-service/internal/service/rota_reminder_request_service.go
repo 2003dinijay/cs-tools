@@ -57,6 +57,9 @@ const (
 	// reminderRequestCooldown is how soon the same reminder can be asked for
 	// again: a second press should not email the whole rota twice.
 	reminderRequestCooldown = 10 * time.Minute
+	// reminderTestCooldown is the same for a test, which emails only the
+	// person asking.
+	reminderTestCooldown = 2 * time.Minute
 	// reminderRequestStale is when a request claimed but never reported is
 	// claimed again (the run that took it died).
 	reminderRequestStale  = 30 * time.Minute
@@ -87,7 +90,11 @@ func (s *rotaReminderRequestService) Create(ctx context.Context, family string, 
 	if err != nil {
 		return domain.RotaReminderRequest{}, err
 	}
-	return s.repo.Create(ctx, actor, f, kind, reminderRequestCooldown)
+	cooldown := reminderRequestCooldown
+	if req.Test {
+		cooldown = reminderTestCooldown
+	}
+	return s.repo.Create(ctx, actor, f, kind, req.Test, cooldown)
 }
 
 func (s *rotaReminderRequestService) List(ctx context.Context, family string) ([]domain.RotaReminderRequest, error) {

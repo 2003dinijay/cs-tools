@@ -54,16 +54,31 @@ func TestRotaReminderRequestIntegration_Queue(t *testing.T) {
 		_, _ = pool.Exec(ctx, `DELETE FROM team_schedule_reminder_request WHERE family = 'SME'`)
 	})
 
-	first, err := repo.Create(ctx, "ann@example.com", "SME", "weekend", 10*time.Minute)
+	first, err := repo.Create(ctx, "ann@example.com", "SME", "weekend", false, 10*time.Minute)
 	if err != nil || first.Status != "QUEUED" || first.RequestedBy != "ann@example.com" {
 		t.Fatalf("first: %+v, %v", first, err)
 	}
 	var conflict *apierror.ConflictError
-	if _, err := repo.Create(ctx, "ben@example.com", "SME", "weekend", 0); !errors.As(err, &conflict) {
+	if _, err := repo.Create(ctx, "ben@example.com", "SME", "weekend", false, 0); !errors.As(err, &conflict) {
 		t.Errorf("while waiting: %v", err)
 	}
-	if other, err := repo.Create(ctx, "ben@example.com", "SME", "weekday", 10*time.Minute); err != nil || other.Kind != "weekday" {
+	if other, err := repo.Create(ctx, "ben@example.com", "SME", "weekday", false, 10*time.Minute); err != nil || other.Kind != "weekday" {
 		t.Errorf("another kind: %+v, %v", other, err)
+	}
+	// A test is its own queue per person: not held up by the waiting real
+	// weekend, refused a second time within its gap, and nobody else's.
+	mine, err := repo.Create(ctx, "ann@example.com", "SME", "weekend", true, 2*time.Minute)
+	if err != nil || !mine.Test {
+		t.Fatalf("a test while a real one waits: %+v, %v", mine, err)
+	}
+	if _, err := repo.Create(ctx, "ann@example.com", "SME", "weekend", true, 2*time.Minute); !errors.As(err, &conflict) {
+		t.Errorf("a second test of mine while the first waits: %v", err)
+	}
+	if theirs, err := repo.Create(ctx, "ben@example.com", "SME", "weekend", true, 2*time.Minute); err != nil || !theirs.Test {
+		t.Errorf("somebody else's test: %+v, %v", theirs, err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM team_schedule_reminder_request WHERE family = 'SME' AND test`); err != nil {
+		t.Fatal(err)
 	}
 
 	claimed, err := repo.Claim(ctx, "csm-scheduled-tasks", "SME", 30*time.Minute)
@@ -92,10 +107,10 @@ func TestRotaReminderRequestIntegration_Queue(t *testing.T) {
 		t.Errorf("a second report: %v", err)
 	}
 	var tooMany *apierror.TooManyRequestsError
-	if _, err := repo.Create(ctx, "ann@example.com", "SME", "weekend", 10*time.Minute); !errors.As(err, &tooMany) {
+	if _, err := repo.Create(ctx, "ann@example.com", "SME", "weekend", false, 10*time.Minute); !errors.As(err, &tooMany) {
 		t.Errorf("within the cooldown: %v", err)
 	}
-	if again, err := repo.Create(ctx, "ann@example.com", "SME", "weekend", 0); err != nil || again.Status != "QUEUED" {
+	if again, err := repo.Create(ctx, "ann@example.com", "SME", "weekend", false, 0); err != nil || again.Status != "QUEUED" {
 		t.Errorf("after the cooldown: %+v, %v", again, err)
 	}
 	listed, err := repo.List(ctx, "SME", 5)

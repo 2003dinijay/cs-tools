@@ -599,11 +599,15 @@ export type RotaReminderKind = "weekday" | "weekend";
 /** Where a request is: waiting for the scheduled task, being sent, or done. */
 export type RotaReminderStatus = "QUEUED" | "SENDING" | "SENT" | "FAILED";
 
-/** One ask to send a group's rota reminders now, picked up by the scheduled task. */
+/**
+ * One ask to send a group's rota reminders now, picked up by the scheduled task.
+ * `test` is true for a test copy, which goes only to the person who asked.
+ */
 export type RotaReminderRequest = {
   id: string;
   family: RotaFamily;
   kind: RotaReminderKind;
+  test: boolean;
   status: RotaReminderStatus;
   requestedBy: string;
   requestedOn: string;
@@ -612,5 +616,9 @@ export type RotaReminderRequest = {
   result?: string;
 };
 
-/** What is posted to ask for a reminder now. */
-export type SendRotaReminder = { kind: RotaReminderKind };
+/**
+ * What is posted to ask for a reminder now. With `test` the reminder goes only
+ * to the person asking (marked "[Test copy]"), never to the rota, and is not
+ * recorded as a real reminder.
+ */
+export type SendRotaReminder = { kind: RotaReminderKind; test: boolean };

@@ -138,10 +138,16 @@ func TestRotaReminderRequest_SendNow(t *testing.T) {
 	fake := &fakeReminderRequestClient{}
 	w := httptest.NewRecorder()
 	NewRotaReminderRequestHandler(fake).CreateRotaReminderRequest(w, reminderSettingsRequest(http.MethodPost, "cre", `{"kind":"weekend","extra":1}`))
-	if w.Code != http.StatusCreated || fake.family != "CRE" || len(fake.body) != 1 || fake.body["kind"] != "weekend" {
+	if w.Code != http.StatusCreated || fake.family != "CRE" || len(fake.body) != 2 || fake.body["kind"] != "weekend" || fake.body["test"] != false {
 		t.Fatalf("status %d family %q body %v", w.Code, fake.family, fake.body)
 	}
-	for _, bad := range []struct{ family, body string }{{"OPS", `{"kind":"weekend"}`}, {"CRE", `{"kind":"monthly"}`}, {"CRE", `{}`}} {
+	fake = &fakeReminderRequestClient{}
+	w = httptest.NewRecorder()
+	NewRotaReminderRequestHandler(fake).CreateRotaReminderRequest(w, reminderSettingsRequest(http.MethodPost, "CRE", `{"kind":"weekday","test":true}`))
+	if w.Code != http.StatusCreated || fake.body["test"] != true {
+		t.Fatalf("a test: status %d body %v", w.Code, fake.body)
+	}
+	for _, bad := range []struct{ family, body string }{{"OPS", `{"kind":"weekend"}`}, {"CRE", `{"kind":"monthly"}`}, {"CRE", `{}`}, {"CRE", `{"kind":"weekend","test":"yes"}`}} {
 		fake := &fakeReminderRequestClient{}
 		w := httptest.NewRecorder()
 		NewRotaReminderRequestHandler(fake).CreateRotaReminderRequest(w, reminderSettingsRequest(http.MethodPost, bad.family, bad.body))

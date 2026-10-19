@@ -128,6 +128,10 @@ type Config struct {
 	Settings SettingsReader
 	// Manual is a "Send now" run: the saved on/off switches do not apply.
 	Manual bool
+	// Test is "Send a test to me": every email goes to RedirectTo (the person
+	// who asked) with "[Test]" in its subject, invitations carry test event
+	// ids, and the weekend's send record is neither read nor written.
+	Test bool
 	// EmailsEnabled is ALERTS_ENABLED, this component's single switch for
 	// every email it sends. When false a run succeeds and sends nothing.
 	EmailsEnabled bool
@@ -289,6 +293,7 @@ func announce(ctx context.Context, rota RotaReader, sender EmailSender, cfg Conf
 		if len(cfg.RedirectTo) > 0 {
 			sendTo, sendCc = cfg.RedirectTo, nil
 		}
+		b.email.subject = cfg.subject(b.email.subject)
 		if err := sendWindowEmail(ctx, sender, sendTo, sendCc, b.email); err != nil {
 			var names []string
 			for _, w := range b.windows {
@@ -469,4 +474,22 @@ func without(list, exclude []string) []string {
 		}
 	}
 	return out
+}
+
+// subject marks a test's emails in the inbox.
+func (cfg Config) subject(s string) string {
+	if cfg.Test {
+		return "[Test] " + s
+	}
+	return s
+}
+
+// inviteUID is the event id of a window's invitation; a test's are its own,
+// so a test event never stands in for, or blocks, the real one.
+func (cfg Config) inviteUID(rotaDate, shiftCode string) string {
+	uid := inviteUID(cfg.Family, rotaDate, shiftCode)
+	if cfg.Test {
+		uid = strings.Replace(uid, "@", "-test@", 1)
+	}
+	return uid
 }
