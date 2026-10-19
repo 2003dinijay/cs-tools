@@ -29599,6 +29599,10 @@ components:
             enum: [CASE, ENGAGEMENT, SECURITY_REPORT_ANALYSIS, SERVICE_REQUEST, ANNOUNCEMENT, CHANGE_REQUEST]
         searchQuery:
           type: string
+        addedReason:
+          type: string
+          enum: [AUTO_CLOSED, MANUAL]
+          description: Narrows to entries added for this reason.
         includeVerified:
           type: boolean
           description: >-
