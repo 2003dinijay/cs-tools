@@ -40,12 +40,12 @@ import {
 } from "@wso2/oxygen-ui";
 import { ArrowLeft } from "@wso2/oxygen-ui-icons-react";
 import DOMPurify from "dompurify";
-import html2canvas from "html2canvas";
 import jsPDF from "jspdf";
 import { useParams } from "react-router";
 import QueryErrorState from "@components/QueryErrorState";
 import { useGetTimelogsBreakdown } from "@features/csm-reports/api/useGetTimelogsBreakdown";
 import PieChart from "@features/csm-reports/components/PieChart";
+import { addElementPages, copyCanvasPixels } from "@features/csm-reports/components/reportPdfCapture";
 import type { TimeCardDetails, TimeLogBreakdownCase, TimeLogBreakdownDetails } from "@features/csm-reports/api/reportTypes";
 import { sysidToUuid } from "@features/csm-cases/utils/inlineImages";
 import { useNavTransition } from "@hooks/useNavTransition";
@@ -96,24 +96,49 @@ function EmptyRow({ colSpan, label }: { colSpan: number; label: string }): JSX.E
 async function downloadPDF(): Promise<void> {
   const input = document.getElementById("timelogs-report");
   if (!input) return;
-  const canvas = await html2canvas(input, { scale: 2, backgroundColor: "#ffffff", logging: false, imageTimeout: 2000 });
-  const imgData = canvas.toDataURL("image/jpeg", 0.92);
   const pdf = new jsPDF("p", "mm", "a4");
   const pdfWidth = pdf.internal.pageSize.getWidth();
   const pdfHeight = pdf.internal.pageSize.getHeight();
-  const imgProps = pdf.getImageProperties(imgData);
-  const imgHeight = (imgProps.height * pdfWidth) / imgProps.width;
-  let heightLeft = imgHeight;
-  let position = 0;
-  pdf.addImage(imgData, "JPEG", 0, position, pdfWidth, imgHeight);
-  heightLeft -= pdfHeight;
-  while (heightLeft >= 0) {
-    position = heightLeft - imgHeight;
-    pdf.addPage();
-    pdf.addImage(imgData, "JPEG", 0, position, pdfWidth, imgHeight);
-    heightLeft -= pdfHeight;
+  const width = Math.max(Math.ceil(input.getBoundingClientRect().width), 640);
+  const pageCssHeight = Math.max(480, Math.floor(width * (pdfHeight / pdfWidth)));
+  const sections = Array.from(input.children).filter((node): node is HTMLElement => node instanceof HTMLElement);
+  const host = document.createElement("div");
+  host.style.cssText = `position:fixed;left:-12000px;top:0;width:${width}px;background:#ffffff;`;
+  document.body.appendChild(host);
+  const bucket = document.createElement("div");
+  bucket.style.background = "#ffffff";
+  host.appendChild(bucket);
+  input.setAttribute("data-html2canvas-ignore", "true");
+  let started = false;
+  try {
+    const flush = async (): Promise<void> => {
+      if (bucket.childElementCount === 0) return;
+      started = await addElementPages(pdf, bucket, started, { width, windowWidth: width, pageCssHeight });
+      bucket.replaceChildren();
+    };
+    for (const section of sections) {
+      const clone = section.cloneNode(true) as HTMLElement;
+      copyCanvasPixels(section, clone);
+      bucket.appendChild(clone);
+      if (bucket.scrollHeight > pageCssHeight && bucket.childElementCount > 1) {
+        bucket.removeChild(clone);
+        await flush();
+        bucket.appendChild(clone);
+      }
+      if (bucket.scrollHeight > pageCssHeight) {
+        bucket.removeChild(clone);
+        await flush();
+        host.appendChild(clone);
+        started = await addElementPages(pdf, clone, started, { width, windowWidth: width, pageCssHeight });
+        clone.remove();
+      }
+    }
+    await flush();
+    pdf.save("Timelogs_Report.pdf");
+  } finally {
+    input.removeAttribute("data-html2canvas-ignore");
+    host.remove();
   }
-  pdf.save("Timelogs_Report.pdf");
 }
 
 function ReportToggle({
