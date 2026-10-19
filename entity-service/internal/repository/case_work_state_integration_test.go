@@ -103,14 +103,14 @@ func TestCaseWorkStateIntegration_StateChangeSyncsWorkState(t *testing.T) {
 	}
 	setState := func(t *testing.T, id string, s domain.CaseState) {
 		t.Helper()
-		if _, _, err := repo.UpdateCase(ctx, domain.UpdateCaseRequest{ID: id, State: &s}, nil); err != nil {
+		if _, _, _, err := repo.UpdateCase(ctx, domain.UpdateCaseRequest{ID: id, State: &s}, nil); err != nil {
 			t.Fatalf("UpdateCase state %s: %v", s, err)
 		}
 	}
 	setOngoing := func(t *testing.T, id string) {
 		t.Helper()
 		ws := domain.CaseWorkStateOngoing
-		if _, _, err := repo.UpdateCase(ctx, domain.UpdateCaseRequest{ID: id, WorkState: &ws}, nil); err != nil {
+		if _, _, _, err := repo.UpdateCase(ctx, domain.UpdateCaseRequest{ID: id, WorkState: &ws}, nil); err != nil {
 			t.Fatalf("UpdateCase workState ongoing: %v", err)
 		}
 	}
@@ -165,18 +165,18 @@ func TestCaseWorkStateIntegration_OneOngoingGuardIgnoresNonWorkInProgress(t *tes
 	}
 	inProgress := domain.CaseStateWorkInProgress
 	ongoing := domain.CaseWorkStateOngoing
-	if _, _, err := repo.UpdateCase(ctx, domain.UpdateCaseRequest{ID: cleEngagement, State: &inProgress}, nil); err != nil {
+	if _, _, _, err := repo.UpdateCase(ctx, domain.UpdateCaseRequest{ID: cleEngagement, State: &inProgress}, nil); err != nil {
 		t.Fatalf("engagement work_in_progress: %v", err)
 	}
-	if _, _, err := repo.UpdateCase(ctx, domain.UpdateCaseRequest{ID: cleEngagement, WorkState: &ongoing}, nil); err != nil {
+	if _, _, _, err := repo.UpdateCase(ctx, domain.UpdateCaseRequest{ID: cleEngagement, WorkState: &ongoing}, nil); err != nil {
 		t.Fatalf("engagement Ongoing must not trip on the stale awaiting_info row: %v", err)
 	}
 
 	// A genuine work_in_progress + ONGOING row still trips the guard.
-	if _, _, err := repo.UpdateCase(ctx, domain.UpdateCaseRequest{ID: cleSecReport, State: &inProgress}, nil); err != nil {
+	if _, _, _, err := repo.UpdateCase(ctx, domain.UpdateCaseRequest{ID: cleSecReport, State: &inProgress}, nil); err != nil {
 		t.Fatalf("security report work_in_progress: %v", err)
 	}
-	_, _, err := repo.UpdateCase(ctx, domain.UpdateCaseRequest{ID: cleSecReport, WorkState: &ongoing}, nil)
+	_, _, _, err := repo.UpdateCase(ctx, domain.UpdateCaseRequest{ID: cleSecReport, WorkState: &ongoing}, nil)
 	var conflict *apierror.ConflictError
 	if !errors.As(err, &conflict) {
 		t.Fatalf("Ongoing beside a real work_in_progress Ongoing item: err = %v, want *apierror.ConflictError", err)

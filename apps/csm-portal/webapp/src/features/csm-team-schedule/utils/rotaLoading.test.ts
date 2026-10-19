@@ -57,6 +57,11 @@ describe("rotaIsLoading: when the rota card shows its skeleton", () => {
     expect(loading({ view: "today", assignments: held })).toBe(true);
   });
 
+  it("is loading while My week still holds the previous week's rows", () => {
+    expect(loading({ view: "mine", mine: { isLoading: false, isPlaceholderData: true } })).toBe(true);
+    expect(loading({ view: "mine", mine: { isLoading: false, isPlaceholderData: false } })).toBe(false);
+  });
+
   it("leaves the roster and My week to their own reads", () => {
     const held = { isLoading: false, isPlaceholderData: true };
     // The roster reads month by month and says it is loading on its own.

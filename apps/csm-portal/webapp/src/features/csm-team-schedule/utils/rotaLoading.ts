@@ -25,8 +25,9 @@ export interface RotaLoadingInput {
   catalogueLoading: boolean;
   /** Whether it is known yet which tabs the reader gets. */
   tabsKnown: boolean;
-  /** My week's own read of the reader's rota. */
-  mine: { isLoading: boolean };
+  /** My week's own read of the reader's rota. Like the week read it keeps the
+   *  previous week's rows while the next loads, flagged by `isPlaceholderData`. */
+  mine: { isLoading: boolean; isPlaceholderData?: boolean };
   /** The read the current view draws from. `isPlaceholderData` is set while
    *  it still holds the previous range's rows for a range not read yet. */
   assignments: { isLoading: boolean; isPlaceholderData?: boolean };
@@ -41,11 +42,12 @@ export interface RotaLoadingInput {
  * the week read as an empty grid of dashes -- nobody on the rota -- until the
  * answer arrived. So on those two views, rows held over from another range
  * count as still loading. The roster reads month by month and says it is
- * loading on its own; My week has its own read.
+ * loading on its own. My week has its own read, which also keeps the
+ * previous week's rows, so it counts as loading while it holds them too.
  */
 export function rotaIsLoading({ view, catalogueLoading, tabsKnown, mine, assignments }: RotaLoadingInput): boolean {
   if (catalogueLoading || !tabsKnown) return true;
-  if (view === "mine") return mine.isLoading;
+  if (view === "mine") return mine.isLoading || Boolean(mine.isPlaceholderData);
   if ((view === "week" || view === "today") && assignments.isPlaceholderData) return true;
   return assignments.isLoading;
 }

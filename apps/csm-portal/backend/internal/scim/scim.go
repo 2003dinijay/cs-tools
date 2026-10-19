@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -294,14 +295,25 @@ func emailFromDisplay(display string) string {
 // "display" comes back the identical "<domain>/<name>" shape role members'
 // emails do (e.g. "DEFAULT/<group name>", not the bare group name
 // ASGARDEO_ROLE_GROUP_NAMES is configured with) -- without stripping it,
-// every group-name match silently failed. Falls back to the raw value when
-// it carries no "/", rather than returning an empty string.
+// every group-name match silently failed.
+//
+// The prefix is stripped only when it is verified as a domain token: a user
+// store domain is an upper-case identifier ("DEFAULT", "PRIMARY", "AD_CORP"),
+// matched by scimDomainPrefix. A name that merely contains "/" but does not
+// start with such a token (e.g. "team/ops") is returned unchanged, as is a
+// value with nothing after the "/". Residual ambiguity: an unprefixed name
+// whose first segment is itself upper-case ("OPS/admins") is indistinguishable
+// from a prefixed one by shape alone.
 func stripSCIMDomainPrefix(display string) string {
-	if idx := strings.Index(display, "/"); idx >= 0 && idx+1 < len(display) {
-		return display[idx+1:]
+	if m := scimDomainPrefix.FindStringSubmatch(display); m != nil && len(m[0]) < len(display) {
+		return display[len(m[0]):]
 	}
 	return display
 }
+
+// scimDomainPrefix matches a leading "<DOMAIN>/" where DOMAIN is an upper-case
+// identifier (letter first, then letters, digits, "_", "-" or ".").
+var scimDomainPrefix = regexp.MustCompile(`^[A-Z][A-Z0-9_.-]*/`)
 
 // extractMobilePhone returns the first phone number of type "mobile", or nil.
 // Mirrors processPhoneNumber in the Ballerina SCIM utils.

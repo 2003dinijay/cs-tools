@@ -2096,7 +2096,6 @@ components:
           type: string
         class:
           type: string
-          enum: [software, service]
         createdOn:
           type: string
           format: date-time
@@ -2118,7 +2117,7 @@ components:
           enum: [available, extended, deprecated, discontinued]
         releaseDate:
           type: string
-          format: date-time
+          format: date
         supportEolDate:
           type: string
           format: date-time

@@ -189,6 +189,16 @@ func TestScimGroupAssignments_UnmarshalJSON(t *testing.T) {
 			json: `{"value":"33333333-3333-3333-3333-333333333333","display":"example-group-no-prefix"}`,
 			want: []GroupAssignment{{ID: "33333333-3333-3333-3333-333333333333", Name: "example-group-no-prefix"}},
 		},
+		{
+			name: "unprefixed name containing a slash is kept intact",
+			json: `{"value":"44444444-4444-4444-4444-444444444444","display":"team/example-group"}`,
+			want: []GroupAssignment{{ID: "44444444-4444-4444-4444-444444444444", Name: "team/example-group"}},
+		},
+		{
+			name: "unprefixed slash name in an array of strings is kept intact",
+			json: `["team/example-group","DEFAULT/team/example-group"]`,
+			want: []GroupAssignment{{Name: "team/example-group"}, {Name: "team/example-group"}},
+		},
 		{name: "empty string", json: `""`, want: nil},
 		{name: "null", json: `null`, want: nil},
 		{name: "empty array", json: `[]`, want: []GroupAssignment{}},

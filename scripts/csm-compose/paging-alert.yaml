@@ -192,7 +192,8 @@ cre:
   #            SCIM operations service. Needs SCIM_BASE_URL. The default.
   #   none     only numbers named in this file (heads below).
   #
-  # A number named in this file always wins over the profile.
+  # A valid CSM profile number wins over a number named in this file; a number
+  # here is a fallback. Only INCIDENT_ESCALATION_TEST_CALL_TO is never replaced.
   phones:
     source: profile
 

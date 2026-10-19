@@ -995,8 +995,10 @@ func main() {
 			// which the portal stores in CSM ("user".phone) as well as on
 			// their Asgardeo user. entity-service gives the number to call
 			// for a whole rung in one request: the profile number, else the
-			// paging-only number a lead or admin stored. A number named in
-			// paging-alert.yaml (the heads) still wins.
+			// paging-only number a lead or admin stored. A valid CSM profile
+			// number wins over a number named in paging-alert.yaml (the heads),
+			// which is a fallback. Only INCIDENT_ESCALATION_TEST_CALL_TO is
+			// never replaced.
 			//
 			// Asgardeo, through the SCIM operations service and the OAuth2 app
 			// the onboarding flow uses, is only the fallback for people CSM
