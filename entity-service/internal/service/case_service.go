@@ -2720,6 +2720,15 @@ func (s *caseService) updateCaseMarkFixIssued(ctx context.Context, req domain.Up
 		return domain.UpdateCaseResponse{}, err
 	}
 
+	// resolveActorOrM2M so the integration that marks a fix released (an M2M
+	// caller with no end-user token) is still attributed, to its client id.
+	// Best-effort: an unresolvable caller just skips the entry.
+	if !alreadySet {
+		if actor, err := s.resolveActorOrM2M(ctx); err == nil {
+			s.recordFieldChangeActivity(ctx, req.ID, "fix_issued_on", "", fixIssued.UTC().Format(time.RFC3339), actor.Email)
+		}
+	}
+
 	if !alreadySet && s.snWriteback != nil {
 		if patcher, ok := s.snMirror.(snFieldPatcher); ok {
 			markFixIssued := true
@@ -3004,10 +3013,25 @@ func (s *caseService) updateCaseFields(ctx context.Context, req domain.UpdateCas
 		return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "workaroundProvided requires an authenticated end-user caller: a pure M2M caller has no user record to attribute it to"}
 	}
 
+	// before is read only when an activity-logged field is in play: the
+	// update path has no before-state of its own, and the ETA entries need
+	// the prior value to log only a genuine change. A failed read is logged
+	// and skips those entries, never the update.
+	var before *domain.CaseView
+	if req.WorkaroundProvided != nil || req.BestCaseFixEta != nil || req.MostLikelyFixEta != nil || req.WorstCaseFixEta != nil {
+		if cv, err := s.GetCaseByID(ctx, req.ID); err != nil {
+			slog.ErrorContext(ctx, "update case: read before-state for activity entries failed", "caseId", req.ID, "error", err)
+		} else {
+			before = &cv
+		}
+	}
+
 	updatedOn, err := s.repo.UpdateCaseFields(ctx, req, actor.ID, actor.Email)
 	if err != nil {
 		return domain.UpdateCaseResponse{}, err
 	}
+
+	s.recordCaseFieldsActivity(ctx, req, before, updatedOn, actor.Email)
 
 	// Deliberately independent of s.publisher (never touches Event Hub) --
 	// same reasoning every other SLAEngineService call site in this file
@@ -3101,6 +3125,40 @@ func (s *caseService) updateCaseFields(ctx context.Context, req domain.UpdateCas
 	resp.MostLikelyFixEta = req.MostLikelyFixEta
 	resp.WorstCaseFixEta = req.WorstCaseFixEta
 	return domain.UpdateCaseResponse{Message: "Case updated successfully", Case: resp}, nil
+}
+
+// recordCaseFieldsActivity logs the activity-feed entries for updateCaseFields'
+// workaround and fix-ETA fields. ETAs are logged only on a real change
+// (old empty when previously unset), so they need before; workaround set/
+// recall store the timestamp, which the feed renders as a date-time.
+func (s *caseService) recordCaseFieldsActivity(ctx context.Context, req domain.UpdateCaseRequest, before *domain.CaseView, updatedOn time.Time, actorEmail string) {
+	if req.WorkaroundProvided != nil {
+		var prev string
+		if before != nil && before.WorkaroundProvidedOn != nil {
+			prev = before.WorkaroundProvidedOn.UTC().Format(time.RFC3339)
+		}
+		if *req.WorkaroundProvided {
+			s.recordFieldChangeActivity(ctx, req.ID, "workaround_provided_on", prev, updatedOn.UTC().Format(time.RFC3339), actorEmail)
+		} else if prev != "" {
+			s.recordFieldChangeActivity(ctx, req.ID, "workaround_provided_on", prev, "", actorEmail)
+		}
+	}
+	if before == nil {
+		return
+	}
+	for _, e := range []struct {
+		field    string
+		new, old *string
+	}{
+		{"best_case_eta", req.BestCaseFixEta, before.BestCaseFixEta},
+		{"most_likely_eta", req.MostLikelyFixEta, before.MostLikelyFixEta},
+		{"worst_case_eta", req.WorstCaseFixEta, before.WorstCaseFixEta},
+	} {
+		if e.new == nil || *e.new == derefString(e.old) {
+			continue
+		}
+		s.recordFieldChangeActivity(ctx, req.ID, e.field, derefString(e.old), *e.new, actorEmail)
+	}
 }
 
 // validateCaseFieldValues rejects malformed ids and unknown enum spellings in the
