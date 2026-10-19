@@ -54,15 +54,6 @@ vi.mock("@api/backend/client", () => ({
   },
 }));
 
-// The page calls this as a fire-and-forget side effect (its return value is
-// discarded) purely to keep the case-activity SSE stream alive — it has its
-// own dedicated test file (useCaseActivityStream.test.tsx) and doesn't need
-// to be exercised for real here. Left unmocked, it transitively pulls in
-// useAuthTokens -> useLogger, which throws without a LoggerProvider.
-vi.mock("@features/csm-cases/api/useCaseActivityStream", () => ({
-  useCaseActivityStream: vi.fn(),
-}));
-
 const navigateMock = vi.fn();
 vi.mock("@hooks/useNavTransition", () => ({
   useNavTransition: () => navigateMock,

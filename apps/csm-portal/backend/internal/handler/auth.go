@@ -34,12 +34,27 @@ import (
 // holding no role granting PermViewerAccess) and the caller must return
 // immediately.
 func requireViewerAccess(w http.ResponseWriter, r *http.Request, guard *AccessGuard) (*middleware.UserInfo, bool) {
+	return requirePermission(w, r, guard, PermViewerAccess)
+}
+
+// requireCustomerHealthAccess is requireViewerAccess for the Customer Health
+// handlers (and the two filter lists they read): the same first-call-in-the-
+// handler check, against PermViewCustomerHealth, which cs_engineer and admin
+// hold as well as Viewer -- see that permission's own doc comment.
+func requireCustomerHealthAccess(w http.ResponseWriter, r *http.Request, guard *AccessGuard) (*middleware.UserInfo, bool) {
+	return requirePermission(w, r, guard, PermViewCustomerHealth)
+}
+
+// requirePermission is the shared body of the two helpers above: 401 when
+// there is no authenticated user, 403 when the user's roles do not grant
+// perm. On failure it has already written the response.
+func requirePermission(w http.ResponseWriter, r *http.Request, guard *AccessGuard, perm Permission) (*middleware.UserInfo, bool) {
 	user := middleware.UserInfoFromContext(r.Context())
 	if user == nil {
 		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
 		return nil, false
 	}
-	if !guard.Permits(PermViewerAccess, user.Roles) {
+	if !guard.Permits(perm, user.Roles) {
 		writeError(w, http.StatusForbidden, ErrMsgForbidden)
 		return nil, false
 	}

@@ -26,10 +26,13 @@ import {
 } from "@config/csmNavItems";
 import {
   featureState,
-  visibleNavChildren,
+  hasVisibleShortcutChild,
   visibleNavSections,
+  visibleRailChildren,
+  visibleShortcutTo,
 } from "@config/featureFlags";
 import { useFeaturePreviewOverrides } from "@config/featurePreview";
+import type { PortalAccess } from "@context/current-user/portalAccess";
 import { usePortalAccess, useSafeCurrentUserId } from "@context/current-user/usePortalAccess";
 import { useNavTransition } from "@hooks/useNavTransition";
 
@@ -87,12 +90,30 @@ interface CsmSideBarProps {
  * structural marker for this — see `CsmNavNode.tab`'s doc comment — so this
  * stays correct if another section adopts the same pattern later, with no
  * hardcoded id list to keep in sync.
+ *
+ * A route-tab section also opens as a dropdown for a user who sees one of its
+ * shortcut children (e.g. Customer Health under Customers for a viewer — see
+ * `CsmNavNode.shortcutTo`): a shortcut is not part of the in-page tab strip,
+ * so the rail is the only place it can be offered. Its route tabs then appear
+ * in the dropdown too, since the dropdown's parent no longer navigates.
  */
-function isSubmenuSection(section: CsmNavSection): boolean {
-  return Boolean(section.children?.length) && (section.children ?? []).every((child) => Boolean(child.tab));
+function isSubmenuSection(
+  section: CsmNavSection,
+  access: PortalAccess,
+  previewOverrides?: Record<string, boolean>,
+): boolean {
+  if (!section.children?.length) return false;
+  return (
+    section.children.every((child) => Boolean(child.tab)) ||
+    hasVisibleShortcutChild(section, access, previewOverrides)
+  );
 }
 
-function pickActiveId(pathname: string): string {
+function pickActiveId(
+  pathname: string,
+  access: PortalAccess,
+  previewOverrides?: Record<string, boolean>,
+): string {
   if (pathname === "/" || pathname === "") return "dashboard";
   // A submenu section's own child (e.g. `operations.incidents`) gets its own
   // rail entry, so highlight *that* rather than the section — this is what
@@ -104,7 +125,28 @@ function pickActiveId(pathname: string): string {
   // section was last active instead of hard-jumping to Dashboard.
   const match = navNodeMatchForPath(pathname);
   if (match?.node.tab !== undefined) return match.node.id;
-  return navSectionForPath(pathname)?.id ?? getLastSectionId();
+  // A page this user reaches through a shortcut (Customer Health under
+  // Customers, for a viewer) lights up the shortcut: the owner's own entry is
+  // not in their rail at all.
+  if (match) {
+    const shortcut = visibleShortcutTo(match.node.id, access, previewOverrides);
+    if (shortcut) return shortcut.id;
+  }
+  const section = navSectionForPath(pathname);
+  // A route-tab section that opens as a dropdown for this user (see
+  // isSubmenuSection) highlights the child in the dropdown, like Operations.
+  // Everyone else keeps highlighting the section itself on its child routes
+  // (e.g. a CS engineer on /customers/accounts), as before.
+  if (
+    section &&
+    match &&
+    match.node !== section &&
+    section.children?.includes(match.node) &&
+    isSubmenuSection(section, access, previewOverrides)
+  ) {
+    return match.node.id;
+  }
+  return section?.id ?? getLastSectionId();
 }
 
 export default function CsmSideBar({
@@ -121,7 +163,7 @@ export default function CsmSideBar({
   const { overrides: previewOverrides } = useFeaturePreviewOverrides(useSafeCurrentUserId());
   const location = useLocation();
   const navigate = useNavTransition();
-  const activeItem = pickActiveId(location.pathname);
+  const activeItem = pickActiveId(location.pathname, access, previewOverrides);
   useEffect(() => {
     // The persisted id is the fallback used for routes with no owning section
     // (see `pickActiveId`'s doc comment) -- it must stay a *section* id.
@@ -176,6 +218,24 @@ export default function CsmSideBar({
     return { ...expandedMenus, [sectionId]: true };
   }, [expandedMenus, activeItem]);
 
+  // The layout's toggle (Oxygen's useAppShell.toggleMenu) flips the stored
+  // value, and for a section that is open only because of the auto-expand
+  // above that stored value is still `undefined`: flipping it writes `true`,
+  // which changes nothing on screen, so the first click on an auto-opened
+  // section used to do nothing and only the second one closed it. Toggle
+  // against what is actually shown instead: when the section is auto-open,
+  // flip twice (undefined -> true -> false) so the first click closes it.
+  // toggleMenu is a functional state update, so both flips apply in order.
+  const handleToggleExpand = useCallback(
+    (id: string): void => {
+      if (!onToggleExpand) return;
+      const autoOpened = expandedMenus?.[id] === undefined && effectiveExpandedMenus?.[id] === true;
+      onToggleExpand(id);
+      if (autoOpened) onToggleExpand(id);
+    },
+    [onToggleExpand, expandedMenus, effectiveExpandedMenus],
+  );
+
   return (
     <Sidebar
       collapsed={collapsed}
@@ -187,7 +247,7 @@ export default function CsmSideBar({
       activeItem={activeItem}
       expandedMenus={effectiveExpandedMenus}
       onSelect={handleSelect}
-      onToggleExpand={onToggleExpand}
+      onToggleExpand={handleToggleExpand}
     >
       <Sidebar.Nav>
         <Sidebar.Category>
@@ -243,8 +303,8 @@ export default function CsmSideBar({
                 // children (below) navigate. A section whose config has hidden
                 // every one of its children falls through to the plain flat item
                 // instead of rendering an entry with nothing to expand.
-                const children = isSubmenuSection(item)
-                  ? visibleNavChildren(item, access, previewOverrides)
+                const children = isSubmenuSection(item, access, previewOverrides)
+                  ? visibleRailChildren(item, access, previewOverrides)
                   : [];
                 if (children.length > 0) {
                   return (

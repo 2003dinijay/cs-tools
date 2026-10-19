@@ -2483,6 +2483,32 @@ window is still set to `Waiting on WSO2`. Postgres could close it with a
 conditional `UPDATE`, but that lives on the `UpdateCase` path this rule
 deliberately reuses unchanged; flagged, not half-closed.
 
+**One concrete failure mode of this race is fixed, though, not just
+flagged: the dual-write mirror no longer re-sends a state the downstream
+data source already holds.** Reported live via a dual-write failure record:
+`Invalid transition from 'Waiting On WSO2' to stateKey 1003. Allowed
+transitions: Closed.` — stateKey 1003 is `Waiting On WSO2` itself, so this
+was a self-transition: the case was already in that state and a mirror
+PATCH tried to set it there again, which that system's own workflow
+doesn't list as a legal move (only `-> Closed` is). Root cause: `UpdateCase`'s
+dual-write mirror dispatch (the `switch` over `State`/`Severity`/`WorkState`
+a few paragraphs above "Customer tags/watch list/...") fired on every
+`req.State != nil`, with no "did the state actually change" guard — unlike
+the sibling activity-log and `case.status_changed`-publish blocks in the
+same method, which both already check `before.State != *req.State` first.
+Combined with this rule's own race above, two near-simultaneous customer
+replies (or a duplicate delivery of one) can both read the case as
+`Awaiting Info`/`Solution Proposed` and both call `UpdateCase` with the
+same target state before either write commits: the first mirror PATCH
+succeeds, and the second — now a same-state no-op against the downstream
+system — is rejected exactly as observed. The dispatch now skips the
+mirror call whenever `before.State` already equals the requested state, the
+same no-op check its sibling blocks use. This does not close the general
+race (a case moved to a genuinely *different* state in the window is still
+set back to `Waiting on WSO2`, per the gap above) — only the specific,
+reported self-transition case, which is also the one this rule's own
+duplicate-firing race actually produces.
+
 Tests: `case_service_customer_reply_test.go` (the recording repository: a
 CASE and a SERVICE_REQUEST in the same table, every state, work note, staff /
 mixed / M2M callers, unresolved identity, a failed move logged with the
@@ -3493,6 +3519,8 @@ has neither column, so a hold on one is a 400, never a silent no-op.
   token forwarded.
 
 ## Change requests
+
+Tests: `entity-service/docs/change-request-tests.md` maps change request scenarios to Go and Playwright tests, lists Vitest coverage, and says how to list and run them.
 
 `change_request` (migration 0043) is a shared-PK extension of `work_item`,
 same pattern as `"case"` (`change_request.id` IS `work_item.id`). `SearchChangeRequests`,
@@ -7168,7 +7196,87 @@ read the curated `team` registry, whose ids `GET /groups/{id}` could not resolve
 beside `GET /teams/{id}/members`) lists the `team` table — `{id, name, type}`,
 ordered by name, with an optional case-insensitive substring `searchQuery` on the
 name. The CSM portal backend calls it for its own `POST /teams/search` and enriches
-rows from its configured registry.
+rows from its configured registry. **Deliberately never includes
+`chat_webhook_url`** (see the next paragraph) — a webhook URL is a bearer
+credential, and this route has no caller restriction beyond `auth.Middleware`
+letting any validated token through.
+
+**`GET /teams/chat-webhooks`** (`team_repo.go` `ListChatWebhooks`, migration `0240`)
+is the replacement for configuring a team's own Chat space by hand in
+`integrations/csm-notification-service`'s `GOOGLE_CHAT_SPACES` env var:
+`team.chat_webhook_url` (nullable TEXT, never written by the ServiceNow sync —
+same "platform-owned config, not synced vocabulary" posture as `team.key`/
+`group_email`) holds the team's own incoming-webhook URL, set directly by
+platform operators. The endpoint returns `{teams: [{name, chatWebhookUrl}]}` for
+every team that has one set — a team with none is left out, same as today's
+"not in `GOOGLE_CHAT_SPACES`" case. **Internal-caller-only**
+(`TeamService.ListChatWebhooks` → `RequireInternalCaller`, the identical gate
+`GET /sla-duration-policy` uses) — a webhook URL lets anyone holding it post
+into that team's Chat space, so this is reference data for a backend service
+(fetched periodically, not once at startup, since operators can add a team's
+webhook while this service keeps running — see that repo's own `CLAUDE.md`),
+never something a portal caller should reach. Standing audiences that aren't
+teams at all ("Incident Monitor", "Onboarding", "Americas", "Evaluation") stay
+config-driven on that service's own side — this table only ever holds a real
+team's own space.
+
+**`GET`/`PATCH /teams/{id}`** (`team_repo.go`'s `GetTeamDetail`/
+`SetChatWebhookURL`, the latter against the same `team.chat_webhook_url`
+column) is the single-team counterpart to the bulk `GET /teams/chat-webhooks`
+above — added so `apps/csm-portal/backend` can let a team manage its own Chat
+space without handing out every other team's webhook URL in the same
+response. **A single generic team resource (id/name/type/chatWebhookUrl),
+mirroring `GET`/`PATCH /users/{id}`, rather than a dedicated
+`/teams/{id}/chat-webhook` route** — `chatWebhookUrl` is the only settable
+field today, but a second one later is a new field on `UpdateTeamRequest`,
+not a new route; `POST /teams/search` still never includes it (a webhook URL
+is a bearer credential). **Internal-caller-only**, identical gate.
+`UpdateTeam` (`team_service.go`) requires at least one field (today, only
+`chatWebhookUrl`, so omitting it is a 400) and validates: a non-empty
+`chatWebhookUrl` must parse as a well-formed URL whose scheme is `https`,
+whose hostname (case-folded, trailing dot stripped) is exactly
+`chat.googleapis.com`, and which carries no embedded userinfo
+(`https://chat.googleapis.com@evil.example/...`) — a plain `strings.HasPrefix(
+..., "https://")` check used to be the whole validation, which would have let
+this endpoint's caller point `csm-notification-service` at an arbitrary
+internal host (SSRF: that service fetches and unattendedly POSTs to whatever
+URL is stored here) or a cloud metadata endpoint; empty clears the stored
+value. **Fine-grained authorization — an Asgardeo admin, or that specific
+team's own lead, may call the PATCH — is enforced entirely by the caller**
+(`apps/csm-portal/backend`), never here: this route's only gate is "internal
+service", same as every other route in this section.
+
+**`POST /teams/{id}/lead`** (`team_repo.go`'s `AssignTeamLead`, a single
+transaction: check team exists, check user exists, demote any other current
+`'lead'` to `'engineer'`, then upsert the chosen user's `team_member` row to
+`'lead'`) reassigns a team's one lead. **This writes the real,
+paging-connected `team_member.role` column** — not a cosmetic label;
+`csm-notification-service`'s incident call-escalation ladder reads this exact
+column to decide who gets paged at its LEVEL_2 rung for this team, so
+reassigning it changes who gets called during an incident, immediately.
+Internal-caller-only here too; **fine-grained authorization (Asgardeo admin
+only) is the caller's job**, same posture as the chat-webhook PATCH above. The
+chosen user does not need to already be a member of the team — a user with no
+existing `team_member` row is inserted with role `'lead'` directly.
+
+**`PATCH /users/{id}`** (`user_service.go`'s `UpdateUser`, `user_repo.go`'s
+`UpdateUserProfile`, reusing the same write path `PATCH /users/me` already
+uses) is the admin-settable counterpart to `PATCH /users/me`: that route
+always resolves the caller's own id from `x-user-id-token`, so there was
+previously no way to update *someone else's* profile. Needed once a team's
+lead can be reassigned through `POST /teams/{id}/lead` above: the incident
+call-escalation ladder dials `"user".phone` (migration 0141) for whoever
+holds `'lead'`, so a newly assigned lead with no phone on file is a silent
+paging gap until this is set here. Both `timeZone` and `phone` are optional
+pointers (unlike `PATCH /users/me`'s own `timeZone`, which can never be
+cleared), but at least one must be present; `phone` has the identical
+trim/length/clear rules as `PATCH /users/me`'s own field. Internal-caller-only;
+a malformed id, neither field present, or an over-`maxPhoneLen`-character
+phone is a `ValidationError`. No fine-grained authorization of its own beyond
+"internal service" — `apps/csm-portal/backend` restricts this to its
+`cs_engineer`/admin roles (the same two roles its own `PermWrite` holds), a
+looser bar than `POST /teams/{id}/lead`'s own admin-only gate, since recording
+a phone number is a lower-stakes action than reassigning who gets paged.
 
 `POST /users/search` keeps the two id spaces apart: `filters.groupIds` are `"group"`
 ids matched against `group_member`, `filters.teamIds` are `team` ids matched against
@@ -7713,6 +7821,47 @@ copy of this schema. This finally gives the previously ServiceNow-only "instance
 `instance_repo.go`/`instance_service.go` are new; `deployed_product_repo.go`/
 `deployed_product_service.go` gained the two metrics methods (previously
 unconditional `ServiceUnavailableError` stubs).
+
+**All five read paths (`InstanceService`'s own five methods, plus
+`DeployedProductService.SearchDeployedProductMetrics`/
+`SearchDeployedProductUsageCounts`) are deliberately always Postgres-backed,
+by explicit product decision, regardless of `DATA_SOURCE` -- including under
+`postgres-servicenow-dual-write`.** A later change had both read paths fall
+back to the previous system under dual-write, reasoning that `deployment_node`
+rows had no real link to a deployment/deployed product anywhere in this
+database -- true only because the underlying rows genuinely weren't linked
+correctly yet (`deployment_node.deployment_number`/`product_version_id` and
+`deployed_product.product_id` have to agree with the real `deployment`/
+`deployed_product` rows for `instanceRefJoins`/`resolveDeployedProductNodes`
+to resolve anything -- see those functions' own doc comments). Once linked
+correctly, Postgres has the real data and must be read from directly; the
+fallback is removed (`routes.go`'s `activeInstanceSvc` wiring, and both
+methods on `deployedProductService` no longer check `s.snMirror`) rather
+than kept as a standing workaround for what is a one-time data-linkage
+problem, not a structural gap. `DATA_SOURCE=servicenow` (no Postgres pool at
+all) is the one real exception for both services -- `activeInstanceSvc` and
+`activeDeployedProductSvc` each still route to the previous system under
+that one `DATA_SOURCE` value, same as every other entity this service backs
+with it.
+
+Also fixed in this same pass: `resolveDeployedProductNodes` (the shared node
+resolution both `deployed_product_service.go` methods above call) resolved
+a deployed product by its deployment and product-version references alone,
+never checking that its product reference was also set -- the same "is this
+a real deployed product" requirement `deployment_repo.go`'s own
+`productCount` subquery already enforces to decide whether a deployment is
+even offered as a choice at all. Without it, a direct request naming a
+deployed product with no product reference could still resolve its nodes
+and return real usage/metrics data, even though that same record is treated
+everywhere else as having no product at all. The resolver's own lookup now
+requires `product_id IS NOT NULL` too.
+
+Two real bugs were also found and fixed in `SearchInstanceMetricsStats`
+while reconciling this against the real upstream aggregation logic it is
+meant to replicate: it summed every `deployment_information` row per day
+instead of only the latest snapshot per node per day (overcounting any node
+that reports more than once a day), and its stats key was `CORES` instead
+of the real `TOTAL_CORES`.
 
 **"Instance" is `deployment_node`.** `Instance.Key` is `node_id`;
 `Instance.Metadata` comes from that node's latest `deployment_information`
@@ -8506,12 +8655,19 @@ shape**: "every project except the in-progress ones" (6 of the 7 statuses), matc
 already-joined `p.onboarding_status` column (`caseSearchJoins`'s `LEFT JOIN project p`) keeps
 that join alive for every row even in a `COUNT(*)`-only query that reads no other column of `p`;
 replayed Query Store text measured the project lookup alone at ~10,200 of a widget's
-21,000-55,000 total data pages. The filter is now `wi.project_id IS NOT NULL AND wi.project_id
-<> ALL(ARRAY(SELECT id FROM project WHERE onboarding_status IS NULL OR onboarding_status <>
-ALL($n::text[]::onboarding_status_enum[])))` -- same NULL semantics as before (a project with no
-status, or a case with no project, never matches `in`), but with no WHERE-clause reference to the
-`p` alias left for this filter at all, which is what lets the planner drop the dead `LEFT JOIN
-project` from a `COUNT(*)`-only query entirely. The `notIn` branch is deliberately left as the
+21,000-55,000 total data pages. The filter is now `wi.project_id IS NOT NULL AND NOT EXISTS
+(SELECT 1 FROM project excluded WHERE excluded.id = wi.project_id AND (excluded.onboarding_status
+IS NULL OR excluded.onboarding_status <> ALL($n::text[]::onboarding_status_enum[])))` -- same NULL
+semantics as before (a project with no status, or a case with no project, never matches `in`), but
+with no WHERE-clause reference to the `p` alias left for this filter at all, which is what lets the
+planner drop the dead `LEFT JOIN project` from a `COUNT(*)`-only query entirely. It was first
+written as `wi.project_id <> ALL(ARRAY(SELECT id FROM project WHERE ...))`; that form compares
+every case row with every excluded id (no index, no hash), which is cheap for the six-status widget
+list (about a dozen excluded projects) but not when only one or two statuses are selected and the
+exclusion list holds ~1,950 ids: measured on a production-size copy at 93-105 ms against 12 ms for
+the `NOT EXISTS` probe on `project`'s primary key, with identical counts for every single status and
+for the six-status set (where both take ~12 ms). Same problem as the state filter's `notIn`
+(digiops-cs #3459). The `notIn` branch is deliberately left as the
 plain join check: it already satisfies the no-project/no-status cases via its own `OR`, nothing
 marks it as a measured bottleneck the way `in` was, and the equivalent rewrite would need its own
 extra `OR wi.project_id IS NULL` term to keep that behaviour -- not worth the added risk without
@@ -8665,20 +8821,32 @@ results. ids are always non-`NULL` (each branch selects a primary key), so the
 anti-join is an exact negation of `= ANY` here, with no three-valued-logic
 subtlety to account for.
 
-**`projectOnboardingStatus`/its `notIn` sibling deliberately keep filtering
-through the `LEFT JOIN` to `p`, despite the superficial similarity to the
-state-filter rewrite above.** The same "match against the table directly via
-an `ARRAY`-wrapped id lookup instead of filtering through a join" technique
-was tried here too and measured, directly against production-volume data, to
-bring no benefit and in some cases be slower. The state lookup wins because a
-case search's state filter is typically highly selective (e.g. "open" is a
-small fraction of all cases); `projectOnboardingStatus` filters in practice
-tend to be the opposite -- a widget excluding only a couple of terminal
-statuses matches nearly every project -- so building an array of almost
-every project id and checking per-row membership against it costs more than
-the indexed nested-loop join this already was. Revisit only with a
-measurement showing otherwise for a specific, genuinely selective
-onboarding-status filter shape.
+**Each enum-typed branch compares the state column, not `state::TEXT`.**
+Casting the column hides it from its index (`idx_case_state`), so
+`state::TEXT = ANY($n::text[])` was a sequential scan of `"case"` on every
+state-filtered search. The bound list stays `text[]` and is turned into the
+table's own enum by keeping only the labels that enum has
+(`caseLikeEnumStateList`: `ARRAY(SELECT s FROM unnest(enum_range(NULL::case_state_enum))
+s WHERE s::TEXT = ANY($n))`), so a label the enum does not know matches nothing,
+as the text comparison did, instead of failing the query the way a direct
+`$n::text[]::case_state_enum[]` cast would. Measured on a production-size copy
+(129,440 cases): `{OPEN}` 10.3 ms seq scan → 0.4 ms index-only scan, `{CLOSED}`
+13.6 → 5.6 ms, identical counts, unknown labels included. `engagement`,
+`service_request` and `security_report_analysis` use the same form (they have no
+state index today, so it changes nothing for them yet). The announcement branch
+keeps the text comparison, which its `CLOSE`→`CLOSED` normalization needs.
+`TestCaseLikeStateLookupUsesTheColumnNotACast` pins the shape.
+
+**The `projectOnboardingStatus` `notIn` branch deliberately keeps filtering
+through the `LEFT JOIN` to `p`; the `in` branch does not.** `in` is a
+`NOT EXISTS` probe on `project`'s primary key (see "Case search `countOnly`, and
+the projectOnboardingStatus `in` filter's exclusion-list rewrite" above). An
+`ARRAY`-wrapped id lookup like the state filter's was measured against
+production-volume data for this filter and brought no benefit: widgets select
+nearly every status, so the array would hold almost every project id, and
+checking per-row membership against it cost more than the indexed
+nested-loop join. Revisit `notIn` only with a measurement showing a selective
+shape that is slow.
 
 **Known, accepted divergence**: a work_item row whose own `type` disagrees
 with which extension table actually holds its data (see the bullet above --

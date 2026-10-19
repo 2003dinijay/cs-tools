@@ -360,6 +360,10 @@ export interface BeCaseView {
   type?: BeCaseType | null;
   /** Engagement type; only meaningful for `engagement` cases. Null otherwise. */
   engagementType?: string | null;
+  /** Engagement payment type as the data source's display label (e.g. "Paid",
+   * "FOC"), not the {@link BeEngagementPaymentType} code; only meaningful for
+   * `engagement` cases. Not populated by every data source. */
+  engagementPaymentType?: string | null;
   state?: BeCaseState;
   /** Work sub-state; only meaningful while `state` is `work_in_progress`. */
   workState?: BeCaseWorkState | null;
@@ -3260,6 +3264,44 @@ export interface BeTeam {
 export interface BeTeamSearchPayload {
   filters?: { searchQuery?: string };
   pagination?: BePagination;
+}
+
+/** One row of `GET /teams/{id}/members` — the team's real CRE/SRE roster
+ * (role "lead"/"member"), not the registry entry `BeTeam` above describes. */
+export interface BeTeamMember {
+  name: string;
+  email: string;
+  role: string;
+}
+
+/** `GET`/`PATCH /teams/{id}` response — the team's own id/name/type plus its
+ * configured Google Chat space link, `null` when unset. A single generic
+ * team resource (mirroring `BeSnUserDetail`/`GET /users/{id}`) rather than a
+ * dedicated `/teams/{id}/chat-webhook` shape — `chatWebhookUrl` is the only
+ * settable field today. */
+export interface BeTeamDetail {
+  id: string;
+  name: string;
+  type: string;
+  chatWebhookUrl: string | null;
+}
+
+/** `PATCH /teams/{id}` request body. `chatWebhookUrl` is the only settable
+ * field today and is required. */
+export interface BeUpdateTeamPayload {
+  chatWebhookUrl: string;
+}
+
+export interface BeAssignTeamLeadPayload {
+  userId: string;
+}
+
+/** `PATCH /users/{id}` request body — both fields optional, at least one
+ * required. See `apps/csm-portal/backend`'s own CLAUDE.md: restricted to
+ * cs_engineer/admin, for updating someone else's profile by id. */
+export interface BeUpdateUserPayload {
+  timeZone?: string;
+  phone?: string;
 }
 
 export interface BeTeamSearchResponse {

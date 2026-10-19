@@ -204,6 +204,23 @@ endpoint one way or the other.
 
 Contacts search and opportunity/invoice/link reads work over M2M only if this service's client id is in entity-service's `AUTH_INTERNAL_CLIENT_IDS`; otherwise 401/403.
 
+## Catalog searches (`/products`, `/deployments`, `/deployed-products`)
+
+`POST /products/search`, `POST /products/{id}/versions/search`,
+`POST /deployments/search` and `POST /deployed-products/search`
+(`internal/handler/catalog.go`) are plain passthroughs, like the account and
+project searches: the JSON body is capped, checked for validity, forwarded to
+entity-service as-is, and its response is returned verbatim. Filters, paging and
+ordering are entity-service's, and the request and response schemas in
+`openapi.yaml` mirror entity-service's. An empty body is forwarded as `{}`
+(entity-service rejects a body with no JSON object); the `{id}` in the versions
+path must be a UUID.
+
+An earlier revision exposed these as `GET` endpoints that reshaped entity-service
+responses into the legacy scripted-API format (name ordering, in-memory version
+sorting, `sfIds` resolution, reformatted dates). That was removed on purpose; see
+git history if the reshaping logic is needed again.
+
 ## Middleware chain
 
 `SecurityHeaders → CorrelationID → Logger → Mux`

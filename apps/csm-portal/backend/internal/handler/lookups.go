@@ -36,14 +36,15 @@ type LookupsHandler struct {
 }
 
 // NewLookupsHandler creates a LookupsHandler. accessGuard enforces
-// PermViewerAccess, the viewer audience's blanket gate.
+// PermViewCustomerHealth: these two lists exist only to fill the Customer
+// Health dashboard's filters, so they share its audience.
 func NewLookupsHandler(lookups lookupsClient, accessGuard *AccessGuard) *LookupsHandler {
 	return &LookupsHandler{lookups: lookups, accessGuard: accessGuard}
 }
 
 // GetProducts handles GET /products.
 func (h *LookupsHandler) GetProducts(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireViewerAccess(w, r, h.accessGuard)
+	user, ok := requireCustomerHealthAccess(w, r, h.accessGuard)
 	if !ok {
 		return
 	}
@@ -60,7 +61,7 @@ func (h *LookupsHandler) GetProducts(w http.ResponseWriter, r *http.Request) {
 
 // GetABTTeams handles GET /abt-teams.
 func (h *LookupsHandler) GetABTTeams(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireViewerAccess(w, r, h.accessGuard)
+	user, ok := requireCustomerHealthAccess(w, r, h.accessGuard)
 	if !ok {
 		return
 	}

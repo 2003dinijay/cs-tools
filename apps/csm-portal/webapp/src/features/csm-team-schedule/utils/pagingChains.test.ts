@@ -30,7 +30,7 @@ const TEAMS = [
 ];
 const reader = (
   runs: string[],
-  over: Partial<{ portalAdmin: boolean; head: boolean; settingsLadders: string[] }> = {},
+  over: Partial<{ portalAdmin: boolean; head: boolean; creRights: boolean; settingsLadders: string[] }> = {},
 ) =>
   caseAlertChainsFor({ teams: TEAMS, runs, portalAdmin: false, ...over });
 
@@ -53,13 +53,18 @@ describe("caseAlertChainsFor", () => {
     expect(reader(["apollo", "artemis", "iaas"])).toEqual(["SRE_SAAS", "SRE_IAAS"]);
   });
 
-  it("never offers CRE's chain: CRE alerts keep their own flow", () => {
-    // A CRE lead or rota admin has no chain here, so is not offered the tab.
-    expect(reader(["castor"])).toEqual([]);
-    expect(reader(["castor", "americas"])).toEqual([]);
-    expect(caseAlertsOffered(true, reader(["castor", "americas"]))).toBe(false);
-    // Somebody who runs a CRE team and an SRE one sees the SRE chain alone.
-    expect(reader(["castor", "apollo"])).toEqual(["SRE_SAAS"]);
+  it("gives a CRE Team lead or rota admin CRE's chain, where they mark their first responders", () => {
+    expect(reader(["castor"])).toEqual(["CRE"]);
+    expect(reader(["castor", "americas"])).toEqual(["CRE"]);
+    expect(caseAlertsOffered(true, reader(["castor", "americas"]))).toBe(true);
+    // Somebody who runs a CRE team and an SRE one sees both, CRE's first.
+    expect(reader(["castor", "apollo"])).toEqual(["CRE", "SRE_SAAS"]);
+  });
+
+  it("gives CRE's chain to anybody who may change part of it, such as the America lead", () => {
+    expect(reader([], { creRights: true })).toEqual(["CRE"]);
+    expect(reader(["apollo"], { creRights: true })).toEqual(["CRE", "SRE_SAAS"]);
+    expect(reader([], { creRights: false })).toEqual([]);
   });
 
   it("gives the CRE head and the CS head every chain, as a CSM admin", () => {
@@ -75,14 +80,16 @@ describe("caseAlertChainsFor", () => {
     ).toEqual(["PAAS"]);
   });
 
-  it("gives each family's chains to whoever may change its alert settings, CRE's only so", () => {
-    // A CRE rota admin: CRE's chain, though running CRE teams gives none.
+  it("gives each family's chains to whoever may change its alert settings", () => {
+    // A CRE rota admin.
     expect(reader(["castor", "americas"], { settingsLadders: ["CRE"] })).toEqual(["CRE"]);
     expect(caseAlertsOffered(true, reader([], { settingsLadders: ["CRE"] }))).toBe(true);
     // Somebody with all three rota admin roles.
     expect(reader([], { settingsLadders: ["CRE", "SRE", "SME"] })).toEqual(["CRE", "SRE_SAAS", "SRE_IAAS", "SME"]);
-    // An SRE rota admin who also leads a CRE team still gets no CRE chain.
-    expect(reader(["castor", "apollo"], { settingsLadders: ["SRE"] })).toEqual(["SRE_SAAS", "SRE_IAAS"]);
+    // An SRE rota admin who also leads a CRE team: that team's CRE chain too.
+    expect(reader(["castor", "apollo"], { settingsLadders: ["SRE"] })).toEqual(["CRE", "SRE_SAAS", "SRE_IAAS"]);
+    // An SRE rota admin who runs no CRE team and may change nothing of CRE's: no CRE chain.
+    expect(reader(["apollo"], { settingsLadders: ["SRE"] })).toEqual(["SRE_SAAS", "SRE_IAAS"]);
   });
 
   it("gives a CSM admin every chain", () => {

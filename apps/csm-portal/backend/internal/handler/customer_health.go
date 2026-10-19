@@ -85,7 +85,7 @@ type CustomerHealthHandler struct {
 }
 
 // NewCustomerHealthHandler creates a CustomerHealthHandler. accessGuard
-// enforces PermViewerAccess, the viewer audience's blanket gate — no
+// enforces PermViewCustomerHealth (Viewer, cs_engineer and admin) — no
 // endpoint in this domain has an additional fine-grained permission check
 // beyond it (confirmed by reading every customer-health resource function in
 // service.bal: none call a group list beyond the global request
@@ -138,7 +138,7 @@ type accountSummary struct {
 // the filtered total and each row's health summary are all computed
 // server-side, so the cost does not grow with the number of accounts.
 func (h *CustomerHealthHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireViewerAccess(w, r, h.accessGuard)
+	user, ok := requireCustomerHealthAccess(w, r, h.accessGuard)
 	if !ok {
 		return
 	}
@@ -291,7 +291,7 @@ type initHealthTrackingRequest struct {
 // InitHealthTracking handles POST
 // /customer-health/accounts/{accountSysId}/init-health-tracking.
 func (h *CustomerHealthHandler) InitHealthTracking(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireViewerAccess(w, r, h.accessGuard)
+	user, ok := requireCustomerHealthAccess(w, r, h.accessGuard)
 	if !ok {
 		return
 	}
@@ -316,7 +316,7 @@ func (h *CustomerHealthHandler) InitHealthTracking(w http.ResponseWriter, r *htt
 
 // GetAccountDetail handles GET /customer-health/accounts/{accountId}.
 func (h *CustomerHealthHandler) GetAccountDetail(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireViewerAccess(w, r, h.accessGuard)
+	user, ok := requireCustomerHealthAccess(w, r, h.accessGuard)
 	if !ok {
 		return
 	}
@@ -341,7 +341,7 @@ func (h *CustomerHealthHandler) GetAccountDetail(w http.ResponseWriter, r *http.
 
 // OpenRisk handles POST /customer-health/projects/{projectSysId}/risk.
 func (h *CustomerHealthHandler) OpenRisk(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireViewerAccess(w, r, h.accessGuard)
+	user, ok := requireCustomerHealthAccess(w, r, h.accessGuard)
 	if !ok {
 		return
 	}
@@ -367,7 +367,7 @@ func (h *CustomerHealthHandler) OpenRisk(w http.ResponseWriter, r *http.Request)
 
 // CloseRisk handles PUT /customer-health/risks/{riskId}/close.
 func (h *CustomerHealthHandler) CloseRisk(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireViewerAccess(w, r, h.accessGuard)
+	user, ok := requireCustomerHealthAccess(w, r, h.accessGuard)
 	if !ok {
 		return
 	}
@@ -393,7 +393,7 @@ func (h *CustomerHealthHandler) CloseRisk(w http.ResponseWriter, r *http.Request
 // MarkHealthy handles POST
 // /customer-health/projects/{projectSysId}/mark-healthy.
 func (h *CustomerHealthHandler) MarkHealthy(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireViewerAccess(w, r, h.accessGuard)
+	user, ok := requireCustomerHealthAccess(w, r, h.accessGuard)
 	if !ok {
 		return
 	}
@@ -420,7 +420,7 @@ func (h *CustomerHealthHandler) MarkHealthy(w http.ResponseWriter, r *http.Reque
 // RevertReview handles POST
 // /customer-health/projects/{projectSysId}/revert-review.
 func (h *CustomerHealthHandler) RevertReview(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireViewerAccess(w, r, h.accessGuard)
+	user, ok := requireCustomerHealthAccess(w, r, h.accessGuard)
 	if !ok {
 		return
 	}
@@ -447,7 +447,7 @@ func (h *CustomerHealthHandler) RevertReview(w http.ResponseWriter, r *http.Requ
 // GetAccountHealthStatus handles GET
 // /customer-health/accounts/{accountSysId}/health-status.
 func (h *CustomerHealthHandler) GetAccountHealthStatus(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireViewerAccess(w, r, h.accessGuard)
+	user, ok := requireCustomerHealthAccess(w, r, h.accessGuard)
 	if !ok {
 		return
 	}
@@ -469,7 +469,7 @@ func (h *CustomerHealthHandler) GetAccountHealthStatus(w http.ResponseWriter, r 
 // GetAccountHealthSummary handles GET
 // /customer-health/accounts/{accountSysId}/health-summary.
 func (h *CustomerHealthHandler) GetAccountHealthSummary(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireViewerAccess(w, r, h.accessGuard)
+	user, ok := requireCustomerHealthAccess(w, r, h.accessGuard)
 	if !ok {
 		return
 	}
@@ -491,7 +491,7 @@ func (h *CustomerHealthHandler) GetAccountHealthSummary(w http.ResponseWriter, r
 // GetProjectRiskHistory handles GET
 // /customer-health/projects/{projectSysId}/risk-history.
 func (h *CustomerHealthHandler) GetProjectRiskHistory(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireViewerAccess(w, r, h.accessGuard)
+	user, ok := requireCustomerHealthAccess(w, r, h.accessGuard)
 	if !ok {
 		return
 	}

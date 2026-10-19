@@ -92,6 +92,8 @@ import { isSettled, sitsAboveTeamLeads } from "../utils/myWeek";
 import { zoneColour } from "../utils/rotaHues";
 import { onItsStandingCard, standingDayRows } from "../utils/standingDay";
 import { SCHEDULE_THEME_VARS } from "../utils/useScheduleTheme";
+import ScheduleSkeleton, { TabStripSkeleton } from "../components/ScheduleSkeleton";
+import { rotaIsLoading } from "../utils/rotaLoading";
 import "../teamSchedule.css";
 import { teamDisplayName } from "../utils/teamDisplayName";
 /** What the banner says when an edit is refused: the server's own reason where
@@ -338,8 +340,10 @@ export default function CsmTeamSchedulePage(): JSX.Element {
   const showAccess = canManageRotaAccess(rotaAccess.data);
 
   /** The alert chains Case Alerts shows this reader: their own -- the chain
-   *  of each team they lead or run, never CRE's -- or every chain for a CSM admin and for the CRE and CS heads (who
-   *  hold that position on a team, which CRE's chain lists). Not ready until what it is
+   *  of each team they lead or run, and CRE's for anybody who may change part
+   *  of it (where the CRE Team leads mark their first responders) -- or every
+   *  chain for a CSM admin and for the CRE and CS heads (who hold that
+   *  position on a team, which CRE's chain lists). Not ready until what it is
    *  worked out from has been read; the tab is not offered until then, so
    *  nobody sees every chain, or a tab with none, for a moment. A lead does not
    *  wait on the reads that only add chains (see caseAlertChainsReady). */
@@ -358,6 +362,12 @@ export default function CsmTeamSchedulePage(): JSX.Element {
       chains: caseAlertChainsFor({
         teams: catalogue.data.teams,
         runs: fullTeams,
+        creRights:
+          !!pagingCan &&
+          (pagingCan.responderTeams.length > 0 ||
+            pagingCan.teamLeadTeams.length > 0 ||
+            pagingCan.americasTeamLead ||
+            pagingCan.heads),
         portalAdmin: Boolean(rotaAccess.data?.canManage.rotaAdmins),
         head:
           readerEmail !== "" &&
@@ -368,7 +378,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
         settingsLadders: alertSettings.data?.canManage.roomLadders,
       }),
     };
-  }, [catalogue.data, leadTeams, markerOnlyTeams, rotaAccess, pagingProbe, alertSettings, fullTeams, ownTeamKey, ownTeamFamily, readerEmail]);
+  }, [catalogue.data, leadTeams, markerOnlyTeams, rotaAccess, pagingProbe, pagingCan, alertSettings, fullTeams, ownTeamKey, ownTeamFamily, readerEmail]);
   /** Case Alerts as offered: to whoever showPaging lets in, once their chains
    *  are known, and only when there is one -- not a tab with nothing of theirs. */
   const pagingOffered = caseAlertsOffered(showPaging, pagingChains.ready ? pagingChains.chains : null);
@@ -1327,7 +1337,15 @@ export default function CsmTeamSchedulePage(): JSX.Element {
     return <QueryErrorState message="Could not load the schedule catalogue." error={catalogue.error} />;
   }
 
-  const busy = catalogue.isLoading || !aboveLeadsKnown || (view === "mine" ? mine.isLoading : assignments.isLoading);
+  const busy = rotaIsLoading({
+    view,
+    catalogueLoading: catalogue.isLoading,
+    tabsKnown: aboveLeadsKnown,
+    mine,
+    // The week and day views draw from the single read, which keeps the last
+    // range's rows while the next loads (see rotaIsLoading).
+    assignments: rosterView ? assignments : singleRead,
+  });
 
   return (
     <TeamColourProvider teams={catalogue.data?.teams ?? []}>
@@ -1336,7 +1354,10 @@ export default function CsmTeamSchedulePage(): JSX.Element {
         <h1>Team Schedule</h1>
 
         <div className="tabrow">
-          <div className="tabs" role="tablist">
+          <div className="tabs" role="tablist" aria-busy={visibleTabs.length === 0}>
+            {/* Until it is known which tabs the reader gets, placeholders the
+                size of the real ones: an empty strip read as a stray dot. */}
+            {visibleTabs.length === 0 ? <TabStripSkeleton /> : null}
             {visibleTabs.map((t) => {
               // The dates a view covers, said on hover now that the line under
               // its name says what it is for.
@@ -1597,7 +1618,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
           ) : assignments.isError ? (
             <QueryErrorState message="Could not load the rota." error={assignments.error} />
           ) : busy ? (
-            <div className="offnone">Loading the rota…</div>
+            <ScheduleSkeleton variant={view} label="Loading the rota…" />
           ) : view === "today" ? (
             <DayLadder
               day={anchor}

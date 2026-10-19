@@ -44,6 +44,10 @@ const TAB_2: CaseTabState = {
 };
 
 const PINNED: PinnedTabProps = { label: "Dashboard", active: false, onClick: vi.fn() };
+const PINNED_WITH_ICON: PinnedTabProps = {
+  ...PINNED,
+  icon: <svg data-testid="pinned-tab-icon" />,
+};
 
 function noopHandlers() {
   return {
@@ -63,12 +67,35 @@ describe("CaseTabStrip", () => {
     expect(screen.queryByText("Dashboard")).not.toBeInTheDocument();
   });
 
-  it("shows the pinned tab once at least one case tab is open", () => {
+  it("shows the pinned tab once at least one case tab is open, with a divider separating it from the case tabs", () => {
     render(
       <CaseTabStrip tabs={[TAB_1]} activeTabId="t1" pinnedTab={PINNED} {...noopHandlers()} />,
     );
     expect(screen.getByText("Dashboard")).toBeInTheDocument();
     expect(screen.getByText("CS0001")).toBeInTheDocument();
+    expect(screen.getByTestId("pinned-tab-divider")).toBeInTheDocument();
+  });
+
+  it("renders the pinned tab's own icon, and a divider separating it from the case tabs, only when an icon is given", () => {
+    const { rerender } = render(
+      <CaseTabStrip tabs={[TAB_1]} activeTabId="t1" pinnedTab={PINNED} {...noopHandlers()} />,
+    );
+    expect(screen.queryByTestId("pinned-tab-icon")).not.toBeInTheDocument();
+
+    rerender(
+      <CaseTabStrip
+        tabs={[TAB_1]}
+        activeTabId="t1"
+        pinnedTab={PINNED_WITH_ICON}
+        {...noopHandlers()}
+      />,
+    );
+    expect(screen.getByTestId("pinned-tab-icon")).toBeInTheDocument();
+  });
+
+  it("renders no divider at all when there is no pinned tab", () => {
+    render(<CaseTabStrip tabs={[TAB_1]} activeTabId="t1" {...noopHandlers()} />);
+    expect(screen.queryByTestId("pinned-tab-divider")).not.toBeInTheDocument();
   });
 
   it("renders one chip per open tab, highlighting the active one", () => {
@@ -344,6 +371,51 @@ describe("CaseTabStrip", () => {
       fireEvent.click(screen.getByRole("button", { name: "More tab actions" }));
       expect(screen.getByText("Close all tabs")).toBeInTheDocument();
       expect(screen.queryByText("Close other tabs")).not.toBeInTheDocument();
+    });
+  });
+  describe("unseen live update cue", () => {
+    const FLAGGED: CaseTabState = { ...TAB_2, hasUpdate: true };
+
+    it("marks a flagged, non-active tab with the update attribute and an accessible cue", () => {
+      render(
+        <CaseTabStrip tabs={[TAB_1, FLAGGED]} activeTabId="t1" {...noopHandlers()} />,
+      );
+      // The tooltip title is the chip's accessible name (see the existing
+      // accessible-name test above), so the cue is part of it.
+      const tab = screen.getByRole("tab", { name: /has new updates/ });
+      expect(tab).toHaveAttribute("data-has-update", "true");
+      expect(tab).toHaveAccessibleName("CPASUB-2 · Second case subject (has new updates)");
+      expect(screen.getByText("has new updates")).toBeInTheDocument();
+    });
+
+    it("leaves unflagged tabs without the attribute or the cue", () => {
+      render(
+        <CaseTabStrip tabs={[TAB_1, FLAGGED]} activeTabId="t2" {...noopHandlers()} />,
+      );
+      const plain = screen.getByRole("tab", { name: "CPASUB-1 · First case subject" });
+      expect(plain).not.toHaveAttribute("data-has-update");
+      expect(screen.queryByText("has new updates")).not.toBeInTheDocument();
+    });
+
+    it("never shows the cue on the active tab, even if its flag is set", () => {
+      render(<CaseTabStrip tabs={[FLAGGED]} activeTabId="t2" {...noopHandlers()} />);
+      const tab = screen.getByRole("tab", { name: "CPASUB-2 · Second case subject" });
+      expect(tab).not.toHaveAttribute("data-has-update");
+    });
+
+    it("reports activation of a flagged tab through onActivate", () => {
+      const handlers = noopHandlers();
+      render(<CaseTabStrip tabs={[TAB_1, FLAGGED]} activeTabId="t1" {...handlers} />);
+      fireEvent.click(screen.getByRole("tab", { name: /has new updates/ }));
+      expect(handlers.onActivate).toHaveBeenCalledWith("t2");
+    });
+
+    it("shows a static dot for a flagged tab and emits no animation", () => {
+      render(<CaseTabStrip tabs={[TAB_1, FLAGGED]} activeTabId="t1" {...noopHandlers()} />);
+      const css = Array.from(document.querySelectorAll("style"))
+        .map((el) => el.textContent ?? "")
+        .join("\n");
+      expect(css).not.toContain("csmTabUpdateBlink");
     });
   });
 });

@@ -321,6 +321,18 @@ func (rc RoutingContext) Rule() string {
 type Recipient struct {
 	Email string
 	Name  string
+	// UserID is the person's CSM user id, when the Team Schedule gave one
+	// (on-duty assignments and team members do; heads and leads named in
+	// configuration do not). Log lines name a recipient by it -- see LogID --
+	// never by name or email. Optional: a ladder stored before this existed
+	// decodes with it empty.
+	UserID string
+	// PhoneFixed marks a Phone that must not be replaced: one from
+	// INCIDENT_ESCALATION_TEST_CALL_TO, which sends every call to one number
+	// (a test environment's tester). Any other Phone -- the phone book, a
+	// number in paging-alert.yaml, the roster -- is a fallback that a valid
+	// CSM profile number replaces (ProfilePhoneResolver).
+	PhoneFixed bool
 	// Phone is empty when the user profile has no mobile number. The
 	// specification's execution summary logs that case as
 	// [LEVEL_n][ERROR][NO_NUMBER][email] and carries on — a missing number
@@ -368,4 +380,11 @@ type Resolver interface {
 type LeadPoolResolver interface {
 	Resolver
 	LeadPool(ctx context.Context) ([]Recipient, error)
+}
+
+// TeamLeadResolver is a Resolver that can name one team's lead regardless of
+// shift, for the rung email's L1 (rung_email.go). A resolver that cannot is
+// simply not asked: L1 then reaches whoever the call's LEVEL_1 reaches.
+type TeamLeadResolver interface {
+	TeamLead(ctx context.Context, team string) ([]Recipient, error)
 }

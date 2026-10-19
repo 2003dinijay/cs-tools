@@ -1698,6 +1698,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 		accountID, accountName, accountTier      *string
 		severity, issueType, workState, caseType *string
 		announcementType, engagementType         *string
+		engagementPaymentType                    *string
 		state, cause, closeNotes, resolutionCode *string
 		escalationLevel                          *string
 		isEscalated                              *bool
@@ -1727,7 +1728,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 	scopeArgs := []any{id}
 
 	err := r.db.QueryRow(ctx,
-		`SELECT wi.id, wi.number, wi.wso2_id, wi.type::TEXT, ann.announcement_type::TEXT, eng.type::TEXT,
+		`SELECT wi.id, wi.number, wi.wso2_id, wi.type::TEXT, ann.announcement_type::TEXT, eng.type::TEXT, eng.payment_type::TEXT,
 		        wi.description, c.severity::TEXT, c.issue_type::TEXT, `+caseLikeWorkStateColumn+`,
 		        `+caseLikeStateColumn+`, `+caseLikeCauseColumn+`, `+caseLikeCloseNotesColumn+`,
 		        `+caseLikeResolutionCodeColumn+`, c.current_escalation_level::TEXT, c.is_escalated,
@@ -1770,7 +1771,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 		 WHERE wi.id = $1 AND wi.type = ANY(`+caseLikeWorkItemTypes+`)
 		   AND `+announcementVisibilityLeakGuard+``, scopeArgs...,
 	).Scan(
-		&cv.ID, &cv.Number, &internalID, &caseType, &announcementType, &engagementType,
+		&cv.ID, &cv.Number, &internalID, &caseType, &announcementType, &engagementType, &engagementPaymentType,
 		&description, &severity, &issueType, &workState,
 		&state, &cause, &closeNotes,
 		&resolutionCode, &escalationLevel, &isEscalated,
@@ -1906,6 +1907,14 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 	if engagementType != nil {
 		lower := strings.ToLower(*engagementType)
 		cv.EngagementType = &lower
+	}
+	// engagement_payment_type_enum ("PAID"/"FOC") lowercased to the domain
+	// EngagementPaymentType value, same as EngagementType above -- the
+	// ServiceNow path returns the choice's display label here instead, and the
+	// CSM portal's FOC check accepts either. nil for every non-engagement type.
+	if engagementPaymentType != nil {
+		lower := strings.ToLower(*engagementPaymentType)
+		cv.EngagementPaymentType = &lower
 	}
 	// project_id/deployment_id/deployed_product_id (and deployed_product.
 	// product_id) are all nullable on work_item (migration 0021) -- a case
@@ -3543,7 +3552,14 @@ func buildCaseSearchWhere(req domain.SearchCasesRequest, scope SearchScope) (str
 	// check and, with no remaining WHERE-clause reference to the p alias at
 	// all, lets the planner drop the dead LEFT JOIN from a COUNT(*) query
 	// entirely -- measured as a 12% database-CPU reduction for this filter
-	// alone. The `notIn` branch below is left as the simple join check: it
+	// alone. The exclusion is a NOT EXISTS probe on project's primary key,
+	// not `wi.project_id <> ALL(ARRAY(...))`: `<> ALL(array)` compares every
+	// case row with every excluded id (no index, no hash), so when only one or
+	// two statuses are selected and the exclusion list is long (1,955 projects)
+	// it cost 242 ms against 16 ms for the probe, measured on production-size
+	// data; with the usual six statuses the two are equal (16-18 ms). See the
+	// state filter's anti-join for the same problem (digiops-cs #3459).
+	// The `notIn` branch below is left as the simple join check: it
 	// already satisfies both the no-project and null-status cases via the OR,
 	// and nothing here claims it is a bottleneck on real traffic the way
 	// `in` is -- rewriting it the same way would need its own extra `OR
@@ -3555,7 +3571,7 @@ func buildCaseSearchWhere(req domain.SearchCasesRequest, scope SearchScope) (str
 			return "", nil, argIdx, err
 		}
 		where += fmt.Sprintf(
-			" AND wi.project_id IS NOT NULL AND wi.project_id <> ALL(ARRAY(SELECT id FROM project WHERE onboarding_status IS NULL OR onboarding_status <> ALL($%d::text[]::onboarding_status_enum[])))",
+			" AND wi.project_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM project excluded WHERE excluded.id = wi.project_id AND (excluded.onboarding_status IS NULL OR excluded.onboarding_status <> ALL($%d::text[]::onboarding_status_enum[])))",
 			argIdx,
 		)
 		filterArgs = append(filterArgs, labels)

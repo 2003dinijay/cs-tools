@@ -420,6 +420,13 @@ func (r TeamScheduleResolver) Resolve(ctx context.Context, level Level, rc Routi
 		}
 	}
 	for i := range out {
+		if r.phones.TestCallTo != "" {
+			// TEST_CALL_TO routes every call to one tester -- even someone
+			// with a number of their own in paging-alert.yaml -- and nothing
+			// may replace it, not even the person's own profile number.
+			out[i].Phone, out[i].PhoneFixed = r.phones.TestCallTo, true
+			continue
+		}
 		if out[i].Phone == "" {
 			out[i].Phone = r.phones.NumberFor(out[i].Email)
 		}
@@ -666,7 +673,7 @@ func (r TeamScheduleResolver) withoutAway(ctx context.Context, in []Recipient, a
 	out := in[:0:0]
 	for _, p := range in {
 		if away[strings.ToLower(strings.TrimSpace(p.Email))] {
-			slog.InfoContext(ctx, "escalation: on leave; not calling them (onLeave: skip)", "recipient", p.Name)
+			slog.InfoContext(ctx, "escalation: on leave; not calling them (onLeave: skip)", "recipientId", p.LogID())
 			continue
 		}
 		out = append(out, p)
@@ -722,7 +729,7 @@ func (r TeamScheduleResolver) rotaMembers(ctx context.Context, at time.Time, shi
 		}
 		seen[a.Engineer.UserID] = true
 		out = append(out, Recipient{
-			Email: a.Engineer.Email, Name: a.Engineer.Name, ShiftCode: a.ShiftCode,
+			Email: a.Engineer.Email, Name: a.Engineer.Name, UserID: a.Engineer.UserID, ShiftCode: a.ShiftCode,
 		})
 	}
 	sortRecipients(out)
@@ -752,7 +759,7 @@ func (r TeamScheduleResolver) rotaMembersOnShifts(ctx context.Context, at time.T
 		}
 		seen[a.Engineer.UserID] = true
 		out = append(out, Recipient{
-			Email: a.Engineer.Email, Name: a.Engineer.Name, ShiftCode: a.ShiftCode,
+			Email: a.Engineer.Email, Name: a.Engineer.Name, UserID: a.Engineer.UserID, ShiftCode: a.ShiftCode,
 		})
 	}
 	sortRecipients(out)
@@ -798,7 +805,7 @@ func (r TeamScheduleResolver) rotaPair(ctx context.Context, at time.Time, teamKe
 			continue
 		}
 		seen[a.Engineer.UserID] = true
-		rec := Recipient{Email: a.Engineer.Email, Name: a.Engineer.Name, ShiftCode: a.ShiftCode}
+		rec := Recipient{Email: a.Engineer.Email, Name: a.Engineer.Name, UserID: a.Engineer.UserID, ShiftCode: a.ShiftCode}
 		if teamKey != "" && teamKeyFor(a.TeamKey) == teamKey {
 			own = append(own, rec)
 			continue
@@ -980,7 +987,7 @@ func (r TeamScheduleResolver) pickOnePerTeam(members []teamMember) []Recipient {
 	out := make([]Recipient, 0, len(order))
 	for _, key := range order {
 		m := byTeam[key]
-		out = append(out, Recipient{Email: m.Email, Name: m.Name})
+		out = append(out, Recipient{Email: m.Email, Name: m.Name, UserID: m.UserID})
 	}
 	return out
 }
@@ -1030,6 +1037,13 @@ func (r TeamScheduleResolver) teamLeadPool(ctx context.Context) ([]Recipient, er
 // (LEVEL_1, LEVEL_2) can reach for an ABT incident.
 func (r TeamScheduleResolver) LeadPool(ctx context.Context) ([]Recipient, error) {
 	return r.teamLeadPool(ctx)
+}
+
+// TeamLead implements TeamLeadResolver: the lead of one team, by name or key,
+// whatever the shift. The rung email's L1 reaches the case's own ABT team lead
+// at night too, when the call's LEVEL_1 is the Americas team leads.
+func (r TeamScheduleResolver) TeamLead(ctx context.Context, team string) ([]Recipient, error) {
+	return r.abtMembers(ctx, team, roleLead)
 }
 
 // leadsOfABT is every lead in this ladder's ABT, resolved by type so a team
@@ -1135,7 +1149,7 @@ func teamKeyFor(team string) string {
 func recipientsOf(members []teamMember) []Recipient {
 	var out []Recipient
 	for _, m := range members {
-		out = append(out, Recipient{Email: m.Email, Name: m.Name})
+		out = append(out, Recipient{Email: m.Email, Name: m.Name, UserID: m.UserID})
 	}
 	return out
 }

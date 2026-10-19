@@ -63,6 +63,16 @@ type UserService interface {
 	// ServiceUnavailableError naming any requested role not seeded in the role
 	// table.
 	CreateUser(ctx context.Context, req domain.CreateUserRequest) (domain.User, error)
+	// UpdateUser sets the given user's timezone and/or "user".phone (the
+	// number the incident call-escalation ladder dials) by id, not by
+	// resolving the caller from their own token the way PatchMe does -- an
+	// internal caller (RequireInternalCaller) acting on someone else's
+	// profile, e.g. a portal admin recording a newly-assigned team lead's
+	// paging number. Both fields are optional but at least one must be
+	// present. A ValidationError is returned for a malformed id, neither
+	// field present, or an over-long phone; a NotFoundError when no user has
+	// that id.
+	UpdateUser(ctx context.Context, userID string, req domain.UpdateUserRequest) (domain.PatchUserMeResponse, error)
 }
 
 // UserCacheInvalidator clears a user's cached GET /users/{id} and

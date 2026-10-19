@@ -169,6 +169,7 @@ func main() {
 	if activityHub != nil {
 		streamMux := http.NewServeMux()
 		streamMux.HandleFunc("GET /cases/{id}/activities/stream", streamHandler.StreamCaseActivities)
+		streamMux.HandleFunc("GET /cases/activities/stream", streamHandler.StreamMultipleCaseActivities)
 
 		streamAddr := ":" + mustPort("STREAM_PORT", "9092")
 		streamLn, err = (&net.ListenConfig{}).Listen(ctx, "tcp", streamAddr)

@@ -458,7 +458,6 @@ func assignRoles(users []domain.User, byUser map[string][]string) {
 	}
 }
 
-
 // GetUserRoles implements UserRepository.
 func (r *userRepo) GetUserRoles(ctx context.Context, userID string) ([]string, error) {
 	// DISTINCT: user_role has no unique (user_id, role_id), and duplicates exist.
@@ -490,14 +489,14 @@ func (r *userRepo) GetUserRoles(ctx context.Context, userID string) ([]string, e
 func (r *userRepo) GetUserDetail(ctx context.Context, id string) (domain.UserDetail, error) {
 	var (
 		d                      domain.UserDetail
-		email, userType        *string
+		email, userType, phone *string
 		isActive               *bool
 		name, firstName, lName *string
 	)
 	err := r.db.QueryRow(ctx, `
-		SELECT id::TEXT, user_name, name, first_name, last_name, email, is_active, user_type::TEXT, created_on, updated_on
+		SELECT id::TEXT, user_name, name, first_name, last_name, email, is_active, user_type::TEXT, created_on, updated_on, phone
 		FROM "user" WHERE id = $1::uuid`, id).Scan(
-		&d.ID, &d.UserName, &name, &firstName, &lName, &email, &isActive, &userType, &d.CreatedOn, &d.UpdatedOn)
+		&d.ID, &d.UserName, &name, &firstName, &lName, &email, &isActive, &userType, &d.CreatedOn, &d.UpdatedOn, &phone)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.UserDetail{}, &apierror.NotFoundError{Msg: "no user found with id: " + id}
 	}
@@ -509,6 +508,9 @@ func (r *userRepo) GetUserDetail(ctx context.Context, id string) (domain.UserDet
 	d.Active = isActive == nil || *isActive
 	if userType != nil {
 		d.UserType = userTypeFromEnum[*userType]
+	}
+	if phone != nil && strings.TrimSpace(*phone) != "" {
+		d.Phone = phone
 	}
 	return d, nil
 }

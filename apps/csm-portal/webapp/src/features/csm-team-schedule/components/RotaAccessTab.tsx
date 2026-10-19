@@ -21,6 +21,7 @@ import { useDebouncedValue } from "@hooks/useDebouncedValue";
 import { useChangeRotaAccess, useRotaAccess, type RotaAccessChange } from "../api/useRotaAccess";
 import type { RotaAdminGrant, RotaFamily, RotaMarkerGrant, ScheduleTeam } from "../types";
 import RotaReminderSettings from "./RotaReminderSettings";
+import ScheduleSkeleton from "./ScheduleSkeleton";
 
 const FAMILIES: RotaFamily[] = ["CRE", "SRE", "SME"];
 
@@ -59,7 +60,7 @@ export default function RotaAccessTab({ teams }: Props): JSX.Element {
     change.mutate(c, { onError: (e) => setError(e.message || "That change did not save.") });
   };
 
-  if (access.isLoading) return <div className="offnone">Loading rota access…</div>;
+  if (access.isLoading) return <ScheduleSkeleton variant="list" label="Loading rota access…" rows={5} />;
   if (access.isError || !access.data) return <div className="offnone">Rota Access could not be loaded.</div>;
 
   return (

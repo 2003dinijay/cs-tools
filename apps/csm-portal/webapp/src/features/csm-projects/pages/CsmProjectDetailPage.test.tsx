@@ -191,6 +191,30 @@ describe("CsmProjectDetailPage — tab state", () => {
     );
   });
 
+  it.each([
+    ["managed_cloud_subscription", true],
+    ["cloud_support", true],
+    ["subscription", false],
+    ["cloud_evaluation_support", false],
+  ] as const)(
+    "Create menu for a %s project shows 'Create service request': %s",
+    (subscriptionType, shown) => {
+      mockUseGetProject.mockReturnValue({
+        data: { ...PROJECT, subscriptionType },
+        isLoading: false,
+        isError: false,
+      });
+      renderPage();
+      fireEvent.click(screen.getByRole("button", { name: /create/i }));
+      expect(screen.getByText("Create case")).toBeInTheDocument();
+      if (shown) {
+        expect(screen.getByText("Create service request")).toBeInTheDocument();
+      } else {
+        expect(screen.queryByText("Create service request")).not.toBeInTheDocument();
+      }
+    },
+  );
+
   it("hides the Create split-button entirely for a caller without write access", () => {
     mockCanWrite = false;
     renderPage();

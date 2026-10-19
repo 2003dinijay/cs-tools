@@ -53,6 +53,9 @@ import (
 // contacted regardless of availability anyway, so this affects LEVEL_0 only.
 type RosterResolver struct {
 	roster Roster
+	// testCallTo is INCIDENT_ESCALATION_TEST_CALL_TO: when set, every
+	// recipient is rung on it, fixed (PhoneFixed), whatever the roster says.
+	testCallTo string
 }
 
 // Roster is the configured recipient roster, in the shape of section 5.0's own
@@ -99,6 +102,15 @@ func NewRosterResolver(r Roster) RosterResolver {
 	return RosterResolver{roster: r}
 }
 
+// WithTestCallTo returns rr ringing every recipient on number, as
+// INCIDENT_ESCALATION_TEST_CALL_TO does for the Team Schedule resolver, and
+// marking it PhoneFixed so the CSM profile lookup never replaces it. Empty
+// leaves the roster's own numbers.
+func (rr RosterResolver) WithTestCallTo(number string) RosterResolver {
+	rr.testCallTo = strings.TrimSpace(number)
+	return rr
+}
+
 // IsEmpty reports whether this roster would resolve nobody at any level, which
 // cmd/server/main.go uses to refuse to start the engine on an empty
 // configuration rather than run a ladder that can never call anyone.
@@ -122,7 +134,15 @@ func (rr RosterResolver) Resolve(_ context.Context, level Level, rc RoutingConte
 		rr.roster.Default,
 	} {
 		if people, ok := tier[key]; ok && len(people) > 0 {
-			return people, nil
+			if rr.testCallTo == "" {
+				return people, nil
+			}
+			out := make([]Recipient, len(people))
+			copy(out, people)
+			for i := range out {
+				out[i].Phone, out[i].PhoneFixed = rr.testCallTo, true
+			}
+			return out, nil
 		}
 	}
 	return nil, nil

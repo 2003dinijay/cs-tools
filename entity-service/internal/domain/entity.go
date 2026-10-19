@@ -307,7 +307,11 @@ type UserDetail struct {
 	Active    bool      `json:"active"`
 	CreatedOn time.Time `json:"createdOn"`
 	UpdatedOn time.Time `json:"updatedOn"`
-	Roles     []string  `json:"roles"`
+	// Phone is "user".phone (migration 0141) -- the number the incident
+	// call-escalation ladder (integrations/csm-notification-service) dials.
+	// Omitted when unset, same convention as ProjectAccess below.
+	Phone *string  `json:"phone,omitempty"`
+	Roles []string `json:"roles"`
 	// Groups are the teams the user belongs to (team_member). Which of them are
 	// registry teams is the caller's determination.
 	Groups []UserGroupRef `json:"groups"`
@@ -378,6 +382,18 @@ type GetUserMeResponse struct {
 // ignores Phone (a phone-only request is a no-op there).
 type PatchUserMeRequest struct {
 	TimeZone string  `json:"timeZone"`
+	Phone    *string `json:"phone"`
+}
+
+// UpdateUserRequest is the request body for PATCH /users/{id} -- the
+// admin-targeted counterpart to PatchUserMeRequest, for a caller acting on
+// someone else's profile rather than their own (see UserService.UpdateUser's
+// own doc comment). Both fields are optional pointers (unlike
+// PatchUserMeRequest.TimeZone, which is a plain string since it can never be
+// cleared), but at least one must be present. Phone has the same
+// trim/length/clear rules as PatchUserMeRequest.Phone.
+type UpdateUserRequest struct {
+	TimeZone *string `json:"timeZone"`
 	Phone    *string `json:"phone"`
 }
 
@@ -1565,6 +1581,15 @@ type SearchProjectsRequest struct {
 	// Matching is exact and case-sensitive (project keys are opaque
 	// identifiers, not display text).
 	ExcludeProjectKeys []string `json:"excludeProjectKeys,omitempty"`
+	// SfIDs restricts results to projects whose Salesforce id (ProjectView.SfID)
+	// is any of the given values — the include-side counterpart of
+	// ExcludeProjectKeys, for callers that hold Salesforce ids rather than
+	// platform UUIDs. Matching is exact and case-sensitive. The Postgres data
+	// source applies it as a real SQL filter against project.sf_id; the
+	// ServiceNow data source has no upstream filter for it, so it is applied
+	// in Go by paging through every match, with the same page-bound caveat as
+	// ExcludeClosureStates.
+	SfIDs []string `json:"sfIds,omitempty"`
 }
 
 // ProjectSearchAccountRef is the account reference embedded in a project
@@ -5663,6 +5688,55 @@ type SearchTeamsResponse struct {
 	Total  int    `json:"total"`
 	Offset int    `json:"offset"`
 	Limit  int    `json:"limit"`
+}
+
+// TeamChatWebhook is one team's own Google Chat incoming-webhook URL
+// (team.chat_webhook_url, migration 0240) -- the replacement for a team's
+// entry in csm-notification-service's own GOOGLE_CHAT_SPACES config. Only
+// teams with a configured URL are ever included (see
+// GET /teams/chat-webhooks); a team with none has nowhere specific to route
+// a Chat alert, same as a team missing from that config today.
+type TeamChatWebhook struct {
+	Name           string `json:"name"`
+	ChatWebhookURL string `json:"chatWebhookUrl"`
+}
+
+// ListTeamChatWebhooksResponse is the response for GET /teams/chat-webhooks
+// -- internal-caller-only (see TeamService.ListChatWebhooks), since a
+// webhook URL is itself a bearer credential: anyone holding it can post into
+// that team's Chat space.
+type ListTeamChatWebhooksResponse struct {
+	Teams []TeamChatWebhook `json:"teams"`
+}
+
+// TeamDetail is the response for GET /teams/{id} -- the same id/name/type
+// POST /teams/search already returns for a row, plus ChatWebhookURL (nil
+// when unset), the one field PATCH /teams/{id} accepts today. A single
+// generic team resource (mirroring GET/PATCH /users/{id}) rather than a
+// dedicated /teams/{id}/chat-webhook pair, so a second settable team field
+// later is a new optional field on UpdateTeamRequest, not a new route.
+// Internal-caller-only -- a webhook URL is itself a bearer credential, so
+// this is never exposed through POST /teams/search.
+type TeamDetail struct {
+	ID             string  `json:"id"`
+	Name           string  `json:"name"`
+	Type           string  `json:"type"`
+	ChatWebhookURL *string `json:"chatWebhookUrl"`
+}
+
+// UpdateTeamRequest is the body of PATCH /teams/{id}. ChatWebhookURL is the
+// only settable field today: an empty value clears the team's own webhook, a
+// non-empty one must be a well-formed https://chat.googleapis.com/... URL,
+// and omitting it entirely leaves the stored value untouched -- "at least
+// one field must be present" the same contract PATCH /users/{id}'s own
+// UpdateUserRequest has.
+type UpdateTeamRequest struct {
+	ChatWebhookURL *string `json:"chatWebhookUrl"`
+}
+
+// AssignTeamLeadRequest is the body of POST /teams/{id}/lead.
+type AssignTeamLeadRequest struct {
+	UserID string `json:"userId"`
 }
 
 // ServiceOfferingServiceRef is the parent service reference within a service offering.

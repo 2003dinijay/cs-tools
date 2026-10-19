@@ -63,12 +63,25 @@ func testRoleIDsForCSMRoles() map[string]string {
 	}
 }
 
+// testGroupNamesForCSMRoles is a dummy ASGARDEO_ROLE_GROUP_NAMES mapping
+// (portal role key -> Asgardeo group display name) -- what
+// AccessGuard.WithGroupNames resolves against, alongside
+// testRoleIDsForCSMRoles above.
+func testGroupNamesForCSMRoles() map[string][]string {
+	return map[string][]string{
+		"cs_engineer": {"CSM Engineers"},
+	}
+}
+
 // newAccessGuardForCSMRoles builds the AccessGuard these tests wire in --
 // WithRoleIDs is what makes RolesForIDs (what withPortalRoles now calls)
 // resolve anything at all; a guard built without it answers empty for every
 // role, the same as if ASGARDEO_ROLE_IDS configured none of these names.
+// WithGroupNames is the same for group-based matching.
 func newAccessGuardForCSMRoles() *AccessGuard {
-	return NewAccessGuard(testAccessConfigForCSMRoles()).WithRoleIDs(testRoleIDsForCSMRoles())
+	return NewAccessGuard(testAccessConfigForCSMRoles()).
+		WithRoleIDs(testRoleIDsForCSMRoles()).
+		WithGroupNames(testGroupNamesForCSMRoles())
 }
 
 type getUserPortalRolesResponse struct {
@@ -98,12 +111,12 @@ func TestGetUser_PortalRoles_AddsCsmPlatformRolesForWso2Email(t *testing.T) {
 			gotEmail = email
 			return &scim.UserInfo{ID: scimUserID}, nil
 		},
-		getUserByIDFn: func(_ context.Context, userID string) ([]scim.RoleAssignment, error) {
+		getUserByIDFn: func(_ context.Context, userID string) (scim.UserAssignments, error) {
 			gotUserID = userID
-			return []scim.RoleAssignment{
+			return scim.UserAssignments{Roles: []scim.RoleAssignment{
 				{ID: "test-admin-id", Name: "test-admin"},
 				{ID: "some-other-app-role-id", Name: "some-other-app-role"},
-			}, nil
+			}}, nil
 		},
 	}, &mockEntityUserClient{
 		getUserFn: func(_ context.Context, _ string) ([]byte, error) {
@@ -132,6 +145,52 @@ func TestGetUser_PortalRoles_AddsCsmPlatformRolesForWso2Email(t *testing.T) {
 	}
 }
 
+// TestGetUser_PortalRoles_AddsCsmPlatformRolesFromGroupMembershipAlone: a
+// target holding NO role that matches ASGARDEO_ROLE_IDS at all must still
+// gain a csmPlatformRoles entry when they belong to a group whose DISPLAY
+// NAME is configured against ASGARDEO_ROLE_GROUP_NAMES -- this is the whole
+// point of group-based matching: some portal roles are granted by Asgardeo
+// group membership instead of (or in addition to) a role assignment, named
+// directly by the group's own display name, not its opaque id.
+func TestGetUser_PortalRoles_AddsCsmPlatformRolesFromGroupMembershipAlone(t *testing.T) {
+	const id = "11111111-1111-1111-1111-111111111111"
+	h := NewUsersHandler(&mockSCIMClient{
+		searchUserFn: func(_ context.Context, _ string) (*scim.UserInfo, error) {
+			return &scim.UserInfo{ID: "scim-user-1"}, nil
+		},
+		getUserByIDFn: func(_ context.Context, _ string) (scim.UserAssignments, error) {
+			return scim.UserAssignments{
+				// No role assignment matches any configured ASGARDEO_ROLE_IDS
+				// entry at all -- the portal role below must come from the
+				// group alone.
+				Roles: []scim.RoleAssignment{{ID: "some-other-app-role-id", Name: "some-other-app-role"}},
+				Groups: []scim.GroupAssignment{
+					// Matched by Name, not ID -- ID is deliberately a different,
+					// unrelated string here to prove the match never falls back
+					// to it.
+					{ID: "some-asgardeo-group-uuid", Name: "CSM Engineers"},
+					{ID: "some-unrelated-group-uuid", Name: "Unrelated Group"},
+				},
+			}, nil
+		},
+	}, &mockEntityUserClient{
+		getUserFn: func(_ context.Context, _ string) ([]byte, error) {
+			return []byte(`{"id":"` + id + `","email":"staff@wso2.com","userType":"internal","roles":["admin","internal"]}`), nil
+		},
+	}, testDirectory(t), false, nil).WithAccessGuard(newAccessGuardForCSMRoles())
+
+	r := withUser(httptest.NewRequest(http.MethodGet, "/users/"+id, nil))
+	r.SetPathValue("id", id)
+	w := httptest.NewRecorder()
+	h.GetUser(w, r)
+
+	assertStatus(t, w, http.StatusOK)
+	got := decodeJSON[getUserPortalRolesResponse](t, w)
+	if !reflect.DeepEqual(got.CsmPlatformRoles, []string{"cs_engineer"}) {
+		t.Errorf("csmPlatformRoles = %v, want [cs_engineer] from group membership alone", got.CsmPlatformRoles)
+	}
+}
+
 // TestGetUser_PortalRoles_EmptyWhenNoScimRoleMatchesAnyConfiguredRole: SCIM
 // can return a non-empty role list for a wso2.com target where none of their
 // role IDs match any configured ASGARDEO_ROLE_IDS entry -- e.g. the person
@@ -144,11 +203,11 @@ func TestGetUser_PortalRoles_EmptyWhenNoScimRoleMatchesAnyConfiguredRole(t *test
 		searchUserFn: func(_ context.Context, _ string) (*scim.UserInfo, error) {
 			return &scim.UserInfo{ID: "scim-user-1"}, nil
 		},
-		getUserByIDFn: func(_ context.Context, _ string) ([]scim.RoleAssignment, error) {
-			return []scim.RoleAssignment{
+		getUserByIDFn: func(_ context.Context, _ string) (scim.UserAssignments, error) {
+			return scim.UserAssignments{Roles: []scim.RoleAssignment{
 				{ID: "some-other-app-role-id", Name: "some-other-app-role"},
 				{ID: "another-unrelated-role-id", Name: "another-unrelated-role"},
-			}, nil
+			}}, nil
 		},
 	}, &mockEntityUserClient{
 		getUserFn: func(_ context.Context, _ string) ([]byte, error) {
@@ -181,8 +240,8 @@ func TestGetUser_PortalRoles_AddedForAWso2EmailEvenWhenTaggedExternal(t *testing
 		searchUserFn: func(_ context.Context, _ string) (*scim.UserInfo, error) {
 			return &scim.UserInfo{ID: "scim-user-1"}, nil
 		},
-		getUserByIDFn: func(_ context.Context, _ string) ([]scim.RoleAssignment, error) {
-			return []scim.RoleAssignment{{ID: "test-admin-id", Name: "test-admin"}}, nil
+		getUserByIDFn: func(_ context.Context, _ string) (scim.UserAssignments, error) {
+			return scim.UserAssignments{Roles: []scim.RoleAssignment{{ID: "test-admin-id", Name: "test-admin"}}}, nil
 		},
 	}, &mockEntityUserClient{
 		getUserFn: func(_ context.Context, _ string) ([]byte, error) {

@@ -11,7 +11,9 @@
  * — it is the structural marker that distinguishes a rail submenu (Operations,
  * Security Center) from a section whose children live in an in-page tab strip
  * (Customers, Settings). Without it PLG rendered as a single flat item and its
- * other four pages were reachable only through search.
+ * other four pages were reachable only through search. (A route-tab section
+ * also opens as a dropdown for a user offered one of its shortcut children —
+ * see `CsmNavNode.shortcutTo` — which is not how PLG gets there.)
  *
  * PLG's children are route-backed rather than query-param tabs, which is the
  * less common of the two shapes this field supports. `navNodeHref` handles it:

@@ -41,9 +41,10 @@ type scimClient interface {
 	UpdateUserPhone(ctx context.Context, userID, mobile string) (*string, error)
 	GetRole(ctx context.Context, roleID string) ([]scim.RoleMember, error)
 	// GetUserByID is used by withPortalRoles to resolve a target user's held
-	// roles by their own Asgardeo ID (see that method's own doc comment for
-	// why -- two distinct roles can share a display name).
-	GetUserByID(ctx context.Context, userID string) ([]scim.RoleAssignment, error)
+	// roles AND group memberships by their own Asgardeo ID (see that method's
+	// own doc comment for why -- two distinct roles, or two distinct groups,
+	// can share a display name).
+	GetUserByID(ctx context.Context, userID string) (scim.UserAssignments, error)
 	// AddRoleMembers grants a role to one or more users by email -- used by
 	// CreateUser to grant each of the caller's requested grantRoles once the
 	// new platform user exists.
@@ -62,6 +63,7 @@ type entityUserClient interface {
 	SaveSavedFilterView(ctx context.Context, body []byte) ([]byte, error)
 	DeleteSavedFilterView(ctx context.Context, listKey, name string) ([]byte, error)
 	ReorderSavedFilterView(ctx context.Context, body []byte) ([]byte, error)
+	UpdateUser(ctx context.Context, id string, body []byte) ([]byte, error)
 }
 
 // UsersHandler handles HTTP requests for user-related operations.
@@ -383,6 +385,73 @@ func (h *UsersHandler) PatchMe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSONValue(w, http.StatusOK, resp)
+}
+
+// updateUserRequest is the body of PATCH /users/{id}. Both fields are
+// optional, but at least one must be present.
+type updateUserRequest struct {
+	TimeZone *string `json:"timeZone"`
+	Phone    *string `json:"phone"`
+}
+
+// UpdateUser handles PATCH /users/{id} -- restricted to cs_engineer or admin
+// via the route's PermWrite permission (cmd/server/main.go, held by exactly
+// those two roles), same posture as CreateUser: this handler does not
+// re-check the caller's role itself. Unlike PatchMe, which only ever
+// resolves the caller's OWN id from their token, this lets one of those
+// roles update someone else's profile -- needed once an admin can reassign a
+// team's lead (POST /teams/{id}/lead): the incident call-escalation ladder
+// dials the lead's own "user".phone, so a newly assigned lead with no number
+// on file is a silent paging gap until this is set here.
+func (h *UsersHandler) UpdateUser(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserInfoFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
+		return
+	}
+
+	id := r.PathValue("id")
+	if id == "" || !uuidRe.MatchString(id) {
+		writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
+		return
+	}
+
+	body, ok := readJSONBody(w, r)
+	if !ok {
+		return
+	}
+
+	var payload updateUserRequest
+	if err := json.Unmarshal(body, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+	if payload.TimeZone == nil && payload.Phone == nil {
+		writeError(w, http.StatusBadRequest, "At least one field must be provided for update.")
+		return
+	}
+
+	entityFields := map[string]string{}
+	if payload.TimeZone != nil {
+		entityFields["timeZone"] = *payload.TimeZone
+	}
+	if payload.Phone != nil {
+		entityFields["phone"] = *payload.Phone
+	}
+	entityBody, err := json.Marshal(entityFields)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, ErrMsgInternal)
+		return
+	}
+
+	raw, err := h.entity.UpdateUser(r.Context(), id, entityBody)
+	if err != nil {
+		// Never log the body: it may carry the phone number.
+		slog.ErrorContext(r.Context(), "entity UpdateUser failed", "userID", user.UserID, "targetID", id, "err", err)
+		mapUpstreamError(w, err, "Failed to update user.")
+		return
+	}
+	writeJSON(w, http.StatusOK, raw)
 }
 
 // SearchUsers handles POST /users/search.
