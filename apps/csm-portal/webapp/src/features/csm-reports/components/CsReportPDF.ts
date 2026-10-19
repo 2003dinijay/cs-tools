@@ -28,6 +28,7 @@
 import html2canvas from "html2canvas";
 import jsPDF from "jspdf";
 import { formatDateOnly } from "@utils/dateTime";
+import { addElementPages } from "./reportPdfCapture";
 import logo from "../assets/wso2-logo-orange.png";
 import "../styles/CSReportPDF.css";
 
@@ -494,8 +495,6 @@ export async function csReportPDF(
   }
 
   const pdf = new jsPDF("l", "mm", "a4");
-  const pdfW = pdf.internal.pageSize.getWidth();
-  const pdfH = pdf.internal.pageSize.getHeight();
   // html2canvas clones the element's whole document. Capturing from the app
   // page re-fetches every icon and chart SVG, once per page. This frame holds
   // one sheet and the styles it needs, so each capture stays that small.
@@ -540,33 +539,11 @@ export async function csReportPDF(
       if (!child.classList.contains("pdf-sheet")) continue;
       const sheet = child;
       frameDoc.body.replaceChildren(sheet);
-      const canvas = await html2canvas(sheet, {
-        scale: 2,
-        backgroundColor: "#ffffff",
-        logging: false,
-        imageTimeout: 2000,
+      started = await addElementPages(pdf, sheet, started, {
         width: PAGE_W,
         windowWidth: PAGE_W,
+        pageCssHeight: PAGE_H,
       });
-      const slicePx = Math.max(1, Math.round(PAGE_H * (canvas.height / Math.max(sheet.offsetHeight, 1))));
-      let y = 0;
-      do {
-        const h = Math.min(slicePx, canvas.height - y);
-        if (h <= 1) break;
-        const slice = document.createElement("canvas");
-        slice.width = canvas.width;
-        slice.height = h;
-        const ctx = slice.getContext("2d");
-        if (!ctx) break;
-        ctx.fillStyle = "#ffffff";
-        ctx.fillRect(0, 0, slice.width, slice.height);
-        ctx.drawImage(canvas, 0, y, canvas.width, h, 0, 0, canvas.width, h);
-        if (started) pdf.addPage();
-        started = true;
-        const drawH = (h / canvas.width) * pdfW;
-        pdf.addImage(slice.toDataURL("image/jpeg", 0.92), "JPEG", 0, 0, pdfW, Math.min(drawH, pdfH));
-        y += h;
-      } while (y < canvas.height - 2);
     }
 
     const formattedFrom = from ? formatDateOnly(from) : "UnknownStart";
