@@ -2036,8 +2036,11 @@ type ProductVersion struct {
 	ReleaseDate                    time.Time     `json:"releaseDate"`
 	SupportEOLDate                 *time.Time    `json:"supportEolDate"`
 	EarliestPossibleSupportEOLDate *time.Time    `json:"earliestPossibleSupportEolDate"`
-	CreatedOn                      time.Time     `json:"createdOn"`
-	UpdatedOn                      time.Time     `json:"updatedOn"`
+	// DeploymentProfile is product_version.deployment_profile (e.g. "All In
+	// One"); null when the version has none.
+	DeploymentProfile *string   `json:"deploymentProfile"`
+	CreatedOn         time.Time `json:"createdOn"`
+	UpdatedOn         time.Time `json:"updatedOn"`
 }
 
 // SearchProductVersionsRequest is the input for a product version search operation.
@@ -2049,14 +2052,10 @@ type SearchProductVersionsRequest struct {
 	SearchQuery string     `json:"searchQuery"`
 	// DeploymentProfile restricts results to versions with this deployment
 	// profile (product_version.deployment_profile), matched case-insensitively.
-	// Omitted means DefaultDeploymentProfile; an explicit empty string turns the
-	// filter off and returns every profile. Postgres data source only.
+	// Omitted (or empty) applies no profile filter and returns every profile.
+	// Postgres data source only.
 	DeploymentProfile *string `json:"deploymentProfile,omitempty"`
 }
-
-// DefaultDeploymentProfile is the deployment profile a product version search
-// is scoped to when the request does not name one.
-const DefaultDeploymentProfile = "All In One"
 
 // SearchProductVersionsResponse is the paginated result of a product version search.
 // HasMore is true when additional pages are available beyond the current offset.
@@ -2104,9 +2103,12 @@ type DeploymentView struct {
 	Project     EntityRef      `json:"project"`
 	// ProjectSfID is the Salesforce id of the deployment's project; null when the
 	// project has none (or the data source does not carry it).
-	ProjectSfID *string   `json:"projectSfId"`
-	CreatedOn   time.Time `json:"createdOn"`
-	UpdatedOn   time.Time `json:"updatedOn"`
+	ProjectSfID *string `json:"projectSfId"`
+	// Active reports whether the deployment is active; null when the data
+	// source does not say.
+	Active    *bool     `json:"active"`
+	CreatedOn time.Time `json:"createdOn"`
+	UpdatedOn time.Time `json:"updatedOn"`
 	// DeployedProductCount is the number of deployed products in this
 	// deployment, as reported by the upstream data source. Consumers rely on it
 	// to tell whether a deployment has any products at all without a second
@@ -2246,6 +2248,9 @@ type DeployedProductView struct {
 	// (deployed_product.project_id); null when it has none or the data source
 	// does not carry it.
 	ProjectSfID *string `json:"projectSfId"`
+	// Active reports whether the deployed product is active (a missing value in
+	// the database counts as active); null when the data source does not say.
+	Active *bool `json:"active"`
 	// Description is the customer's own free-text note about this deployed
 	// product. It is editable through the update endpoint, so it has to be
 	// readable here too — otherwise a client cannot show the current value
@@ -2301,6 +2306,11 @@ type SearchDeployedProductsRequest struct {
 	// exact and case-sensitive, combining (AND) with DeploymentIDs. Postgres
 	// data source only.
 	ProjectSfIDs []string `json:"projectSfIds,omitempty"`
+	// Active filters on the deployed product's active state. Omitted (or true)
+	// returns active deployed products only -- the default; false returns
+	// deactivated ones only. A missing value in the database counts as active.
+	// Postgres data source only.
+	Active *bool `json:"active,omitempty"`
 }
 
 // SearchDeployedProductsResponse is the paginated result of a deployed-product search.

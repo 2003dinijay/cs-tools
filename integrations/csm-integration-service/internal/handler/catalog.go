@@ -72,44 +72,129 @@ func readSearchBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
 	return body, true
 }
 
+// orderedField and orderedObject hold a JSON object's members in their original
+// order, with each value kept as its exact original text, so rewriting one field
+// leaves every other byte and the key order as received.
+type orderedField struct {
+	key string
+	val json.RawMessage
+}
+
+type orderedObject []orderedField
+
+// decodeOrdered reads one JSON object from dec, in member order. It errors when
+// the next value is not an object (including null).
+func decodeOrdered(dec *json.Decoder) (orderedObject, error) {
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, err
+	}
+	if d, ok := tok.(json.Delim); !ok || d != '{' {
+		return nil, errors.New("not a JSON object")
+	}
+	var obj orderedObject
+	for dec.More() {
+		kt, err := dec.Token()
+		if err != nil {
+			return nil, err
+		}
+		key, ok := kt.(string)
+		if !ok {
+			return nil, errors.New("invalid JSON object key")
+		}
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			return nil, err
+		}
+		obj = append(obj, orderedField{key: key, val: raw})
+	}
+	if _, err := dec.Token(); err != nil { // the closing brace
+		return nil, err
+	}
+	return obj, nil
+}
+
+// marshalPlain encodes v as JSON without HTML escaping or a trailing newline.
+func marshalPlain(v any) []byte {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(v) // v is a string here; encoding cannot fail
+	return bytes.TrimRight(buf.Bytes(), "\n")
+}
+
+func (o orderedObject) bytes() []byte {
+	var buf bytes.Buffer
+	buf.WriteByte('{')
+	for i, f := range o {
+		if i > 0 {
+			buf.WriteByte(',')
+		}
+		buf.Write(marshalPlain(f.key))
+		buf.WriteByte(':')
+		buf.Write(f.val)
+	}
+	buf.WriteByte('}')
+	return buf.Bytes()
+}
+
 // upperEnumFields upper-cases the string value of each named field on every
 // object in the response's list under listKey (e.g. "products"), leaving
-// everything else as received: numbers keep their exact text, nulls and
+// everything else exactly as received: member order, number text, nulls and
 // non-string values are untouched, and a response without that list passes
 // through unchanged. It errors unless body is exactly one JSON object (not null,
 // not another type, and with nothing after it).
 func upperEnumFields(body []byte, listKey string, fields ...string) ([]byte, error) {
 	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.UseNumber()
-	var doc map[string]any
-	if err := dec.Decode(&doc); err != nil {
+	doc, err := decodeOrdered(dec)
+	if err != nil {
 		return nil, err
-	}
-	if doc == nil {
-		return nil, errors.New("response is null, not a JSON object")
 	}
 	if _, err := dec.Token(); err != io.EOF {
 		return nil, errors.New("response has data after the JSON object")
 	}
-	items, _ := doc[listKey].([]any)
-	for _, it := range items {
-		obj, ok := it.(map[string]any)
-		if !ok {
+	for i, f := range doc {
+		if f.key == listKey {
+			doc[i].val = upperListFields(f.val, fields)
+		}
+	}
+	return doc.bytes(), nil
+}
+
+// upperListFields rewrites the named string fields on each object of the JSON
+// array raw; anything that is not an array, or an item that is not an object,
+// is returned as it was.
+func upperListFields(raw json.RawMessage, fields []string) json.RawMessage {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if tok, err := dec.Token(); err != nil {
+		return raw
+	} else if d, ok := tok.(json.Delim); !ok || d != '[' {
+		return raw
+	}
+	var items [][]byte
+	for dec.More() {
+		var item json.RawMessage
+		if err := dec.Decode(&item); err != nil {
+			return raw
+		}
+		obj, err := decodeOrdered(json.NewDecoder(bytes.NewReader(item)))
+		if err != nil {
+			items = append(items, item)
 			continue
 		}
-		for _, f := range fields {
-			if v, ok := obj[f].(string); ok {
-				obj[f] = strings.ToUpper(v)
+		for i, f := range obj {
+			for _, name := range fields {
+				var str string
+				// only a JSON string is rewritten: unmarshalling null into a string
+				// would succeed and turn the null into "".
+				if f.key == name && len(f.val) > 0 && f.val[0] == '"' && json.Unmarshal(f.val, &str) == nil {
+					obj[i].val = marshalPlain(strings.ToUpper(str))
+				}
 			}
 		}
+		items = append(items, obj.bytes())
 	}
-	var out bytes.Buffer
-	enc := json.NewEncoder(&out)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(doc); err != nil {
-		return nil, err
-	}
-	return bytes.TrimRight(out.Bytes(), "\n"), nil
+	return append(append([]byte{'['}, bytes.Join(items, []byte{','})...), ']')
 }
 
 // writeUpperedJSON upper-cases the given enum fields and writes the result,

@@ -39,9 +39,9 @@ func TestProductVersionService_SearchProductVersions_DeploymentProfile(t *testin
 		in   *string
 		want string
 	}{
-		"omitted defaults to All In One": {nil, domain.DefaultDeploymentProfile},
-		"explicit value is kept":         {&custom, "Split"},
-		"empty opts out of the filter":   {&none, ""},
+		"omitted applies no profile filter": {nil, ""},
+		"explicit value is kept":            {&custom, "Split"},
+		"empty applies no profile filter":   {&none, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			repo := &stubProductVersionRepo{}
@@ -49,8 +49,12 @@ func TestProductVersionService_SearchProductVersions_DeploymentProfile(t *testin
 			if _, err := svc.SearchProductVersions(context.Background(), domain.SearchProductVersionsRequest{DeploymentProfile: tc.in}); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if repo.got.DeploymentProfile == nil || *repo.got.DeploymentProfile != tc.want {
-				t.Errorf("repository deploymentProfile = %v, want %q", repo.got.DeploymentProfile, tc.want)
+			got := ""
+			if repo.got.DeploymentProfile != nil {
+				got = *repo.got.DeploymentProfile
+			}
+			if got != tc.want {
+				t.Errorf("repository deploymentProfile = %q, want %q", got, tc.want)
 			}
 		})
 	}

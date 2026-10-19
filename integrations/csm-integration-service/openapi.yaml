@@ -1985,8 +1985,7 @@ components:
           description: Case-insensitive match against version string.
         deploymentProfile:
           type: string
-          default: All In One
-          description: Only versions with this deployment profile, matched case-insensitively. Defaults to "All In One" when omitted; send an empty string to return every profile.
+          description: Only versions with this deployment profile (e.g. "All In One"), matched case-insensitively. Omit it, or send an empty string, to return every profile.
 
     SearchProductVersionsResponse:
       type: object
@@ -2088,6 +2087,10 @@ components:
           items:
             type: string
           description: Only deployed products of the projects whose Salesforce id is any of the given values (exact, case-sensitive; empty or padded values are rejected with 400, at most 100). Combines with deploymentIds.
+        active:
+          type: boolean
+          default: true
+          description: Filter on the deployed product's active state. Defaults to true (active deployed products only); false returns deactivated ones only. A product with no recorded state counts as active.
 
     SearchDeployedProductsResponse:
       type: object
@@ -2145,6 +2148,10 @@ components:
           type: string
           format: date-time
           nullable: true
+        deploymentProfile:
+          type: string
+          nullable: true
+          description: Deployment profile of this version, e.g. "All In One"; null when it has none.
         createdOn:
           type: string
           format: date-time
@@ -2179,6 +2186,10 @@ components:
           type: string
           nullable: true
           description: Salesforce id of the deployment's project; null when the project has none.
+        active:
+          type: boolean
+          nullable: true
+          description: Whether the deployment is active.
         createdOn:
           type: string
           format: date-time
@@ -2219,6 +2230,10 @@ components:
           type: string
           nullable: true
           description: Salesforce id of the deployed product's project; null when the project has none.
+        active:
+          type: boolean
+          nullable: true
+          description: Whether the deployed product is active.
         description:
           type: string
           nullable: true
