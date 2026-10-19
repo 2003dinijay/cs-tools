@@ -16,7 +16,11 @@
 
 package repository
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
+)
 
 // TestPendingVerificationSeverityFromEnum locks in the CodeRabbit finding:
 // pending_verification's severity must agree with GetCaseByID/SearchCases'
@@ -45,6 +49,61 @@ func TestPendingVerificationSeverityFromEnum(t *testing.T) {
 			}
 			if got != nil && *got != *tt.want {
 				t.Fatalf("got %q, want %q", *got, *tt.want)
+			}
+		})
+	}
+}
+
+// TestDedupeAddedReasonClause locks in the CodeRabbit finding: when
+// VerifiedOnly is set, addedReason must be applied AFTER Search's own
+// DISTINCT ON dedup (as an outer filter), never as a pre-dedup inner WHERE
+// clause, or dedup can pick a stale, already-verified cycle over a case's
+// true latest (different-reason, unverified) cycle.
+func TestDedupeAddedReasonClause(t *testing.T) {
+	autoClosed := domain.PendingVerificationAddedReasonAutoClosed
+
+	tests := []struct {
+		name       string
+		filters    domain.PendingVerificationSearchFilters
+		argOffset  int
+		wantClause string
+		wantArgs   []any
+	}{
+		{
+			name:       "nil AddedReason produces no clause and no args",
+			filters:    domain.PendingVerificationSearchFilters{},
+			argOffset:  0,
+			wantClause: "",
+			wantArgs:   nil,
+		},
+		{
+			name:       "AddedReason set with argOffset 0 numbers its placeholder $1",
+			filters:    domain.PendingVerificationSearchFilters{AddedReason: &autoClosed},
+			argOffset:  0,
+			wantClause: " AND added_reason = $1::pending_verification_added_reason_enum",
+			wantArgs:   []any{autoClosed},
+		},
+		{
+			name:       "AddedReason set with a non-zero argOffset numbers its placeholder accordingly",
+			filters:    domain.PendingVerificationSearchFilters{AddedReason: &autoClosed},
+			argOffset:  3,
+			wantClause: " AND added_reason = $4::pending_verification_added_reason_enum",
+			wantArgs:   []any{autoClosed},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotClause, gotArgs := dedupeAddedReasonClause(tt.filters, tt.argOffset)
+			if gotClause != tt.wantClause {
+				t.Fatalf("clause: got %q, want %q", gotClause, tt.wantClause)
+			}
+			if len(gotArgs) != len(tt.wantArgs) {
+				t.Fatalf("args: got %v, want %v", gotArgs, tt.wantArgs)
+			}
+			for i := range gotArgs {
+				if gotArgs[i] != tt.wantArgs[i] {
+					t.Fatalf("args[%d]: got %v, want %v", i, gotArgs[i], tt.wantArgs[i])
+				}
 			}
 		})
 	}

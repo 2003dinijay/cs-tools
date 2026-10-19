@@ -279,7 +279,11 @@ func buildSearchWhere(f domain.PendingVerificationSearchFilters, includeTypeFilt
 	args := []any{f.ProjectID}
 	argIdx := 2
 
-	if f.AddedReason != nil {
+	// Skipped entirely when VerifiedOnly is set -- see
+	// dedupeAddedReasonClause's own doc comment for why: it must be applied
+	// AFTER Search's DISTINCT ON dedup, not here, or it can make dedup pick
+	// the wrong cycle.
+	if f.AddedReason != nil && !f.VerifiedOnly {
 		where += fmt.Sprintf(" AND pv.added_reason = $%d::pending_verification_added_reason_enum", argIdx)
 		args = append(args, *f.AddedReason)
 		argIdx++
@@ -315,6 +319,25 @@ func buildSearchWhere(f domain.PendingVerificationSearchFilters, includeTypeFilt
 	return where, args
 }
 
+// dedupeAddedReasonClause returns the SQL fragment (its one placeholder
+// numbered right after argOffset existing args) and the argument to append,
+// for applying AddedReason to a VerifiedOnly (dedupe) query's OUTER
+// selection -- i.e. AFTER DISTINCT ON has already picked each work item's
+// true latest cycle. buildSearchWhere deliberately excludes AddedReason from
+// the inner WHERE when VerifiedOnly is set, for the same reason it already
+// excludes verified_on: filtering by reason BEFORE dedup can remove a case's
+// real latest (still-unverified, different-reason) cycle from DISTINCT ON's
+// candidate set entirely, letting it pick a stale, already-verified older
+// cycle instead -- showing a case in the Verified tab, in the wrong reason
+// bucket, whose true current cycle isn't verified at all. Returns ("", nil)
+// when no AddedReason filter applies.
+func dedupeAddedReasonClause(f domain.PendingVerificationSearchFilters, argOffset int) (string, []any) {
+	if f.AddedReason == nil {
+		return "", nil
+	}
+	return fmt.Sprintf(" AND added_reason = $%d::pending_verification_added_reason_enum", argOffset+1), []any{*f.AddedReason}
+}
+
 // Search implements PendingVerificationRepository.
 func (r *pendingVerificationRepo) Search(ctx context.Context, req domain.SearchPendingVerificationsRequest) (domain.SearchPendingVerificationsResponse, error) {
 	where, args := buildSearchWhere(req.Filters, true)
@@ -329,6 +352,7 @@ func (r *pendingVerificationRepo) Search(ctx context.Context, req domain.SearchP
 
 	eg.Go(func() error {
 		var dataQuery string
+		var dataArgs []any
 		if dedupe {
 			// One row per work_item_id — its LATEST cycle (by added_on, not
 			// by verified_on) — so a case verified more than once (VerifiedOnly's
@@ -344,24 +368,29 @@ func (r *pendingVerificationRepo) Search(ctx context.Context, req domain.SearchP
 			// would wrongly keep showing in the Verified tab via its stale
 			// first-round row. The outer re-sort by verified_on DESC is then
 			// just display order, unrelated to which row DISTINCT ON picked.
+			// addedReasonClause (see dedupeAddedReasonClause) is applied here,
+			// in this same outer WHERE, for the identical reason.
+			addedReasonClause, addedReasonArgs := dedupeAddedReasonClause(req.Filters, len(args))
 			dataQuery = fmt.Sprintf(`
 				SELECT * FROM (
 					SELECT DISTINCT ON (pv.work_item_id) %s
 					%s %s
 					ORDER BY pv.work_item_id, pv.added_on DESC
 				) latest
-				WHERE verified_on IS NOT NULL
+				WHERE verified_on IS NOT NULL%s
 				ORDER BY verified_on DESC
 				LIMIT $%d OFFSET $%d`,
-				pendingVerificationColumns, pendingVerificationFromJoin, where, len(args)+1, len(args)+2)
+				pendingVerificationColumns, pendingVerificationFromJoin, where, addedReasonClause,
+				len(args)+len(addedReasonArgs)+1, len(args)+len(addedReasonArgs)+2)
+			dataArgs = append(append(append([]any{}, args...), addedReasonArgs...), req.Pagination.Limit, req.Pagination.Offset)
 		} else {
 			dataQuery = fmt.Sprintf(`
 				SELECT %s %s %s
 				ORDER BY pv.added_on DESC
 				LIMIT $%d OFFSET $%d`,
 				pendingVerificationColumns, pendingVerificationFromJoin, where, len(args)+1, len(args)+2)
+			dataArgs = append(append([]any{}, args...), req.Pagination.Limit, req.Pagination.Offset)
 		}
-		dataArgs := append(append([]any{}, args...), req.Pagination.Limit, req.Pagination.Offset)
 
 		rows, err := r.db.Query(egCtx, dataQuery, dataArgs...)
 		if err != nil {
@@ -386,6 +415,7 @@ func (r *pendingVerificationRepo) Search(ctx context.Context, req domain.SearchP
 
 	eg.Go(func() error {
 		var countQuery string
+		var countArgs []any
 		if dedupe {
 			// Same one-row-per-work-item LATEST-cycle set as the data query
 			// above (see its own doc comment for why DISTINCT ON orders by
@@ -393,7 +423,11 @@ func (r *pendingVerificationRepo) Search(ctx context.Context, req domain.SearchP
 			// so total/autoClosedCount/manualCount agree with what the rows
 			// themselves show — each work item's count attributed to its
 			// own latest cycle's own addedReason, and a case whose latest
-			// cycle isn't verified yet is excluded entirely.
+			// cycle isn't verified yet is excluded entirely. addedReasonClause
+			// (see dedupeAddedReasonClause) is applied in this same outer
+			// WHERE, after dedup, for the identical reason the data query above
+			// applies it there.
+			addedReasonClause, addedReasonArgs := dedupeAddedReasonClause(req.Filters, len(args))
 			countQuery = fmt.Sprintf(`
 				WITH latest AS (
 					SELECT DISTINCT ON (pv.work_item_id) pv.added_reason, pv.verified_on
@@ -404,15 +438,17 @@ func (r *pendingVerificationRepo) Search(ctx context.Context, req domain.SearchP
 				       COUNT(*) FILTER (WHERE added_reason = 'AUTO_CLOSED'),
 				       COUNT(*) FILTER (WHERE added_reason = 'MANUAL')
 				FROM latest
-				WHERE verified_on IS NOT NULL`, pendingVerificationCountFromJoin, where)
+				WHERE verified_on IS NOT NULL%s`, pendingVerificationCountFromJoin, where, addedReasonClause)
+			countArgs = append(append([]any{}, args...), addedReasonArgs...)
 		} else {
 			countQuery = fmt.Sprintf(`
 				SELECT COUNT(*),
 				       COUNT(*) FILTER (WHERE pv.added_reason = 'AUTO_CLOSED'),
 				       COUNT(*) FILTER (WHERE pv.added_reason = 'MANUAL')
 				%s %s`, pendingVerificationCountFromJoin, where)
+			countArgs = args
 		}
-		if err := r.db.QueryRow(egCtx, countQuery, args...).Scan(&total, &autoClosedCount, &manualCount); err != nil {
+		if err := r.db.QueryRow(egCtx, countQuery, countArgs...).Scan(&total, &autoClosedCount, &manualCount); err != nil {
 			return fmt.Errorf("count pending_verifications: %w", err)
 		}
 		return nil
@@ -420,22 +456,29 @@ func (r *pendingVerificationRepo) Search(ctx context.Context, req domain.SearchP
 
 	eg.Go(func() error {
 		var typeCountsQuery string
+		var typeCountsQueryArgs []any
 		if dedupe {
+			// added_reason has to be selected here too (it wasn't before) so
+			// dedupeAddedReasonClause's outer filter below has a column to
+			// apply itself to, same reasoning as the data/count queries above.
+			addedReasonClause, addedReasonArgs := dedupeAddedReasonClause(req.Filters, len(typeCountsArgs))
 			typeCountsQuery = fmt.Sprintf(`
 				WITH latest AS (
-					SELECT DISTINCT ON (pv.work_item_id) wi.type, pv.verified_on
+					SELECT DISTINCT ON (pv.work_item_id) wi.type, pv.added_reason, pv.verified_on
 					%s %s
 					ORDER BY pv.work_item_id, pv.added_on DESC
 				)
-				SELECT type::TEXT, COUNT(*) FROM latest WHERE verified_on IS NOT NULL GROUP BY type`,
-				pendingVerificationCountFromJoin, typeCountsWhere)
+				SELECT type::TEXT, COUNT(*) FROM latest WHERE verified_on IS NOT NULL%s GROUP BY type`,
+				pendingVerificationCountFromJoin, typeCountsWhere, addedReasonClause)
+			typeCountsQueryArgs = append(append([]any{}, typeCountsArgs...), addedReasonArgs...)
 		} else {
 			typeCountsQuery = fmt.Sprintf(`
 				SELECT wi.type::TEXT, COUNT(*)
 				%s %s
 				GROUP BY wi.type`, pendingVerificationCountFromJoin, typeCountsWhere)
+			typeCountsQueryArgs = typeCountsArgs
 		}
-		rows, err := r.db.Query(egCtx, typeCountsQuery, typeCountsArgs...)
+		rows, err := r.db.Query(egCtx, typeCountsQuery, typeCountsQueryArgs...)
 		if err != nil {
 			return fmt.Errorf("count pending_verifications by type: %w", err)
 		}
