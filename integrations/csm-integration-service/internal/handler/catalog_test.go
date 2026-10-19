@@ -18,8 +18,10 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -76,7 +78,7 @@ func catalogCases(got *[]byte, resp string, err error) []struct {
 	}
 }
 
-func TestCatalog_ForwardsBodyAndReturnsResponseVerbatim(t *testing.T) {
+func TestCatalog_ForwardsBodyAndKeepsResponseContent(t *testing.T) {
 	const payload = `{"pagination":{"limit":5,"offset":0},"searchQuery":"x"}`
 	const upstream = `{"items":[{"id":"a"}],"total":1,"hasMore":false,"extra":{"kept":true}}`
 	var got []byte
@@ -89,11 +91,81 @@ func TestCatalog_ForwardsBodyAndReturnsResponseVerbatim(t *testing.T) {
 			if string(got) != payload {
 				t.Errorf("upstream body = %q, want %q", got, payload)
 			}
-			if w.Body.String() != upstream {
-				t.Errorf("response = %q, want upstream bytes %q", w.Body.String(), upstream)
+			var want, have any
+			_ = json.Unmarshal([]byte(upstream), &want)
+			if err := json.Unmarshal(w.Body.Bytes(), &have); err != nil {
+				t.Fatalf("response is not JSON: %v", err)
+			}
+			if !reflect.DeepEqual(have, want) {
+				t.Errorf("response = %s, want content of %s", w.Body.String(), upstream)
 			}
 		})
 	}
+}
+
+func TestCatalog_UppercasesEnumFields(t *testing.T) {
+	for _, tc := range []struct {
+		name, target, upstream, wantField, want string
+		mock                                    func(resp string) *mockCatalogClient
+	}{
+		{"products", "/products/search", `{"products":[{"id":"a","name":"APIM","class":"software"},{"id":"b","name":"Svc","class":"service"}],"total":2}`, "class", "SOFTWARE",
+			func(r string) *mockCatalogClient {
+				return &mockCatalogClient{products: func([]byte) ([]byte, error) { return []byte(r), nil }}
+			}},
+		{"versions", "/products/" + catalogUUID + "/versions/search", `{"productVersions":[{"id":"v","version":"4.0.0","currentSupportStatus":"available"}],"total":1}`, "currentSupportStatus", "AVAILABLE",
+			func(r string) *mockCatalogClient {
+				return &mockCatalogClient{versions: func(string, []byte) ([]byte, error) { return []byte(r), nil }}
+			}},
+		{"deployments", "/deployments/search", `{"deployments":[{"id":"d","type":"primary_production"}],"total":1}`, "type", "PRIMARY_PRODUCTION",
+			func(r string) *mockCatalogClient {
+				return &mockCatalogClient{deployments: func([]byte) ([]byte, error) { return []byte(r), nil }}
+			}},
+		{"deployed-products", "/deployed-products/search", `{"deployedProducts":[{"id":"p","category":"pdp"}],"total":1}`, "category", "PDP",
+			func(r string) *mockCatalogClient {
+				return &mockCatalogClient{deployedProducts: func([]byte) ([]byte, error) { return []byte(r), nil }}
+			}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := serveCatalog(tc.mock(tc.upstream), tc.target, `{}`)
+			assertStatus(t, w, http.StatusOK)
+			resp := decodeJSON[map[string]any](t, w)
+			var list []any
+			for _, v := range resp {
+				if l, ok := v.([]any); ok {
+					list = l
+				}
+			}
+			if len(list) == 0 || list[0].(map[string]any)[tc.wantField] != tc.want {
+				t.Errorf("%s = %v, want %q; body: %s", tc.wantField, list, tc.want, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestCatalog_UpperEnumFieldsLeavesTheRestAlone(t *testing.T) {
+	in := `{"deployedProducts":[{"id":"x","category":null,"tps":12.50,"cores":4,"note":"a<b&c","updates":[{"updateLevel":12}]},{"id":"y","category":"ms"}],"total":2,"unrelated":{"category":"keep"}}`
+	out, err := upperEnumFields([]byte(in), "deployedProducts", "category")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := string(out)
+	for _, want := range []string{`"tps":12.50`, `"cores":4`, `"note":"a<b&c"`, `"category":null`, `"category":"MS"`, `"unrelated":{"category":"keep"}`, `"updateLevel":12`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %s: %s", want, got)
+		}
+	}
+	// a response without the list, and a non-object body, are handled safely
+	if out, err := upperEnumFields([]byte(`{"total":0}`), "deployedProducts", "category"); err != nil || string(out) != `{"total":0}` {
+		t.Errorf("no list: out=%s err=%v", out, err)
+	}
+	if _, err := upperEnumFields([]byte(`[1]`), "deployedProducts", "category"); err == nil {
+		t.Error("expected an error for a non-object body")
+	}
+}
+
+func TestCatalog_NonJSONUpstreamBodyIs500(t *testing.T) {
+	m := &mockCatalogClient{products: func([]byte) ([]byte, error) { return []byte(`not json`), nil }}
+	assertStatus(t, serveCatalog(m, "/products/search", `{}`), http.StatusInternalServerError)
 }
 
 func TestCatalog_EmptyBodyBecomesEmptyObject(t *testing.T) {

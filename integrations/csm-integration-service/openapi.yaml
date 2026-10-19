@@ -2114,7 +2114,7 @@ components:
           type: string
         class:
           type: string
-          enum: [software, service]
+          enum: [SOFTWARE, SERVICE]
         createdOn:
           type: string
           format: date-time
@@ -2133,7 +2133,7 @@ components:
           type: string
         currentSupportStatus:
           type: string
-          enum: [available, extended, deprecated, discontinued]
+          enum: [AVAILABLE, EXTENDED, DEPRECATED, DISCONTINUED]
         releaseDate:
           type: string
           format: date-time
@@ -2164,12 +2164,12 @@ components:
         type:
           type: string
           enum:
-            - primary_production
-            - staging
-            - qa
-            - stress
-            - uat
-            - development
+            - PRIMARY_PRODUCTION
+            - STAGING
+            - QA
+            - STRESS
+            - UAT
+            - DEVELOPMENT
         description:
           type: string
           nullable: true
@@ -2214,6 +2214,7 @@ components:
         category:
           type: string
           nullable: true
+          description: Product category in upper case, e.g. "PDP".
         projectSfId:
           type: string
           nullable: true

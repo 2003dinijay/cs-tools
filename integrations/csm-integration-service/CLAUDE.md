@@ -208,18 +208,24 @@ Contacts search and opportunity/invoice/link reads work over M2M only if this se
 
 `POST /products/search`, `POST /products/{id}/versions/search`,
 `POST /deployments/search` and `POST /deployed-products/search`
-(`internal/handler/catalog.go`) are plain passthroughs, like the account and
-project searches: the JSON body is capped, checked for validity, forwarded to
-entity-service as-is, and its response is returned verbatim. Filters, paging and
-ordering are entity-service's, and the request and response schemas in
-`openapi.yaml` mirror entity-service's. An empty body is forwarded as `{}`
-(entity-service rejects a body with no JSON object); the `{id}` in the versions
-path must be a UUID.
+(`internal/handler/catalog.go`) are passthroughs, like the account and project
+searches: the JSON body is capped, checked for validity, forwarded to
+entity-service as-is, and its response returned. Filters, paging and ordering
+are entity-service's, and the request and response schemas in `openapi.yaml`
+mirror entity-service's. An empty body is forwarded as `{}` (entity-service
+rejects a body with no JSON object); the `{id}` in the versions path must be a UUID.
+
+**One deliberate deviation from "bytes through":** each response's enum-valued
+field is upper-cased here, without changing entity-service — product `class`,
+version `currentSupportStatus`, deployment `type`, and deployed-product
+`category` (`upperEnumFields`). Everything else is kept as received, but the body
+is decoded and re-encoded, so key order may differ and a non-JSON upstream body is
+a 500. Request filters are not rewritten.
 
 An earlier revision exposed these as `GET` endpoints that reshaped entity-service
-responses into the legacy scripted-API format (name ordering, in-memory version
-sorting, `sfIds` resolution, reformatted dates). That was removed on purpose; see
-git history if the reshaping logic is needed again.
+responses into a legacy format (name ordering, in-memory version sorting, `sfIds`
+resolution, reformatted dates). That was removed on purpose; see git history if
+the reshaping logic is needed again.
 
 ## Middleware chain
 
