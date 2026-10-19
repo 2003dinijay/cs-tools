@@ -12433,7 +12433,7 @@ paths:
 
   /deployed-products/{id}/metrics/search:
     post:
-      summary: Get deployed-product cores metrics over a date range (ServiceNow data source only).
+      summary: Get deployed-product cores metrics over a date range.
       operationId: searchDeployedProductMetrics
       parameters:
         - name: id
@@ -12480,16 +12480,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        "503":
-          description: Deployed product metrics are only supported for the ServiceNow data source.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
 
   /deployed-products/{id}/metrics/usage-counts/search:
     post:
-      summary: Get deployed-product usage-count metrics over a date range (ServiceNow data source only).
+      summary: Get deployed-product usage-count metrics over a date range.
       operationId: searchDeployedProductUsageCounts
       parameters:
         - name: id
@@ -12532,12 +12526,6 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "500":
           description: Internal server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        "503":
-          description: Deployed product usage counts are only supported for the ServiceNow data source.
           content:
             application/json:
               schema:
