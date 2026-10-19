@@ -82,4 +82,27 @@ describe("CaseDetailsTabs", () => {
     expect(screen.queryByRole("tab", { name: /^calls/i })).not.toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /knowledge base/i })).toBeInTheDocument();
   });
+
+  // Regression test for the CodeRabbit finding: hideVerificationsTab must
+  // default to true (same as hideEscalationTab/hideRelatedChangeRequestsTab)
+  // so the tab bar and CaseDetailsContent's own panel-index array agree on
+  // whether Verifications exists at all -- a tab shown with no matching
+  // panel shifts every tab after it out of alignment.
+  it("should omit Verifications tab by default", () => {
+    render(
+      <ThemeProvider theme={createTheme()}>
+        <CaseDetailsTabs value={0} onChange={vi.fn()} />
+      </ThemeProvider>,
+    );
+    expect(screen.queryByRole("tab", { name: /verifications/i })).not.toBeInTheDocument();
+  });
+
+  it("should show Verifications tab when hideVerificationsTab is false", () => {
+    render(
+      <ThemeProvider theme={createTheme()}>
+        <CaseDetailsTabs value={0} onChange={vi.fn()} hideVerificationsTab={false} />
+      </ThemeProvider>,
+    );
+    expect(screen.getByRole("tab", { name: /verifications/i })).toBeInTheDocument();
+  });
 });

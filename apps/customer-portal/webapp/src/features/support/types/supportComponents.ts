@@ -436,6 +436,7 @@ export type CaseDetailsTabsProps = {
   hideEscalationTab?: boolean;
   escalationCount?: number;
   isEscalated?: boolean;
+  hideVerificationsTab?: boolean;
   verificationsCount?: number;
 };
 

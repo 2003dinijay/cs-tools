@@ -468,6 +468,7 @@ export default function CaseDetailsContent({
           hideEscalationTab={hideEscalationTab}
           escalationCount={escalationCount}
           isEscalated={isEscalated}
+          hideVerificationsTab={!verificationEnabled}
           verificationsCount={verificationsCount}
         />
       </Paper>

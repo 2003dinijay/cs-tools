@@ -41,6 +41,7 @@ export default function CaseDetailsTabs({
   hideEscalationTab = true,
   escalationCount,
   isEscalated = false,
+  hideVerificationsTab = true,
   verificationsCount,
 }: CaseDetailsTabsProps): JSX.Element {
   const theme = useTheme();
@@ -55,6 +56,9 @@ export default function CaseDetailsTabs({
       return false;
     }
     if (hideEscalationTab && t.label === "Escalation") {
+      return false;
+    }
+    if (hideVerificationsTab && t.label === "Verifications") {
       return false;
     }
     return true;
