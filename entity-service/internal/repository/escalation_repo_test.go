@@ -171,7 +171,8 @@ func escalationTestConfig() (EscalationNotificationConfig, *fakeRecipientDirecto
 
 // TestResolveEscalationRecipients_CumulativeInSNOrder pins the whole
 // EscalationNotificationUtils rule, level by level and in ServiceNow's own
-// order: team leads, Americas TLs, account owner, technical owner (EL1);
+// order: team leads, Americas TLs, account owner, technical owner, then the
+// CSM-side renewal account manager and secondary technical owner (EL1);
 // Americas TU, product contact (EL2); cre_head holders, CSM (EL3);
 // case_escalation_el4 holders (EL4); case_escalation_el5 holders (EL5). Each
 // level keeps everything below it.
@@ -183,8 +184,11 @@ func TestResolveEscalationRecipients_CumulativeInSNOrder(t *testing.T) {
 		accountManagerID: strPtr("user-account-owner"),
 		technicalOwnerID: strPtr("user-tech-owner"),
 		csmID:            strPtr("user-csm"),
+
+		renewalAccountManagerID:   strPtr("user-renewal-am"),
+		secondaryTechnicalOwnerID: strPtr("user-secondary-tech"),
 	}
-	el1 := []string{"user-lead-a", "user-lead-b", "user-tl-a", "user-tl-b", "user-account-owner", "user-tech-owner"}
+	el1 := []string{"user-lead-a", "user-lead-b", "user-tl-a", "user-tl-b", "user-account-owner", "user-tech-owner", "user-renewal-am", "user-secondary-tech"}
 	el2 := append(append([]string{}, el1...), "user-tu", "user-default")
 	el3 := append(append([]string{}, el2...), "user-cre-head", "user-csm")
 	el4 := append(append([]string{}, el3...), "user-cco", "user-cro")
@@ -219,6 +223,42 @@ func TestResolveEscalationRecipients_DedupesKeepingFirst(t *testing.T) {
 	}
 }
 
+// TestResolveEscalationRecipients_RenewalAndSecondaryOwners pins the CSM-side
+// EL1 extension: the renewal account manager and secondary technical owner
+// join at EL1, nil or empty ids contribute nobody, and an id already present
+// (renewal AM is also the account manager) is notified once.
+func TestResolveEscalationRecipients_RenewalAndSecondaryOwners(t *testing.T) {
+	cfg, dir := escalationTestConfig()
+	cfg.EL1AmericasTLEmails = nil
+	r := &escalationRepo{dir: dir, notifyCfg: cfg}
+	empty := ""
+
+	cases := []struct {
+		name string
+		cc   escalationCaseContext
+		want []string
+	}{
+		{"both set", escalationCaseContext{renewalAccountManagerID: strPtr("r"), secondaryTechnicalOwnerID: strPtr("s")}, []string{"r", "s"}},
+		{"nil and empty", escalationCaseContext{renewalAccountManagerID: nil, secondaryTechnicalOwnerID: &empty}, nil},
+		{"renewal same as account manager", escalationCaseContext{accountManagerID: strPtr("am"), renewalAccountManagerID: strPtr("am"), secondaryTechnicalOwnerID: strPtr("s")}, []string{"am", "s"}},
+		{"secondary same as technical owner", escalationCaseContext{technicalOwnerID: strPtr("t"), secondaryTechnicalOwnerID: strPtr("t")}, []string{"t"}},
+	}
+	for _, tc := range cases {
+		got, err := r.resolveEscalationRecipients(context.Background(), nil, 1, tc.cc)
+		if err != nil {
+			t.Fatalf("%s: unexpected error: %v", tc.name, err)
+		}
+		if !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
+	}
+	// Cumulative: still present at EL5.
+	got, err := r.resolveEscalationRecipients(context.Background(), nil, 5, escalationCaseContext{renewalAccountManagerID: strPtr("r"), secondaryTechnicalOwnerID: strPtr("s")})
+	if err != nil || len(got) < 2 || got[0] != "r" || got[1] != "s" {
+		t.Errorf("EL5: got %v, err %v", got, err)
+	}
+}
+
 // TestResolveEscalationRecipients_LevelZeroReturnsEmpty guards the fact that
 // none of the "if newLevel >= N" branches fire at level 0 (a DEESCALATE that
 // brought the case back down to EL0): the notification list must come back
@@ -227,7 +267,8 @@ func TestResolveEscalationRecipients_DedupesKeepingFirst(t *testing.T) {
 func TestResolveEscalationRecipients_LevelZeroReturnsEmpty(t *testing.T) {
 	cfg, dir := escalationTestConfig()
 	r := &escalationRepo{dir: dir, notifyCfg: cfg}
-	cc := escalationCaseContext{technicalOwnerID: strPtr("user-owner"), accountManagerID: strPtr("user-am"), csmID: strPtr("user-csm")}
+	cc := escalationCaseContext{technicalOwnerID: strPtr("user-owner"), accountManagerID: strPtr("user-am"), csmID: strPtr("user-csm"),
+		renewalAccountManagerID: strPtr("user-renewal-am"), secondaryTechnicalOwnerID: strPtr("user-secondary-tech")}
 
 	got, err := r.resolveEscalationRecipients(context.Background(), nil, 0, cc)
 	if err != nil {
