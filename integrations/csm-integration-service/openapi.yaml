@@ -956,25 +956,24 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
-  /deployed-products:
-    get:
+  /deployed-products/search:
+    post:
       summary: Search deployed products
       operationId: searchDeployedProducts
-      description: >
-        Response shape is that of the ServiceNow scripted REST API this replaces, built from
-        entity-service responses. With sfIds, results are scoped to the deployments of the matching
-        projects; unknown Salesforce IDs match nothing (never an unfiltered result).
-      parameters:
-        - $ref: '#/components/parameters/SfIds'
-        - $ref: '#/components/parameters/Limit'
-        - $ref: '#/components/parameters/Offset'
+      description: The payload is forwarded to the entity service and its response is returned unchanged. An empty body is treated as {}.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchDeployedProductsRequest'
       responses:
         "200":
           description: Ok
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/DeployedProductSearchResponse'
+                $ref: '#/components/schemas/SearchDeployedProductsResponse'
         "400":
           description: BadRequest
           content:
@@ -999,6 +998,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        "413":
+          description: Request body too large
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "500":
           description: InternalServerError
           content:
@@ -1006,31 +1011,30 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         "503":
-          description: ServiceUnavailable (upstream unreachable)
+          description: ServiceUnavailable (the upstream entity service is unavailable)
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
-  /deployments:
-    get:
+  /deployments/search:
+    post:
       summary: Search deployments
       operationId: searchDeployments
-      description: >
-        Response shape is that of the ServiceNow scripted REST API this replaces, built from
-        entity-service responses. Salesforce IDs that match no project yield an empty list. deployment.version is always
-        null (entity-service does not carry it); type.id/label follow ServiceNow's type keys.
-      parameters:
-        - $ref: '#/components/parameters/SfIds'
-        - $ref: '#/components/parameters/Limit'
-        - $ref: '#/components/parameters/Offset'
+      description: The payload is forwarded to the entity service and its response is returned unchanged. An empty body is treated as {}.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchDeploymentsRequest'
       responses:
         "200":
           description: Ok
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/DeploymentSearchResponse'
+                $ref: '#/components/schemas/SearchDeploymentsResponse'
         "400":
           description: BadRequest
           content:
@@ -1055,6 +1059,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        "413":
+          description: Request body too large
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "500":
           description: InternalServerError
           content:
@@ -1062,36 +1072,30 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         "503":
-          description: ServiceUnavailable (upstream unreachable)
+          description: ServiceUnavailable (the upstream entity service is unavailable)
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
-  /products:
-    get:
-      summary: Search WSO2 product models
+  /products/search:
+    post:
+      summary: Search products
       operationId: searchProducts
-      description: >
-        Response shape is that of the ServiceNow scripted REST API this replaces, built from
-        entity-service responses. products.warnings is always empty.
-      parameters:
-        - name: class
-          in: query
-          required: false
-          schema:
-            type: string
-            enum: [product_model, software_model, service_model]
-            description: An unrecognised value is ignored (no class filter), not rejected.
-        - $ref: '#/components/parameters/Limit'
-        - $ref: '#/components/parameters/Offset'
+      description: The payload is forwarded to the entity service and its response is returned unchanged. An empty body is treated as {}.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchProductsRequest'
       responses:
         "200":
           description: Ok
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ProductSearchResponse'
+                $ref: '#/components/schemas/SearchProductsResponse'
         "400":
           description: BadRequest
           content:
@@ -1116,6 +1120,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        "413":
+          description: Request body too large
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "500":
           description: InternalServerError
           content:
@@ -1123,21 +1133,17 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         "503":
-          description: ServiceUnavailable (upstream unreachable)
+          description: ServiceUnavailable (the upstream entity service is unavailable)
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
-  /products/{id}/versions:
-    get:
+  /products/{id}/versions/search:
+    post:
       summary: Search versions of a product
       operationId: searchProductVersions
-      description: >
-        Response shape is that of the ServiceNow scripted REST API this replaces, built from
-        entity-service responses. abbreviation is always null (entity-service does not return it);
-        product.id is the path id. product.name is looked up from the product list and is null
-        when no product matches or the lookup fails.
+      description: The payload is forwarded to the entity service and its response is returned unchanged. An empty body is treated as {}.
       parameters:
         - name: id
           in: path
@@ -1145,15 +1151,19 @@ paths:
           schema:
             type: string
             format: uuid
-        - $ref: '#/components/parameters/Limit'
-        - $ref: '#/components/parameters/Offset'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchProductVersionsRequest'
       responses:
         "200":
           description: Ok
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ProductVersionSearchResponse'
+                $ref: '#/components/schemas/SearchProductVersionsResponse'
         "400":
           description: BadRequest
           content:
@@ -1178,6 +1188,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        "413":
+          description: Request body too large
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "500":
           description: InternalServerError
           content:
@@ -1185,7 +1201,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         "503":
-          description: ServiceUnavailable (upstream unreachable)
+          description: ServiceUnavailable (the upstream entity service is unavailable)
           content:
             application/json:
               schema:
@@ -1888,24 +1904,6 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
 
 components:
-  parameters:
-    SfIds:
-      name: sfIds
-      in: query
-      required: false
-      description: Comma-separated Salesforce project IDs (max 100). Omit for no project filter.
-      schema: {type: string, example: "SF001,SF002"}
-    Limit:
-      name: limit
-      in: query
-      required: false
-      description: Page size, 1-100.
-      schema: {type: integer, minimum: 1, maximum: 100, default: 10}
-    Offset:
-      name: offset
-      in: query
-      required: false
-      schema: {type: integer, minimum: 0, default: 0}
   securitySchemes:
     oauth2ClientCredentials:
       type: oauth2
@@ -1948,146 +1946,320 @@ components:
               description: The endpoint's payload, forwarded unchanged.
           required: [code, message, cloud, data]
       required: [result]
-    CatalogRef:
+    SearchProductsRequest:
       type: object
-      nullable: true
+      properties:
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+        searchQuery:
+          type: string
+          description: Case-insensitive match against product name.
+        class:
+          type: string
+          enum: [software, service]
+          description: Optional filter restricting results to a single product class. Omit to return every class.
+
+    SearchProductsResponse:
+      type: object
+      properties:
+        products:
+          type: array
+          items:
+            $ref: '#/components/schemas/Product'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+        hasMore:
+          type: boolean
+
+    SearchProductVersionsRequest:
+      type: object
+      properties:
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+        searchQuery:
+          type: string
+          description: Case-insensitive match against version string.
+
+    SearchProductVersionsResponse:
+      type: object
+      properties:
+        productVersions:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProductVersion'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+        hasMore:
+          type: boolean
+
+    SearchDeploymentsRequest:
+      type: object
+      properties:
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+        searchQuery:
+          type: string
+          description: Case-insensitive match against deployment name.
+        projectIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: Filter by project UUIDs.
+        deploymentTypes:
+          type: array
+          items:
+            type: string
+            enum:
+              - primary_production
+              - staging
+              - qa
+              - stress
+              - uat
+              - development
+          description: Filter by deployment types.
+        ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: Filter by the deployment's own UUID.
+        includeInactive:
+          type: boolean
+          description: >
+            When true, also includes deactivated deployments. Omitted or false
+            returns active deployments only.
+
+    SearchDeploymentsResponse:
+      type: object
+      properties:
+        deployments:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeploymentView'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+        hasMore:
+          type: boolean
+
+    SearchDeployedProductsRequest:
+      type: object
+      properties:
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+        deploymentIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: Filter by deployment UUIDs.
+        productCategories:
+          type: array
+          items:
+            type: string
+          description: Optional filter by product category (e.g. "pdp"). Combines with deploymentIds rather than replacing it. Values are matched case-insensitively against the deployed product's category. The category returned on each deployed product is the same lower-case code.
+
+    SearchDeployedProductsResponse:
+      type: object
+      properties:
+        deployedProducts:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeployedProductView'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+        hasMore:
+          type: boolean
+
+    Product:
+      type: object
       properties:
         id:
           type: string
         name:
           type: string
-          nullable: true
-    Product:
-      type: object
-      properties:
-        id: {type: string}
-        name: {type: string}
-        class: {type: string}
-    ProductSearchResponse:
-      type: object
-      properties:
-        success: {type: boolean}
-        data:
-          type: object
-          properties:
-            products:
-              type: array
-              items: {$ref: '#/components/schemas/Product'}
-            total: {type: integer}
-            offset: {type: integer}
-            limit: {type: integer}
-            warnings:
-              type: array
-              items: {type: string}
+        class:
+          type: string
+          enum: [software, service]
+        createdOn:
+          type: string
+          format: date-time
+        updatedOn:
+          type: string
+          format: date-time
+
     ProductVersion:
       type: object
       properties:
-        id: {type: string}
-        version: {type: string, nullable: true}
-        currentSupportStatus: {type: string, nullable: true}
-        releaseDate: {type: string, nullable: true, description: 'Date only, "YYYY-MM-DD".'}
-        supportEolDate: {type: string, nullable: true, description: 'Date only, "YYYY-MM-DD".'}
-        earliestPossibleSupportEolDate: {type: string, nullable: true, description: 'Date only, "YYYY-MM-DD".'}
-        abbreviation: {type: string, nullable: true, description: Always null.}
-        product: {$ref: '#/components/schemas/CatalogRef'}
-    ProductVersionSearchResponse:
-      type: object
-      properties:
-        success: {type: boolean}
-        data:
-          type: object
-          properties:
-            versions:
-              type: array
-              items: {$ref: '#/components/schemas/ProductVersion'}
-            total: {type: integer}
-            offset: {type: integer}
-            limit: {type: integer}
-    Deployment:
-      type: object
-      properties:
-        id: {type: string}
-        number: {type: string, nullable: true}
-        name: {type: string, nullable: true}
-        description: {type: string, nullable: true}
-        url: {type: string, nullable: true}
-        version: {type: string, nullable: true, description: Always null.}
-        createdOn: {type: string, nullable: true, description: 'ServiceNow display layout, "YYYY-MM-DD HH:MM:SS" (UTC).'}
-        updatedOn: {type: string, nullable: true, description: 'ServiceNow display layout, "YYYY-MM-DD HH:MM:SS" (UTC).'}
-        project: {$ref: '#/components/schemas/CatalogRef'}
-        type:
-          type: object
-          nullable: true
-          properties:
-            id: {type: integer}
-            label: {type: string}
-    DeploymentSearchResponse:
-      type: object
-      properties:
-        success: {type: boolean}
-        data:
-          type: object
-          properties:
-            deployments:
-              type: array
-              items: {$ref: '#/components/schemas/Deployment'}
-            totalRecords: {type: integer}
-            offset: {type: integer}
-            limit: {type: integer}
-    DeployedProduct:
-      type: object
-      properties:
-        id: {type: string}
-        description: {type: string, nullable: true}
+        id:
+          type: string
+        productId:
+          type: string
         version:
-          type: object
+          type: string
+        currentSupportStatus:
+          type: string
+          enum: [available, extended, deprecated, discontinued]
+        releaseDate:
+          type: string
+          format: date-time
+        supportEolDate:
+          type: string
+          format: date-time
           nullable: true
-          properties:
-            id: {type: string}
-            name: {type: string, nullable: true}
-        cores: {type: integer, nullable: true}
-        tps: {type: integer, nullable: true, description: Truncated to a whole number.}
-        releasedOn: {type: string, nullable: true, description: 'Date only, "YYYY-MM-DD".'}
-        endOfLifeOn: {type: string, nullable: true, description: 'Date only, "YYYY-MM-DD".'}
+        earliestPossibleSupportEolDate:
+          type: string
+          format: date-time
+          nullable: true
+        createdOn:
+          type: string
+          format: date-time
+        updatedOn:
+          type: string
+          format: date-time
+
+    DeploymentView:
+      type: object
+      properties:
+        id:
+          type: string
+        number:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+          enum:
+            - primary_production
+            - staging
+            - qa
+            - stress
+            - uat
+            - development
+        description:
+          type: string
+          nullable: true
+        project:
+          $ref: '#/components/schemas/EntityRef'
+        createdOn:
+          type: string
+          format: date-time
+        updatedOn:
+          type: string
+          format: date-time
+        url:
+          type: string
+          nullable: true
+        deployedProductCount:
+          type: integer
+          description: Number of deployed products in this deployment.
+
+    DeployedProductView:
+      type: object
+      properties:
+        id:
+          type: string
+        deployment:
+          $ref: '#/components/schemas/EntityRef'
+        product:
+          $ref: '#/components/schemas/ProductRef'
+        version:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/DeployedProductVersionRef'
+        cores:
+          type: integer
+          nullable: true
+        tps:
+          type: number
+          nullable: true
+        category:
+          type: string
+          nullable: true
+        description:
+          type: string
+          nullable: true
+          description: >
+            The customer's own note about this deployed product. Editable via
+            the update endpoint, so it is readable here too.
         updates:
           type: array
           nullable: true
           items:
-            type: object
-            properties:
-              updateLevel: {type: string, nullable: true}
-              date: {type: string, nullable: true}
-              details: {type: string, nullable: true}
-        createdOn: {type: string, nullable: true, description: 'ServiceNow display layout, "YYYY-MM-DD HH:MM:SS" (UTC).'}
-        updatedOn: {type: string, nullable: true, description: 'ServiceNow display layout, "YYYY-MM-DD HH:MM:SS" (UTC).'}
-        deployment:
-          type: object
+            $ref: '#/components/schemas/ProductUpdateEntry'
+          description: Update-level history recorded against this deployed product.
+        createdOn:
+          type: string
+          format: date-time
+        updatedOn:
+          type: string
+          format: date-time
+
+    ProductRef:
+      type: object
+      description: >
+        A reference to a product, carrying its short key alongside the display
+        name. The short key (e.g. "wso2am") is distinct from the display name
+        (e.g. "WSO2 API Manager").
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        abbreviation:
+          type: string
           nullable: true
-          properties:
-            id: {type: string}
-            name: {type: string, nullable: true}
-            type: {type: string, nullable: true, description: 'Deployment type label, e.g. "Primary Production".'}
-        product:
-          type: object
-          nullable: true
-          properties:
-            id: {type: string}
-            name: {type: string, nullable: true}
-            abbreviation: {type: string, nullable: true}
-        category: {type: string, nullable: true, description: Always null.}
-    DeployedProductSearchResponse:
+          description: Short product key, e.g. "wso2am". Absent when the product has none.
+      required:
+        - id
+        - name
+
+    DeployedProductVersionRef:
       type: object
       properties:
-        success: {type: boolean}
-        data:
-          type: object
-          properties:
-            deployedProducts:
-              type: array
-              items: {$ref: '#/components/schemas/DeployedProduct'}
-            totalRecords: {type: integer}
-            offset: {type: integer}
-            limit: {type: integer}
+        id:
+          type: string
+        name:
+          type: string
+        releasedDate:
+          type: string
+          format: date-time
+          nullable: true
+        supportEoLDate:
+          type: string
+          format: date-time
+          nullable: true
+
+    ProductUpdateEntry:
+      type: object
+      required: [updateLevel, date]
+      properties:
+        updateLevel:
+          type: integer
+        date:
+          type: string
+          format: date
+        details:
+          type: string
+          nullable: true
+
     ErrorResponse:
       type: object
       properties:
