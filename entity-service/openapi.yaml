@@ -18075,7 +18075,9 @@ components:
       description: >
         At least one field must be provided. hasAgent and hasKbReferences are
         simple toggles; the closure-state fields track sub-states of an
-        Account Closure Process.
+        Account Closure Process; closureState is a direct override of the
+        overall status. Postgres data sources only enforce "admin only" for
+        closureState at the BFF layer (apps/csm-portal/backend), not here.
       properties:
         hasAgent:
           type: boolean
@@ -18087,6 +18089,16 @@ components:
           type: string
         complianceViolationClosureState:
           type: string
+        closureState:
+          type: string
+          enum: [OPEN, READ_ONLY, CLOSED, RESTRICTED, SUSPENDED]
+          description: >
+            Directly overrides the overall closure state (Postgres data sources
+            only), bypassing the usual derivation from the three closure-state
+            fields above. A later request that sets any of those three
+            recomputes the overall state from them again, silently overwriting
+            a manual override — there is no column recording that one was ever
+            set.
         suspensionProcessState:
           type: object
           additionalProperties: true

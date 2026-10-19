@@ -19195,7 +19195,9 @@ components:
         At least one field must be provided. hasAgent and hasKbReferences are
         simple toggles; the closure-state fields track sub-states of an
         Account Closure Process and are only applicable to projects sourced
-        from the backing data source.
+        from the backing data source. closureState requires the admin role —
+        every other field only requires the ordinary write permission this
+        route is registered at.
       properties:
         hasAgent:
           type: boolean
@@ -19207,6 +19209,16 @@ components:
           type: string
         complianceViolationClosureState:
           type: string
+        closureState:
+          type: string
+          enum: [OPEN, READ_ONLY, CLOSED, RESTRICTED, SUSPENDED]
+          description: >
+            Directly overrides the project's overall closure status, bypassing
+            the usual derivation from the three closure-state fields above.
+            Admin only — a caller holding only the ordinary write permission
+            gets a 403 if this field is present at all. A later request that
+            sets any of the three fields above recomputes the overall status
+            from them again, silently overwriting a manual override.
         suspensionProcessState:
           type: object
           additionalProperties: true

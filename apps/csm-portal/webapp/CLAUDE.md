@@ -41,6 +41,15 @@ gating on top of a real server-side gate, by explicit choice rather than by the 
 default. If a future admin-only action is added, default to the show-and-reject norm unless there's a
 specific reason (as here) to also hide it.
 
+**Editing a project's closure state** (`CsmProjectDetailPage.tsx`'s pencil icon next to the "State"
+chip, `EditProjectClosureStateDialog.tsx`) is a third such exception, gated on
+`usePortalAccess().canUpdateProjectClosureState` — `admin` only, same shape as `canCreateUser`. The
+backend genuinely enforces it too: `PATCH /projects/{id}` narrows its `closureState` field to
+`PermAdmin` in-handler while every other field on the same route stays at the ordinary write
+permission (see `apps/csm-portal/backend`'s own `CLAUDE.md`, "PATCH /projects/{id}: closureState
+requires PermAdmin") — hiding the pencil icon for a `cs_engineer` just avoids offering an action that
+would 403 for them.
+
 `AddUserDialog.tsx` has two independent role-shaped controls that must not be confused with each
 other. One narrower, required control: **"User type" (Internal/External)**. entity-service's `user_type` has no plain settable
 column — it's derived by a DB trigger from role membership (`recompute_user_type`, migration 0011) —

@@ -102,6 +102,8 @@ func TestValidateClosureFields(t *testing.T) {
 		{InvoiceDueDateClosureState: s("Suspended & Previously Paid")},
 		{ComplianceViolationClosureState: s("open")},
 		{HasAgent: new(bool)},
+		{ClosureState: s("read_only")},
+		{ClosureState: s("Restricted")},
 	}
 	for _, req := range ok {
 		if err := validateClosureFields(req); err != nil {
@@ -117,6 +119,8 @@ func TestValidateClosureFields(t *testing.T) {
 			`complianceViolationClosureState: "Restricted" is not a valid closure state; use one of Open, Suspended`},
 		{domain.ProjectUpdateRequest{EndDateClosureState: s("Paused")},
 			`endDateClosureState: "Paused" is not a valid closure state; use one of Closed, Closure Notices, Notified, Open, Pending Closed, Pending Closure Notices, Pending Notified, Pending Restricted, Restricted, Suspended`},
+		{domain.ProjectUpdateRequest{ClosureState: s("Paused")},
+			`closureState: "Paused" is not a valid closure state; use one of Closed, Open, Read Only, Restricted, Suspended`},
 	}
 	for _, tc := range cases {
 		err := validateClosureFields(tc.req)

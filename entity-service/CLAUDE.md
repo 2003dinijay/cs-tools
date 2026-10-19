@@ -6894,6 +6894,48 @@ Two things intentionally left untouched by this same audit, not code bugs:
   synthesizing a value from it would risk returning a plausible-looking but wrong number. This
   stays an explicit TODO (see `project_metadata_service.go`'s own comment) rather than a fix.
 
+## PATCH /projects/{id}: closureState is a direct admin override
+
+`project.wso2_closure_state` was, until now, always derived — recomputed via `wso2ClosureStateRule`
+from the three sub-state fields (`endDateClosureState`/`invoiceDueDateClosureState`/
+`complianceViolationClosureState`) whenever a PATCH touched any of them (see `updateProjectTx`).
+`domain.ProjectUpdateRequest` gained a fourth, independent field, `ClosureState *string
+json:"closureState,omitempty"`, letting a caller set the overall status directly to one of
+`wso2_closure_state_enum`'s five values (`OPEN`/`READ_ONLY`/`CLOSED`/`RESTRICTED`/`SUSPENDED`,
+validated the same case/whitespace-tolerant way the three sub-state fields already are --
+`wso2ClosureStateLabels`, `validateClosureFields`) — this is what backs the CSM Portal's "admin can
+set a project's closure state directly" feature.
+
+- **Applied in `updateProjectTx` *after* the sub-state recompute**, so a request naming both (rare,
+  not rejected) leaves the caller's own explicit value in place rather than whatever the three
+  sub-states would otherwise derive -- the plain `UPDATE project SET wso2_closure_state =
+  $2::wso2_closure_state_enum WHERE id = $1` runs unconditionally whenever `req.ClosureState != nil`,
+  independent of (and after) the existing `IF any sub-state set THEN recompute` block.
+- **A deliberately simple, documented-caveat mechanism, not a tracked override** -- no new column
+  records that a value was set manually rather than derived. The accepted trade-off: a LATER PATCH
+  that touches any of the three sub-state fields recomputes `wso2_closure_state` from them again,
+  silently overwriting the override with no memory that one was ever set. Chosen over a
+  tracking-column design specifically because this endpoint has no production traffic pattern yet
+  that depends on surviving a sub-state write afterward -- the same "don't build for a regression
+  that doesn't exist yet" judgment call this file's own usage-metrics fix made earlier (see "Instances
+  and usage tracking" above).
+- **`hasStoredProjectFields` now includes `ClosureState`**, so a request naming only it is recognized
+  as having something to write (previously would have hit the "at least one field must be provided"
+  validation error). **`hasSNMirrorableProjectFields` is the older check, kept separate and used only
+  to gate the dual-write ServiceNow mirror dispatch** -- `ClosureState` is deliberately excluded from
+  it: it has no ServiceNow equivalent at all (`snProjectUpdateService`'s own payload struct doesn't
+  carry it), so a `postgres-servicenow-dual-write` request naming only `closureState` must not
+  dispatch a mirror write — one would only ever fail against `snProjectUpdateService`'s own "at least
+  one field must be provided" check, recorded as a pointless, permanently-failing
+  `sn_writeback_failures` row for a field that system was never going to support.
+- **No admin-only enforcement at this layer.** Same posture as every other field on this request:
+  entity-service only authorizes the caller against the project itself (`authorizeProject`); which
+  *human roles* may set `closureState` specifically is enforced entirely in `apps/csm-portal/backend`
+  (see that repo's own `CLAUDE.md`), the established "narrow a shared endpoint in-handler" pattern
+  this codebase already uses for `PermCreateAnnouncement`/Security Center rather than re-gating the
+  whole route (which other fields on this same PATCH, like `hasAgent`, still need `cs_engineer` to
+  reach).
+
 ## GetProjectByID 404'd on any project with no linked account
 
 Found in the same audit pass as the SearchProjects fix below, by explicitly
