@@ -2029,13 +2029,15 @@ type SearchSNProductVersionsResponse struct {
 // ProductVersion represents a versioned release of a software product.
 // SupportEOLDate and EarliestPossibleSupportEOLDate are optional.
 type ProductVersion struct {
-	ID                             string        `json:"id"`
-	ProductID                      string        `json:"productId"`
-	Version                        string        `json:"version"`
-	CurrentSupportStatus           SupportStatus `json:"currentSupportStatus"`
-	ReleaseDate                    time.Time     `json:"releaseDate"`
-	SupportEOLDate                 *time.Time    `json:"supportEolDate"`
-	EarliestPossibleSupportEOLDate *time.Time    `json:"earliestPossibleSupportEolDate"`
+	ID        string `json:"id"`
+	ProductID string `json:"productId"`
+	Version   string `json:"version"`
+	// CurrentSupportStatus and ReleaseDate are null when the database has no
+	// value; both columns are nullable.
+	CurrentSupportStatus           *SupportStatus `json:"currentSupportStatus"`
+	ReleaseDate                    *time.Time     `json:"releaseDate"`
+	SupportEOLDate                 *time.Time     `json:"supportEolDate"`
+	EarliestPossibleSupportEOLDate *time.Time     `json:"earliestPossibleSupportEolDate"`
 	// DeploymentProfile is product_version.deployment_profile (e.g. "All In
 	// One"); null when the version has none.
 	DeploymentProfile *string   `json:"deploymentProfile"`
