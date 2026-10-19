@@ -167,3 +167,21 @@ func TestManual_ATestGoesOnlyToWhoAsked(t *testing.T) {
 		t.Fatalf("real notice: sent %d, recorded %d", len(mail.sent), len(real.recorded))
 	}
 }
+
+// When some reminder emails go out and some fail, the run succeeds (a retry
+// would email the others twice), but the card is told how many did not.
+func TestManual_APartlyFailedSendSaysSo(t *testing.T) {
+	weekday, weekend := manualConfigs("2026-10-19 10:00")
+	rota := &fakeRota{assignments: []teamschedule.Assignment{
+		assignment("Ann", "ann@example.com", "vega", "CRE_MORNING", "2026-10-20", "2026-10-20 06:00", "2026-10-20 09:00"),
+		assignment("Ben", "ben@example.com", "vega", "CRE_EVENING", "2026-10-20", "2026-10-20 18:00", "2026-10-20 21:00"),
+	}}
+	queue := &fakeQueue{waiting: []teamschedule.ReminderRequest{{ID: "r1", Kind: "weekday"}}}
+	mail := &fakeEmail{failOn: "Morning Rotation"}
+	if err := ManualReminder(rota, &fakeStore{}, queue, mail, weekday, weekend)(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(queue.reports) != 1 || !strings.HasPrefix(queue.reports[0], "r1 SENT Sent 1 of 2 emails; 1 could not be sent") {
+		t.Fatalf("reports %v", queue.reports)
+	}
+}

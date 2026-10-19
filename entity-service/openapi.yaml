@@ -8072,6 +8072,8 @@ paths:
         refused). 404 when nothing was sent for the period yet, which is how
         a reminder run tells "already sent" from "not yet".
       operationId: getScheduleReminder
+      security:
+        - clientAssertion: []
       parameters:
         - name: family
           in: path
@@ -8137,6 +8139,8 @@ paths:
         replaces the invites, so the next run can cancel an invite for
         somebody taken off the rota. Service credential only.
       operationId: recordScheduleReminder
+      security:
+        - clientAssertion: []
       parameters:
         - name: family
           in: path
@@ -8209,6 +8213,8 @@ paths:
         incomplete rota. Service credential only. Active internal holders of
         the family's rota admin role with an address, each once, by name.
       operationId: getRotaAdmins
+      security:
+        - clientAssertion: []
       parameters:
         - name: family
           in: path
@@ -8267,6 +8273,10 @@ paths:
         and by the Team Schedule's Rota Access tab. Any internal caller. 404
         when none were saved: the reminders then keep their own configuration.
       operationId: getRotaReminderSettings
+      security:
+        - clientAssertion: []
+        - clientAssertion: []
+          userIdToken: []
       parameters:
         - name: family
           in: path
@@ -8318,6 +8328,9 @@ paths:
         user token. The whole form is sent; it replaces what was saved and is
         recorded in the Team Schedule audit trail.
       operationId: saveRotaReminderSettings
+      security:
+        - clientAssertion: []
+          userIdToken: []
       parameters:
         - name: family
           in: path
@@ -8377,6 +8390,9 @@ paths:
         it at its next run. Refused while one of the same kind is waiting (409)
         and within 10 minutes of the last one (429).
       operationId: createRotaReminderRequest
+      security:
+        - clientAssertion: []
+          userIdToken: []
       parameters:
         - name: family
           in: path
@@ -8455,6 +8471,10 @@ paths:
     get:
       summary: The family's latest "Send now" requests, newest first (5).
       operationId: listRotaReminderRequests
+      security:
+        - clientAssertion: []
+        - clientAssertion: []
+          userIdToken: []
       parameters:
         - name: family
           in: path
@@ -8513,6 +8533,8 @@ paths:
         SENDING but not reported within 30 minutes, as SENDING and returns
         it; 404 when nothing is waiting.
       operationId: claimRotaReminderRequest
+      security:
+        - clientAssertion: []
       parameters:
         - name: family
           in: path
@@ -8561,6 +8583,8 @@ paths:
     put:
       summary: Report how a claimed request went (csm-scheduled-tasks).
       operationId: reportRotaReminderRequest
+      security:
+        - clientAssertion: []
       parameters:
         - name: family
           in: path
@@ -15952,6 +15976,22 @@ paths:
 
 components:
   securitySchemes:
+    clientAssertion:
+      type: apiKey
+      in: header
+      name: x-jwt-assertion
+      description: >-
+        The calling application's client-credentials assertion, set by the
+        gateway. Declared on the Team Schedule reminder operations; a service
+        credential alone (no x-user-id-token) is what csm-scheduled-tasks sends.
+    userIdToken:
+      type: apiKey
+      in: header
+      name: x-user-id-token
+      description: >-
+        The end user's ID token, forwarded by a portal backend. Declared on the
+        Team Schedule reminder operations a person performs; who may is in each
+        operation's description.
     internalClientCredential:
       type: http
       scheme: bearer

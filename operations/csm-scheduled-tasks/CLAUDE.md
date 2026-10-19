@@ -170,9 +170,10 @@ emails" below.
 
 ## Rota reminders
 
-`internal/rotareminder`, registered as **`rota_weekday_reminder`**, **`rota_weekend_notice`** and
-**`rota_weekend_reminder`**, emails the people rostered on a rotation shift in the Team Schedule,
-with a calendar invitation for their window. **Registered only when `ROTA_REMINDERS_ENABLED=true`**
+`internal/rotareminder`, registered as **`rota_weekday_reminder`**, **`rota_weekend_notice`**,
+**`rota_weekend_reminder`** and **`rota_manual_reminder`** (the Rota Access card's "Send now" and
+"Send a test to me"), emails the people rostered on a rotation shift in the Team Schedule, with a
+calendar invitation for their window. **Registered only when `ROTA_REMINDERS_ENABLED=true`**
 (default false): they email real staff from the real rota.
 
 | Task | Default schedule | Announces |
@@ -180,6 +181,7 @@ with a calendar invitation for their window. **Registered only when `ROTA_REMIND
 | `rota_weekday_reminder` | `30 9 * * 1-5` (15:00 Colombo, Mon–Fri) | the next working day's weekday rotations (`CRE_MORNING`, `CRE_MORNING_OC`, `CRE_EVENING`): tomorrow from Monday to Thursday, **Monday from Friday** |
 | `rota_weekend_notice` | `30 14 * * 0-4` (20:00 Colombo, Sun–Thu) | the coming weekend (`CRE_WEEKEND`, `CRE_WEEKEND_NIGHT`, `CRE_WEEKEND_NIGHT_OC`), **once it is fully marked**: the summary and the invitations, sent once; until then the rota admins are asked every evening |
 | `rota_weekend_reminder` | `30 9 * * 5` (15:00 Colombo, Fri) | this weekend again: the summary, the invitations as updates, cancellations, gaps listed |
+| `rota_manual_reminder` | `*/5 * * * *` (finer than the driver, so due at every run) | whatever was asked for on the Rota Access card since the last run: a weekday or weekend "Send now", or a test sent only to the person who asked (see "Send now" below) |
 
 The schedule decides only *when* a task runs. Which days it announces comes from the day it runs
 (`NextWorkingDay`, `ComingWeekend`), counted in `ROTA_REMINDER_TIME_ZONE` (default
@@ -290,7 +292,7 @@ schedules assume `TZ=UTC` like every other here.
 - Turning the tasks on with `EMAIL_BASE_URL` unset refuses to start.
 - **Not built**: a "your shift changed" email when a lead edits the rota after the reminder went
   out (Friday's reminder is the only re-send; it needs entity-service to announce rota changes,
-  see "Future: events"), a manual "Send reminder" button, SRE and SME rotas (set
+  see "Future: events"), SRE and SME rotas (set
   `ROTA_REMINDER_FAMILY` and the shift lists; the date rules assume CRE's weekday and weekend
   split), and cancelling a weekday invitation (weekday sends are not recorded). Unlike the report
   tasks, these own no template file.

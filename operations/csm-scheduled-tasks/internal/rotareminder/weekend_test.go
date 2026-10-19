@@ -432,3 +432,33 @@ func TestParseWindows(t *testing.T) {
 		t.Errorf("empty = %v, %v", w, err)
 	}
 }
+
+// On Friday with gaps the rota admins are told only after the summary has
+// gone: when it fails, the run fails and nobody is told yet, so each retry
+// does not email the admins again, and their email never says a reminder
+// went out that did not.
+func TestWeekendReminder_AdminsAreToldOnlyAfterTheSummary(t *testing.T) {
+	short := fullWeekend()[1:] // Saturday's LK Weekend is one short
+	store := &fakeStore{admins: []teamschedule.RotaAdmin{{Name: "Zoe Admin", Email: "zoe@example.com"}}}
+	cfg := weekendConfig("2026-10-23 15:00", "rota_weekend_reminder")
+
+	mail := &fakeEmail{failOn: "Weekend Rotation –"}
+	if err := WeekendReminder(&fakeRota{assignments: short}, store, mail, cfg)(context.Background()); err == nil {
+		t.Fatal("a failed summary passed")
+	}
+	if len(mail.sent) != 0 {
+		t.Fatalf("sent %d emails before the summary went out: %+v", len(mail.sent), mail.sent)
+	}
+
+	mail = &fakeEmail{}
+	if err := WeekendReminder(&fakeRota{assignments: short}, store, mail, cfg)(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(mail.sent) < 2 || !strings.Contains(mail.sent[0].subject, "Weekend Rotation –") || !strings.Contains(mail.sent[1].subject, "Action needed") {
+		var subjects []string
+		for _, m := range mail.sent {
+			subjects = append(subjects, m.subject)
+		}
+		t.Fatalf("order: %v", subjects)
+	}
+}

@@ -62,10 +62,15 @@ func ManualReminder(rota RotaReader, store ReminderStore, queue RequestQueue, em
 			if req.Test {
 				weekday, weekend = asTest(weekday, req.RequestedBy), asTest(weekend, req.RequestedBy)
 			}
-			sent, err := sendManual(ctx, rota, store, email, weekday, weekend, req.Kind)
+			sent, notSent, err := sendManual(ctx, rota, store, email, weekday, weekend, req.Kind)
 			switch {
 			case err != nil:
 				status, result = "FAILED", err.Error()
+			case notSent > 0:
+				// Some went out, so the run did not fail; the person who
+				// pressed the button must still see that some did not.
+				result = fmt.Sprintf("Sent %d of %d emails; %d could not be sent (the task's alert recipients were told who missed out).",
+					sent, sent+notSent, notSent)
 			case sent == 0:
 				result = "Nothing was sent: nobody on these rotations has an email address, or the rotations are empty."
 			case sent == 1:
@@ -73,7 +78,7 @@ func ManualReminder(rota RotaReader, store ReminderStore, queue RequestQueue, em
 			default:
 				result = fmt.Sprintf("Sent %d emails.", sent)
 			}
-			if req.Test && err == nil && sent > 0 {
+			if req.Test && err == nil && sent > 0 && notSent == 0 {
 				result = strings.TrimSuffix(result, ".") + " to " + req.RequestedBy + " (test)."
 			}
 			slog.InfoContext(ctx, "rota reminder: sent by hand", "kind", req.Kind, "test", req.Test, "requestedBy", req.RequestedBy, "status", status, "result", result)
@@ -85,29 +90,30 @@ func ManualReminder(rota RotaReader, store ReminderStore, queue RequestQueue, em
 	}
 }
 
-// sendManual sends one request and counts the emails that went out.
-func sendManual(ctx context.Context, rota RotaReader, store ReminderStore, email EmailSender, weekdayCfg, weekendCfg Config, kind string) (int, error) {
+// sendManual sends one request and counts the reminder emails that went out
+// and those that did not.
+func sendManual(ctx context.Context, rota RotaReader, store ReminderStore, email EmailSender, weekdayCfg, weekendCfg Config, kind string) (sent, notSent int, err error) {
 	counted := &countingSender{EmailSender: email}
 	switch kind {
 	case "weekday":
 		cfg := weekdayCfg
 		if !cfg.EmailsEnabled {
-			return 0, errors.New("emails are turned off in this environment (ALERTS_ENABLED)")
+			return 0, 0, errors.New("emails are turned off in this environment (ALERTS_ENABLED)")
 		}
 		cfg.Manual, cfg.Anchor = true, cfg.Now
 		err := WeekdayReminder(rota, counted, cfg)(ctx)
-		return counted.n, err
+		return counted.n, counted.failed, err
 	case "weekend":
 		cfg := weekendCfg
 		if !cfg.EmailsEnabled {
-			return 0, errors.New("emails are turned off in this environment (ALERTS_ENABLED)")
+			return 0, 0, errors.New("emails are turned off in this environment (ALERTS_ENABLED)")
 		}
 		now := cfg.Now()
 		cfg.Manual, cfg.Anchor = true, func() time.Time { return manualWeekendAnchor(now, cfg.Zone) }
 		err := weekend(ctx, rota, store, counted, cfg, true)
-		return counted.n, err
+		return counted.n, counted.failed, err
 	}
-	return 0, fmt.Errorf("unknown reminder kind %q", kind)
+	return 0, 0, fmt.Errorf("unknown reminder kind %q", kind)
 }
 
 // manualWeekendAnchor is the day a "Send now" weekend is counted from: today,
@@ -124,11 +130,12 @@ func manualWeekendAnchor(now time.Time, zone *time.Location) time.Time {
 	}
 }
 
-// countingSender counts the emails the reminders send. Only the rota's own
-// emails count: an alert about a failure is not a reminder.
+// countingSender counts the reminder emails that went out (n) and those that
+// could not be sent (failed). Only the rota's own emails count: an alert
+// about a failure is not a reminder.
 type countingSender struct {
 	EmailSender
-	n int
+	n, failed int
 }
 
 func (c *countingSender) SendEmail(ctx context.Context, to, cc []string, subject, body string) error {
@@ -137,8 +144,12 @@ func (c *countingSender) SendEmail(ctx context.Context, to, cc []string, subject
 
 func (c *countingSender) SendEmailWithAttachments(ctx context.Context, to, cc []string, subject, body string, a []notify.Attachment) error {
 	err := c.EmailSender.SendEmailWithAttachments(ctx, to, cc, subject, body, a)
-	if err == nil && strings.Contains(subject, " Rota]") {
-		c.n++
+	if strings.Contains(subject, " Rota]") {
+		if err == nil {
+			c.n++
+		} else {
+			c.failed++
+		}
 	}
 	return err
 }

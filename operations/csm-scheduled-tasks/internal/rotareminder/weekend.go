@@ -138,19 +138,14 @@ func weekend(ctx context.Context, rota RotaReader, store ReminderStore, sender E
 	gaps := missingSlots(cfg, rostered, days)
 
 	var failed []failure
-	if len(gaps) > 0 {
+	if len(gaps) > 0 && !final {
+		// Nothing goes to the rota until it is complete; the next evening's
+		// run checks again. A failed admin email fails the run, which is
+		// retried until then.
 		adminErr := askRotaAdmins(ctx, store, sender, cfg, days, gaps, final)
-		if !final {
-			// Nothing goes to the rota until it is complete; the next
-			// evening's run checks again. A failed admin email fails the run,
-			// which is retried until then.
-			slog.InfoContext(ctx, "rota reminder: the weekend is not fully marked; the rota admins were asked",
-				"weekend", period, "gaps", gapList(cfg, gaps))
-			return adminErr
-		}
-		if adminErr != nil {
-			failed = append(failed, failure{label: "the email to the rota admins", err: adminErr})
-		}
+		slog.InfoContext(ctx, "rota reminder: the weekend is not fully marked; the rota admins were asked",
+			"weekend", period, "gaps", gapList(cfg, gaps))
+		return adminErr
 	}
 
 	now := cfg.Now()
@@ -176,6 +171,14 @@ func weekend(ctx context.Context, rota RotaReader, store ReminderStore, sender E
 	if err := send(ctx, sender, cfg, summary); err != nil {
 		// Nothing has gone to the rota yet, so the run fails and is retried.
 		return fmt.Errorf("rotareminder: the weekend summary for %s: %w", period, err)
+	}
+	// Friday tells the rota admins what is still missing only once the
+	// summary has gone: their email says it was sent, and a failed summary
+	// fails the run, whose retry would otherwise ask them again each time.
+	if len(gaps) > 0 {
+		if err := askRotaAdmins(ctx, store, sender, cfg, days, gaps, final); err != nil {
+			failed = append(failed, failure{label: "the email to the rota admins", err: err})
+		}
 	}
 
 	var invites []teamschedule.ReminderInvite
