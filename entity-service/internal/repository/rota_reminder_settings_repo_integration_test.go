@@ -28,7 +28,7 @@ import (
 
 // A family's reminder settings: nothing until saved, a save is read back as
 // saved, a second save replaces it, and both are in the audit trail with who
-// made them. Needs migrations 0155 and 0241; skipped unless
+// made them. Needs migrations 0155 and 0242; skipped unless
 // ENTITY_TEST_DATABASE_URL is set. Uses SME and refuses to run where SME
 // settings already exist, so it never overwrites real ones.
 func TestRotaReminderSettingsIntegration_SaveAndRead(t *testing.T) {

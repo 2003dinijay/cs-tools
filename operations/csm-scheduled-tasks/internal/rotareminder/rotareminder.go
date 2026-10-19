@@ -48,6 +48,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"net/http"
 	"sort"
 	"strings"
 	"time"
@@ -57,6 +58,7 @@ import (
 	// dates in an email independent of the image.
 	_ "time/tzdata"
 
+	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/notify"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/teamschedule"
 )
@@ -285,7 +287,7 @@ func announce(ctx context.Context, rota RotaReader, sender EmailSender, cfg Conf
 		if len(cfg.RedirectTo) > 0 {
 			sendTo, sendCc = cfg.RedirectTo, nil
 		}
-		if err := sender.SendEmailWithAttachments(ctx, sendTo, sendCc, b.email.subject, b.email.body, b.email.attachments); err != nil {
+		if err := sendWindowEmail(ctx, sender, sendTo, sendCc, b.email); err != nil {
 			var names []string
 			for _, w := range b.windows {
 				names = append(names, w.base+" on "+w.date)
@@ -324,6 +326,23 @@ func (w *window) span() (start, end time.Time) {
 		}
 	}
 	return start, end
+}
+
+// sendWindowEmail sends a weekday window's email with its invitation. An
+// email service that rejects the invitation (HTTP 400) is sent the email
+// again without it: the reminder matters more than the calendar entry, and a
+// 400 means nothing went out, so nobody gets it twice. (A weekend invitation
+// email has no fallback: it exists for its invitation, and the summary has
+// already told everybody.)
+func sendWindowEmail(ctx context.Context, sender EmailSender, to, cc []string, email shiftEmail) error {
+	err := sender.SendEmailWithAttachments(ctx, to, cc, email.subject, email.body, email.attachments)
+	var apiErr *apierror.Error
+	if len(email.attachments) > 0 && errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusBadRequest {
+		slog.WarnContext(ctx, "rota reminder: the email service rejected the calendar invitation; sending the email without it",
+			"subject", email.subject, "err", err)
+		return sender.SendEmail(ctx, to, cc, email.subject, email.body)
+	}
+	return err
 }
 
 // start is when the earliest person on the window starts.

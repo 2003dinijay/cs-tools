@@ -51,10 +51,14 @@ func withSettings(ctx context.Context, cfg Config, weekend bool) (Config, bool, 
 	// Invitations need an organizer; without one they stay off whatever was
 	// saved.
 	cfg.Invites = s.InvitesEnabled && cfg.OrganizerEmail != ""
-	if s.WeekendRequired != nil {
+	// An empty map saved (entity-service stores {} for one left out) keeps
+	// the configured values: wiping them would announce a half-staffed
+	// weekend with no minimum, and put the Americas weekend back on the
+	// Team Schedule's IST hours.
+	if len(s.WeekendRequired) > 0 {
 		cfg.Required = maps.Clone(s.WeekendRequired)
 	}
-	if s.Windows != nil {
+	if len(s.Windows) > 0 {
 		windows, err := settingsWindows(s.Windows)
 		if err != nil {
 			return cfg, false, fmt.Errorf("rotareminder: the saved %s reminder windows: %w", cfg.Family, err)

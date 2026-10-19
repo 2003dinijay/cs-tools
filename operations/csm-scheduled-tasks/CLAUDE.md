@@ -209,12 +209,12 @@ schedules assume `TZ=UTC` like every other here.
   carrying its invitation with all of them as guests, so they can start a group chat from the
   event. One recipient is greeted by full name, several with "Dear all,".
 - **Settings saved on the Rota Access tab win.** Every run first reads
-  `GET /team-schedule/reminder-settings/{family}` (entity-service, migration 0241; the
+  `GET /team-schedule/reminder-settings/{family}` (entity-service, migration 0242; the
   "CRE rota reminders" card, editable by a CSM admin or the CRE rota admin). When something
   is saved: `weekdayEnabled` / `weekendEnabled` turn that task off (the run succeeds and
   sends nothing), `invitesEnabled` replaces `ROTA_REMINDER_INVITES_ENABLED` (still off
   without an organizer), `weekendRequired` replaces `ROTA_REMINDER_WEEKEND_REQUIRED`,
-  `windows` replaces `ROTA_REMINDER_WINDOWS`, and `copyTo` is copied on top of the
+  `windows` replaces `ROTA_REMINDER_WINDOWS` (either saved empty keeps the configured one), and `copyTo` is copied on top of the
   configured copy list. Nothing saved (a 404, also from an entity-service without the
   route) keeps the environment's values. A failed read fails the run, so it is retried
   rather than sent with settings somebody turned off. Not on the card, on purpose: the
@@ -227,7 +227,7 @@ schedules assume `TZ=UTC` like every other here.
   are none) a table of what is missing, every evening, and sends nothing to the rota. Friday's
   `rota_weekend_reminder` sends anyway, listing the gaps, and tells the admins.
 - **The weekend send is recorded in entity-service** (`team_schedule_reminder_sent`, migration
-  0240, `GET`/`PUT /team-schedule/reminders/{family}/weekend_notice/{saturday}`): an evening that
+  0241, `GET`/`PUT /team-schedule/reminders/{family}/weekend_notice/{saturday}`): an evening that
   finds the record sends nothing, and Friday compares its invitations with the recorded ones and
   sends a cancellation (`METHOD:CANCEL`) to anybody taken off a window, or to everybody on a window
   that is gone. A failure to record is reported in the partial-failure alert; the emails are not
@@ -238,7 +238,8 @@ schedules assume `TZ=UTC` like every other here.
   `.ics` attached by hand in Gmail compose does not). Each event's identity is the rota day and
   shift (`inviteUID`), and its sequence the minute it was sent, so a re-send updates it. The
   email service binds an attachment to `byte[]`, so `notify.Attachment` sends it as an array of
-  byte values, not base64. Weekday emails carry their window's invitation in the same email.
+  byte values, not base64. Weekday emails carry their window's invitation in the same email. If the email service rejects a weekday email's invitation (HTTP 400), the email is sent again
+  without it, so the reminder still arrives; a weekend invitation email has no such fallback.
 - **The task's `SUB_CRON_RECIPIENTS` are not copied** unless
   `ROTA_REMINDER_COPY_TASK_RECIPIENTS=true`; they still get its failure alerts, as everywhere
   here. Nobody is ever both a recipient and copied, or copied twice (case-insensitive).

@@ -29,7 +29,7 @@ import (
 )
 
 // RotaReminderSettingsRepository stores each family's rota reminder settings
-// (team_schedule_reminder_setting, migration 0241).
+// (team_schedule_reminder_setting, migration 0242).
 type RotaReminderSettingsRepository interface {
 	// Get is the family's settings, or nil when none were saved.
 	Get(ctx context.Context, family string) (*domain.RotaReminderSettings, error)

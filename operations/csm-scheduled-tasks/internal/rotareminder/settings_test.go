@@ -116,3 +116,24 @@ func TestSettings_ReadFailureAndNothingSaved(t *testing.T) {
 		t.Errorf("nothing saved: err %v, sent %d, want the summary and four invitations", err, len(mail.sent))
 	}
 }
+
+// Saved settings with no minimums and no windows (entity-service stores {}
+// for either when left out) keep the configured ones: the incomplete weekend
+// still asks the rota admins, and the Americas hours stay on Pacific time.
+func TestSettings_EmptyMapsKeepTheConfiguration(t *testing.T) {
+	s := savedSettings()
+	s.WeekendRequired = map[string]int{}
+	s.Windows = map[string]teamschedule.ReminderWindow{}
+	cfg := weekendConfig("2026-10-18 20:00", "rota_weekend_notice")
+	cfg.Settings = fakeSettings{s: s}
+	got, on, err := withSettings(context.Background(), cfg, true)
+	if err != nil || !on {
+		t.Fatalf("on %v, err %v", on, err)
+	}
+	if got.Required["CRE_WEEKEND"] != 3 || got.Required["CRE_WEEKEND_NIGHT"] != 1 {
+		t.Errorf("Required = %v, want the configured CRE_WEEKEND=3, CRE_WEEKEND_NIGHT=1", got.Required)
+	}
+	if w, ok := got.Windows["CRE_WEEKEND_NIGHT"]; !ok || w.Zone.String() != "America/Los_Angeles" {
+		t.Errorf("Windows = %v, want the configured America/Los_Angeles window", got.Windows)
+	}
+}

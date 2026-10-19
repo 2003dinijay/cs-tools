@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/notify"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/teamschedule"
 )
@@ -494,5 +495,51 @@ func TestTeamScheduleLinkIsInEveryEmail(t *testing.T) {
 	}
 	if m := send(""); strings.Contains(m.body, "latest roster") {
 		t.Errorf("an empty address still produced the link:\n%s", m.body)
+	}
+}
+
+// rejectingEmail answers a send that carries attachments with an HTTP error,
+// as the email service would, and records everything else.
+type rejectingEmail struct {
+	fakeEmail
+	status int
+	tries  int
+}
+
+func (r *rejectingEmail) SendEmailWithAttachments(ctx context.Context, to, cc []string, subject, body string, attachments []notify.Attachment) error {
+	if len(attachments) > 0 {
+		r.tries++
+		return &apierror.Error{StatusCode: r.status}
+	}
+	return r.fakeEmail.SendEmailWithAttachments(ctx, to, cc, subject, body, nil)
+}
+
+func (r *rejectingEmail) SendEmail(ctx context.Context, to, cc []string, subject, body string) error {
+	return r.fakeEmail.SendEmailWithAttachments(ctx, to, cc, subject, body, nil)
+}
+
+// An email service that rejects the invitation (400) still delivers the
+// weekday reminder, without it. Any other failure stays a failure.
+func TestWeekdayReminder_ARejectedInvitationStillSendsTheEmail(t *testing.T) {
+	rota := &fakeRota{assignments: []teamschedule.Assignment{
+		assignment("Ann", "ann@example.com", "vega", "CRE_MORNING", "2026-10-13", "2026-10-13 06:00", "2026-10-13 09:00"),
+	}}
+	cfg := weekendConfig("2026-10-12 15:00", "rota_weekday_reminder")
+	cfg.Rotations = weekdayRotations
+
+	mail := &rejectingEmail{status: 400}
+	if err := WeekdayReminder(rota, mail, cfg)(context.Background()); err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if mail.tries != 1 || len(mail.sent) != 1 || mail.sent[0].attachments != nil {
+		t.Fatalf("tries %d, sent %+v: want one try with the invitation, then the email alone", mail.tries, mail.sent)
+	}
+
+	mail = &rejectingEmail{status: 503}
+	if err := WeekdayReminder(rota, mail, cfg)(context.Background()); err == nil {
+		t.Fatal("a 503 was treated as a rejected invitation")
+	}
+	if len(mail.sent) != 0 {
+		t.Fatalf("sent %+v after a 503, want nothing", mail.sent)
 	}
 }
