@@ -28,6 +28,9 @@ export interface PendingVerificationsListProps {
   isLoading: boolean;
   isError?: boolean;
   hasListRefinement?: boolean;
+  /** Overrides the generic (no search/filter applied) empty-state message —
+   * e.g. the Verified tab shouldn't say "No records pending verification." */
+  emptyMessage?: string;
   onViewCase?: (record: PendingVerificationView) => void;
   onMarkVerified?: (record: PendingVerificationView) => void;
 }
@@ -48,6 +51,7 @@ export default function PendingVerificationsList({
   isLoading,
   isError = false,
   hasListRefinement = false,
+  emptyMessage = "No records pending verification.",
   onViewCase,
   onMarkVerified,
 }: PendingVerificationsListProps): JSX.Element {
@@ -81,7 +85,7 @@ export default function PendingVerificationsList({
       <Box sx={{ display: "flex", flexDirection: "column", alignItems: "center", py: 6 }}>
         <EmptyIcon style={{ width: 200, maxWidth: "100%", height: "auto", marginBottom: 16 }} />
         <Typography variant="body1" color="text.secondary">
-          No records pending verification.
+          {emptyMessage}
         </Typography>
       </Box>
     );

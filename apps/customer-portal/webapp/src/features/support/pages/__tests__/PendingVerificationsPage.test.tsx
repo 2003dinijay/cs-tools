@@ -128,13 +128,19 @@ vi.mock("@components/list-view/ListPagination", () => ({
 
 vi.mock("@features/support/components/pending-verifications/PendingVerificationsList", () => ({
   default: ({
+    hasListRefinement,
+    emptyMessage,
     onViewCase,
     onMarkVerified,
   }: {
+    hasListRefinement?: boolean;
+    emptyMessage?: string;
     onViewCase?: (record: PendingVerificationView) => void;
     onMarkVerified?: (record: PendingVerificationView) => void;
   }) => (
     <div>
+      <span data-testid="has-list-refinement">{String(!!hasListRefinement)}</span>
+      <span data-testid="empty-message">{emptyMessage ?? ""}</span>
       <button onClick={() => onViewCase?.(fakeRecord)}>View Case</button>
       <button onClick={() => onMarkVerified?.(fakeRecord)}>Mark Verified</button>
     </div>
@@ -221,6 +227,46 @@ describe("PendingVerificationsPage", () => {
 
     const [, filters] = mockUsePendingVerificationsListSearch.mock.calls[0];
     expect(filters).toEqual({ searchQuery: undefined, includeVerified: false, addedReason: undefined });
+  });
+
+  // Regression tests for the CodeRabbit finding: a stat-box deep link
+  // (?addedReason=...) matching zero records must show the "try adjusting
+  // your filters" empty state, not the generic one, which would otherwise
+  // falsely claim there's nothing pending at all.
+  it("treats an addedReason filter on the unverified tab as a list refinement", () => {
+    mockUseSearchParams.mockReturnValue([
+      new URLSearchParams("tab=unverified&addedReason=auto-closed"),
+      vi.fn(),
+    ]);
+
+    render(<PendingVerificationsPage />);
+
+    expect(screen.getByTestId("has-list-refinement")).toHaveTextContent("true");
+  });
+
+  it("does not treat addedReason as a refinement on the verified tab, where it has no effect", () => {
+    mockUseSearchParams.mockReturnValue([
+      new URLSearchParams("tab=verified&addedReason=auto-closed"),
+      vi.fn(),
+    ]);
+
+    render(<PendingVerificationsPage />);
+
+    expect(screen.getByTestId("has-list-refinement")).toHaveTextContent("false");
+  });
+
+  it("passes a tab-specific empty message for the verified tab", () => {
+    mockUseSearchParams.mockReturnValue([new URLSearchParams("tab=verified"), vi.fn()]);
+
+    render(<PendingVerificationsPage />);
+
+    expect(screen.getByTestId("empty-message")).toHaveTextContent("No verified records yet.");
+  });
+
+  it("leaves the empty message as the component's own default on the unverified tab", () => {
+    render(<PendingVerificationsPage />);
+
+    expect(screen.getByTestId("empty-message")).toHaveTextContent("");
   });
 
   it("navigates back to the support page, not browser-back", () => {

@@ -121,7 +121,11 @@ export default function PendingVerificationsPage(): JSX.Element {
 
   const records = useMemo(() => data?.pendingVerifications ?? [], [data?.pendingVerifications]);
   const totalRecords = data?.totalRecords ?? 0;
-  const hasListRefinement = !!searchTerm;
+  // addedReason only narrows the Unverified set (see filters above) -- a
+  // deep link like ?tab=unverified&addedReason=manual matching zero records
+  // must show the "try adjusting your filters" empty state, not the generic
+  // one, which would otherwise falsely imply there's nothing pending at all.
+  const hasListRefinement = !!searchTerm || (activeTab === "unverified" && !!addedReason);
 
   // Single mutation instance, re-parameterized by whichever record is
   // currently pending confirmation — avoids instantiating one hook per card.
@@ -179,6 +183,7 @@ export default function PendingVerificationsPage(): JSX.Element {
         isLoading={isLoading}
         isError={isError}
         hasListRefinement={hasListRefinement}
+        emptyMessage={activeTab === "verified" ? "No verified records yet." : undefined}
         onViewCase={(record) => {
           if (!projectId) return;
           navigate(buildPendingVerificationRecordPath(projectId, record), {

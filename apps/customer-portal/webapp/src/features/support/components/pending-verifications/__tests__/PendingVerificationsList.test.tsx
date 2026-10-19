@@ -76,6 +76,15 @@ describe("PendingVerificationsList", () => {
     expect(screen.getByText(/No records found/)).toBeInTheDocument();
   });
 
+  it("uses a caller-provided emptyMessage instead of the generic one", () => {
+    renderList(
+      <PendingVerificationsList records={[]} isLoading={false} emptyMessage="No verified records yet." />,
+    );
+
+    expect(screen.getByText("No verified records yet.")).toBeInTheDocument();
+    expect(screen.queryByText("No records pending verification.")).not.toBeInTheDocument();
+  });
+
   it("renders one card per record", () => {
     renderList(<PendingVerificationsList records={records} isLoading={false} />);
 
