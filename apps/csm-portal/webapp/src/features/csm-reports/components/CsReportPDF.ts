@@ -27,8 +27,7 @@
 // export), which is exactly what html2pdf.js does under the hood.
 import html2canvas from "html2canvas";
 import jsPDF from "jspdf";
-import type { Dayjs } from "dayjs";
-import dayjs from "dayjs";
+import { formatDateOnly } from "@utils/dateTime";
 import logo from "../assets/wso2-logo-orange.png";
 import "../styles/CSReportPDF.css";
 
@@ -455,8 +454,8 @@ export async function csReportPDF(
   account: string,
   key: string,
   records: any[],
-  from: Dayjs | null,
-  to: Dayjs | null,
+  from: Date | null,
+  to: Date | null,
   notesText: string,
   notesImage: string,
   deploymentImage: string,
@@ -570,8 +569,8 @@ export async function csReportPDF(
       } while (y < canvas.height - 2);
     }
 
-    const formattedFrom = from ? dayjs(from).format("YYYY-MM-DD") : "UnknownStart";
-    const formattedTo = to ? dayjs(to).format("YYYY-MM-DD") : "UnknownEnd";
+    const formattedFrom = from ? formatDateOnly(from) : "UnknownStart";
+    const formattedTo = to ? formatDateOnly(to) : "UnknownEnd";
     pdf.save(`CS_Report_${key}_${formattedFrom}_to_${formattedTo}.pdf`);
   } finally {
     document.body.removeChild(frame);

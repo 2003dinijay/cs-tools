@@ -14,15 +14,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import type { Dayjs } from "dayjs";
 import { Box, Typography, useTheme } from "@wso2/oxygen-ui";
 import { LineChart } from "@wso2/oxygen-ui-charts-react";
 
 /* eslint-disable @typescript-eslint/no-explicit-any -- mirrors the source's own loosely-typed chart data prop */
 interface ChartProps {
   data: any;
-  from?: Dayjs;
-  to?: Dayjs;
 }
 
 const CHART_HEIGHT = 280;

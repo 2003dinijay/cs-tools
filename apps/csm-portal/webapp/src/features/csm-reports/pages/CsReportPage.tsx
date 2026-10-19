@@ -44,15 +44,12 @@ import {
   TextField,
   Typography,
   useTheme,
+  AdapterDateFns,
+  DatePickers,
 } from "@wso2/oxygen-ui";
 import { ArrowLeft, ChevronDown } from "@wso2/oxygen-ui-icons-react";
-import dayjs, { type Dayjs } from "dayjs";
-import minMax from "dayjs/plugin/minMax";
-import quarterOfYear from "dayjs/plugin/quarterOfYear";
-import { DatePicker } from "@mui/x-date-pickers/DatePicker";
-import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
-import { AdapterDayjs } from "@mui/x-date-pickers/AdapterDayjs";
 import { useParams } from "react-router";
+import { formatDateOnly, parseDateOnly } from "@utils/dateTime";
 import QueryErrorState from "@components/QueryErrorState";
 import { useGetCsReportDetails } from "@features/csm-reports/api/useGetCsReportDetails";
 import { csReportPDF } from "@features/csm-reports/components/CsReportPDF";
@@ -62,25 +59,72 @@ import CSLineChart from "@features/csm-reports/components/CSLineChart";
 import type { ProductDetails, ProjectDeployment } from "@features/csm-reports/api/reportTypes";
 import { useNavTransition } from "@hooks/useNavTransition";
 
-dayjs.extend(minMax);
-dayjs.extend(quarterOfYear);
+const { DesktopDatePicker: DatePicker, LocalizationProvider } = DatePickers;
+
+const MONTHS_LONG = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
+
+function startOfQuarter(date: Date): Date {
+  const month = Math.floor(date.getMonth() / 3) * 3;
+  return new Date(date.getFullYear(), month, 1);
+}
+
+function endOfQuarter(date: Date): Date {
+  const start = startOfQuarter(date);
+  return new Date(start.getFullYear(), start.getMonth() + 3, 0);
+}
+
+function addMonths(date: Date, months: number): Date {
+  const day = date.getDate();
+  const result = new Date(date.getFullYear(), date.getMonth() + months, 1);
+  const lastDay = new Date(result.getFullYear(), result.getMonth() + 1, 0).getDate();
+  result.setDate(Math.min(day, lastDay));
+  return result;
+}
+
+function isAfterDay(a: Date, b: Date): boolean {
+  const left = new Date(a.getFullYear(), a.getMonth(), a.getDate()).getTime();
+  const right = new Date(b.getFullYear(), b.getMonth(), b.getDate()).getTime();
+  return left > right;
+}
+
+function formatReportLabel(date: Date): string {
+  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" }).format(date);
+}
+
+function asPickerDate(value: unknown): Date | null {
+  return value instanceof Date && !Number.isNaN(value.getTime()) ? value : null;
+}
 
 function getLastFourQuarters() {
   const quarters: { label: string; value: string }[] = [];
-  let current = dayjs().startOf("quarter");
+  let current = startOfQuarter(new Date());
+  const now = new Date();
   let count = 0;
   while (count < 4) {
-    const year = current.year();
-    const start = current.startOf("quarter");
-    const end = current.endOf("quarter");
-    if (end.isBefore(dayjs())) {
+    const start = startOfQuarter(current);
+    const end = endOfQuarter(current);
+    const endInstant = new Date(end.getFullYear(), end.getMonth(), end.getDate(), 23, 59, 59, 999);
+    if (endInstant < now) {
       quarters.push({
-        label: `${year} Q${start.month() / 3 + 1} — ${start.format("MMMM")} to ${end.format("MMMM")}`,
-        value: `${start.format("YYYY-MM-DD")}_${end.format("YYYY-MM-DD")}`,
+        label: `${start.getFullYear()} Q${start.getMonth() / 3 + 1} — ${MONTHS_LONG[start.getMonth()]} to ${MONTHS_LONG[end.getMonth()]}`,
+        value: `${formatDateOnly(start)}_${formatDateOnly(end)}`,
       });
       count++;
     }
-    current = current.subtract(3, "months");
+    current = new Date(current.getFullYear(), current.getMonth() - 3, 1);
   }
   return quarters;
 }
@@ -244,11 +288,11 @@ export default function CsReportPage(): JSX.Element {
   const [dateRangeError, setDateRangeError] = useState("");
   const [dateComparisonError, setDateComparisonError] = useState("");
   const [selectedOption, setSelectedOption] = useState(lastFourQuarters[0]?.value ?? "custom");
-  const [from, setFrom] = useState<Dayjs | null>(
-    lastFourQuarters[0] ? dayjs(lastFourQuarters[0].value.split("_")[0]) : dayjs(),
+  const [from, setFrom] = useState<Date | null>(
+    lastFourQuarters[0] ? parseDateOnly(lastFourQuarters[0].value.split("_")[0]) : new Date(),
   );
-  const [to, setTo] = useState<Dayjs | null>(
-    lastFourQuarters[0] ? dayjs(lastFourQuarters[0].value.split("_")[1]) : dayjs(),
+  const [to, setTo] = useState<Date | null>(
+    lastFourQuarters[0] ? parseDateOnly(lastFourQuarters[0].value.split("_")[1]) : new Date(),
   );
   const [useCustomDates, setUseCustomDates] = useState(false);
   const [showReport, setShowReport] = useState(false);
@@ -272,21 +316,21 @@ export default function CsReportPage(): JSX.Element {
     to: submittedRange?.to ?? "",
     enabled: submittedRange !== null,
   });
-  const reportFrom = submittedRange ? dayjs(submittedRange.from) : from;
-  const reportTo = submittedRange ? dayjs(submittedRange.to) : to;
+  const reportFrom = submittedRange ? parseDateOnly(submittedRange.from) : from;
+  const reportTo = submittedRange ? parseDateOnly(submittedRange.to) : to;
 
   const handleOptionChange = (value: string) => {
     setSelectedOption(value);
     if (value === "custom") {
-      const currentDate = dayjs();
+      const currentDate = new Date();
       setFrom(currentDate);
       setTo(currentDate);
       setUseCustomDates(true);
     } else {
       setUseCustomDates(false);
       const [start, end] = value.split("_");
-      setFrom(dayjs(start));
-      setTo(dayjs(end));
+      setFrom(parseDateOnly(start));
+      setTo(parseDateOnly(end));
     }
   };
 
@@ -372,12 +416,11 @@ export default function CsReportPage(): JSX.Element {
 
   const handleSubmit = () => {
     if (useCustomDates && from && to) {
-      const diffInMonths = to.diff(from, "month");
-      if (diffInMonths > 6) {
+      if (isAfterDay(to, addMonths(from, 6))) {
         setDateRangeError("The date range cannot exceed 6 months.");
         return;
       }
-      if (from.isAfter(to)) {
+      if (isAfterDay(from, to)) {
         setDateComparisonError("The From date must be earlier than the To date.");
         return;
       }
@@ -386,7 +429,7 @@ export default function CsReportPage(): JSX.Element {
     setDateComparisonError("");
     setDateRangeError("");
     setShowReport(true);
-    const nextRange = { from: from.format("YYYY-MM-DD"), to: to.format("YYYY-MM-DD") };
+    const nextRange = { from: formatDateOnly(from), to: formatDateOnly(to) };
     if (submittedRange?.from === nextRange.from && submittedRange?.to === nextRange.to) {
       void refetchReportData();
       return;
@@ -410,8 +453,8 @@ export default function CsReportPage(): JSX.Element {
           dayStateCount = { day: openedDate, opened: 0, closed: 0 };
           dayWiseCases.push(dayStateCount);
         }
-        if (caseState === "Open") dayStateCount.opened++;
-        else if (caseState === "Closed") dayStateCount.closed++;
+        if (caseState === "Closed") dayStateCount.closed++;
+        else dayStateCount.opened++;
         return dayWiseCases;
       },
       [],
@@ -483,7 +526,7 @@ export default function CsReportPage(): JSX.Element {
     }, new Map<string, ProductDetails>()),
   );
   const engagementCases = (csReportData?.casesRecords ?? []).filter((record) => record.caseType === "Engagement");
-  const rangeLabel = reportFrom && reportTo ? `${reportFrom.format("MMM D, YYYY")} – ${reportTo.format("MMM D, YYYY")}` : "";
+  const rangeLabel = reportFrom && reportTo ? `${formatReportLabel(reportFrom)} – ${formatReportLabel(reportTo)}` : "";
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 2.5 }}>
@@ -531,9 +574,19 @@ export default function CsReportPage(): JSX.Element {
             </Select>
           </FormControl>
           {useCustomDates && (
-            <LocalizationProvider dateAdapter={AdapterDayjs}>
-              <DatePicker label="From" value={from} onChange={setFrom} slotProps={{ textField: { size: "small" } }} />
-              <DatePicker label="To" value={to} onChange={setTo} slotProps={{ textField: { size: "small" } }} />
+            <LocalizationProvider dateAdapter={AdapterDateFns}>
+              <DatePicker
+                label="From"
+                value={from}
+                onChange={(date) => setFrom(asPickerDate(date))}
+                slotProps={{ textField: { size: "small" } }}
+              />
+              <DatePicker
+                label="To"
+                value={to}
+                onChange={(date) => setTo(asPickerDate(date))}
+                slotProps={{ textField: { size: "small" } }}
+              />
             </LocalizationProvider>
           )}
           <Button variant="outlined" onClick={handleSubmit}>
@@ -714,7 +767,7 @@ export default function CsReportPage(): JSX.Element {
             >
               <Box sx={{ minWidth: 0, overflow: "hidden" }}>
                 {transformedData?.casesByDayAndState ? (
-                  <BarChart data={transformedData.casesByDayAndState} chartType="state" from={reportFrom ?? dayjs()} to={reportTo ?? dayjs()} />
+                  <BarChart data={transformedData.casesByDayAndState} chartType="state" from={reportFrom ?? new Date()} to={reportTo ?? new Date()} />
                 ) : (
                   <Typography variant="body2" color="text.secondary">
                     No opened or resolved cases in this range.
@@ -729,8 +782,8 @@ export default function CsReportPage(): JSX.Element {
                   <BarChart
                     data={transformedData.casesByMonthAndProduct}
                     distinctProductNames={transformedData.distinctProductNames}
-                    from={reportFrom ?? dayjs()}
-                    to={reportTo ?? dayjs()}
+                    from={reportFrom ?? new Date()}
+                    to={reportTo ?? new Date()}
                     chartType="product"
                   />
                 ) : (
@@ -744,8 +797,8 @@ export default function CsReportPage(): JSX.Element {
                   <BarChart
                     data={transformedData.casesByMonthAndPriority}
                     distinctPriorities={transformedData.distinctPriorities}
-                    from={reportFrom ?? dayjs()}
-                    to={reportTo ?? dayjs()}
+                    from={reportFrom ?? new Date()}
+                    to={reportTo ?? new Date()}
                     chartType="priority"
                   />
                 ) : (
@@ -759,7 +812,7 @@ export default function CsReportPage(): JSX.Element {
 
           <SectionCard className="cases-volume-widget" title="Case volume by month">
             {transformedData?.MonthlyCases && transformedData.MonthlyCases.length > 0 ? (
-              <CSLineChart data={transformedData.MonthlyCases} from={reportFrom ?? dayjs().startOf("month")} to={reportTo ?? dayjs().endOf("month")} />
+              <CSLineChart data={transformedData.MonthlyCases} />
             ) : (
               <Typography variant="body2" color="text.secondary">
                 No case volume in this range.

@@ -14,18 +14,23 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { Dayjs } from "dayjs";
 import { Box, Typography, useTheme } from "@wso2/oxygen-ui";
 import { BarChart, XAxis, YAxis } from "@wso2/oxygen-ui-charts-react";
 import { priorityChartColor, useReportChartColors } from "./useReportChartColors";
+
+const MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function monthStart(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), 1);
+}
 
 /* eslint-disable @typescript-eslint/no-explicit-any -- mirrors the source's own loosely-typed chart data props */
 interface ChartProps {
   data: any;
   distinctProductNames?: string[];
   distinctPriorities?: string[];
-  from: Dayjs;
-  to: Dayjs;
+  from: Date;
+  to: Date;
   chartType: "product" | "priority" | "state";
 }
 
@@ -44,10 +49,11 @@ export default function CSBarChart({
   const unknown = theme.palette.grey[500];
 
   const monthLabels: string[] = [];
-  let currentMonth = from.startOf("month");
-  while (currentMonth.isBefore(to) || currentMonth.isSame(to, "month")) {
-    monthLabels.push(currentMonth.format("MMM"));
-    currentMonth = currentMonth.add(1, "month");
+  let currentMonth = monthStart(from);
+  const lastMonth = monthStart(to);
+  while (currentMonth.getTime() <= lastMonth.getTime()) {
+    monthLabels.push(MONTHS_SHORT[currentMonth.getMonth()]);
+    currentMonth = new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1, 1);
   }
 
   let series: { key: string; color: string }[] = [];
@@ -62,7 +68,7 @@ export default function CSBarChart({
       color: name === "Unknown" ? unknown : colors[i % colors.length],
     }));
     rows = monthLabels.map((label, i) => {
-      const monthKey = from.add(i, "month").month();
+      const monthKey = (from.getMonth() + i) % 12;
       const row: Record<string, string | number> = { month: label };
       distinctProductNames.forEach((name) => {
         row[name] = data[monthKey]?.[name] || 0;
@@ -76,7 +82,7 @@ export default function CSBarChart({
       color: priorityChartColor(priority, i, colors, unknown),
     }));
     rows = monthLabels.map((label, i) => {
-      const monthKey = from.add(i, "month").month();
+      const monthKey = (from.getMonth() + i) % 12;
       const row: Record<string, string | number> = { month: label };
       distinctPriorities.forEach((priority) => {
         row[priority] = data[monthKey]?.[priority] || 0;
