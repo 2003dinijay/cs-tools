@@ -41,7 +41,7 @@ backend.
 | Direction | Peer | Detail |
 |---|---|---|
 | Inbound | Browser, via the API gateway | `GET /cases/{id}/activities/stream` on the stream port (default 9092). Needs a valid `x-jwt-assertion` header. |
-| Inbound | Health probe | `GET /health` on the health port (default 8080), JSON `{"status":"ok"}`, no auth. |
+| Inbound | Health probe | `GET /health` on the stream port (default 9092), JSON `{"status":"ok"}`, no auth. |
 | Inbound | Event Hub | Case events from the `case-events` topic (Kafka protocol over TLS with SASL/PLAIN). |
 | Outbound | Entity service | `GET /cases/{id}` with the caller's identity token, once per new stream, to confirm the caller may read the case. OAuth2 client credentials for the service itself. |
 
@@ -83,17 +83,16 @@ latest offset so a new group does not replay retained history as a burst of stal
 notifications. Trade-offs: a redeploy (new pod name) creates a new group, and old groups
 accumulate on the broker because there is no API to delete them.
 
-### Optional event bus and two listeners
+### Optional event bus and the single listener
 
-If `EVENT_HUB_BROKER` is unset the service still starts, but serves only the health
-listener: the stream listener is not started and no consumer runs. (The stream handler
-itself would answer 503 "Live updates are not available right now." if it were reached
-with no hub.) With it set, two HTTP servers run:
+One HTTP server (the stream listener, `STREAM_PORT`, default 9092) serves everything:
+`GET /health` (liveness probe, no auth) and the two SSE routes. Timeouts: header 10 s,
+read 30 s, write and idle disabled (the SSE connection stays open; the tiny `/health`
+handler is unaffected).
 
-| Listener | Port variable (default) | Timeouts | Routes |
-|---|---|---|---|
-| Health | `HEALTH_PORT` (8080) | header 10 s, read/write 30 s, idle 60 s | `GET /health` |
-| Stream | `STREAM_PORT` (9092) | header 10 s, read 30 s, write and idle disabled | `GET /cases/{id}/activities/stream` |
+If `EVENT_HUB_BROKER` is unset the service still starts and still serves `/health`, but
+no consumer runs and the SSE routes answer 503 "Live updates are not available right
+now." With it set, the consumer also runs.
 
 Middleware, outermost first: `SecurityHeaders` (nosniff, upgrade-insecure-requests,
 HSTS), `CORS` (fail-closed allow-list; sits before `Auth` because a preflight carries no
@@ -117,8 +116,7 @@ csm-portal-activity-stream-service/
 │   ├── handler/              # StreamCaseActivities (SSE) and response helpers
 │   ├── middleware/           # auth, cors, correlation, logger, security_headers
 │   └── stream/               # BroadcastHub: per-case in-process pub/sub
-├── .choreo/component.yaml    # Two endpoints: health (8080) and stream (9092)
-├── openapi.yaml              # Health endpoint contract
+├── .choreo/component.yaml    # One endpoint: stream (9092), also serving /health
 ├── openapi-stream.yaml       # SSE endpoint contract
 └── .env.example
 ```
@@ -153,7 +151,7 @@ this mode outside local development. Allow your dev web app's origin with
 `STREAM_CORS_ALLOWED_ORIGINS`.
 
 ```bash
-curl http://localhost:8080/health
+curl http://localhost:9092/health
 # Replace <jwt> with a token carrying "email" and "userid" claims, and <case-uuid> with a case id
 curl -N -H "x-jwt-assertion: <jwt>" \
   http://localhost:9092/cases/<case-uuid>/activities/stream
@@ -203,14 +201,12 @@ Placeholders below are examples, not real values.
 | `AUTH_ISSUER` | Yes | none | Expected `iss` claim. | `https://idp.example.com/oauth2/token` |
 | `AUTH_AUDIENCE` | Yes | none | Comma-separated accepted `aud` values; the token needs at least one. | `<audience-a>,<audience-b>` |
 | `AUTH_TOKEN_VALIDATOR_ENABLED` | No | enabled | Only the exact string `false` disables signature, issuer, expiry and audience checks (decode only). Local development only. | `false` |
-| `EVENT_HUB_BROKER` | No (feature gate) | unset | Kafka-compatible bootstrap address. Unset means no stream listener and no consumer. | `<namespace>.servicebus.windows.net:9093` |
+| `EVENT_HUB_BROKER` | No (feature gate) | unset | Kafka-compatible bootstrap address. Unset means no consumer; the SSE routes answer 503 (`/health` still works). | `<namespace>.servicebus.windows.net:9093` |
 | `EVENT_HUB_CONNECTION_STRING` | Yes, once `EVENT_HUB_BROKER` is set | none | Namespace-level shared-access connection string, used as the SASL/PLAIN password. Secret. | `<connection-string>` |
 | `EVENT_HUB_TOPIC` | Yes, once `EVENT_HUB_BROKER` is set | none | Topic carrying case events. | `case-events` |
 | `EVENT_HUB_CONSUMER_GROUP` | No | `csm-portal-activity-stream-service` | Base consumer group name; each replica appends `-replica-<hostname>`. | `csm-portal-activity-stream-service` |
-| `STREAM_PORT` | No | `9092` | SSE listener port (bare number 1 to 65535). | `9092` |
-| `HEALTH_PORT` | No | `8080` | Health listener port (bare number 1 to 65535). | `8080` |
+| `STREAM_PORT` | No | `9092` | Listener port for the SSE routes and `/health` (bare number 1 to 65535). | `9092` |
 | `STREAM_CORS_ALLOWED_ORIGINS` | No | none (deny all cross-origin) | Comma-separated browser origins allowed on the stream listener. | `http://localhost:3001` |
-| `CORS_ALLOWED_ORIGINS` | No | none (deny all cross-origin) | Same, for the health listener. | `http://localhost:3001` |
 
 Notes:
 
