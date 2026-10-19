@@ -46,11 +46,7 @@ func (s *productVersionService) SearchProductVersions(ctx context.Context, req d
 	if err := validateSearchQuery(req.SearchQuery); err != nil {
 		return domain.SearchProductVersionsResponse{}, err
 	}
-	if req.DeploymentProfile == nil {
-		def := domain.DefaultDeploymentProfile
-		req.DeploymentProfile = &def
-	}
-	if utf8.RuneCountInString(*req.DeploymentProfile) > maxDeploymentProfileLen {
+	if req.DeploymentProfile != nil && utf8.RuneCountInString(*req.DeploymentProfile) > maxDeploymentProfileLen {
 		return domain.SearchProductVersionsResponse{}, &apierror.ValidationError{Msg: "deploymentProfile cannot exceed 255 characters"}
 	}
 
