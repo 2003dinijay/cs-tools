@@ -309,6 +309,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	var teamMemberHandler *handler.TeamMemberHandler
 	var pagingChainHandler *handler.PagingChainHandler
 	var caseAlertSettingsHandler *handler.CaseAlertSettingsHandler
+	var runbookHandler *handler.RunbookHandler
+	// runbookRepo stays a nil interface without a pool, so no incident service gets a catalog.
+	var runbookRepo repository.RunbookRepository
 
 	// Customer-health risk tracking (migration 0219) has no upstream
 	// equivalent either -- it replaces a standalone MySQL database
@@ -653,6 +656,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		activeProjectSvc = pgProjectSvc
 	}
 	projectHandler := handler.NewProjectHandler(activeProjectSvc)
+	projectConsumptionHandler := handler.NewProjectConsumptionHandler(activeProjectSvc)
 
 	projectContactRepo := repository.NewProjectContactRepository(db)
 	var activeProjectContactSvc service.ProjectContactService
@@ -1391,6 +1395,13 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	if handoffErr != nil {
 		log.Fatalf("invalid specialist handoff configuration: %v", handoffErr)
 	}
+	if db != nil {
+		// A team configured without a groupId hands off to its Team Schedule
+		// team's group; read those teams before the configuration is shared.
+		resolveCtx, cancelResolve := context.WithTimeout(context.Background(), 15*time.Second)
+		service.ResolveSpecialistHandoffTeamGroups(resolveCtx, repository.NewSpecialistHandoffGroupRepository(db), handoffConfig)
+		cancelResolve()
+	}
 	activeIncidentSvc = service.WithSpecialistHandoffConfig(activeIncidentSvc, handoffConfig)
 	// The handoff's GitHub issue links back to the incident in the CSM portal.
 	activeIncidentSvc = service.WithHandoffPortalBaseURL(activeIncidentSvc, cfg.CSMPortalBaseURL)
@@ -1411,6 +1422,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// paging ladders use, changed on the Alert Settings tab instead of a
 		// Choreo secret. csm-notification-service reads them only when it runs
 		// with PAGING_CONFIG_SOURCE set.
+		// Runbooks: the alert-name to runbook catalog, matched against every new incident's subject.
+		runbookRepo = repository.NewRunbookRepository(db)
+		runbookHandler = handler.NewRunbookHandler(service.NewRunbookService(runbookRepo))
 		caseAlertSettingsHandler = handler.NewCaseAlertSettingsHandler(
 			service.NewCaseAlertSettingsService(repository.NewCaseAlertSettingsRepository(db), repository.NewPagingChainRepository(db), accessSvc,
 				service.CaseAlertSettingsConfig{
@@ -1444,6 +1458,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// groupless default is logged, never fatal -- the create still works, it
 	// just leaves such incidents unassigned.
 	activeIncidentSvc = service.WithIncidentDefaultService(activeIncidentSvc, cfg.IncidentDefaultServiceID)
+	if runbookRepo != nil {
+		activeIncidentSvc = service.WithRunbookCatalog(activeIncidentSvc, runbookRepo)
+	}
 	if cfg.IncidentDefaultServiceID != "" && (db != nil || cfg.DataSource == config.DataSourceServiceNow) {
 		go service.CheckIncidentDefaultService(context.Background(), activeIncidentSvc, cfg.IncidentDefaultServiceID)
 	}
@@ -1639,6 +1656,13 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 	instanceHandler := handler.NewInstanceHandler(activeInstanceSvc)
 
+	var instanceIngestionHandler *handler.InstanceIngestionHandler
+	if db != nil {
+		instanceIngestionRepo := repository.NewInstanceIngestionRepository(repository.NewScoped(db))
+		instanceIngestionSvc := service.NewInstanceIngestionService(instanceIngestionRepo)
+		instanceIngestionHandler = handler.NewInstanceIngestionHandler(instanceIngestionSvc)
+	}
+
 	itServiceRepo := repository.NewITServiceRepository(db)
 	var activeITServiceSvc service.ITServiceService
 	if cfg.DataSource == config.DataSourceServiceNow {
@@ -1812,6 +1836,14 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("POST /team-schedule/paging-contacts/{userId}/test", pagingChainHandler.RequestTestCall)
 		mux.HandleFunc("PUT /team-schedule/paging-contacts/{userId}/test-result", pagingChainHandler.RecordTestResult)
 	}
+	if runbookHandler != nil {
+		// Runbooks (Operations > Runbooks): internal callers only.
+		mux.HandleFunc("GET /runbooks", internalOnly(accessSvc, runbookHandler.ListRunbooks))
+		mux.HandleFunc("POST /runbooks", internalOnly(accessSvc, runbookHandler.CreateRunbook))
+		mux.HandleFunc("POST /runbooks/import", internalOnly(accessSvc, runbookHandler.ImportRunbooks))
+		mux.HandleFunc("PUT /runbooks/{id}", internalOnly(accessSvc, runbookHandler.UpdateRunbook))
+		mux.HandleFunc("DELETE /runbooks/{id}", internalOnly(accessSvc, runbookHandler.DeleteRunbook))
+	}
 	if caseAlertSettingsHandler != nil {
 		// Case Alerts settings: chat rooms, group routes and the other ladder
 		// values. A room's webhook URL is write-only; the runtime read, with
@@ -1978,6 +2010,14 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 	mux.HandleFunc("GET /projects/{id}", projectHandler.GetProject)
 	mux.HandleFunc("POST /projects/search", projectHandler.SearchProjects)
+	// Product-consumption provisioning state, internal callers only: the status
+	// carries the project's client secret and HMAC secret keys, and the update
+	// replaces them. The caller is the subscription service (its client id in
+	// M2M_CLIENT_IDS); customers reach provisioning only through it.
+	mux.HandleFunc("GET /projects/{id}/consumption/status", internalOnly(accessSvc, projectConsumptionHandler.GetProjectConsumptionStatus))
+	mux.HandleFunc("POST /projects/{id}/consumption/status", internalOnly(accessSvc, projectConsumptionHandler.GetProjectConsumptionStatus))
+	mux.HandleFunc("PATCH /projects/{id}/consumption", internalOnly(accessSvc, projectConsumptionHandler.UpdateProjectConsumption))
+	mux.HandleFunc("POST /projects/{id}/consumption", internalOnly(accessSvc, projectConsumptionHandler.UpdateProjectConsumption))
 	mux.HandleFunc("POST /projects/{id}/contacts/search", projectMemberOnly(accessSvc, projectContactHandler.SearchProjectContacts))
 	mux.HandleFunc("GET /projects/{id}/contacts/{contactId}", projectMemberOnly(accessSvc, projectContactHandler.GetProjectContact))
 	if projectMembershipHandler != nil {
@@ -2316,6 +2356,18 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	mux.HandleFunc("POST /instances/usages/search", instanceHandler.SearchInstanceUsage)
 	mux.HandleFunc("POST /instances/metrics/stats/search", instanceHandler.SearchInstanceMetricsStats)
 	mux.HandleFunc("POST /instances/usages/stats/search", instanceHandler.SearchInstanceUsageStats)
+	// Telemetry ingestion for product-consumption-tracking, internal callers
+	// only: the writes run as the caller with no project scoping of their own,
+	// and the secret key is the credential telemetry signatures are verified
+	// with. product-consumption-tracking's client id must be in M2M_CLIENT_IDS.
+	if instanceIngestionHandler != nil {
+		mux.HandleFunc("POST /instances/meta", internalOnly(accessSvc, instanceIngestionHandler.UpsertInstanceMeta))
+		mux.HandleFunc("POST /instances/info", internalOnly(accessSvc, instanceIngestionHandler.InsertInstanceInfo))
+		mux.HandleFunc("POST /instances/usage-stats", internalOnly(accessSvc, instanceIngestionHandler.InsertUsageStats))
+		mux.HandleFunc("POST /instances/daily-usages/batch", internalOnly(accessSvc, instanceIngestionHandler.ImportDailyUsagesBatch))
+		mux.HandleFunc("GET /projects/{key}/secret-key", internalOnly(accessSvc, instanceIngestionHandler.GetProjectSecretKey))
+		mux.HandleFunc("GET /deployments/by-number/{number}/consumption-secret", internalOnly(accessSvc, instanceIngestionHandler.GetDeploymentConsumptionSecret))
+	}
 
 	// Token validation always runs -- there is no config flag to disable it.
 	// The JWKS must load right here at startup: a wrong URL panics now instead

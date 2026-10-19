@@ -474,6 +474,12 @@ type CaseRepository interface {
 	// detectBillableStatusChange, the sole caller that needs this value, and
 	// the CodeRabbit finding on PR #1683 this fixes.
 	//
+	// previousState is the case's state immediately before this update, read under
+	// the same row lock as the write, and is set only when req.State is set (nil
+	// otherwise, or if the stored state was NULL). Unlike a state read taken before
+	// the call, it is accurate under concurrent updates to the same case: it is
+	// what a caller compares to req.State to learn whether THIS update committed a
+	// real transition.
 	// Returns a NotFoundError if no matching row exists.
 	//
 	// actorID is the resolved caller's own "user" id (from the caller's
@@ -484,7 +490,7 @@ type CaseRepository interface {
 	// recordFieldChangeActivity's own actorEmail already uses). A state
 	// transition AWAY from closed clears closed_by_user_id back to NULL,
 	// mirroring closed_on's own existing clear-on-reopen behaviour.
-	UpdateCase(ctx context.Context, req domain.UpdateCaseRequest, actorID *string) (c domain.Case, previousSeverity *domain.CaseSeverity, err error)
+	UpdateCase(ctx context.Context, req domain.UpdateCaseRequest, actorID *string) (c domain.Case, previousSeverity *domain.CaseSeverity, previousState *domain.CaseState, err error)
 	// CreateCaseAttachment inserts a new attachment metadata row for the case
 	// identified by req.ReferenceID. req.StorageKey must be non-nil: this data
 	// source stores file bytes externally in SFTPGo, never inline in Postgres.
@@ -2660,8 +2666,51 @@ func scanUpdatedCase(row pgx.Row) (domain.Case, error) {
 	return c, nil
 }
 
+// updateLockingPreviousState runs exec (the single UPDATE of one UpdateCase
+// call) and, when req.State is set, also reports the state the row held
+// immediately before that UPDATE. The state is read in the same transaction,
+// after taking the row lock the UPDATE would take anyway, so a concurrent
+// UpdateCase on the same case is serialized behind this one and sees the state
+// this one committed. Without the lock, two callers could both read the old
+// state, both write the same new state, and both be told it changed.
+//
+// A request that does not set req.State has nothing to compare and runs exec
+// directly, with no transaction and a nil previous state. A row whose state is
+// NULL also yields nil.
+func (r *caseRepo) updateLockingPreviousState(ctx context.Context, req domain.UpdateCaseRequest, exec func(q rowQuerier) (domain.Case, error)) (domain.Case, *domain.CaseState, error) {
+	if req.State == nil {
+		c, err := exec(r.db)
+		return c, nil, err
+	}
+	var c domain.Case
+	var prev *domain.CaseState
+	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
+		var raw *string
+		if err := tx.QueryRow(ctx, `
+			SELECT `+caseLikeStateColumn+`
+			FROM work_item wi
+			LEFT JOIN "case" c ON c.id = wi.id
+			`+caseLikeJoins+`
+			WHERE wi.id = $1
+			FOR NO KEY UPDATE OF wi`, req.ID).Scan(&raw); err != nil {
+			return err
+		}
+		if raw != nil {
+			st := domain.CaseState(strings.ToLower(*raw))
+			prev = &st
+		}
+		var execErr error
+		c, execErr = exec(tx)
+		return execErr
+	})
+	if err != nil {
+		return domain.Case{}, nil, err
+	}
+	return c, prev, nil
+}
+
 // UpdateCase implements CaseRepository.
-func (r *caseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest, actorID *string) (domain.Case, *domain.CaseSeverity, error) {
+func (r *caseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest, actorID *string) (domain.Case, *domain.CaseSeverity, *domain.CaseState, error) {
 	state := ""
 	if req.State != nil {
 		state = strings.ToUpper(string(*req.State))
@@ -2678,7 +2727,7 @@ func (r *caseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest,
 	if req.ResolutionCode != nil {
 		enumVal, ok := caseResolutionCodeToEnum[*req.ResolutionCode]
 		if !ok {
-			return domain.Case{}, nil, &apierror.ValidationError{Msg: "resolutionCode contains invalid value: " + string(*req.ResolutionCode)}
+			return domain.Case{}, nil, nil, &apierror.ValidationError{Msg: "resolutionCode contains invalid value: " + string(*req.ResolutionCode)}
 		}
 		resolutionCode = enumVal
 	}
@@ -2692,14 +2741,14 @@ func (r *caseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest,
 	// read the state from -- see caseLikeRowTypeColumn.
 	workItemType, err := readCaseLikeType(ctx, r.db, "update case", req.ID, false)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return domain.Case{}, nil, &apierror.NotFoundError{Msg: "case not found"}
+		return domain.Case{}, nil, nil, &apierror.NotFoundError{Msg: "case not found"}
 	}
 	if err != nil {
-		return domain.Case{}, nil, fmt.Errorf("update case: read type: %w", err)
+		return domain.Case{}, nil, nil, fmt.Errorf("update case: read type: %w", err)
 	}
 
 	if err := validateUpdateCaseFieldsForType(workItemType, req, state); err != nil {
-		return domain.Case{}, nil, err
+		return domain.Case{}, nil, nil, err
 	}
 
 	// state=closed: a case cannot close while any child case (work_item.parent_id
@@ -2718,10 +2767,10 @@ func (r *caseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest,
 			  AND COALESCE(`+caseLikeStateColumn+`, '') <> 'CLOSED'
 			LIMIT 1`, req.ID).Scan(&openChild)
 		if err == nil {
-			return domain.Case{}, nil, &apierror.ConflictError{Msg: "Cannot close this case while child case " + openChild + " is still open"}
+			return domain.Case{}, nil, nil, &apierror.ConflictError{Msg: "Cannot close this case while child case " + openChild + " is still open"}
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
-			return domain.Case{}, nil, fmt.Errorf("update case: check open child cases: %w", err)
+			return domain.Case{}, nil, nil, fmt.Errorf("update case: check open child cases: %w", err)
 		}
 	}
 
@@ -2732,20 +2781,23 @@ func (r *caseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest,
 		// here would only ever surface later as a failed mirror write. Checked in
 		// a transaction serialized per assignee.
 		if req.WorkState != nil && workState == "ONGOING" {
-			return r.updateCaseEnforcingOneOngoing(ctx, req, workItemType, state, severity, workState, resolutionCode, cause, actorID)
+			c, prevSev, err := r.updateCaseEnforcingOneOngoing(ctx, req, workItemType, state, severity, workState, resolutionCode, cause, actorID)
+			return c, prevSev, nil, err
 		}
 
 		// req.Severity == nil: severity can't change, so there's nothing to
 		// race on — skip the transaction/lock overhead entirely.
 		if req.Severity == nil {
-			c, err := scanUpdatedCase(r.db.QueryRow(ctx, updateCaseQuery, req.ID, state, severity, workState, resolutionCode, cause, req.CloseNotes, actorID))
+			c, prevState, err := r.updateLockingPreviousState(ctx, req, func(q rowQuerier) (domain.Case, error) {
+				return scanUpdatedCase(q.QueryRow(ctx, updateCaseQuery, req.ID, state, severity, workState, resolutionCode, cause, req.CloseNotes, actorID))
+			})
 			if errors.Is(err, pgx.ErrNoRows) {
-				return domain.Case{}, nil, &apierror.NotFoundError{Msg: "case not found"}
+				return domain.Case{}, nil, nil, &apierror.NotFoundError{Msg: "case not found"}
 			}
 			if err != nil {
-				return domain.Case{}, nil, fmt.Errorf("update case: %w", err)
+				return domain.Case{}, nil, nil, fmt.Errorf("update case: %w", err)
 			}
-			return c, c.Severity, nil
+			return c, c.Severity, prevState, nil
 		}
 
 		// req.Severity != nil: lock the row first so the previous severity this
@@ -2780,36 +2832,39 @@ func (r *caseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest,
 			return nil
 		})
 		if errors.Is(err, pgx.ErrNoRows) {
-			return domain.Case{}, nil, &apierror.NotFoundError{Msg: "case not found"}
+			return domain.Case{}, nil, nil, &apierror.NotFoundError{Msg: "case not found"}
 		}
 		if err != nil {
-			return domain.Case{}, nil, fmt.Errorf("update case: %w", err)
+			return domain.Case{}, nil, nil, fmt.Errorf("update case: %w", err)
 		}
 		var previousSeverity *domain.CaseSeverity
 		if previousSeverityRaw != nil {
 			s := caseSeverityFromEnum[*previousSeverityRaw]
 			previousSeverity = &s
 		}
-		return c, previousSeverity, nil
+		return c, previousSeverity, nil, nil
 
 	default:
 		query, args, label, ok := caseLikeExtensionUpdate(workItemType, req, state, workState, resolutionCode, cause, actorID)
 		if !ok {
-			return domain.Case{}, nil, &apierror.ValidationError{Msg: fmt.Sprintf("unsupported work item type: %s", workItemType)}
+			return domain.Case{}, nil, nil, &apierror.ValidationError{Msg: fmt.Sprintf("unsupported work item type: %s", workItemType)}
 		}
 		// Same one-Ongoing-per-engineer rule as "case": ServiceNow keeps the
 		// work state of every case-like type in one field on one table.
 		if req.WorkState != nil && workState == "ONGOING" {
-			return r.updateCaseEnforcingOneOngoing(ctx, req, workItemType, state, severity, workState, resolutionCode, cause, actorID)
+			c, prevSev, err := r.updateCaseEnforcingOneOngoing(ctx, req, workItemType, state, severity, workState, resolutionCode, cause, actorID)
+			return c, prevSev, nil, err
 		}
-		c, err := scanUpdatedCase(r.db.QueryRow(ctx, query, args...))
+		c, prevState, err := r.updateLockingPreviousState(ctx, req, func(q rowQuerier) (domain.Case, error) {
+			return scanUpdatedCase(q.QueryRow(ctx, query, args...))
+		})
 		if errors.Is(err, pgx.ErrNoRows) {
-			return domain.Case{}, nil, &apierror.NotFoundError{Msg: "case not found"}
+			return domain.Case{}, nil, nil, &apierror.NotFoundError{Msg: "case not found"}
 		}
 		if err != nil {
-			return domain.Case{}, nil, fmt.Errorf("update case: %s: %w", label, err)
+			return domain.Case{}, nil, nil, fmt.Errorf("update case: %s: %w", label, err)
 		}
-		return c, nil, nil
+		return c, nil, prevState, nil
 	}
 }
 

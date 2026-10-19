@@ -203,6 +203,36 @@ func normalizeUserPagination(p *domain.Pagination) error {
 }
 
 // validateSearchQuery returns a ValidationError if q exceeds the character limit.
+// maxProjectSfIDs bounds a projectSfIds filter.
+const maxProjectSfIDs = 100
+
+// validateProjectSfIDs rejects a projectSfIds filter that could never match
+// (empty or padded values) or is oversized, so it fails loudly instead of
+// silently returning nothing.
+func validateProjectSfIDs(ids []string) error {
+	if len(ids) > maxProjectSfIDs {
+		return &apierror.ValidationError{Msg: fmt.Sprintf("projectSfIds cannot contain more than %d values", maxProjectSfIDs)}
+	}
+	for _, id := range ids {
+		if strings.TrimSpace(id) == "" {
+			return &apierror.ValidationError{Msg: "projectSfIds must not contain empty values"}
+		}
+		if id != strings.TrimSpace(id) {
+			return &apierror.ValidationError{Msg: "projectSfIds must not contain leading or trailing whitespace: " + strconv.Quote(id)}
+		}
+	}
+	return nil
+}
+
+// validateDeploymentActiveFilter rejects asking for a specific active state and
+// also asking to include inactive deployments, which contradict each other.
+func validateDeploymentActiveFilter(active *bool, includeInactive bool) error {
+	if active != nil && includeInactive {
+		return &apierror.ValidationError{Msg: "active cannot be combined with includeInactive"}
+	}
+	return nil
+}
+
 func validateSearchQuery(q string) error {
 	if utf8.RuneCountInString(q) > maxSearchQueryLen {
 		return &apierror.ValidationError{Msg: "searchQuery cannot exceed 200 characters"}

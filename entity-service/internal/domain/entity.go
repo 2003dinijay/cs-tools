@@ -1519,6 +1519,30 @@ type ProjectUpdateResult struct {
 	SuspensionProcessState          json.RawMessage `json:"suspensionProcessState"`
 }
 
+// ProjectConsumptionStatus represents the product consumption state and keys for a project.
+type ProjectConsumptionStatus struct {
+	Status             int     `json:"status"`
+	ApplicationID      *string `json:"applicationId,omitempty"`
+	Name               *string `json:"name,omitempty"`
+	Description        *string `json:"description,omitempty"`
+	ConsumerKey        *string `json:"consumerKey,omitempty"`
+	ConsumerSecret     *string `json:"consumerSecret,omitempty"`
+	PrimarySecretKey   *string `json:"primarySecretKey,omitempty"`
+	SecondarySecretKey *string `json:"secondarySecretKey,omitempty"`
+	LicenseSecrets     *string `json:"licenseSecrets,omitempty"`
+}
+
+// ProjectConsumptionUpdateRequest holds the fields updated during the subscription/licensing lifecycle.
+type ProjectConsumptionUpdateRequest struct {
+	Status             int     `json:"status"`
+	ApplicationID      *string `json:"applicationId,omitempty"`
+	ConsumerKey        *string `json:"consumerKey,omitempty"`
+	ConsumerSecret     *string `json:"consumerSecret,omitempty"`
+	PrimarySecretKey   *string `json:"primarySecretKey,omitempty"`
+	SecondarySecretKey *string `json:"secondarySecretKey,omitempty"`
+	LicenseSecrets     *string `json:"licenseSecrets,omitempty"`
+}
+
 // SearchProjectsRequest is the input for a project search operation.
 // SearchQuery is matched case-insensitively against name, key, and subscription_type.
 type SearchProjectsRequest struct {
@@ -2045,15 +2069,20 @@ type SearchSNProductVersionsResponse struct {
 // ProductVersion represents a versioned release of a software product.
 // SupportEOLDate and EarliestPossibleSupportEOLDate are optional.
 type ProductVersion struct {
-	ID                             string        `json:"id"`
-	ProductID                      string        `json:"productId"`
-	Version                        string        `json:"version"`
-	CurrentSupportStatus           SupportStatus `json:"currentSupportStatus"`
-	ReleaseDate                    time.Time     `json:"releaseDate"`
-	SupportEOLDate                 *time.Time    `json:"supportEolDate"`
-	EarliestPossibleSupportEOLDate *time.Time    `json:"earliestPossibleSupportEolDate"`
-	CreatedOn                      time.Time     `json:"createdOn"`
-	UpdatedOn                      time.Time     `json:"updatedOn"`
+	ID        string `json:"id"`
+	ProductID string `json:"productId"`
+	Version   string `json:"version"`
+	// CurrentSupportStatus and ReleaseDate are null when the database has no
+	// value; both columns are nullable.
+	CurrentSupportStatus           *SupportStatus `json:"currentSupportStatus"`
+	ReleaseDate                    *time.Time     `json:"releaseDate"`
+	SupportEOLDate                 *time.Time     `json:"supportEolDate"`
+	EarliestPossibleSupportEOLDate *time.Time     `json:"earliestPossibleSupportEolDate"`
+	// DeploymentProfile is product_version.deployment_profile (e.g. "All In
+	// One"); null when the version has none.
+	DeploymentProfile *string   `json:"deploymentProfile"`
+	CreatedOn         time.Time `json:"createdOn"`
+	UpdatedOn         time.Time `json:"updatedOn"`
 }
 
 // SearchProductVersionsRequest is the input for a product version search operation.
@@ -2063,6 +2092,11 @@ type SearchProductVersionsRequest struct {
 	Pagination  Pagination `json:"pagination"`
 	ProductID   string     `json:"-"`
 	SearchQuery string     `json:"searchQuery"`
+	// DeploymentProfile restricts results to versions with this deployment
+	// profile (product_version.deployment_profile), matched case-insensitively.
+	// Omitted (or empty) applies no profile filter and returns every profile.
+	// Postgres data source only.
+	DeploymentProfile *string `json:"deploymentProfile,omitempty"`
 }
 
 // SearchProductVersionsResponse is the paginated result of a product version search.
@@ -2109,8 +2143,14 @@ type DeploymentView struct {
 	Description *string        `json:"description"`
 	URL         *string        `json:"url"`
 	Project     EntityRef      `json:"project"`
-	CreatedOn   time.Time      `json:"createdOn"`
-	UpdatedOn   time.Time      `json:"updatedOn"`
+	// ProjectSfID is the Salesforce id of the deployment's project; null when the
+	// project has none (or the data source does not carry it).
+	ProjectSfID *string `json:"projectSfId"`
+	// Active reports whether the deployment is active; null when the data
+	// source does not say.
+	Active    *bool     `json:"active"`
+	CreatedOn time.Time `json:"createdOn"`
+	UpdatedOn time.Time `json:"updatedOn"`
 	// DeployedProductCount is the number of deployed products in this
 	// deployment, as reported by the upstream data source. Consumers rely on it
 	// to tell whether a deployment has any products at all without a second
@@ -2134,6 +2174,9 @@ type SearchDeploymentsRequest struct {
 	ProjectIDs      []string         `json:"projectIds"`
 	DeploymentTypes []DeploymentType `json:"deploymentTypes"`
 	IDs             []string         `json:"ids"`
+	// Numbers matches deployments by their exact deployment number (e.g.
+	// "DEP000002442"), the identifier an offline usage report carries.
+	Numbers []string `json:"numbers,omitempty"`
 	// IncludeInactive additively widens the result to also include deployments
 	// with is_active = FALSE -- omitted/false reproduces today's exact
 	// behavior for every existing caller (the permanent is_active = TRUE
@@ -2142,6 +2185,17 @@ type SearchDeploymentsRequest struct {
 	// such filter at all -- a deactivated deployment can still carry real EOL
 	// product history that must count toward the risk flag.
 	IncludeInactive bool `json:"includeInactive,omitempty"`
+	// Active filters on the deployment's active state. Omitted (or true) returns
+	// active deployments only -- the default; false returns deactivated ones
+	// only. It cannot be combined with IncludeInactive: true (400), which widens
+	// the result to both. Postgres data source only.
+	Active *bool `json:"active,omitempty"`
+	// ProjectSfIDs restricts results to deployments of the projects whose
+	// Salesforce id is any of the given values, for callers that hold
+	// Salesforce ids rather than project UUIDs. Matching is exact and
+	// case-sensitive, and combines (AND) with ProjectIDs. Applied as a SQL
+	// filter on the Postgres data source.
+	ProjectSfIDs []string `json:"projectSfIds,omitempty"`
 }
 
 // SearchDeploymentsResponse is the paginated result of a deployment search.
@@ -2235,6 +2289,13 @@ type DeployedProductView struct {
 	Cores      *int                       `json:"cores"`
 	TPS        *float64                   `json:"tps"`
 	Category   *string                    `json:"category"`
+	// ProjectSfID is the Salesforce id of the deployed product's project
+	// (deployed_product.project_id); null when it has none or the data source
+	// does not carry it.
+	ProjectSfID *string `json:"projectSfId"`
+	// Active reports whether the deployed product is active (a missing value in
+	// the database counts as active); null when the data source does not say.
+	Active *bool `json:"active"`
 	// Description is the customer's own free-text note about this deployed
 	// product. It is editable through the update endpoint, so it has to be
 	// readable here too — otherwise a client cannot show the current value
@@ -2285,6 +2346,16 @@ type SearchDeployedProductsRequest struct {
 	Pagination        Pagination `json:"pagination"`
 	DeploymentIDs     []string   `json:"deploymentIds"`
 	ProductCategories []string   `json:"productCategories,omitempty"`
+	// ProjectSfIDs restricts results to deployed products of the projects whose
+	// Salesforce id is any of the given values (deployed_product.project_id),
+	// exact and case-sensitive, combining (AND) with DeploymentIDs. Postgres
+	// data source only.
+	ProjectSfIDs []string `json:"projectSfIds,omitempty"`
+	// Active filters on the deployed product's active state. Omitted (or true)
+	// returns active deployed products only -- the default; false returns
+	// deactivated ones only. A missing value in the database counts as active.
+	// Postgres data source only.
+	Active *bool `json:"active,omitempty"`
 }
 
 // SearchDeployedProductsResponse is the paginated result of a deployed-product search.
@@ -6482,11 +6553,13 @@ type CreateIncidentRequest struct {
 	WatchList          []string `json:"watchList,omitempty"`
 	AdditionalComments *string  `json:"additionalComments,omitempty"`
 	WorkNotes          *string  `json:"workNotes,omitempty"`
-	ParentID           *string  `json:"parentId,omitempty"`
-	ParentIncidentID   *string  `json:"parentIncidentId,omitempty"`
-	ChangeRequestID    *string  `json:"changeRequestId,omitempty"`
-	ProblemID          *string  `json:"problemId,omitempty"`
-	CausedByID         *string  `json:"causedById,omitempty"`
+	// RunbookWorkNote is set by the service from the runbook catalog and written as a work note of its own, after WorkNotes; never read from the request body.
+	RunbookWorkNote  *string `json:"-"`
+	ParentID         *string `json:"parentId,omitempty"`
+	ParentIncidentID *string `json:"parentIncidentId,omitempty"`
+	ChangeRequestID  *string `json:"changeRequestId,omitempty"`
+	ProblemID        *string `json:"problemId,omitempty"`
+	CausedByID       *string `json:"causedById,omitempty"`
 	// CorrelationID is an optional caller-supplied external-system key, stored
 	// on ServiceNow's stock `correlation_id` field. Lets a monitoring
 	// integration find an incident it already created (SearchIncidentsFilters.
@@ -6743,6 +6816,11 @@ type IncidentSpecialistHandoffSummary struct {
 	AssignmentGroup   EntityRef                                `json:"assignmentGroup"`
 	Task              IncidentSpecialistHandoffSummaryTask     `json:"task"`
 	GithubIssueURL    *string                                  `json:"githubIssueUrl"`
+	// GithubIssueExpected is whether the incident's product files a GitHub
+	// issue on a handoff: true only for a product with a repository in
+	// SPECIALIST_HANDOFF_CONFIG. Absent when the summary comes from
+	// ServiceNow.
+	GithubIssueExpected *bool `json:"githubIssueExpected,omitempty"`
 }
 
 // ProblemFieldFilter is a single predicate in a problem search's generic

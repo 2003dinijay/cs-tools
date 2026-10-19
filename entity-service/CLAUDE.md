@@ -7692,7 +7692,20 @@ Routing is configuration, not code or tables: `SPECIALIST_HANDOFF_CONFIG`
 (one line of JSON, `specialist_handoff_config.go`, validated at startup --
 a bad value refuses to start) lists products, each with its service ids,
 its Special Ops teams (`key` = the handoff's `escalationTeam`, `label`,
-`groupId`) and an optional GitHub repo. A product with several teams
+`groupId`) and an optional GitHub repo. A team with no `groupId` is the
+Team Schedule team keyed `key` (`{"key":"u2"}`): at startup
+`ResolveTeamGroups` (`specialist_handoff_group_repo.go`) takes the team's id
+as its group id and its name as an empty `label`, `smeTeam` defaults to the
+key, and a `"group"` row with that id and name is added when missing --
+`work_item.assignment_group_id` references `"group"`, so the incident needs
+one. ServiceNow-synced teams already share their group's id; an existing
+row is never touched. A key no team holds is logged and the team refuses
+handoffs (409) until the team exists and the service restarts. NewRouter
+resolves its copy of the config at startup; the alert drainer's copy (main.go)
+resolves on demand instead (`WithSpecialOpsAlertTeamGroups`): a group change
+matching no team while a team-only team is unresolved resolves them first,
+and a failed lookup is returned so the change is retried -- a handoff the
+router took always raises its alert. A product with several teams
 (Choreo) requires `escalationTeam`; one with a single team (Asgardeo) takes
 it and records no team, as SN does. `GET /specialist-handoff-teams?serviceId=`
 feeds the dialog, and `IncidentView.CanHandOffToSpecialist` (SN's
@@ -7913,6 +7926,32 @@ matches independent SQL counts. The same resolution is reused by
 `deployment_information.node_id` matches any `deployment_node.node_id` in staging
 (the former are sys_ids and `TEST2`/`TEST3`), so no instance has `Metadata` there.
 
+**`SearchDeployedProductMetrics`/`SearchDeployedProductUsageCounts` read
+`daily_usage_summary`, not `hourly_usage_summary` -- found live, via a real
+HAR capture and direct queries against staging, after the CSM Portal's Usage
+Metrics page showed empty/null charts for deployed products with genuine,
+months-long usage history.** Both methods originally queried
+`hourly_usage_summary` (bucketing its per-event `counted_on` into days in
+Go); for one real deployed product's 7 resolved nodes, that table held zero
+rows, while `daily_usage_summary` -- already shaped as one row per node per
+day per count type, with real `summary_date`/`value` columns -- held 487
+rows of genuine daily transaction counts spanning January through August.
+The two tables are independent sync feeds with no foreign key or rollup
+relationship to each other in this schema (see migration 0054's own doc
+comment), so there's no guarantee one ever catches up to what the other
+already has -- `daily_usage_summary` is simply the more complete, and more
+directly-shaped, source for a per-day chart. A handful of real rows repeat
+the same `(deployment_node_id, summary_date, count_type)` key (an
+uncorrected correction/re-ingest on the sync's side), so both queries `SUM`
+rather than assume exactly one row per key. A direct check found a small
+set of `(node, day, count_type)` keys that exist only in `hourly_usage_summary`
+(10, against 487 in `daily_usage_summary`) -- these two endpoints have no
+production traffic yet, so there is no existing behavior built on that
+narrower coverage to preserve, and the fix is a straight switch to
+`daily_usage_summary` rather than a union of both tables. Revisit if either
+endpoint ever needs to recover that handful of hourly-only keys once real
+callers depend on it.
+
 **Metrics vs. usage vs. usage-stats read three different tables, not one,
 because only one of them carries what each endpoint needs:**
 
@@ -7957,6 +7996,51 @@ shape has a monthly-granularity rollup concept to serve from it;
 `product_usage_map` (a product-code -> display-unit lookup) has no consuming
 field either. Left unused rather than exposed speculatively, same as other
 tables with no current caller elsewhere in this file.
+
+### Telemetry ingestion (the write side, for product-consumption-tracking)
+
+`digiops-cs`'s product-consumption-tracking (PCT) no longer talks to Postgres:
+it writes these tables through `POST /instances/meta`, `/instances/info`,
+`/instances/usage-stats`, `/instances/daily-usages/batch` and verifies telemetry
+signatures with `GET /projects/{key}/secret-key` (`instance_ingestion_*.go`).
+
+- **Internal callers only** (`internalOnly`): PCT's client id must be in
+  `M2M_CLIENT_IDS`. The repository has no system-identity fallback. The
+  secret key is a credential (`Cache-Control: no-store`); a project with no key
+  is a 404. `/projects/by-key/{key}/...` cannot be used: it overlaps
+  `GET /projects/{id}/contacts/{contactId}` and the router refuses it.
+- **One transaction per call, under a per-node advisory lock**
+  (`deployment-node:<nodeId>`). `deployment_node.node_id` is not unique (synced,
+  and ServiceNow's identity is not consistent upstream), and every write is a
+  read-then-insert; without the lock two first heartbeats create two nodes. Do not
+  add a unique index instead. Batches lock their nodes in id order.
+- **Node meta rides on every call**: a blank project key or deployment number
+  never clears a stored one; the product version moves only when both product and
+  version are sent (to NULL for a pair not in the catalogue). Product resolution is
+  exact code, then exact name, then the shortest name containing it, with LIKE
+  wildcards escaped.
+- **Parity with PCT's own SQL**: `daily_usage_summary.deployment_number` is
+  written (the request's, else the node's); the latest count wins on a day's row;
+  a host snapshot is stored once per (node, hash) and later reports move its
+  `payload_updated_on`; rows are `created_by` `product-consumption-tracking`
+  (FILE_UPLOAD rows: the uploader's email).
+- **Times** are RFC 3339 or `YYYY-MM-DD HH:MM:SS` read as UTC, parsed in Go and
+  bound as instants; the daily date is the count's UTC date, never the session's.
+- **Batches** are validated whole (400 naming the entry) and written all or
+  nothing; an entry may override `nodeId`/`deploymentNumber`, and `nodes` registers
+  each node an offline report describes with its own product and version.
+- **Offline usage reports** name their deployment (number) but not their project.
+  PCT verifies a report's signature with the key from
+  `GET /deployments/by-number/{number}/consumption-secret` (internal only; the active
+  deployment wins when two share a number; a project with no key is a 404). The
+  customer portal backend first checks the uploader can see that deployment with
+  `POST /deployments/search` `numbers` (exact match), run as the uploader, which
+  row-level security on `deployment` scopes to their projects.
+
+Tests: `instance_ingestion_integration_test.go` (real Postgres, schema from
+migration 0054, session zone Asia/Colombo; `INSTANCE_INGESTION_TEST_DSN`),
+including concurrent first heartbeats (fails without the lock) and a batch that
+fails part-way.
 
 ## Service offerings and task SLAs
 
@@ -8288,16 +8372,14 @@ ones that should have unconditional access. A caller that reaches entity-service
 *through* another service is identified by that other service's client id, not
 its own.
 
-The three product-consumption routes (`GET`/`PATCH
-/projects/{id}/consumption`, `POST
-/projects/{id}/deployments/{deploymentId}/license`) are scoped too, but check
-membership in `service.authorizeProject` rather than pushing the scope into a
-query. Two of the three have no query to push it into: a write and an upstream
-call that leaves the service entirely. Refused as a 404 for the same reason as
-the by-id reads. **These are scoped on both data sources**, unlike the five
-operations above -- they are registered in ServiceNow mode deliberately (see
-"Product-consumption provisioning state" in `README.md`), so ServiceNow is not
-there to scope them.
+The product-consumption provisioning routes (`GET`/`POST
+/projects/{id}/consumption/status`, `PATCH`/`POST /projects/{id}/consumption`) are
+**internal callers only** (`internalOnly`), not project-scoped: the status carries the
+project's client secret and HMAC secret keys and the update replaces them, so even a
+member of the project must not read or change them. Their one caller is the
+subscription service (`choreo-subscription-on-project-create`), whose client id must
+be in `M2M_CLIENT_IDS`; customers reach provisioning only through it (customer
+portal backend → subscription service). They are registered on both data sources.
 
 **Not yet wired**: every other project/case-adjacent read (comments,
 time cards, attachments, conversations, change requests,

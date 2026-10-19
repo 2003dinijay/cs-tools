@@ -279,6 +279,7 @@ func (c *postgresReportsClient) GetTimeLogBreakdown(ctx context.Context, project
 			return viewer.TimeLogBreakdownDetails{}, err
 		}
 		for _, tc := range allCards {
+			// The report groups cards under cases. A card with no case has nowhere to go.
 			if tc.Case == nil || tc.Case.ID == "" {
 				continue
 			}

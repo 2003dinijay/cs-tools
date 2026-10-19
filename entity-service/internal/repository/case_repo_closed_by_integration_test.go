@@ -104,7 +104,7 @@ func TestClosedByIntegration_ClosingACaseStampsTheActor(t *testing.T) {
 
 	closed := domain.CaseStateClosed
 	closerID := cbCloserUserID
-	if _, _, err := repo.UpdateCase(ctx, domain.UpdateCaseRequest{ID: cbCaseID, State: &closed}, &closerID); err != nil {
+	if _, _, _, err := repo.UpdateCase(ctx, domain.UpdateCaseRequest{ID: cbCaseID, State: &closed}, &closerID); err != nil {
 		t.Fatalf("UpdateCase(state=closed): %v", err)
 	}
 
@@ -126,7 +126,7 @@ func TestClosedByIntegration_ClosingACaseStampsTheActor(t *testing.T) {
 	// behaviour closed_on itself already has, now mirrored for
 	// closed_by_user_id.
 	open := domain.CaseStateOpen
-	if _, _, err := repo.UpdateCase(ctx, domain.UpdateCaseRequest{ID: cbCaseID, State: &open}, nil); err != nil {
+	if _, _, _, err := repo.UpdateCase(ctx, domain.UpdateCaseRequest{ID: cbCaseID, State: &open}, nil); err != nil {
 		t.Fatalf("UpdateCase(state=open): %v", err)
 	}
 	cv, err = repo.GetCaseByID(ctx, cbCaseID, repository.SearchScope{Unrestricted: true})
@@ -149,7 +149,7 @@ func TestClosedByIntegration_ClosingWithNoResolvedActorLeavesItNil(t *testing.T)
 	ctx := repository.WithSystemIdentity(context.Background())
 
 	closed := domain.CaseStateClosed
-	if _, _, err := repo.UpdateCase(ctx, domain.UpdateCaseRequest{ID: cbCaseID, State: &closed}, nil); err != nil {
+	if _, _, _, err := repo.UpdateCase(ctx, domain.UpdateCaseRequest{ID: cbCaseID, State: &closed}, nil); err != nil {
 		t.Fatalf("UpdateCase(state=closed): %v", err)
 	}
 
@@ -177,7 +177,7 @@ func TestClosedByIntegration_EngagementAlsoStampsTheActor(t *testing.T) {
 
 	closed := domain.CaseStateClosed
 	closerID := cbCloserUserID
-	if _, _, err := repo.UpdateCase(ctx, domain.UpdateCaseRequest{ID: cbEngagementID, State: &closed}, &closerID); err != nil {
+	if _, _, _, err := repo.UpdateCase(ctx, domain.UpdateCaseRequest{ID: cbEngagementID, State: &closed}, &closerID); err != nil {
 		t.Fatalf("UpdateCase(state=closed): %v", err)
 	}
 
@@ -206,12 +206,12 @@ func TestClosedByIntegration_RedundantRecloseDoesNotOverwriteTheRealCloser(t *te
 
 	closed := domain.CaseStateClosed
 	closerID := cbCloserUserID
-	if _, _, err := repo.UpdateCase(ctx, domain.UpdateCaseRequest{ID: cbCaseID, State: &closed}, &closerID); err != nil {
+	if _, _, _, err := repo.UpdateCase(ctx, domain.UpdateCaseRequest{ID: cbCaseID, State: &closed}, &closerID); err != nil {
 		t.Fatalf("UpdateCase(state=closed) first close: %v", err)
 	}
 
 	otherID := cbOtherUserID
-	if _, _, err := repo.UpdateCase(ctx, domain.UpdateCaseRequest{ID: cbCaseID, State: &closed}, &otherID); err != nil {
+	if _, _, _, err := repo.UpdateCase(ctx, domain.UpdateCaseRequest{ID: cbCaseID, State: &closed}, &otherID); err != nil {
 		t.Fatalf("UpdateCase(state=closed) redundant re-close: %v", err)
 	}
 

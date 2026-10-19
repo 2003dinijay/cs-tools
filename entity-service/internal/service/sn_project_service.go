@@ -369,7 +369,7 @@ func (s *snProjectService) fetchAllProjectsFiltered(ctx context.Context, req dom
 	// resolving an announcement audience could under-count real recipients
 	// and never know. Fail loudly instead of guessing.
 	return nil, &apierror.ServiceUnavailableError{Msg: fmt.Sprintf(
-		"too many matching projects to apply excludeClosureStates/excludeSubscriptionTypes/excludeProjectKeys safely (exceeded %d upstream pages of %d) — narrow the search with an additional filter",
+		"too many matching projects to apply excludeClosureStates/excludeSubscriptionTypes/excludeProjectKeys/sfIds safely (exceeded %d upstream pages of %d) — narrow the search with an additional filter",
 		maxExcludeFilterPages, snExcludeFilterPageSize,
 	)}
 }
@@ -1058,3 +1058,20 @@ func (s *snProjectContactService) GetProjectContact(
 	}
 	return domain.ProjectContact{}, &apierror.NotFoundError{Msg: "contact not found on this project"}
 }
+
+// GetProjectConsumptionStatus implements ProjectService.
+func (s *snProjectService) GetProjectConsumptionStatus(ctx context.Context, id string) (domain.ProjectConsumptionStatus, error) {
+	if s.pgFallback != nil {
+		return s.pgFallback.GetProjectConsumptionStatus(ctx, id)
+	}
+	return domain.ProjectConsumptionStatus{}, fmt.Errorf("consumption status not supported without postgres fallback")
+}
+
+// UpdateProjectConsumption implements ProjectService.
+func (s *snProjectService) UpdateProjectConsumption(ctx context.Context, id string, req domain.ProjectConsumptionUpdateRequest, updatedBy string) error {
+	if s.pgFallback != nil {
+		return s.pgFallback.UpdateProjectConsumption(ctx, id, req, updatedBy)
+	}
+	return fmt.Errorf("consumption update not supported without postgres fallback")
+}
+

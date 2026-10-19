@@ -1962,7 +1962,9 @@ func (e *Engine) applySafety(ctx context.Context, plan *Plan) {
 
 	// No calls at all until the lead pool can be called: see
 	// Safety.CallWithoutVerifiedLeads. Log only -- nothing on the work note.
-	if channel.Uses(ChannelCall) && !s.CallWithoutVerifiedLeads {
+	// A plan with no calls has nothing to hold: flagging it would end the
+	// ladder silently and swallow the "no reachable recipients" work note.
+	if channel.Uses(ChannelCall) && !s.CallWithoutVerifiedLeads && len(plan.Calls) > 0 {
 		if missing, err := e.unverifiedLeads(ctx); err != nil || missing > 0 {
 			plan.CallsHeld = true
 			if channel == ChannelCall {

@@ -4245,6 +4245,286 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /projects/{id}/consumption/status:
+    post:
+      summary: Get product consumption status for a project.
+      description: Returns the product consumption status, application ID, and credential state for a project.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Project UUID.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Product consumption status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectConsumptionStatusResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    get:
+      summary: Get product consumption status for a project (GET alternative).
+      description: Returns the product consumption status, application ID, and credential state for a project.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Project UUID.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Product consumption status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectConsumptionStatusResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /projects/{id}/consumption:
+    patch:
+      summary: Update product consumption status and credentials for a project.
+      description: Updates the product consumption lifecycle state and credential keys for a project.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Project UUID.
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectConsumptionUpdateRequest'
+      responses:
+        "200":
+          description: Project consumption updated successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectConsumptionUpdateResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      summary: Update product consumption status and credentials for a project (POST alternative).
+      description: Updates the product consumption lifecycle state and credential keys for a project.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Project UUID.
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectConsumptionUpdateRequest'
+      responses:
+        "200":
+          description: Project consumption updated successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectConsumptionUpdateResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /deployments/by-number/{number}/consumption-secret:
+    get:
+      summary: Resolve a deployment number to its project and the project's HMAC secret key.
+      description: >-
+        Internal callers only. product-consumption-tracking verifies an offline usage
+        report, which names its deployment but not its project, with the returned key.
+        Sent with Cache-Control no-store.
+      operationId: getDeploymentConsumptionSecret
+      parameters:
+        - name: number
+          in: path
+          required: true
+          description: Deployment number (e.g. DEP000002442).
+          schema:
+            type: string
+            maxLength: 50
+      responses:
+        "200":
+          description: The deployment's project and secret key.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deploymentNumber:
+                    type: string
+                  projectId:
+                    type: string
+                    format: uuid
+                  projectKey:
+                    type: string
+                  secretKey:
+                    type: string
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Deployment not found, or its project has no secret key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /projects/{key}/secret-key:
+    get:
+      summary: Retrieve the primary secret key for HMAC signature verification.
+      description: >-
+        Internal callers only. Returns the project's product-consumption primary
+        secret key, which product-consumption-tracking verifies telemetry
+        signatures with. Sent with Cache-Control no-store.
+      operationId: getProjectSecretKey
+      parameters:
+        - name: key
+          in: path
+          required: true
+          description: Project key (e.g. CUPRSUBDEV); a project UUID is accepted too.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Secret key response.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  secretKey:
+                    type: string
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller (product-consumption-tracking's client id must be in M2M_CLIENT_IDS).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Project not found, or the project has no secret key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /products/search:
     post:
       summary: Search products by name.
@@ -9594,6 +9874,249 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /runbooks:
+    get:
+      summary: List the runbook catalog.
+      description: >
+        Every alert name with its runbook link, ordered by alert name. A new
+        incident whose subject contains an alert name gets a separate work note:
+        "Runbook", "Matched alert: <alert name>" and an "Open runbook" link, or
+        "No runbook available for this alert." when the entry has no link. An
+        alert-born incident (one with a correlationId) that matches no entry
+        gets "Runbook" and "No runbook available for this alert." Internal
+        callers only.
+      operationId: listRunbooks
+      responses:
+        "200":
+          description: The catalog.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunbookList'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      summary: Add a runbook entry.
+      operationId: createRunbook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SaveRunbookRequest'
+      responses:
+        "201":
+          description: The entry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Runbook'
+        "400":
+          description: Invalid alert name or link.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Runbooks are not available on this deployment (it has no database).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: The alert name already has an entry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /runbooks/import:
+    post:
+      summary: Create or update many runbook entries by alert name.
+      description: >
+        One transaction. An entry whose alert name exists (ignoring case and
+        surrounding spaces) has its link replaced; a later entry with the same
+        name in the request wins. At most 5000 entries.
+      operationId: importRunbooks
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImportRunbooksRequest'
+      responses:
+        "200":
+          description: What the import did.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportRunbooksResponse'
+        "400":
+          description: An entry is invalid; nothing was written.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Runbooks are not available on this deployment (it has no database).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /runbooks/{id}:
+    put:
+      summary: Change a runbook entry.
+      operationId: updateRunbook
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SaveRunbookRequest'
+      responses:
+        "200":
+          description: The entry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Runbook'
+        "400":
+          description: Invalid id, alert name or link.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: No entry with that id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: The alert name already has an entry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      summary: Remove a runbook entry.
+      operationId: deleteRunbook
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Removed.
+        "400":
+          description: Invalid id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: No entry with that id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /team-schedule/case-alerts/settings:
     get:
       summary: The Case Alerts chat rooms, group routes and ladder values.
@@ -13018,7 +13541,7 @@ paths:
 
   /deployed-products/{id}/metrics/search:
     post:
-      summary: Get deployed-product cores metrics over a date range (ServiceNow data source only).
+      summary: Get deployed-product cores metrics over a date range.
       operationId: searchDeployedProductMetrics
       parameters:
         - name: id
@@ -13066,7 +13589,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         "503":
-          description: Deployed product metrics are only supported for the ServiceNow data source.
+          description: Service temporarily unavailable.
           content:
             application/json:
               schema:
@@ -13074,7 +13597,7 @@ paths:
 
   /deployed-products/{id}/metrics/usage-counts/search:
     post:
-      summary: Get deployed-product usage-count metrics over a date range (ServiceNow data source only).
+      summary: Get deployed-product usage-count metrics over a date range.
       operationId: searchDeployedProductUsageCounts
       parameters:
         - name: id
@@ -13122,7 +13645,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         "503":
-          description: Deployed product usage counts are only supported for the ServiceNow data source.
+          description: Service temporarily unavailable.
           content:
             application/json:
               schema:
@@ -14004,6 +14527,353 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "503":
           description: Case time cards are only supported for the ServiceNow data source.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /instances/meta:
+    post:
+      summary: Register or update a deployment node.
+      description: Internal callers only.
+      operationId: upsertInstanceMeta
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - nodeId
+              properties:
+                nodeId:
+                  type: string
+                  maxLength: 36
+                projectKey:
+                  type: string
+                  maxLength: 128
+                  description: Project (subscription) key of the node. Blank leaves the stored value.
+                deploymentNumber:
+                  type: string
+                  maxLength: 50
+                  description: Deployment number (e.g. DEP000002442). Blank leaves the stored value.
+                product:
+                  type: string
+                  description: Product code or name. Moves the node's product version only together with version.
+                version:
+                  type: string
+      responses:
+        "200":
+          description: Node registered or updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller (product-consumption-tracking's client id must be in M2M_CLIENT_IDS).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /instances/info:
+    post:
+      summary: Record a deployment host information snapshot.
+      description: >-
+        Internal callers only. Registers the node from the meta fields first. A snapshot
+        already stored for the node with the same hash is not stored again (its
+        payload_updated_on moves and its id is returned). Without a hash, the
+        SHA-256 of deploymentInfo is used.
+      operationId: insertInstanceInfo
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - nodeId
+              properties:
+                nodeId:
+                  type: string
+                  maxLength: 36
+                jdkVersion:
+                  type: string
+                  maxLength: 64
+                coreCount:
+                  type: integer
+                  minimum: 0
+                deploymentInfo:
+                  type: object
+                hash:
+                  type: string
+                  maxLength: 128
+                createdTime:
+                  type: string
+                  description: RFC 3339, or YYYY-MM-DD HH:MM:SS read as UTC. Empty means now.
+                  example: "2026-10-15 10:00:00"
+                projectKey:
+                  type: string
+                  maxLength: 128
+                  description: Project (subscription) key of the node. Blank leaves the stored value.
+                deploymentNumber:
+                  type: string
+                  maxLength: 50
+                  description: Deployment number (e.g. DEP000002442). Blank leaves the stored value.
+                product:
+                  type: string
+                  description: Product code or name. Moves the node's product version only together with version.
+                version:
+                  type: string
+      responses:
+        "200":
+          description: Deployment information recorded.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller (product-consumption-tracking's client id must be in M2M_CLIENT_IDS).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /instances/usage-stats:
+    post:
+      summary: Ingest a live usage count.
+      description: >-
+        Internal callers only. Registers the node from the meta fields first, records the
+        count in hourly_usage_summary and sets the day's API_CALL row in
+        daily_usage_summary (the day is createdTime's UTC date; the latest count
+        wins). The daily row's deployment number is the request's, else the node's.
+      operationId: insertInstanceUsageStats
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - nodeId
+                - countType
+              properties:
+                nodeId:
+                  type: string
+                  maxLength: 36
+                countType:
+                  type: string
+                  maxLength: 50
+                count:
+                  type: integer
+                  minimum: 0
+                  maximum: 2147483647
+                createdTime:
+                  type: string
+                  description: RFC 3339, or YYYY-MM-DD HH:MM:SS read as UTC. Empty means now.
+                  example: "2026-10-15 10:00:00"
+                projectKey:
+                  type: string
+                  maxLength: 128
+                  description: Project (subscription) key of the node. Blank leaves the stored value.
+                deploymentNumber:
+                  type: string
+                  maxLength: 50
+                  description: Deployment number (e.g. DEP000002442). Blank leaves the stored value.
+                product:
+                  type: string
+                  description: Product code or name. Moves the node's product version only together with version.
+                version:
+                  type: string
+      responses:
+        "200":
+          description: Usage recorded successfully.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller (product-consumption-tracking's client id must be in M2M_CLIENT_IDS).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /instances/daily-usages/batch:
+    post:
+      summary: Batch ingest daily usage entries from offline imports.
+      description: >-
+        Internal callers only. All or nothing: every entry is validated first and the
+        import is written in one transaction. Entries are FILE_UPLOAD rows created
+        by userEmail; an entry's nodeId and deploymentNumber override the batch's.
+        Re-importing a day updates its rows.
+      operationId: importDailyUsagesBatch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - nodeId
+                - usages
+              properties:
+                nodeId:
+                  type: string
+                  maxLength: 36
+                projectKey:
+                  type: string
+                  maxLength: 128
+                  description: Project (subscription) key of the node. Blank leaves the stored value.
+                deploymentNumber:
+                  type: string
+                  maxLength: 50
+                  description: Deployment number (e.g. DEP000002442). Blank leaves the stored value.
+                product:
+                  type: string
+                  description: Product code or name. Moves the node's product version only together with version.
+                version:
+                  type: string
+                userEmail:
+                  type: string
+                nodes:
+                  type: array
+                  maxItems: 5000
+                  description: Nodes the report describes, registered with their own product and version.
+                  items:
+                    type: object
+                    required:
+                      - nodeId
+                    properties:
+                      nodeId:
+                        type: string
+                        maxLength: 36
+                      product:
+                        type: string
+                      version:
+                        type: string
+                usages:
+                  type: array
+                  maxItems: 5000
+                  items:
+                    type: object
+                    required:
+                      - date
+                      - type
+                    properties:
+                      date:
+                        type: string
+                        format: date
+                      type:
+                        type: string
+                        maxLength: 100
+                      value:
+                        type: integer
+                        minimum: 0
+                        maximum: 2147483647
+                      nodeId:
+                        type: string
+                        maxLength: 36
+                      deploymentNumber:
+                        type: string
+                        maxLength: 50
+      responses:
+        "200":
+          description: Batch imported successfully.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  importedCount:
+                    type: integer
+                  status:
+                    type: string
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller (product-consumption-tracking's client id must be in M2M_CLIENT_IDS).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
           content:
             application/json:
               schema:
@@ -18208,6 +19078,9 @@ components:
         searchQuery:
           type: string
           description: Case-insensitive match against version string.
+        deploymentProfile:
+          type: string
+          description: Only versions with this deployment profile (e.g. "All In One"), matched case-insensitively. Omit it, or send an empty string, to return every profile. Postgres data source only.
 
     ProductVersion:
       type: object
@@ -18221,9 +19094,11 @@ components:
         currentSupportStatus:
           type: string
           enum: [available, extended, deprecated, discontinued]
+          nullable: true
         releaseDate:
           type: string
           format: date-time
+          nullable: true
         supportEolDate:
           type: string
           format: date-time
@@ -18232,6 +19107,10 @@ components:
           type: string
           format: date-time
           nullable: true
+        deploymentProfile:
+          type: string
+          nullable: true
+          description: Deployment profile of this version, e.g. "All In One"; null when it has none.
         createdOn:
           type: string
           format: date-time
@@ -18287,12 +19166,30 @@ components:
             type: string
             format: uuid
           description: Filter by the deployment's own UUID. Postgres data source only.
+        numbers:
+          type: array
+          maxItems: 50
+          items:
+            type: string
+            maxLength: 50
+          description: >
+            Filter by exact deployment number (e.g. DEP000002442), the identifier an
+            offline usage report carries. Postgres data source only.
         includeInactive:
           type: boolean
           description: >
             Additive: when true, also includes deployments with
             is_active = FALSE. Omitted/false reproduces the default
             (active-only) behavior exactly. Postgres data source only.
+        active:
+          type: boolean
+          default: true
+          description: Filter on the deployment's active state. Defaults to true (active deployments only); false returns deactivated deployments only. Postgres data source only. Cannot be combined with includeInactive true (400).
+        projectSfIds:
+          type: array
+          items:
+            type: string
+          description: Only deployments of the projects whose Salesforce id is any of the given values (exact, case-sensitive; empty or padded values are rejected with 400, at most 100). Combines with projectIds. Postgres data source only.
 
     DeploymentView:
       type: object
@@ -18317,6 +19214,14 @@ components:
           nullable: true
         project:
           $ref: '#/components/schemas/EntityRef'
+        projectSfId:
+          type: string
+          nullable: true
+          description: Salesforce id of the deployment's project; null when the project has none.
+        active:
+          type: boolean
+          nullable: true
+          description: Whether the deployment is active.
         createdOn:
           type: string
           format: date-time
@@ -18446,6 +19351,15 @@ components:
           items:
             type: string
           description: Optional filter by product category (e.g. "pdp"). Combines with deploymentIds rather than replacing it. Values are matched case-insensitively against the deployed product's category and are supported on both the PostgreSQL and the ServiceNow-backed data sources. The category returned on each deployed product is the same lower-case code.
+        projectSfIds:
+          type: array
+          items:
+            type: string
+          description: Only deployed products of the projects whose Salesforce id is any of the given values (exact, case-sensitive; empty or padded values are rejected with 400, at most 100). Combines with deploymentIds. Postgres data source only.
+        active:
+          type: boolean
+          default: true
+          description: Filter on the deployed product's active state. Defaults to true (active deployed products only); false returns deactivated ones only. A product with no recorded state counts as active. Postgres data source only.
 
     DeployedProductVersionRef:
       type: object
@@ -18512,6 +19426,14 @@ components:
         category:
           type: string
           nullable: true
+        projectSfId:
+          type: string
+          nullable: true
+          description: Salesforce id of the deployed product's project; null when the project has none.
+        active:
+          type: boolean
+          nullable: true
+          description: Whether the deployed product is active.
         description:
           type: string
           nullable: true
@@ -25327,6 +26249,66 @@ components:
         sentOn:
           type: string
           format: date-time
+    Runbook:
+      type: object
+      required: [id, alertName, runbookUrl, createdOn, createdBy, updatedOn, updatedBy]
+      properties:
+        id:
+          type: string
+          format: uuid
+        alertName:
+          type: string
+          description: Matched against a new incident's subject (contains, ignoring case).
+        runbookUrl:
+          type: string
+          nullable: true
+          description: The runbook link; null when the alert has no runbook yet.
+        createdOn:
+          type: string
+          format: date-time
+        createdBy:
+          type: string
+        updatedOn:
+          type: string
+          format: date-time
+        updatedBy:
+          type: string
+    RunbookList:
+      type: object
+      required: [runbooks]
+      properties:
+        runbooks:
+          type: array
+          items:
+            $ref: '#/components/schemas/Runbook'
+    SaveRunbookRequest:
+      type: object
+      required: [alertName]
+      properties:
+        alertName:
+          type: string
+          maxLength: 1000
+        runbookUrl:
+          type: string
+          nullable: true
+          description: A full http(s) link; empty or null records that no runbook exists.
+    ImportRunbooksRequest:
+      type: object
+      required: [runbooks]
+      properties:
+        runbooks:
+          type: array
+          maxItems: 5000
+          items:
+            $ref: '#/components/schemas/SaveRunbookRequest'
+    ImportRunbooksResponse:
+      type: object
+      required: [created, updated]
+      properties:
+        created:
+          type: integer
+        updated:
+          type: integer
     ErrorResponse:
       type: object
       description: >-
@@ -26554,6 +27536,13 @@ components:
         githubIssueUrl:
           type: string
           nullable: true
+        githubIssueExpected:
+          type: boolean
+          description: >-
+            Whether a handoff of this incident files an internal GitHub issue at all: true only
+            when its product has a repository in SPECIALIST_HANDOFF_CONFIG (Choreo, Asgardeo);
+            false otherwise (U2, B-Central, WSO2 Cloud, Moesif, or a service in no product).
+            A null githubIssueUrl is a missing issue only when this is true.
 
     HandOffIncidentToSpecialistRequest:
       type: object
@@ -26634,7 +27623,8 @@ components:
               description: >-
                 Why the internal issue could not be created, if creation was requested but
                 failed. The handoff itself still succeeds -- callers must surface this rather
-                than report a clean success when it is non-null.
+                than report a clean success when it is non-null. Null, with a null githubIssue,
+                when the product has no repository: it files no issue by design.
             incident:
               $ref: '#/components/schemas/IncidentView'
 
@@ -27885,6 +28875,95 @@ components:
             $ref: '#/components/schemas/ChoiceListItem'
         resolvedCount:
           $ref: '#/components/schemas/ResolvedCountBreakdown'
+
+    ProjectConsumptionStatus:
+      type: object
+      description: The product consumption status and credential state for a project.
+      required:
+        - status
+      properties:
+        status:
+          type: integer
+          description: Lifecycle status code (1=PENDING, 2=CREATED_APPLICATION, 3=SUBSCRIBED_APPLICATION, 4=GENERATED_CREDENTIALS, 5=COMPLETED).
+        applicationId:
+          type: string
+          nullable: true
+        name:
+          type: string
+          nullable: true
+        description:
+          type: string
+          nullable: true
+        consumerKey:
+          type: string
+          nullable: true
+        consumerSecret:
+          type: string
+          nullable: true
+        primarySecretKey:
+          type: string
+          nullable: true
+        secondarySecretKey:
+          type: string
+          nullable: true
+        licenseSecrets:
+          type: string
+          nullable: true
+
+    ProjectConsumptionStatusResponse:
+      type: object
+      description: The response for POST or GET /projects/{id}/consumption/status.
+      required:
+        - result
+      properties:
+        applicationId:
+          type: string
+          nullable: true
+        result:
+          $ref: '#/components/schemas/ProjectConsumptionStatus'
+
+    ProjectConsumptionUpdateRequest:
+      type: object
+      description: The request body for PATCH or POST /projects/{id}/consumption.
+      required:
+        - status
+      properties:
+        status:
+          type: integer
+          description: Lifecycle status code.
+        applicationId:
+          type: string
+          nullable: true
+        consumerKey:
+          type: string
+          nullable: true
+        consumerSecret:
+          type: string
+          nullable: true
+        primarySecretKey:
+          type: string
+          nullable: true
+        secondarySecretKey:
+          type: string
+          nullable: true
+        licenseSecrets:
+          type: string
+          nullable: true
+
+    ProjectConsumptionUpdateResponse:
+      type: object
+      description: The response for PATCH or POST /projects/{id}/consumption.
+      required:
+        - message
+        - result
+      properties:
+        message:
+          type: string
+        result:
+          type: object
+          properties:
+            message:
+              type: string
 
     SystemMetadataResponse:
       type: object

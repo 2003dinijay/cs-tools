@@ -87,12 +87,28 @@ func (h *Handler) Handle(ctx context.Context, record eventbus.Record) error {
 	if h.hub == nil || env.EntityID == "" {
 		return nil
 	}
+	if env.Type == events.TypeCommentAdded && isInternalNote(env.Payload) {
+		// Internal notes are never customer-visible: do not tell customer
+		// browsers that anything changed.
+		return nil
+	}
 	switch env.Type {
 	case events.TypeCommentAdded, events.TypeStatusChanged, events.TypeCaseAssigned,
 		events.TypeSeverityChanged, events.TypeCaseAcknowledged:
 		h.broadcast(ctx, env)
 	}
 	return nil
+}
+
+// isInternalNote reports whether a case.comment_added payload is flagged as an
+// internal note. A missing or undecodable payload counts as not internal, so
+// the broadcast behaves as it did before the flag existed.
+func isInternalNote(payload json.RawMessage) bool {
+	var p events.CommentAddedPayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return false
+	}
+	return p.IsInternalNote
 }
 
 func (h *Handler) broadcast(ctx context.Context, env events.Envelope) {
