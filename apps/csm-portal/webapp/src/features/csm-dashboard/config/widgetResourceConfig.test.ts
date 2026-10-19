@@ -636,6 +636,53 @@ describe("WIDGET_RESOURCE_CONFIG.project.buildSearchRequestBody", () => {
   });
 });
 
+describe("WIDGET_RESOURCE_CONFIG.project.buildHref", () => {
+  // Used to unconditionally return the bare path and ignore `filters`
+  // entirely — reported live: clicking a tile like "Active Onboarding"
+  // (`query: {onboardingStatus: ["In-Progress"]}`) landed on the plain,
+  // unfiltered Projects page with no way to tell which status it meant.
+  const buildHref = WIDGET_RESOURCE_CONFIG.project.buildHref;
+
+  it("carries a single onboardingStatus value as a URL query param", () => {
+    expect(buildHref({ onboardingStatus: ["In-Progress"] })).toBe(
+      "/customers/projects?onboardingStatus=In-Progress",
+    );
+  });
+
+  it("joins multiple onboardingStatus values with a comma, matching the preview page's own array encoding", () => {
+    expect(buildHref({ onboardingStatus: ["In-Progress", "OnHold"] })).toBe(
+      "/customers/projects?onboardingStatus=In-Progress%2COnHold",
+    );
+  });
+
+  it("falls back to the bare path when onboardingStatus is absent or empty", () => {
+    expect(buildHref({})).toBe("/customers/projects");
+    expect(buildHref({ onboardingStatus: [] })).toBe("/customers/projects");
+  });
+
+  it("ignores a malformed (non-string-array) onboardingStatus rather than crashing", () => {
+    expect(buildHref({ onboardingStatus: "In-Progress" })).toBe("/customers/projects");
+  });
+
+  // The Projects page only reads `onboardingStatus` back out of its URL
+  // (see buildSearchRequestBody's comment above for the full set of fields
+  // `/projects/search` accepts -- accountId, subRegion, ...). A widget
+  // filtering by one of those too would otherwise land this click on every
+  // project matching the status, not just the ones the tile's other filter
+  // also scoped to -- the same lossy-link bug `incident_task`/`problem`'s
+  // own `hasFiltersBeyond` fallback above exists to avoid.
+  it("routes to the widget preview page when a filter beyond onboardingStatus is present", () => {
+    const href = buildHref(
+      { onboardingStatus: ["In-Progress"], accountId: "acc-1" },
+      { widgetId: "widget-7", displayName: "Active Onboarding" },
+    );
+    expect(href.startsWith("/dashboard/preview/projects?")).toBe(true);
+    const params = hrefParams(href);
+    expect(params.get("w")).toBe("widget-7");
+    expect(params.get("n")).toBe("Active Onboarding");
+  });
+});
+
 /**
  * `translateCallRequestDashboardFilters`/`callRequestWidgetFiltersToQuery` —
  * the call-requests "View more" landing's own seed/query pair, mirroring

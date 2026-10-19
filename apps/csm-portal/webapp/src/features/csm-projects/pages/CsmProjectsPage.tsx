@@ -29,9 +29,10 @@ import {
   Typography,
 } from "@wso2/oxygen-ui";
 import { ArrowLeft } from "@wso2/oxygen-ui-icons-react";
-import { useMemo, useState, type ChangeEvent, type JSX, type KeyboardEvent } from "react";
-import { useLocation } from "react-router";
+import { useEffect, useMemo, useState, type ChangeEvent, type JSX, type KeyboardEvent } from "react";
+import { useLocation, useSearchParams } from "react-router";
 import QueryErrorState from "@components/QueryErrorState";
+import MultiSelectField from "@components/MultiSelectField";
 import { useDebouncedValue } from "@hooks/useDebouncedValue";
 import { useNavTransition } from "@hooks/useNavTransition";
 import { useSearchProjects } from "@features/csm-projects/api/useSearchProjects";
@@ -43,6 +44,25 @@ import { BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
 const DEFAULT_ROWS_PER_PAGE = 20;
 // Top option is the backend's max page limit; larger requests are rejected.
 const ROWS_PER_PAGE_OPTIONS = [10, 20, BE_MAX_PAGE_LIMIT];
+
+// Matches Project["onboardingStatus"]'s own value set, minus "Not-Applicable"
+// (not a real onboarding state to filter *for* — it means the project has no
+// onboarding engagement at all). This is also the exact vocabulary a
+// dashboard widget's `resourceType: "project"` tile sends — see
+// `widgetResourceConfig.ts`'s `project.buildHref`, which is what sends this
+// page the `?onboardingStatus=` param this page reads back below.
+const ONBOARDING_STATUS_OPTIONS: { value: string; label: string }[] = [
+  { value: "In-Progress", label: "In Progress" },
+  { value: "Completed", label: "Completed" },
+  { value: "Not-Started", label: "Not Started" },
+  { value: "Expired", label: "Expired" },
+  { value: "Cancelled", label: "Cancelled" },
+  { value: "OnHold", label: "On Hold" },
+];
+
+function parseOnboardingStatusParam(raw: string | null): string[] {
+  return raw ? raw.split(",").filter(Boolean) : [];
+}
 
 function formatDate(value?: string | null): string {
   if (!value) return "—";
@@ -62,18 +82,58 @@ export default function CsmProjectsPage(): JSX.Element {
   // Set by a dashboard widget's click-through, since this page has no
   // dashboard context of its own.
   const backState = location.state as { from?: string } | undefined;
+  const [searchParams, setSearchParams] = useSearchParams();
   const [searchInput, setSearchInput] = useState("");
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(DEFAULT_ROWS_PER_PAGE);
+  // Derived straight from the URL on every render (not a `useState`
+  // initializer, which only runs once at mount) — a same-route navigation
+  // that doesn't remount this page (e.g. one dashboard tile's click-through
+  // followed by another, both landing on /customers/projects, or browser
+  // back/forward) still reads the URL's current `?onboardingStatus=` instead
+  // of whatever the first mount saw. `handleOnboardingStatusChange` below
+  // writes the control's choice to the URL rather than to separate local
+  // state, so there is only one source of truth and nothing to re-sync.
+  const onboardingStatusParam = searchParams.get("onboardingStatus");
+  const onboardingStatus = useMemo(
+    () => parseOnboardingStatusParam(onboardingStatusParam),
+    [onboardingStatusParam],
+  );
+  // Resets pagination whenever the URL's onboardingStatus changes for any
+  // reason, including a same-route external navigation
+  // `handleOnboardingStatusChange` below didn't cause (and so didn't already
+  // reset itself) — syncing page state to that external source is exactly
+  // what the QuickNav.tsx precedent below disables this rule for.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- syncs page state to an external source, the URL's onboardingStatus param, same pattern as QuickNav.tsx's initial q/goto sync
+    setPage(0);
+  }, [onboardingStatusParam]);
 
   const debouncedSearch = useDebouncedValue(searchInput, 300);
+
+  const handleOnboardingStatusChange = (next: string[]): void => {
+    setPage(0);
+    setSearchParams(
+      (prev) => {
+        const params = new URLSearchParams(prev);
+        if (next.length > 0) {
+          params.set("onboardingStatus", next.join(","));
+        } else {
+          params.delete("onboardingStatus");
+        }
+        return params;
+      },
+      { replace: true },
+    );
+  };
 
   const request = useMemo<SearchProjectsRequest>(
     () => ({
       pagination: { limit: rowsPerPage, offset: page * rowsPerPage },
       searchQuery: debouncedSearch.trim() || undefined,
+      onboardingStatus: onboardingStatus.length > 0 ? onboardingStatus : undefined,
     }),
-    [debouncedSearch, page, rowsPerPage],
+    [debouncedSearch, onboardingStatus, page, rowsPerPage],
   );
 
   const { data, isLoading, isFetching, isError, error, refetch, dataUpdatedAt } =
@@ -118,15 +178,26 @@ export default function CsmProjectsPage(): JSX.Element {
         />
       </Box>
 
-      <TextField
-        size="small"
-        label="Search projects"
-        placeholder="Search projects by name, key, or subscription"
-        value={searchInput}
-        onChange={handleSearchChange}
-        slotProps={{ htmlInput: { "aria-label": "Search projects by name, key, or subscription type" } }}
-        sx={{ maxWidth: 480 }}
-      />
+      <Box sx={{ display: "flex", flexWrap: "wrap", gap: 2 }}>
+        <TextField
+          size="small"
+          label="Search projects"
+          placeholder="Search projects by name, key, or subscription"
+          value={searchInput}
+          onChange={handleSearchChange}
+          slotProps={{ htmlInput: { "aria-label": "Search projects by name, key, or subscription type" } }}
+          sx={{ maxWidth: 480, flex: "1 1 320px" }}
+        />
+        <Box sx={{ width: 240 }}>
+          <MultiSelectField
+            id="projects-filter-onboarding-status"
+            label="Onboarding status"
+            values={onboardingStatus}
+            options={ONBOARDING_STATUS_OPTIONS}
+            onChange={handleOnboardingStatusChange}
+          />
+        </Box>
+      </Box>
 
       <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1, overflow: "hidden" }}>
         <TableContainer>
