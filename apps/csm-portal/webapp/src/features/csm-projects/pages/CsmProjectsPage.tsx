@@ -98,12 +98,22 @@ function renderProjectCell(id: ProjectColumnId, p: Project): ReactNode {
     case "onboardingStatus":
       return <ProjectOnboardingStatusChip onboardingStatus={p.onboardingStatus} emptyFallback="—" />;
     case "onboardingOwner":
-      return p.onboardingOwner ? (
-        <UserRefLink
-          name={p.onboardingOwner.name}
-          email={p.onboardingOwner.email || undefined}
-          userId={p.onboardingOwner.id}
-        />
+      // Gated on onboardingStatus too, matching the detail page's own
+      // "onboarding enabled" condition — an owner left over on a row whose
+      // status reads "Not-Applicable" (or is missing) must not render,
+      // since that status means there's no active onboarding engagement.
+      return p.onboardingStatus && p.onboardingStatus !== "Not-Applicable" && p.onboardingOwner ? (
+        // UserRefLink renders its own link to the owner's profile; without
+        // this, a click (or Enter while it's focused) bubbles up into the
+        // row's own onClick/onKeyDown below and navigates to the project
+        // instead of the owner's profile.
+        <span onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+          <UserRefLink
+            name={p.onboardingOwner.name}
+            email={p.onboardingOwner.email || undefined}
+            userId={p.onboardingOwner.id}
+          />
+        </span>
       ) : (
         "—"
       );

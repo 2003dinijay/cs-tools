@@ -17,7 +17,7 @@
 import type { ReactElement } from "react";
 import { fireEvent, render as rtlRender, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { MemoryRouter, Route, Routes, useNavigate } from "react-router";
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import "@testing-library/jest-dom/vitest";
 import CsmProjectsPage from "@features/csm-projects/pages/CsmProjectsPage";
@@ -244,5 +244,119 @@ describe("CsmProjectsPage — column customisation", () => {
 
     expect(screen.getAllByText("In Progress").length).toBeGreaterThan(0);
     expect(await screen.findByText("Jane Doe")).toBeInTheDocument();
+  });
+
+  // Regression (CodeRabbit, PR #2907): the owner cell used to render
+  // whenever `onboardingOwner` was set, regardless of `onboardingStatus` —
+  // but a "Not-Applicable" status means no active onboarding engagement, the
+  // same condition the detail page's own owner cell is gated on.
+  it("shows a dash for the owner column when onboardingStatus is Not-Applicable, even with an owner set", async () => {
+    mockResult({
+      data: {
+        projects: [
+          {
+            id: "proj-1",
+            name: "Acme Project",
+            key: "ACME",
+            subscriptionType: "subscription",
+            startDate: null,
+            endDate: null,
+            createdOn: "2024-01-01T00:00:00Z",
+            closureState: "open",
+            endDateClosureState: null,
+            invoiceDueDateClosureState: null,
+            complianceViolationClosureState: null,
+            complianceViolationDate: null,
+            suspensionProcessState: null,
+            onboardingStatus: "Not-Applicable",
+            onboardingOwner: { id: "user-2", name: "Jane Doe", email: "jane.doe@example.com" },
+          },
+        ],
+        total: 1,
+        limit: 20,
+        offset: 0,
+        hasMore: false,
+      },
+    });
+
+    render(<CsmProjectsPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Customise projects columns" }));
+    const picker = screen.getByRole("list", { name: "Customise projects columns" });
+    fireEvent.click(within(picker).getByText("Onboarding owner"));
+
+    expect(screen.queryByText("Jane Doe")).not.toBeInTheDocument();
+  });
+
+  // Regression (CodeRabbit, PR #2907): the owner cell's UserRefLink had no
+  // way to stop its click/keydown from bubbling into the row's own
+  // onClick/onKeyDown, so activating the owner's link navigated to the
+  // project instead of the owner's own profile page.
+  it("clicking the owner link opens the owner's profile, not the project", async () => {
+    mockResult({
+      data: {
+        projects: [
+          {
+            id: "proj-1",
+            name: "Acme Project",
+            key: "ACME",
+            subscriptionType: "subscription",
+            startDate: null,
+            endDate: null,
+            createdOn: "2024-01-01T00:00:00Z",
+            closureState: "open",
+            endDateClosureState: null,
+            invoiceDueDateClosureState: null,
+            complianceViolationClosureState: null,
+            complianceViolationDate: null,
+            suspensionProcessState: null,
+            onboardingStatus: "In-Progress",
+            onboardingOwner: { id: "user-2", name: "Jane Doe", email: "jane.doe@example.com" },
+          },
+        ],
+        total: 1,
+        limit: 20,
+        offset: 0,
+        hasMore: false,
+      },
+    });
+
+    function LocationProbe(): ReactElement {
+      const location = useLocation();
+      return <div data-testid="location-probe">{location.pathname}</div>;
+    }
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    rtlRender(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/customers/projects"]}>
+          <Routes>
+            <Route
+              path="/customers/projects"
+              element={
+                <>
+                  <CsmProjectsPage />
+                  <LocationProbe />
+                </>
+              }
+            />
+            <Route path="/customers/projects/:id" element={<LocationProbe />} />
+            <Route path="/people/:id" element={<LocationProbe />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Customise projects columns" }));
+    const picker = screen.getByRole("list", { name: "Customise projects columns" });
+    fireEvent.click(within(picker).getByText("Onboarding owner"));
+    // Close the popover — MUI's Modal marks the rest of the page aria-hidden
+    // while it's open, which hides the owner link from the accessibility
+    // tree and makes the getByRole query below fail to find it.
+    fireEvent.keyDown(picker, { key: "Escape" });
+
+    fireEvent.click(await screen.findByRole("link", { name: "Jane Doe" }));
+
+    expect(await screen.findByTestId("location-probe")).toHaveTextContent("/people/user-2");
   });
 });
