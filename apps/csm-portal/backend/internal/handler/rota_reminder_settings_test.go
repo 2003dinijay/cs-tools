@@ -114,3 +114,52 @@ func TestRotaReminderSettings_NeedsAUser(t *testing.T) {
 		t.Errorf("status %d", w.Code)
 	}
 }
+
+type fakeReminderRequestClient struct {
+	family string
+	body   map[string]any
+	err    error
+}
+
+func (f *fakeReminderRequestClient) ListRotaReminderRequests(_ context.Context, family string) ([]byte, error) {
+	f.family = family
+	return []byte(`{"requests":[]}`), f.err
+}
+
+func (f *fakeReminderRequestClient) CreateRotaReminderRequest(_ context.Context, family string, body []byte) ([]byte, error) {
+	f.family = family
+	_ = json.Unmarshal(body, &f.body)
+	return []byte(`{"status":"QUEUED"}`), f.err
+}
+
+// Only weekday or weekend goes on, to the upper-cased family; a bad request
+// never calls out; a refusal keeps entity-service's reason, a 429 included.
+func TestRotaReminderRequest_SendNow(t *testing.T) {
+	fake := &fakeReminderRequestClient{}
+	w := httptest.NewRecorder()
+	NewRotaReminderRequestHandler(fake).CreateRotaReminderRequest(w, reminderSettingsRequest(http.MethodPost, "cre", `{"kind":"weekend","extra":1}`))
+	if w.Code != http.StatusCreated || fake.family != "CRE" || len(fake.body) != 1 || fake.body["kind"] != "weekend" {
+		t.Fatalf("status %d family %q body %v", w.Code, fake.family, fake.body)
+	}
+	for _, bad := range []struct{ family, body string }{{"OPS", `{"kind":"weekend"}`}, {"CRE", `{"kind":"monthly"}`}, {"CRE", `{}`}} {
+		fake := &fakeReminderRequestClient{}
+		w := httptest.NewRecorder()
+		NewRotaReminderRequestHandler(fake).CreateRotaReminderRequest(w, reminderSettingsRequest(http.MethodPost, bad.family, bad.body))
+		if w.Code != http.StatusBadRequest || fake.family != "" {
+			t.Errorf("%+v: status %d, called %q", bad, w.Code, fake.family)
+		}
+	}
+	for _, status := range []int{409, 429, 403} {
+		fake := &fakeReminderRequestClient{err: &apierror.Error{StatusCode: status, Body: `{"code":1,"message":"a weekend reminder was asked for less than 10 minutes ago; try again later"}`}}
+		w := httptest.NewRecorder()
+		NewRotaReminderRequestHandler(fake).CreateRotaReminderRequest(w, reminderSettingsRequest(http.MethodPost, "CRE", `{"kind":"weekend"}`))
+		if w.Code != status || !strings.Contains(w.Body.String(), "less than 10 minutes ago") {
+			t.Errorf("%d: %d %s", status, w.Code, w.Body)
+		}
+	}
+	w = httptest.NewRecorder()
+	NewRotaReminderRequestHandler(&fakeReminderRequestClient{}).ListRotaReminderRequests(w, reminderSettingsRequest(http.MethodGet, "CRE", ""))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "requests") {
+		t.Errorf("list: %d %s", w.Code, w.Body)
+	}
+}

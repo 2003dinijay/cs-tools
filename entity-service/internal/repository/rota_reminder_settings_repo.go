@@ -81,6 +81,14 @@ func (r *rotaReminderSettingsRepository) Get(ctx context.Context, family string)
 }
 
 func (r *rotaReminderSettingsRepository) Save(ctx context.Context, actor string, s domain.RotaReminderSettings) (domain.RotaReminderSettings, error) {
+	// A nil map would be stored as JSON null, which the table refuses: none
+	// is an empty object.
+	if s.WeekendRequired == nil {
+		s.WeekendRequired = map[string]int{}
+	}
+	if s.Windows == nil {
+		s.Windows = map[string]domain.ReminderWindow{}
+	}
 	required, err := json.Marshal(s.WeekendRequired)
 	if err != nil {
 		return domain.RotaReminderSettings{}, fmt.Errorf("encode weekend_required: %w", err)

@@ -216,6 +216,8 @@ export interface SearchScheduleAssignmentsPayload {
   /** Widen the window to catch a block that began before `from` and is still
    *  running into it -- the night crew a day view shows at the top. */
   includeOvernight?: boolean;
+  /** Leave out anybody on leave that day: who a reminder would reach. */
+  excludeAbsent?: boolean;
 }
 
 export interface SearchScheduleAbsencesPayload {
@@ -590,3 +592,25 @@ export type RotaReminderSettings = SaveRotaReminderSettings & {
   updatedBy: string;
   updatedOn: string;
 };
+
+/** Which reminder is asked for: the next working day's, or the weekend's. */
+export type RotaReminderKind = "weekday" | "weekend";
+
+/** Where a request is: waiting for the scheduled task, being sent, or done. */
+export type RotaReminderStatus = "QUEUED" | "SENDING" | "SENT" | "FAILED";
+
+/** One ask to send a group's rota reminders now, picked up by the scheduled task. */
+export type RotaReminderRequest = {
+  id: string;
+  family: RotaFamily;
+  kind: RotaReminderKind;
+  status: RotaReminderStatus;
+  requestedBy: string;
+  requestedOn: string;
+  claimedOn?: string;
+  handledOn?: string;
+  result?: string;
+};
+
+/** What is posted to ask for a reminder now. */
+export type SendRotaReminder = { kind: RotaReminderKind };

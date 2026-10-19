@@ -18,6 +18,7 @@ package teamschedule
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -53,5 +54,44 @@ func TestReminderSettingsFor(t *testing.T) {
 	}
 	if s, err := c.ReminderSettingsFor(ctx, "SME"); err == nil {
 		t.Fatalf("a failure read as %+v", s)
+	}
+}
+
+// Claiming: nothing waiting is a 404 and reads as nil; a claim is decoded; a
+// report is PUT with its status and result.
+func TestReminderRequests_ClaimAndReport(t *testing.T) {
+	var reported string
+	waiting := true
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/team-schedule/reminder-requests/CRE/claim":
+			if !waiting {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"code":404,"message":"no rota reminder request is waiting"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"id":"r1","family":"CRE","kind":"weekend","status":"SENDING","requestedBy":"ann@example.com"}`))
+		case r.Method == http.MethodPut && r.URL.Path == "/team-schedule/reminder-requests/CRE/r1/result":
+			body, _ := io.ReadAll(r.Body)
+			reported = string(body)
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusTeapot)
+		}
+	}))
+	defer srv.Close()
+	c := newClient(srv.Client(), srv.URL)
+	ctx := context.Background()
+	req, err := c.ClaimReminderRequest(ctx, "CRE")
+	if err != nil || req == nil || req.Kind != "weekend" || req.RequestedBy != "ann@example.com" {
+		t.Fatalf("claim = %+v, %v", req, err)
+	}
+	if err := c.ReportReminderRequest(ctx, "CRE", "r1", "SENT", "Sent 5 emails."); err != nil || reported != `{"result":"Sent 5 emails.","status":"SENT"}` {
+		t.Fatalf("report %q, %v", reported, err)
+	}
+	waiting = false
+	if req, err := c.ClaimReminderRequest(ctx, "CRE"); err != nil || req != nil {
+		t.Fatalf("nothing waiting: %+v, %v", req, err)
 	}
 }

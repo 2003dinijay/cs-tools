@@ -3159,6 +3159,21 @@
 .csm-ts .rrs-acts { display: flex; flex-wrap: wrap; gap: 8px; }
 .csm-ts .rrs .cas-status.ok { margin-top: 0; }
 
+/* Rota Access: "Send now", the last part of the same card. */
+.csm-ts .rrs-send { display: grid; gap: 10px; margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--line); max-width: 680px; }
+.csm-ts .rrs-send h4 { margin: 0; font-size: 13px; }
+.csm-ts .rrs-send h5 { margin: 0; font-size: 12px; color: var(--ink-2); }
+.csm-ts .rrs-send .cp-help, .csm-ts .rrs-send .ra-err, .csm-ts .rrs-send .cas-status { margin: 0; }
+.csm-ts .rrs-kinds { display: grid; gap: 6px; margin: 0; padding: 0; border: 0; min-width: 0; }
+.csm-ts .rrs-kinds legend { padding: 0; margin-bottom: 4px; font-size: 12px; color: var(--ink-2); }
+.csm-ts .rrs-opt { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; }
+.csm-ts .rrs-opt .cas-check { margin-top: 0; }
+.csm-ts .rrs-when { font-size: 12px; color: var(--ink-2); }
+.csm-ts .rrs-days { display: grid; gap: 8px; }
+.csm-ts .rrs-day-name { font-size: 12px; font-weight: 600; }
+.csm-ts .rrs-lines, .csm-ts .rrs-recent { margin: 2px 0 0; padding-left: 18px; font-size: 12.5px; }
+.csm-ts .rrs-send .rrs-acts { align-items: center; }
+
 /* Loading skeletons (ScheduleSkeleton.tsx): each view drawn in its own shape
    while its data is on the way, instead of one line of text on an empty card.
    Built from the page's own tokens, so dark mode needs nothing of its own. */

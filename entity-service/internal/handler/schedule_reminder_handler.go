@@ -113,3 +113,67 @@ func (h *RotaReminderSettingsHandler) Save(w http.ResponseWriter, r *http.Reques
 	}
 	writeScheduleJSON(w, http.StatusOK, s)
 }
+
+// RotaReminderRequestHandler serves "Send now": a person asks for a rota
+// reminder, the scheduled task claims it and reports how it went.
+type RotaReminderRequestHandler struct {
+	svc service.RotaReminderRequestService
+}
+
+// NewRotaReminderRequestHandler constructs a RotaReminderRequestHandler.
+func NewRotaReminderRequestHandler(svc service.RotaReminderRequestService) *RotaReminderRequestHandler {
+	return &RotaReminderRequestHandler{svc: svc}
+}
+
+// Create handles POST /team-schedule/reminder-requests/{family}.
+func (h *RotaReminderRequestHandler) Create(w http.ResponseWriter, r *http.Request) {
+	var req domain.CreateRotaReminderRequest
+	if !decodeRequest(w, r, &req) {
+		return
+	}
+	out, err := h.svc.Create(r.Context(), r.PathValue("family"), req)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	writeScheduleJSON(w, http.StatusCreated, out)
+}
+
+// List handles GET /team-schedule/reminder-requests/{family}.
+func (h *RotaReminderRequestHandler) List(w http.ResponseWriter, r *http.Request) {
+	out, err := h.svc.List(r.Context(), r.PathValue("family"))
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	writeScheduleJSON(w, http.StatusOK, map[string]any{"requests": out})
+}
+
+// Claim handles POST /team-schedule/reminder-requests/{family}/claim: 404
+// when nothing is waiting.
+func (h *RotaReminderRequestHandler) Claim(w http.ResponseWriter, r *http.Request) {
+	out, err := h.svc.Claim(r.Context(), r.PathValue("family"))
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	if out == nil {
+		apierror.WriteJSON(w, http.StatusNotFound, "no rota reminder request is waiting")
+		return
+	}
+	writeScheduleJSON(w, http.StatusOK, out)
+}
+
+// Report handles PUT /team-schedule/reminder-requests/{family}/{id}/result.
+func (h *RotaReminderRequestHandler) Report(w http.ResponseWriter, r *http.Request) {
+	var req domain.ReportRotaReminderRequest
+	if !decodeRequest(w, r, &req) {
+		return
+	}
+	out, err := h.svc.Report(r.Context(), r.PathValue("family"), r.PathValue("id"), req)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	writeScheduleJSON(w, http.StatusOK, out)
+}

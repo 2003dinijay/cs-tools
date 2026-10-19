@@ -87,22 +87,29 @@ func (s *rotaReminderSettingsService) Get(ctx context.Context, family string) (*
 // admin, or a rota admin of that family. A person only: the scheduled task
 // reads the settings, it never writes them.
 func (s *rotaReminderSettingsService) mayChange(ctx context.Context, family string) (string, error) {
-	if err := RequireInternalCaller(ctx, s.access, "rota reminder settings are internal only"); err != nil {
+	return rotaReminderEditor(ctx, s.access, s.schedule, s.adminRoles, family, "change the %[1]s rota reminder settings")
+}
+
+// rotaReminderEditor admits a CSM admin, or a rota admin of the family, as a
+// person, and returns their address. what completes "only a CSM admin or the
+// CRE rota admin can ..." (%[1]s is the family).
+func rotaReminderEditor(ctx context.Context, access AccessService, schedule repository.ScheduleRepository, adminRoles []string, family, what string) (string, error) {
+	if err := RequireInternalCaller(ctx, access, "rota reminders are internal only"); err != nil {
 		return "", err
 	}
 	id := auth.IdentityFromContext(ctx)
 	if id.UserEmail == "" {
-		return "", &apierror.ForbiddenError{Msg: "rota reminder settings are changed by a person, not a service credential"}
+		return "", &apierror.ForbiddenError{Msg: "this is done by a person, not a service credential"}
 	}
-	if holdsAnyRole(id.Roles, s.adminRoles) {
+	if holdsAnyRole(id.Roles, adminRoles) {
 		return id.UserEmail, nil
 	}
-	families, err := s.schedule.RotaAdminFamilies(ctx, id.UserEmail)
+	families, err := schedule.RotaAdminFamilies(ctx, id.UserEmail)
 	if err != nil {
 		return "", err
 	}
 	if !slices.Contains(families, family) {
-		return "", &apierror.ForbiddenError{Msg: fmt.Sprintf("only a CSM admin or the %s rota admin can change the %s rota reminder settings", family, family)}
+		return "", &apierror.ForbiddenError{Msg: fmt.Sprintf("only a CSM admin or the %[1]s rota admin can "+what, family)}
 	}
 	return id.UserEmail, nil
 }

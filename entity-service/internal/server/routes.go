@@ -305,6 +305,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	var rotaAccessHandler *handler.RotaAccessHandler
 	var scheduleReminderHandler *handler.ScheduleReminderHandler
 	var rotaReminderSettingsHandler *handler.RotaReminderSettingsHandler
+	var rotaReminderRequestHandler *handler.RotaReminderRequestHandler
 	var teamMemberHandler *handler.TeamMemberHandler
 	var pagingChainHandler *handler.PagingChainHandler
 	var caseAlertSettingsHandler *handler.CaseAlertSettingsHandler
@@ -1090,6 +1091,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		rotaReminderSettingsHandler = handler.NewRotaReminderSettingsHandler(
 			service.NewRotaReminderSettingsService(repository.NewRotaReminderSettingsRepository(db), repository.NewScheduleRepository(db), accessSvc, cfg.AuthAdminRoles),
 		)
+		// "Send now" on the same card: asked for by a CSM admin or the family's
+		// rota admin, claimed and reported by csm-scheduled-tasks.
+		rotaReminderRequestHandler = handler.NewRotaReminderRequestHandler(
+			service.NewRotaReminderRequestService(repository.NewRotaReminderRequestRepository(db), repository.NewScheduleRepository(db), accessSvc, cfg.AuthAdminRoles),
+		)
 		// Postgres-only, and internal-staff-only like every other read in this
 		// module: it returns staff names, addresses and rank.
 		teamMemberHandler = handler.NewTeamMemberHandler(
@@ -1858,6 +1864,12 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	if rotaReminderSettingsHandler != nil {
 		mux.HandleFunc("GET /team-schedule/reminder-settings/{family}", rotaReminderSettingsHandler.Get)
 		mux.HandleFunc("PUT /team-schedule/reminder-settings/{family}", rotaReminderSettingsHandler.Save)
+	}
+	if rotaReminderRequestHandler != nil {
+		mux.HandleFunc("POST /team-schedule/reminder-requests/{family}", rotaReminderRequestHandler.Create)
+		mux.HandleFunc("GET /team-schedule/reminder-requests/{family}", rotaReminderRequestHandler.List)
+		mux.HandleFunc("POST /team-schedule/reminder-requests/{family}/claim", rotaReminderRequestHandler.Claim)
+		mux.HandleFunc("PUT /team-schedule/reminder-requests/{family}/{id}/result", rotaReminderRequestHandler.Report)
 	}
 	if rotaGenerateHandler != nil {
 		// A lead of the rota (or its admin) works out a month from the

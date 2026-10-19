@@ -21,7 +21,7 @@
 -- One row per (family, kind, period_start). kind is the reminder, e.g.
 -- 'weekend_notice'; period_start the first rota day it covers (a weekend's
 -- Saturday). invites is the last set of calendar events sent:
--- [{"uid": "...", "sequence": 3, "attendees": ["a@wso2.com", ...]}].
+-- [{"uid": "...", "sequence": 3, "attendees": ["a@example.com", ...]}].
 --
 -- Additive and safe to re-run: nothing existing is touched.
 CREATE TABLE IF NOT EXISTS team_schedule_reminder_sent (

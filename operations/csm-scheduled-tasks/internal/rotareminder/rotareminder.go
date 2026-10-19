@@ -126,6 +126,8 @@ type Config struct {
 	// switches, the weekend minimums, the windows and adds to Copy. Nothing
 	// saved keeps this configuration.
 	Settings SettingsReader
+	// Manual is a "Send now" run: the saved on/off switches do not apply.
+	Manual bool
 	// EmailsEnabled is ALERTS_ENABLED, this component's single switch for
 	// every email it sends. When false a run succeeds and sends nothing.
 	EmailsEnabled bool

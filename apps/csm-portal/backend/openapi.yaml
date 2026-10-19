@@ -12845,6 +12845,115 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
+  /team-schedule/reminder-requests/{family}:
+    get:
+      summary: The family's latest "Send now" rota reminder requests (5, newest first).
+      operationId: listTeamScheduleRotaReminderRequests
+      description: >
+        The entity service's payload, forwarded unchanged: {requests: [{id, family, kind, status
+        (QUEUED, SENDING, SENT, FAILED), requestedBy, requestedOn, claimedOn, handledOn, result}]}.
+      parameters:
+        - name: family
+          in: path
+          required: true
+          schema: { type: string, enum: [CRE, SRE, SME] }
+      responses:
+        "200":
+          description: Ok.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "400":
+          description: "Bad family."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: "Unauthorized."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: "Forbidden."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: "Internal server error."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+    post:
+      summary: Ask for the family's rota reminders to be sent now.
+      operationId: createTeamScheduleRotaReminderRequest
+      description: >
+        Queued for the scheduled task's next run. Only kind is forwarded; the entity service
+        decides who may (a CSM admin or the family's rota admin).
+      parameters:
+        - name: family
+          in: path
+          required: true
+          schema: { type: string, enum: [CRE, SRE, SME] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind]
+              properties:
+                kind: { type: string, enum: [weekday, weekend] }
+      responses:
+        "201":
+          description: Queued.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "400":
+          description: "Bad request."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: "Unauthorized."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: "Forbidden: entity-service's reason, e.g. only a CSM admin or the CRE rota admin can send the CRE rota reminders."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "409":
+          description: "One of the same kind is already waiting to be sent."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "429":
+          description: "One of the same kind was asked for less than 10 minutes ago."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: "Internal server error."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
   /team-schedule/case-alerts/settings:
     get:
       summary: Case Alerts chat rooms, group routes and ladder values, and what the caller may change.

@@ -220,6 +220,20 @@ schedules assume `TZ=UTC` like every other here.
   rather than sent with settings somebody turned off. Not on the card, on purpose: the
   send times, `ROTA_REMINDER_REDIRECT_TO`, the family, the shift codes and names, and the
   email service settings.
+- **"Send now" (`rota_manual_reminder`, every run).** The card's Send now button queues a
+  request in entity-service (`team_schedule_reminder_request`, migration 0243; asked for by a
+  CSM admin or the family's rota admin, refused while one of the same kind is waiting and within
+  10 minutes of the last). This task has no address to call, so at every run it claims the
+  waiting requests (`POST .../reminder-requests/{family}/claim`, up to 5 a run) and sends each
+  with the code above: `weekday` is the next working day's windows, `weekend` the coming weekend
+  (this one from a Saturday or a Sunday), sent even when not fully marked, as on Friday, and
+  recorded like Friday's, so invitations update and cancellations follow. The saved on/off
+  switches do not stop it; the saved minimums, hours, invitations switch and copy list apply.
+  Each request is reported `SENT` ("Sent N emails.") or `FAILED` with the reason
+  (`PUT .../{id}/result`); only a failed claim or report fails the run. A request claimed but
+  never reported (the run died) is claimed again after 30 minutes, so in that rare case its
+  emails go out twice. How soon it is sent is the driver's cadence (`DRIVER_INTERVAL`, an hour by
+  default); its schedule (`*/5 * * * *`) is finer than the driver, so it is due at every tick.
 - **Only a fully marked weekend is announced.** `ROTA_REMINDER_WEEKEND_REQUIRED` (default
   `CRE_WEEKEND=3,CRE_WEEKEND_NIGHT=1`) is how many people each shift needs on each day; the on-call
   variant does not count. Until that holds, `rota_weekend_notice` emails the family's rota admins

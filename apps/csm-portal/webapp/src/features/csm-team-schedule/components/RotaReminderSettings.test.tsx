@@ -36,7 +36,10 @@ vi.mock("../api/useRotaReminderSettings", () => ({
   useSaveRotaReminderSettings: () => ({ mutate, isPending: saving.pending }),
 }));
 
-type Callbacks = { onSuccess?: (s: Settings) => void; onError?: (e: Error) => void };
+// The Send now section has its own tests; here only the settings form.
+vi.mock("./RotaReminderSendNow", () => ({ default: () => null }));
+
+type Callbacks ={ onSuccess?: (s: Settings) => void; onError?: (e: Error) => void };
 
 const LA = { start: "08:00", end: "18:00", timeZone: "America/Los_Angeles" };
 

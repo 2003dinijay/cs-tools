@@ -315,6 +315,8 @@ func main() {
 	rotaWeekendTo, rotaWeekendCc := recipientsFor(recipientOverrides, rotaWeekendTaskName)
 	const rotaWeekendReminderTaskName = "rota_weekend_reminder"
 	rotaWeekendReminderTo, rotaWeekendReminderCc := recipientsFor(recipientOverrides, rotaWeekendReminderTaskName)
+	const rotaManualTaskName = "rota_manual_reminder"
+	rotaManualTo, rotaManualCc := recipientsFor(recipientOverrides, rotaManualTaskName)
 
 	tasks := []registry.Task{
 		// This component's first real sub-cron: deletes rows from
@@ -505,6 +507,9 @@ func main() {
 		rotaWeekdaySchedule := scheduleFor(scheduleOverrides, rotaWeekdayTaskName, "30 9 * * 1-5")
 		rotaWeekendSchedule := scheduleFor(scheduleOverrides, rotaWeekendTaskName, "30 14 * * 0-4")
 		rotaWeekendReminderSchedule := scheduleFor(scheduleOverrides, rotaWeekendReminderTaskName, "30 9 * * 5")
+		// "Send now" requests are picked up at every run: the schedule is finer
+		// than the driver, so it is due at each tick.
+		rotaManualSchedule := scheduleFor(scheduleOverrides, rotaManualTaskName, "*/5 * * * *")
 		tasks = append(tasks,
 			registry.Task{
 				Name:     rotaWeekdayTaskName,
@@ -529,6 +534,15 @@ func main() {
 					rotaConfig(rotaWeekendReminderTaskName, rotaWeekendReminderSchedule, weekendRotations, rotaWeekendReminderTo, rotaWeekendReminderCc)),
 				To: rotaWeekendReminderTo,
 				Cc: rotaWeekendReminderCc,
+			},
+			registry.Task{
+				Name:     rotaManualTaskName,
+				Schedule: rotaManualSchedule,
+				Handler: rotareminder.ManualReminder(teamScheduleClient, teamScheduleClient, teamScheduleClient, emailClient,
+					rotaConfig(rotaManualTaskName, rotaManualSchedule, weekdayRotations, rotaManualTo, rotaManualCc),
+					rotaConfig(rotaManualTaskName, rotaManualSchedule, weekendRotations, rotaManualTo, rotaManualCc)),
+				To: rotaManualTo,
+				Cc: rotaManualCc,
 			},
 		)
 	}

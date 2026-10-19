@@ -90,3 +90,29 @@ type SaveRotaReminderSettingsRequest struct {
 	Windows         map[string]ReminderWindow `json:"windows"`
 	CopyTo          []string                  `json:"copyTo"`
 }
+
+// RotaReminderRequest is a rota reminder asked for by hand ("Send now"),
+// queued for csm-scheduled-tasks (team_schedule_reminder_request).
+type RotaReminderRequest struct {
+	ID          string     `json:"id"`
+	Family      string     `json:"family"`
+	Kind        string     `json:"kind"`
+	Status      string     `json:"status"`
+	RequestedBy string     `json:"requestedBy"`
+	RequestedOn time.Time  `json:"requestedOn"`
+	ClaimedOn   *time.Time `json:"claimedOn,omitempty"`
+	HandledOn   *time.Time `json:"handledOn,omitempty"`
+	Result      string     `json:"result,omitempty"`
+}
+
+// CreateRotaReminderRequest asks for a rota reminder to be sent now.
+type CreateRotaReminderRequest struct {
+	Kind string `json:"kind"`
+}
+
+// ReportRotaReminderRequest is how a claimed request went: SENT or FAILED,
+// with a short result for the card.
+type ReportRotaReminderRequest struct {
+	Status string `json:"status"`
+	Result string `json:"result"`
+}

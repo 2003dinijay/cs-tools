@@ -8368,6 +8368,256 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /team-schedule/reminder-requests/{family}:
+    post:
+      summary: Ask for a rota reminder to be sent now.
+      description: >
+        "Send now" on the Rota Access tab. A CSM admin or a rota admin of the
+        family, with a user token. Queued for csm-scheduled-tasks, which sends
+        it at its next run. Refused while one of the same kind is waiting (409)
+        and within 10 minutes of the last one (429).
+      operationId: createRotaReminderRequest
+      parameters:
+        - name: family
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [CRE, SRE, SME]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind]
+              properties:
+                kind:
+                  type: string
+                  enum: [weekday, weekend]
+                  description: weekday is the next working day's Morning and Evening; weekend the coming weekend, sent even if not fully marked.
+      responses:
+        "201":
+          description: Queued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RotaReminderRequest'
+        "400":
+          description: "Bad family or kind."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: "No valid token."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: "Not a CSM admin or a rota admin of this family, or a service credential."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: "Not found: the schedule routes register only with a database pool."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: "One of the same kind is already waiting to be sent."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "429":
+          description: "One of the same kind was asked for less than 10 minutes ago."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: "Unexpected error."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    get:
+      summary: The family's latest "Send now" requests, newest first (5).
+      operationId: listRotaReminderRequests
+      parameters:
+        - name: family
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [CRE, SRE, SME]
+      responses:
+        "200":
+          description: The requests.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [requests]
+                properties:
+                  requests:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/RotaReminderRequest'
+        "400":
+          description: "Bad family."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: "No valid token."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: "Not an internal caller."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: "Not found: the schedule routes register only with a database pool."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: "Unexpected error."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /team-schedule/reminder-requests/{family}/claim:
+    post:
+      summary: Claim the oldest waiting request (csm-scheduled-tasks).
+      description: >
+        Service credential only. Marks the oldest QUEUED request, or one
+        SENDING but not reported within 30 minutes, as SENDING and returns
+        it; 404 when nothing is waiting.
+      operationId: claimRotaReminderRequest
+      parameters:
+        - name: family
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [CRE, SRE, SME]
+      responses:
+        "200":
+          description: The claimed request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RotaReminderRequest'
+        "400":
+          description: "Bad family."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: "No valid token."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: "Not an internal service credential: a user token is refused."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: "Nothing is waiting."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: "Unexpected error."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /team-schedule/reminder-requests/{family}/{id}/result:
+    put:
+      summary: Report how a claimed request went (csm-scheduled-tasks).
+      operationId: reportRotaReminderRequest
+      parameters:
+        - name: family
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [CRE, SRE, SME]
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [SENT, FAILED]
+                result:
+                  type: string
+                  maxLength: 500
+      responses:
+        "200":
+          description: The request as reported.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RotaReminderRequest'
+        "400":
+          description: "Bad family, id or status."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: "No valid token."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: "Not an internal service credential: a user token is refused."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: "No request with that id is being sent."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: "Unexpected error."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /team-schedule/rota-access:
     get:
       summary: Who may change the rotas beyond the team leads.
@@ -23999,6 +24249,35 @@ components:
             updatedOn:
               type: string
               format: date-time
+    RotaReminderRequest:
+      type: object
+      required: [id, family, kind, status, requestedBy, requestedOn]
+      properties:
+        id:
+          type: string
+          format: uuid
+        family:
+          type: string
+          enum: [CRE, SRE, SME]
+        kind:
+          type: string
+          enum: [weekday, weekend]
+        status:
+          type: string
+          enum: [QUEUED, SENDING, SENT, FAILED]
+        requestedBy:
+          type: string
+        requestedOn:
+          type: string
+          format: date-time
+        claimedOn:
+          type: string
+          format: date-time
+        handledOn:
+          type: string
+          format: date-time
+        result:
+          type: string
     RotaAdminContact:
       type: object
       required: [name, email]

@@ -1,0 +1,128 @@
+// Copyright (c) 2026 WSO2 LLC. (https://www.wso2.com).
+//
+// WSO2 LLC. licenses this file to you under the Apache License,
+// Version 2.0 (the "License"); you may not use this file except
+// in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+package rotareminder
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/teamschedule"
+)
+
+type fakeQueue struct {
+	waiting  []teamschedule.ReminderRequest
+	reports  []string
+	claimErr error
+}
+
+func (f *fakeQueue) ClaimReminderRequest(context.Context, string) (*teamschedule.ReminderRequest, error) {
+	if f.claimErr != nil {
+		return nil, f.claimErr
+	}
+	if len(f.waiting) == 0 {
+		return nil, nil
+	}
+	r := f.waiting[0]
+	f.waiting = f.waiting[1:]
+	return &r, nil
+}
+
+func (f *fakeQueue) ReportReminderRequest(_ context.Context, _, id, status, result string) error {
+	f.reports = append(f.reports, id+" "+status+" "+result)
+	return nil
+}
+
+func manualConfigs(now string) (Config, Config) {
+	weekday := config(now, weekdayRotations)
+	weekday.EmailsEnabled = true
+	weekend := weekendConfig(now, "rota_manual_reminder")
+	weekend.EmailsEnabled = true
+	return weekday, weekend
+}
+
+// A weekend asked for on a Monday is the coming one, sent even though the
+// automatic weekend reminders are switched off, and reported with its count.
+func TestManual_WeekendIsSentWhateverTheSwitch(t *testing.T) {
+	weekday, weekend := manualConfigs("2026-10-19 10:00")
+	off := savedSettings()
+	off.WeekdayEnabled, off.WeekendEnabled = false, false
+	weekend.Settings = fakeSettings{s: off}
+	queue := &fakeQueue{waiting: []teamschedule.ReminderRequest{{ID: "r1", Kind: "weekend", RequestedBy: "ann@example.com"}}}
+	mail := &fakeEmail{}
+	rota := &fakeRota{assignments: fullWeekend()}
+	if err := ManualReminder(rota, &fakeStore{}, queue, mail, weekday, weekend)(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if rota.from != "2026-10-24" || len(mail.sent) != 5 || len(queue.reports) != 1 || queue.reports[0] != "r1 SENT Sent 5 emails." {
+		t.Fatalf("read %s, sent %d, reports %v", rota.from, len(mail.sent), queue.reports)
+	}
+}
+
+// From a Saturday it is this weekend, not the next.
+func TestManual_FromASaturdayItIsThisWeekend(t *testing.T) {
+	weekday, weekend := manualConfigs("2026-10-24 05:00")
+	queue := &fakeQueue{waiting: []teamschedule.ReminderRequest{{ID: "r1", Kind: "weekend"}}}
+	rota := &fakeRota{assignments: fullWeekend()}
+	if err := ManualReminder(rota, &fakeStore{}, queue, &fakeEmail{}, weekday, weekend)(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if rota.from != "2026-10-24" || !strings.HasPrefix(queue.reports[0], "r1 SENT") {
+		t.Fatalf("read %s, reports %v", rota.from, queue.reports)
+	}
+}
+
+// Every waiting request is sent in one run; a weekday with nobody on the rota
+// is reported as such; emails turned off in the environment is a failure the
+// card can show, not a silent success.
+func TestManual_SeveralRequestsAndWhatIsReported(t *testing.T) {
+	weekday, weekend := manualConfigs("2026-10-19 10:00")
+	queue := &fakeQueue{waiting: []teamschedule.ReminderRequest{{ID: "r1", Kind: "weekday"}, {ID: "r2", Kind: "weekend"}}}
+	if err := ManualReminder(&fakeRota{}, &fakeStore{}, queue, &fakeEmail{}, weekday, weekend)(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(queue.reports) != 2 || !strings.HasPrefix(queue.reports[0], "r1 SENT Nothing was sent") {
+		t.Fatalf("reports %v", queue.reports)
+	}
+	weekday.EmailsEnabled = false
+	queue = &fakeQueue{waiting: []teamschedule.ReminderRequest{{ID: "r3", Kind: "weekday"}}}
+	if err := ManualReminder(&fakeRota{}, &fakeStore{}, queue, &fakeEmail{}, weekday, weekend)(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if queue.reports[0] != "r3 FAILED emails are turned off in this environment (ALERTS_ENABLED)" {
+		t.Fatalf("reports %v", queue.reports)
+	}
+}
+
+// A failed send is reported FAILED with its reason and the run succeeds; a
+// failed claim fails the run.
+func TestManual_FailuresAreReported(t *testing.T) {
+	weekday, weekend := manualConfigs("2026-10-19 10:00")
+	queue := &fakeQueue{waiting: []teamschedule.ReminderRequest{{ID: "r1", Kind: "weekend"}}}
+	mail := &fakeEmail{failOn: "Weekend Rotation –"}
+	if err := ManualReminder(&fakeRota{assignments: fullWeekend()}, &fakeStore{}, queue, mail, weekday, weekend)(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(queue.reports[0], "r1 FAILED") || !strings.Contains(queue.reports[0], "mail service down") {
+		t.Fatalf("reports %v", queue.reports)
+	}
+	queue = &fakeQueue{claimErr: errors.New("entity-service down")}
+	if err := ManualReminder(&fakeRota{}, &fakeStore{}, queue, &fakeEmail{}, weekday, weekend)(context.Background()); err == nil {
+		t.Fatal("a failed claim passed")
+	}
+}

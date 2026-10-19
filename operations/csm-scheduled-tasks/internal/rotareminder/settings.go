@@ -44,7 +44,9 @@ func withSettings(ctx context.Context, cfg Config, weekend bool) (Config, bool, 
 	if weekend {
 		on = s.WeekendEnabled
 	}
-	if !on {
+	// "Send now" is asked for by hand: the on/off switches are for the
+	// automatic sends, so they do not stop it.
+	if !on && !cfg.Manual {
 		slog.InfoContext(ctx, "rota reminder: turned off on the Rota Access tab; nothing sent", "task", cfg.Task, "family", cfg.Family)
 		return cfg, false, nil
 	}

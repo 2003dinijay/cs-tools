@@ -64,3 +64,44 @@ func (c *Client) ReminderSettingsFor(ctx context.Context, family string) (*Remin
 	}
 	return &s, nil
 }
+
+// ReminderRequest is a rota reminder asked for by hand ("Send now" on the
+// Rota Access tab), claimed for sending.
+type ReminderRequest struct {
+	ID          string `json:"id"`
+	Family      string `json:"family"`
+	Kind        string `json:"kind"`
+	RequestedBy string `json:"requestedBy"`
+}
+
+func reminderRequestPath(family string) string {
+	return "/team-schedule/reminder-requests/" + url.PathEscape(family)
+}
+
+// ClaimReminderRequest claims the family's oldest waiting "Send now" request,
+// or returns nil when nothing is waiting.
+func (c *Client) ClaimReminderRequest(ctx context.Context, family string) (*ReminderRequest, error) {
+	body, err := c.do(ctx, http.MethodPost, reminderRequestPath(family)+"/claim", nil)
+	var apiErr *apierror.Error
+	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var req ReminderRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		return nil, fmt.Errorf("teamschedule: decode reminder request: %w", err)
+	}
+	return &req, nil
+}
+
+// ReportReminderRequest records how a claimed request went: SENT or FAILED.
+func (c *Client) ReportReminderRequest(ctx context.Context, family, id, status, result string) error {
+	body, err := json.Marshal(map[string]string{"status": status, "result": result})
+	if err != nil {
+		return fmt.Errorf("teamschedule: encode reminder request result: %w", err)
+	}
+	_, err = c.do(ctx, http.MethodPut, reminderRequestPath(family)+"/"+url.PathEscape(id)+"/result", body)
+	return err
+}

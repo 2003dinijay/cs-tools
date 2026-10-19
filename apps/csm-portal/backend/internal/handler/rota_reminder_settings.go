@@ -130,3 +130,82 @@ func (h *RotaReminderSettingsHandler) forward(w http.ResponseWriter, r *http.Req
 	}
 	writeJSON(w, http.StatusOK, result)
 }
+
+// entityRotaReminderRequestClient is the entity-service calls "Send now" on
+// the Rota Reminders card needs. The scheduled task's claim and report are not
+// proxied: they are for its service credential only.
+type entityRotaReminderRequestClient interface {
+	ListRotaReminderRequests(ctx context.Context, family string) ([]byte, error)
+	CreateRotaReminderRequest(ctx context.Context, family string, body []byte) ([]byte, error)
+}
+
+// RotaReminderRequestHandler proxies "Send now": asking for a family's rota
+// reminders to be sent at the scheduled task's next run, and the latest
+// requests. Who may ask is entity-service's decision.
+type RotaReminderRequestHandler struct {
+	entity entityRotaReminderRequestClient
+}
+
+// NewRotaReminderRequestHandler creates a RotaReminderRequestHandler.
+func NewRotaReminderRequestHandler(entity entityRotaReminderRequestClient) *RotaReminderRequestHandler {
+	return &RotaReminderRequestHandler{entity: entity}
+}
+
+// ListRotaReminderRequests handles GET /team-schedule/reminder-requests/{family}.
+func (h *RotaReminderRequestHandler) ListRotaReminderRequests(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserInfoFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
+		return
+	}
+	family := r.PathValue("family")
+	if !rotaFamilyRe.MatchString(family) {
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+	result, err := h.entity.ListRotaReminderRequests(r.Context(), strings.ToUpper(family))
+	if err != nil {
+		reminderRequestError(w, r, user.UserID, "ListRotaReminderRequests", "Failed to load the rota reminder requests.", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// CreateRotaReminderRequest handles POST /team-schedule/reminder-requests/{family}.
+func (h *RotaReminderRequestHandler) CreateRotaReminderRequest(w http.ResponseWriter, r *http.Request) {
+	body, userID, ok := readScheduleBody(w, r)
+	if !ok {
+		return
+	}
+	family := r.PathValue("family")
+	var in struct {
+		Kind string `json:"kind"`
+	}
+	if !rotaFamilyRe.MatchString(family) || json.Unmarshal(body, &in) != nil || (in.Kind != "weekday" && in.Kind != "weekend") {
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+	result, err := h.entity.CreateRotaReminderRequest(r.Context(), strings.ToUpper(family), mustJSON(in))
+	if err != nil {
+		reminderRequestError(w, r, userID, "CreateRotaReminderRequest", "Failed to ask for the rota reminders.", err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, result)
+}
+
+// reminderRequestError keeps entity-service's reason for a refusal ("a
+// weekend reminder was asked for less than 10 minutes ago", "only a CSM admin
+// or the CRE rota admin can ...") so the card can say why.
+func reminderRequestError(w http.ResponseWriter, r *http.Request, userID, op, fallbackMsg string, err error) {
+	var apiErr *apierror.Error
+	if errors.As(err, &apiErr) {
+		switch apiErr.StatusCode {
+		case http.StatusBadRequest, http.StatusForbidden, http.StatusConflict, http.StatusTooManyRequests:
+			slog.WarnContext(r.Context(), "entity "+op+" refused", "userID", userID, "status", apiErr.StatusCode)
+			writeError(w, apiErr.StatusCode, upstreamErrorMessageStrict(apiErr.Body, fallbackMsg))
+			return
+		}
+	}
+	slog.ErrorContext(r.Context(), "entity "+op+" failed", "userID", userID, "err", err)
+	mapUpstreamErrorGeneric(w, err, fallbackMsg)
+}

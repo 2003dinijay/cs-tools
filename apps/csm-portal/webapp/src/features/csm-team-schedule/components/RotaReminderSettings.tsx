@@ -18,6 +18,7 @@
 import { useId, useState, type FormEvent, type JSX } from "react";
 import { useRotaReminderSettings, useSaveRotaReminderSettings } from "../api/useRotaReminderSettings";
 import type { ReminderWindow, RotaFamily, RotaReminderSettings, SaveRotaReminderSettings } from "../types";
+import RotaReminderSendNow from "./RotaReminderSendNow";
 
 const FAMILY: RotaFamily = "CRE";
 
@@ -399,6 +400,7 @@ export default function RotaReminderSettings(): JSX.Element {
         </div>
         <div aria-live="polite">{justSaved ? <p className="cas-status ok">Saved.</p> : null}</div>
       </form>
+      <RotaReminderSendNow />
     </section>
   );
 }
