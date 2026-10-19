@@ -2137,9 +2137,11 @@ components:
         currentSupportStatus:
           type: string
           enum: [AVAILABLE, EXTENDED, DEPRECATED, DISCONTINUED]
+          nullable: true
         releaseDate:
           type: string
           format: date-time
+          nullable: true
         supportEolDate:
           type: string
           format: date-time
