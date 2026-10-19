@@ -31,7 +31,7 @@ import (
 )
 
 // RotaReminderRequestRepository queues rota reminders asked for by hand
-// (team_schedule_reminder_request, migration 0243).
+// (team_schedule_reminder_request, migration 0242).
 type RotaReminderRequestRepository interface {
 	// Create queues a request, unless one of the same family and kind is
 	// still waiting (ConflictError) or was asked for within cooldown

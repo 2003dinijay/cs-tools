@@ -221,7 +221,7 @@ schedules assume `TZ=UTC` like every other here.
   send times, `ROTA_REMINDER_REDIRECT_TO`, the family, the shift codes and names, and the
   email service settings.
 - **"Send now" (`rota_manual_reminder`, every run).** The card's Send now button queues a
-  request in entity-service (`team_schedule_reminder_request`, migration 0243; asked for by a
+  request in entity-service (`team_schedule_reminder_request`, migration 0242; asked for by a
   CSM admin or the family's rota admin, refused while one of the same kind is waiting and within
   10 minutes of the last). This task has no address to call, so at every run it claims the
   waiting requests (`POST .../reminder-requests/{family}/claim`, up to 5 a run) and sends each

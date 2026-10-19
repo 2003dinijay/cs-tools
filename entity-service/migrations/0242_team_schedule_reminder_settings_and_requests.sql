@@ -14,6 +14,58 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- The rota reminders' two tables for the Team Schedule's Rota Access tab:
+-- the settings the card saves (team_schedule_reminder_setting) and the
+-- "Send now" / "Send a test to me" requests it queues for
+-- csm-scheduled-tasks (team_schedule_reminder_request). One migration so
+-- the feature is one change; each table is created only if missing.
+
+-- Rota reminder settings, one row per rota family, saved from the Team
+-- Schedule's Rota Access tab by a CSM admin or the family's rota admin and
+-- read by csm-scheduled-tasks at the start of every reminder run. A family
+-- with no row keeps the task's own configuration.
+--
+--   weekday_enabled / weekend_enabled  whether those reminders are sent
+--   invites_enabled                    whether they carry calendar invitations
+--   weekend_required                   {"CRE_WEEKEND": 3, ...} people each
+--                                      weekend shift needs on each day
+--   windows                            {"CRE_WEEKEND_NIGHT": {"start": "08:00",
+--                                      "end": "18:00", "timeZone":
+--                                      "America/Los_Angeles"}}: a rotation's
+--                                      hours on its own clock
+--   copy_to                            addresses copied on every reminder
+--
+-- id is there for the Team Schedule audit trigger (team_schedule_audit_row),
+-- which keys its rows by it, so every change is in team_schedule_audit.
+--
+-- Additive and safe to re-run: nothing existing is touched.
+CREATE TABLE IF NOT EXISTS team_schedule_reminder_setting (
+    id               UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+    family           VARCHAR(16)  NOT NULL,
+    weekday_enabled  BOOLEAN      NOT NULL DEFAULT TRUE,
+    weekend_enabled  BOOLEAN      NOT NULL DEFAULT TRUE,
+    invites_enabled  BOOLEAN      NOT NULL DEFAULT TRUE,
+    weekend_required JSONB        NOT NULL DEFAULT '{}'::jsonb,
+    windows          JSONB        NOT NULL DEFAULT '{}'::jsonb,
+    copy_to          TEXT[]       NOT NULL DEFAULT '{}',
+    created_on       TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    updated_on       TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    created_by       VARCHAR(255) NOT NULL,
+    updated_by       VARCHAR(255) NOT NULL,
+    CONSTRAINT team_schedule_reminder_setting_family_uq UNIQUE (family),
+    CONSTRAINT team_schedule_reminder_setting_family_check CHECK (family IN ('CRE', 'SRE', 'SME')),
+    CONSTRAINT team_schedule_reminder_setting_required_check CHECK (jsonb_typeof(weekend_required) = 'object'),
+    CONSTRAINT team_schedule_reminder_setting_windows_check CHECK (jsonb_typeof(windows) = 'object')
+);
+
+COMMENT ON TABLE team_schedule_reminder_setting IS
+    'Rota reminder settings per family, set on the Team Schedule Rota Access tab; read by csm-scheduled-tasks.';
+
+DROP TRIGGER IF EXISTS team_schedule_reminder_setting_audit ON team_schedule_reminder_setting;
+CREATE TRIGGER team_schedule_reminder_setting_audit
+    AFTER INSERT OR UPDATE OR DELETE ON team_schedule_reminder_setting
+    FOR EACH ROW EXECUTE FUNCTION team_schedule_audit_row();
+
 -- Rota reminders asked for by hand ("Send now" on the Team Schedule's Rota
 -- Access tab), queued for csm-scheduled-tasks, which has no address of its
 -- own to call: its rota_manual_reminder job claims the oldest queued request
@@ -51,10 +103,6 @@ CREATE TABLE IF NOT EXISTS team_schedule_reminder_request (
     CONSTRAINT team_schedule_reminder_request_kind_check CHECK (kind IN ('weekday', 'weekend')),
     CONSTRAINT team_schedule_reminder_request_status_check CHECK (status IN ('QUEUED', 'SENDING', 'SENT', 'FAILED'))
 );
-
--- For a database that applied this file before test was added (it was not
--- released then): the column, as above.
-ALTER TABLE team_schedule_reminder_request ADD COLUMN IF NOT EXISTS test BOOLEAN NOT NULL DEFAULT FALSE;
 
 CREATE INDEX IF NOT EXISTS team_schedule_reminder_request_family_on_idx
     ON team_schedule_reminder_request (family, requested_on DESC);

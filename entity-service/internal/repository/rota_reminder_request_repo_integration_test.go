@@ -31,7 +31,7 @@ import (
 // The Send now queue: one request waits at a time, a second press is refused
 // while it waits and for the cooldown after, the task claims the oldest and
 // reports it, a claim left unreported is claimed again. Needs migrations 0155
-// and 0243; skipped unless ENTITY_TEST_DATABASE_URL is set. Uses SME and
+// and 0242; skipped unless ENTITY_TEST_DATABASE_URL is set. Uses SME and
 // refuses to run where SME requests exist, so it never touches real ones.
 func TestRotaReminderRequestIntegration_Queue(t *testing.T) {
 	dsn := os.Getenv("ENTITY_TEST_DATABASE_URL")
