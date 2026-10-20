@@ -221,15 +221,15 @@ describe("RunbooksTab", () => {
     expect(mocks.unmerge).toHaveBeenCalledWith({ id: "1", alerts: ["gw-5xx"] }, expect.anything());
   });
 
-  it("shows when each runbook was created and last updated, and by whom", () => {
+  it("shows when each runbook was created and last updated, but not by whom", () => {
     render(<RunbooksTab />);
     expect(screen.getByRole("columnheader", { name: "Created" })).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "Updated" })).toBeInTheDocument();
     const row = screen.getByRole("checkbox", { name: "Select Gateway" }).closest("tr") as HTMLElement;
     expect(within(row).getByText("Mar 2, 2026")).toBeInTheDocument();
-    expect(within(row).getByText("creator@example.com")).toBeInTheDocument();
     expect(within(row).getByText("Sep 15, 2026")).toBeInTheDocument();
-    expect(within(row).getByText("editor@example.com")).toBeInTheDocument();
+    expect(within(row).queryByText("creator@example.com")).not.toBeInTheDocument();
+    expect(within(row).queryByText("editor@example.com")).not.toBeInTheDocument();
   });
 
   it("offers no unmerge for a runbook's only alert", () => {
@@ -273,10 +273,10 @@ describe("RunbooksTab", () => {
     );
   });
 
-  it("shows Anyone as the default editor filter, like the other filters show their default", () => {
+  it("shows each filter's default and has no editor filter", () => {
     render(<RunbooksTab />);
     fireEvent.click(screen.getByRole("button", { name: "Filters" }));
-    expect(screen.getByRole("combobox", { name: "Last updated by" })).toHaveTextContent("Anyone");
+    expect(screen.queryByRole("combobox", { name: "Last updated by" })).not.toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Last updated" })).toHaveTextContent("Any time");
   });
 

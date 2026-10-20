@@ -128,20 +128,19 @@ describe("filterRunbooks", () => {
     ...over,
   });
   const catalog = [
-    rb("gw", { runbookUrl: "https://d/gw", alerts: ["gw-5xx", "gw-latency"], updatedBy: "a@wso2.com" }),
+    rb("gw", { runbookUrl: "https://d/gw", alerts: ["gw-5xx", "gw-latency"] }),
     rb("jvm", { alerts: ["JVM Heap"], updatedOn: "2026-09-01T00:00:00Z" }),
     rb("disk", { runbookUrl: "https://d/disk", alerts: ["disk"], updatedOn: "2026-05-01T00:00:00Z" }),
   ];
   const ids = (filters: Partial<typeof DEFAULT_RUNBOOK_FILTERS>, search = "") =>
     filterRunbooks(catalog, search, { ...DEFAULT_RUNBOOK_FILTERS, ...filters }, now).map((r) => r.id);
 
-  it("filters by link, alert count, editor and age", () => {
+  it("filters by link, alert count and age", () => {
     expect(ids({})).toEqual(["gw", "jvm", "disk"]);
     expect(ids({ coverage: "linked" })).toEqual(["gw", "disk"]);
     expect(ids({ coverage: "missing" })).toEqual(["jvm"]);
     expect(ids({ alertCount: "single" })).toEqual(["jvm", "disk"]);
     expect(ids({ alertCount: "multiple" })).toEqual(["gw"]);
-    expect(ids({ updatedBy: "a@wso2.com" })).toEqual(["gw"]);
     expect(ids({ updatedWithin: "7" })).toEqual(["gw"]);
     expect(ids({ updatedWithin: "90" })).toEqual(["gw", "jvm"]);
     expect(ids({ coverage: "linked", alertCount: "single" })).toEqual(["disk"]);
@@ -155,6 +154,6 @@ describe("filterRunbooks", () => {
 
   it("counts the filters that differ from the default", () => {
     expect(activeRunbookFilterCount(DEFAULT_RUNBOOK_FILTERS)).toBe(0);
-    expect(activeRunbookFilterCount({ ...DEFAULT_RUNBOOK_FILTERS, alertCount: "multiple", updatedBy: "a" })).toBe(2);
+    expect(activeRunbookFilterCount({ ...DEFAULT_RUNBOOK_FILTERS, alertCount: "multiple", updatedWithin: "7" })).toBe(2);
   });
 });
