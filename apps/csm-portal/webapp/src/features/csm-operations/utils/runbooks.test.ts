@@ -16,39 +16,77 @@
 
 import { describe, expect, it } from "vitest";
 import { findRunbookForIncident, parseRunbookImport, runbooksToCsvRows, runbooksToImportJson } from "./runbooks";
+import {
+  activeRunbookFilterCount,
+  cleanAlertNames,
+  DEFAULT_RUNBOOK_FILTERS,
+  filterRunbooks,
+  findRunbookForIncident,
+  parseRunbookImport,
+  type Runbook,
+} from "./runbooks";
 
 describe("parseRunbookImport", () => {
-  it("reads an object of alert name to link, blank meaning no runbook", () => {
-    expect(parseRunbookImport('{"Alert A": "https://docs.example.com/a", " Alert B ": ""}')).toEqual([
-      { alertName: "Alert A", runbookUrl: "https://docs.example.com/a" },
-      { alertName: "Alert B", runbookUrl: null },
+  it("reads an object whose keys are comma-separated alert names, keeping spaces inside a name", () => {
+    expect(
+      parseRunbookImport('{"Alert 1, Alert 2 ,alert 1": "https://docs.example.com/a", " Alert B ": ""}'),
+    ).toEqual([
+      { name: "Alert 1", runbookUrl: "https://docs.example.com/a", alerts: ["Alert 1", "Alert 2"] },
+      { name: "Alert B", runbookUrl: null, alerts: ["Alert B"] },
     ]);
   });
 
-  it("reads a list of entries", () => {
-    expect(parseRunbookImport('[{"alertName": "A", "runbookUrl": null}]')).toEqual([{ alertName: "A", runbookUrl: null }]);
+  it("reads a list of runbooks with a list or a comma-separated string of alerts", () => {
+    expect(
+      parseRunbookImport('[{"name": "Gateway", "runbookUrl": null, "alerts": ["a", "b"]}, {"alerts": "c, d"}]'),
+    ).toEqual([
+      { name: "Gateway", runbookUrl: null, alerts: ["a", "b"] },
+      { name: "c", runbookUrl: null, alerts: ["c", "d"] },
+    ]);
   });
 
-  it("refuses bad JSON, blank names and links that are not http(s)", () => {
+  it("still reads an older list entry with one alertName", () => {
+    expect(parseRunbookImport('[{"alertName": "A", "runbookUrl": null}]')).toEqual([
+      { name: "A", runbookUrl: null, alerts: ["A"] },
+    ]);
+  });
+
+  it("reads an older alertName with a comma as one alert, never splitting it", () => {
+    expect(parseRunbookImport('[{"alertName": "CPU > 90%, prod", "runbookUrl": null}]')).toEqual([
+      { name: "CPU > 90%, prod", runbookUrl: null, alerts: ["CPU > 90%, prod"] },
+    ]);
+  });
+
+  it("refuses bad JSON, entries with no alert and links that are not http(s)", () => {
     expect(() => parseRunbookImport("{")).toThrow("not valid JSON");
-    expect(() => parseRunbookImport('[{"alertName": " "}]')).toThrow("alert name");
+    expect(() => parseRunbookImport('[{"name": "N", "alerts": [" "]}]')).toThrow("at least one alert name");
+    expect(() => parseRunbookImport('{" , ": "https://x.example"}')).toThrow("at least one alert name");
     expect(() => parseRunbookImport('{"A": "javascript:alert(1)"}')).toThrow("http(s)");
+  });
+});
+
+describe("cleanAlertNames", () => {
+  it("trims and drops blanks and repeats, ignoring case", () => {
+    expect(cleanAlertNames([" a ", "", "A", "b"])).toEqual(["a", "b"]);
   });
 });
 
 describe("findRunbookForIncident", () => {
   const catalog = [
-    { alertName: "gw-5xx", runbookUrl: "https://docs.example.com/short" },
-    { alertName: "gw-5xx-prod-001", runbookUrl: "https://docs.example.com/long" },
-    { alertName: "JVM Heap", runbookUrl: null },
+    { name: "Gateway", runbookUrl: "https://docs.example.com/gw", alerts: ["gw-5xx", "gw-latency"] },
+    { name: "Gateway prod", runbookUrl: "https://docs.example.com/long", alerts: ["gw-5xx-prod-001"] },
+    { name: "JVM", runbookUrl: null, alerts: ["JVM Heap"] },
   ];
 
-  it("picks the longest alert name the subject contains, ignoring case", () => {
-    expect(findRunbookForIncident(catalog, "Fired GW-5XX-PROD-001 on log")?.runbookUrl).toBe("https://docs.example.com/long");
+  it("picks the runbook holding the longest alert name the subject contains, ignoring case", () => {
+    const match = findRunbookForIncident(catalog, "Fired GW-5XX-PROD-001 on log");
+    expect(match?.runbook.name).toBe("Gateway prod");
+    expect(match?.alertName).toBe("gw-5xx-prod-001");
+    expect(findRunbookForIncident(catalog, "gw-latency spike")?.runbook.name).toBe("Gateway");
   });
 
-  it("finds a known alert without a link, and nothing for an unknown subject", () => {
-    expect(findRunbookForIncident(catalog, "node / jvm heap")).toEqual({ alertName: "JVM Heap", runbookUrl: null });
+  it("finds a runbook without a link, and nothing for an unknown subject", () => {
+    expect(findRunbookForIncident(catalog, "node / jvm heap")?.runbook.runbookUrl).toBeNull();
     expect(findRunbookForIncident(catalog, "unrelated")).toBeUndefined();
   });
 });
@@ -76,5 +114,47 @@ describe("export", () => {
       ["gw-5xx", "https://docs.example.com/gw", "a@x", "2026-10-01T00:00:00Z"],
       ["JVM Heap", "", "b@x", "2026-10-02T00:00:00Z"],
     ]);
+describe("filterRunbooks", () => {
+  const now = Date.parse("2026-10-20T00:00:00Z");
+  const rb = (id: string, over: Partial<Runbook>): Runbook => ({
+    id,
+    name: id,
+    runbookUrl: null,
+    alerts: ["a"],
+    createdOn: "2026-01-01T00:00:00Z",
+    createdBy: "x@wso2.com",
+    updatedOn: "2026-10-19T00:00:00Z",
+    updatedBy: "x@wso2.com",
+    ...over,
+  });
+  const catalog = [
+    rb("gw", { runbookUrl: "https://d/gw", alerts: ["gw-5xx", "gw-latency"], updatedBy: "a@wso2.com" }),
+    rb("jvm", { alerts: ["JVM Heap"], updatedOn: "2026-09-01T00:00:00Z" }),
+    rb("disk", { runbookUrl: "https://d/disk", alerts: ["disk"], updatedOn: "2026-05-01T00:00:00Z" }),
+  ];
+  const ids = (filters: Partial<typeof DEFAULT_RUNBOOK_FILTERS>, search = "") =>
+    filterRunbooks(catalog, search, { ...DEFAULT_RUNBOOK_FILTERS, ...filters }, now).map((r) => r.id);
+
+  it("filters by link, alert count, editor and age", () => {
+    expect(ids({})).toEqual(["gw", "jvm", "disk"]);
+    expect(ids({ coverage: "linked" })).toEqual(["gw", "disk"]);
+    expect(ids({ coverage: "missing" })).toEqual(["jvm"]);
+    expect(ids({ alertCount: "single" })).toEqual(["jvm", "disk"]);
+    expect(ids({ alertCount: "multiple" })).toEqual(["gw"]);
+    expect(ids({ updatedBy: "a@wso2.com" })).toEqual(["gw"]);
+    expect(ids({ updatedWithin: "7" })).toEqual(["gw"]);
+    expect(ids({ updatedWithin: "90" })).toEqual(["gw", "jvm"]);
+    expect(ids({ coverage: "linked", alertCount: "single" })).toEqual(["disk"]);
+  });
+
+  it("searches name, alert names and link together with the filters", () => {
+    expect(ids({}, "LATENCY")).toEqual(["gw"]);
+    expect(ids({}, "d/disk")).toEqual(["disk"]);
+    expect(ids({ coverage: "missing" }, "gw")).toEqual([]);
+  });
+
+  it("counts the filters that differ from the default", () => {
+    expect(activeRunbookFilterCount(DEFAULT_RUNBOOK_FILTERS)).toBe(0);
+    expect(activeRunbookFilterCount({ ...DEFAULT_RUNBOOK_FILTERS, alertCount: "multiple", updatedBy: "a" })).toBe(2);
   });
 });
