@@ -193,12 +193,24 @@ func TestCaseAlertValueChecks(t *testing.T) {
 		{"SRE", "timing.includeL4", `false`, `false`, ""},
 		{"SRE", "unansweredChat", `true`, `true`, ""},
 		{"SRE", "smeHandoffChat", `false`, `false`, ""},
+		// The ladder's own switches, per family.
+		{"CRE", "enabled", `false`, `false`, ""},
+		{"SME", "enabled", `true`, `true`, ""},
+		{"SRE", "enabled", `"yes"`, "", "true or false"},
+		{"SRE", "channel", `"BOTH"`, `"both"`, ""},
+		{"SME", "channel", `"chat"`, `"chat"`, ""},
+		{"CRE", "channel", `"log"`, `"log"`, ""},
+		{"CRE", "channel", `"sms"`, "", "call or chat or both or log"},
+		{"SRE", "safety.maxCallsPerLadder", `4`, `4`, ""},
+		{"SRE", "safety.maxCallsPerLadder", `0`, "", "1 to 50"},
+		{"CRE", "safety.maxCallsPerLadder", `51`, "", "1 to 50"},
+		{"SRE", "safety.callWithoutVerifiedLeads", `true`, `true`, ""},
+		{"CRE", "safety.callHeadsWithoutLowerTiers", `false`, `false`, ""},
+		{"SME", "safety.callWithoutVerifiedLeads", `true`, "", "not a SME setting"},
 		// The wrong ladder, keys that stay in the file, no value.
 		{"CRE", "timing.interval", `"5m"`, "", "not a CRE setting"},
 		{"SRE", "heads.cre", `{"name": "x", "email": "crehead@wso2.com"}`, "", "not a SRE setting"},
-		{"CRE", "enabled", `false`, "", "not a setting that can be saved here"},
-		{"SRE", "channel", `"log"`, "", "not a setting that can be saved here"},
-		{"SRE", "safety.maxCallsPerLadder", `100`, "", "not a setting that can be saved here"},
+		{"SRE", "safety.allowedNumbers", `[]`, "", "not a setting that can be saved here"},
 		{"SRE", "teams.aliases", `{}`, "", "not a setting that can be saved here"},
 		{"CRE", "onLeave", `null`, "", "send a value"},
 	}
@@ -372,10 +384,18 @@ func TestCaseAlertGetShowsValuesAndRunning(t *testing.T) {
 	}
 
 	// The CRE rota admin is sent neither SRE's values nor what SRE runs with.
-	repo.mode, repo.summary = &shadow, []byte(`{"rooms":0,"running":{"ladders":{"SRE":{"timing.interval":{"value":"5m","source":"file"}},"CRE":{"onLeave":{"value":"skip","source":"file"}}},"fileOnly":{"SRE":{"channel":"call"},"CRE":{"channel":"both"}}}}`)
+	repo.mode, repo.summary = &shadow, []byte(`{"rooms":0,"running":{"ladders":{"SRE":{"timing.interval":{"value":"5m","source":"file"}},"CRE":{"onLeave":{"value":"skip","source":"file"}}},"fileOnly":{"SRE":{"channel":"call"},"CRE":{"channel":"both"}},"channels":{"SRE":{"enabled":true,"channel":"both","teams":[{"team":"iaas","channel":"chat","teamChannel":"chat","room":true}]},"CRE":{"enabled":true,"channel":"both","teams":[]},"SME":{"enabled":false,"channel":"call","teams":[]}}}}`)
 	cre, _ := svc.Get(asPerson("cre.rota@wso2.com"))
 	if len(cre.Values) != 0 || cre.Running == nil || cre.Running.Ladders["SRE"] != nil || cre.Running.FileOnly["SRE"] != nil || cre.Running.Ladders["CRE"] == nil {
 		t.Fatalf("CRE rota admin was sent %+v / %+v", cre.Values, cre.Running)
+	}
+	if cre.Running.Channels["CRE"] == nil || cre.Running.Channels["SRE"] != nil || cre.Running.Channels["SME"] != nil {
+		t.Fatalf("CRE rota admin was sent channels %v", cre.Running.Channels)
+	}
+	// The CS head sits above all three families and sees every ladder's channels.
+	cs, _ := svc.Get(asPerson("cshead@wso2.com"))
+	if cs.Running == nil || len(cs.Running.Channels) != 3 || !strings.Contains(string(cs.Running.Channels["SRE"]), `"team":"iaas"`) {
+		t.Fatalf("CS head was sent channels %v", cs.Running)
 	}
 
 	// Somebody who may see nothing gets no values either.

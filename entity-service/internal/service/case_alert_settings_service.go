@@ -43,10 +43,10 @@ import (
 // Who may do what:
 //
 //	see the settings     a CSM admin (AUTH_ADMIN_ROLES), a portal admin, the
-//	                     CRE or SRE rota admin, the CRE or CS head
-//	change a ladder's    a CSM admin or portal admin: both ladders; the CRE
-//	rooms, routes and    rota admin: CRE; the SRE rota admin: SRE
-//	values
+//	                     CRE, SRE or SME rota admin, the CRE or CS head
+//	change a ladder's    a CSM admin, portal admin or CS head: all three;
+//	rooms, routes and    the CRE rota admin or CRE head: CRE; the SRE rota
+//	values               admin: SRE; the SME rota admin: SME
 //	read the opened URLs csm-notification-service's client only
 //	                     (CASE_ALERTS_RUNTIME_CLIENT_IDS), never a person
 type CaseAlertSettingsService interface {
@@ -177,17 +177,18 @@ func (s *caseAlertSettingsService) whoIsAsking(ctx context.Context) (caseAlertCa
 		return caseAlertCaller{}, err
 	}
 	a := authorityOf(who)
-	// Each family's settings are its own: the CRE rota admin and the CRE and
-	// CS heads have CRE's, the SRE rota admin SRE's, the SME rota admin SME's.
-	// Seeing a family's settings and changing them go together; another
-	// family's are never sent. A CSM or portal admin has all three.
+	// Each family's settings are its own: the CRE rota admin and the CRE head
+	// have CRE's, the SRE rota admin SRE's, the SME rota admin SME's. The CS
+	// head sits above all three families and has all three. Seeing a family's
+	// settings and changing them go together; another family's are never
+	// sent. A CSM or portal admin has all three.
 	switch {
 	case a.portalAdmin:
 		c.ladder[familyCRE], c.ladder[familySRE], c.ladder[familySME] = true, true, true
 	default:
 		c.ladder[familyCRE] = a.creRotaAdmin || a.head
-		c.ladder[familySRE] = a.sreRotaAdmin
-		c.ladder[familySME] = a.smeRotaAdmin
+		c.ladder[familySRE] = a.sreRotaAdmin || a.csHead
+		c.ladder[familySME] = a.smeRotaAdmin || a.csHead
 	}
 	c.view = len(c.roomLadders()) > 0
 	return c, nil
@@ -196,7 +197,11 @@ func (s *caseAlertSettingsService) whoIsAsking(ctx context.Context) (caseAlertCa
 // mayChange refuses a change to ladder's settings the caller may not make.
 func (c caseAlertCaller) mayChange(ladder string) error {
 	if !c.ladder[ladder] {
-		return &apierror.ForbiddenError{Msg: fmt.Sprintf("only a CSM admin, a portal admin or the %s rota admin can change the %s alert settings", ladder, ladder)}
+		who := fmt.Sprintf("the %s rota admin or the CS head", ladder)
+		if ladder == familyCRE {
+			who = "the CRE rota admin, the CRE head or the CS head"
+		}
+		return &apierror.ForbiddenError{Msg: fmt.Sprintf("only a CSM admin, a portal admin, %s can change the %s alert settings", who, ladder)}
 	}
 	return nil
 }
@@ -383,6 +388,7 @@ func runningView(ctx context.Context, rev repository.CaseAlertRevisionRow, mine 
 		Running *struct {
 			Ladders  map[string]map[string]domain.CaseAlertRunningValue `json:"ladders"`
 			FileOnly map[string]map[string]json.RawMessage              `json:"fileOnly"`
+			Channels map[string]json.RawMessage                         `json:"channels"`
 		} `json:"running"`
 	}
 	if err := json.Unmarshal(rev.AppliedSummary, &summary); err != nil {
@@ -405,6 +411,14 @@ func runningView(ctx context.Context, rev repository.CaseAlertRevisionRow, mine 
 	for l, v := range summary.Running.FileOnly {
 		if mine[l] {
 			out.FileOnly[l] = v
+		}
+	}
+	for l, v := range summary.Running.Channels {
+		if mine[l] {
+			if out.Channels == nil {
+				out.Channels = map[string]json.RawMessage{}
+			}
+			out.Channels[l] = v
 		}
 	}
 	return out

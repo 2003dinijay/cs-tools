@@ -273,7 +273,7 @@ func TestCaseAlertSettingsRights(t *testing.T) {
 		{"CRE rota admin: CRE's only", asPerson("cre.rota@wso2.com"), true, []string{"CRE"}, []string{"CRE"}, 1},
 		{"SME rota admin: SME's only", asPerson("sme.rota@wso2.com"), true, []string{"SME"}, []string{}, 0},
 		{"CRE head: CRE's, in full", asPerson("crehead@wso2.com"), true, []string{"CRE"}, []string{"CRE"}, 1},
-		{"CS head: CRE's, in full", asPerson("cshead@wso2.com"), true, []string{"CRE"}, []string{"CRE"}, 1},
+		{"CS head: all three families", asPerson("cshead@wso2.com"), true, []string{"CRE", "SRE", "SME"}, []string{"CRE", "SRE"}, 3},
 		{"team lead sees nothing", asPerson("lead@wso2.com"), false, []string{}, []string{}, 0},
 		{"engineer sees nothing", asPerson("eng@wso2.com"), false, []string{}, []string{}, 0},
 		{"admin role matched exactly", asPerson("eng@wso2.com", "CS_ADMIN"), false, []string{}, []string{}, 0},

@@ -329,8 +329,18 @@ ticker, with Redis as its only durable state — the same `REDIS_URL`/
   by a setter per key in `caseAlertKeys` (which must match entity-service's
   `caseAlertValueSpecs`; `TestCaseAlertKeysMatchTheTab` lists them). An unknown
   key or one for the other ladder is skipped and logged; a value in the wrong
-  shape refuses the merge. `enabled`, `channel`, `safety`, `phones`,
-  `testCall`, `sme` and `rules` are not keys: they stay in the file.
+  shape refuses the merge. Each ladder's own switches are keys too:
+  `enabled`, `channel` (CRE, SRE, SME), `safety.maxCallsPerLadder`,
+  `safety.callWithoutVerifiedLeads` and `safety.callHeadsWithoutLowerTiers`
+  (CRE, SRE), so a ladder can be turned on, put on chat only or have its
+  holds changed from the tab (a file with no `sme:` section still gets the SME
+  page from a saved `enabled`). The file's top-level `enabled`, the
+  `INCIDENT_ESCALATION_ENABLED` kill switch, `safety.maxLevel`,
+  `safety.allowedNumbers`, `phones`, `testCall` and `rules` are not keys: they
+  stay in the file. The applied report also carries `channels`
+  (`EffectiveChannels`): per ladder whether it runs, its channel, and each SRE
+  and SME team's channel in use (the ladder's narrowed by the team's own) and
+  whether it has a room. Saved values still apply only at start-up.
   The applied report carries `running` (`RunningCaseAlertValues`): every
   ladder value the process runs with and whether it came from the file or the
   tab -- in shadow the file's, so the tab can copy them. Heads go with a name

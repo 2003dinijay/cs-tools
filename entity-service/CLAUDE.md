@@ -7248,6 +7248,14 @@ group's current name through `group_id`, so a rename in ServiceNow keeps its rou
 covers and no team is named after: csm-notification-service posts their incident cards to the shared
 SRE room. Deploy entity-service before the BFF and webapp that send `groupId` (strict decoding).
 
+**Who may see and change each family's Case Alerts settings** (`whoIsAsking`): a CSM or
+portal admin and the CS head (`cs_head` on any team): all three families; the CRE rota admin and
+the CRE head (`cre_head`): CRE; the SRE rota admin: SRE; the SME rota admin: SME. Seeing and changing
+go together, and another family's rooms, routes, values and running report are never sent. The saved
+values include each ladder's own switches (`enabled`, `channel` for CRE, SRE and SME;
+`safety.maxCallsPerLadder` 1-50, `safety.callWithoutVerifiedLeads`, `safety.callHeadsWithoutLowerTiers`
+for CRE and SRE), so they follow the same per-family rule.
+
 ## IT services (CMDB services)
 
 `service` (migration 0044) is the CMDB service catalogue: `incident`,
