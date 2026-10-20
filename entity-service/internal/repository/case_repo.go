@@ -667,6 +667,12 @@ type CaseRepository interface {
 	// directly through pgFallback instead, rather than paying for a full
 	// CaseRepository.GetCaseByID just for one column.
 	GetCaseEtaSharedOn(ctx context.Context, caseID string) (*time.Time, error)
+	// GetCaseWorkaroundProvidedOn returns work_item.workaround_provided_on
+	// for caseID -- nil (not an error) when no workaround is marked
+	// provided, or the case id doesn't exist. GetCaseByID does not populate
+	// CaseView.WorkaroundProvidedOn on this data source, so the activity
+	// entries for a workaround set/recall read the prior stamp here.
+	GetCaseWorkaroundProvidedOn(ctx context.Context, caseID string) (*time.Time, error)
 	// ProjectContactEmailsByRole returns the distinct project_contact.email
 	// addresses for projectID whose contact currently holds role (a
 	// project_role_enum label, e.g. "SECURITY_CONTACT" or "PORTAL_USER") via
@@ -4227,6 +4233,19 @@ func (r *caseRepo) GetCaseEtaSharedOn(ctx context.Context, caseID string) (*time
 	return etaSharedOn, nil
 }
 
+// GetCaseWorkaroundProvidedOn implements CaseRepository.
+func (r *caseRepo) GetCaseWorkaroundProvidedOn(ctx context.Context, caseID string) (*time.Time, error) {
+	var providedOn *time.Time
+	err := r.db.QueryRow(ctx, `SELECT workaround_provided_on FROM work_item WHERE id = $1`, caseID).Scan(&providedOn)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get case workaround provided on: %w", err)
+	}
+	return providedOn, nil
+}
+
 // ProjectContactEmailsByRole implements CaseRepository.
 func (r *caseRepo) ProjectContactEmailsByRole(ctx context.Context, projectID, role string) ([]string, error) {
 	rows, err := r.db.Query(ctx, `
@@ -4863,6 +4882,8 @@ var caseActivityFieldChangeLabelOverrides = map[string]string{
 	"assigned_to_id":          "Assigned to",
 	"acknowledged_by_user_id": "Acknowledged by",
 	"parent_id":               "Parent case",
+	"workaround_provided_on":  "Workaround Provided",
+	"fix_issued_on":           "Update Released",
 }
 
 func caseActivityFieldChangeLabel(fieldName string) string {
