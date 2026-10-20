@@ -757,8 +757,9 @@ else `no-answer`), and PUTs `completed`/`no-answer`/`busy`/`failed` to
 restart during the wait leaves the status `pending` (accepted for phase 1).
 
 **Call outcomes** (`call_outcome.go`, `ALERTING_CALL_OUTCOME_CHECK`, default
-off): a rung's call is logged `ALERT TRIGGERED ... status=queued`, which only
-says Twilio took it. With the flag on, `Engine.WithCallOutcomeWatcher` gives
+on, `false` turns it off): a rung's call is logged `ALERT TRIGGERED ...
+status=queued`, which only says Twilio took it. Unless the flag is `false`,
+`Engine.WithCallOutcomeWatcher` gives
 both engines one `CallOutcomeWatcher`, and every call `placeVia` places (a
 `ChannelCall` delivery with a sid) is asked of Twilio the same way a test call
 is -- after 60 s, every 20 s, up to 3 min -- then logged once as

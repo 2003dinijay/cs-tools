@@ -958,11 +958,12 @@ func main() {
 			// its own consumer group and its own store namespace, because a
 			// P0 CRE incident climbs both ladders at the same time and the
 			// two must not mistake each other for a redelivery.
-			// ALERTING_CALL_OUTCOME_CHECK (default false): log how each placed
-			// call ended, asked of Twilio after the ring timeout -- the log
-			// otherwise stops at "queued". Shared by both engines; logging only.
+			// ALERTING_CALL_OUTCOME_CHECK (default true; "false" turns it off):
+			// log how each placed call ended, asked of Twilio after the ring
+			// timeout -- the log otherwise stops at "queued". Shared by both
+			// engines; logging only.
 			var callOutcomes *paging.CallOutcomeWatcher
-			if envBool("ALERTING_CALL_OUTCOME_CHECK", false) {
+			if envBool("ALERTING_CALL_OUTCOME_CHECK", true) {
 				callOutcomes = paging.NewCallOutcomeWatcher(ctx, twilioClient)
 			}
 
