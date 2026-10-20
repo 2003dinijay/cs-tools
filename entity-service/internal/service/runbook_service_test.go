@@ -106,19 +106,9 @@ func TestRunbookImport_RefusesAnEntryLeftWithoutAlerts(t *testing.T) {
 	}
 }
 
-func TestRunbookMergeAndUnmerge_Refusals(t *testing.T) {
+func TestRunbookUnmerge_Refusals(t *testing.T) {
 	svc := NewRunbookService(&recordingRunbookRepo{})
 	id := "11111111-1111-4111-8111-111111111111"
-	for name, req := range map[string]domain.MergeRunbooksRequest{
-		"one runbook":   {RunbookIDs: []string{id, " " + id + " "}},
-		"not an id":     {RunbookIDs: []string{id, "nope"}},
-		"relative link": {RunbookIDs: []string{id, "22222222-2222-4222-8222-222222222222"}, RunbookURL: strp("docs")},
-	} {
-		var ve *apierror.ValidationError
-		if _, err := svc.Merge(context.Background(), req); !errors.As(err, &ve) {
-			t.Errorf("merge, %s: err = %v, want a ValidationError", name, err)
-		}
-	}
 	var ve *apierror.ValidationError
 	if _, err := svc.Unmerge(context.Background(), id, domain.UnmergeRunbookAlertsRequest{Alerts: []string{" "}}); !errors.As(err, &ve) {
 		t.Errorf("unmerge with no alert: err = %v, want a ValidationError", err)

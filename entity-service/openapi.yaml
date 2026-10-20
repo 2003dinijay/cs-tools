@@ -9546,8 +9546,10 @@ paths:
         that holds its first listed alert (ignoring case and surrounding
         spaces), or is created with the next number when none of its alerts
         is listed. An alert listed under another runbook moves to the entry's
-        runbook, and a runbook left without alerts is removed (counted in
-        `removed`). Within the request, a later entry wins over an earlier one
+        runbook, and a runbook left without alerts is removed: `removed` lists
+        each one's number and the link it had. Every runbook that holds an
+        imported alert is locked first, so a concurrent unmerge or import
+        waits. Within the request, a later entry wins over an earlier one
         with the same alert; an entry left without alerts by later entries is
         a 400 and nothing is written. At most 5000 entries.
       operationId: importRunbooks
@@ -9572,56 +9574,6 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "404":
           description: Runbooks are not available on this deployment (it has no database).
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        "401":
-          description: No valid token.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        "403":
-          description: Not an internal caller.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        "500":
-          description: Unexpected error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-  /runbooks/merge:
-    post:
-      summary: Merge runbooks into one.
-      description: >
-        One transaction. The first runbook keeps its id and number, takes every
-        alert of the others and is relinked as given; the others are removed.
-      operationId: mergeRunbooks
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/MergeRunbooksRequest'
-      responses:
-        "200":
-          description: The merged runbook.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Runbook'
-        "400":
-          description: Fewer than two runbooks, an invalid id or link; nothing was written.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        "404":
-          description: A runbook does not exist, or runbooks are not available on this deployment.
           content:
             application/json:
               schema:
@@ -25847,21 +25799,6 @@ components:
           maxItems: 5000
           items:
             $ref: '#/components/schemas/SaveRunbookRequest'
-    MergeRunbooksRequest:
-      type: object
-      required: [runbookIds]
-      properties:
-        runbookIds:
-          type: array
-          minItems: 2
-          description: The runbook to keep first, then the runbooks merged into it.
-          items:
-            type: string
-            format: uuid
-        runbookUrl:
-          type: string
-          nullable: true
-          description: A full http(s) link; empty or null records that no runbook exists.
     UnmergeRunbookAlertsRequest:
       type: object
       required: [alerts]
@@ -25880,8 +25817,18 @@ components:
         updated:
           type: integer
         removed:
-          type: integer
-          description: Runbooks left without alerts because the import moved all of them elsewhere.
+          type: array
+          description: Runbooks left without alerts because the import moved all of them elsewhere, by number.
+          items:
+            type: object
+            required: [number, runbookUrl]
+            properties:
+              number:
+                type: string
+              runbookUrl:
+                type: string
+                nullable: true
+                description: The link the removed runbook had.
     ErrorResponse:
       type: object
       description: >-

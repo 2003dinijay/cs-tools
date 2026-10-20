@@ -64,6 +64,7 @@ import {
   cleanAlertNames,
   DEFAULT_RUNBOOK_FILTERS,
   filterRunbooks,
+  findAlertsContaining,
   findRunbookForIncident,
   isValidRunbookUrl,
   parseRunbookImport,
@@ -105,6 +106,7 @@ export default function RunbooksTab(): JSX.Element {
   const [notice, setNotice] = useState<{ severity: "success" | "error"; text: string } | null>(null);
   // An unmerge is confirmed first: the ✕ on a tag is easy to hit by accident.
   const [pendingUnmerge, setPendingUnmerge] = useState<{ runbook: Runbook; alert: string } | null>(null);
+  const [unmergeError, setUnmergeError] = useState<string | null>(null);
   const unmerge = useUnmergeRunbookAlerts();
 
   const linkedCount = runbooks.filter((r) => r.runbookUrl).length;
@@ -126,6 +128,7 @@ export default function RunbooksTab(): JSX.Element {
       { id: rb.id, alerts },
       {
         onSuccess: (res) => {
+          setPendingUnmerge(null);
           const created = (res?.runbooks ?? []).slice(1).map((r) => r.number);
           setNotice({
             severity: "success",
@@ -135,7 +138,8 @@ export default function RunbooksTab(): JSX.Element {
                 : `Moved ${alerts.length} alerts out of ${rb.number}, each into a runbook of its own.`,
           });
         },
-        onError: (err) => setNotice({ severity: "error", text: errorText(err, "Failed to unmerge the alert.") }),
+        // The confirmation stays open with the reason, next to the alert it was about.
+        onError: (err) => setUnmergeError(errorText(err, "Failed to unmerge the alert.")),
       },
     );
   };
@@ -163,7 +167,9 @@ export default function RunbooksTab(): JSX.Element {
             severity: "success",
             text:
               `Imported ${res.created} new and updated ${res.updated} existing runbooks.` +
-              (res.removed ? ` Removed ${res.removed} whose alerts all moved to another runbook.` : ""),
+              (res.removed?.length
+                ? ` Removed ${res.removed.map((r) => `${r.number} (${r.runbookUrl ?? "no link"})`).join(", ")}: all of their alerts moved to another runbook.`
+                : ""),
           }),
         onError: (err) => setNotice({ severity: "error", text: errorText(err, "Failed to import runbooks.") }),
       });
@@ -386,7 +392,10 @@ export default function RunbooksTab(): JSX.Element {
                         runbook={rb}
                         canWrite={canWrite}
                         busy={unmerge.isPending}
-                        onUnmerge={(alert) => setPendingUnmerge({ runbook: rb, alert })}
+                        onUnmerge={(alert) => {
+                          setUnmergeError(null);
+                          setPendingUnmerge({ runbook: rb, alert });
+                        }}
                       />
                     </TableCell>
                     <TableCell>
@@ -495,6 +504,7 @@ export default function RunbooksTab(): JSX.Element {
               "It keeps having no runbook link."
             )}
           </Typography>
+          {unmergeError && <Alert severity="error">{unmergeError}</Alert>}
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setPendingUnmerge(null)}>Cancel</Button>
@@ -503,7 +513,6 @@ export default function RunbooksTab(): JSX.Element {
             disabled={unmerge.isPending}
             onClick={() => {
               if (pendingUnmerge) handleUnmerge(pendingUnmerge.runbook, [pendingUnmerge.alert]);
-              setPendingUnmerge(null);
             }}
           >
             Unmerge
@@ -678,6 +687,8 @@ function RunbookDialog({ editing, existing, onClose }: RunbookDialogProps): JSX.
 function RunbookAlertSearch({ runbooks }: { runbooks: Runbook[] }): JSX.Element {
   const [query, setQuery] = useState("");
   const match = query.trim() ? findRunbookForIncident(runbooks, query) : undefined;
+  // No alert is contained in the text: it may be part of an alert name, so list the alerts that contain it.
+  const partial = query.trim() && !match ? findAlertsContaining(runbooks, query) : [];
 
   return (
     <Paper sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 1.5 }}>
@@ -695,11 +706,32 @@ function RunbookAlertSearch({ runbooks }: { runbooks: Runbook[] }): JSX.Element 
         slotProps={{ htmlInput: { "aria-label": "Search runbook with alert name" } }}
       />
       {query.trim() && (
-        <Alert severity={match?.runbook.runbookUrl ? "success" : "warning"}>
+        <Alert severity={match?.runbook.runbookUrl ? "success" : partial.length > 0 ? "info" : "warning"}>
           {match ? (
             <Typography variant="body2" sx={{ wordBreak: "break-word" }}>
               {match.runbook.number}, matched alert: {match.alertName}
             </Typography>
+          ) : partial.length > 0 ? (
+            <>
+              <Typography variant="body2">No alert matches this whole text. Alerts that contain it:</Typography>
+              <Box component="ul" sx={{ m: 0, mt: 0.5, pl: 2.5 }}>
+                {partial.map((p) => (
+                  <Typography component="li" variant="body2" key={p.alertName} sx={{ wordBreak: "break-word" }}>
+                    {p.runbook.number}: {p.alertName}
+                    {p.runbook.runbookUrl ? (
+                      <>
+                        {" "}
+                        <Link href={p.runbook.runbookUrl} target="_blank" rel="noopener noreferrer">
+                          Open runbook
+                        </Link>
+                      </>
+                    ) : (
+                      " (no runbook yet)"
+                    )}
+                  </Typography>
+                ))}
+              </Box>
+            </>
           ) : (
             <Typography variant="body2">No runbook covers this alert.</Typography>
           )}

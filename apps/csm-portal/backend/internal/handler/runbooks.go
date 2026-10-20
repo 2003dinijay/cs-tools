@@ -43,7 +43,6 @@ type entityRunbookClient interface {
 	UpdateRunbook(ctx context.Context, id string, body []byte) ([]byte, error)
 	DeleteRunbook(ctx context.Context, id string) ([]byte, error)
 	ImportRunbooks(ctx context.Context, body []byte) ([]byte, error)
-	MergeRunbooks(ctx context.Context, body []byte) ([]byte, error)
 	UnmergeRunbookAlerts(ctx context.Context, id string, body []byte) ([]byte, error)
 }
 
@@ -160,35 +159,8 @@ func (h *RunbookHandler) ImportRunbooks(w http.ResponseWriter, r *http.Request) 
 		func(ctx context.Context) ([]byte, error) { return h.entity.ImportRunbooks(ctx, fwd) })
 }
 
-type mergeRunbooksBody struct {
-	RunbookIDs []string `json:"runbookIds"`
-	RunbookURL *string  `json:"runbookUrl"`
-}
-
 type unmergeRunbookAlertsBody struct {
 	Alerts []string `json:"alerts"`
-}
-
-// MergeRunbooks handles POST /runbooks/merge.
-func (h *RunbookHandler) MergeRunbooks(w http.ResponseWriter, r *http.Request) {
-	body, callerID, ok := readScheduleBody(w, r)
-	if !ok {
-		return
-	}
-	var req mergeRunbooksBody
-	if err := json.Unmarshal(body, &req); err != nil || len(req.RunbookIDs) < 2 {
-		writeError(w, http.StatusBadRequest, "Send at least two runbooks to merge.")
-		return
-	}
-	for _, id := range req.RunbookIDs {
-		if !uuidRe.MatchString(strings.TrimSpace(id)) {
-			writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
-			return
-		}
-	}
-	fwd := mustJSON(req)
-	h.forward(w, r, callerID, "MergeRunbooks", "Failed to merge the runbooks.", http.StatusOK,
-		func(ctx context.Context) ([]byte, error) { return h.entity.MergeRunbooks(ctx, fwd) })
 }
 
 // UnmergeRunbookAlerts handles POST /runbooks/{id}/unmerge.

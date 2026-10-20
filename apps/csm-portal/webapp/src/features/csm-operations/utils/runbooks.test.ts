@@ -20,27 +20,28 @@ import {
   cleanAlertNames,
   DEFAULT_RUNBOOK_FILTERS,
   filterRunbooks,
+  findAlertsContaining,
   findRunbookForIncident,
   parseRunbookImport,
   type Runbook,
 } from "./runbooks";
 
 describe("parseRunbookImport", () => {
-  it("reads an object whose keys are comma-separated alert names, keeping spaces inside a name", () => {
+  it("reads an object whose keys are alert names, a comma included, as one alert each", () => {
     expect(
-      parseRunbookImport('{"Alert 1, Alert 2 ,alert 1": "https://docs.example.com/a", " Alert B ": ""}'),
+      parseRunbookImport('{"CPU > 90%, prod": "https://docs.example.com/a", " Alert B ": ""}'),
     ).toEqual([
-      { runbookUrl: "https://docs.example.com/a", alerts: ["Alert 1", "Alert 2"] },
+      { runbookUrl: "https://docs.example.com/a", alerts: ["CPU > 90%, prod"] },
       { runbookUrl: null, alerts: ["Alert B"] },
     ]);
   });
 
-  it("reads a list of runbooks with a list or a comma-separated string of alerts, ignoring a name", () => {
+  it("reads a list of runbooks with a list of alerts, a text alerts value as one alert, ignoring a name", () => {
     expect(
       parseRunbookImport('[{"name": "Gateway", "runbookUrl": null, "alerts": ["a", "b"]}, {"alerts": "c, d"}]'),
     ).toEqual([
       { runbookUrl: null, alerts: ["a", "b"] },
-      { runbookUrl: null, alerts: ["c", "d"] },
+      { runbookUrl: null, alerts: ["c, d"] },
     ]);
   });
 
@@ -59,7 +60,7 @@ describe("parseRunbookImport", () => {
   it("refuses bad JSON, entries with no alert and links that are not http(s)", () => {
     expect(() => parseRunbookImport("{")).toThrow("not valid JSON");
     expect(() => parseRunbookImport('[{"alerts": [" "]}]')).toThrow("Entry 1 needs at least one alert name");
-    expect(() => parseRunbookImport('{" , ": "https://x.example"}')).toThrow("at least one alert name");
+    expect(() => parseRunbookImport('{" ": "https://x.example"}')).toThrow("at least one alert name");
     expect(() => parseRunbookImport('{"A": "javascript:alert(1)"}')).toThrow("http(s)");
   });
 });
@@ -87,6 +88,22 @@ describe("findRunbookForIncident", () => {
   it("finds a runbook without a link, and nothing for an unknown subject", () => {
     expect(findRunbookForIncident(catalog, "node / jvm heap")?.runbook.runbookUrl).toBeNull();
     expect(findRunbookForIncident(catalog, "unrelated")).toBeUndefined();
+  });
+});
+
+describe("findAlertsContaining", () => {
+  const catalog = [
+    { number: "RB0000001", runbookUrl: "https://docs.example.com/gw", alerts: ["Gateway Latency High", "gw-5xx"] },
+    { number: "RB0000002", runbookUrl: null, alerts: ["Gateway Latency"] },
+  ];
+
+  it("lists the alerts whose name contains a partial name, shortest first", () => {
+    expect(findAlertsContaining(catalog, "gateway LATENCY").map((m) => [m.runbook.number, m.alertName])).toEqual([
+      ["RB0000002", "Gateway Latency"],
+      ["RB0000001", "Gateway Latency High"],
+    ]);
+    expect(findAlertsContaining(catalog, "nothing")).toEqual([]);
+    expect(findAlertsContaining(catalog, "  ")).toEqual([]);
   });
 });
 

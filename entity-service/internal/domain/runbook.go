@@ -49,13 +49,6 @@ type ImportRunbooksRequest struct {
 	Runbooks []SaveRunbookRequest `json:"runbooks"`
 }
 
-// MergeRunbooksRequest is the body of POST /runbooks/merge: the first runbook keeps its id and number and takes every alert of
-// the others, which are removed; it is relinked as given.
-type MergeRunbooksRequest struct {
-	RunbookIDs []string `json:"runbookIds"`
-	RunbookURL *string  `json:"runbookUrl"`
-}
-
 // UnmergeRunbookAlertsRequest is the body of POST /runbooks/{id}/unmerge: each alert leaves the runbook and becomes a
 // runbook of its own, with a new number and the same link.
 type UnmergeRunbookAlertsRequest struct {
@@ -66,6 +59,12 @@ type UnmergeRunbookAlertsRequest struct {
 type ImportRunbooksResponse struct {
 	Created int `json:"created"`
 	Updated int `json:"updated"`
-	// Removed counts the runbooks left without alerts because the file moved all of them elsewhere.
-	Removed int `json:"removed"`
+	// Removed lists the runbooks left without alerts because the file moved all of them elsewhere, by number.
+	Removed []RemovedRunbook `json:"removed"`
+}
+
+// RemovedRunbook is a runbook an import removed: its number and the link it had.
+type RemovedRunbook struct {
+	Number     string  `json:"number"`
+	RunbookURL *string `json:"runbookUrl"`
 }
