@@ -36,6 +36,16 @@ vi.mock("@api/useSearchUsersByName", () => ({
   useSearchInternalUsersByName: (...args: unknown[]) => useSearchUsersByNameMock(...(args as [])),
 }));
 
+// The "Originating service request" picker searches service requests through
+// the backend client — stub it with one result.
+vi.mock("@features/csm-operations/api/useSearchServiceRequestsForSelect", () => ({
+  useSearchServiceRequestsForSelect: () => ({
+    data: [{ id: "case-2", number: "CS0002", subject: "Rotate the certificates" }],
+    isFetching: false,
+    isError: false,
+  }),
+}));
+
 // Customer Project picker: a plain labelled input that reports the typed id and
 // its display name; exposes whether it may be cleared.
 const PROJECT_NAMES: Record<string, string> = { "proj-a": "Acme Project", "proj-b": "Beta Project" };
@@ -395,6 +405,31 @@ describe("EditChangeRequestDialog — assigned engineer", () => {
   it("leaves Save disabled when nothing changed, even with an existing assignee", () => {
     renderDialog({ assignedEngineer: { id: "user-1", name: "Jane Doe" } });
     expect(saveButton()).toBeDisabled();
+  });
+});
+
+describe("EditChangeRequestDialog — originating service request", () => {
+  const picker = (): HTMLElement => screen.getByLabelText(/^originating service request$/i);
+  const pick = (): void => {
+    fireEvent.change(picker(), { target: { value: "CS0002" } });
+    fireEvent.click(screen.getByRole("option", { name: "CS0002 — Rotate the certificates" }));
+  };
+
+  it("links a change request raised without one", () => {
+    const { onSave } = renderDialog();
+    expect(picker()).toHaveValue("");
+    pick();
+    fireEvent.click(saveButton());
+    expect(onSave).toHaveBeenCalledWith({ caseId: "case-2" });
+  });
+
+  it("shows the current link and replaces it", () => {
+    const { onSave } = renderDialog({ case: { id: "case-1", name: "CS0001" } });
+    expect(picker()).toHaveValue("CS0001");
+    expect(saveButton()).toBeDisabled();
+    pick();
+    fireEvent.click(saveButton());
+    expect(onSave).toHaveBeenCalledWith({ caseId: "case-2" });
   });
 });
 

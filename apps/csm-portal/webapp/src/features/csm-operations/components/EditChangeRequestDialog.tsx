@@ -39,10 +39,12 @@ import {
 import { useCallback, useMemo, useState, type JSX } from "react";
 import { useSearchGroups } from "@api/useSearchGroups";
 import { useSearchInternalUsersByName } from "@api/useSearchUsersByName";
+import { useSearchServiceRequestsForSelect } from "@features/csm-operations/api/useSearchServiceRequestsForSelect";
 import type {
   BeChangeRequestCategory,
   BeChangeRequestDetail,
   BeGroup,
+  BeCaseSearchView,
   BePatchChangeRequestPayload,
   BeUser,
 } from "@api/backend/types";
@@ -72,6 +74,7 @@ import {
   EMERGENCY_CUSTOMER_STEPS_HELPER,
   isChangeRequestCreationPhase,
   isEmergencyChangeRequestType,
+  parentRecordLabel,
 } from "@features/csm-operations/utils/changeRequests";
 
 const { DateTimePicker, LocalizationProvider } = DatePickers;
@@ -169,7 +172,9 @@ function useRichTextPlanField(storedHtml?: string | null): RichTextPlanField {
 }
 
 /**
- * Edit the change-request fields the BE allows updating: the planned window,
+ * Edit the change-request fields the BE allows updating: the originating
+ * service request (`caseId`; a change request raised without one can be linked
+ * afterwards, and a wrong link corrected), the planned window,
  * the assignment group, the individual assignee, requester, customer group,
  * rollback duration, the implementation/rollback/test/affected-services/
  * affected-components plans (the last five added 2026-08-20, see
@@ -236,6 +241,7 @@ export default function EditChangeRequestDialog({
   const initialAssignedTeamId = cr.assignedTeam?.id ?? "";
   const initialAssignedEngineerId = cr.assignedEngineer?.id ?? "";
   const initialRequestedById = cr.requestedBy?.id ?? "";
+  const initialCaseId = cr.case?.id ?? "";
   const initialRollbackDurationText = cr.rollbackDurationText ?? "";
   const initialIsPlanningVisibleToCustomers = cr.isPlanningVisibleToCustomers ?? false;
   const initialCustomerApprovalRequired = cr.customerApprovalRequired ?? false;
@@ -288,6 +294,7 @@ export default function EditChangeRequestDialog({
     deploymentProducts: cr.deploymentProducts?.map((p) => ({ id: p.id, label: p.name })),
   });
   const [requestedById, setRequestedById] = useState(initialRequestedById);
+  const [caseId, setCaseId] = useState(initialCaseId);
   const [rollbackDurationText, setRollbackDurationText] = useState(initialRollbackDurationText);
   const [isPlanningVisibleToCustomers, setIsPlanningVisibleToCustomers] = useState(
     initialIsPlanningVisibleToCustomers,
@@ -363,6 +370,11 @@ export default function EditChangeRequestDialog({
     if (requestedById !== initialRequestedById && requestedById) {
       next.requestedById = requestedById;
     }
+    // Like the pickers above, a cleared link is not sent: the patch has no way
+    // to express "no originating service request".
+    if (caseId !== initialCaseId && caseId) {
+      next.caseId = caseId;
+    }
     if (isPlanningVisibleToCustomers !== initialIsPlanningVisibleToCustomers) {
       next.isPlanningVisibleToCustomers = isPlanningVisibleToCustomers;
     }
@@ -405,6 +417,8 @@ export default function EditChangeRequestDialog({
     initialDeploymentIds,
     requestedById,
     initialRequestedById,
+    caseId,
+    initialCaseId,
     isPlanningVisibleToCustomers,
     initialIsPlanningVisibleToCustomers,
     customerApprovalRequired,
@@ -588,6 +602,29 @@ export default function EditChangeRequestDialog({
             getId={(u) => u.id!}
             getLabel={userLabel}
             knownLabel={cr.assignedEngineer?.name}
+          />
+          {/*
+            Service requests only: the PATCH resolves `caseId` against the case
+            table, so an incident (which the create form's picker can find but
+            never submit) has no place here.
+          */}
+          <AsyncEntitySelect<BeCaseSearchView>
+            id="cr-edit-originating-service-request"
+            label="Originating service request"
+            placeholder="Search service requests by CS number or subject…"
+            value={caseId}
+            onChange={setCaseId}
+            disabled={isSaving}
+            useSearch={useSearchServiceRequestsForSelect}
+            searchExtra={cr.project?.id}
+            getId={(c) => c.id}
+            getLabel={(c) => parentRecordLabel({ id: c.id, number: c.number, subject: c.subject })}
+            knownLabel={cr.case?.name}
+            helperText={
+              initialCaseId
+                ? "The service request this change request was raised from."
+                : "Link the service request this change request was raised from, if any."
+            }
           />
           <AsyncEntitySelect<BeUser>
             id="cr-edit-requested-by"
