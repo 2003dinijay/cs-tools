@@ -52,6 +52,8 @@ import (
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/schedule"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/stalecases"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/teamschedule"
+	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/worklogreport"
+	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/worklogsreport"
 )
 
 func main() {
@@ -105,6 +107,23 @@ func main() {
 	})
 	if err != nil {
 		slog.Error("failed to construct entity-service case-search client", "err", err)
+		os.Exit(1)
+	}
+
+	// The CS Worklogs reports' own client. Same deployment and
+	// credentials, separate client for the same reason as the others: a
+	// distinct endpoint whose timeout differs materially. A weekly report
+	// reads every time card in a seven-day window across every delivery
+	// team, so it allows ninety seconds.
+	worklogReportClient, err := worklogreport.NewClient(worklogreport.Config{
+		BaseURL:      entityServiceBaseURL,
+		TokenURL:     oauthTokenURL,
+		ClientID:     oauthClientID,
+		ClientSecret: oauthClientSecret,
+		Scopes:       entityServiceScopes,
+	})
+	if err != nil {
+		slog.Error("failed to construct entity-service worklog-report client", "err", err)
 		os.Exit(1)
 	}
 
@@ -301,7 +320,20 @@ func main() {
 	const staleCaseThreshold = 30 * 24 * time.Hour
 
 	const openCasesTaskName = "open_cases_report"
+	// Where an issue key in a CS Worklogs mail points. ServiceNow linked
+	// into its agent workspace, a URL that dies at cutover; leaving this
+	// unset renders the keys as plain text rather than as links to
+	// nowhere.
+	notify.CaseLinkBase = "https://support.wso2.com"
+	if v, ok := os.LookupEnv("CSM_PORTAL_BASE_URL"); ok {
+		notify.CaseLinkBase = v
+	}
+
+	const worklogsDailyTaskName = "cs_worklogs_daily_report"
+	const worklogsWeeklyTaskName = "cs_worklogs_weekly_report"
 	openCasesTo, openCasesCc := recipientsFor(recipientOverrides, openCasesTaskName)
+	worklogsDailyTo, worklogsDailyCc := recipientsFor(recipientOverrides, worklogsDailyTaskName)
+	worklogsWeeklyTo, worklogsWeeklyCc := recipientsFor(recipientOverrides, worklogsWeeklyTaskName)
 
 	const publishScheduledAnnouncementsTaskName = "publish_scheduled_announcements"
 	publishScheduledAnnouncementsTo, publishScheduledAnnouncementsCc := recipientsFor(recipientOverrides, publishScheduledAnnouncementsTaskName)
@@ -361,6 +393,37 @@ func main() {
 			Handler:  opencases.SendReport(entityCasesClient, emailClient, openCasesTo, openCasesCc, alertsEnabled),
 			To:       openCasesTo,
 			Cc:       openCasesCc,
+		},
+		// The CS Worklogs reports. Both default schedules are the times
+		// ServiceNow actually sends at, expressed in UTC because these
+		// cron strings are UTC: WeeklyReportAutomation V2 triggers Monday
+		// 16:00 UTC, which is 21:30 Asia/Colombo and the timestamp on the
+		// delivered weekly mail; the daily one arrives 09:25 Colombo,
+		// which is 03:55 UTC. The REPORTED range is derived in
+		// Asia/Colombo regardless -- see worklogsreport.ReportTimezone --
+		// because at 03:55 UTC the two zones disagree about which day
+		// "yesterday" is.
+		//
+		// Recipients come from SUB_CRON_RECIPIENTS and the two lists are
+		// NOT the same: the delivered mails have different audiences,
+		// with group addresses in To on the daily and in Cc on the
+		// weekly. Sends nothing (but still succeeds) if the To list is
+		// empty.
+		{
+			Name:     worklogsDailyTaskName,
+			Schedule: scheduleFor(scheduleOverrides, worklogsDailyTaskName, "55 3 * * *"),
+			Handler: worklogsreport.SendDaily(worklogReportClient, emailClient,
+				worklogsDailyTo, worklogsDailyCc, alertsEnabled),
+			To: worklogsDailyTo,
+			Cc: worklogsDailyCc,
+		},
+		{
+			Name:     worklogsWeeklyTaskName,
+			Schedule: scheduleFor(scheduleOverrides, worklogsWeeklyTaskName, "0 16 * * 1"),
+			Handler: worklogsreport.SendWeekly(worklogReportClient, emailClient,
+				worklogsWeeklyTo, worklogsWeeklyCc, alertsEnabled),
+			To: worklogsWeeklyTo,
+			Cc: worklogsWeeklyCc,
 		},
 		// The first sub-cron here that does real, per-row, multi-step,
 		// partial-failure-tolerant work rather than a bulk delete or a

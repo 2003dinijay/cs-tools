@@ -234,8 +234,17 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		githubSync service.GithubSyncService
 	)
 	var scheduledTaskRunHandler *handler.ScheduledTaskRunHandler
+	var worklogReportHandler *handler.WorklogReportHandler
 	if db != nil {
 		scheduledTaskRunHandler = handler.NewScheduledTaskRunHandler(service.NewScheduledTaskRunService(repository.NewScheduledTaskRunRepository(db)))
+		// The CS Worklogs reports cover the CRE delivery teams: the two
+		// ABTs and the standalone regional ones. Leadership and the SME
+		// and SRE teams are out of scope -- they appear in neither
+		// delivered mail.
+		worklogReportHandler = handler.NewWorklogReportHandler(
+			service.NewWorklogReportService(
+				repository.NewWorklogReportRepository(repository.NewScoped(db)),
+				[]string{"cre-abt", "cre"}))
 		if cfg.HasGithubIntegration() {
 			githubLabels, labelErr := service.NewGithubLabels(service.GithubLabelOverrides{
 				TypeIncident:       cfg.GithubLabelTypeIncident,
@@ -1814,6 +1823,12 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("POST /github/service-requests", githubServiceRequestHandler.Create)
 	}
 
+	if worklogReportHandler != nil {
+		// internalOnly, not merely authenticated. The report names every
+		// engineer, what they worked on and how long it took; a customer
+		// token must never reach it.
+		mux.HandleFunc("GET /reports/worklogs", internalOnly(accessSvc, worklogReportHandler.GetWorklogReport))
+	}
 	if scheduledTaskRunHandler != nil {
 		mux.HandleFunc("POST /scheduled-tasks/attempts", scheduledTaskRunHandler.AttemptScheduledTaskRun)
 		mux.HandleFunc("PATCH /scheduled-tasks/attempts/{id}", scheduledTaskRunHandler.UpdateScheduledTaskRunAttempt)
