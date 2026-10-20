@@ -75,17 +75,21 @@ func DailyDate(now time.Time, loc *time.Location) time.Time {
 	return time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -1)
 }
 
-// SendDaily returns the daily sub-cron handler.
-func SendDaily(reports ReportFetcher, email EmailSender, to, cc []string, emailsEnabled bool) func(ctx context.Context) error {
-	return send(reports, email, worklogreport.CadenceDaily, to, cc, emailsEnabled)
+// SendDaily returns the daily sub-cron handler. anchor supplies the
+// scheduled firing time this run belongs to -- see send.
+func SendDaily(reports ReportFetcher, email EmailSender, anchor func() time.Time,
+	to, cc []string, emailsEnabled bool) func(ctx context.Context) error {
+	return send(reports, email, worklogreport.CadenceDaily, anchor, to, cc, emailsEnabled)
 }
 
 // SendWeekly returns the weekly sub-cron handler.
-func SendWeekly(reports ReportFetcher, email EmailSender, to, cc []string, emailsEnabled bool) func(ctx context.Context) error {
-	return send(reports, email, worklogreport.CadenceWeekly, to, cc, emailsEnabled)
+func SendWeekly(reports ReportFetcher, email EmailSender, anchor func() time.Time,
+	to, cc []string, emailsEnabled bool) func(ctx context.Context) error {
+	return send(reports, email, worklogreport.CadenceWeekly, anchor, to, cc, emailsEnabled)
 }
 
-// send fetches, renders and sends one report.
+// send fetches, renders and sends one report for the period its anchor
+// names.
 //
 // *** RECIPIENTS COME FROM CONFIGURATION, NOT FROM THE DATA. ***
 //
@@ -107,7 +111,7 @@ func SendWeekly(reports ReportFetcher, email EmailSender, to, cc []string, email
 // and a day where the mail simply does not arrive is indistinguishable
 // from a day where the job broke.
 func send(reports ReportFetcher, email EmailSender, cadence worklogreport.Cadence,
-	to, cc []string, emailsEnabled bool) func(ctx context.Context) error {
+	anchor func() time.Time, to, cc []string, emailsEnabled bool) func(ctx context.Context) error {
 
 	return func(ctx context.Context) error {
 		if !emailsEnabled || len(to) == 0 {
@@ -119,11 +123,21 @@ func send(reports ReportFetcher, email EmailSender, cadence worklogreport.Cadenc
 			return fmt.Errorf("worklogsreport: load %s: %w", ReportTimezone, err)
 		}
 
+		// The range comes from the SCHEDULED FIRING, never from the
+		// wall clock. The engine retries a failed period on every tick
+		// until the next firing, so a daily run that fails at 03:55 UTC
+		// and succeeds on a retry after 18:30 UTC -- already the next
+		// day in Colombo -- would otherwise report the wrong day
+		// entirely: the day it owed would never be sent, and the
+		// following one would be sent twice. anchor is
+		// schedule.PeriodKey for this task's cron, so it is identical
+		// for every attempt at the same period.
+		at := anchor()
 		var from, until time.Time
 		if cadence == worklogreport.CadenceWeekly {
-			from, until = WeeklyRange(time.Now(), loc)
+			from, until = WeeklyRange(at, loc)
 		} else {
-			from = DailyDate(time.Now(), loc)
+			from = DailyDate(at, loc)
 			until = from
 		}
 

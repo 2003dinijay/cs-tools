@@ -334,6 +334,8 @@ func main() {
 	openCasesTo, openCasesCc := recipientsFor(recipientOverrides, openCasesTaskName)
 	worklogsDailyTo, worklogsDailyCc := recipientsFor(recipientOverrides, worklogsDailyTaskName)
 	worklogsWeeklyTo, worklogsWeeklyCc := recipientsFor(recipientOverrides, worklogsWeeklyTaskName)
+	worklogsDailySchedule := scheduleFor(scheduleOverrides, worklogsDailyTaskName, "55 3 * * *")
+	worklogsWeeklySchedule := scheduleFor(scheduleOverrides, worklogsWeeklyTaskName, "0 16 * * 1")
 
 	const publishScheduledAnnouncementsTaskName = "publish_scheduled_announcements"
 	publishScheduledAnnouncementsTo, publishScheduledAnnouncementsCc := recipientsFor(recipientOverrides, publishScheduledAnnouncementsTaskName)
@@ -409,21 +411,29 @@ func main() {
 		// with group addresses in To on the daily and in Cc on the
 		// weekly. Sends nothing (but still succeeds) if the To list is
 		// empty.
+		//
+		// To and Cc are left nil DELIBERATELY. The engine mails
+		// task.To plus ALERT_RECIPIENTS on every failed attempt, and a
+		// failed period is retried on every tick until the next
+		// firing. These two audiences are the whole CS leadership plus
+		// several distribution lists, so an entity-service outage
+		// would send them an hourly FAILED notice for up to a day
+		// (daily) or a week (weekly). The report audience and the
+		// alert audience are not the same people: the recipients go to
+		// the handler, the failures go to ALERT_RECIPIENTS.
 		{
 			Name:     worklogsDailyTaskName,
-			Schedule: scheduleFor(scheduleOverrides, worklogsDailyTaskName, "55 3 * * *"),
+			Schedule: worklogsDailySchedule,
 			Handler: worklogsreport.SendDaily(worklogReportClient, emailClient,
+				periodStart(worklogsDailySchedule),
 				worklogsDailyTo, worklogsDailyCc, alertsEnabled),
-			To: worklogsDailyTo,
-			Cc: worklogsDailyCc,
 		},
 		{
 			Name:     worklogsWeeklyTaskName,
-			Schedule: scheduleFor(scheduleOverrides, worklogsWeeklyTaskName, "0 16 * * 1"),
+			Schedule: worklogsWeeklySchedule,
 			Handler: worklogsreport.SendWeekly(worklogReportClient, emailClient,
+				periodStart(worklogsWeeklySchedule),
 				worklogsWeeklyTo, worklogsWeeklyCc, alertsEnabled),
-			To: worklogsWeeklyTo,
-			Cc: worklogsWeeklyCc,
 		},
 		// The first sub-cron here that does real, per-row, multi-step,
 		// partial-failure-tolerant work rather than a bulk delete or a
