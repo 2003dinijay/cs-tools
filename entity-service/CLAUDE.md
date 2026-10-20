@@ -7235,6 +7235,19 @@ ServiceNow's services (`scanSNServices`: only a complete scan may conclude "not 
 list carries no group's active flag, so that set cannot leave out an inactive group.
 `GET /incidents/create-defaults` (internal only) reports the default service and its group.
 
+## Case Alerts group routes reference the assignment group (migration 0243)
+
+`paging_group_route` (0233) matched an incident's assignment group by its typed name only.
+0243 adds a nullable `group_id` (FK `"group"`, `ON DELETE SET NULL`), a unique partial index
+`(ladder, group_id)` and a backfill where exactly one `"group"` row has the route's name;
+`IF NOT EXISTS` throughout, re-runnable. `SaveRoute` with a `groupId` (Alert Settings picks it from
+`routeOptions.assignmentGroups`, the active support groups, `supportGroupSetSQL`) stores the
+group's own name and id, 400 when the id is not one of them. `ListRoutes`/`Runtime` read the
+group's current name through `group_id`, so a rename in ServiceNow keeps its route.
+`CaseAlertSettings.unmappedGroups` (SRE viewers only) lists the support groups no enabled SRE route
+covers and no team is named after: csm-notification-service posts their incident cards to the shared
+SRE room. Deploy entity-service before the BFF and webapp that send `groupId` (strict decoding).
+
 ## IT services (CMDB services)
 
 `service` (migration 0044) is the CMDB service catalogue: `incident`,

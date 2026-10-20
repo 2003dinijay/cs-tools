@@ -458,6 +458,16 @@ export interface CaseAlertSettings {
   running?: CaseAlertRunning;
   /** The lists a group route is made from; absent for somebody who may see nothing. */
   routeOptions?: CaseAlertRouteOptions;
+  /** SRE viewers only: active assignment groups no enabled SRE redirect
+   *  covers and no Team Schedule team is named after. Their incident cards go
+   *  to the shared SRE room. Absent when there are none. */
+  unmappedGroups?: CaseAlertAssignmentGroup[];
+}
+
+/** A ServiceNow assignment group (a "group" row that is a service's support group). */
+export interface CaseAlertAssignmentGroup {
+  id: string;
+  name: string;
 }
 
 /** A team as a route option: CRE, SRE or SME. */
@@ -476,6 +486,9 @@ export interface CaseAlertRouteOptions {
   groups: CaseAlertTeamOption[];
   teams: CaseAlertTeamOption[];
   rotas: { code: string; label: string }[];
+  /** The active assignment groups a redirect can be picked for. Absent from
+   *  an older server. */
+  assignmentGroups?: CaseAlertAssignmentGroup[];
 }
 
 /** A chat room: a ladder's shared room (no teamKey) or an SRE or SME team's
@@ -510,6 +523,9 @@ export interface CaseAlertGroupRoute {
   id: string;
   ladder: CaseAlertLadder;
   groupName: string;
+  /** The assignment group the redirect was picked for; absent for one saved
+   *  by name. Its groupName is then the group's current name. */
+  groupId?: string;
   teamKey?: string;
   rotaCode?: string;
   enabled: boolean;

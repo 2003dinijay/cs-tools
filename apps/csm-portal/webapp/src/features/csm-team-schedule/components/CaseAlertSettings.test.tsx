@@ -233,6 +233,79 @@ describe("CaseAlertSettings", () => {
     expect(screen.getByText(/^✓ Saved/)).toHaveTextContent("✓ Saved 2 changes.");
   });
 
+  it("redirects an assignment group picked from the list, by its id", async () => {
+    const IAAS = "77777777-7777-4777-8777-000000000001";
+    const base = make();
+    settings.data = make({
+      routeOptions: {
+        ...base.routeOptions!,
+        assignmentGroups: [
+          { id: IAAS, name: "WSO2 IaaS Team" },
+          // Named like a team above: offered there, not twice.
+          { id: "77777777-7777-4777-8777-000000000002", name: "Apollo" },
+        ],
+      },
+    });
+    render(<CaseAlertSettings chain="SRE_SAAS" />);
+    expect(screen.getAllByRole("option", { name: "Apollo" })).toHaveLength(2); // the group list and the target list
+    fireEvent.change(screen.getByLabelText("When an incident is assigned to"), {
+      target: { value: `\u0000ag:${IAAS}` },
+    });
+    fireEvent.change(screen.getByLabelText("send its alerts to"), {
+      target: { value: "team:apollo" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    expect(screen.getByText(/^Added to this tab's changes:/)).toHaveTextContent(
+      "Added to this tab's changes: redirect from WSO2 IaaS Team to Apollo. Submit to save them.",
+    );
+    await submit();
+    expect(saveRoute.mutateAsync).toHaveBeenCalledWith({
+      ladder: "SRE",
+      groupName: "WSO2 IaaS Team",
+      groupId: IAAS,
+      teamKey: "apollo",
+    });
+  });
+
+  it("gives a typed name the id of the one assignment group that has it", async () => {
+    const IAAS = "77777777-7777-4777-8777-000000000001";
+    const base = make();
+    settings.data = make({
+      routeOptions: { ...base.routeOptions!, assignmentGroups: [{ id: IAAS, name: "WSO2 IaaS Team" }] },
+    });
+    render(<CaseAlertSettings chain="SRE_SAAS" />);
+    fireEvent.change(screen.getByLabelText("When an incident is assigned to"), {
+      target: { value: "\u0000other" },
+    });
+    fireEvent.change(screen.getByLabelText("Assignment group name"), {
+      target: { value: "wso2 iaas team" },
+    });
+    fireEvent.change(screen.getByLabelText("send its alerts to"), {
+      target: { value: "team:apollo" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    await submit();
+    expect(saveRoute.mutateAsync).toHaveBeenCalledWith({
+      ladder: "SRE",
+      groupName: "wso2 iaas team",
+      groupId: IAAS,
+      teamKey: "apollo",
+    });
+  });
+
+  it("warns about SRE assignment groups no redirect covers", () => {
+    settings.data = make({
+      unmappedGroups: [
+        { id: "a1", name: "WSO2 IaaS Team" },
+        { id: "a2", name: "U2 SRE Group" },
+      ],
+    });
+    render(<CaseAlertSettings chain="SRE_SAAS" />);
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "2 assignment groups have no SRE team: their incident cards go to the shared SRE room. Add a redirect for WSO2 IaaS Team, U2 SRE Group.",
+    );
+  });
+
   it("redirects an SRE assignment group that is not a CSM Portal team, typed by name", async () => {
     render(<CaseAlertSettings chain="SRE_SAAS" />);
     fireEvent.change(screen.getByLabelText("When an incident is assigned to"), {

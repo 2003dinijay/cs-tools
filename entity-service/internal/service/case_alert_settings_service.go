@@ -289,7 +289,37 @@ func (s *caseAlertSettingsService) Get(ctx context.Context) (domain.CaseAlertSet
 	if out.RouteOptions, err = s.routeOptions(ctx); err != nil {
 		return domain.CaseAlertSettings{}, err
 	}
+	if c.ladder[familySRE] {
+		out.UnmappedGroups = unmappedSREGroups(out.RouteOptions, routes)
+	}
 	return out, nil
+}
+
+// unmappedSREGroups are the assignment groups whose incidents no SRE route
+// sends to a team or rota, and that no Team Schedule team is named as (the
+// alert service matches a group named as a team key or name without a
+// route): their cards go to the shared SRE room until a route is saved.
+func unmappedSREGroups(opts *domain.CaseAlertRouteOptions, routes []repository.CaseAlertRouteRow) []domain.CaseAlertAssignmentGroup {
+	covered := map[string]bool{}
+	for _, r := range routes {
+		if r.Ladder == familySRE && r.Enabled {
+			covered[r.GroupName] = true
+			if r.GroupID != "" {
+				covered["id:"+r.GroupID] = true
+			}
+		}
+	}
+	for _, t := range append(slices.Clone(opts.Groups), opts.Teams...) {
+		covered[strings.ToLower(strings.TrimSpace(t.Key))] = true
+		covered[strings.ToLower(strings.TrimSpace(t.Name))] = true
+	}
+	out := []domain.CaseAlertAssignmentGroup{}
+	for _, g := range opts.AssignmentGroups {
+		if !covered["id:"+g.ID] && !covered[strings.ToLower(strings.TrimSpace(g.Name))] {
+			out = append(out, g)
+		}
+	}
+	return out
 }
 
 // routeOptions are the lists the tab offers for a group route.
@@ -306,8 +336,16 @@ func (s *caseAlertSettingsService) routeOptions(ctx context.Context) (*domain.Ca
 	if err != nil {
 		return nil, err
 	}
+	assignment, err := s.repo.AssignmentGroups(ctx)
+	if err != nil {
+		return nil, err
+	}
 	out := &domain.CaseAlertRouteOptions{
 		Groups: []domain.CaseAlertTeamOption{}, Teams: []domain.CaseAlertTeamOption{}, Rotas: []domain.CaseAlertRotaOption{},
+		AssignmentGroups: []domain.CaseAlertAssignmentGroup{},
+	}
+	for _, g := range assignment {
+		out.AssignmentGroups = append(out.AssignmentGroups, domain.CaseAlertAssignmentGroup{ID: g.ID, Name: g.Name})
 	}
 	for _, g := range groups {
 		out.Groups = append(out.Groups, domain.CaseAlertTeamOption{Key: g.Key, Name: g.Name, Family: g.Family})
@@ -400,7 +438,7 @@ func roomView(r repository.CaseAlertRoomRow) domain.CaseAlertChatRoom {
 
 func routeView(r repository.CaseAlertRouteRow) domain.CaseAlertGroupRoute {
 	return domain.CaseAlertGroupRoute{
-		ID: r.ID, Ladder: r.Ladder, GroupName: r.GroupName, TeamKey: r.TeamKey, RotaCode: r.RotaCode,
+		ID: r.ID, Ladder: r.Ladder, GroupName: r.GroupName, GroupID: r.GroupID, TeamKey: r.TeamKey, RotaCode: r.RotaCode,
 		Enabled: r.Enabled, UpdatedBy: r.UpdatedBy, UpdatedOn: r.UpdatedOn,
 	}
 }
@@ -615,6 +653,21 @@ func (s *caseAlertSettingsService) SaveRoute(ctx context.Context, req domain.Sav
 	}
 	if req.Enabled != nil {
 		w.Enabled = *req.Enabled
+	}
+	if id := strings.TrimSpace(req.GroupID); id != "" {
+		// Picked from the assignment groups: the group's own name is what
+		// the route matches, whatever groupName says.
+		if err := validateUUIDs("groupId", []string{id}); err != nil {
+			return domain.CaseAlertGroupRoute{}, err
+		}
+		g, ok, err := s.repo.AssignmentGroupByID(ctx, id)
+		if err != nil {
+			return domain.CaseAlertGroupRoute{}, err
+		}
+		if !ok || g.Name == "" {
+			return domain.CaseAlertGroupRoute{}, &apierror.ValidationError{Msg: "groupId is not an assignment group"}
+		}
+		w.GroupID, w.GroupName = strings.ToLower(id), strings.ToLower(g.Name)
 	}
 	if w.GroupName == "" || len(w.GroupName) > maxCaseAlertGroupName {
 		return domain.CaseAlertGroupRoute{}, &apierror.ValidationError{Msg: fmt.Sprintf("groupName must be 1 to %d characters", maxCaseAlertGroupName)}

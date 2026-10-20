@@ -28,6 +28,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/apierror"
@@ -81,6 +82,14 @@ type GoogleChatConfig struct {
 type GoogleChatClient struct {
 	http                  *http.Client
 	webhookURLsByAudience map[string]string
+	// routedIncidentSpaces are incident audiences (IncidentAudience, and
+	// IncidentFallbackAudience) taken from the Alert Settings mapping: an
+	// assignment group -> its SRE team's saved room. Set once the paging
+	// configuration is loaded (SetIncidentRouteSpaces), guarded by mu, and
+	// checked before webhookURLsByAudience, so the mapping wins over an
+	// INCIDENT_CHAT_SPACES entry for the same group.
+	mu                   sync.RWMutex
+	routedIncidentSpaces map[string]string
 }
 
 // NewGoogleChatClient constructs a GoogleChatClient that routes alerts to the
@@ -114,8 +123,48 @@ func NewGoogleChatClient(cfg GoogleChatConfig) *GoogleChatClient {
 // *before* building the final audience list, not just when it's time to
 // send.
 func (c *GoogleChatClient) HasAudienceSpace(audience string) bool {
-	url, ok := c.webhookURLsByAudience[strings.TrimSpace(audience)]
-	return ok && url != ""
+	_, ok := c.webhookURLFor(audience)
+	return ok
+}
+
+// SetIncidentRouteSpaces replaces the incident audiences taken from the Alert
+// Settings mapping (incident audience -> webhook URL). Only keys under
+// IncidentAudiencePrefix are kept; nil or empty clears them.
+func (c *GoogleChatClient) SetIncidentRouteSpaces(spaces map[string]string) {
+	routed := make(map[string]string, len(spaces))
+	for audience, url := range spaces {
+		audience = strings.TrimSpace(audience)
+		if strings.HasPrefix(audience, IncidentAudiencePrefix) && strings.TrimSpace(url) != "" {
+			routed[audience] = url
+		}
+	}
+	c.mu.Lock()
+	c.routedIncidentSpaces = routed
+	c.mu.Unlock()
+}
+
+// AudienceWebhookURL is the webhook URL audience resolves to, if any, so the
+// paging configuration can point an incident audience at the room an SRE
+// team's audience-only chat section names. The URL is a credential and is
+// never logged.
+func (c *GoogleChatClient) AudienceWebhookURL(audience string) (string, bool) {
+	return c.webhookURLFor(audience)
+}
+
+// webhookURLFor resolves audience to its webhook URL: a routed incident
+// audience first, then the configured spaces.
+func (c *GoogleChatClient) webhookURLFor(audience string) (string, bool) {
+	audience = strings.TrimSpace(audience)
+	if strings.HasPrefix(audience, IncidentAudiencePrefix) {
+		c.mu.RLock()
+		url := c.routedIncidentSpaces[audience]
+		c.mu.RUnlock()
+		if url != "" {
+			return url, true
+		}
+	}
+	url, ok := c.webhookURLsByAudience[audience]
+	return url, ok && url != ""
 }
 
 // withThreadReplyOption adds the reply option a threaded webhook message
@@ -706,8 +755,8 @@ func (c *GoogleChatClient) sendCardToAudience(ctx context.Context, audience, num
 	if len(msg.CardsV2) > 0 {
 		alertType = msg.CardsV2[0].CardID
 	}
-	webhookURL, ok := c.webhookURLsByAudience[strings.TrimSpace(audience)]
-	if !ok || webhookURL == "" {
+	webhookURL, ok := c.webhookURLFor(audience)
+	if !ok {
 		slog.WarnContext(ctx, "notifications: no google chat space configured for audience; alert was not posted to it", "audience", audience, "number", number, "id", id, "alertType", alertType)
 		return nil
 	}

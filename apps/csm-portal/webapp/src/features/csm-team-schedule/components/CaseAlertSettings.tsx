@@ -388,6 +388,7 @@ function Redirects({
 }: RedirectsProps): JSX.Element {
   const canRoutes = s.canManage.routeLadders.includes(ladder);
   const routes = s.routes.filter((r) => r.ladder === ladder);
+  const unmapped = ladder === "SRE" ? (s.unmappedGroups ?? []) : [];
   return (
     <>
       <CaseAlertSection
@@ -397,9 +398,10 @@ function Redirects({
           routes.length === 0
             ? "none"
             : `${routes.length} redirect${routes.length === 1 ? "" : "s"}`
-        }`}
+        }${unmapped.length ? ` · ${unmapped.length} unmapped` : ""}`}
       >
         <p className="cas-sub">{ROUTE_WORDS[ladder].help}</p>
+        {unmapped.length ? <UnmappedGroups groups={unmapped} /> : null}
         <RouteTable
           ladder={ladder}
           routes={routes}
@@ -413,6 +415,27 @@ function Redirects({
         />
       </CaseAlertSection>
     </>
+  );
+}
+
+/** How many unmapped groups the warning names before "and N more". */
+const UNMAPPED_SHOWN = 5;
+
+/** The SRE assignment groups no redirect covers and no team is named after:
+ *  their incident cards go to the shared SRE room. */
+function UnmappedGroups({ groups }: { groups: { id: string; name: string }[] }): JSX.Element {
+  const shown = groups.slice(0, UNMAPPED_SHOWN).map((g) => g.name);
+  const more = groups.length - shown.length;
+  return (
+    <p className="cas-status warn" role="status">
+      {groups.length === 1
+        ? "1 assignment group has no SRE team"
+        : `${groups.length} assignment groups have no SRE team`}
+      {groups.length === 1 ? ": its" : ": their"} incident cards go to the shared SRE room. Add a
+      redirect for{" "}
+      {shown.join(", ")}
+      {more > 0 ? ` and ${more} more` : ""}.
+    </p>
   );
 }
 
@@ -1269,6 +1292,8 @@ const ROUTE_WORDS: Record<
 /** The group list's "type a name" entry: an SRE incident's assignment group
  *  that no CSM Portal team has. Not a name any team can have. */
 const OTHER_GROUP = "\u0000other";
+/** Prefix of an assignment group picked from the list: then the id follows. */
+const ASSIGNMENT_GROUP = "\u0000ag:";
 
 const ROUTE_GROUP_FAMILIES: Record<
   CaseAlertLadder,
@@ -1295,15 +1320,45 @@ function RouteTable({
   const [group, setGroup] = useState("");
   // The typed name when group is OTHER_GROUP (SRE only).
   const [otherGroup, setOtherGroup] = useState("");
-  const groupName = group === OTHER_GROUP ? otherGroup.trim() : group;
-  // "team:<key>" or "rota:<code>": one list, the ladder's teams first.
-  const [target, setTarget] = useState("");
-  const [confirmId, setConfirmId] = useState<string | null>(null);
-  const busy = drafts.submitting === family;
   const families = ROUTE_GROUP_FAMILIES[ladder];
   const groups = (options?.groups ?? []).filter((g) =>
     families.includes(g.family),
   );
+  // SRE incidents carry their ServiceNow assignment group: list those, less
+  // the ones a team above is already named after.
+  const assignmentGroups =
+    ladder === "SRE"
+      ? (options?.assignmentGroups ?? []).filter(
+          (a) => !groups.some((g) => g.name.toLowerCase() === a.name.toLowerCase()),
+        )
+      : [];
+  const pickedGroup = group.startsWith(ASSIGNMENT_GROUP)
+    ? (options?.assignmentGroups ?? []).find(
+        (a) => a.id === group.slice(ASSIGNMENT_GROUP.length),
+      )
+    : undefined;
+  const groupName =
+    group === OTHER_GROUP
+      ? otherGroup.trim()
+      : pickedGroup
+        ? pickedGroup.name
+        : group.startsWith(ASSIGNMENT_GROUP)
+          ? ""
+          : group;
+  /** The assignment group a name is, when exactly one has it (SRE only), so
+   *  the redirect follows a rename in ServiceNow. */
+  const groupIdFor = (name: string): string | undefined => {
+    if (pickedGroup) return pickedGroup.id;
+    if (ladder !== "SRE") return undefined;
+    const same = (options?.assignmentGroups ?? []).filter(
+      (a) => a.name.trim().toLowerCase() === name.trim().toLowerCase(),
+    );
+    return same.length === 1 ? same[0].id : undefined;
+  };
+  // "team:<key>" or "rota:<code>": one list, the ladder's teams first.
+  const [target, setTarget] = useState("");
+  const [confirmId, setConfirmId] = useState<string | null>(null);
+  const busy = drafts.submitting === family;
   const teams = (options?.teams ?? []).filter((t) => t.family === ladder);
   const rotas = options?.rotas ?? [];
   // A saved route holds the team's name in lower case; show it as the team
@@ -1357,6 +1412,7 @@ function RouteTable({
       input: {
         ladder,
         groupName,
+        ...(groupIdFor(groupName) ? { groupId: groupIdFor(groupName) } : {}),
         ...(kind === "team" ? { teamKey: value } : { rotaCode: value }),
       },
     });
@@ -1469,6 +1525,11 @@ function RouteTable({
               })}
               {ladder === "SRE" ? (
                 <optgroup label="Not a CSM Portal team">
+                  {assignmentGroups.map((a) => (
+                    <option key={a.id} value={`${ASSIGNMENT_GROUP}${a.id}`}>
+                      {a.name}
+                    </option>
+                  ))}
                   <option value={OTHER_GROUP}>Another assignment group…</option>
                 </optgroup>
               ) : null}
