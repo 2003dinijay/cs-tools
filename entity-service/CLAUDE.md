@@ -1579,9 +1579,10 @@ gap ("with servicenow data source all are shown").
 - **Workaround and update released**: `updateCaseFields` logs
   `workaround_provided_on` (set stores the new timestamp, recall stores the
   prior timestamp as old and an empty new; a recall of an unset workaround
-  logs nothing). It reads a best-effort before-state via `GetCaseByID` only
-  when `WorkaroundProvided` is in the request; a failed read is logged and
-  never fails the update. `updateCaseMarkFixIssued` logs `fix_issued_on` as
+  logs nothing). It reads the prior stamp via `GetCaseWorkaroundProvidedOn`
+  (`GetCaseByID` does not populate `WorkaroundProvidedOn` on this data
+  source) only when `WorkaroundProvided` is in the request; a failed read is
+  logged and never fails the update. `updateCaseMarkFixIssued` logs `fix_issued_on` as
   "Update Released" only when `!alreadySet`. Timestamps are RFC 3339 UTC so
   the feed renders them as date-times. Fix ETA values are deliberately not
   logged: they are internal until shared with the customer, and the

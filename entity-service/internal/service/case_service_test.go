@@ -79,6 +79,7 @@ type stubCaseRepo struct {
 	accountDefaultWatcherEmails   func(ctx context.Context, projectID string) ([]string, error)
 	projectOnboardingInfo         func(ctx context.Context, projectID string) (string, bool, error)
 	getCaseEtaSharedOn            func(ctx context.Context, caseID string) (*time.Time, error)
+	getCaseWorkaroundProvidedOn   func(ctx context.Context, caseID string) (*time.Time, error)
 	projectContactEmailsByRole    func(ctx context.Context, projectID, role string) ([]string, error)
 	updateCaseAssignee            func(ctx context.Context, caseID string, userID *string, callerEmail string) (time.Time, bool, error)
 	acknowledgeCase               func(ctx context.Context, caseID, actorID, actorEmail string) (bool, domain.AssignedEngineerRef, string, time.Time, error)
@@ -315,6 +316,15 @@ func (s *stubCaseRepo) ProjectOnboardingInfo(ctx context.Context, projectID stri
 func (s *stubCaseRepo) GetCaseEtaSharedOn(ctx context.Context, caseID string) (*time.Time, error) {
 	if s.getCaseEtaSharedOn != nil {
 		return s.getCaseEtaSharedOn(ctx, caseID)
+	}
+	return nil, nil
+}
+
+// GetCaseWorkaroundProvidedOn defaults to nil (no workaround marked) rather
+// than panicking, same reasoning as GetCaseEtaSharedOn above.
+func (s *stubCaseRepo) GetCaseWorkaroundProvidedOn(ctx context.Context, caseID string) (*time.Time, error) {
+	if s.getCaseWorkaroundProvidedOn != nil {
+		return s.getCaseWorkaroundProvidedOn(ctx, caseID)
 	}
 	return nil, nil
 }
@@ -1653,9 +1663,6 @@ func TestCaseService_UpdateCase_M2MCallerCannotProvideWorkaround(t *testing.T) {
 func TestCaseService_UpdateCase_CompletesWorkaroundSLAOnProvided(t *testing.T) {
 	workaroundProvided := true
 	repo := &stubCaseRepo{
-		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
-			return domain.CaseView{}, nil
-		},
 		updateCaseFields: func(_ context.Context, req domain.UpdateCaseRequest, actorID, actorEmail string) (time.Time, error) {
 			return time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC), nil
 		},
@@ -1682,9 +1689,6 @@ func TestCaseService_UpdateCase_CompletesWorkaroundSLAOnProvided(t *testing.T) {
 func TestCaseService_UpdateCase_DoesNotCompleteWorkaroundSLAOnRecall(t *testing.T) {
 	workaroundProvided := false
 	repo := &stubCaseRepo{
-		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
-			return domain.CaseView{}, nil
-		},
 		updateCaseFields: func(_ context.Context, req domain.UpdateCaseRequest, actorID, actorEmail string) (time.Time, error) {
 			return time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC), nil
 		},
@@ -1716,9 +1720,6 @@ func TestCaseService_UpdateCase_DoesNotCompleteWorkaroundSLAOnRecall(t *testing.
 func TestCaseService_UpdateCase_PublishesWorkaroundProvided(t *testing.T) {
 	workaroundProvided := true
 	repo := &stubCaseRepo{
-		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
-			return domain.CaseView{}, nil
-		},
 		updateCaseFields: func(_ context.Context, req domain.UpdateCaseRequest, actorID, actorEmail string) (time.Time, error) {
 			return time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC), nil
 		},
@@ -1753,9 +1754,6 @@ func TestCaseService_UpdateCase_PublishesWorkaroundProvided(t *testing.T) {
 func TestCaseService_UpdateCase_DoesNotPublishWorkaroundProvidedOnRecall(t *testing.T) {
 	workaroundProvided := false
 	repo := &stubCaseRepo{
-		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
-			return domain.CaseView{}, nil
-		},
 		updateCaseFields: func(_ context.Context, req domain.UpdateCaseRequest, actorID, actorEmail string) (time.Time, error) {
 			return time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC), nil
 		},

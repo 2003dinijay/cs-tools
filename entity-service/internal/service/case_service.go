@@ -3013,14 +3013,15 @@ func (s *caseService) updateCaseFields(ctx context.Context, req domain.UpdateCas
 		return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "workaroundProvided requires an authenticated end-user caller: a pure M2M caller has no user record to attribute it to"}
 	}
 
-	// before is read only for a workaround change: the recall entry needs the
-	// prior timestamp. A failed read is logged and never fails the update.
-	var before *domain.CaseView
+	// The prior workaround stamp is read only for a workaround change: the
+	// recall entry needs it. A failed read is logged and never fails the
+	// update.
+	var prevWorkaround *time.Time
 	if req.WorkaroundProvided != nil {
-		if cv, err := s.GetCaseByID(ctx, req.ID); err != nil {
-			slog.ErrorContext(ctx, "update case: read before-state for activity entries failed", "caseId", req.ID, "error", err)
+		if t, err := s.repo.GetCaseWorkaroundProvidedOn(ctx, req.ID); err != nil {
+			slog.ErrorContext(ctx, "update case: read prior workaround stamp for activity entry failed", "caseId", req.ID, "error", err)
 		} else {
-			before = &cv
+			prevWorkaround = t
 		}
 	}
 
@@ -3029,7 +3030,7 @@ func (s *caseService) updateCaseFields(ctx context.Context, req domain.UpdateCas
 		return domain.UpdateCaseResponse{}, err
 	}
 
-	s.recordCaseFieldsActivity(ctx, req, before, updatedOn, actor.Email)
+	s.recordCaseFieldsActivity(ctx, req, prevWorkaround, updatedOn, actor.Email)
 
 	// Deliberately independent of s.publisher (never touches Event Hub) --
 	// same reasoning every other SLAEngineService call site in this file
@@ -3129,13 +3130,13 @@ func (s *caseService) updateCaseFields(ctx context.Context, req domain.UpdateCas
 // workaround field: set stores the new timestamp, recall stores the prior one
 // as old (and nothing when it was not set), which the feed renders as a
 // date-time.
-func (s *caseService) recordCaseFieldsActivity(ctx context.Context, req domain.UpdateCaseRequest, before *domain.CaseView, updatedOn time.Time, actorEmail string) {
+func (s *caseService) recordCaseFieldsActivity(ctx context.Context, req domain.UpdateCaseRequest, prevOn *time.Time, updatedOn time.Time, actorEmail string) {
 	if req.WorkaroundProvided == nil {
 		return
 	}
 	var prev string
-	if before != nil && before.WorkaroundProvidedOn != nil {
-		prev = before.WorkaroundProvidedOn.UTC().Format(time.RFC3339)
+	if prevOn != nil {
+		prev = prevOn.UTC().Format(time.RFC3339)
 	}
 	if *req.WorkaroundProvided {
 		s.recordFieldChangeActivity(ctx, req.ID, "workaround_provided_on", prev, updatedOn.UTC().Format(time.RFC3339), actorEmail)

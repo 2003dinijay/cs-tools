@@ -23,7 +23,6 @@ import (
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/auth"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
-	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
 
 type fixActivityFixture struct {
@@ -31,13 +30,13 @@ type fixActivityFixture struct {
 	activity []recordedActivity
 }
 
-// newFixActivityFixture answers getCaseByID with the given before-state and
+// newFixActivityFixture answers the prior-workaround-stamp lookup and
 // records every activity row the service writes.
-func newFixActivityFixture(before domain.CaseView) *fixActivityFixture {
+func newFixActivityFixture(prevWorkaround *time.Time) *fixActivityFixture {
 	f := &fixActivityFixture{}
 	f.repo = &stubCaseRepo{
-		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
-			return before, nil
+		getCaseWorkaroundProvidedOn: func(context.Context, string) (*time.Time, error) {
+			return prevWorkaround, nil
 		},
 		updateCaseFields: func(context.Context, domain.UpdateCaseRequest, string, string) (time.Time, error) {
 			return time.Date(2026, 10, 19, 9, 30, 0, 0, time.UTC), nil
@@ -62,7 +61,7 @@ func fixActivityService(repo *stubCaseRepo) CaseService {
 }
 
 func TestCaseService_UpdateCase_WorkaroundSetLogsActivity(t *testing.T) {
-	f := newFixActivityFixture(domain.CaseView{ID: testDeploymentUUID})
+	f := newFixActivityFixture(nil)
 	provided := true
 	if _, err := fixActivityService(f.repo).UpdateCase(fixActivityUserCtx(t), domain.UpdateCaseRequest{ID: testDeploymentUUID, WorkaroundProvided: &provided}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -73,9 +72,34 @@ func TestCaseService_UpdateCase_WorkaroundSetLogsActivity(t *testing.T) {
 	}
 }
 
+func TestCaseService_UpdateCase_WorkaroundSetAfterPreviousStampLogsOldValue(t *testing.T) {
+	was := time.Date(2026, 10, 18, 8, 0, 0, 0, time.UTC)
+	f := newFixActivityFixture(&was)
+	provided := true
+	if _, err := fixActivityService(f.repo).UpdateCase(fixActivityUserCtx(t), domain.UpdateCaseRequest{ID: testDeploymentUUID, WorkaroundProvided: &provided}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := recordedActivity{"workaround_provided_on", "2026-10-18T08:00:00Z", "2026-10-19T09:30:00Z", "jane.doe@example.com"}
+	if len(f.activity) != 1 || f.activity[0] != want {
+		t.Errorf("activity = %+v, want [%+v]", f.activity, want)
+	}
+}
+
+func TestCaseService_UpdateCase_WorkaroundPriorStampReadFailureStillUpdates(t *testing.T) {
+	f := newFixActivityFixture(nil)
+	f.repo.getCaseWorkaroundProvidedOn = func(context.Context, string) (*time.Time, error) { return nil, context.DeadlineExceeded }
+	provided := false
+	if _, err := fixActivityService(f.repo).UpdateCase(fixActivityUserCtx(t), domain.UpdateCaseRequest{ID: testDeploymentUUID, WorkaroundProvided: &provided}); err != nil {
+		t.Fatalf("update must not fail on a prior-stamp read error: %v", err)
+	}
+	if len(f.activity) != 0 {
+		t.Errorf("activity = %+v, want none", f.activity)
+	}
+}
+
 func TestCaseService_UpdateCase_WorkaroundRecallLogsActivity(t *testing.T) {
 	was := time.Date(2026, 10, 18, 8, 0, 0, 0, time.UTC)
-	f := newFixActivityFixture(domain.CaseView{ID: testDeploymentUUID, WorkaroundProvidedOn: &was})
+	f := newFixActivityFixture(&was)
 	provided := false
 	if _, err := fixActivityService(f.repo).UpdateCase(fixActivityUserCtx(t), domain.UpdateCaseRequest{ID: testDeploymentUUID, WorkaroundProvided: &provided}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -87,7 +111,7 @@ func TestCaseService_UpdateCase_WorkaroundRecallLogsActivity(t *testing.T) {
 }
 
 func TestCaseService_UpdateCase_WorkaroundRecallWhenUnsetLogsNothing(t *testing.T) {
-	f := newFixActivityFixture(domain.CaseView{ID: testDeploymentUUID})
+	f := newFixActivityFixture(nil)
 	provided := false
 	if _, err := fixActivityService(f.repo).UpdateCase(fixActivityUserCtx(t), domain.UpdateCaseRequest{ID: testDeploymentUUID, WorkaroundProvided: &provided}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -111,7 +135,7 @@ func TestCaseService_UpdateCase_MarkFixIssuedLogsActivity(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newFixActivityFixture(domain.CaseView{})
+			f := newFixActivityFixture(nil)
 			f.repo.markCaseFixIssued = func(context.Context, string) (time.Time, bool, error) { return issued, tc.alreadySet, nil }
 			mark := true
 			if _, err := fixActivityService(f.repo).UpdateCase(tc.ctx, domain.UpdateCaseRequest{ID: testDeploymentUUID, MarkFixIssued: &mark}); err != nil {
