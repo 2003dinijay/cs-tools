@@ -50,6 +50,7 @@ import {
 } from "@features/csm-operations/utils/changeRequestsFiltersUrl";
 import SavedViewsMenu from "@features/csm-operations/components/SavedViewsMenu";
 import MultiSelectField from "@components/MultiSelectField";
+import AsyncTagMultiSelect from "@features/csm-cases/components/AsyncTagMultiSelect";
 import AsyncProjectMultiSelect from "@features/csm-cases/components/AsyncProjectMultiSelect";
 
 const { DatePicker, LocalizationProvider } = DatePickers;
@@ -277,6 +278,14 @@ export default function ChangeRequestsFilterBar({
                 id="cr-filter-project"
                 values={filters.projectIds}
                 onChange={(next) => onChange({ ...filters, projectIds: next })}
+              />
+            </Grid>
+            <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+              <AsyncTagMultiSelect
+                id="cr-filter-tag"
+                label="Tags"
+                values={filters.tags}
+                onChange={(next) => onChange({ ...filters, tags: next })}
               />
             </Grid>
             <Grid size={{ xs: 12, sm: 6, md: 3 }}>

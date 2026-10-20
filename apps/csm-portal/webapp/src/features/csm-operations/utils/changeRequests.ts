@@ -1248,6 +1248,9 @@ export interface ChangeRequestFilters {
    * (see `buildChangeRequestSearchFilters`), matching the entity-service's
    * own field name for this search. */
   projectIds: string[];
+  /** Selected tag names — sent as a generic `{ field: "tag", op: "in" }`
+   * filter entry: a change request carrying any of them matches. */
+  tags: string[];
 }
 
 export const DEFAULT_CR_FILTERS: ChangeRequestFilters = {
@@ -1258,6 +1261,7 @@ export const DEFAULT_CR_FILTERS: ChangeRequestFilters = {
   closedEndDate: "",
   sreTeamIds: [],
   projectIds: [],
+  tags: [],
 };
 
 /** Count non-search active filters (used for the badge on the Filters button). */
@@ -1268,7 +1272,8 @@ export function countActiveCRFilters(filters: ChangeRequestFilters): number {
     (filters.closedStartDate ? 1 : 0) +
     (filters.closedEndDate ? 1 : 0) +
     (filters.sreTeamIds.length > 0 ? 1 : 0) +
-    (filters.projectIds.length > 0 ? 1 : 0)
+    (filters.projectIds.length > 0 ? 1 : 0) +
+    (filters.tags.length > 0 ? 1 : 0)
   );
 }
 
@@ -1291,6 +1296,14 @@ export function buildChangeRequestSearchFilters(
   filters: ChangeRequestFilters,
   debouncedSearch: string,
 ): NonNullable<BeChangeRequestSearchPayload["filters"]> {
+  // SRE team and tag share the one generic `filters` array, so both entries
+  // are collected here rather than each spreading its own `filters` key.
+  const fieldFilters = [
+    ...(filters.sreTeamIds.length > 0
+      ? [{ field: "assignmentGroupId" as const, op: "in" as const, values: filters.sreTeamIds }]
+      : []),
+    ...(filters.tags.length > 0 ? [{ field: "tag" as const, op: "in" as const, values: filters.tags }] : []),
+  ];
   return {
     ...(debouncedSearch.length > 0 && { searchQuery: debouncedSearch }),
     ...(filters.states.length > 0 && { states: filters.states }),
@@ -1301,11 +1314,7 @@ export function buildChangeRequestSearchFilters(
     ...(filters.closedEndDate && {
       closedEndDate: crDateOnlyToISOEnd(filters.closedEndDate),
     }),
-    ...(filters.sreTeamIds.length > 0 && {
-      filters: [
-        { field: "assignmentGroupId" as const, op: "in" as const, values: filters.sreTeamIds },
-      ],
-    }),
+    ...(fieldFilters.length > 0 && { filters: fieldFilters }),
     ...(filters.projectIds.length > 0 && { projectIds: filters.projectIds }),
   };
 }

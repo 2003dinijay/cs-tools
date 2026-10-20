@@ -53,6 +53,9 @@ vi.mock("@features/csm-dashboard/api/useTeams", () => ({
 // The filter bar's Project control (`AsyncProjectMultiSelect`) goes through
 // the same shared infinite-query hook the cases list uses — stub it out for
 // the same "no QueryClientProvider" reason as the SRE Team mock above.
+vi.mock("@features/csm-cases/api/useSearchTags", () => ({
+  useSearchTags: () => ({ data: [], isFetching: false, isError: false }),
+}));
 vi.mock("@features/csm-cases/api/useProjectSearch", () => ({
   useInfiniteProjectSearch: () => ({
     projects: [],

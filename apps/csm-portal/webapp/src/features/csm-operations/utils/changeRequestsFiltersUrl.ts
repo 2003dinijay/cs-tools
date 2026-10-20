@@ -32,6 +32,7 @@ export const CR_FILTER_PARAM_KEYS = [
   "crClosedTo",
   "crSreTeams",
   "crProjects",
+  "crTags",
 ] as const;
 
 const DATE_ONLY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -107,6 +108,7 @@ export function readChangeRequestFiltersFromUrl(
     closedEndDate: parseDateOnly(params.get("crClosedTo")),
     sreTeamIds: parseTeamIdsCsv(params.get("crSreTeams")),
     projectIds: parseProjectIdsCsv(params.get("crProjects")),
+    tags: parseTeamIdsCsv(params.get("crTags")),
   };
 }
 
@@ -125,5 +127,6 @@ export function writeChangeRequestFiltersToUrl(
   if (f.closedEndDate) out.set("crClosedTo", f.closedEndDate);
   if (f.sreTeamIds.length) out.set("crSreTeams", f.sreTeamIds.join(","));
   if (f.projectIds.length) out.set("crProjects", f.projectIds.join(","));
+  if (f.tags.length) out.set("crTags", f.tags.join(","));
   return out;
 }

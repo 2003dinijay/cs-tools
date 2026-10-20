@@ -3494,12 +3494,14 @@ export interface BePatchChangeRequestResponse {
 export type BeChangeRequestFieldFilterField =
   | "createdOn"
   | "assignmentGroupId"
-  | "approval";
+  | "approval"
+  /** Tag names, `in` (carries any) or `notIn` (carries none); staff only. */
+  | "tag";
 
 /** `op` enum accepted by a change-request search's generic `filters` array
  * — mirrors `changeRequestFilterOpSet` in `change_request_filters.go`.
  * Field/op compatibility is enforced only on the backend. */
-export type BeChangeRequestFieldFilterOp = "gte" | "lte" | "in" | "eq";
+export type BeChangeRequestFieldFilterOp = "gte" | "lte" | "in" | "eq" | "notIn";
 
 /** One entry in a change-request search's generic `filters` array. */
 export interface BeChangeRequestFieldFilter {

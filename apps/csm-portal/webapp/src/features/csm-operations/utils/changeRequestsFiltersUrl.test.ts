@@ -30,7 +30,7 @@ describe("readChangeRequestFiltersFromUrl", () => {
 
   it("parses a fully-populated query string", () => {
     const params = new URLSearchParams(
-      "crQ=rollback&crStates=implement,review&crImpacts=high,low&crClosedFrom=2026-01-01&crClosedTo=2026-01-31&crSreTeams=team-apollo,team-atlas&crProjects=proj-1,proj-2",
+      "crQ=rollback&crStates=implement,review&crImpacts=high,low&crClosedFrom=2026-01-01&crClosedTo=2026-01-31&crSreTeams=team-apollo,team-atlas&crProjects=proj-1,proj-2&crTags=hotfix,db",
     );
     expect(readChangeRequestFiltersFromUrl(params)).toEqual({
       search: "rollback",
@@ -40,6 +40,7 @@ describe("readChangeRequestFiltersFromUrl", () => {
       closedEndDate: "2026-01-31",
       sreTeamIds: ["team-apollo", "team-atlas"],
       projectIds: ["proj-1", "proj-2"],
+      tags: ["hotfix", "db"],
     });
   });
 
@@ -99,6 +100,7 @@ describe("writeChangeRequestFiltersToUrl", () => {
       closedEndDate: "2026-01-31",
       sreTeamIds: ["team-apollo"],
       projectIds: ["proj-1"],
+      tags: ["hotfix", "db"],
     };
     const round = readChangeRequestFiltersFromUrl(
       writeChangeRequestFiltersToUrl(filters),
