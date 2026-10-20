@@ -18901,6 +18901,10 @@ components:
         region:
           type: string
           nullable: true
+        country:
+          type: string
+          nullable: true
+          description: The account's country (account.country). null when none is on record.
         supportTier:
           type: string
           nullable: true
@@ -18973,6 +18977,10 @@ components:
         region:
           type: string
           nullable: true
+        country:
+          type: string
+          nullable: true
+          description: The account's country (account.country). null when none is on record.
         supportTier:
           nullable: true
           allOf:
