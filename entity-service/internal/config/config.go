@@ -644,6 +644,18 @@ type Config struct {
 	SalesEntityClientSecret string
 	SalesEntityScopes       string
 
+	// SCIM* is the Choreo connection to the WSO2 internal-org SCIM search API
+	// (POST /organizations/internal/users/search), used by the Salesforce
+	// Account ingest to auto-provision a CSM "user" row for an account person
+	// reference (owner, technical owner, etc.) that has no match by email yet.
+	// The four connection fields are all-or-nothing like SalesEntity*; Scopes
+	// is optional.
+	SCIMBaseURL      string
+	SCIMTokenURL     string
+	SCIMClientID     string
+	SCIMClientSecret string
+	SCIMScopes       string
+
 	// Escalation* are the fixed EL1/EL2 case-escalation notification
 	// recipients EscalationService.CreateEscalation (Postgres data sources)
 	// adds to the per-case ones -- see EscalationRepository.CreateEscalation's
@@ -809,6 +821,11 @@ func Load() *Config {
 		SalesEntityClientID:                           os.Getenv("SALES_ENTITY_CLIENT_ID"),
 		SalesEntityClientSecret:                       os.Getenv("SALES_ENTITY_CLIENT_SECRET"),
 		SalesEntityScopes:                             os.Getenv("SALES_ENTITY_SCOPES"),
+		SCIMBaseURL:                                   os.Getenv("SCIM_BASE_URL"),
+		SCIMTokenURL:                                  os.Getenv("SCIM_TOKEN_URL"),
+		SCIMClientID:                                  os.Getenv("SCIM_CLIENT_ID"),
+		SCIMClientSecret:                              os.Getenv("SCIM_CLIENT_SECRET"),
+		SCIMScopes:                                    os.Getenv("SCIM_SCOPES"),
 		CSMMigrationMembershipRegistrationEnabled:     envFlagOn("CSM_MIGRATION_MEMBERSHIP_REGISTRATION_ENABLED"),
 		EscalationEL1AmericasTLEmails:                 splitComma(os.Getenv("ESCALATION_EL1_AMERICAS_TL_EMAILS")),
 		EscalationEL2AmericasTUEmails:                 splitComma(os.Getenv("ESCALATION_EL2_AMERICAS_TU_EMAILS")),
@@ -1131,6 +1148,10 @@ func (c *Config) Validate() error {
 	if salesEntitySet && !c.SalesEntityConfigured() {
 		return fmt.Errorf("SALES_ENTITY_BASE_URL, SALES_ENTITY_TOKEN_URL, SALES_ENTITY_CLIENT_ID, and SALES_ENTITY_CLIENT_SECRET must be set together or not at all")
 	}
+	scimSet := c.SCIMBaseURL != "" || c.SCIMTokenURL != "" || c.SCIMClientID != "" || c.SCIMClientSecret != "" || c.SCIMScopes != ""
+	if scimSet && !c.SCIMConfigured() {
+		return fmt.Errorf("SCIM_BASE_URL, SCIM_TOKEN_URL, SCIM_CLIENT_ID, and SCIM_CLIENT_SECRET must be set together or not at all")
+	}
 	if (c.CSMPortalBackendClientID == "") != (c.CSMPortalUserDomain == "") {
 		return fmt.Errorf("CSM_PORTAL_BACKEND_CLIENT_ID and CSM_PORTAL_USER_DOMAIN must be set together or not at all")
 	}
@@ -1270,6 +1291,14 @@ func (c *Config) SalesEntityConfigured() bool {
 		c.SalesEntityTokenURL != "" &&
 		c.SalesEntityClientID != "" &&
 		c.SalesEntityClientSecret != ""
+}
+
+// SCIMConfigured reports whether every WSO2 internal-org SCIM search env var is set.
+func (c *Config) SCIMConfigured() bool {
+	return c.SCIMBaseURL != "" &&
+		c.SCIMTokenURL != "" &&
+		c.SCIMClientID != "" &&
+		c.SCIMClientSecret != ""
 }
 
 // DSN constructs a PostgreSQL connection string from the config fields.
