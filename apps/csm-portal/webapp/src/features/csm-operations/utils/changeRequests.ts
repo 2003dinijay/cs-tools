@@ -1325,14 +1325,13 @@ export function buildChangeRequestSearchFilters(
 //   - `priority` is write-only — accepted by create, never present on the
 //     read response — so there is no source value to copy from, ever,
 //     regardless of how the form is wired.
-//   - `riskImpactAnalysis` is write-only for the same reason.
-//     (`implementationPlan` was write-only too, but the read side now
-//     returns it — see `BeChangeRequestDetail.implementationPlan` — so it's
-//     no longer part of this gap. It isn't wired into the clone fields
-//     below yet, though: that's a separate feature decision, not a gap.)
-//   - `impactDescription`, `serviceOutage`, `communicationPlan`, and
-//     `rollbackPlan` are read-only today — the create payload has no field
-//     for any of them.
+//   - The create form's "Risk and impact analysis" (`riskImpactAnalysis`) and
+//     "Backout plan" (`backoutPlan`) come back on the read as
+//     `impactDescription` and `rollbackPlan` (the entity service writes both
+//     column pairs on create and reads the latter), so a clone carries them
+//     across under those names, along with `implementationPlan`.
+//   - `serviceOutage` and `communicationPlan` are read-only today — the
+//     create payload has no field for either.
 //   - `project`, `case`, `deployment`, `deployedProduct`, and `product` are
 //     read-only refs with no create-time field to set them from at all.
 //   - `assignedTeam` is read-only; create's nearest-sounding field
@@ -1347,7 +1346,8 @@ export function buildChangeRequestSearchFilters(
 // None of the above can be safely carried over without either fabricating
 // data or guessing at an unconfirmed field mapping, so this only clones the
 // fields that are genuinely the same field on both sides: `subject`,
-// `description`, `justification`, `testPlan`, `type`, `impact`, and
+// `description`, `justification`, `implementationPlan`, the risk and impact
+// analysis, the backout plan, `testPlan`, `type`, `impact`, and
 // `assignedEngineer`. Everything else resets to the create form's own
 // defaults, same as a from-scratch change request — see
 // `CLONE_SOURCE_GAP_MESSAGE` for the user-facing disclosure of this gap.
@@ -1357,6 +1357,11 @@ export interface CloneChangeRequestNavState {
   subject?: string;
   description?: string;
   justification?: string;
+  implementationPlan?: string;
+  /** Seeds the create form's "Risk and impact analysis"; read as `impactDescription`. */
+  riskImpactAnalysis?: string;
+  /** Seeds the create form's "Backout plan"; read as `rollbackPlan`. */
+  backoutPlan?: string;
   testPlan?: string;
   type?: BeChangeRequestType;
   impact?: BeChangeRequestImpact;
@@ -1406,6 +1411,9 @@ export function buildCloneChangeRequestNavState(
     subject: cr.subject ?? undefined,
     description: cloneableHtml(cr.description),
     justification: cloneableHtml(cr.justification),
+    implementationPlan: cloneableHtml(cr.implementationPlan),
+    riskImpactAnalysis: cloneableHtml(cr.impactDescription),
+    backoutPlan: cloneableHtml(cr.rollbackPlan),
     testPlan: cloneableHtml(cr.testPlan),
     type: (cr.type as BeChangeRequestType) ?? undefined,
     impact: (cr.impact as BeChangeRequestImpact) ?? undefined,
@@ -1426,8 +1434,8 @@ export function buildCloneChangeRequestNavState(
  * wants a preview) and the create page stay in sync.
  */
 export const CLONE_SOURCE_GAP_MESSAGE =
-  "Copied the subject, description, justification, test plan, type, impact, assigned engineer, customer project, category, and customer approval/review settings. " +
-  "Priority, implementation plan, risk/impact analysis, backout plan, assignment group, " +
+  "Copied the subject, description, justification, implementation plan, risk and impact analysis, backout plan, test plan, type, impact, assigned engineer, customer project, category, and customer approval/review settings. " +
+  "Priority, assignment group, " +
   "linked case, and affected product aren't available to copy and need to be re-entered. " +
   "Deployments, deployment products, schedule, and approval fields are intentionally left blank for you to set for the new environment. The Customer Group follows the customer project.";
 

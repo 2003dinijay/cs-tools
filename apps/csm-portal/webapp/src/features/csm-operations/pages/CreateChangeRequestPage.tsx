@@ -253,9 +253,13 @@ export default function CreateChangeRequestPage(): JSX.Element {
   const [justification, setJustification] = useState(
     draft?.justification ?? cloneState?.justification ?? "",
   );
-  const [implementationPlan, setImplementationPlan] = useState(draft?.implementationPlan ?? "");
-  const [riskImpactAnalysis, setRiskImpactAnalysis] = useState(draft?.riskImpactAnalysis ?? "");
-  const [backoutPlan, setBackoutPlan] = useState(draft?.backoutPlan ?? "");
+  const [implementationPlan, setImplementationPlan] = useState(
+    draft?.implementationPlan ?? cloneState?.implementationPlan ?? "",
+  );
+  const [riskImpactAnalysis, setRiskImpactAnalysis] = useState(
+    draft?.riskImpactAnalysis ?? cloneState?.riskImpactAnalysis ?? "",
+  );
+  const [backoutPlan, setBackoutPlan] = useState(draft?.backoutPlan ?? cloneState?.backoutPlan ?? "");
   const [testPlan, setTestPlan] = useState(draft?.testPlan ?? cloneState?.testPlan ?? "");
   const [isPlanningVisibleToCustomers, setIsPlanningVisibleToCustomers] = useState(
     draft?.isPlanningVisibleToCustomers ?? false,

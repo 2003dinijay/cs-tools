@@ -128,23 +128,42 @@ describe("buildCloneChangeRequestNavState", () => {
     expect(state.sourceNumber).toBe("CHG0009988");
   });
 
+  it("carries the implementation plan, risk and impact analysis, and backout plan into the create form's own fields", () => {
+    const state = buildCloneChangeRequestNavState({
+      ...FULL_CR,
+      implementationPlan: "<p>Roll the nodes one at a time.</p>",
+    });
+    expect(state.implementationPlan).toContain("Roll the nodes one at a time.");
+    // Read back as impactDescription / rollbackPlan; created as riskImpactAnalysis / backoutPlan.
+    expect(state.riskImpactAnalysis).toContain("Brief outage expected.");
+    expect(state.backoutPlan).toContain("Revert to the previous image.");
+  });
+
+  it("leaves a blank plan field out rather than seeding an empty editor", () => {
+    const state = buildCloneChangeRequestNavState({
+      ...FULL_CR,
+      implementationPlan: "<p><br></p>",
+      impactDescription: null,
+      rollbackPlan: "",
+    });
+    expect(state.implementationPlan).toBeUndefined();
+    expect(state.riskImpactAnalysis).toBeUndefined();
+    expect(state.backoutPlan).toBeUndefined();
+  });
+
   it("never surfaces a field that create-time payload has no slot for", () => {
     const state = buildCloneChangeRequestNavState(FULL_CR);
     const keys = Object.keys(state);
-    // impactDescription/serviceOutage/communicationPlan/rollbackPlan are
-    // read-only on the backend today — BeCreateChangeRequestPayload has no
-    // field for any of them, so they must never appear in the clone state.
+    // serviceOutage/communicationPlan are read-only on the backend today —
+    // BeCreateChangeRequestPayload has no field for either. impactDescription
+    // and rollbackPlan travel as riskImpactAnalysis / backoutPlan instead.
     expect(keys).not.toContain("impactDescription");
     expect(keys).not.toContain("serviceOutage");
     expect(keys).not.toContain("communicationPlan");
     expect(keys).not.toContain("rollbackPlan");
-    // priority/risk/riskImpactAnalysis have no clone source. `implementationPlan`
-    // is readable now too, but isn't wired into clone yet (separate feature
-    // decision), so it also must not appear here.
+    // priority/risk have no clone source.
     expect(keys).not.toContain("priority");
     expect(keys).not.toContain("risk");
-    expect(keys).not.toContain("implementationPlan");
-    expect(keys).not.toContain("riskImpactAnalysis");
   });
 
   it("carries the customer project and category, but never the deployments / deployment products / customer group", () => {
