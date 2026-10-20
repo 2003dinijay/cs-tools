@@ -3495,8 +3495,15 @@ export type BeChangeRequestFieldFilterField =
   | "createdOn"
   | "assignmentGroupId"
   | "approval"
+  | "assignedUserId"
   /** Tag names, `in` (carries any) or `notIn` (carries none); staff only. */
-  | "tag";
+  | "tag"
+  /** PostgreSQL only, `gte`/`lte`. */
+  | "updatedOn"
+  | "plannedStartOn"
+  | "plannedEndOn"
+  /** PostgreSQL only, `in`: change types (standard, normal, ...). */
+  | "type";
 
 /** `op` enum accepted by a change-request search's generic `filters` array
  * — mirrors `changeRequestFilterOpSet` in `change_request_filters.go`.

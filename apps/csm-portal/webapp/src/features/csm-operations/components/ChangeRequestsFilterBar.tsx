@@ -37,6 +37,7 @@ import {
 import { useMemo, type JSX } from "react";
 import { useTeams } from "@features/csm-dashboard/api/useTeams";
 import {
+  CHANGE_REQUEST_FILTER_TYPE_OPTIONS,
   CHANGE_REQUEST_IMPACTS,
   CHANGE_REQUEST_STATES,
   changeRequestImpactLabel,
@@ -51,6 +52,8 @@ import {
 import SavedViewsMenu from "@features/csm-operations/components/SavedViewsMenu";
 import MultiSelectField from "@components/MultiSelectField";
 import AsyncTagMultiSelect from "@features/csm-cases/components/AsyncTagMultiSelect";
+import AsyncAssignedUserIdMultiSelect from "@features/csm-cases/components/AsyncAssignedUserIdMultiSelect";
+import DateRangeFilterFields from "@features/csm-operations/components/DateRangeFilterFields";
 import AsyncProjectMultiSelect from "@features/csm-cases/components/AsyncProjectMultiSelect";
 
 const { DatePicker, LocalizationProvider } = DatePickers;
@@ -281,6 +284,23 @@ export default function ChangeRequestsFilterBar({
               />
             </Grid>
             <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+              <AsyncAssignedUserIdMultiSelect
+                id="cr-filter-assignee"
+                label="Assigned engineer"
+                values={filters.assigneeIds}
+                onChange={(next) => onChange({ ...filters, assigneeIds: next })}
+              />
+            </Grid>
+            <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+              <MultiSelectField
+                id="cr-filter-type"
+                label="Type"
+                values={filters.types}
+                options={CHANGE_REQUEST_FILTER_TYPE_OPTIONS}
+                onChange={(next) => onChange({ ...filters, types: next })}
+              />
+            </Grid>
+            <Grid size={{ xs: 12, sm: 6, md: 3 }}>
               <AsyncTagMultiSelect
                 id="cr-filter-tag"
                 label="Tags"
@@ -317,6 +337,28 @@ export default function ChangeRequestsFilterBar({
                 />
               </LocalizationProvider>
             </Grid>
+            <DateRangeFilterFields
+              label="Created"
+              value={{ from: filters.createdStartDate, to: filters.createdEndDate }}
+              onChange={(r) => onChange({ ...filters, createdStartDate: r.from, createdEndDate: r.to })}
+            />
+            <DateRangeFilterFields
+              label="Updated"
+              value={{ from: filters.updatedStartDate, to: filters.updatedEndDate }}
+              onChange={(r) => onChange({ ...filters, updatedStartDate: r.from, updatedEndDate: r.to })}
+            />
+            <DateRangeFilterFields
+              label="Planned start"
+              capAtToday={false}
+              value={{ from: filters.plannedStartFrom, to: filters.plannedStartTo }}
+              onChange={(r) => onChange({ ...filters, plannedStartFrom: r.from, plannedStartTo: r.to })}
+            />
+            <DateRangeFilterFields
+              label="Planned end"
+              capAtToday={false}
+              value={{ from: filters.plannedEndFrom, to: filters.plannedEndTo }}
+              onChange={(r) => onChange({ ...filters, plannedEndFrom: r.from, plannedEndTo: r.to })}
+            />
           </Grid>
           {activeCount > 0 && (
             <Box sx={{ display: "flex", justifyContent: "flex-end" }}>

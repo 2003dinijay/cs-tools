@@ -15,7 +15,7 @@
 // under the License.
 
 import type { ReactElement } from "react";
-import { fireEvent, render as rtlRender, screen } from "@testing-library/react";
+import { fireEvent, render as rtlRender, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { MemoryRouter } from "react-router";
 import "@testing-library/jest-dom/vitest";
@@ -53,6 +53,16 @@ vi.mock("@features/csm-dashboard/api/useTeams", () => ({
 // The filter bar's Project control (`AsyncProjectMultiSelect`) goes through
 // the same shared infinite-query hook the cases list uses — stub it out for
 // the same "no QueryClientProvider" reason as the SRE Team mock above.
+vi.mock("@features/csm-cases/api/useUserSearch", () => ({
+  useInfiniteUserSearch: () => ({
+    users: [],
+    isFetching: false,
+    isError: false,
+    hasNextPage: false,
+    fetchNextPage: () => {},
+    isFetchingNextPage: false,
+  }),
+}));
 vi.mock("@features/csm-cases/api/useSearchTags", () => ({
   useSearchTags: () => ({ data: [], isFetching: false, isError: false }),
 }));
@@ -167,7 +177,8 @@ describe("ChangeRequestsTab — customise columns", () => {
     for (const label of ["Project", "Impact", "Planned start"]) {
       expect(screen.getByRole("columnheader", { name: label, hidden: true })).toBeInTheDocument();
     }
-    // The rest are only offered, not shown yet — unambiguous with `getByText`.
+    // The rest are only offered, not shown yet — read from the picker itself,
+    // since the filter bar has fields of the same names (Type, Assigned engineer).
     for (const label of [
       "Planned end",
       "Product",
@@ -177,7 +188,9 @@ describe("ChangeRequestsTab — customise columns", () => {
       "Case",
       "Created",
     ]) {
-      expect(screen.getByText(label)).toBeInTheDocument();
+      expect(
+        within(screen.getByRole("list", { name: "Customise change request columns" })).getByText(label),
+      ).toBeInTheDocument();
     }
   });
 

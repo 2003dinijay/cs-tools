@@ -15,6 +15,7 @@
 // under the License.
 
 import {
+  CHANGE_REQUEST_FILTER_TYPE_OPTIONS,
   CHANGE_REQUEST_IMPACTS,
   CHANGE_REQUEST_STATES,
   type ChangeRequestFilters,
@@ -33,6 +34,16 @@ export const CR_FILTER_PARAM_KEYS = [
   "crSreTeams",
   "crProjects",
   "crTags",
+  "crAssignees",
+  "crTypes",
+  "crCreatedFrom",
+  "crCreatedTo",
+  "crUpdatedFrom",
+  "crUpdatedTo",
+  "crPlannedStartFrom",
+  "crPlannedStartTo",
+  "crPlannedEndFrom",
+  "crPlannedEndTo",
 ] as const;
 
 const DATE_ONLY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -97,6 +108,21 @@ function parseProjectIdsCsv(raw: string | null): string[] {
  * so they fall back to the default (unfiltered) behaviour instead of being
  * silently sent to the backend.
  */
+/** A from/to pair of `YYYY-MM-DD` params under the two given keys; an end
+ * before the start is dropped (it could only ever match nothing). */
+function parseRange<F extends string, T extends string>(
+  params: URLSearchParams,
+  fromParam: string,
+  toParam: string,
+  fromKey: F,
+  toKey: T,
+): Record<F | T, string> {
+  const from = parseDateOnly(params.get(fromParam));
+  let to = parseDateOnly(params.get(toParam));
+  if (from && to && from > to) to = "";
+  return { [fromKey]: from, [toKey]: to } as Record<F | T, string>;
+}
+
 export function readChangeRequestFiltersFromUrl(
   params: URLSearchParams,
 ): ChangeRequestFilters {
@@ -109,6 +135,14 @@ export function readChangeRequestFiltersFromUrl(
     sreTeamIds: parseTeamIdsCsv(params.get("crSreTeams")),
     projectIds: parseProjectIdsCsv(params.get("crProjects")),
     tags: parseTeamIdsCsv(params.get("crTags")),
+    assigneeIds: parseTeamIdsCsv(params.get("crAssignees")),
+    types: parseTeamIdsCsv(params.get("crTypes")).filter((t) =>
+      CHANGE_REQUEST_FILTER_TYPE_OPTIONS.some((o) => o.value === t),
+    ),
+    ...parseRange(params, "crCreatedFrom", "crCreatedTo", "createdStartDate", "createdEndDate"),
+    ...parseRange(params, "crUpdatedFrom", "crUpdatedTo", "updatedStartDate", "updatedEndDate"),
+    ...parseRange(params, "crPlannedStartFrom", "crPlannedStartTo", "plannedStartFrom", "plannedStartTo"),
+    ...parseRange(params, "crPlannedEndFrom", "crPlannedEndTo", "plannedEndFrom", "plannedEndTo"),
   };
 }
 
@@ -128,5 +162,18 @@ export function writeChangeRequestFiltersToUrl(
   if (f.sreTeamIds.length) out.set("crSreTeams", f.sreTeamIds.join(","));
   if (f.projectIds.length) out.set("crProjects", f.projectIds.join(","));
   if (f.tags.length) out.set("crTags", f.tags.join(","));
+  if (f.assigneeIds.length) out.set("crAssignees", f.assigneeIds.join(","));
+  if (f.types.length) out.set("crTypes", f.types.join(","));
+  const dates: Array<[string, string]> = [
+    ["crCreatedFrom", f.createdStartDate],
+    ["crCreatedTo", f.createdEndDate],
+    ["crUpdatedFrom", f.updatedStartDate],
+    ["crUpdatedTo", f.updatedEndDate],
+    ["crPlannedStartFrom", f.plannedStartFrom],
+    ["crPlannedStartTo", f.plannedStartTo],
+    ["crPlannedEndFrom", f.plannedEndFrom],
+    ["crPlannedEndTo", f.plannedEndTo],
+  ];
+  for (const [key, value] of dates) if (value) out.set(key, value);
   return out;
 }

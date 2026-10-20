@@ -41,6 +41,16 @@ describe("readChangeRequestFiltersFromUrl", () => {
       sreTeamIds: ["team-apollo", "team-atlas"],
       projectIds: ["proj-1", "proj-2"],
       tags: ["hotfix", "db"],
+      assigneeIds: [],
+      types: [],
+      createdStartDate: "",
+      createdEndDate: "",
+      updatedStartDate: "",
+      updatedEndDate: "",
+      plannedStartFrom: "",
+      plannedStartTo: "",
+      plannedEndFrom: "",
+      plannedEndTo: "",
     });
   });
 
@@ -101,6 +111,16 @@ describe("writeChangeRequestFiltersToUrl", () => {
       sreTeamIds: ["team-apollo"],
       projectIds: ["proj-1"],
       tags: ["hotfix", "db"],
+      assigneeIds: ["user-1"],
+      types: ["normal"],
+      createdStartDate: "2026-01-01",
+      createdEndDate: "2026-01-15",
+      updatedStartDate: "2026-01-02",
+      updatedEndDate: "2026-01-16",
+      plannedStartFrom: "2026-02-01",
+      plannedStartTo: "2026-02-28",
+      plannedEndFrom: "",
+      plannedEndTo: "2026-03-31",
     };
     const round = readChangeRequestFiltersFromUrl(
       writeChangeRequestFiltersToUrl(filters),

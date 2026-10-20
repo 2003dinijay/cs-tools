@@ -1251,7 +1251,34 @@ export interface ChangeRequestFilters {
   /** Selected tag names — sent as a generic `{ field: "tag", op: "in" }`
    * filter entry: a change request carrying any of them matches. */
   tags: string[];
+  /** Assigned engineer user ids — `{ field: "assignedUserId", op: "in" }`. */
+  assigneeIds: string[];
+  /** Change types — `{ field: "type", op: "in" }`. */
+  types: string[];
+  /** `YYYY-MM-DD` UTC date bounds, or empty, for created / updated / planned
+   * start / planned end — each a `gte`/`lte` pair on its own field. */
+  createdStartDate: string;
+  createdEndDate: string;
+  updatedStartDate: string;
+  updatedEndDate: string;
+  plannedStartFrom: string;
+  plannedStartTo: string;
+  plannedEndFrom: string;
+  plannedEndTo: string;
 }
+
+/** Change types a list can be filtered by: the three a change is created with,
+ * then the ones migrated changes still carry. */
+export const CHANGE_REQUEST_FILTER_TYPE_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "standard", label: "Standard" },
+  { value: "normal", label: "Normal" },
+  { value: "emergency", label: "Emergency" },
+  { value: "azure", label: "Azure" },
+  { value: "change_registration", label: "Change registration" },
+  { value: "cloud_infrastructure", label: "Cloud infrastructure" },
+  { value: "infra", label: "Infra" },
+  { value: "unauthorized_change", label: "Unauthorized change" },
+];
 
 export const DEFAULT_CR_FILTERS: ChangeRequestFilters = {
   search: "",
@@ -1262,6 +1289,16 @@ export const DEFAULT_CR_FILTERS: ChangeRequestFilters = {
   sreTeamIds: [],
   projectIds: [],
   tags: [],
+  assigneeIds: [],
+  types: [],
+  createdStartDate: "",
+  createdEndDate: "",
+  updatedStartDate: "",
+  updatedEndDate: "",
+  plannedStartFrom: "",
+  plannedStartTo: "",
+  plannedEndFrom: "",
+  plannedEndTo: "",
 };
 
 /** Count non-search active filters (used for the badge on the Filters button). */
@@ -1273,7 +1310,19 @@ export function countActiveCRFilters(filters: ChangeRequestFilters): number {
     (filters.closedEndDate ? 1 : 0) +
     (filters.sreTeamIds.length > 0 ? 1 : 0) +
     (filters.projectIds.length > 0 ? 1 : 0) +
-    (filters.tags.length > 0 ? 1 : 0)
+    (filters.tags.length > 0 ? 1 : 0) +
+    (filters.assigneeIds.length > 0 ? 1 : 0) +
+    (filters.types.length > 0 ? 1 : 0) +
+    [
+      filters.createdStartDate,
+      filters.createdEndDate,
+      filters.updatedStartDate,
+      filters.updatedEndDate,
+      filters.plannedStartFrom,
+      filters.plannedStartTo,
+      filters.plannedEndFrom,
+      filters.plannedEndTo,
+    ].filter(Boolean).length
   );
 }
 
@@ -1285,6 +1334,17 @@ export function crDateOnlyToISOStart(date: string): string {
 /** Convert a YYYY-MM-DD date picker value to an ISO 8601 string at end-of-day UTC. */
 export function crDateOnlyToISOEnd(date: string): string {
   return `${date}T23:59:59Z`;
+}
+
+/** One `gte`/`lte` entry of the generic filters array for a `YYYY-MM-DD` UTC
+ * date (start or end of that day), or none when the date is empty. */
+function dateBound(
+  field: "createdOn" | "updatedOn" | "plannedStartOn" | "plannedEndOn",
+  op: "gte" | "lte",
+  date: string,
+): Array<{ field: typeof field; op: typeof op; values: string[] }> {
+  if (!date) return [];
+  return [{ field, op, values: [op === "gte" ? crDateOnlyToISOStart(date) : crDateOnlyToISOEnd(date)] }];
 }
 
 /**
@@ -1303,6 +1363,18 @@ export function buildChangeRequestSearchFilters(
       ? [{ field: "assignmentGroupId" as const, op: "in" as const, values: filters.sreTeamIds }]
       : []),
     ...(filters.tags.length > 0 ? [{ field: "tag" as const, op: "in" as const, values: filters.tags }] : []),
+    ...(filters.assigneeIds.length > 0
+      ? [{ field: "assignedUserId" as const, op: "in" as const, values: filters.assigneeIds }]
+      : []),
+    ...(filters.types.length > 0 ? [{ field: "type" as const, op: "in" as const, values: filters.types }] : []),
+    ...dateBound("createdOn", "gte", filters.createdStartDate),
+    ...dateBound("createdOn", "lte", filters.createdEndDate),
+    ...dateBound("updatedOn", "gte", filters.updatedStartDate),
+    ...dateBound("updatedOn", "lte", filters.updatedEndDate),
+    ...dateBound("plannedStartOn", "gte", filters.plannedStartFrom),
+    ...dateBound("plannedStartOn", "lte", filters.plannedStartTo),
+    ...dateBound("plannedEndOn", "gte", filters.plannedEndFrom),
+    ...dateBound("plannedEndOn", "lte", filters.plannedEndTo),
   ];
   return {
     ...(debouncedSearch.length > 0 && { searchQuery: debouncedSearch }),
