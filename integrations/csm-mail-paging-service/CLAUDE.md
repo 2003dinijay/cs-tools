@@ -1,4 +1,4 @@
-# csm-mail-trigger-service
+# csm-mail-paging-service
 
 Polls Gmail and publishes one event per rule-matching email. No Twilio and no
 paging logic lives here; consumers decide what to do with the event.

@@ -1,4 +1,4 @@
-# csm-mail-trigger-service
+# csm-mail-paging-service
 
 Polls a Gmail mailbox and publishes an event to the event bus for every email
 that matches a configured rule. It does not place calls: a consumer (for

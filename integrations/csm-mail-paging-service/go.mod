@@ -1,4 +1,4 @@
-module github.com/wso2-open-operations/cs-tools/integrations/csm-mail-trigger-service
+module github.com/wso2-open-operations/cs-tools/integrations/csm-mail-paging-service
 
 go 1.26.9
 

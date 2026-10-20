@@ -46,7 +46,7 @@ func Load() (Config, error) {
 	c := Config{
 		GmailCredentialsJSON: os.Getenv("GMAIL_SERVICE_ACCOUNT_JSON"),
 		GmailDelegatedUser:   os.Getenv("GMAIL_DELEGATED_USER"),
-		ProcessedLabel:       getenv("GMAIL_PROCESSED_LABEL", "csm-mail-trigger-processed"),
+		ProcessedLabel:       getenv("GMAIL_PROCESSED_LABEL", "csm-mail-paging-processed"),
 		Lookback:             getenv("MAIL_LOOKBACK", "2d"),
 		RulesJSON:            os.Getenv("MAIL_TRIGGER_RULES"),
 		KafkaBroker:          os.Getenv("EVENT_BUS_BROKER"),

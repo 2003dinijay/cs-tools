@@ -25,7 +25,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wso2-open-operations/cs-tools/integrations/csm-mail-trigger-service/internal/rules"
+	"github.com/wso2-open-operations/cs-tools/integrations/csm-mail-paging-service/internal/rules"
 )
 
 // Mailbox is the mail source.

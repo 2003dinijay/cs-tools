@@ -34,7 +34,7 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/jwt"
 
-	"github.com/wso2-open-operations/cs-tools/integrations/csm-mail-trigger-service/internal/rules"
+	"github.com/wso2-open-operations/cs-tools/integrations/csm-mail-paging-service/internal/rules"
 )
 
 const (

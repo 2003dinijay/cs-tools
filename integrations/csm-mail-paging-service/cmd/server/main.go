@@ -25,16 +25,16 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/wso2-open-operations/cs-tools/integrations/csm-mail-trigger-service/internal/config"
-	"github.com/wso2-open-operations/cs-tools/integrations/csm-mail-trigger-service/internal/eventbus"
-	"github.com/wso2-open-operations/cs-tools/integrations/csm-mail-trigger-service/internal/gmail"
-	"github.com/wso2-open-operations/cs-tools/integrations/csm-mail-trigger-service/internal/poller"
-	"github.com/wso2-open-operations/cs-tools/integrations/csm-mail-trigger-service/internal/rules"
+	"github.com/wso2-open-operations/cs-tools/integrations/csm-mail-paging-service/internal/config"
+	"github.com/wso2-open-operations/cs-tools/integrations/csm-mail-paging-service/internal/eventbus"
+	"github.com/wso2-open-operations/cs-tools/integrations/csm-mail-paging-service/internal/gmail"
+	"github.com/wso2-open-operations/cs-tools/integrations/csm-mail-paging-service/internal/poller"
+	"github.com/wso2-open-operations/cs-tools/integrations/csm-mail-paging-service/internal/rules"
 )
 
 func main() {
 	if err := run(); err != nil {
-		slog.Error("csm-mail-trigger-service stopped", "err", err)
+		slog.Error("csm-mail-paging-service stopped", "err", err)
 		os.Exit(1)
 	}
 }
@@ -65,7 +65,7 @@ func run() error {
 	prod := eventbus.NewProducer(eventbus.Config{Broker: cfg.KafkaBroker, ConnectionString: cfg.KafkaConnection, Topic: cfg.KafkaTopic})
 	defer prod.Close()
 
-	slog.Info("csm-mail-trigger-service started", "rules", len(rs), "interval", cfg.PollInterval.String())
+	slog.Info("csm-mail-paging-service started", "rules", len(rs), "interval", cfg.PollInterval.String())
 	poller.New(mb, prod, rs, cfg.PollInterval, cfg.Lookback).Run(ctx)
 	return nil
 }
