@@ -356,7 +356,7 @@ export default function RunbooksTab(): JSX.Element {
         />
       </Box>
 
-      <RunbookMatchPreview runbooks={runbooks} />
+      <RunbookAlertSearch runbooks={runbooks} />
 
       {dialog.open && (
         <RunbookDialog
@@ -456,28 +456,29 @@ function RunbookDialog({ editing, existing, onClose }: RunbookDialogProps): JSX.
   );
 }
 
-function RunbookMatchPreview({ runbooks }: { runbooks: Runbook[] }): JSX.Element {
-  const [subject, setSubject] = useState("");
-  const match = subject.trim() ? findRunbookForIncident(runbooks, subject) : undefined;
+function RunbookAlertSearch({ runbooks }: { runbooks: Runbook[] }): JSX.Element {
+  const [query, setQuery] = useState("");
+  const match = query.trim() ? findRunbookForIncident(runbooks, query) : undefined;
 
   return (
     <Paper sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 1.5 }}>
       <Box>
-        <Typography variant="subtitle2">Try it with an incident</Typography>
+        <Typography variant="subtitle2">Search runbook with alert name</Typography>
         <Typography variant="body2" color="text.secondary">
-          Paste an incident subject to see which runbook it matches.
+          Enter an alert name, or paste an incident subject, to find the runbook that covers it.
         </Typography>
       </Box>
       <TextField
         size="small"
-        placeholder="[Alert]Fired:Sev0 Azure Monitor Alert example-gw-CriticalHTTP5xxCountLimitExceeded-prod-001 on …"
-        value={subject}
-        onChange={(e) => setSubject(e.target.value)}
+        placeholder="example-gw-CriticalHTTP5xxCountLimitExceeded-prod-001"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        slotProps={{ htmlInput: { "aria-label": "Search runbook with alert name" } }}
       />
-      {subject.trim() && (
+      {query.trim() && (
         <Alert severity={match?.runbookUrl ? "success" : "warning"}>
           <Typography variant="body2" sx={{ wordBreak: "break-word" }}>
-            {match ? `Matched alert: ${match.alertName}` : "No alert in the catalog matches this incident."}
+            {match ? `Matched alert: ${match.alertName}` : "No runbook covers this alert."}
           </Typography>
           {match?.runbookUrl ? (
             <Link
