@@ -15,6 +15,7 @@
 // under the License.
 
 import {
+  Alert,
   Autocomplete,
   Avatar,
   Box,
@@ -42,9 +43,11 @@ import {
   listSupportedTimeZones,
   normalizeUserTimeZone,
 } from "@utils/dateTime";
-
-// E.164 phone validator: leading + required, then country code digit + 7-14 more digits.
-const E164 = /^\+[1-9]\d{7,14}$/;
+import {
+  E164,
+  platformPhoneState,
+  savingRepairsPlatform,
+} from "./profilePhone";
 
 // Show at most this many role chips inline before collapsing with "+N more".
 const ROLES_PREVIEW_LIMIT = 4;
@@ -94,10 +97,38 @@ export default function UserProfileModal({
     setIsTzEditing(false);
   }, [userMe?.phoneNumber, userMe?.timeZone]);
 
+  const phoneState = platformPhoneState(
+    userMe?.phoneNumber,
+    userMe?.platformPhone,
+  );
+
+  // Saves the profile's own number again so the BFF writes it to the platform
+  // record too (PATCH /users/me updates both). The shown number has not
+  // changed, which is why a plain Save used to send nothing.
+  const handleUseProfileNumberForAlerts = useCallback(() => {
+    const profile = (userMe?.phoneNumber ?? "").trim();
+    if (!profile) return;
+    patchUserMe.mutate(
+      { phoneNumber: profile },
+      {
+        onSuccess: () => {
+          showSuccess("Case Alerts calls now use your profile number.");
+        },
+        onError: () => {
+          showError("Could not update the number Case Alerts calls. Please try again.");
+        },
+      },
+    );
+  }, [userMe?.phoneNumber, patchUserMe, showError, showSuccess]);
+
   const handleSave = useCallback(() => {
     const currentPhone = userMe?.phoneNumber ?? "";
     const nextPhone = phoneDraft.trim();
-    const phoneChanged = nextPhone !== currentPhone;
+    // A number equal to the shown one is still sent when the platform record
+    // (what Case Alerts dial) holds another: saving is how it gets repaired.
+    const phoneChanged =
+      nextPhone !== currentPhone ||
+      (isPhoneEditing && savingRepairsPlatform(nextPhone, userMe?.platformPhone));
 
     const currentTz = normalizeUserTimeZone(userMe?.timeZone) ?? "";
     const nextTz = tzDraft ?? "";
@@ -141,7 +172,9 @@ export default function UserProfileModal({
   }, [
     phoneDraft,
     tzDraft,
+    isPhoneEditing,
     userMe?.phoneNumber,
+    userMe?.platformPhone,
     userMe?.timeZone,
     patchUserMe,
     showError,
@@ -273,6 +306,14 @@ export default function UserProfileModal({
                 </IconButton>
               </Box>
             )}
+            {!isLoading && (
+              <PlatformPhoneNote
+                state={phoneState}
+                editing={isPhoneEditing}
+                pending={patchUserMe.isPending}
+                onUseProfileNumber={handleUseProfileNumberForAlerts}
+              />
+            )}
           </Box>
 
           <Box>
@@ -340,5 +381,67 @@ export default function UserProfileModal({
         </Stack>
       </Box>
     </Dialog>
+  );
+}
+
+interface PlatformPhoneNoteProps {
+  state: ReturnType<typeof platformPhoneState>;
+  editing: boolean;
+  pending: boolean;
+  onUseProfileNumber: () => void;
+}
+
+/**
+ * Says so when Case Alerts calls a different number from the one shown above
+ * (the platform record's copy has drifted), and offers to fix it. Nothing is
+ * shown while the two agree or the platform copy is unknown.
+ */
+function PlatformPhoneNote({
+  state,
+  editing,
+  pending,
+  onUseProfileNumber,
+}: PlatformPhoneNoteProps): JSX.Element | null {
+  if (state.kind === "unknown" || state.kind === "same") return null;
+
+  let message: string;
+  let canRepair = false;
+  switch (state.kind) {
+    case "differs":
+      message = `Case Alerts calls go to ${state.platform}, the number on your platform record, not the number above.`;
+      canRepair = E164.test(state.profile);
+      break;
+    case "platformMissing":
+      message =
+        "Your platform record has no phone number, so Case Alerts calls can't reach you on the number above.";
+      canRepair = E164.test(state.profile);
+      break;
+    case "profileMissing":
+      message = `Case Alerts calls go to ${state.platform}, which isn't shown above. Set your phone number above to change it.`;
+      break;
+  }
+  if (editing) {
+    message += " Saving updates both.";
+  }
+
+  return (
+    <Alert
+      severity="warning"
+      sx={{ mt: 1 }}
+      action={
+        canRepair && !editing ? (
+          <Button
+            color="inherit"
+            size="small"
+            onClick={onUseProfileNumber}
+            disabled={pending}
+          >
+            Use this number for alerts
+          </Button>
+        ) : undefined
+      }
+    >
+      {message}
+    </Alert>
   );
 }

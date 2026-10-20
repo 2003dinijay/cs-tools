@@ -168,8 +168,11 @@ type RungEmail struct {
 
 // Phones selects the source of recipients' phone numbers.
 //
-//	profile  the number each person set on their own CSM Portal profile, read
-//	         from Asgardeo (the default)
+//	profile  the number each person set on their own CSM Portal profile (the
+//	         default): CSM's "user".phone first, which is what the portal's
+//	         Profile dialog does NOT show (it shows Asgardeo's copy), then a
+//	         number this file or the phone book names, then the paging-only
+//	         number, then Asgardeo's -- see ProfilePhoneResolver.fill
 //	none     only numbers named in this file; everyone else is NO_NUMBER
 type Phones struct {
 	Source string `yaml:"source"`
