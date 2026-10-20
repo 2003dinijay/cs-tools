@@ -46,6 +46,9 @@ func TestParseErrors(t *testing.T) {
 		"no name":      `[{"recipient":"a@b.c","eventType":"e"}]`,
 		"no recipient": `[{"name":"a","eventType":"e"}]`,
 		"no event":     `[{"name":"a","recipient":"a@b.c"}]`,
+		"bad number":   `[{"name":"a","recipient":"a@b.c","eventType":"e","callPath":[{"level":2,"to":["123"]}]}]`,
+		"desc levels":  `[{"name":"a","recipient":"a@b.c","eventType":"e","callPath":[{"level":3,"to":["+15550100"]},{"level":2,"to":["+15550101"]}]}]`,
+		"no numbers":   `[{"name":"a","recipient":"a@b.c","eventType":"e","callPath":[{"level":2,"to":[]}]}]`,
 		"bad regex":    `[{"name":"a","recipient":"a@b.c","eventType":"e","senderRegex":"("}]`,
 		"duplicate":    `[{"name":"a","recipient":"a@b.c","eventType":"e"},{"name":"a","recipient":"a@b.c","eventType":"e"}]`,
 	} {

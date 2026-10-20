@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-mail-paging-service/internal/rules"
@@ -39,6 +40,14 @@ type Mailbox interface {
 type Publisher interface {
 	Publish(ctx context.Context, key, value []byte) error
 }
+
+// Caller places one voice call and returns the call's sid.
+type Caller interface {
+	MakeCall(ctx context.Context, to, message string) (string, error)
+}
+
+// maxSpokenSubject bounds how much of an email subject is read aloud.
+const maxSpokenSubject = 200
 
 // Envelope is the wire shape every event on the bus shares; kept in sync by
 // hand with csm-notification-service's events.Envelope.
@@ -68,12 +77,22 @@ type Poller struct {
 	rules    []rules.Rule
 	query    string
 	interval time.Duration
+	caller   Caller
+	sleep    func(context.Context, time.Duration)
+	wg       sync.WaitGroup
+}
+
+// WithCaller enables the call path of rules that define one. Without it, such
+// rules still publish their event but place no calls.
+func (p *Poller) WithCaller(c Caller) *Poller {
+	p.caller = c
+	return p
 }
 
 // New builds a Poller. lookback bounds how far back unprocessed mail is read
 // (a Gmail newer_than value such as "2d").
 func New(mb Mailbox, pub Publisher, rs []rules.Rule, interval time.Duration, lookback string) *Poller {
-	return &Poller{mailbox: mb, pub: pub, rules: rs, interval: interval, query: searchQuery(rs, lookback)}
+	return &Poller{mailbox: mb, pub: pub, rules: rs, interval: interval, query: searchQuery(rs, lookback), sleep: sleepCtx}
 }
 
 // searchQuery narrows Gmail's own listing to mail addressed to any rule's
@@ -96,6 +115,7 @@ func (p *Poller) Run(ctx context.Context) {
 		}
 		select {
 		case <-ctx.Done():
+			p.wg.Wait()
 			return
 		case <-t.C:
 		}
@@ -142,8 +162,65 @@ func (p *Poller) handle(ctx context.Context, id string) error {
 			return err
 		}
 		slog.InfoContext(ctx, "mail event published", "rule", r.Name, "eventType", r.EventType)
+		p.startCallPath(ctx, r, msg)
 	}
 	// Labelled even when no rule matched (e.g. a sender filter), so it is
 	// not re-read on every pass.
 	return p.mailbox.MarkProcessed(ctx, id)
+}
+
+func sleepCtx(ctx context.Context, d time.Duration) {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+	case <-t.C:
+	}
+}
+
+// startCallPath runs a rule's call path in the background so a long ladder
+// never blocks the poll loop. The path lives in this process: a restart
+// mid-ladder drops the levels not yet reached. Each level is attempted once; a
+// failed call is logged (never with the number) and the ladder continues.
+func (p *Poller) startCallPath(ctx context.Context, r rules.Rule, msg rules.Message) {
+	if p.caller == nil || len(r.CallPath) == 0 {
+		return
+	}
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		spoken := spokenMessage(r, msg)
+		for i, level := range r.CallPath {
+			if i > 0 {
+				p.sleep(ctx, time.Duration(r.LevelDelaySeconds)*time.Second)
+			}
+			if ctx.Err() != nil {
+				return
+			}
+			for _, to := range level.To {
+				sid, err := p.caller.MakeCall(ctx, to, spoken)
+				if err != nil {
+					slog.ErrorContext(ctx, "mail call failed", "rule", r.Name, "level", level.Level, "err", err)
+					continue
+				}
+				slog.InfoContext(ctx, "mail call placed", "rule", r.Name, "level", level.Level, "callSid", sid)
+			}
+		}
+	}()
+}
+
+// spokenMessage is the rule's prefix followed by the (bounded) subject.
+func spokenMessage(r rules.Rule, msg rules.Message) string {
+	prefix := r.CallMessage
+	if prefix == "" {
+		prefix = rules.DefaultCallMessage
+	}
+	subject := []rune(strings.TrimSpace(msg.Subject))
+	if len(subject) > maxSpokenSubject {
+		subject = subject[:maxSpokenSubject]
+	}
+	if len(subject) == 0 {
+		return prefix
+	}
+	return prefix + ". " + string(subject)
 }
