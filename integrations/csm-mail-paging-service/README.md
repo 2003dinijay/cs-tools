@@ -17,7 +17,13 @@ Gmail (group mail) -> poll -> rules -> event bus (Envelope) -> consumer
 3. For each matching rule it publishes `{type: eventType, entityId: <Message-ID>, payload}`.
 4. Only after every publish succeeded does it add the processed label. A failed
    publish leaves the message unlabelled, so the next pass retries it
-   (at-least-once; consumers dedupe on the Message-ID).
+   (at-least-once). Consumers dedupe on the payload's `dedupeKey`
+   (`<Message-ID>/<rule name>`), not on the Message-ID alone: one email that
+   matches two rules produces two events.
+
+   Retries are bounded by `MAIL_LOOKBACK` (default `2d`): a message still
+   unpublished after that window is no longer listed. Alert on the
+   "mail message failed; will retry" log line.
 
 The Gmail label is the durable record of "handled", so no database or Redis is
 needed for correctness.

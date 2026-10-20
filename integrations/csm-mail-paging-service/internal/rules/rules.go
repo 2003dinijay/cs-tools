@@ -59,6 +59,9 @@ func Parse(raw string) ([]Rule, error) {
 	if err := json.Unmarshal([]byte(raw), &rules); err != nil {
 		return nil, fmt.Errorf("rules: parse: %w", err)
 	}
+	if len(rules) == 0 {
+		return nil, fmt.Errorf("rules: at least one rule is required")
+	}
 	seen := map[string]bool{}
 	for i := range rules {
 		r := &rules[i]

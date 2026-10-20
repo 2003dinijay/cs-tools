@@ -86,7 +86,7 @@ func TestPollPublishesAndMarks(t *testing.T) {
 	}
 	var pl Payload
 	_ = json.Unmarshal(env.Payload, &pl)
-	if env.Type != "mail.alert.received" || env.EntityID != "<a@x>" || pl.Levels != 3 || pl.Subject != "DB down" {
+	if env.Type != "mail.alert.received" || env.EntityID != "<a@x>" || pl.DedupeKey != "<a@x>/r" || pl.Levels != 3 || pl.Subject != "DB down" {
 		t.Errorf("unexpected event %+v %+v", env, pl)
 	}
 }

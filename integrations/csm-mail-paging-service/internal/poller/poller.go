@@ -50,8 +50,11 @@ type Envelope struct {
 
 // Payload is what every rule-triggered event carries.
 type Payload struct {
-	RuleName   string `json:"ruleName"`
-	MessageID  string `json:"messageId"`
+	RuleName  string `json:"ruleName"`
+	MessageID string `json:"messageId"`
+	// DedupeKey is stable across retries and distinct per rule, so one email
+	// matching two rules yields two events a consumer must both act on.
+	DedupeKey  string `json:"dedupeKey"`
 	Subject    string `json:"subject"`
 	From       string `json:"from"`
 	ReceivedAt string `json:"receivedAt,omitempty"`
@@ -125,7 +128,7 @@ func (p *Poller) handle(ctx context.Context, id string) error {
 			continue
 		}
 		payload, err := json.Marshal(Payload{
-			RuleName: r.Name, MessageID: msg.ID, Subject: msg.Subject,
+			RuleName: r.Name, MessageID: msg.ID, DedupeKey: msg.ID + "/" + r.Name, Subject: msg.Subject,
 			From: msg.From, ReceivedAt: msg.ReceivedAt, Levels: r.Levels,
 		})
 		if err != nil {

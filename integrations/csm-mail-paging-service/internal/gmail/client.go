@@ -96,7 +96,10 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 			TokenURL:   key.TokenURI,
 			Subject:    cfg.DelegatedUser,
 		}
-		c.http = oauth2.NewClient(context.WithValue(ctx, oauth2.HTTPClient, &http.Client{Timeout: 30 * time.Second}), jc.TokenSource(ctx))
+		// The same timeout-bound context serves the token exchange and the
+		// API calls, so a stalled token endpoint cannot hang the poll loop.
+		tokenCtx := context.WithValue(ctx, oauth2.HTTPClient, &http.Client{Timeout: 30 * time.Second})
+		c.http = oauth2.NewClient(tokenCtx, jc.TokenSource(tokenCtx))
 		c.http.Timeout = 30 * time.Second
 	}
 	return c, nil

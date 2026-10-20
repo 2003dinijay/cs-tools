@@ -25,6 +25,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"log/slog"
+	"time"
 
 	kafka "github.com/segmentio/kafka-go"
 	"github.com/segmentio/kafka-go/sasl/plain"
@@ -47,6 +48,9 @@ func NewProducer(cfg Config) *Producer {
 		Topic:        cfg.Topic,
 		Balancer:     &kafka.Hash{},
 		RequiredAcks: kafka.RequireAll,
+		// Publish writes one record per call and waits; without this the
+		// writer holds each single-record batch for its 1s default.
+		BatchTimeout: 10 * time.Millisecond,
 		Transport: &kafka.Transport{
 			TLS:  &tls.Config{MinVersion: tls.VersionTLS12},
 			SASL: plain.Mechanism{Username: "$ConnectionString", Password: cfg.ConnectionString},

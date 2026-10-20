@@ -41,6 +41,8 @@ func TestParseAndMatch(t *testing.T) {
 func TestParseErrors(t *testing.T) {
 	for name, raw := range map[string]string{
 		"bad json":     `nope`,
+		"empty":        `[]`,
+		"null":         `null`,
 		"no name":      `[{"recipient":"a@b.c","eventType":"e"}]`,
 		"no recipient": `[{"name":"a","eventType":"e"}]`,
 		"no event":     `[{"name":"a","recipient":"a@b.c"}]`,
