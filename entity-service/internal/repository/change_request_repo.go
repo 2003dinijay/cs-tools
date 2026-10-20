@@ -862,9 +862,15 @@ func (r *changeRequestRepo) AggregateChangeRequests(ctx context.Context, req dom
 // nothing to select -- same "no real column" posture as ApprovedBy/
 // ApprovedOn/LegalNextStates already have (see this file's own package
 // doc comment).
+// impactDescription and rollbackPlan read impact_description / rollback_process,
+// falling back to risk_impact_analysis / backout_plan: the create form's "Risk and
+// impact analysis" and "Backout plan" were written only to the latter pair, so a
+// change request created before both creates wrote the pair the read uses showed
+// neither field. Plain COALESCE (not NULLIF ''), so a field cleared by a PATCH
+// stays cleared.
 const changeRequestDetailColumns = `
-	wi.created_by, cr.justification, cr.impact_description, cr.service_outage_downtime,
-	cr.communication_plan, cr.rollback_process, cr.test_plan,
+	wi.created_by, cr.justification, COALESCE(cr.impact_description, cr.risk_impact_analysis), cr.service_outage_downtime,
+	cr.communication_plan, COALESCE(cr.rollback_process, cr.backout_plan), cr.test_plan,
 	cr.is_customer_approval_required, cr.is_customer_review_required,
 	cr.implementation_plan, cr.priority::TEXT, cr.category::TEXT,
 	rb.id, COALESCE(rb.name, NULLIF(TRIM(CONCAT_WS(' ', rb.first_name, rb.last_name)), '')),
@@ -2232,14 +2238,16 @@ const createChangeRequestPortalQuery = `
 			justification, implementation_plan, risk_impact_analysis, backout_plan, test_plan,
 			start_on, end_on, requested_by_user_id, customer_group_id,
 			is_planning_visible_to_customers, affected_services, affected_component, rollback_duration,
-			customer_approval_required, customer_review_required, category
+			customer_approval_required, customer_review_required, category,
+			impact_description, rollback_process
 		)
 		SELECT id, 'NEW'::change_request_state_enum, $5::uuid, $6::uuid, $7::change_request_impact_enum, $8::change_request_risk_enum,
 		       $9::change_request_priority_enum, $10::change_request_change_model_enum,
 		       $11, $12, $13, $14, $15,
 		       $16::text::timestamptz, $17::text::timestamptz, $18::uuid, $19::uuid,
 		       $20, $21, $22, $23, COALESCE($25::boolean, false), COALESCE($26::boolean, false),
-		       $30::change_request_category_enum
+		       $30::change_request_category_enum,
+		       $13, $14
 		FROM inserted_work_item
 		RETURNING id
 	)
@@ -2451,7 +2459,8 @@ const createChangeRequestFromServiceNowQuery = `
 			justification, implementation_plan, risk_impact_analysis, backout_plan, test_plan,
 			start_on, end_on, requested_by_user_id, customer_group_id,
 			is_planning_visible_to_customers, affected_services, affected_component, rollback_duration,
-			customer_approval_required, customer_review_required, category
+			customer_approval_required, customer_review_required, category,
+			impact_description, rollback_process
 		)
 		VALUES (
 			$1, 'NEW'::change_request_state_enum, $7::uuid, $8::uuid, $9::change_request_impact_enum, $10::change_request_risk_enum,
@@ -2459,7 +2468,8 @@ const createChangeRequestFromServiceNowQuery = `
 			$13, $14, $15, $16, $17,
 			$18::text::timestamptz, $19::text::timestamptz, $20::uuid, $21::uuid,
 			$22, $23, $24, $25, COALESCE($27::boolean, false), COALESCE($28::boolean, false),
-			$32::change_request_category_enum
+			$32::change_request_category_enum,
+			$15, $16
 		)
 		RETURNING id
 	)
