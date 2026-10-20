@@ -18,6 +18,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -735,4 +736,22 @@ func TestUpdateProject(t *testing.T) {
 // withProjectCaller attaches a caller whose token carries roles.
 func withProjectCaller(r *http.Request, roles ...string) *http.Request {
 	return r.WithContext(middleware.WithUserInfo(r.Context(), &middleware.UserInfo{Email: "jane.doe@example.com", UserID: "u1", Roles: roles}))
+}
+
+// encoding/json matches keys with Unicode simple folding, so the key checks
+// must too: a long-s spelling still names the protected field to the decoder.
+func TestProjectUpdateKeyChecksFoldLikeDecoder(t *testing.T) {
+	if !projectUpdateTargetsClosureState([]byte(`{"closureſtate":"CLOSED"}`)) {
+		t.Error("long-s spelling of closureState must be detected")
+	}
+	onb, other := projectUpdateTargets([]byte(`{"onboardingſtatus":"In-Progress"}`))
+	if !onb || other {
+		t.Errorf("long-s onboardingStatus: onboarding=%v other=%v, want true/false", onb, other)
+	}
+	var req struct {
+		ClosureState string `json:"closureState"`
+	}
+	if err := json.Unmarshal([]byte(`{"closureſtate":"CLOSED"}`), &req); err != nil || req.ClosureState != "CLOSED" {
+		t.Fatalf("premise: decoder should fold long-s (got %q, err %v)", req.ClosureState, err)
+	}
 }

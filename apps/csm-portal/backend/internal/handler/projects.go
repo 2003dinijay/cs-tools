@@ -60,11 +60,15 @@ func (h *ProjectHandler) WithAccessGuard(g *AccessGuard) *ProjectHandler {
 }
 
 // projectUpdateKeys returns the top-level keys of a PATCH /projects/{id}
-// body, lower-cased. Reads them as a token stream, the same way
+// body, verbatim. Reads them as a token stream, the same way
 // caseCreateTargetsAnnouncement (cases.go) does and for the identical reason:
 // entity-service's decoder (encoding/json) matches a JSON key to a Go struct
 // field without regard to case, so a check that only looked for one canonical
 // spelling could be walked around by a body that spells the key differently.
+// Callers must compare with hasProjectUpdateKey (strings.EqualFold), never
+// strings.ToLower: encoding/json folds with Unicode simple folding, so a key
+// like "closure\u017ftate" (long s) names closureState to the decoder but
+// does not lower-case to it.
 // A body this can't make sense of (not a JSON object) yields no keys;
 // entity-service's own request decoding rejects it regardless.
 func projectUpdateKeys(body []byte) []string {
@@ -83,7 +87,7 @@ func projectUpdateKeys(body []byte) []string {
 		if err := dec.Decode(&raw); err != nil {
 			return keys
 		}
-		keys = append(keys, strings.ToLower(key))
+		keys = append(keys, key)
 	}
 	return keys
 }
@@ -97,7 +101,13 @@ func projectUpdateKeys(body []byte) []string {
 // as targeting it, since there is no legitimate reason a non-admin caller
 // sends this field at all.
 func projectUpdateTargetsClosureState(body []byte) bool {
-	return slices.Contains(projectUpdateKeys(body), "closurestate")
+	return hasProjectUpdateKey(projectUpdateKeys(body), "closureState")
+}
+
+// hasProjectUpdateKey reports whether keys contains name, matching the way
+// encoding/json does (Unicode simple case folding).
+func hasProjectUpdateKey(keys []string, name string) bool {
+	return slices.ContainsFunc(keys, func(k string) bool { return strings.EqualFold(k, name) })
 }
 
 // projectUpdateTargets reports whether a PATCH /projects/{id} body sets the
@@ -108,7 +118,7 @@ func projectUpdateTargetsClosureState(body []byte) bool {
 // field" validation.
 func projectUpdateTargets(body []byte) (onboarding, other bool) {
 	for _, key := range projectUpdateKeys(body) {
-		if key == "onboardingstatus" || key == "onboardingowner" {
+		if strings.EqualFold(key, "onboardingStatus") || strings.EqualFold(key, "onboardingOwner") {
 			onboarding = true
 		} else {
 			other = true
