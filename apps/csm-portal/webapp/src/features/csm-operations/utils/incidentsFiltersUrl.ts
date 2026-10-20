@@ -15,7 +15,9 @@
 // under the License.
 
 import {
+  INCIDENT_FILTER_CATEGORIES,
   INCIDENT_PRIORITIES,
+  INCIDENT_STATES,
   type IncidentFilters,
 } from "@features/csm-operations/utils/incidents";
 
@@ -30,6 +32,12 @@ export const INCIDENT_FILTER_PARAM_KEYS = [
   "incCreatedTo",
   "incProducts",
   "incSreTeams",
+  "incStates",
+  "incCategories",
+  "incServices",
+  "incAssignees",
+  "incUpdatedFrom",
+  "incUpdatedTo",
 ] as const;
 
 const DATE_ONLY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -105,6 +113,18 @@ function parseTeamIdsCsv(raw: string | null): string[] {
  * so it falls back to the default (unfiltered) behaviour instead of being
  * silently sent to the backend.
  */
+/** Parses a from/to pair, dropping an end before the start (same rule as the
+ * created range below). */
+function parseUpdatedRange(
+  rawFrom: string | null,
+  rawTo: string | null,
+): { updatedStartDate: string; updatedEndDate: string } {
+  const from = parseDateOnly(rawFrom);
+  let to = parseDateOnly(rawTo);
+  if (from && to && from > to) to = "";
+  return { updatedStartDate: from, updatedEndDate: to };
+}
+
 export function readIncidentFiltersFromUrl(
   params: URLSearchParams,
 ): IncidentFilters {
@@ -128,6 +148,11 @@ export function readIncidentFiltersFromUrl(
     createdEndDate,
     products: parseProductsCsv(params.get("incProducts")),
     sreTeamIds: parseTeamIdsCsv(params.get("incSreTeams")),
+    states: parseCsv(params.get("incStates"), INCIDENT_STATES),
+    categories: parseCsv(params.get("incCategories"), INCIDENT_FILTER_CATEGORIES),
+    serviceIds: parseTeamIdsCsv(params.get("incServices")),
+    assigneeIds: parseTeamIdsCsv(params.get("incAssignees")),
+    ...parseUpdatedRange(params.get("incUpdatedFrom"), params.get("incUpdatedTo")),
   };
 }
 
@@ -144,5 +169,11 @@ export function writeIncidentFiltersToUrl(f: IncidentFilters): URLSearchParams {
   if (f.createdEndDate) out.set("incCreatedTo", f.createdEndDate);
   if (f.products.length) out.set("incProducts", f.products.join(","));
   if (f.sreTeamIds.length) out.set("incSreTeams", f.sreTeamIds.join(","));
+  if (f.states.length) out.set("incStates", f.states.join(","));
+  if (f.categories.length) out.set("incCategories", f.categories.join(","));
+  if (f.serviceIds.length) out.set("incServices", f.serviceIds.join(","));
+  if (f.assigneeIds.length) out.set("incAssignees", f.assigneeIds.join(","));
+  if (f.updatedStartDate) out.set("incUpdatedFrom", f.updatedStartDate);
+  if (f.updatedEndDate) out.set("incUpdatedTo", f.updatedEndDate);
   return out;
 }

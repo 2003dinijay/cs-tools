@@ -15,7 +15,7 @@
 // under the License.
 
 import type { ReactElement } from "react";
-import { fireEvent, render as rtlRender, screen } from "@testing-library/react";
+import { fireEvent, render as rtlRender, screen, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { MemoryRouter } from "react-router";
@@ -145,7 +145,10 @@ describe("IncidentsTab — customise columns", () => {
       "Updated by",
       "Created",
     ]) {
-      expect(screen.getByText(label)).toBeInTheDocument();
+      // Scoped to the picker: the filter bar has a "Category" field too.
+      expect(
+        within(screen.getByRole("list", { name: "Customise incident columns" })).getByText(label),
+      ).toBeInTheDocument();
     }
   });
 

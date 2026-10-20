@@ -3819,10 +3819,8 @@ export interface BePatchIncidentResponse {
 /**
  * `field` enum accepted by an incident search's generic `filters` array —
  * mirrors the entity-service's `incidentFilterFieldSet` (see
- * `incident_filters.go`) exactly. This portal currently builds controls for
- * `assignmentGroupId` (SRE Team), `slaViolated`, `createdOn`, and
- * `productName` — the remaining values (`state`, `businessServiceId`,
- * `madeSla`) are included for completeness/future controls, not dead code.
+ * `incident_filters.go`) exactly. The Incidents filter bar builds controls for
+ * all of them except `madeSla`.
  */
 export type BeIncidentFieldFilterField =
   | "state"
@@ -3831,7 +3829,12 @@ export type BeIncidentFieldFilterField =
   | "createdOn"
   | "slaViolated"
   | "madeSla"
-  | "productName";
+  | "productName"
+  | "assignedUserId"
+  /** PostgreSQL only: incident category labels, `in`. */
+  | "category"
+  /** PostgreSQL only: last update, `gte`/`lte`. */
+  | "updatedOn";
 
 /**
  * `op` enum accepted by an incident search's generic `filters` array,

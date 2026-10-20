@@ -106,6 +106,29 @@ describe("buildIncidentSearchFilters", () => {
     });
   });
 
+  it("sends state, category, service, assignee and the updated range as generic filter entries", () => {
+    const out = buildIncidentSearchFilters(
+      {
+        ...DEFAULT_INCIDENT_FILTERS,
+        states: ["NEW", "IN_PROGRESS"],
+        categories: ["SOFTWARE"],
+        serviceIds: ["svc-1"],
+        assigneeIds: ["user-1"],
+        updatedStartDate: "2026-01-01",
+        updatedEndDate: "2026-01-31",
+      },
+      "",
+    );
+    expect(out.filters).toEqual([
+      { field: "state", op: "in", values: ["NEW", "IN_PROGRESS"] },
+      { field: "category", op: "in", values: ["SOFTWARE"] },
+      { field: "businessServiceId", op: "in", values: ["svc-1"] },
+      { field: "assignedUserId", op: "in", values: ["user-1"] },
+      { field: "updatedOn", op: "gte", values: ["2026-01-01T00:00:00Z"] },
+      { field: "updatedOn", op: "lte", values: ["2026-01-31T23:59:59Z"] },
+    ]);
+  });
+
   it("includes priorities and searchQuery alongside the generic filters array", () => {
     const filters: IncidentFilters = {
       search: "",
@@ -115,6 +138,12 @@ describe("buildIncidentSearchFilters", () => {
       createdEndDate: "2026-05-31",
       products: ["Choreo"],
       sreTeamIds: [],
+      states: [],
+      categories: [],
+      serviceIds: [],
+      assigneeIds: [],
+      updatedStartDate: "",
+      updatedEndDate: "",
     };
     expect(buildIncidentSearchFilters(filters, "timeout")).toEqual({
       searchQuery: "timeout",

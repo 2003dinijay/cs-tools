@@ -153,8 +153,8 @@ export interface CreateIncidentFromIncidentNavState {
  * `number` (see openapi.yaml); `slaViolated`, `createdOn` (date range), and
  * `productName` all route through the generic `filters` array (see
  * {@link buildIncidentSearchFilters}), same as `sreTeamIds`' own
- * `assignmentGroupId`/`"in"` entry — there's no server-side state/category
- * filter to build a control for.
+ * `assignmentGroupId`/`"in"` entry, as do state, category, service, assignee
+ * and the updated-date range.
  */
 export interface IncidentFilters {
   search: string;
@@ -173,7 +173,28 @@ export interface IncidentFilters {
    * `{ field: "assignmentGroupId", op: "in" }` filter entry (see
    * `buildIncidentSearchFilters`), not a named payload field. */
   sreTeamIds: string[];
+  /** `{ field: "state", op: "in" }`. */
+  states: BeIncidentState[];
+  /** `{ field: "category", op: "in" }` (PostgreSQL only). */
+  categories: string[];
+  /** Service ids — `{ field: "businessServiceId", op: "in" }`. */
+  serviceIds: string[];
+  /** Assignee user ids — `{ field: "assignedUserId", op: "in" }`. */
+  assigneeIds: string[];
+  /** `YYYY-MM-DD` UTC dates bounding the last update, or empty. */
+  updatedStartDate: string;
+  updatedEndDate: string;
 }
+
+/** Every incident category the data holds (ServiceNow's choices, synced),
+ * not only the three the create form offers — a filter must reach the
+ * incidents that carry the others. */
+export const INCIDENT_FILTER_CATEGORIES: string[] = [
+  "INQUIRY", "SERVICE_INTERRUPTION", "SECURITY", "NETWORK", "DATABASE", "HARDWARE",
+  "SOFTWARE", "APPLICATION", "CONNECTIVITY", "EC2_INSTANCE", "ELASTIC_LOAD_BALANCER",
+  "ERRORS", "METRICS", "MONITORING", "PERFORMANCE", "RDS_DATABASE",
+  "RESOURCE_EXHAUSTION", "TECHNICAL_FAULTS",
+];
 
 export const DEFAULT_INCIDENT_FILTERS: IncidentFilters = {
   search: "",
@@ -183,6 +204,12 @@ export const DEFAULT_INCIDENT_FILTERS: IncidentFilters = {
   createdEndDate: "",
   products: [],
   sreTeamIds: [],
+  states: [],
+  categories: [],
+  serviceIds: [],
+  assigneeIds: [],
+  updatedStartDate: "",
+  updatedEndDate: "",
 };
 
 /** Count non-search active filters (used for the badge on the Filters button). */
@@ -193,7 +220,13 @@ export function countActiveIncidentFilters(filters: IncidentFilters): number {
     (filters.createdStartDate ? 1 : 0) +
     (filters.createdEndDate ? 1 : 0) +
     (filters.products.length > 0 ? 1 : 0) +
-    (filters.sreTeamIds.length > 0 ? 1 : 0)
+    (filters.sreTeamIds.length > 0 ? 1 : 0) +
+    (filters.states.length > 0 ? 1 : 0) +
+    (filters.categories.length > 0 ? 1 : 0) +
+    (filters.serviceIds.length > 0 ? 1 : 0) +
+    (filters.assigneeIds.length > 0 ? 1 : 0) +
+    (filters.updatedStartDate ? 1 : 0) +
+    (filters.updatedEndDate ? 1 : 0)
   );
 }
 
@@ -257,6 +290,36 @@ export function buildIncidentSearchFilters(
       : []),
     ...(filters.sreTeamIds.length > 0
       ? [{ field: "assignmentGroupId" as const, op: "in" as const, values: filters.sreTeamIds }]
+      : []),
+    ...(filters.states.length > 0
+      ? [{ field: "state" as const, op: "in" as const, values: filters.states }]
+      : []),
+    ...(filters.categories.length > 0
+      ? [{ field: "category" as const, op: "in" as const, values: filters.categories }]
+      : []),
+    ...(filters.serviceIds.length > 0
+      ? [{ field: "businessServiceId" as const, op: "in" as const, values: filters.serviceIds }]
+      : []),
+    ...(filters.assigneeIds.length > 0
+      ? [{ field: "assignedUserId" as const, op: "in" as const, values: filters.assigneeIds }]
+      : []),
+    ...(filters.updatedStartDate
+      ? [
+          {
+            field: "updatedOn" as const,
+            op: "gte" as const,
+            values: [incidentDateOnlyToUTCStart(filters.updatedStartDate)],
+          },
+        ]
+      : []),
+    ...(filters.updatedEndDate
+      ? [
+          {
+            field: "updatedOn" as const,
+            op: "lte" as const,
+            values: [incidentDateOnlyToUTCEnd(filters.updatedEndDate)],
+          },
+        ]
       : []),
   ];
 

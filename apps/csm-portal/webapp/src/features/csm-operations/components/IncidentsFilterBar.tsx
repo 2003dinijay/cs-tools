@@ -36,7 +36,10 @@ import { useTeams } from "@features/csm-dashboard/api/useTeams";
 import {
   countActiveIncidentFilters,
   incidentPriorityLabel,
+  incidentStateLabel,
+  INCIDENT_FILTER_CATEGORIES,
   INCIDENT_PRIORITIES,
+  INCIDENT_STATES,
   type IncidentFilters,
 } from "@features/csm-operations/utils/incidents";
 import {
@@ -46,6 +49,10 @@ import {
 import IncidentProductMultiSelect from "@features/csm-operations/components/IncidentProductMultiSelect";
 import SavedViewsMenu from "@features/csm-operations/components/SavedViewsMenu";
 import MultiSelectField from "@components/MultiSelectField";
+import AsyncEntityMultiSelect from "@components/AsyncEntityMultiSelect";
+import { useSearchItServices } from "@api/useSearchItServices";
+import AsyncAssignedUserIdMultiSelect from "@features/csm-cases/components/AsyncAssignedUserIdMultiSelect";
+import DateRangeFilterFields from "@features/csm-operations/components/DateRangeFilterFields";
 
 const { DatePicker, LocalizationProvider } = DatePickers;
 
@@ -90,10 +97,11 @@ interface IncidentsFilterBarProps {
 }
 
 /**
- * Search + filters bar for the Incidents tab: priority, product, SRE team,
- * SLA-violated, and created date range (see `IncidentSearchPayload.filters` in
- * openapi.yaml — there's still no server-side state/category filter to build
- * a control for). The created-date bounds are inclusive and interpreted in
+ * Search + filters bar for the Incidents tab: state, priority, category,
+ * service, assignee, product, SRE team, SLA-violated, and the created and
+ * updated date ranges (see `IncidentSearchPayload.filters` in openapi.yaml).
+ * Category and the updated range are PostgreSQL-only on the backend. The
+ * created-date bounds are inclusive and interpreted in
  * UTC by the backend, so both date fields are labelled "(UTC)" rather than
  * silently letting a viewer in another timezone assume their own — picking
  * "1 May" here means the UTC calendar day, not midnight in the viewer's
@@ -142,6 +150,23 @@ export default function IncidentsFilterBar({
         )
         .map((t) => ({ value: t.sreGroupId, label: t.name })),
     [teams],
+  );
+
+  const stateOptions = useMemo(
+    () => INCIDENT_STATES.map((st) => ({ value: st, label: incidentStateLabel(st) })),
+    [],
+  );
+  const categoryOptions = useMemo(
+    () =>
+      INCIDENT_FILTER_CATEGORIES.map((c) => ({
+        value: c,
+        label: c
+          .toLowerCase()
+          .split("_")
+          .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+          .join(" "),
+      })),
+    [],
   );
 
   const handlePriorityChange = (next: BeIncidentPriority[]): void => {
@@ -247,11 +272,53 @@ export default function IncidentsFilterBar({
           <Grid container spacing={2}>
             <Grid size={{ xs: 12, sm: 6, md: 4 }}>
               <MultiSelectField
+                id="incident-filter-state"
+                label="State"
+                values={filters.states}
+                options={stateOptions}
+                onChange={(next) => onChange({ ...filters, states: next })}
+              />
+            </Grid>
+            <Grid size={{ xs: 12, sm: 6, md: 4 }}>
+              <MultiSelectField
                 id="incident-filter-priority"
                 label="Priority"
                 values={filters.priorities}
                 options={priorityOptions}
                 onChange={handlePriorityChange}
+              />
+            </Grid>
+
+            <Grid size={{ xs: 12, sm: 6, md: 4 }}>
+              <MultiSelectField
+                id="incident-filter-category"
+                label="Category"
+                values={filters.categories}
+                options={categoryOptions}
+                onChange={(next) => onChange({ ...filters, categories: next })}
+              />
+            </Grid>
+
+            <Grid size={{ xs: 12, sm: 6, md: 4 }}>
+              <AsyncEntityMultiSelect
+                id="incident-filter-service"
+                label="Service"
+                placeholder="Search services…"
+                values={filters.serviceIds}
+                onChange={(next) => onChange({ ...filters, serviceIds: next })}
+                useSearch={useSearchItServices}
+                getId={(svc) => svc.id}
+                getLabel={(svc) => svc.name ?? svc.id}
+                compactSelectedValues
+              />
+            </Grid>
+
+            <Grid size={{ xs: 12, sm: 6, md: 4 }}>
+              <AsyncAssignedUserIdMultiSelect
+                id="incident-filter-assignee"
+                label="Assignee"
+                values={filters.assigneeIds}
+                onChange={(next) => onChange({ ...filters, assigneeIds: next })}
               />
             </Grid>
 
@@ -319,6 +386,12 @@ export default function IncidentsFilterBar({
                 />
               </LocalizationProvider>
             </Grid>
+
+            <DateRangeFilterFields
+              label="Updated"
+              value={{ from: filters.updatedStartDate, to: filters.updatedEndDate }}
+              onChange={(r) => onChange({ ...filters, updatedStartDate: r.from, updatedEndDate: r.to })}
+            />
           </Grid>
           {activeCount > 0 && (
             <Box sx={{ display: "flex", justifyContent: "flex-end" }}>

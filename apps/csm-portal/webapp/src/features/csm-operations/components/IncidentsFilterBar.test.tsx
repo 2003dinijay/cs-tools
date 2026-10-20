@@ -43,6 +43,19 @@ const useTeamsMock = vi.fn(() => ({
   ],
   isLoading: false,
 }));
+vi.mock("@api/useSearchItServices", () => ({
+  useSearchItServices: () => ({ data: [], isFetching: false, isError: false }),
+}));
+vi.mock("@features/csm-cases/api/useUserSearch", () => ({
+  useInfiniteUserSearch: () => ({
+    users: [],
+    isFetching: false,
+    isError: false,
+    hasNextPage: false,
+    fetchNextPage: () => {},
+    isFetchingNextPage: false,
+  }),
+}));
 vi.mock("@features/csm-dashboard/api/useTeams", () => ({
   useTeams: () => useTeamsMock(),
 }));
@@ -166,5 +179,23 @@ describe("IncidentsFilterBar", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: /clear filters/i }));
     expect(onReset).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers state, category, service, assignee and updated-date filters", () => {
+    const onChange = vi.fn();
+    render(
+      <IncidentsFilterBar
+        filters={DEFAULT_INCIDENT_FILTERS}
+        onChange={onChange}
+        onReset={vi.fn()}
+        isFiltersOpen
+        onFiltersToggle={vi.fn()}
+      />,
+    );
+    for (const label of ["State", "Category", "Service", "Assignee"]) {
+      expect(screen.getAllByLabelText(label).length).toBeGreaterThan(0);
+    }
+    expect(screen.getAllByText("Updated from (UTC)").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Updated to (UTC)").length).toBeGreaterThan(0);
   });
 });
