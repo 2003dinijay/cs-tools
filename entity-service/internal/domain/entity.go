@@ -1506,11 +1506,11 @@ type ProjectDetailsView struct {
 // derivation rule entirely. This is a deliberately simple mechanism with one
 // documented caveat, not hidden: a later PATCH that touches any of the three
 // sub-state fields recomputes the overall state from them again, silently
-// overwriting a manual override with no memory that one was ever set.
-// Admin-only enforcement for this one field is checked both here
-// (pgProjectUpdateService.UpdateProject, against the caller's own token
-// roles) and in the BFF (apps/csm-portal/backend) — this route is not
-// internalOnly, so the BFF's own check alone is not sufficient.
+// overwriting a manual override with no memory that one was ever set. Fine-
+// grained "admin only" enforcement for this field lives in the BFF
+// (apps/csm-portal/backend), not here — this service only authorizes the
+// caller against the project itself, the same as every other field on this
+// request.
 //
 // VerificationEnabled is likewise Postgres data source only — no ServiceNow
 // equivalent — and combines freely with every other field here (no
