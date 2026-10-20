@@ -96,3 +96,17 @@ export function parseRunbookImport(text: string): RunbookInput[] {
   }
   throw new Error("Expected an object of alert name to link, or a list of entries.");
 }
+
+/** Runbooks as an import file: an object of alert name to link, "" for an alert with no runbook yet. */
+export function runbooksToImportJson(runbooks: Pick<Runbook, "alertName" | "runbookUrl">[]): string {
+  const out: Record<string, string> = {};
+  for (const rb of runbooks) out[rb.alertName] = rb.runbookUrl ?? "";
+  return `${JSON.stringify(out, null, 2)}\n`;
+}
+
+export const RUNBOOK_CSV_HEADER = ["Alert name", "Runbook link", "Last updated by", "Last updated"];
+
+/** One CSV row per runbook, in the order of RUNBOOK_CSV_HEADER. */
+export function runbooksToCsvRows(runbooks: Runbook[]): string[][] {
+  return runbooks.map((rb) => [rb.alertName, rb.runbookUrl ?? "", rb.updatedBy, rb.updatedOn]);
+}

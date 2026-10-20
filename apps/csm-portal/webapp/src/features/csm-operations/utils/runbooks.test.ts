@@ -15,7 +15,7 @@
 // under the License.
 
 import { describe, expect, it } from "vitest";
-import { findRunbookForIncident, parseRunbookImport } from "./runbooks";
+import { findRunbookForIncident, parseRunbookImport, runbooksToCsvRows, runbooksToImportJson } from "./runbooks";
 
 describe("parseRunbookImport", () => {
   it("reads an object of alert name to link, blank meaning no runbook", () => {
@@ -50,5 +50,26 @@ describe("findRunbookForIncident", () => {
   it("finds a known alert without a link, and nothing for an unknown subject", () => {
     expect(findRunbookForIncident(catalog, "node / jvm heap")).toEqual({ alertName: "JVM Heap", runbookUrl: null });
     expect(findRunbookForIncident(catalog, "unrelated")).toBeUndefined();
+  });
+});
+
+describe("export", () => {
+  const catalog = [
+    { id: "1", alertName: "gw-5xx", runbookUrl: "https://docs.example.com/gw", createdOn: "", createdBy: "", updatedOn: "2026-10-01T00:00:00Z", updatedBy: "a@x" },
+    { id: "2", alertName: "JVM Heap", runbookUrl: null, createdOn: "", createdBy: "", updatedOn: "2026-10-02T00:00:00Z", updatedBy: "b@x" },
+  ];
+
+  it("writes JSON the importer reads back unchanged", () => {
+    expect(parseRunbookImport(runbooksToImportJson(catalog))).toEqual([
+      { alertName: "gw-5xx", runbookUrl: "https://docs.example.com/gw" },
+      { alertName: "JVM Heap", runbookUrl: null },
+    ]);
+  });
+
+  it("writes one CSV row per runbook", () => {
+    expect(runbooksToCsvRows(catalog)).toEqual([
+      ["gw-5xx", "https://docs.example.com/gw", "a@x", "2026-10-01T00:00:00Z"],
+      ["JVM Heap", "", "b@x", "2026-10-02T00:00:00Z"],
+    ]);
   });
 });
