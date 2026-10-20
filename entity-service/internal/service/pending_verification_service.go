@@ -40,18 +40,20 @@ var validPendingVerificationPreviousStatus = map[domain.PendingVerificationPrevi
 	domain.PendingVerificationPreviousStatusAwaitingInfo:     true,
 }
 
-// validPendingVerificationRecordType is the six work_item_type_enum values
-// this feature is scoped to (§2 of the requirements doc) — deliberately
-// narrower than every value work_item_type_enum actually has (e.g. INCIDENT,
-// PROBLEM are unrelated features), so a caller can't filter this list by a
-// record type the feature was never meant to cover.
+// validPendingVerificationRecordType narrows filters.workItemTypes to CASE,
+// the only type CreatePendingVerification actually ever accepts (product
+// decision, 2026-10-06). The requirements doc's §2 scope table originally
+// named five more types (Engagement, Security Report, Service Request,
+// Announcement, Change Request), but the feature was since scoped down to
+// Case only before any code accepting those other types was built -- and
+// buildSearchWhere's own query unconditionally ANDs wi.type = 'CASE' onto
+// every search regardless of this filter, so a caller sending e.g.
+// workItemTypes: ["ENGAGEMENT"] used to pass this validation and then
+// silently get an empty result forever, with no way to tell "no matches"
+// apart from "this filter value doesn't do anything here". Rejecting the
+// other five outright is honest about what's actually implemented.
 var validPendingVerificationRecordType = map[string]bool{
-	"CASE":                     true,
-	"ENGAGEMENT":               true,
-	"SECURITY_REPORT_ANALYSIS": true,
-	"SERVICE_REQUEST":          true,
-	"ANNOUNCEMENT":             true,
-	"CHANGE_REQUEST":           true,
+	"CASE": true,
 }
 
 // addedBy/verifiedBy always come from resolveCallerEmail (account_contact_service.go's

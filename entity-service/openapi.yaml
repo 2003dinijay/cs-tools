@@ -29602,7 +29602,11 @@ components:
           type: array
           items:
             type: string
-            enum: [CASE, ENGAGEMENT, SECURITY_REPORT_ANALYSIS, SERVICE_REQUEST, ANNOUNCEMENT, CHANGE_REQUEST]
+            enum: [CASE]
+          description: >-
+            CASE is the only value accepted -- the feature is scoped to
+            cases only. Any other value is a 400, not a silently-empty
+            result.
         searchQuery:
           type: string
         addedReason:

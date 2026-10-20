@@ -419,6 +419,26 @@ func TestPendingVerificationService_Search_UnsupportedWorkItemType(t *testing.T)
 	assertValidationError(t, err)
 }
 
+// TestPendingVerificationService_Search_RejectsNonCaseWorkItemType locks in
+// a real finding: buildSearchWhere unconditionally ANDs wi.type = 'CASE'
+// onto every search regardless of filters.workItemTypes, so a request for
+// any of the five other work_item_type_enum values the doc's §2 scope table
+// originally named (the feature has since been scoped to Case only) used to
+// pass this validation and then silently return zero rows forever -- never
+// a 400 explaining the filter does nothing. Each must now be rejected
+// outright instead.
+func TestPendingVerificationService_Search_RejectsNonCaseWorkItemType(t *testing.T) {
+	for _, recordType := range []string{"ENGAGEMENT", "SECURITY_REPORT_ANALYSIS", "SERVICE_REQUEST", "ANNOUNCEMENT", "CHANGE_REQUEST"} {
+		t.Run(recordType, func(t *testing.T) {
+			svc := NewPendingVerificationService(&fakePendingVerificationRepo{}, stubAccess{scope: AccessScope{Unrestricted: true}})
+			_, err := svc.SearchPendingVerifications(context.Background(), domain.SearchPendingVerificationsRequest{
+				Filters: domain.PendingVerificationSearchFilters{ProjectID: pvTestWorkItemID, WorkItemTypes: []string{recordType}},
+			})
+			assertValidationError(t, err)
+		})
+	}
+}
+
 // TestPendingVerificationService_Search_InvalidAddedReason locks in the new
 // addedReason filter's own validation, added alongside the Support page's
 // Auto-closed/Manual stat boxes.
