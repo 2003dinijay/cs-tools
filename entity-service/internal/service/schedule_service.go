@@ -249,7 +249,7 @@ func (s *scheduleService) requireRotaWriter(ctx context.Context, teamKey string)
 	}
 	if !ok {
 		return &apierror.ForbiddenError{
-			Msg: fmt.Sprintf("changing %s's rota needs a lead of that team, its rota marker, or a rota admin for its family", teamKey),
+			Msg: fmt.Sprintf("changing %s's rota needs a lead of that team, its rota manager, or a rota admin for its family", teamKey),
 		}
 	}
 	return nil

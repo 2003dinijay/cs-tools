@@ -92,19 +92,19 @@ describe("RotaAccessTab", () => {
     expect(lastChange()).toEqual({ kind: "admin", family: "CRE", userId: ME, grant: true });
   });
 
-  it("names a team's rota marker from its members, leaving out the lead and anyone already one", () => {
+  it("names a team's Rota Manager from its members, leaving out the lead and anyone already one", () => {
     render(<RotaAccessTab teams={TEAMS} />);
     fireEvent.click(screen.getByRole("tab", { name: "SRE" }));
-    const pick = screen.getByRole("combobox", { name: "Add rota marker for Apollo" });
+    const pick = screen.getByRole("combobox", { name: "Add Rota Manager for Apollo" });
     const offered = within(pick)
       .getAllByRole("option")
       .map((o) => o.textContent);
-    expect(offered).toEqual(["+ Add rota marker", "Ben"]);
+    expect(offered).toEqual(["+ Add Rota Manager", "Ben"]);
 
     fireEvent.change(pick, { target: { value: BEN } });
     expect(lastChange()).toEqual({ kind: "marker", teamKey: "apollo", userId: BEN, grant: true });
 
-    fireEvent.click(screen.getByRole("button", { name: "Remove Ana as Apollo rota marker" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove Ana as Apollo Rota Manager" }));
     expect(lastChange()).toEqual({ kind: "marker", teamKey: "apollo", userId: ANA, grant: false });
   });
 
@@ -132,7 +132,7 @@ describe("RotaAccessTab", () => {
     access.data!.markers[0] = { ...access.data!.markers[0], active: false };
     render(<RotaAccessTab teams={TEAMS} />);
     fireEvent.click(screen.getByRole("tab", { name: "SRE" }));
-    const list = screen.getByRole("list", { name: "Apollo rota markers" });
+    const list = screen.getByRole("list", { name: "Apollo Rota Managers" });
     expect(within(list).getByText("inactive")).toBeInTheDocument();
   });
 
