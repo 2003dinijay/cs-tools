@@ -20,6 +20,7 @@ import { useSearchInternalUsersByName } from "@api/useSearchUsersByName";
 import { useDebouncedValue } from "@hooks/useDebouncedValue";
 import { useChangeRotaAccess, useRotaAccess, type RotaAccessChange } from "../api/useRotaAccess";
 import type { RotaAdminGrant, RotaFamily, RotaMarkerGrant, ScheduleTeam } from "../types";
+import RotaReminderSettings from "./RotaReminderSettings";
 import ScheduleSkeleton from "./ScheduleSkeleton";
 
 const FAMILIES: RotaFamily[] = ["CRE", "SRE", "SME"];
@@ -134,6 +135,8 @@ export default function RotaAccessTab({ teams }: Props): JSX.Element {
           </div>
         </section>
       ) : null}
+
+      {markerFamilies.includes("CRE") ? <RotaReminderSettings /> : null}
     </div>
   );
 }

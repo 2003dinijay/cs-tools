@@ -314,6 +314,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// rest of the Team Schedule.
 	var rotaGenerateHandler *handler.RotaGenerateHandler
 	var rotaAccessHandler *handler.RotaAccessHandler
+	var scheduleReminderHandler *handler.ScheduleReminderHandler
+	var rotaReminderSettingsHandler *handler.RotaReminderSettingsHandler
+	var rotaReminderRequestHandler *handler.RotaReminderRequestHandler
 	var teamMemberHandler *handler.TeamMemberHandler
 	var pagingChainHandler *handler.PagingChainHandler
 	var caseAlertSettingsHandler *handler.CaseAlertSettingsHandler
@@ -1093,6 +1096,22 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// Portal admin: a token role from AUTH_ADMIN_ROLES, as in the portal.
 		rotaAccessHandler = handler.NewRotaAccessHandler(
 			service.NewRotaAccessService(repository.NewRotaAccessRepository(db), repository.NewScheduleRepository(db), accessSvc, cfg.AuthAdminRoles),
+		)
+		// The rota reminders' bookkeeping, for csm-scheduled-tasks' service
+		// credential only: what a reminder last sent, and the rota admins to
+		// ask when a rota is not complete.
+		scheduleReminderHandler = handler.NewScheduleReminderHandler(
+			service.NewScheduleReminderService(repository.NewScheduleReminderRepository(db), repository.NewRotaAccessRepository(db), accessSvc),
+		)
+		// The rota reminders' settings: read by csm-scheduled-tasks and the Rota
+		// Access tab, changed there by a CSM admin or the family's rota admin.
+		rotaReminderSettingsHandler = handler.NewRotaReminderSettingsHandler(
+			service.NewRotaReminderSettingsService(repository.NewRotaReminderSettingsRepository(db), repository.NewScheduleRepository(db), accessSvc, cfg.AuthAdminRoles),
+		)
+		// "Send now" on the same card: asked for by a CSM admin or the family's
+		// rota admin, claimed and reported by csm-scheduled-tasks.
+		rotaReminderRequestHandler = handler.NewRotaReminderRequestHandler(
+			service.NewRotaReminderRequestService(repository.NewRotaReminderRequestRepository(db), repository.NewScheduleRepository(db), accessSvc, cfg.AuthAdminRoles),
 		)
 		// Postgres-only, and internal-staff-only like every other read in this
 		// module: it returns staff names, addresses and rank.
@@ -1883,6 +1902,21 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("DELETE /team-schedule/rota-access/admins/{family}/{userId}", rotaAccessHandler.RevokeRotaAdmin)
 		mux.HandleFunc("PUT /team-schedule/rota-access/markers/{teamKey}/{userId}", rotaAccessHandler.GrantRotaMarker)
 		mux.HandleFunc("DELETE /team-schedule/rota-access/markers/{teamKey}/{userId}", rotaAccessHandler.RevokeRotaMarker)
+	}
+	if scheduleReminderHandler != nil {
+		mux.HandleFunc("GET /team-schedule/reminders/{family}/{kind}/{periodStart}", scheduleReminderHandler.GetReminder)
+		mux.HandleFunc("PUT /team-schedule/reminders/{family}/{kind}/{periodStart}", scheduleReminderHandler.RecordReminder)
+		mux.HandleFunc("GET /team-schedule/rota-admins/{family}", scheduleReminderHandler.GetRotaAdmins)
+	}
+	if rotaReminderSettingsHandler != nil {
+		mux.HandleFunc("GET /team-schedule/reminder-settings/{family}", rotaReminderSettingsHandler.Get)
+		mux.HandleFunc("PUT /team-schedule/reminder-settings/{family}", rotaReminderSettingsHandler.Save)
+	}
+	if rotaReminderRequestHandler != nil {
+		mux.HandleFunc("POST /team-schedule/reminder-requests/{family}", rotaReminderRequestHandler.Create)
+		mux.HandleFunc("GET /team-schedule/reminder-requests/{family}", rotaReminderRequestHandler.List)
+		mux.HandleFunc("POST /team-schedule/reminder-requests/{family}/claim", rotaReminderRequestHandler.Claim)
+		mux.HandleFunc("PUT /team-schedule/reminder-requests/{family}/{id}/result", rotaReminderRequestHandler.Report)
 	}
 	if rotaGenerateHandler != nil {
 		// A lead of the rota (or its admin) works out a month from the
