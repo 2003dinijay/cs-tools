@@ -349,6 +349,36 @@ func TestPgProjectUpdateService_ClosureStateOnlyNeverDispatchesSNMirror(t *testi
 	}
 }
 
+// TestPgProjectUpdateService_VerificationEnabledOnlyNeverDispatchesSNMirror
+// pins the identical reasoning as ClosureStateOnlyNeverDispatchesSNMirror,
+// for the other Postgres-only field this request carries: without this,
+// a dual-write request naming only VerificationEnabled would dispatch a
+// mirror write that snProjectUpdateService doesn't recognize, recording a
+// spurious sn_writeback_failures entry for a field that was never meant to
+// reach ServiceNow.
+func TestPgProjectUpdateService_VerificationEnabledOnlyNeverDispatchesSNMirror(t *testing.T) {
+	verificationEnabled := true
+	repo := &stubProjectUpdateRepo{}
+	mirror := &stubProjectMirror{}
+	failures := &recordingSNWritebackFailures{}
+	dispatcher := NewSNWritebackDispatcher(failures)
+	svc := NewProjectUpdateServiceWithSNWriteback(repo, testProjectUserRepo(), alwaysUnrestrictedAccess{}, dispatcher, mirror)
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	if _, err := svc.UpdateProject(ctx, "11111111-1111-1111-1111-111111111111", domain.ProjectUpdateRequest{VerificationEnabled: &verificationEnabled}); err != nil {
+		t.Fatalf("UpdateProject() error = %v, want success", err)
+	}
+	if !repo.called {
+		t.Fatal("UpdateProject() never called the repository")
+	}
+	// No background goroutine to race against here (mirror dispatch never
+	// happens), so a short, direct check is enough -- same reasoning as the
+	// ClosureState sibling test above.
+	if mirror.calls != 0 {
+		t.Fatalf("ServiceNow mirror UpdateProject called %d times, want 0 for a VerificationEnabled-only request", mirror.calls)
+	}
+}
+
 // TestPgProjectUpdateService_DualWriteDispatchesExactlyOneMirrorCallOnSuccess
 // proves DATA_SOURCE=postgres-servicenow-dual-write mode dispatches exactly
 // one best-effort ServiceNow mirror write after a successful Postgres write,
