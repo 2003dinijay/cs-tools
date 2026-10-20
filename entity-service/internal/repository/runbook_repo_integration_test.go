@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// This is an integration test: it applies migrations 0241-0243 in a private schema and runs
+// This is an integration test: it applies migrations 0241 and 0243 in a private schema and runs
 // RunbookRepository against it. Skipped without a DSN:
 //
 //	RUNBOOK_TEST_DSN=postgres://... go test ./internal/repository/ -run Runbook
@@ -38,7 +38,7 @@ import (
 )
 
 // runbookTestPool creates a private schema with migration 0241 and 0180's number series applied, runs seed against it, applies
-// 0242 and 0243 twice each and returns a pool on that schema.
+// 0243 twice and returns a pool on that schema.
 func runbookTestPool(t *testing.T, seed string) *pgxpool.Pool {
 	t.Helper()
 	dsn := os.Getenv("RUNBOOK_TEST_DSN")
@@ -101,10 +101,8 @@ func runbookTestPool(t *testing.T, seed string) *pgxpool.Pool {
 			t.Fatalf("seed: %v", err)
 		}
 	}
-	apply("0242_runbook_alerts.sql")
-	apply("0242_runbook_alerts.sql")
-	apply("0243_runbook_number.sql")
-	apply("0243_runbook_number.sql")
+	apply("0243_runbook_alerts.sql")
+	apply("0243_runbook_alerts.sql")
 	return pool
 }
 
@@ -131,8 +129,8 @@ func TestRunbookIntegration_MigrationsNumberEachEntryOldestFirst(t *testing.T) {
 	}
 	var hasName bool
 	if err := pool.QueryRow(context.Background(),
-		`SELECT EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = 'runbook'::regclass AND attname = 'name' AND NOT attisdropped)`).Scan(&hasName); err != nil || hasName {
-		t.Fatalf("runbook.name must be gone: exists = %v, err = %v", hasName, err)
+		`SELECT EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = 'runbook'::regclass AND attname = 'alert_name' AND NOT attisdropped)`).Scan(&hasName); err != nil || hasName {
+		t.Fatalf("runbook.alert_name must be gone: exists = %v, err = %v", hasName, err)
 	}
 }
 
@@ -191,7 +189,7 @@ func TestRunbookIntegration_ImportMatchesTheRunbookOfTheFirstListedAlert(t *test
 	if err != nil {
 		t.Fatalf("Import: %v", err)
 	}
-	if res.Created != 1 || res.Updated != 1 || res.Removed != 0 {
+	if res.Created != 1 || res.Updated != 1 || len(res.Removed) != 0 {
 		t.Fatalf("import = %+v, want 1 created and 1 updated", res)
 	}
 	got, err := repo.List(ctx)
@@ -209,7 +207,7 @@ func TestRunbookIntegration_ImportMatchesTheRunbookOfTheFirstListedAlert(t *test
 func TestRunbookIntegration_ImportRemovesARunbookWhoseAlertsAllMove(t *testing.T) {
 	ctx := context.Background()
 	repo := repository.NewRunbookRepository(runbookTestPool(t, ""))
-	if _, err := repo.Create(ctx, "a@x", domain.SaveRunbookRequest{Alerts: []string{"disk-low"}}); err != nil {
+	if _, err := repo.Create(ctx, "a@x", domain.SaveRunbookRequest{RunbookURL: strp("https://d/low"), Alerts: []string{"disk-low"}}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	full, err := repo.Create(ctx, "a@x", domain.SaveRunbookRequest{Alerts: []string{"disk-full"}})
@@ -221,8 +219,9 @@ func TestRunbookIntegration_ImportRemovesARunbookWhoseAlertsAllMove(t *testing.T
 	if err != nil {
 		t.Fatalf("Import: %v", err)
 	}
-	if res.Created != 0 || res.Updated != 1 || res.Removed != 1 {
-		t.Fatalf("import = %+v, want 1 updated and 1 removed", res)
+	if res.Created != 0 || res.Updated != 1 || len(res.Removed) != 1 ||
+		res.Removed[0].Number != "RB0000001" || res.Removed[0].RunbookURL == nil || *res.Removed[0].RunbookURL != "https://d/low" {
+		t.Fatalf("import = %+v, want 1 updated and RB0000001 removed with its link", res)
 	}
 	got, _ := repo.List(ctx)
 	if len(got) != 1 || got[0].ID != full.ID || !reflect.DeepEqual(got[0].Alerts, []string{"disk-full", "DISK-LOW"}) {
@@ -230,44 +229,25 @@ func TestRunbookIntegration_ImportRemovesARunbookWhoseAlertsAllMove(t *testing.T
 	}
 }
 
-func TestRunbookIntegration_MergeAndUnmerge(t *testing.T) {
+func TestRunbookIntegration_Unmerge(t *testing.T) {
 	ctx := context.Background()
 	repo := repository.NewRunbookRepository(runbookTestPool(t, ""))
-	mk := func(alerts ...string) domain.Runbook {
-		rb, err := repo.Create(ctx, "a@x", domain.SaveRunbookRequest{Alerts: alerts})
-		if err != nil {
-			t.Fatalf("Create %v: %v", alerts, err)
-		}
-		return rb
-	}
-	a := mk("gw-5xx")
-	b := mk("gw-latency")
-	c := mk("gw-timeout", "gw-reset")
-	mk("disk-low")
-
-	merged, err := repo.Merge(ctx, "m@x", []string{a.ID, b.ID, c.ID}, strp("https://d/gw"))
+	a, err := repo.Create(ctx, "a@x", domain.SaveRunbookRequest{RunbookURL: strp("https://d/gw"), Alerts: []string{"gw-5xx", "gw-latency", "gw-timeout", "gw-reset"}})
 	if err != nil {
-		t.Fatalf("Merge: %v", err)
+		t.Fatalf("Create: %v", err)
 	}
-	if merged.ID != a.ID || merged.Number != a.Number || merged.RunbookURL == nil ||
-		!reflect.DeepEqual(merged.Alerts, []string{"gw-5xx", "gw-latency", "gw-reset", "gw-timeout"}) {
-		t.Fatalf("merged = %+v", merged)
-	}
-	if got, _ := repo.List(ctx); len(got) != 2 {
-		t.Fatalf("the merged runbooks must be removed, got %+v", got)
-	}
-	if missing, err := repo.Merge(ctx, "m@x", []string{a.ID, b.ID}, nil); err != nil || missing != nil {
-		t.Fatalf("merging a removed runbook = %v, %v; want nil, nil", missing, err)
+	if _, err := repo.Create(ctx, "a@x", domain.SaveRunbookRequest{Alerts: []string{"disk-low"}}); err != nil {
+		t.Fatalf("Create: %v", err)
 	}
 
 	split, err := repo.Unmerge(ctx, "u@x", a.ID, []string{"GW-LATENCY", "gw-reset"})
 	if err != nil {
 		t.Fatalf("Unmerge: %v", err)
 	}
-	if len(split) != 3 || split[0].ID != a.ID || !reflect.DeepEqual(split[0].Alerts, []string{"gw-5xx", "gw-timeout"}) {
+	if len(split) != 3 || split[0].ID != a.ID || split[0].Number != a.Number || !reflect.DeepEqual(split[0].Alerts, []string{"gw-5xx", "gw-timeout"}) {
 		t.Fatalf("unmerged = %+v", split)
 	}
-	if split[1].Number != "RB0000005" || split[2].Number != "RB0000006" {
+	if split[1].Number != "RB0000003" || split[2].Number != "RB0000004" {
 		t.Fatalf("each split alert must get a new number, got %s and %s", split[1].Number, split[2].Number)
 	}
 	for _, rb := range split[1:] {
@@ -282,7 +262,51 @@ func TestRunbookIntegration_MergeAndUnmerge(t *testing.T) {
 			t.Fatalf("%s: err = %v, want a ValidationError", name, err)
 		}
 	}
-	if missing, err := repo.Unmerge(ctx, "u@x", b.ID, []string{"gw-latency"}); err != nil || missing != nil {
-		t.Fatalf("unmerging from a removed runbook = %v, %v; want nil, nil", missing, err)
+	if missing, err := repo.Unmerge(ctx, "u@x", "00000000-0000-4000-8000-000000000000", []string{"gw-5xx"}); err != nil || missing != nil {
+		t.Fatalf("unmerging from an unknown runbook = %v, %v; want nil, nil", missing, err)
+	}
+}
+
+func TestRunbookIntegration_ImportWaitsForAnUnmergeOfTheSameRunbook(t *testing.T) {
+	ctx := context.Background()
+	pool := runbookTestPool(t, "")
+	repo := repository.NewRunbookRepository(pool)
+	x, err := repo.Create(ctx, "a@x", domain.SaveRunbookRequest{Alerts: []string{"a", "b"}})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Hold the lock an unmerge of x takes, then start an import that moves b away from x.
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM runbook WHERE id = $1::uuid FOR UPDATE`, x.ID); err != nil {
+		t.Fatalf("lock: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := repo.Import(ctx, "i@x", []domain.SaveRunbookRequest{{Alerts: []string{"b"}}})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("the import must wait for the lock on %s, finished with %v", x.Number, err)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	// Once the lock is released the import goes ahead: b leaves x, which keeps a.
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	got, _ := repo.List(ctx)
+	for _, rb := range got {
+		if len(rb.Alerts) == 0 {
+			t.Fatalf("no runbook may be left without alerts, got %+v", got)
+		}
 	}
 }

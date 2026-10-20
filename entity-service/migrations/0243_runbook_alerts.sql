@@ -14,8 +14,26 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- A runbook gets a name and a list of alert names (runbook_alert); each existing entry becomes a runbook named after its alert, with that one alert.
-ALTER TABLE runbook ADD COLUMN IF NOT EXISTS name TEXT;
+-- A runbook gets a number (RB0000001, the RB series of migration 0180) and a list of alert names (runbook_alert); each existing entry becomes a runbook with its one alert, numbered oldest first. Safe to run again.
+CREATE SEQUENCE IF NOT EXISTS rb_number_seq START 1;
+
+INSERT INTO number_series (series, digits, sequence_name) VALUES ('RB', 7, 'rb_number_seq')
+ON CONFLICT (series) DO NOTHING;
+
+ALTER TABLE runbook ADD COLUMN IF NOT EXISTS number TEXT;
+
+DO $$
+DECLARE
+    r RECORD;
+BEGIN
+    FOR r IN SELECT id FROM runbook WHERE number IS NULL ORDER BY created_on, id LOOP
+        UPDATE runbook SET number = next_series_number('RB') WHERE id = r.id;
+    END LOOP;
+END $$;
+
+ALTER TABLE runbook ALTER COLUMN number SET DEFAULT next_series_number('RB');
+ALTER TABLE runbook ALTER COLUMN number SET NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS runbook_number_key ON runbook (number);
 
 CREATE TABLE IF NOT EXISTS runbook_alert (
     id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -32,20 +50,17 @@ CREATE INDEX IF NOT EXISTS runbook_alert_runbook_id_idx ON runbook_alert (runboo
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = 'runbook'::regclass AND attname = 'alert_name' AND NOT attisdropped) THEN
-        UPDATE runbook SET name = btrim(alert_name) WHERE name IS NULL;
         INSERT INTO runbook_alert (runbook_id, alert_name) SELECT id, btrim(alert_name) FROM runbook ON CONFLICT DO NOTHING;
         ALTER TABLE runbook DROP COLUMN alert_name;
     END IF;
 END $$;
 
-ALTER TABLE runbook ALTER COLUMN name SET NOT NULL;
+-- A database that ran an earlier draft of this change has a runbook.name column; nothing reads it.
+DROP INDEX IF EXISTS runbook_name_key;
 ALTER TABLE runbook DROP CONSTRAINT IF EXISTS runbook_name_check;
-ALTER TABLE runbook ADD CONSTRAINT runbook_name_check CHECK (btrim(name) <> '' AND char_length(name) <= 1000);
-
--- One runbook per name, ignoring case and surrounding spaces.
-CREATE UNIQUE INDEX IF NOT EXISTS runbook_name_key ON runbook (lower(btrim(name)));
+ALTER TABLE runbook DROP COLUMN IF EXISTS name;
 
 COMMENT ON TABLE runbook IS
-    'Runbook catalog: a named runbook link (NULL when not written yet) for the alert names in runbook_alert.';
+    'Runbook catalog: a numbered runbook link (NULL when not written yet) for the alert names in runbook_alert.';
 COMMENT ON TABLE runbook_alert IS
     'Alert names of a runbook; an incident whose subject contains one shows that runbook.';

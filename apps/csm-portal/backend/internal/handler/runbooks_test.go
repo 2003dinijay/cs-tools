@@ -56,35 +56,12 @@ func (f *fakeRunbookClient) ImportRunbooks(_ context.Context, body []byte) ([]by
 	return []byte(`{"created":1,"updated":0}`), f.err
 }
 
-func (f *fakeRunbookClient) MergeRunbooks(_ context.Context, body []byte) ([]byte, error) {
-	f.body = body
-	return []byte(`{"id":"x"}`), f.err
-}
-
 func (f *fakeRunbookClient) UnmergeRunbookAlerts(_ context.Context, id string, body []byte) ([]byte, error) {
 	f.id, f.body = id, body
 	return []byte(`{"runbooks":[]}`), f.err
 }
 
 const testRunbookID = "11111111-1111-4111-8111-111111111111"
-
-func TestRunbookHandler_MergeRebuildsTheBodyAndRefusesBadInput(t *testing.T) {
-	fake := &fakeRunbookClient{}
-	w := httptest.NewRecorder()
-	NewRunbookHandler(fake).MergeRunbooks(w, withUser(httptest.NewRequest(http.MethodPost, "/runbooks/merge", strings.NewReader(
-		`{"runbookIds":["`+testRunbookID+`","22222222-2222-4222-8222-222222222222"],"runbookUrl":null,"extra":1}`))))
-	if w.Code != http.StatusOK || string(fake.body) != `{"runbookIds":["`+testRunbookID+`","22222222-2222-4222-8222-222222222222"],"runbookUrl":null}` {
-		t.Fatalf("status = %d, forwarded = %s", w.Code, fake.body)
-	}
-	for _, body := range []string{`{"runbookIds":["` + testRunbookID + `"]}`, `{"runbookIds":["` + testRunbookID + `","nope"]}`, `{"runbookIds":"x"}`} {
-		fake := &fakeRunbookClient{}
-		w := httptest.NewRecorder()
-		NewRunbookHandler(fake).MergeRunbooks(w, withUser(httptest.NewRequest(http.MethodPost, "/runbooks/merge", strings.NewReader(body))))
-		if w.Code != http.StatusBadRequest || fake.body != nil {
-			t.Fatalf("%s: status = %d, forwarded = %s; want 400 and nothing forwarded", body, w.Code, fake.body)
-		}
-	}
-}
 
 func TestRunbookHandler_UnmergeForwardsTheAlertsAndRefusesBadInput(t *testing.T) {
 	fake := &fakeRunbookClient{}

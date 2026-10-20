@@ -12760,8 +12760,9 @@ paths:
       summary: The runbook catalog (Operations > Runbooks).
       operationId: listRunbooks
       description: >
-        Every runbook with its name, link (`runbookUrl`, null when none) and
-        alert names, forwarded from the entity service. The incident page's
+        Every runbook with its number (`RB0000001`), link (`runbookUrl`, null
+        when none) and alert names, newest number first, forwarded from the
+        entity service. The incident page's
         Related tab shows the runbook holding the alert name the incident's
         subject contains.
       responses:
@@ -12852,9 +12853,8 @@ paths:
           description: The settings as saved.
               required: [alertName]
               required: [name, alerts]
+              required: [alerts]
               properties:
-                name:
-                  type: string
                 runbookUrl:
                   type: string
                   nullable: true
@@ -12875,6 +12875,7 @@ paths:
           description: "Bad request, or a value the entity service refused (its reason)."
           description: Invalid alert name or link.
           description: Invalid name, alert names or link.
+          description: Invalid alert names or link.
           content:
             application/json:
               schema:
@@ -12886,7 +12887,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
         "409":
-          description: The name, or one of the alert names, already belongs to another runbook.
+          description: One of the alert names already belongs to another runbook.
           content:
             application/json:
               schema:
@@ -12930,7 +12931,7 @@ paths:
           description: Ok.
   /runbooks/import:
     post:
-      summary: Create or replace many runbooks by name.
+      summary: Create or replace many runbooks, matched by their alerts.
       operationId: importRunbooks
       requestBody:
         required: true
@@ -12945,10 +12946,8 @@ paths:
                   maxItems: 5000
                   items:
                     type: object
-                    required: [name, alerts]
+                    required: [alerts]
                     properties:
-                      name:
-                        type: string
                       runbookUrl:
                         type: string
                         nullable: true
@@ -12958,7 +12957,10 @@ paths:
                           type: string
       responses:
         "200":
-          description: Counts of created and updated entries.
+          description: >
+            Counts of created and updated entries, and the runbooks removed
+            (`removedRunbooks`: number and link of each) because the import
+            moved all of their alerts to another entry.
           content:
             application/json:
               schema:
@@ -13016,84 +13018,12 @@ paths:
           required: true
           schema: { type: string, enum: [CRE, SRE, SME] }
 
-  /runbooks/merge:
-    post:
-      summary: Merge runbooks into one.
-      operationId: mergeRunbooks
-      description: >
-        The first runbook keeps its id and takes every alert of the others,
-        which are removed; it is renamed and relinked as given. One transaction
-        in the entity service.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [runbookIds, name]
-              properties:
-                runbookIds:
-                  type: array
-                  minItems: 2
-                  items:
-                    type: string
-                    format: uuid
-                name:
-                  type: string
-                runbookUrl:
-                  type: string
-                  nullable: true
-      responses:
-        "200":
-          description: Ok.
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: true
-        "400":
-          description: Fewer than two runbooks, an invalid id, name or link.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorPayload'
-        "404":
-          description: A runbook does not exist, or runbooks are not available on this deployment.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorPayload'
-        "409":
-          description: The name belongs to a runbook outside the merge.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorPayload'
-        "401":
-          description: Unauthorized.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorPayload'
-        "403":
-          description: Forbidden.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorPayload'
-        "500":
-          description: Internal server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorPayload'
-
   /runbooks/{id}/unmerge:
     post:
       summary: Move alerts out of a runbook into runbooks of their own.
       operationId: unmergeRunbookAlerts
       description: >
-        Each alert becomes a runbook named after it, with the same link. The
+        Each alert becomes a new runbook with the next number and the same link. The
         runbook must keep at least one alert. Returns the runbook followed by
         the new ones.
       parameters:
@@ -13132,12 +13062,6 @@ paths:
                 $ref: '#/components/schemas/ErrorPayload'
         "404":
           description: The runbook does not exist, or runbooks are not available on this deployment.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorPayload'
-        "409":
-          description: A runbook named after one of the alerts already exists.
           content:
             application/json:
               schema:
@@ -13189,9 +13113,8 @@ paths:
           description: Queued.
               required: [alertName]
               required: [name, alerts]
+              required: [alerts]
               properties:
-                name:
-                  type: string
                 runbookUrl:
                   type: string
                   nullable: true
@@ -13212,6 +13135,7 @@ paths:
           description: "Bad request."
           description: Invalid id, alert name or link.
           description: Invalid id, name, alert names or link.
+          description: Invalid id, alert names or link.
           content:
             application/json:
               schema:
@@ -13223,7 +13147,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
         "409":
-          description: The name, or one of the alert names, already belongs to another runbook.
+          description: One of the alert names already belongs to another runbook.
           content:
             application/json:
               schema:

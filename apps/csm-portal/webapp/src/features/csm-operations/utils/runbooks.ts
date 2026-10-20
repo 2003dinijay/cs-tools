@@ -125,12 +125,26 @@ export function findRunbookForIncident<T extends Pick<Runbook, "runbookUrl" | "a
   return best;
 }
 
+/** Alerts whose name contains the query, ignoring case, shortest first: for a partial alert name that no alert is contained in. */
+export function findAlertsContaining<T extends Pick<Runbook, "runbookUrl" | "alerts">>(
+  runbooks: T[],
+  query: string,
+  limit = 5,
+): RunbookMatch<T>[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  return runbooks
+    .flatMap((runbook) => runbook.alerts.filter((a) => a.toLowerCase().includes(q)).map((alertName) => ({ runbook, alertName })))
+    .sort((a, b) => a.alertName.length - b.alertName.length)
+    .slice(0, limit);
+}
+
 /**
- * Reads an import file: a JSON object whose keys are comma-separated alert names
- * and whose values are links ("" for none); or an array of {runbookUrl, alerts},
- * where alerts is a list or a comma-separated string (an older {alertName,
- * runbookUrl} entry is read as one alert, and a name is ignored). Throws with a
- * readable message otherwise.
+ * Reads an import file: a JSON object whose keys are alert names and whose values
+ * are links ("" for none); or an array of {runbookUrl, alerts}, where alerts is a
+ * list (an older {alertName, runbookUrl} entry is read as one alert, and a name is
+ * ignored). A key or a text alerts value is one alert name, commas included, so
+ * several alerts need the list form. Throws with a readable message otherwise.
  */
 export function parseRunbookImport(text: string): RunbookInput[] {
   let data: unknown;
@@ -141,7 +155,7 @@ export function parseRunbookImport(text: string): RunbookInput[] {
   }
   const toInput = (alerts: unknown, url: unknown, label: string): RunbookInput => {
     const alertList = cleanAlertNames(
-      typeof alerts === "string" ? alerts.split(",") : Array.isArray(alerts) ? alerts.map((a) => (typeof a === "string" ? a : "")) : [],
+      typeof alerts === "string" ? [alerts] : Array.isArray(alerts) ? alerts.map((a) => (typeof a === "string" ? a : "")) : [],
     );
     if (alertList.length === 0) {
       throw new Error(`${label} needs at least one alert name.`);

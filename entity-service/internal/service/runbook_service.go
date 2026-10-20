@@ -92,37 +92,6 @@ func (s *runbookService) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-func (s *runbookService) Merge(ctx context.Context, req domain.MergeRunbooksRequest) (domain.Runbook, error) {
-	ids := []string{}
-	seen := map[string]bool{}
-	for _, id := range req.RunbookIDs {
-		id = strings.ToLower(strings.TrimSpace(id))
-		if !seen[id] {
-			seen[id] = true
-			ids = append(ids, id)
-		}
-	}
-	if len(ids) < 2 {
-		return domain.Runbook{}, &apierror.ValidationError{Msg: "runbookIds must name at least two runbooks"}
-	}
-	if err := validateUUIDs("runbookIds", ids); err != nil {
-		return domain.Runbook{}, err
-	}
-	// The link follows the rules of a saved runbook; its alerts come from the merged runbooks.
-	clean, err := normalizeRunbook(domain.SaveRunbookRequest{RunbookURL: req.RunbookURL, Alerts: []string{"merged"}})
-	if err != nil {
-		return domain.Runbook{}, err
-	}
-	rb, err := s.repo.Merge(ctx, actorOf(ctx), ids, clean.RunbookURL)
-	if err != nil {
-		return domain.Runbook{}, err
-	}
-	if rb == nil {
-		return domain.Runbook{}, &apierror.NotFoundError{Msg: "runbook not found"}
-	}
-	return *rb, nil
-}
-
 func (s *runbookService) Unmerge(ctx context.Context, id string, req domain.UnmergeRunbookAlertsRequest) (domain.RunbookList, error) {
 	if err := validateRunbookID(id); err != nil {
 		return domain.RunbookList{}, err

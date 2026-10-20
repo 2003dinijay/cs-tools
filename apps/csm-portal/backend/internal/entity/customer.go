@@ -1322,11 +1322,6 @@ func (c *CustomerEntityClient) ImportRunbooks(ctx context.Context, body []byte) 
 	return c.do(ctx, http.MethodPost, "/runbooks/import", body)
 }
 
-// MergeRunbooks calls POST /runbooks/merge.
-func (c *CustomerEntityClient) MergeRunbooks(ctx context.Context, body []byte) ([]byte, error) {
-	return c.do(ctx, http.MethodPost, "/runbooks/merge", body)
-}
-
 // UnmergeRunbookAlerts calls POST /runbooks/{id}/unmerge.
 func (c *CustomerEntityClient) UnmergeRunbookAlerts(ctx context.Context, id string, body []byte) ([]byte, error) {
 	return c.do(ctx, http.MethodPost, "/runbooks/"+url.PathEscape(id)+"/unmerge", body)

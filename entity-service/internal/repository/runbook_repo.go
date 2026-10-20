@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -38,10 +39,8 @@ type RunbookRepository interface {
 	// Delete removes a runbook and its alerts; false when there was none.
 	Delete(ctx context.Context, id string) (bool, error)
 	// Import applies every entry in one transaction: an entry replaces the runbook that holds its first listed alert, or is
-	// created; its alerts leave any other runbook, and a runbook left without alerts is removed.
+	// created; its alerts leave any other runbook, and a runbook left without alerts is removed and listed in the response.
 	Import(ctx context.Context, actor string, reqs []domain.SaveRunbookRequest) (domain.ImportRunbooksResponse, error)
-	// Merge moves every alert of ids[1:] into ids[0], removes the others and relinks ids[0]; nil when an id is unknown.
-	Merge(ctx context.Context, actor string, ids []string, runbookURL *string) (*domain.Runbook, error)
 	// Unmerge moves each alert out of the runbook into a new runbook of its own, with the same link, and returns
 	// the runbook followed by the new ones; nil when there is none with that id.
 	Unmerge(ctx context.Context, actor, id string, alerts []string) ([]domain.Runbook, error)
@@ -137,8 +136,36 @@ func (r *runbookRepo) Delete(ctx context.Context, id string) (bool, error) {
 }
 
 func (r *runbookRepo) Import(ctx context.Context, actor string, reqs []domain.SaveRunbookRequest) (domain.ImportRunbooksResponse, error) {
-	var out domain.ImportRunbooksResponse
+	out := domain.ImportRunbooksResponse{Removed: []domain.RemovedRunbook{}}
+	var all []string
+	for _, req := range reqs {
+		all = append(all, req.Alerts...)
+	}
 	err := r.inTx(ctx, "import runbooks", func(tx pgx.Tx) error {
+		// Lock every runbook that holds an imported alert, in id order, so an unmerge or another import waits instead of
+		// emptying one of them behind this import's back, and two imports cannot deadlock.
+		var owners []string
+		rows, err := tx.Query(ctx,
+			`SELECT id::text FROM runbook WHERE id IN (
+			   SELECT runbook_id FROM runbook_alert WHERE lower(btrim(alert_name)) = ANY($1::text[])
+			 ) ORDER BY id FOR UPDATE`,
+			lowerAll(all))
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return err
+			}
+			owners = append(owners, id)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+
 		for _, req := range reqs {
 			// The runbook holding the entry's first listed alert takes the entry; an entry none of whose alerts is listed is new.
 			var id string
@@ -176,12 +203,28 @@ func (r *runbookRepo) Import(ctx context.Context, actor string, reqs []domain.Sa
 				return err
 			}
 		}
-		tag, err := tx.Exec(ctx,
-			`DELETE FROM runbook r WHERE NOT EXISTS (SELECT 1 FROM runbook_alert a WHERE a.runbook_id = r.id)`)
+
+		// A locked runbook whose alerts all moved to other entries is removed; the response names it and its link.
+		removed, err := tx.Query(ctx,
+			`DELETE FROM runbook r WHERE r.id = ANY($1::uuid[])
+			   AND NOT EXISTS (SELECT 1 FROM runbook_alert a WHERE a.runbook_id = r.id)
+			 RETURNING r.number, r.runbook_url`,
+			owners)
 		if err != nil {
 			return err
 		}
-		out.Removed = int(tag.RowsAffected())
+		defer removed.Close()
+		for removed.Next() {
+			var rb domain.RemovedRunbook
+			if err := removed.Scan(&rb.Number, &rb.RunbookURL); err != nil {
+				return err
+			}
+			out.Removed = append(out.Removed, rb)
+		}
+		if err := removed.Err(); err != nil {
+			return err
+		}
+		sort.Slice(out.Removed, func(i, j int) bool { return out.Removed[i].Number < out.Removed[j].Number })
 		return nil
 	})
 	return out, err
@@ -211,37 +254,6 @@ func setRunbookAlertsTx(ctx context.Context, tx pgx.Tx, id string, alerts []stri
 		return err
 	}
 	return nil
-}
-
-func (r *runbookRepo) Merge(ctx context.Context, actor string, ids []string, runbookURL *string) (*domain.Runbook, error) {
-	var out *domain.Runbook
-	err := r.inTx(ctx, "merge runbooks", func(tx pgx.Tx) error {
-		var locked int
-		if err := tx.QueryRow(ctx,
-			`SELECT count(*) FROM (SELECT id FROM runbook WHERE id = ANY($1::uuid[]) FOR UPDATE) l`, ids).Scan(&locked); err != nil {
-			return err
-		}
-		if locked != len(ids) {
-			return nil
-		}
-		target, others := ids[0], ids[1:]
-		if _, err := tx.Exec(ctx,
-			`UPDATE runbook_alert SET runbook_id = $1::uuid WHERE runbook_id = ANY($2::uuid[])`, target, others); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `DELETE FROM runbook WHERE id = ANY($1::uuid[])`, others); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx,
-			`UPDATE runbook SET runbook_url = $2, updated_by = $3, updated_on = NOW() WHERE id = $1::uuid`,
-			target, runbookURL, actor); err != nil {
-			return err
-		}
-		rb, err := scanRunbook(tx.QueryRow(ctx, runbookSelect+` WHERE r.id = $1::uuid`, target))
-		out = &rb
-		return err
-	})
-	return out, err
 }
 
 func (r *runbookRepo) Unmerge(ctx context.Context, actor, id string, alerts []string) ([]domain.Runbook, error) {
