@@ -14,6 +14,59 @@ HTTP server. This one isn't: `cmd/acp-closure/main.go` performs one full
 sweep and exits. A Choreo Task component's cron owns the schedule — there is
 no in-process ticker, no long-running state, no health endpoint.
 
+## Two sources: CSM for ACP's own records, Salesforce for the rest
+
+Agreed with Sajith: Salesforce data is read live from sales-entity-service
+instead of CSM's copy; ACP's own records stay on CSM; writes go to CSM, and
+entity-service passes the overall closure state on to Salesforce
+(cs-tools #2780 with digiops-sales #1725).
+
+| Read | From | How |
+|---|---|---|
+| Open-project list (CSM id, `sfId`, key, name) | CSM | `POST /projects/search` via csm-integration-service |
+| Closure states, `suspensionProcessState` | CSM | same call. Salesforce has neither ACP's sub-states nor the notices-sent record |
+| Start / end date, account (`customerId`) | Salesforce | `/projects/search {id: sfId}` |
+| Account manager, technical owner, renewal manager, classification, primary partner | Salesforce | `/customer-search {ids, isRealTime: true}` |
+| Project contacts / account contacts | Salesforce | `/project-contacts/search {projectId, fetchAll}`, `/contacts/search {accountId}` |
+| Linked opportunities, opportunities, invoices | Salesforce | `/linked-opportunities/search`, `/opportunities/search {ids}`, `/invoices/search` |
+
+`Run` takes a `DetailSource`. `NewSalesforceDetails` (`sweep/salesforce_details.go`)
+reads the Salesforce project by the CSM project's `sfId`, then answers the
+sweep's per-project reads (`entityReader`) from Salesforce in the shapes the CSM
+reads return, so the decision code did not change. The project keeps its CSM id,
+key, name and closure records (every write goes to CSM by that id); its dates and
+account are Salesforce's. A project with no `sfId`, or one Salesforce does not
+have, is a failure of that project; the run goes on. `CSMDetails` (CSM for
+everything) exists for tests.
+
+Mapping rules, each pinned by a test:
+- **Partner** is `accountClassification == "Partner"`. sales-entity-service's
+  `isPartner` is Salesforce's Partner Portal checkbox; never read it.
+- **`hasPrimaryPartner`** is `primaryPartnerAccountId` non-blank (legacy's
+  `u_primary_partner_account_id` rule).
+- **Business Contact**: the Salesforce role label "Business Contact" maps to
+  `recipients.BusinessContactRole`. A `DEACTIVATED` membership is skipped, as
+  CSM's contact list does. A membership's email is the contact's, else the
+  invited address.
+- **Technical owner**: Salesforce gives an email only; it is also used as the name.
+- **EULA decimal**: entity-service's `deriveEulaVersion` rule (first `x.y` of
+  the text, `3.4` when the version is empty), since Salesforce has the text only.
+- **Customer search** always uses `isRealTime: true`: the other path reads a
+  database copy that can be stale and has no renewal manager.
+
+`internal/salesentity` is built like the other two clients (`httpsec`: https
+only, no redirects on the token or API client, success bodies capped at
+10 MiB). Its searches page 200 rows at a time up to 10 pages (inside
+sales-entity-service's 1,000-row and 2,000-offset caps); more is an error.
+
+Each open project costs a project, a customer and a linked-opportunities call,
+plus one opportunities call per linked opportunity and one invoices call per
+Closed Won one; contacts are read only when a notice goes out
+(`notifyForWindow`). Each is a live Salesforce API call. The customer is read
+for every project because the invoice gate needs the classification; reading it
+only when a project has a due invoice would save one call per project, at the
+cost of changing the sweep's decision code.
+
 ## Calls csm-integration-service, not entity-service directly
 
 `internal/entity` is an HTTP client for `csm-integration-service`
