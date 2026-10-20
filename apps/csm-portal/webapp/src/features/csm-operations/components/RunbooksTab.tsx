@@ -77,9 +77,8 @@ function errorText(err: unknown, fallback: string): string {
 }
 
 /**
- * Operations -> Runbooks: the alert-name to runbook catalog. entity-service adds
- * a work note to every new incident whose subject contains an alert name listed
- * here: the runbook link, or that none is available.
+ * Operations -> Runbooks: the alert-name to runbook catalog. An incident whose
+ * subject contains an alert name listed here shows its runbook in the Related tab.
  */
 export default function RunbooksTab(): JSX.Element {
   const { canWrite } = usePortalAccess();
@@ -357,7 +356,7 @@ export default function RunbooksTab(): JSX.Element {
         />
       </Box>
 
-      <WorkNotePreview runbooks={runbooks} />
+      <RunbookMatchPreview runbooks={runbooks} />
 
       {dialog.open && (
         <RunbookDialog
@@ -371,7 +370,7 @@ export default function RunbooksTab(): JSX.Element {
         <DialogTitle>Delete runbook?</DialogTitle>
         <DialogContent sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
           <Typography variant="body2" sx={{ wordBreak: "break-word" }}>
-            New incidents for <strong>{pendingDelete?.alertName}</strong> will no longer get a runbook work note.
+            Incidents for <strong>{pendingDelete?.alertName}</strong> will no longer show this runbook.
           </Typography>
           {deleteRunbook.isError && (
             <Alert severity="error">{errorText(deleteRunbook.error, "Failed to delete the runbook.")}</Alert>
@@ -457,7 +456,7 @@ function RunbookDialog({ editing, existing, onClose }: RunbookDialogProps): JSX.
   );
 }
 
-function WorkNotePreview({ runbooks }: { runbooks: Runbook[] }): JSX.Element {
+function RunbookMatchPreview({ runbooks }: { runbooks: Runbook[] }): JSX.Element {
   const [subject, setSubject] = useState("");
   const match = subject.trim() ? findRunbookForIncident(runbooks, subject) : undefined;
 
