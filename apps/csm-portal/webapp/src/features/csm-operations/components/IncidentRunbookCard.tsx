@@ -15,7 +15,7 @@
 // under the License.
 
 import { Box, Card, Chip, Link, Skeleton, Typography } from "@wso2/oxygen-ui";
-import { BookOpen, ExternalLink } from "@wso2/oxygen-ui-icons-react";
+import { ExternalLink } from "@wso2/oxygen-ui-icons-react";
 import { type JSX, useMemo } from "react";
 import { useRunbooks } from "@features/csm-operations/api/useRunbooks";
 import { findRunbookForIncident } from "@features/csm-operations/utils/runbooks";
@@ -24,7 +24,7 @@ interface IncidentRunbookCardProps {
   subject: string;
 }
 
-/** The incident's runbook from Operations > Runbooks: the longest alert name its subject contains. */
+/** The incident's runbook from Operations > Runbooks: the one holding the longest alert name its subject contains. */
 export default function IncidentRunbookCard({ subject }: IncidentRunbookCardProps): JSX.Element {
   const { data: runbooks, isLoading, isError } = useRunbooks();
   const match = useMemo(
@@ -53,9 +53,9 @@ export default function IncidentRunbookCard({ subject }: IncidentRunbookCardProp
         <Typography variant="body2" color="text.secondary" sx={{ wordBreak: "break-word" }}>
           Matched alert: <Box component="code">{match.alertName}</Box>
         </Typography>
-        {match.runbookUrl ? (
+        {match.runbook.runbookUrl ? (
           <Link
-            href={match.runbookUrl}
+            href={match.runbook.runbookUrl}
             target="_blank"
             rel="noopener noreferrer"
             sx={{ display: "inline-flex", alignItems: "center", gap: 0.5, alignSelf: "flex-start" }}
@@ -72,10 +72,7 @@ export default function IncidentRunbookCard({ subject }: IncidentRunbookCardProp
 
   return (
     <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 1.5 }}>
-      <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-        <BookOpen size={16} />
-        <Typography variant="subtitle2">Runbook</Typography>
-      </Box>
+      <Typography variant="subtitle2">Runbook</Typography>
       {body}
     </Card>
   );

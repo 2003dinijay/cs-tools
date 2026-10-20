@@ -56,33 +56,86 @@ func (f *fakeRunbookClient) ImportRunbooks(_ context.Context, body []byte) ([]by
 	return []byte(`{"created":1,"updated":0}`), f.err
 }
 
+func (f *fakeRunbookClient) MergeRunbooks(_ context.Context, body []byte) ([]byte, error) {
+	f.body = body
+	return []byte(`{"id":"x"}`), f.err
+}
+
+func (f *fakeRunbookClient) UnmergeRunbookAlerts(_ context.Context, id string, body []byte) ([]byte, error) {
+	f.id, f.body = id, body
+	return []byte(`{"runbooks":[]}`), f.err
+}
+
+const testRunbookID = "11111111-1111-4111-8111-111111111111"
+
+func TestRunbookHandler_MergeRebuildsTheBodyAndRefusesBadInput(t *testing.T) {
+	fake := &fakeRunbookClient{}
+	w := httptest.NewRecorder()
+	NewRunbookHandler(fake).MergeRunbooks(w, withUser(httptest.NewRequest(http.MethodPost, "/runbooks/merge", strings.NewReader(
+		`{"runbookIds":["`+testRunbookID+`","22222222-2222-4222-8222-222222222222"],"name":"G","runbookUrl":null,"extra":1}`))))
+	if w.Code != http.StatusOK || string(fake.body) != `{"runbookIds":["`+testRunbookID+`","22222222-2222-4222-8222-222222222222"],"name":"G","runbookUrl":null}` {
+		t.Fatalf("status = %d, forwarded = %s", w.Code, fake.body)
+	}
+	for _, body := range []string{`{"runbookIds":["` + testRunbookID + `"],"name":"G"}`, `{"runbookIds":["` + testRunbookID + `","nope"],"name":"G"}`, `{"runbookIds":["` + testRunbookID + `","22222222-2222-4222-8222-222222222222"],"name":" "}`} {
+		fake := &fakeRunbookClient{}
+		w := httptest.NewRecorder()
+		NewRunbookHandler(fake).MergeRunbooks(w, withUser(httptest.NewRequest(http.MethodPost, "/runbooks/merge", strings.NewReader(body))))
+		if w.Code != http.StatusBadRequest || fake.body != nil {
+			t.Fatalf("%s: status = %d, forwarded = %s; want 400 and nothing forwarded", body, w.Code, fake.body)
+		}
+	}
+}
+
+func TestRunbookHandler_UnmergeForwardsTheAlertsAndRefusesBadInput(t *testing.T) {
+	fake := &fakeRunbookClient{}
+	r := withUser(httptest.NewRequest(http.MethodPost, "/runbooks/"+testRunbookID+"/unmerge", strings.NewReader(`{"alerts":["a"]}`)))
+	r.SetPathValue("id", testRunbookID)
+	w := httptest.NewRecorder()
+	NewRunbookHandler(fake).UnmergeRunbookAlerts(w, r)
+	if w.Code != http.StatusOK || fake.id != testRunbookID || string(fake.body) != `{"alerts":["a"]}` {
+		t.Fatalf("status = %d, id = %s, forwarded = %s", w.Code, fake.id, fake.body)
+	}
+	for id, body := range map[string]string{"nope": `{"alerts":["a"]}`, testRunbookID: `{"alerts":[" "]}`} {
+		fake := &fakeRunbookClient{}
+		r := withUser(httptest.NewRequest(http.MethodPost, "/runbooks/"+id+"/unmerge", strings.NewReader(body)))
+		r.SetPathValue("id", id)
+		w := httptest.NewRecorder()
+		NewRunbookHandler(fake).UnmergeRunbookAlerts(w, r)
+		if w.Code != http.StatusBadRequest || fake.body != nil {
+			t.Fatalf("%s %s: status = %d; want 400 and nothing forwarded", id, body, w.Code)
+		}
+	}
+}
+
 func TestRunbookHandler_CreateRebuildsTheBody(t *testing.T) {
 	fake := &fakeRunbookClient{}
 	h := NewRunbookHandler(fake)
 	r := withUser(httptest.NewRequest(http.MethodPost, "/runbooks",
-		strings.NewReader(`{"alertName":"a","runbookUrl":"https://x.example","extra":"dropped"}`)))
+		strings.NewReader(`{"name":"A","runbookUrl":"https://x.example","alerts":["a"],"extra":"dropped"}`)))
 	w := httptest.NewRecorder()
 	h.CreateRunbook(w, r)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want 201; body %s", w.Code, w.Body.String())
 	}
-	if got := string(fake.body); got != `{"alertName":"a","runbookUrl":"https://x.example"}` {
+	if got := string(fake.body); got != `{"name":"A","runbookUrl":"https://x.example","alerts":["a"]}` {
 		t.Fatalf("forwarded body = %s", got)
 	}
 }
 
-func TestRunbookHandler_RefusesBlankAlertName(t *testing.T) {
-	fake := &fakeRunbookClient{}
-	w := httptest.NewRecorder()
-	NewRunbookHandler(fake).CreateRunbook(w, withUser(httptest.NewRequest(http.MethodPost, "/runbooks", strings.NewReader(`{"alertName":"  "}`))))
-	if w.Code != http.StatusBadRequest || fake.body != nil {
-		t.Fatalf("status = %d, forwarded = %s; want 400 and nothing forwarded", w.Code, fake.body)
+func TestRunbookHandler_RefusesAMissingNameOrAlert(t *testing.T) {
+	for _, body := range []string{`{"name":"  ","alerts":["a"]}`, `{"name":"A","alerts":["  "]}`, `{"name":"A"}`} {
+		fake := &fakeRunbookClient{}
+		w := httptest.NewRecorder()
+		NewRunbookHandler(fake).CreateRunbook(w, withUser(httptest.NewRequest(http.MethodPost, "/runbooks", strings.NewReader(body))))
+		if w.Code != http.StatusBadRequest || fake.body != nil {
+			t.Fatalf("%s: status = %d, forwarded = %s; want 400 and nothing forwarded", body, w.Code, fake.body)
+		}
 	}
 }
 
 func TestRunbookHandler_UpdateRefusesBadID(t *testing.T) {
 	fake := &fakeRunbookClient{}
-	r := withUser(httptest.NewRequest(http.MethodPut, "/runbooks/nope", strings.NewReader(`{"alertName":"a"}`)))
+	r := withUser(httptest.NewRequest(http.MethodPut, "/runbooks/nope", strings.NewReader(`{"name":"A","alerts":["a"]}`)))
 	r.SetPathValue("id", "nope")
 	w := httptest.NewRecorder()
 	NewRunbookHandler(fake).UpdateRunbook(w, r)
@@ -93,10 +146,10 @@ func TestRunbookHandler_UpdateRefusesBadID(t *testing.T) {
 
 func TestRunbookHandler_ConflictKeepsEntityMessage(t *testing.T) {
 	fake := &fakeRunbookClient{err: &apierror.Error{StatusCode: http.StatusConflict,
-		Body: `{"code":409,"message":"a runbook entry already exists for alert name: a"}`}}
+		Body: `{"code":409,"message":"alert a already belongs to runbook A"}`}}
 	w := httptest.NewRecorder()
-	NewRunbookHandler(fake).CreateRunbook(w, withUser(httptest.NewRequest(http.MethodPost, "/runbooks", strings.NewReader(`{"alertName":"a"}`))))
-	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "already exists") {
+	NewRunbookHandler(fake).CreateRunbook(w, withUser(httptest.NewRequest(http.MethodPost, "/runbooks", strings.NewReader(`{"name":"A","alerts":["a"]}`))))
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "already belongs") {
 		t.Fatalf("status = %d, body %s; want 409 with the entity message", w.Code, w.Body.String())
 	}
 }
@@ -117,7 +170,7 @@ func TestRunbookHandler_ImportAcceptsBodiesOverTheGeneralLimit(t *testing.T) {
 		if i > 0 {
 			b.WriteString(",")
 		}
-		b.WriteString(`{"alertName":"` + strings.Repeat("a", 1000) + `","runbookUrl":"https://docs.example.com/` + strings.Repeat("x", 900) + `"}`)
+		b.WriteString(`{"name":"` + strings.Repeat("n", 1000) + `","alerts":["` + strings.Repeat("a", 1000) + `"],"runbookUrl":"https://docs.example.com/` + strings.Repeat("x", 900) + `"}`)
 	}
 	b.WriteString(`]}`)
 	if b.Len() <= maxRequestBodyBytes {

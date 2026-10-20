@@ -18,16 +18,18 @@ package domain
 
 import "time"
 
-// Runbook is one entry of the alert-name to runbook catalog (migration 0241).
+// Runbook is one runbook of the catalog (migrations 0241, 0242): a named link and the alert names that lead to it.
 type Runbook struct {
-	ID        string `json:"id"`
-	AlertName string `json:"alertName"`
-	// RunbookURL is nil when the alert is known to have no runbook yet.
-	RunbookURL *string   `json:"runbookUrl"`
-	CreatedOn  time.Time `json:"createdOn"`
-	CreatedBy  string    `json:"createdBy"`
-	UpdatedOn  time.Time `json:"updatedOn"`
-	UpdatedBy  string    `json:"updatedBy"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// RunbookURL is nil when the runbook is not written yet.
+	RunbookURL *string `json:"runbookUrl"`
+	// Alerts are the alert names an incident subject is matched against, ordered by name.
+	Alerts    []string  `json:"alerts"`
+	CreatedOn time.Time `json:"createdOn"`
+	CreatedBy string    `json:"createdBy"`
+	UpdatedOn time.Time `json:"updatedOn"`
+	UpdatedBy string    `json:"updatedBy"`
 }
 
 // RunbookList is the body of GET /runbooks.
@@ -37,13 +39,28 @@ type RunbookList struct {
 
 // SaveRunbookRequest is the body of POST /runbooks and PUT /runbooks/{id}.
 type SaveRunbookRequest struct {
-	AlertName  string  `json:"alertName"`
-	RunbookURL *string `json:"runbookUrl"`
+	Name       string   `json:"name"`
+	RunbookURL *string  `json:"runbookUrl"`
+	Alerts     []string `json:"alerts"`
 }
 
-// ImportRunbooksRequest is the body of POST /runbooks/import: each entry is created, or updated when its alert name exists.
+// ImportRunbooksRequest is the body of POST /runbooks/import: each entry is created, or replaces the runbook with its name.
 type ImportRunbooksRequest struct {
 	Runbooks []SaveRunbookRequest `json:"runbooks"`
+}
+
+// MergeRunbooksRequest is the body of POST /runbooks/merge: the first runbook keeps its id and takes every alert of the others,
+// which are removed; it is renamed and relinked as given.
+type MergeRunbooksRequest struct {
+	RunbookIDs []string `json:"runbookIds"`
+	Name       string   `json:"name"`
+	RunbookURL *string  `json:"runbookUrl"`
+}
+
+// UnmergeRunbookAlertsRequest is the body of POST /runbooks/{id}/unmerge: each alert leaves the runbook and becomes a
+// runbook of its own, named after the alert, with the same link.
+type UnmergeRunbookAlertsRequest struct {
+	Alerts []string `json:"alerts"`
 }
 
 // ImportRunbooksResponse counts what an import did.
