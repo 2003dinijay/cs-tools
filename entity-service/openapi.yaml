@@ -8636,12 +8636,17 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
   /team-schedule/paging-contacts/{userId}/test:
     post:
-      summary: Ask for a test call to a person's paging-only number.
+      summary: Ask for a test call to the number Case Alerts dials for a person.
       description: >
-        Marks the test pending and publishes paging.test_call_requested on the
-        main event topic; csm-notification-service places the call and
-        reports the outcome (PUT .../test-result). Same permission as setting
-        the number. At most one test every two minutes per person.
+        Rings the number Case Alerts dials from CSM: the one on the person's
+        own profile ("user".phone) when it can be called, else their
+        paging-only number. Marks the test pending and publishes
+        paging.test_call_requested on the main event topic;
+        csm-notification-service places the call and reports the outcome
+        (PUT .../test-result). Only a portal admin, or the rota admin of a
+        family one of the person's teams is in, may ask (a lead or head who
+        may set the number may not ring it). At most one test every two
+        minutes per person, across both numbers.
       operationId: requestPagingTestCall
       parameters:
         - name: userId
@@ -8683,7 +8688,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         "409":
-          description: The person has no paging number.
+          description: CSM holds no number to dial for the person (no callable profile number and no paging-only number).
           content:
             application/json:
               schema:
@@ -23197,6 +23202,31 @@ components:
         hasProfilePhone:
           type: boolean
           description: Whether the person has a callable (E.164) number on their own profile ("user".phone), which paging calls ahead of the paging-only number. Absent when paging numbers are not configured.
+        canTestCall:
+          type: boolean
+          description: Whether the caller may place a test call to this person (a portal admin, or the rota admin of a family one of the person's teams is in).
+        testCall:
+          allOf:
+            - $ref: '#/components/schemas/PagingTestCall'
+          description: The number a test call would ring and its last test. Only for a caller who canTestCall; absent when CSM holds no number to dial.
+    PagingTestCall:
+      type: object
+      required: [masked, source]
+      properties:
+        masked:
+          type: string
+          description: The number with its country code and last three digits shown.
+        source:
+          type: string
+          enum: [profile, paging]
+          description: profile = the number on the person's own profile; paging = their paging-only number.
+        lastTestAt:
+          type: string
+          format: date-time
+          description: When the last test of this number was asked for or answered. Absent until one is requested, and after the number changes.
+        lastTestStatus:
+          type: string
+          enum: [pending, completed, no-answer, busy, failed]
     PagingChainPermissions:
       type: object
       required: [responderTeams, teamLeadTeams, americasTeamLead, heads]

@@ -12964,7 +12964,9 @@ paths:
       description: >
         The entity service's payload: `members[]` (one team membership each, with its role,
         responderRank, userId, canEditPhone and pagingPhone -- `{masked, phone?, setBy, setAt,
-        lastTestAt?, lastTestStatus?}` or null, the full `phone` only for a caller who canEditPhone)
+        lastTestAt?, lastTestStatus?}` or null, the full `phone` only for a caller who canEditPhone,
+        canTestCall, and testCall -- `{masked, source: profile|paging, lastTestAt?, lastTestStatus?}`,
+        only for a caller who canTestCall, absent when CSM holds no number to dial)
         and `canEdit` ({responderTeams[], teamLeadTeams[], americasTeamLead, heads}). The portal adds
         `hasProfilePhone` (boolean) to each member: whether their Asgardeo profile has a mobile number,
         from SCIM (cached 10 minutes). A member whose lookup failed has no `hasProfilePhone`; the
@@ -13210,12 +13212,14 @@ paths:
                 $ref: '#/components/schemas/ErrorPayload'
   /team-schedule/paging-contacts/{userId}/test:
     post:
-      summary: Place a test call to a person's paging-only number.
+      summary: Place a test call to the number Case Alerts dials for a person.
       operationId: testTeamSchedulePagingContact
       description: >
+        Rings the person's profile number when it can be called, else their paging-only number.
         Accepted while the call is placed; the result lands on the paging chain's member as
-        `pagingPhone.lastTestStatus`. 409 when the person has no paging number; 429 when it was tested
-        less than 2 minutes ago.
+        `testCall.lastTestStatus`. Only a portal admin or a rota admin of the person's family may ask
+        (403 otherwise). 409 when CSM holds no number for the person; 429 when they were tested less
+        than 2 minutes ago.
       parameters:
         - name: userId
           in: path
