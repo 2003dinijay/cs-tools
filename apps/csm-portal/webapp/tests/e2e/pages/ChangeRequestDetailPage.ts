@@ -359,15 +359,16 @@ export class ChangeRequestDetailPage {
     return this.page.getByRole("button", { name: "Edit", exact: true });
   }
 
+  /** Opens the edit form. It is shown in the page (a region named "Edit
+   * change request", in place of the tabs), not a modal; the name is kept so
+   * the specs read the same. */
   async openEditDialog(): Promise<void> {
     await this.editButton().click();
-    await expect(
-      this.page.getByRole("dialog").getByRole("heading", { name: "Edit change request" }),
-    ).toBeVisible();
+    await expect(this.editDialog()).toBeVisible();
   }
 
   editDialog(): Locator {
-    return this.page.getByRole("dialog");
+    return this.page.getByRole("region", { name: "Edit change request" });
   }
 
   /**

@@ -912,6 +912,8 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
                 patchCr.reset();
                 setEditOpen(true);
               }}
+              // Already editing: the form is open below the header.
+              disabled={editOpen}
               sx={{ flexShrink: 0 }}
             >
               Edit
@@ -1032,6 +1034,49 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
         />
       )}
 
+      {/*
+        Edit happens in the page, not a modal: the form takes the place of the
+        tabs at full width and they come back on Save or Cancel. It is the same
+        EditChangeRequestDialog component (variant="inline"), so every edit rule
+        it enforces (the project frozen after New, add-only customer boxes, the
+        Emergency rules, the deployment window) applies unchanged.
+      */}
+      {editOpen && (
+        <EditChangeRequestDialog
+          variant="inline"
+          cr={cr}
+          isSaving={patchCr.isPending}
+          saveError={
+            patchCr.isError
+              ? backendErrorMessage(
+                  patchCr.error,
+                  "Could not update the change request.",
+                )
+              : null
+          }
+          onClose={() => {
+            if (!patchCr.isPending) setEditOpen(false);
+          }}
+          onSave={(patch) =>
+            patchCr.mutate(
+              { id: cr.id, patch },
+              {
+                onSuccess: () => setEditOpen(false),
+                onError: (err) =>
+                  showError(
+                    backendErrorMessage(
+                      err,
+                      "Could not update the change request.",
+                    ),
+                    err,
+                  ),
+              },
+            )
+          }
+        />
+      )}
+
+      {!editOpen && (
       <Box className="csm-print-hide" sx={{ borderBottom: 1, borderColor: "divider" }}>
         <Tabs
           value={activeTab}
@@ -1061,8 +1106,9 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
           })}
         </Tabs>
       </Box>
+      )}
 
-      {activeTab === "approval" && (
+      {!editOpen && activeTab === "approval" && (
         <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
           <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
             <Typography
@@ -1135,7 +1181,7 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
         </Box>
       )}
 
-      {activeTab === "plan" && (
+      {!editOpen && activeTab === "plan" && (
         <Box sx={{ display: "flex", flexDirection: "column", gap: 2.5 }}>
           {/*
             Field order here mirrors the SRE change-review packet's reading
@@ -1257,7 +1303,7 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
         </Box>
       )}
 
-      {activeTab === "comments" && (
+      {!editOpen && activeTab === "comments" && (
         <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2 }}>
           {composerOpen ? (
             <Box className="csm-print-hide" sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
@@ -1323,7 +1369,7 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
         </Card>
       )}
 
-      {activeTab === "attachments" && (
+      {!editOpen && activeTab === "attachments" && (
         <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2 }}>
           <AttachmentsWidget
             attachments={attachmentList}
@@ -1396,39 +1442,7 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
         />
       )}
 
-      {editOpen && (
-        <EditChangeRequestDialog
-          cr={cr}
-          isSaving={patchCr.isPending}
-          saveError={
-            patchCr.isError
-              ? backendErrorMessage(
-                  patchCr.error,
-                  "Could not update the change request.",
-                )
-              : null
-          }
-          onClose={() => {
-            if (!patchCr.isPending) setEditOpen(false);
-          }}
-          onSave={(patch) =>
-            patchCr.mutate(
-              { id: cr.id, patch },
-              {
-                onSuccess: () => setEditOpen(false),
-                onError: (err) =>
-                  showError(
-                    backendErrorMessage(
-                      err,
-                      "Could not update the change request.",
-                    ),
-                    err,
-                  ),
-              },
-            )
-          }
-        />
-      )}
+
     </Box>
   );
 }

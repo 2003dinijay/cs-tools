@@ -30,6 +30,7 @@ import {
   FormHelperText,
   InputLabel,
   MenuItem,
+  Paper,
   Select,
   Switch,
   TextField,
@@ -96,7 +97,18 @@ interface EditChangeRequestDialogProps {
   onClose: () => void;
   /** Submit only the changed fields (`PATCH /change-requests/{id}`). */
   onSave: (patch: BePatchChangeRequestPayload) => void;
+  /**
+   * `"dialog"` (default): the original modal. `"inline"`: the same form, the
+   * same fields and the same edit rules, rendered in the page itself at full
+   * width (two columns from `md` up, long-form plans across both) — the change
+   * request page uses this so its fields aren't squeezed into a narrow modal.
+   */
+  variant?: "dialog" | "inline";
 }
+
+/** Grid placement for a field that should span both columns in the inline
+ * layout. In the dialog's single flex column it has no effect. */
+const FULL_ROW = { gridColumn: "1 / -1" } as const;
 
 /** Same members, order ignored. */
 function sameIds(a: string[], b: string[]): boolean {
@@ -229,6 +241,7 @@ export default function EditChangeRequestDialog({
   saveError,
   onClose,
   onSave,
+  variant = "dialog",
 }: EditChangeRequestDialogProps): JSX.Element {
   const initialPlannedStart = useMemo(
     () => backendUtcToZonedInput(cr.plannedStartOn),
@@ -445,7 +458,7 @@ export default function EditChangeRequestDialog({
     field: RichTextPlanField,
     helperText: string,
   ): JSX.Element => (
-    <Box>
+    <Box sx={FULL_ROW}>
       <Typography
         id={`${id}-label`}
         variant="caption"
@@ -517,13 +530,23 @@ export default function EditChangeRequestDialog({
     );
   };
 
-  return (
-    <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
-      <DialogTitle>Edit change request</DialogTitle>
-      <DialogContent dividers>
-        <Box sx={{ display: "flex", flexDirection: "column", gap: 2, pt: 0.5 }}>
+  const inline = variant === "inline";
+  const fields = (
+        <Box
+          sx={
+            inline
+              ? {
+                  display: "grid",
+                  gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
+                  columnGap: 3,
+                  rowGap: 2,
+                  alignItems: "start",
+                }
+              : { display: "flex", flexDirection: "column", gap: 2, pt: 0.5 }
+          }
+        >
           {saveError && (
-            <Alert severity="error" sx={{ width: "100%" }}>
+            <Alert severity="error" sx={{ width: "100%", ...FULL_ROW }}>
               {saveError}
             </Alert>
           )}
@@ -641,7 +664,7 @@ export default function EditChangeRequestDialog({
           <Box
             role="group"
             aria-label="Customer project and deployments"
-            sx={{ display: "flex", flexDirection: "column", gap: 1 }}
+            sx={{ display: "flex", flexDirection: "column", gap: 1, ...FULL_ROW }}
           >
             {(projectLocked || scopeLocked) && (
               // An explanation, not an error: a status, so a save error stays the dialog's one alert.
@@ -703,7 +726,7 @@ export default function EditChangeRequestDialog({
             isEmergency ? null : customerRequirementOnceSavedHelper(cr.state, initialCustomerReviewRequired),
           )}
           {isEmergency && (
-            <FormHelperText id={EMERGENCY_NOTE_ID} sx={{ mx: 0 }}>
+            <FormHelperText id={EMERGENCY_NOTE_ID} sx={{ mx: 0, ...FULL_ROW }}>
               {EMERGENCY_CUSTOMER_STEPS_HELPER}
             </FormHelperText>
           )}
@@ -718,7 +741,7 @@ export default function EditChangeRequestDialog({
             helperText="Free text — ServiceNow does not parse this into a structured duration."
           />
           <FormControlLabel
-            sx={{ ml: 0, justifyContent: "space-between", width: "100%" }}
+            sx={{ ml: 0, justifyContent: "space-between", width: "100%", ...FULL_ROW }}
             labelPlacement="start"
             control={
               <Switch
@@ -766,19 +789,55 @@ export default function EditChangeRequestDialog({
             "Components impacted by this change.",
           )}
         </Box>
-      </DialogContent>
-      <DialogActions>
-        <Button color="inherit" onClick={onClose} disabled={isSaving}>
-          Cancel
-        </Button>
-        <Button
-          variant="contained"
-          onClick={() => onSave(patch)}
-          disabled={isSaving || !hasChanges || plannedEndBeforeStart}
+  );
+
+  const actions = (
+    <>
+      <Button color="inherit" onClick={onClose} disabled={isSaving}>
+        Cancel
+      </Button>
+      <Button
+        variant="contained"
+        onClick={() => onSave(patch)}
+        disabled={isSaving || !hasChanges || plannedEndBeforeStart}
+      >
+        {isSaving ? "Saving…" : "Save"}
+      </Button>
+    </>
+  );
+
+  if (inline) {
+    return (
+      <Paper
+        component="section"
+        aria-labelledby="cr-inline-edit-title"
+        sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2 }}
+      >
+        <Typography id="cr-inline-edit-title" variant="h6" component="h2">
+          Edit change request
+        </Typography>
+        {fields}
+        <Box
+          sx={{
+            display: "flex",
+            justifyContent: "flex-end",
+            gap: 1,
+            pt: 1.5,
+            borderTop: 1,
+            borderColor: "divider",
+          }}
         >
-          {isSaving ? "Saving…" : "Save"}
-        </Button>
-      </DialogActions>
+          {actions}
+        </Box>
+      </Paper>
+    );
+  }
+
+  return (
+    <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
+      <DialogTitle>Edit change request</DialogTitle>
+      <DialogContent dividers>{fields}</DialogContent>
+      <DialogActions>{actions}</DialogActions>
     </Dialog>
   );
 }

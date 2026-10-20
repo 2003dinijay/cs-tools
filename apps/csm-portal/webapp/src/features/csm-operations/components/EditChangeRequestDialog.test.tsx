@@ -1186,3 +1186,43 @@ describe("EditChangeRequestDialog — Category", () => {
     expect(saveButton()).toBeDisabled();
   });
 });
+
+describe("EditChangeRequestDialog — inline variant", () => {
+  it("renders the same form in the page, not a modal, and saves only what changed", () => {
+    const onSave = vi.fn<(patch: BePatchChangeRequestPayload) => void>();
+    render(
+      <EditChangeRequestDialog
+        variant="inline"
+        cr={BASE_CR}
+        isSaving={false}
+        onClose={vi.fn()}
+        onSave={onSave}
+      />,
+    );
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    const region = screen.getByRole("region", { name: "Edit change request" });
+    const save = within(region).getByRole("button", { name: /save/i });
+    expect(save).toBeDisabled();
+
+    fireEvent.change(within(region).getByLabelText("Rollback duration"), { target: { value: "30 mins" } });
+    fireEvent.click(save);
+    expect(onSave).toHaveBeenCalledWith({ rollbackDurationText: "30 mins" });
+  });
+
+  it("keeps the edit rules: the Customer Project is read-only once approval was requested", () => {
+    render(
+      <EditChangeRequestDialog
+        variant="inline"
+        cr={{ ...BASE_CR, state: "assess", project: { id: "proj-a", name: "Acme Project" } }}
+        isSaving={false}
+        onClose={vi.fn()}
+        onSave={vi.fn()}
+      />,
+    );
+    expect(
+      within(screen.getByRole("region", { name: "Edit change request" })).getByText(
+        "Fixed when approval was requested. Cancel and clone to change it.",
+      ),
+    ).toBeInTheDocument();
+  });
+});
