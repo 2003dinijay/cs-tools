@@ -34,6 +34,7 @@ import (
 	"github.com/wso2-open-operations/cs-tools/integrations/acp-closure-service/internal/emailservice"
 	"github.com/wso2-open-operations/cs-tools/integrations/acp-closure-service/internal/entity"
 	"github.com/wso2-open-operations/cs-tools/integrations/acp-closure-service/internal/notify"
+	"github.com/wso2-open-operations/cs-tools/integrations/acp-closure-service/internal/salesentity"
 	"github.com/wso2-open-operations/cs-tools/integrations/acp-closure-service/internal/sweep"
 )
 
@@ -88,6 +89,21 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Salesforce-owned project details (dates, account people, contacts,
+	// opportunities, invoices) are read live from sales-entity-service; CSM
+	// keeps the open-project list, closure states and notices sent.
+	salesEntityClient, err := salesentity.NewClient(salesentity.Config{
+		BaseURL:      mustEnv("SALES_ENTITY_BASE_URL"),
+		TokenURL:     mustEnv("SALES_ENTITY_TOKEN_URL"),
+		ClientID:     mustEnv("SALES_ENTITY_CLIENT_ID"),
+		ClientSecret: mustEnv("SALES_ENTITY_CLIENT_SECRET"),
+		Scopes:       strings.Fields(os.Getenv("SALES_ENTITY_SCOPES")),
+	})
+	if err != nil {
+		slog.Error("invalid sales-entity-service configuration", "err", err)
+		os.Exit(1)
+	}
+
 	var updater projectUpdater = entityClient
 	if dryRun {
 		updater = &sweep.DryRunProjectUpdater{}
@@ -116,7 +132,7 @@ func main() {
 
 	ctx := entity.WithCorrelationID(context.Background(), runID)
 
-	result, err := sweep.Run(ctx, entityClient, updater, ntf, time.Now(), testProjectID, excludedProjectIDs)
+	result, err := sweep.Run(ctx, entityClient, sweep.NewSalesforceDetails(salesEntityClient), updater, ntf, time.Now(), testProjectID, excludedProjectIDs)
 	if err != nil {
 		slog.Error("acp-closure-service sweep failed", "runID", runID, "err", err)
 		os.Exit(1)
