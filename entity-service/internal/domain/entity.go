@@ -6633,13 +6633,11 @@ type CreateIncidentRequest struct {
 	WatchList          []string `json:"watchList,omitempty"`
 	AdditionalComments *string  `json:"additionalComments,omitempty"`
 	WorkNotes          *string  `json:"workNotes,omitempty"`
-	// RunbookWorkNote is set by the service from the runbook catalog and written as a work note of its own, after WorkNotes; never read from the request body.
-	RunbookWorkNote  *string `json:"-"`
-	ParentID         *string `json:"parentId,omitempty"`
-	ParentIncidentID *string `json:"parentIncidentId,omitempty"`
-	ChangeRequestID  *string `json:"changeRequestId,omitempty"`
-	ProblemID        *string `json:"problemId,omitempty"`
-	CausedByID       *string `json:"causedById,omitempty"`
+	ParentID           *string  `json:"parentId,omitempty"`
+	ParentIncidentID   *string  `json:"parentIncidentId,omitempty"`
+	ChangeRequestID    *string  `json:"changeRequestId,omitempty"`
+	ProblemID          *string  `json:"problemId,omitempty"`
+	CausedByID         *string  `json:"causedById,omitempty"`
 	// CorrelationID is an optional caller-supplied external-system key, stored
 	// on ServiceNow's stock `correlation_id` field. Lets a monitoring
 	// integration find an incident it already created (SearchIncidentsFilters.

@@ -1281,21 +1281,6 @@ func insertIncidentNotesTx(ctx context.Context, tx pgx.Tx, incidentID string, wo
 	return nil
 }
 
-// insertRunbookWorkNoteTx writes the runbook note as its own work note, stamped with the clock so it sorts after the notes written earlier in the same transaction.
-func insertRunbookWorkNoteTx(ctx context.Context, tx pgx.Tx, incidentID string, note *string, createdBy string) error {
-	if note == nil || strings.TrimSpace(*note) == "" {
-		return nil
-	}
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO comment (id, created_on, created_by, type, work_item_id, content)
-		 VALUES (gen_random_uuid(), clock_timestamp(), $1, $2::comment_type_enum, $3, $4)`,
-		createdBy, caseCommentTypeEnum[domain.CommentTypeWorkNote], incidentID, *note,
-	); err != nil {
-		return fmt.Errorf("insert incident runbook work note: %w", err)
-	}
-	return nil
-}
-
 // incidentLifecycleFKField names the request field behind each foreign key
 // UpdateIncidentLifecycle can trip, and what it refers to, so a bad id reads
 // as a ValidationError on that field instead of a 500.
@@ -1761,9 +1746,6 @@ func (r *incidentRepo) CreateIncident(ctx context.Context, req domain.CreateInci
 				return domain.CreateIncidentResponse{}, fmt.Errorf("insert incident %s: %w", j.commentType, err)
 			}
 		}
-		if err := insertRunbookWorkNoteTx(ctx, tx, outID, req.RunbookWorkNote, createdBy); err != nil {
-			return domain.CreateIncidentResponse{}, err
-		}
 
 		resp := domain.CreateIncidentResponse{Message: "Incident created successfully."}
 		resp.Incident.ID = outID
@@ -1912,10 +1894,7 @@ func (r *incidentRepo) CreateIncidentFromServiceNow(ctx context.Context, req dom
 		).Scan(&outID, &outNumber, &outSubject, &outCreatedOn, &outUpdatedOn, &outCreatedBy); err != nil {
 			return struct{}{}, err
 		}
-		if err := insertIncidentNotesTx(ctx, tx, outID, req.WorkNotes, req.AdditionalComments, createdBy); err != nil {
-			return struct{}{}, err
-		}
-		return struct{}{}, insertRunbookWorkNoteTx(ctx, tx, outID, req.RunbookWorkNote, createdBy)
+		return struct{}{}, insertIncidentNotesTx(ctx, tx, outID, req.WorkNotes, req.AdditionalComments, createdBy)
 	})
 	if err != nil {
 		var ve *apierror.ValidationError
