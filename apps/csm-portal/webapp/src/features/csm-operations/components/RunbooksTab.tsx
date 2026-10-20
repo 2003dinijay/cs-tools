@@ -30,6 +30,7 @@ import {
   InputAdornment,
   InputLabel,
   Link,
+  Menu,
   MenuItem,
   Paper,
   Select,
@@ -45,7 +46,9 @@ import {
   Tooltip,
   Typography,
 } from "@wso2/oxygen-ui";
-import { ChevronDown, ChevronUp, ExternalLink, ListFilter, Pencil, Plus, Search, Trash2, Upload, X } from "@wso2/oxygen-ui-icons-react";
+import { ChevronDown, ChevronUp, Download, ExternalLink, ListFilter, Pencil, Plus, Search, Trash2, Upload, X } from "@wso2/oxygen-ui-icons-react";
+import { downloadCsv } from "@utils/csvExport";
+import { saveBlob } from "@utils/saveBlob";
 import { useMemo, useRef, useState, type ChangeEvent, type JSX } from "react";
 import QueryErrorState from "@components/QueryErrorState";
 import { usePortalAccess } from "@context/current-user/usePortalAccess";
@@ -60,6 +63,9 @@ import {
   findRunbookForIncident,
   isValidRunbookUrl,
   parseRunbookImport,
+  RUNBOOK_CSV_HEADER,
+  runbooksToCsvRows,
+  runbooksToImportJson,
   type Runbook,
   type RunbookCoverage,
 } from "@features/csm-operations/utils/runbooks";
@@ -70,6 +76,13 @@ const ROWS_PER_PAGE_OPTIONS = [10, 20, 50];
 interface RunbookDialogState {
   open: boolean;
   editing?: Runbook;
+}
+
+/** runbooks-YYYY-MM-DD.<ext>, in the viewer's local date. */
+function exportFileName(ext: "json" | "csv"): string {
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `runbooks-${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}.${ext}`;
 }
 
 function errorText(err: unknown, fallback: string): string {
@@ -86,6 +99,7 @@ export default function RunbooksTab(): JSX.Element {
   const deleteRunbook = useDeleteRunbook();
   const importRunbooks = useImportRunbooks();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [exportAnchor, setExportAnchor] = useState<HTMLElement | null>(null);
   const [search, setSearch] = useState("");
   const [coverage, setCoverage] = useState<RunbookCoverage>("all");
   const [isFiltersOpen, setIsFiltersOpen] = useState(false);
@@ -141,36 +155,68 @@ export default function RunbooksTab(): JSX.Element {
         <Typography variant="body2" color="text.secondary">
           {isLoading ? "Loading runbooks…" : `${runbooks.length} alerts, ${linkedCount} with a runbook, ${runbooks.length - linkedCount} without`}
         </Typography>
-        {canWrite && (
-          <Box sx={{ display: "flex", gap: 1 }}>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="application/json,.json"
-              hidden
-              onChange={(e) => void handleImportFile(e)}
-              data-testid="runbook-import-input"
-            />
-            <Button
-              variant="outlined"
-              size="small"
-              startIcon={<Upload size={16} />}
-              disabled={importRunbooks.isPending}
-              onClick={() => fileInputRef.current?.click()}
+        <Box sx={{ display: "flex", gap: 1 }}>
+          <Button
+            variant="outlined"
+            size="small"
+            startIcon={<Download size={16} />}
+            endIcon={<ChevronDown size={16} />}
+            disabled={isLoading || filtered.length === 0}
+            aria-haspopup="menu"
+            aria-expanded={exportAnchor !== null}
+            onClick={(e) => setExportAnchor(e.currentTarget)}
+          >
+            Export
+          </Button>
+          <Menu anchorEl={exportAnchor} open={exportAnchor !== null} onClose={() => setExportAnchor(null)}>
+            <MenuItem
+              onClick={() => {
+                setExportAnchor(null);
+                saveBlob(new Blob([runbooksToImportJson(filtered)], { type: "application/json" }), exportFileName("json"));
+              }}
             >
-              {importRunbooks.isPending ? "Importing…" : "Import JSON"}
-            </Button>
-            <Button
-              variant="contained"
-              color="primary"
-              size="small"
-              startIcon={<Plus size={16} />}
-              onClick={() => setDialog({ open: true })}
+              JSON (can be imported again)
+            </MenuItem>
+            <MenuItem
+              onClick={() => {
+                setExportAnchor(null);
+                downloadCsv(RUNBOOK_CSV_HEADER, runbooksToCsvRows(filtered), exportFileName("csv"));
+              }}
             >
-              Add runbook
-            </Button>
-          </Box>
-        )}
+              CSV
+            </MenuItem>
+          </Menu>
+          {canWrite && (
+            <>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="application/json,.json"
+                hidden
+                onChange={(e) => void handleImportFile(e)}
+                data-testid="runbook-import-input"
+              />
+              <Button
+                variant="outlined"
+                size="small"
+                startIcon={<Upload size={16} />}
+                disabled={importRunbooks.isPending}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                {importRunbooks.isPending ? "Importing…" : "Import JSON"}
+              </Button>
+              <Button
+                variant="contained"
+                color="primary"
+                size="small"
+                startIcon={<Plus size={16} />}
+                onClick={() => setDialog({ open: true })}
+              >
+                Add runbook
+              </Button>
+            </>
+          )}
+        </Box>
       </Box>
 
       {notice && (

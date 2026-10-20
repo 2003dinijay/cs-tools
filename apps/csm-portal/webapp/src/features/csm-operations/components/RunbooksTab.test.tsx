@@ -15,7 +15,7 @@
 // under the License.
 
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import RunbooksTab from "@features/csm-operations/components/RunbooksTab";
 
@@ -30,9 +30,14 @@ const fixtures = vi.hoisted(() => ({
     { id: "2", alertName: "JVM Heap", runbookUrl: null, createdOn: "", createdBy: "", updatedOn: "", updatedBy: "" },
   ],
   idleMutation: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
+  access: { canWrite: true },
+  saveBlob: vi.fn(),
+  downloadCsv: vi.fn(),
 }));
 
-vi.mock("@context/current-user/usePortalAccess", () => ({ usePortalAccess: () => ({ canWrite: true }) }));
+vi.mock("@context/current-user/usePortalAccess", () => ({ usePortalAccess: () => fixtures.access }));
+vi.mock("@utils/saveBlob", () => ({ saveBlob: fixtures.saveBlob }));
+vi.mock("@utils/csvExport", () => ({ downloadCsv: fixtures.downloadCsv }));
 vi.mock("@features/csm-operations/api/useRunbooks", () => ({
   useRunbooks: () => ({ data: fixtures.catalog, isLoading: false, isError: false, error: null, refetch: vi.fn() }),
   useCreateRunbook: fixtures.idleMutation,
@@ -57,5 +62,46 @@ describe("RunbooksTab search runbook with alert name", () => {
 
     fireEvent.change(search, { target: { value: "unknown" } });
     expect(screen.getByText("No runbook covers this alert.")).toBeInTheDocument();
+  });
+});
+
+describe("RunbooksTab export", () => {
+  beforeEach(() => {
+    fixtures.access.canWrite = true;
+    fixtures.saveBlob.mockReset();
+    fixtures.downloadCsv.mockReset();
+  });
+
+  it("exports the shown runbooks as importable JSON", async () => {
+    render(<RunbooksTab />);
+    fireEvent.click(screen.getByRole("button", { name: "Export" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "JSON (can be imported again)" }));
+    const [blob, name] = fixtures.saveBlob.mock.calls[0] as [Blob, string];
+    expect(name).toMatch(/^runbooks-\d{4}-\d{2}-\d{2}\.json$/);
+    const text = await new Promise<string>((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.readAsText(blob);
+    });
+    expect(JSON.parse(text)).toEqual({ "Gateway Latency High": "https://docs.example.com/gw", "JVM Heap": "" });
+  });
+
+  it("exports only the runbooks the search leaves, as CSV", () => {
+    render(<RunbooksTab />);
+    fireEvent.change(screen.getByLabelText("Search runbooks by alert name or link"), { target: { value: "jvm" } });
+    fireEvent.click(screen.getByRole("button", { name: "Export" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "CSV" }));
+    expect(fixtures.downloadCsv).toHaveBeenCalledWith(
+      ["Alert name", "Runbook link", "Last updated by", "Last updated"],
+      [["JVM Heap", "", "", ""]],
+      expect.stringMatching(/^runbooks-\d{4}-\d{2}-\d{2}\.csv$/),
+    );
+  });
+
+  it("offers Export to someone who cannot edit runbooks", () => {
+    fixtures.access.canWrite = false;
+    render(<RunbooksTab />);
+    expect(screen.getByRole("button", { name: "Export" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Import JSON" })).not.toBeInTheDocument();
   });
 });
