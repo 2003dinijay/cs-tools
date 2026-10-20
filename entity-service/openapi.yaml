@@ -9293,13 +9293,10 @@ paths:
     get:
       summary: List the runbook catalog.
       description: >
-        Every alert name with its runbook link, ordered by alert name. A new
-        incident whose subject contains an alert name gets a separate work note:
-        "Runbook", "Matched alert: <alert name>" and an "Open runbook" link, or
-        "No runbook available for this alert." when the entry has no link. An
-        alert-born incident (one with a correlationId) that matches no entry
-        gets "Runbook" and "No runbook available for this alert." Internal
-        callers only.
+        Every alert name with its runbook link, ordered by alert name. The
+        portal shows an incident's runbook in its Related tab: the entry with
+        the longest alert name the incident's subject contains, ignoring case.
+        Internal callers only.
       operationId: listRunbooks
       responses:
         "200":

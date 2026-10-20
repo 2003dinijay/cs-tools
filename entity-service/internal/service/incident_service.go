@@ -457,8 +457,6 @@ func intersectStrings(a, b []string) []string {
 
 type incidentService struct {
 	repo repository.IncidentRepository
-	// runbooks is the runbook catalog a new incident's work note is looked up in; nil leaves it out. Set with WithRunbookCatalog.
-	runbooks runbookLister
 	// userRepo is nil in every mode except DATA_SOURCE=postgres-servicenow-dual-write
 	// -- only needed there, to resolve UpdateIncident's caller identity for
 	// comment.created_by (see resolveActor).
@@ -687,7 +685,6 @@ func (s *incidentService) CreateIncident(ctx context.Context, req domain.CreateI
 		return domain.CreateIncidentResponse{}, err
 	}
 	req = withAssignmentGroup(req, decision)
-	req = withRunbookNote(ctx, req, s.runbooks)
 	if s.snMirror != nil {
 		// ConfigurationItemID has no backing column on this data source at
 		// all (unlike Subcategory/AssignedEngineerID/WatchList/
