@@ -423,7 +423,7 @@ export default function RunbooksTab(): JSX.Element {
                       </TableCell>
                     )}
                     <TableCell sx={{ whiteSpace: "nowrap" }}>
-                      <Typography variant="body2" sx={{ fontFamily: "monospace" }}>
+                      <Typography variant="body2">
                         {rb.number}
                       </Typography>
                     </TableCell>
