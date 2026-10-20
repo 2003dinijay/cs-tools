@@ -32,7 +32,7 @@ import (
 // other fake repos.
 type fakePendingVerificationRepo struct {
 	create                        func(ctx context.Context, req domain.CreatePendingVerificationRequest) (domain.PendingVerification, error)
-	getWorkItemTypeAndProject     func(ctx context.Context, workItemID string) (string, string, error)
+	getWorkItemTypeAndProject     func(ctx context.Context, workItemID string) (string, string, *string, error)
 	getProjectIDForEntry          func(ctx context.Context, id string) (string, error)
 	getProjectVerificationEnabled func(ctx context.Context, projectID string) (bool, error)
 	search                        func(ctx context.Context, req domain.SearchPendingVerificationsRequest) (domain.SearchPendingVerificationsResponse, error)
@@ -46,7 +46,7 @@ func (f *fakePendingVerificationRepo) Create(ctx context.Context, req domain.Cre
 	return f.create(ctx, req)
 }
 
-func (f *fakePendingVerificationRepo) GetWorkItemTypeAndProject(ctx context.Context, workItemID string) (string, string, error) {
+func (f *fakePendingVerificationRepo) GetWorkItemTypeAndProject(ctx context.Context, workItemID string) (string, string, *string, error) {
 	if f.getWorkItemTypeAndProject == nil {
 		panic("fakePendingVerificationRepo.GetWorkItemTypeAndProject: not expected to be called by this test")
 	}
@@ -170,9 +170,9 @@ func TestPendingVerificationService_Create_InvalidPreviousStatusValue(t *testing
 func TestPendingVerificationService_Create_AutoClosedRequiresInternalCaller(t *testing.T) {
 	status := domain.PendingVerificationPreviousStatusAwaitingInfo
 	repo := &fakePendingVerificationRepo{
-		getWorkItemTypeAndProject: func(context.Context, string) (string, string, error) {
+		getWorkItemTypeAndProject: func(context.Context, string) (string, string, *string, error) {
 			t.Fatal("the repository must not be reached for a non-internal caller's auto-closed request")
-			return "", "", nil
+			return "", "", nil, nil
 		},
 		create: func(context.Context, domain.CreatePendingVerificationRequest) (domain.PendingVerification, error) {
 			t.Fatal("Create must not be called for a non-internal caller's auto-closed request")
@@ -195,7 +195,9 @@ func TestPendingVerificationService_Create_AutoClosedRequiresInternalCaller(t *t
 func TestPendingVerificationService_Create_ManualDoesNotRequireInternalCaller(t *testing.T) {
 	wantPV := domain.PendingVerification{ID: pvTestEntryID, WorkItemID: pvTestWorkItemID}
 	repo := &fakePendingVerificationRepo{
-		getWorkItemTypeAndProject:     func(context.Context, string) (string, string, error) { return "CASE", pvTestProjectID, nil },
+		getWorkItemTypeAndProject: func(context.Context, string) (string, string, *string, error) {
+			return "CASE", pvTestProjectID, strPtr("CLOSED"), nil
+		},
 		getProjectVerificationEnabled: pvEnabled,
 		create: func(context.Context, domain.CreatePendingVerificationRequest) (domain.PendingVerification, error) {
 			return wantPV, nil
@@ -218,8 +220,8 @@ func TestPendingVerificationService_Create_ManualDoesNotRequireInternalCaller(t 
 // repository's Create/INSERT.
 func TestPendingVerificationService_Create_RejectsNonCase(t *testing.T) {
 	repo := &fakePendingVerificationRepo{
-		getWorkItemTypeAndProject: func(context.Context, string) (string, string, error) {
-			return "ENGAGEMENT", pvTestProjectID, nil
+		getWorkItemTypeAndProject: func(context.Context, string) (string, string, *string, error) {
+			return "ENGAGEMENT", pvTestProjectID, nil, nil
 		},
 		create: func(context.Context, domain.CreatePendingVerificationRequest) (domain.PendingVerification, error) {
 			t.Fatal("Create must not be called for a non-Case work item")
@@ -235,6 +237,44 @@ func TestPendingVerificationService_Create_RejectsNonCase(t *testing.T) {
 	assertValidationError(t, err)
 }
 
+// TestPendingVerificationService_Create_RejectsOpenCase locks in a real
+// finding: "Add to Verification" only ever applies to a closed case, and
+// that rule used to live only in the webapp (VerificationActionButtons' own
+// isRecordClosed) -- any caller with case-create access could otherwise POST
+// an open case straight through the API. Covers both "no case row joined"
+// (nil, shouldn't happen for a CASE-typed work item, but checked anyway) and
+// a real, non-CLOSED state.
+func TestPendingVerificationService_Create_RejectsOpenCase(t *testing.T) {
+	tests := []struct {
+		name  string
+		state *string
+	}{
+		{"open case", strPtr("OPEN")},
+		{"work in progress", strPtr("WORK_IN_PROGRESS")},
+		{"nil state", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &fakePendingVerificationRepo{
+				getWorkItemTypeAndProject: func(context.Context, string) (string, string, *string, error) {
+					return "CASE", pvTestProjectID, tt.state, nil
+				},
+				create: func(context.Context, domain.CreatePendingVerificationRequest) (domain.PendingVerification, error) {
+					t.Fatal("Create must not be called for a case that isn't closed")
+					return domain.PendingVerification{}, nil
+				},
+			}
+			svc := NewPendingVerificationService(repo, stubAccess{scope: AccessScope{Unrestricted: true}})
+			ctx := contextWithUserIDToken(fakeJWTWithEmail(t, pvTestCallerEmail))
+			_, err := svc.CreatePendingVerification(ctx, domain.CreatePendingVerificationRequest{
+				WorkItemID:  pvTestWorkItemID,
+				AddedReason: domain.PendingVerificationAddedReasonManual,
+			})
+			assertValidationError(t, err)
+		})
+	}
+}
+
 // TestPendingVerificationService_Create_PropagatesWorkItemLookupError
 // confirms a work item the caller can't see (RLS-filtered to zero rows,
 // surfaced by the repo as NotFoundError/ValidationError) is propagated
@@ -242,8 +282,8 @@ func TestPendingVerificationService_Create_RejectsNonCase(t *testing.T) {
 func TestPendingVerificationService_Create_PropagatesWorkItemLookupError(t *testing.T) {
 	wantErr := &apierror.ValidationError{Msg: "workItemId does not reference an existing record"}
 	repo := &fakePendingVerificationRepo{
-		getWorkItemTypeAndProject: func(context.Context, string) (string, string, error) {
-			return "", "", wantErr
+		getWorkItemTypeAndProject: func(context.Context, string) (string, string, *string, error) {
+			return "", "", nil, wantErr
 		},
 	}
 	svc := NewPendingVerificationService(repo, stubAccess{scope: AccessScope{Unrestricted: true}})
@@ -262,8 +302,8 @@ func TestPendingVerificationService_Create_PropagatesWorkItemLookupError(t *test
 // membership, not whether the project has this feature turned on at all.
 func TestPendingVerificationService_Create_RejectsWhenVerificationDisabled(t *testing.T) {
 	repo := &fakePendingVerificationRepo{
-		getWorkItemTypeAndProject: func(context.Context, string) (string, string, error) {
-			return "CASE", pvTestProjectID, nil
+		getWorkItemTypeAndProject: func(context.Context, string) (string, string, *string, error) {
+			return "CASE", pvTestProjectID, strPtr("CLOSED"), nil
 		},
 		getProjectVerificationEnabled: func(context.Context, string) (bool, error) { return false, nil },
 		create: func(context.Context, domain.CreatePendingVerificationRequest) (domain.PendingVerification, error) {
@@ -282,7 +322,9 @@ func TestPendingVerificationService_Create_RejectsWhenVerificationDisabled(t *te
 
 func TestPendingVerificationService_Create_RequiresCallerToken(t *testing.T) {
 	repo := &fakePendingVerificationRepo{
-		getWorkItemTypeAndProject:     func(context.Context, string) (string, string, error) { return "CASE", pvTestProjectID, nil },
+		getWorkItemTypeAndProject: func(context.Context, string) (string, string, *string, error) {
+			return "CASE", pvTestProjectID, strPtr("CLOSED"), nil
+		},
 		getProjectVerificationEnabled: pvEnabled,
 	}
 	svc := NewPendingVerificationService(repo, stubAccess{scope: AccessScope{Unrestricted: true}})
@@ -305,11 +347,11 @@ func TestPendingVerificationService_Create_HappyPath(t *testing.T) {
 	var gotReq domain.CreatePendingVerificationRequest
 	wantPV := domain.PendingVerification{ID: pvTestEntryID, WorkItemID: pvTestWorkItemID, RecordNumber: "CS0441241"}
 	repo := &fakePendingVerificationRepo{
-		getWorkItemTypeAndProject: func(_ context.Context, workItemID string) (string, string, error) {
+		getWorkItemTypeAndProject: func(_ context.Context, workItemID string) (string, string, *string, error) {
 			if workItemID != pvTestWorkItemID {
 				t.Fatalf("GetWorkItemTypeAndProject called with %q, want %q", workItemID, pvTestWorkItemID)
 			}
-			return "CASE", pvTestProjectID, nil
+			return "CASE", pvTestProjectID, strPtr("CLOSED"), nil
 		},
 		getProjectVerificationEnabled: pvEnabled,
 		create: func(_ context.Context, req domain.CreatePendingVerificationRequest) (domain.PendingVerification, error) {

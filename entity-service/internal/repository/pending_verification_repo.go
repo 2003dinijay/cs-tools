@@ -40,16 +40,18 @@ type PendingVerificationRepository interface {
 	// 0191) surfaces as a *apierror.ConflictError — there is at most one
 	// unverified entry per work item at a time.
 	Create(ctx context.Context, req domain.CreatePendingVerificationRequest) (domain.PendingVerification, error)
-	// GetWorkItemTypeAndProject returns work_item.type (e.g. "CASE") and
-	// work_item.project_id for workItemID -- used by CreatePendingVerification
-	// to enforce the Case-only scope and the project's VerificationEnabled
-	// gate before inserting. Reads through the same Scoped/RLS-protected path
-	// as every other work_item query, so a work item that exists but is
-	// outside the caller's scope returns *apierror.ValidationError, identical
-	// to one that doesn't exist at all. Returns *apierror.ValidationError if
-	// the work item has no linked project -- this feature has nothing to
-	// check VerificationEnabled against otherwise.
-	GetWorkItemTypeAndProject(ctx context.Context, workItemID string) (workItemType string, projectID string, err error)
+	// GetWorkItemTypeAndProject returns work_item.type (e.g. "CASE"),
+	// work_item.project_id, and -- for a CASE -- "case".state (nil for any
+	// other type, via the LEFT JOIN) for workItemID -- used by
+	// CreatePendingVerification to enforce the Case-only scope, that the
+	// case is actually closed, and the project's VerificationEnabled gate
+	// before inserting. Reads through the same Scoped/RLS-protected path as
+	// every other work_item query, so a work item that exists but is outside
+	// the caller's scope returns *apierror.ValidationError, identical to one
+	// that doesn't exist at all. Returns *apierror.ValidationError if the
+	// work item has no linked project -- this feature has nothing to check
+	// VerificationEnabled against otherwise.
+	GetWorkItemTypeAndProject(ctx context.Context, workItemID string) (workItemType string, projectID string, caseState *string, err error)
 	// GetProjectIDForEntry returns the project_id of the work item a pending
 	// verification entry (by its own id) belongs to -- used by
 	// VerifyPendingVerification to enforce the project's VerificationEnabled
@@ -188,20 +190,23 @@ func (r *pendingVerificationRepo) Create(ctx context.Context, req domain.CreateP
 }
 
 // GetWorkItemTypeAndProject implements PendingVerificationRepository.
-func (r *pendingVerificationRepo) GetWorkItemTypeAndProject(ctx context.Context, workItemID string) (string, string, error) {
+func (r *pendingVerificationRepo) GetWorkItemTypeAndProject(ctx context.Context, workItemID string) (string, string, *string, error) {
 	var workItemType string
-	var projectID *string
-	err := r.db.QueryRow(ctx, `SELECT type::TEXT, project_id FROM work_item WHERE id = $1`, workItemID).Scan(&workItemType, &projectID)
+	var projectID, caseState *string
+	// "case" is LEFT-joined, not INNER: a non-CASE work item (rejected right
+	// after this call returns) must still resolve a row here rather than
+	// being misreported as "does not exist".
+	err := r.db.QueryRow(ctx, `SELECT wi.type::TEXT, wi.project_id, c.state::TEXT FROM work_item wi LEFT JOIN "case" c ON wi.id = c.id WHERE wi.id = $1`, workItemID).Scan(&workItemType, &projectID, &caseState)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return "", "", &apierror.ValidationError{Msg: "workItemId does not reference an existing record"}
+			return "", "", nil, &apierror.ValidationError{Msg: "workItemId does not reference an existing record"}
 		}
-		return "", "", fmt.Errorf("get work_item type and project: %w", err)
+		return "", "", nil, fmt.Errorf("get work_item type and project: %w", err)
 	}
 	if projectID == nil {
-		return "", "", &apierror.ValidationError{Msg: "workItemId has no linked project; Pending Verification requires one"}
+		return "", "", nil, &apierror.ValidationError{Msg: "workItemId has no linked project; Pending Verification requires one"}
 	}
-	return workItemType, *projectID, nil
+	return workItemType, *projectID, caseState, nil
 }
 
 // GetProjectIDForEntry implements PendingVerificationRepository.

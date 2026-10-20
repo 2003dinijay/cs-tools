@@ -112,12 +112,19 @@ func (s *pendingVerificationService) CreatePendingVerification(ctx context.Conte
 	// uses, so a work item this caller can't even see fails exactly like one
 	// that doesn't exist, rather than leaking its existence via a different
 	// error shape.
-	workItemType, projectID, err := s.repo.GetWorkItemTypeAndProject(ctx, req.WorkItemID)
+	workItemType, projectID, caseState, err := s.repo.GetWorkItemTypeAndProject(ctx, req.WorkItemID)
 	if err != nil {
 		return domain.CreatePendingVerificationResponse{}, err
 	}
 	if workItemType != "CASE" {
 		return domain.CreatePendingVerificationResponse{}, &apierror.ValidationError{Msg: "workItemId must reference a Case -- Pending Verification is scoped to cases only"}
+	}
+	// "Add to Verification" only ever applies to a closed case -- this used
+	// to be enforced only by the webapp (VerificationActionButtons' own
+	// isRecordClosed), so any other caller could add an open case straight
+	// through the API.
+	if caseState == nil || *caseState != "CLOSED" {
+		return domain.CreatePendingVerificationResponse{}, &apierror.ValidationError{Msg: "workItemId must reference a closed Case -- Pending Verification can only be added once the case is closed"}
 	}
 
 	// RLS enforces project membership, not whether the project has this
