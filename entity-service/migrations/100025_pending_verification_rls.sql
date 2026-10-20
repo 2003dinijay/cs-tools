@@ -14,9 +14,28 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- Renamed from 0190_pending_verification_rls.sql, a 4-digit NNNN_*.sql file
+-- that should never have carried this content. Every CREATE POLICY here
+-- calls is_project_member(...), which is only defined in this dedicated
+-- 1NNNNN_*.sql RLS track (first in 100002_case_escalation_rls.sql) -- it was
+-- the only 4-digit migration in the whole repository that referenced that
+-- function. The Makefile's migrate target runs every 4-digit file (phase 1)
+-- before any 1NNNNN file (phase 2, this track), so on a genuinely fresh
+-- database the original 0190 name would have failed outright with "function
+-- is_project_member(...) does not exist" -- it only happened to work in
+-- practice because every environment this was tested against already had
+-- is_project_member from an earlier deploy. See the top-level CLAUDE.md's
+-- "RLS migration track" section for why this content belongs in this
+-- number space, not the one it shipped under.
+--
+-- One transaction, and every CREATE POLICY preceded by its own DROP POLICY
+-- IF EXISTS, matching every other file in this track -- Postgres has no
+-- CREATE POLICY IF NOT EXISTS, and this is what makes the rename itself (and
+-- any future re-run) idempotent.
+--
 -- pending_verification has no project_id of its own -- it reaches one only
 -- via work_item_id, exactly the same shape as case_attachment/work_item_tag/
--- work_item_watcher/work_item_activity (migration 0147_case_adjacent_rls.sql),
+-- work_item_watcher/work_item_activity (migration 100008_case_adjacent_rls.sql),
 -- all of which already got this treatment. pending_verification was the one
 -- table of this exact shape that never did -- a gap this migration closes,
 -- not a new design.
@@ -24,13 +43,14 @@
 -- Before this, none of POST /pending-verifications, POST /pending-verifications/
 -- search, or PATCH /pending-verifications/{id} had any project-membership
 -- enforcement of their own: Search was only ever incidentally safe because
--- its queries happen to join work_item (itself RLS-protected since 0147);
--- Verify's bare `UPDATE pending_verification ... WHERE id = $1` never joined
--- work_item at all, so RLS never entered into it; Create's only check was the
--- work_item_id foreign key, and Postgres foreign-key enforcement always
--- bypasses RLS by design (it would otherwise leak the existence of rows the
--- caller can't see). Confirmed live: a bare UPDATE against this table with no
--- caller identity set returned every row regardless of project.
+-- its queries happen to join work_item (itself RLS-protected since
+-- 100008_case_adjacent_rls.sql); Verify's bare `UPDATE pending_verification
+-- ... WHERE id = $1` never joined work_item at all, so RLS never entered
+-- into it; Create's only check was the work_item_id foreign key, and
+-- Postgres foreign-key enforcement always bypasses RLS by design (it would
+-- otherwise leak the existence of rows the caller can't see). Confirmed
+-- live: a bare UPDATE against this table with no caller identity set
+-- returned every row regardless of project.
 --
 -- No Go changes are needed for Search/Verify: pending_verification_repo.go
 -- already runs on *Scoped (converted when this lint test was first added --
@@ -44,6 +64,7 @@
 ALTER TABLE pending_verification ENABLE ROW LEVEL SECURITY;
 ALTER TABLE pending_verification FORCE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS pending_verification_visibility ON pending_verification;
 CREATE POLICY pending_verification_visibility ON pending_verification
   FOR SELECT
   USING (
@@ -52,7 +73,9 @@ CREATE POLICY pending_verification_visibility ON pending_verification
   );
 
 -- CreatePendingVerification is genuinely customer-facing (manual add), same
--- reasoning as work_item_write/case_write in 0147 -- not internal-only.
+-- reasoning as work_item_write/case_write in 100008_case_adjacent_rls.sql --
+-- not internal-only.
+DROP POLICY IF EXISTS pending_verification_write ON pending_verification;
 CREATE POLICY pending_verification_write ON pending_verification
   FOR INSERT WITH CHECK (
     current_setting('app.is_internal', true) = 'true'
@@ -62,8 +85,10 @@ CREATE POLICY pending_verification_write ON pending_verification
 -- VerifyPendingVerification ("Mark Verified") is also customer-facing --
 -- USING gates which existing row the caller may target, WITH CHECK gates the
 -- row's own work_item_id (unchanged by this UPDATE, but repeated per
--- work_item_update's own precedent in 0147: USING's unqualified work_item_id
--- would otherwise resolve to the OLD row and WITH CHECK's to the NEW one).
+-- work_item_update's own precedent in 100008_case_adjacent_rls.sql: USING's
+-- unqualified work_item_id would otherwise resolve to the OLD row and WITH
+-- CHECK's to the NEW one).
+DROP POLICY IF EXISTS pending_verification_update ON pending_verification;
 CREATE POLICY pending_verification_update ON pending_verification
   FOR UPDATE USING (
     current_setting('app.is_internal', true) = 'true'
@@ -77,7 +102,8 @@ CREATE POLICY pending_verification_update ON pending_verification
 -- Internal-only, not omitted entirely: nothing in this codebase deletes a
 -- pending_verification row today, but FORCE plus zero DELETE policy would
 -- also block legitimate internal/admin/test cleanup -- same sla_delete-style
--- reasoning used throughout this migration series (e.g. 0147's own
--- work_item_delete_internal_only).
+-- reasoning used throughout this migration series (e.g.
+-- 100008_case_adjacent_rls.sql's own work_item_delete_internal_only).
+DROP POLICY IF EXISTS pending_verification_delete_internal_only ON pending_verification;
 CREATE POLICY pending_verification_delete_internal_only ON pending_verification
   FOR DELETE USING (current_setting('app.is_internal', true) = 'true');

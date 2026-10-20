@@ -99,10 +99,10 @@ func (s *pendingVerificationService) CreatePendingVerification(ctx context.Conte
 
 	// AUTO_CLOSED claims the system itself closed the case -- only an
 	// internal caller may create one, or a registered customer could forge a
-	// false system-generated auto-closure entry (migration 0190's RLS policy
-	// only checks project membership, never added_reason). MANUAL stays open
-	// to any project member, gated below by the usual membership/feature
-	// checks only.
+	// false system-generated auto-closure entry (migration 100025's RLS
+	// policy only checks project membership, never added_reason). MANUAL
+	// stays open to any project member, gated below by the usual
+	// membership/feature checks only.
 	if isAutoClosed {
 		if err := RequireInternalCaller(ctx, s.access, "only internal users may add an auto-closed entry to Pending Verification"); err != nil {
 			return domain.CreatePendingVerificationResponse{}, err

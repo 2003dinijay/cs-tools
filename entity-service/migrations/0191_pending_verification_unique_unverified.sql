@@ -23,7 +23,7 @@
 -- the correct constraint, same reasoning as alert_incident_mapping's own
 -- plain UNIQUE on alert_number (migration 0103): enforce it once, at the
 -- table, so it protects every future call site too, not just today's one
--- (the same lesson migration 0190's own RLS policies on this table already
+-- (the same lesson migration 100025's own RLS policies on this table already
 -- apply).
 --
 -- Partial, not a plain UNIQUE on work_item_id: a case is allowed a second

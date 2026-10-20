@@ -165,7 +165,7 @@ func (r *pendingVerificationRepo) Create(ctx context.Context, req domain.CreateP
 	err := r.db.QueryRow(ctx, query, req.WorkItemID, req.AddedReason, req.PreviousStatus, req.AddedBy, req.Note).Scan(&id)
 	if err != nil {
 		// IsRLSPolicyViolation: the pending_verification_write WITH CHECK
-		// policy (migration 0190) rejects a work_item_id outside the
+		// policy (migration 100025) rejects a work_item_id outside the
 		// caller's own project scope -- mapped the same way as the
 		// foreign-key check just below (never reveal existence to a caller
 		// outside scope). In practice CreatePendingVerification's own
