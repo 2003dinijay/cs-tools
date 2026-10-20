@@ -18,6 +18,7 @@ package service
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
@@ -32,6 +33,7 @@ import (
 var changeRequestFilterFieldSet = map[string]bool{
 	"createdOn": true, "assignmentGroupId": true, "approval": true,
 	"assignedUserId": true, "tag": true,
+	"updatedOn": true, "plannedStartOn": true, "plannedEndOn": true, "type": true,
 }
 
 // changeRequestFilterOpSet is the exact set of ChangeRequestFieldFilter.Op
@@ -117,6 +119,13 @@ type parsedChangeRequestFilters struct {
 	// shown to a customer, and the ServiceNow data source has no tags.
 	Tags        []string
 	ExcludeTags []string
+	// UpdatedStart/UpdatedEnd, PlannedStartFrom/To and PlannedEndFrom/To are
+	// the "updatedOn" / "plannedStartOn" / "plannedEndOn" gte/lte bounds; Types
+	// is "type" in (domain change types). PostgreSQL only.
+	UpdatedStart, UpdatedEnd         *time.Time
+	PlannedStartFrom, PlannedStartTo *time.Time
+	PlannedEndFrom, PlannedEndTo     *time.Time
+	Types                            []domain.ChangeRequestType
 }
 
 // ParseChangeRequestFieldFilters translates the change-request-search wire
@@ -197,6 +206,46 @@ func ParseChangeRequestFieldFilters(filters []domain.ChangeRequestFieldFilter, n
 				return parsedChangeRequestFilters{}, err
 			}
 			p.AssignedUserIDs = append(p.AssignedUserIDs, f.Values...)
+
+		case "updatedOn", "plannedStartOn", "plannedEndOn":
+			if err := requireChangeRequestFilterValues(f); err != nil {
+				return parsedChangeRequestFilters{}, err
+			}
+			if len(f.Values) != 1 {
+				return parsedChangeRequestFilters{}, &apierror.ValidationError{Msg: fmt.Sprintf("filters: field %q accepts exactly one value", f.Field)}
+			}
+			t, err := parseChangeRequestFilterDate(f, f.Values[0], now)
+			if err != nil {
+				return parsedChangeRequestFilters{}, err
+			}
+			var from, to **time.Time
+			switch f.Field {
+			case "updatedOn":
+				from, to = &p.UpdatedStart, &p.UpdatedEnd
+			case "plannedStartOn":
+				from, to = &p.PlannedStartFrom, &p.PlannedStartTo
+			default: // plannedEndOn
+				from, to = &p.PlannedEndFrom, &p.PlannedEndTo
+			}
+			switch f.Op {
+			case "gte":
+				*from = t
+			case "lte":
+				*to = t
+			default:
+				return parsedChangeRequestFilters{}, badChangeRequestFilterCombo(f)
+			}
+
+		case "type":
+			if f.Op != "in" {
+				return parsedChangeRequestFilters{}, badChangeRequestFilterCombo(f)
+			}
+			if err := requireChangeRequestFilterValues(f); err != nil {
+				return parsedChangeRequestFilters{}, err
+			}
+			for _, v := range f.Values {
+				p.Types = append(p.Types, domain.ChangeRequestType(strings.ToLower(strings.TrimSpace(v))))
+			}
 
 		case "tag":
 			if err := requireChangeRequestFilterValues(f); err != nil {

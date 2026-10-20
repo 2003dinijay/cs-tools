@@ -441,10 +441,22 @@ func incidentWhereClause(f domain.SearchIncidentsFilters, priorities, states, se
 	if createdEndDate != nil {
 		add("wi.created_on <= $%d", *createdEndDate)
 	}
-	// assignmentGroupId/productName have no backing column or confirmed
-	// mapping -- deliberately not applied here, matching
-	// changeRequestWhereClause's own precedent for the identical class of
-	// gap. businessServiceId itself IS applied above, mapped to
+	if len(f.AssignmentGroupIDs) > 0 {
+		add("wi.assignment_group_id = ANY($%d::uuid[])", f.AssignmentGroupIDs)
+	}
+	if len(f.Categories) > 0 {
+		// Text, not an enum cast: a label the enum does not have matches
+		// nothing instead of failing the query.
+		add("inc.category::TEXT = ANY($%d::text[])", f.Categories)
+	}
+	if f.UpdatedStart != nil {
+		add("wi.updated_on >= $%d", *f.UpdatedStart)
+	}
+	if f.UpdatedEnd != nil {
+		add("wi.updated_on <= $%d", *f.UpdatedEnd)
+	}
+	// productName has no confirmed product-to-incident mapping -- deliberately
+	// not applied here. businessServiceId IS applied above, mapped to
 	// inc.service_id -- "business service" is ServiceNow's own name for
 	// what this schema calls "service" (service_offering.parent_id in
 	// service_offering_repo.go already makes the same identification).
@@ -459,7 +471,13 @@ const incidentSelectColumns = `
 	parent_wi.id, parent_wi.number,
 	parent_inc.id, parent_inc_wi.number,
 	ae.id, COALESCE(ae.name, NULLIF(TRIM(CONCAT_WS(' ', ae.first_name, ae.last_name)), '')),
-	wi.created_on, wi.created_by, wi.updated_on, wi.updated_by`
+	wi.created_on, wi.created_by, wi.updated_on, wi.updated_by,
+	sag.id, sag.name`
+
+// incidentSearchGroupJoin resolves the assignment group the search list shows
+// (its own alias: GetIncidentByID joins "group" as ag after incidentFromJoins).
+const incidentSearchGroupJoin = `
+	LEFT JOIN "group" sag ON sag.id = wi.assignment_group_id`
 
 func scanSearchIncidentView(row interface{ Scan(...any) error }) (domain.SearchIncidentView, error) {
 	var (
@@ -472,6 +490,7 @@ func scanSearchIncidentView(row interface{ Scan(...any) error }) (domain.SearchI
 		aeID, aeName                 *string
 		createdOn, updatedOn         time.Time
 		createdBy, updatedBy         string
+		agID, agName                 *string
 	)
 	if err := row.Scan(
 		&id, &number, &subject, &openedOn,
@@ -481,6 +500,7 @@ func scanSearchIncidentView(row interface{ Scan(...any) error }) (domain.SearchI
 		&parentIncID, &parentIncNumber,
 		&aeID, &aeName,
 		&createdOn, &createdBy, &updatedOn, &updatedBy,
+		&agID, &agName,
 	); err != nil {
 		return domain.SearchIncidentView{}, err
 	}
@@ -506,6 +526,9 @@ func scanSearchIncidentView(row interface{ Scan(...any) error }) (domain.SearchI
 	if aeID != nil {
 		v.AssignedTo = &domain.EntityRef{ID: *aeID, Name: stringOrEmpty(aeName)}
 	}
+	if agID != nil {
+		v.AssignmentGroup = &domain.EntityRef{ID: *agID, Name: stringOrEmpty(agName)}
+	}
 	return v, nil
 }
 
@@ -529,8 +552,8 @@ func (r *incidentRepo) SearchIncidents(ctx context.Context, req domain.SearchInc
 
 	countQuery := "SELECT COUNT(*) " + incidentFromJoins + " " + where
 	dataQuery := fmt.Sprintf(
-		`SELECT %s %s %s ORDER BY %s %s, wi.id LIMIT $%d OFFSET $%d`,
-		incidentSelectColumns, incidentFromJoins, where, sortCol, sortDir, len(args)+1, len(args)+2,
+		`SELECT %s %s %s %s ORDER BY %s %s, wi.id LIMIT $%d OFFSET $%d`,
+		incidentSelectColumns, incidentFromJoins, incidentSearchGroupJoin, where, sortCol, sortDir, len(args)+1, len(args)+2,
 	)
 	dataArgs := append(append([]any{}, args...), req.Pagination.Limit, req.Pagination.Offset)
 

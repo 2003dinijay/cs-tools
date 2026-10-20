@@ -4603,6 +4603,11 @@ type SearchChangeRequestsFilters struct {
 	//   - "tag" (op in / notIn): tag names, matched case-insensitively; in =
 	//     carries any of them, notIn = carries none. PostgreSQL only, internal
 	//     callers only.
+	//   - "updatedOn" / "plannedStartOn" / "plannedEndOn" (op gte/lte): same
+	//     value syntax as "createdOn", on the last update / planned start /
+	//     planned end. PostgreSQL only.
+	//   - "type" (op in): change types (standard, normal, emergency, ...).
+	//     PostgreSQL only.
 	// See service.ParseChangeRequestFieldFilters.
 	Filters []ChangeRequestFieldFilter `json:"filters,omitempty"`
 
@@ -4610,6 +4615,14 @@ type SearchChangeRequestsFilters struct {
 	// Filters before the repository runs. Never read from the wire.
 	Tags        []string `json:"-"`
 	ExcludeTags []string `json:"-"`
+	// The other list filters the PostgreSQL search applies from Filters, set by
+	// the service the same way. Never read from the wire.
+	AssignmentGroupIDs               []string            `json:"-"`
+	AssignedUserIDs                  []string            `json:"-"`
+	UpdatedStart, UpdatedEnd         *time.Time          `json:"-"`
+	PlannedStartFrom, PlannedStartTo *time.Time          `json:"-"`
+	PlannedEndFrom, PlannedEndTo     *time.Time          `json:"-"`
+	Types                            []ChangeRequestType `json:"-"`
 }
 
 // SearchChangeRequestsRequest is the input for a change request search operation.
@@ -6365,6 +6378,10 @@ type SearchIncidentsFilters struct {
 	//     ServiceNow's raw incident_state numeric keys.
 	//   - "assignmentGroupId" (op in): sys_user_group UUIDs.
 	//   - "businessServiceId" (op in): business_service sys_id UUIDs.
+	//   - "category" (op in): incident category labels (e.g. "SOFTWARE"),
+	//     case-insensitive. PostgreSQL only.
+	//   - "updatedOn" (op gte/lte): same syntax as "createdOn", on the
+	//     incident's last update. PostgreSQL only.
 	//   - "createdOn" (op gte/lte): RFC3339 timestamp, YYYY-MM-DD date, or a
 	//     relative-date placeholder (e.g. "__daysAgo:90__"), same syntax as
 	//     case search's own "createdOn" filter.
@@ -6392,6 +6409,15 @@ type SearchIncidentsFilters struct {
 	//     filter; a key with no state is a 400.
 	// See service.ParseIncidentFieldFilters.
 	Filters []IncidentFieldFilter `json:"filters,omitempty"`
+
+	// AssignmentGroupIDs / Categories / UpdatedStart / UpdatedEnd are the parsed
+	// "assignmentGroupId", "category" and "updatedOn" filters, set by the
+	// Postgres incident service from Filters before the repository runs. Never
+	// read from the wire.
+	AssignmentGroupIDs []string   `json:"-"`
+	Categories         []string   `json:"-"`
+	UpdatedStart       *time.Time `json:"-"`
+	UpdatedEnd         *time.Time `json:"-"`
 }
 
 // SearchIncidentsRequest is the input for POST /incidents/search.

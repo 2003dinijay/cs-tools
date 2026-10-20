@@ -178,7 +178,7 @@ func (s *changeRequestService) SearchChangeRequests(ctx context.Context, req dom
 		return domain.SearchChangeRequestsResponse{}, &apierror.ValidationError{Msg: "filters: createdOn lte bound must not be before its gte bound"}
 	}
 
-	if err := applyChangeRequestTagFilter(ctx, &req.Filters, parsed); err != nil {
+	if err := applyChangeRequestListFilters(ctx, &req.Filters, parsed); err != nil {
 		return domain.SearchChangeRequestsResponse{}, err
 	}
 
@@ -215,6 +215,36 @@ func applyChangeRequestTagFilter(ctx context.Context, f *domain.SearchChangeRequ
 	return nil
 }
 
+// applyChangeRequestListFilters hands every parsed filter the PostgreSQL search
+// applies to the repository, through the request's internal fields. The tag
+// filter is internal callers only (applyChangeRequestTagFilter).
+func applyChangeRequestListFilters(ctx context.Context, f *domain.SearchChangeRequestsFilters, parsed parsedChangeRequestFilters) error {
+	if err := applyChangeRequestTagFilter(ctx, f, parsed); err != nil {
+		return err
+	}
+	for _, t := range parsed.Types {
+		if !repository.IsFilterableChangeRequestType(t) {
+			return &apierror.ValidationError{Msg: "filters: type contains a value with no equivalent on this data source: " + string(t)}
+		}
+	}
+	for _, b := range [][2]*time.Time{
+		{parsed.UpdatedStart, parsed.UpdatedEnd},
+		{parsed.PlannedStartFrom, parsed.PlannedStartTo},
+		{parsed.PlannedEndFrom, parsed.PlannedEndTo},
+	} {
+		if b[0] != nil && b[1] != nil && b[1].Before(*b[0]) {
+			return &apierror.ValidationError{Msg: "filters: a lte bound must not be before its gte bound"}
+		}
+	}
+	f.AssignmentGroupIDs = parsed.AssignmentGroupIDs
+	f.AssignedUserIDs = parsed.AssignedUserIDs
+	f.UpdatedStart, f.UpdatedEnd = parsed.UpdatedStart, parsed.UpdatedEnd
+	f.PlannedStartFrom, f.PlannedStartTo = parsed.PlannedStartFrom, parsed.PlannedStartTo
+	f.PlannedEndFrom, f.PlannedEndTo = parsed.PlannedEndFrom, parsed.PlannedEndTo
+	f.Types = parsed.Types
+	return nil
+}
+
 // AggregateChangeRequests implements ChangeRequestService.
 func (s *changeRequestService) AggregateChangeRequests(ctx context.Context, req domain.AggregateChangeRequestsRequest) (domain.AggregateResponse, error) {
 	if err := validateChangeRequestFilters(req.Filters); err != nil {
@@ -232,7 +262,7 @@ func (s *changeRequestService) AggregateChangeRequests(ctx context.Context, req 
 		return domain.AggregateResponse{}, err
 	}
 
-	if err := applyChangeRequestTagFilter(ctx, &req.Filters, parsed); err != nil {
+	if err := applyChangeRequestListFilters(ctx, &req.Filters, parsed); err != nil {
 		return domain.AggregateResponse{}, err
 	}
 

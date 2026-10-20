@@ -21441,9 +21441,14 @@ components:
             - assignmentGroupId
             - approval
             - assignedUserId
+            - tag
+            - updatedOn
+            - plannedStartOn
+            - plannedEndOn
+            - type
         op:
           type: string
-          enum: [gte, lte, in, eq]
+          enum: [gte, lte, in, eq, notIn]
         values:
           type: array
           items:
@@ -21470,6 +21475,14 @@ components:
           field.
         - **assignedUserId** (in): assignee UUIDs to filter the change
           request's assigned user by.
+        - **tag** (in / notIn): tag names, case-insensitive; in = carries any
+          of them, notIn = carries none. PostgreSQL only; internal callers only
+          (403 otherwise).
+        - **updatedOn** / **plannedStartOn** / **plannedEndOn** (gte / lte):
+          same value syntax as createdOn, bounding the last update, the
+          planned start and the planned end. PostgreSQL only.
+        - **type** (in): change types (standard, normal, emergency, ...). A
+          type with no equivalent on the data source is a 400. PostgreSQL only.
 
     SearchChangeRequestsRequest:
       type: object
@@ -26246,6 +26259,8 @@ components:
             - productName
             - assignedUserId
             - incidentStateKeys
+            - category
+            - updatedOn
         op:
           type: string
           enum: [in, gte, lte, eq]
@@ -26285,6 +26300,10 @@ components:
           narrows rather than guarantees full coverage.
         - **assignedUserId** (in): assignee UUIDs to filter the incident's
           assigned user by.
+        - **category** (in): incident category labels (e.g. SOFTWARE),
+          case-insensitive. PostgreSQL only.
+        - **updatedOn** (gte/lte): same syntax as createdOn, on the incident's
+          last update. PostgreSQL only.
         - **incidentStateKeys** (in): one or more raw ServiceNow
           `incident_state` numeric keys, passed through unmapped (unlike
           state above, which translates the domain IncidentState enum to

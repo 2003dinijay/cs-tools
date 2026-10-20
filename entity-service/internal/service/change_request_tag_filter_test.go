@@ -103,3 +103,47 @@ func TestChangeRequestService_SearchByTag_RefusedForRestrictedCallers(t *testing
 		})
 	}
 }
+
+func TestParseChangeRequestFieldFilters_ListColumns(t *testing.T) {
+	p, err := ParseChangeRequestFieldFilters([]domain.ChangeRequestFieldFilter{
+		{Field: "updatedOn", Op: "gte", Values: []string{"2026-01-01"}},
+		{Field: "plannedStartOn", Op: "lte", Values: []string{"2026-02-01"}},
+		{Field: "plannedEndOn", Op: "gte", Values: []string{"2026-01-15"}},
+		{Field: "type", Op: "in", Values: []string{"Normal", " emergency "}},
+	}, time.Now())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.UpdatedStart == nil || p.PlannedStartTo == nil || p.PlannedEndFrom == nil {
+		t.Errorf("bounds not parsed: %+v", p)
+	}
+	if len(p.Types) != 2 || p.Types[0] != "normal" || p.Types[1] != "emergency" {
+		t.Errorf("Types = %v", p.Types)
+	}
+	if !changeRequestPostgresOnlyFilters(p) {
+		t.Error("the ServiceNow service must refuse these filters")
+	}
+}
+
+func TestChangeRequestService_ListFiltersReachTheRepository(t *testing.T) {
+	repo := &tagRecordingCRRepo{}
+	svc := NewChangeRequestService(repo, stubUserRepo{})
+	req := domain.SearchChangeRequestsRequest{Filters: domain.SearchChangeRequestsFilters{Filters: []domain.ChangeRequestFieldFilter{
+		{Field: "assignmentGroupId", Op: "in", Values: []string{"11111111-1111-1111-1111-111111111111"}},
+		{Field: "assignedUserId", Op: "in", Values: []string{"22222222-2222-2222-2222-222222222222"}},
+		{Field: "type", Op: "in", Values: []string{"standard"}},
+	}}}
+	if _, err := svc.SearchChangeRequests(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(repo.got.AssignmentGroupIDs) != 1 || len(repo.got.AssignedUserIDs) != 1 || len(repo.got.Types) != 1 {
+		t.Fatalf("repository got %+v", repo.got)
+	}
+
+	bad := domain.SearchChangeRequestsRequest{Filters: domain.SearchChangeRequestsFilters{Filters: []domain.ChangeRequestFieldFilter{
+		{Field: "type", Op: "in", Values: []string{"not-a-type"}},
+	}}}
+	if _, err := svc.SearchChangeRequests(context.Background(), bad); err == nil {
+		t.Fatal("an unknown type must be refused, not ignored")
+	}
+}

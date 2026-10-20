@@ -692,13 +692,43 @@ func changeRequestWhereClause(f domain.SearchChangeRequestsFilters, createdStart
 	if len(f.ExcludeTags) > 0 {
 		add("NOT EXISTS (SELECT 1 FROM work_item_tag wit JOIN tag t ON t.id = wit.tag_id WHERE wit.work_item_id = wi.id AND LOWER(t.name) = ANY($%d::text[]))", lowerAll(f.ExcludeTags))
 	}
-	// The parsed filter array's assignmentGroupId has a real backing column
-	// now (work_item.assignment_group_id, read as AssignedTeam -- see this
-	// file's own package doc comment), but filtering search results by it is
-	// still not wired here; out of scope for the read-side fix that added
-	// the column's own join.
+	// The assigned team (SRE Team) and engineer, read as AssignedTeam /
+	// AssignedEngineer.
+	if len(f.AssignmentGroupIDs) > 0 {
+		add("wi.assignment_group_id = ANY($%d::uuid[])", f.AssignmentGroupIDs)
+	}
+	if len(f.AssignedUserIDs) > 0 {
+		add("wi.assigned_to_id = ANY($%d::uuid[])", f.AssignedUserIDs)
+	}
+	for _, b := range []struct {
+		col string
+		at  *time.Time
+		op  string
+	}{
+		{"wi.updated_on", f.UpdatedStart, ">="}, {"wi.updated_on", f.UpdatedEnd, "<="},
+		{"cr.start_on", f.PlannedStartFrom, ">="}, {"cr.start_on", f.PlannedStartTo, "<="},
+		{"cr.end_on", f.PlannedEndFrom, ">="}, {"cr.end_on", f.PlannedEndTo, "<="},
+	} {
+		if b.at != nil {
+			add(b.col+" "+b.op+" $%d", *b.at)
+		}
+	}
+	if len(f.Types) > 0 {
+		models := make([]string, 0, len(f.Types))
+		for _, t := range f.Types {
+			models = append(models, changeRequestTypeToChangeModel[t])
+		}
+		add("cr.change_model::TEXT = ANY($%d::text[])", models)
+	}
 
 	return where, args
+}
+
+// IsFilterableChangeRequestType reports whether a change type has a
+// change_model on this data source (model / site_reliability_ops have none).
+func IsFilterableChangeRequestType(t domain.ChangeRequestType) bool {
+	_, ok := changeRequestTypeToChangeModel[t]
+	return ok
 }
 
 // changeRequestApprovalEnum maps ServiceNow's raw task.approval value
