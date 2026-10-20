@@ -40,12 +40,10 @@ export type RunbookUpdatedWithin = "all" | "7" | "30" | "90";
 export interface RunbookFilters {
   coverage: RunbookCoverage;
   alertCount: RunbookAlertCount;
-  /** "" for anyone. */
-  updatedBy: string;
   updatedWithin: RunbookUpdatedWithin;
 }
 
-export const DEFAULT_RUNBOOK_FILTERS: RunbookFilters = { coverage: "all", alertCount: "all", updatedBy: "", updatedWithin: "all" };
+export const DEFAULT_RUNBOOK_FILTERS: RunbookFilters = { coverage: "all", alertCount: "all", updatedWithin: "all" };
 
 /** How many filters differ from their default. */
 export function activeRunbookFilterCount(filters: RunbookFilters): number {
@@ -65,7 +63,6 @@ export function filterRunbooks(runbooks: Runbook[], search: string, filters: Run
     if (filters.coverage === "missing" && r.runbookUrl) return false;
     if (filters.alertCount === "single" && r.alerts.length !== 1) return false;
     if (filters.alertCount === "multiple" && r.alerts.length < 2) return false;
-    if (filters.updatedBy && r.updatedBy !== filters.updatedBy) return false;
     if (since !== undefined) {
       const updated = Date.parse(r.updatedOn);
       if (Number.isNaN(updated) || updated < since) return false;

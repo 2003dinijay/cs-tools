@@ -78,7 +78,6 @@ import {
 
 const DEFAULT_ROWS_PER_PAGE = 20;
 // A Select treats "" as no selection and leaves its label inside the box, so "Anyone" needs a real value.
-const ANY_EDITOR = "__anyone__";
 const ROWS_PER_PAGE_OPTIONS = [10, 20, 50];
 
 interface RunbookDialogState {
@@ -120,10 +119,6 @@ export default function RunbooksTab(): JSX.Element {
 
   const filtered = useMemo(() => filterRunbooks(runbooks, search, filters), [runbooks, search, filters]);
   const activeFilters = activeRunbookFilterCount(filters);
-  const editors = useMemo(
-    () => [...new Set(runbooks.map((r) => r.updatedBy).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
-    [runbooks],
-  );
 
   const setFilter = <K extends keyof RunbookFilters>(key: K, value: RunbookFilters[K]): void => {
     setFilters((f) => ({ ...f, [key]: value }));
@@ -294,7 +289,7 @@ export default function RunbooksTab(): JSX.Element {
           <>
             <Divider />
             <Grid container spacing={2} alignItems="center">
-              <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+              <Grid size={{ xs: 12, sm: 4 }}>
                 <FormControl fullWidth size="small">
                   <InputLabel id="runbook-filter-coverage-label">Runbook link</InputLabel>
                   <Select
@@ -310,7 +305,7 @@ export default function RunbooksTab(): JSX.Element {
                   </Select>
                 </FormControl>
               </Grid>
-              <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+              <Grid size={{ xs: 12, sm: 4 }}>
                 <FormControl fullWidth size="small">
                   <InputLabel id="runbook-filter-alerts-label">Alerts</InputLabel>
                   <Select
@@ -326,26 +321,7 @@ export default function RunbooksTab(): JSX.Element {
                   </Select>
                 </FormControl>
               </Grid>
-              <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-                <FormControl fullWidth size="small">
-                  <InputLabel id="runbook-filter-updated-by-label">Last updated by</InputLabel>
-                  <Select
-                    labelId="runbook-filter-updated-by-label"
-                    id="runbook-filter-updated-by"
-                    label="Last updated by"
-                    value={filters.updatedBy || ANY_EDITOR}
-                    onChange={(e) => setFilter("updatedBy", e.target.value === ANY_EDITOR ? "" : e.target.value)}
-                  >
-                    <MenuItem value={ANY_EDITOR}>Anyone</MenuItem>
-                    {editors.map((who) => (
-                      <MenuItem key={who} value={who}>
-                        {who}
-                      </MenuItem>
-                    ))}
-                  </Select>
-                </FormControl>
-              </Grid>
-              <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+              <Grid size={{ xs: 12, sm: 4 }}>
                 <FormControl fullWidth size="small">
                   <InputLabel id="runbook-filter-updated-within-label">Last updated</InputLabel>
                   <Select
@@ -461,10 +437,10 @@ export default function RunbooksTab(): JSX.Element {
                       )}
                     </TableCell>
                     <TableCell>
-                      <WhenAndWho on={rb.createdOn} by={rb.createdBy} />
+                      <RunbookDate on={rb.createdOn} />
                     </TableCell>
                     <TableCell>
-                      <WhenAndWho on={rb.updatedOn} by={rb.updatedBy} />
+                      <RunbookDate on={rb.updatedOn} />
                     </TableCell>
                     {canWrite && (
                       <TableCell align="right">
@@ -608,23 +584,16 @@ interface RunbookDialogProps {
   onClose: () => void;
 }
 
-/** A date, with who did it underneath and the full date and time on hover. */
-function WhenAndWho({ on, by }: { on: string; by: string }): JSX.Element {
+/** A date, with the full date and time on hover. */
+function RunbookDate({ on }: { on: string }): JSX.Element {
   const date = formatBackendTimestampForDisplay(on, { month: "short", day: "numeric", year: "numeric" });
   const full = formatBackendTimestampForDisplay(on, { dateStyle: "medium", timeStyle: "short" });
   return (
-    <Box sx={{ minWidth: 0 }}>
-      <Tooltip title={full ?? ""}>
-        <Typography variant="body2" component="span">
-          {date ?? "—"}
-        </Typography>
-      </Tooltip>
-      {by && (
-        <Typography variant="caption" color="text.secondary" component="div" noWrap title={by}>
-          {by}
-        </Typography>
-      )}
-    </Box>
+    <Tooltip title={full ?? ""}>
+      <Typography variant="body2" component="span">
+        {date ?? "—"}
+      </Typography>
+    </Tooltip>
   );
 }
 
