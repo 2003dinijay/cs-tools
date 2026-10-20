@@ -123,10 +123,10 @@ func TestRunbookIntegration_MigrationsNumberEachEntryOldestFirst(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("got %d runbooks, want 2", len(got))
 	}
-	if got[0].Number != "RB0000001" || got[0].RunbookURL != nil || !reflect.DeepEqual(got[0].Alerts, []string{"JVM Heap"}) {
-		t.Fatalf("first = %+v", got[0])
+	if got[0].Number != "RB0000002" || got[0].RunbookURL == nil || !reflect.DeepEqual(got[0].Alerts, []string{"gw-5xx"}) {
+		t.Fatalf("first (newest) = %+v", got[0])
 	}
-	if got[1].Number != "RB0000002" || got[1].RunbookURL == nil || !reflect.DeepEqual(got[1].Alerts, []string{"gw-5xx"}) {
+	if got[1].Number != "RB0000001" || got[1].RunbookURL != nil || !reflect.DeepEqual(got[1].Alerts, []string{"JVM Heap"}) {
 		t.Fatalf("second = %+v", got[1])
 	}
 	var hasName bool
@@ -198,11 +198,11 @@ func TestRunbookIntegration_ImportMatchesTheRunbookOfTheFirstListedAlert(t *test
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(got) != 2 || got[0].ID != gw.ID || got[0].RunbookURL == nil || !reflect.DeepEqual(got[0].Alerts, []string{"GW-5XX"}) {
+	if len(got) != 2 || got[1].ID != gw.ID || got[1].RunbookURL == nil || !reflect.DeepEqual(got[1].Alerts, []string{"GW-5XX"}) {
 		t.Fatalf("the first entry must update %s, got %+v", gw.Number, got)
 	}
-	if got[1].Number != "RB0000002" || !reflect.DeepEqual(got[1].Alerts, []string{"db-latency", "gw-latency"}) {
-		t.Fatalf("the second entry must be a new runbook, got %+v", got[1])
+	if got[0].Number != "RB0000002" || !reflect.DeepEqual(got[0].Alerts, []string{"db-latency", "gw-latency"}) {
+		t.Fatalf("the second entry must be a new runbook, listed first, got %+v", got[0])
 	}
 }
 

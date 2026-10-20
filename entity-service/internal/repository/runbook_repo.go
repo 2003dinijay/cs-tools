@@ -29,7 +29,7 @@ import (
 
 // RunbookRepository reads and writes the runbook catalog (migrations 0241-0243).
 type RunbookRepository interface {
-	// List is every runbook with its alerts, ordered by number.
+	// List is every runbook with its alerts, newest number first.
 	List(ctx context.Context) ([]domain.Runbook, error)
 	// Create adds a runbook with the next number; a ConflictError when one of its alerts is taken.
 	Create(ctx context.Context, actor string, req domain.SaveRunbookRequest) (domain.Runbook, error)
@@ -68,7 +68,7 @@ func scanRunbook(row pgx.Row) (domain.Runbook, error) {
 }
 
 func (r *runbookRepo) List(ctx context.Context) ([]domain.Runbook, error) {
-	rows, err := r.db.Query(ctx, runbookSelect+` ORDER BY r.number`)
+	rows, err := r.db.Query(ctx, runbookSelect+` ORDER BY length(r.number) DESC, r.number DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("list runbooks: %w", err)
 	}

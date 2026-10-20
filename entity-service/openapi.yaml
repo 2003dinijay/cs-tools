@@ -9455,7 +9455,7 @@ paths:
     get:
       summary: List the runbook catalog.
       description: >
-        Every runbook with its number, link and alert names, ordered by number. The
+        Every runbook with its number, link and alert names, newest number first. The
         portal shows an incident's runbook in its Related tab: the runbook
         holding the longest alert name the incident's subject contains,
         ignoring case. Internal callers only.
