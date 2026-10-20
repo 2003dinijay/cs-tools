@@ -833,7 +833,7 @@ function RunbookDialog({ editing, existing, onClose }: RunbookDialogProps): JSX.
   };
 
   return (
-    <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
+    <Dialog open onClose={onClose} maxWidth="md" fullWidth>
       <DialogTitle>{editing ? `Edit ${editing.number}` : "Add runbook"}</DialogTitle>
       <DialogContent sx={{ display: "flex", flexDirection: "column", gap: 2, pt: "8px !important" }}>
         <TextField
