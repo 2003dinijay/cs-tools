@@ -4600,8 +4600,16 @@ type SearchChangeRequestsFilters struct {
 	//     "rejected". Distinct from approvedBy/approvedOn on
 	//     ChangeRequestDetail, which are derived from a narrower
 	//     Customer-Approval-stage record, not this CR-wide field.
+	//   - "tag" (op in / notIn): tag names, matched case-insensitively; in =
+	//     carries any of them, notIn = carries none. PostgreSQL only, internal
+	//     callers only.
 	// See service.ParseChangeRequestFieldFilters.
 	Filters []ChangeRequestFieldFilter `json:"filters,omitempty"`
+
+	// Tags / ExcludeTags are the parsed "tag" filter, set by the service from
+	// Filters before the repository runs. Never read from the wire.
+	Tags        []string `json:"-"`
+	ExcludeTags []string `json:"-"`
 }
 
 // SearchChangeRequestsRequest is the input for a change request search operation.

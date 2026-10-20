@@ -684,6 +684,14 @@ func changeRequestWhereClause(f domain.SearchChangeRequestsFilters, createdStart
 	if approval != nil {
 		add("cr.approval = $%d::change_request_approval_enum", changeRequestApprovalEnum(*approval))
 	}
+	// tag: the case search's own predicate (case_field_predicates.go), on the
+	// change request's work item. in = carries any of the names, notIn = none.
+	if len(f.Tags) > 0 {
+		add("EXISTS (SELECT 1 FROM work_item_tag wit JOIN tag t ON t.id = wit.tag_id WHERE wit.work_item_id = wi.id AND LOWER(t.name) = ANY($%d::text[]))", lowerAll(f.Tags))
+	}
+	if len(f.ExcludeTags) > 0 {
+		add("NOT EXISTS (SELECT 1 FROM work_item_tag wit JOIN tag t ON t.id = wit.tag_id WHERE wit.work_item_id = wi.id AND LOWER(t.name) = ANY($%d::text[]))", lowerAll(f.ExcludeTags))
+	}
 	// The parsed filter array's assignmentGroupId has a real backing column
 	// now (work_item.assignment_group_id, read as AssignedTeam -- see this
 	// file's own package doc comment), but filtering search results by it is

@@ -178,6 +178,10 @@ func (s *changeRequestService) SearchChangeRequests(ctx context.Context, req dom
 		return domain.SearchChangeRequestsResponse{}, &apierror.ValidationError{Msg: "filters: createdOn lte bound must not be before its gte bound"}
 	}
 
+	if err := applyChangeRequestTagFilter(ctx, &req.Filters, parsed); err != nil {
+		return domain.SearchChangeRequestsResponse{}, err
+	}
+
 	views, total, err := s.repo.SearchChangeRequests(ctx, req, parsed.CreatedStartDate, parsed.CreatedEndDate, parsed.Approval, parsed.AssignmentGroupIDs)
 	if err != nil {
 		return domain.SearchChangeRequestsResponse{}, err
@@ -193,6 +197,24 @@ func (s *changeRequestService) SearchChangeRequests(ctx context.Context, req dom
 
 const defaultChangeRequestMaxGroups = 10
 
+// applyChangeRequestTagFilter hands the parsed "tag" filter to the repository
+// (through the request's internal Tags / ExcludeTags). Tags are staff
+// bookkeeping a customer never sees (GetChangeRequestByID leaves them null for a
+// restricted caller), so filtering by them is refused for anyone but an
+// Unrestricted caller: a customer's result would otherwise tell them which tags
+// their change requests carry.
+func applyChangeRequestTagFilter(ctx context.Context, f *domain.SearchChangeRequestsFilters, parsed parsedChangeRequestFilters) error {
+	if len(parsed.Tags) == 0 && len(parsed.ExcludeTags) == 0 {
+		return nil
+	}
+	if scope, ok := repository.CallerIdentityFromContext(ctx); !ok || !scope.Unrestricted {
+		return &apierror.ForbiddenError{Msg: "filters: field \"tag\" is only available to internal callers"}
+	}
+	f.Tags = parsed.Tags
+	f.ExcludeTags = parsed.ExcludeTags
+	return nil
+}
+
 // AggregateChangeRequests implements ChangeRequestService.
 func (s *changeRequestService) AggregateChangeRequests(ctx context.Context, req domain.AggregateChangeRequestsRequest) (domain.AggregateResponse, error) {
 	if err := validateChangeRequestFilters(req.Filters); err != nil {
@@ -207,6 +229,10 @@ func (s *changeRequestService) AggregateChangeRequests(ctx context.Context, req 
 	}
 	parsed, err := ParseChangeRequestFieldFilters(req.Filters.Filters, time.Now().UTC())
 	if err != nil {
+		return domain.AggregateResponse{}, err
+	}
+
+	if err := applyChangeRequestTagFilter(ctx, &req.Filters, parsed); err != nil {
 		return domain.AggregateResponse{}, err
 	}
 

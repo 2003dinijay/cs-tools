@@ -303,6 +303,9 @@ func (s *snChangeRequestService) SearchChangeRequests(ctx context.Context, req d
 	if err != nil {
 		return domain.SearchChangeRequestsResponse{}, err
 	}
+	if len(parsedFilters.Tags) > 0 || len(parsedFilters.ExcludeTags) > 0 {
+		return domain.SearchChangeRequestsResponse{}, &apierror.ValidationError{Msg: "filters: field \"tag\" is not supported by this data source"}
+	}
 	if parsedFilters.CreatedEndDate != nil && parsedFilters.CreatedStartDate != nil &&
 		parsedFilters.CreatedEndDate.Before(*parsedFilters.CreatedStartDate) {
 		return domain.SearchChangeRequestsResponse{}, &apierror.ValidationError{Msg: "createdOn: lte value must not be before gte value"}
@@ -485,6 +488,9 @@ func (s *snChangeRequestService) AggregateChangeRequests(ctx context.Context, re
 	parsedFilters, err := ParseChangeRequestFieldFilters(req.Filters.Filters, time.Now().UTC())
 	if err != nil {
 		return domain.AggregateResponse{}, err
+	}
+	if len(parsedFilters.Tags) > 0 || len(parsedFilters.ExcludeTags) > 0 {
+		return domain.AggregateResponse{}, &apierror.ValidationError{Msg: "filters: field \"tag\" is not supported by this data source"}
 	}
 	if parsedFilters.CreatedEndDate != nil && parsedFilters.CreatedStartDate != nil &&
 		parsedFilters.CreatedEndDate.Before(*parsedFilters.CreatedStartDate) {
