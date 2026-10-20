@@ -249,6 +249,9 @@ describe("RunbooksTab", () => {
     expect(within(dialog).getByText("Alerts in the merged runbook (3)")).toBeInTheDocument();
     expect(within(dialog).getByLabelText(/^Name/)).toHaveValue("Gateway");
     expect(within(dialog).getByRole("radio", { name: /docs\.example\.com\/gw/ })).toBeChecked();
+    const linkOption = within(dialog).getByRole("link", { name: "https://docs.example.com/gw" });
+    expect(linkOption).toHaveAttribute("href", "https://docs.example.com/gw");
+    expect(linkOption).toHaveAttribute("target", "_blank");
     type(within(dialog).getByLabelText(/^Name/), "Platform");
     fireEvent.click(within(dialog).getByRole("button", { name: "Merge" }));
     expect(mocks.merge).toHaveBeenCalledWith(

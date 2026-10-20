@@ -777,7 +777,9 @@ function MergeRunbooksDialog({
                 control={<Radio size="small" />}
                 label={
                   <Typography variant="body2" sx={{ wordBreak: "break-all" }}>
-                    {l.url}{" "}
+                    <Link href={l.url} target="_blank" rel="noopener noreferrer">
+                      {l.url}
+                    </Link>{" "}
                     <Typography component="span" variant="caption" color="text.secondary">
                       (used by {l.count} of {selected.length})
                     </Typography>
