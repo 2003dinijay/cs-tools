@@ -174,12 +174,13 @@ func (s *pgProjectUpdateService) resolveUpdatedBy(ctx context.Context) (string, 
 
 // hasStoredProjectFields reports whether req sets a field Postgres stores.
 func hasStoredProjectFields(req domain.ProjectUpdateRequest) bool {
-	return hasSNMirrorableProjectFields(req) || req.ClosureState != nil
+	return hasSNMirrorableProjectFields(req) || req.ClosureState != nil ||
+		req.OnboardingStatus != nil || req.OnboardingOwner != nil
 }
 
 // hasSNMirrorableProjectFields reports whether req sets a field the
 // ServiceNow dual-write mirror (snProjectUpdateService) knows how to carry.
-// ClosureState is deliberately excluded: it's a direct, Postgres-only
+// ClosureState, OnboardingStatus and OnboardingOwner are deliberately excluded: it's a direct, Postgres-only
 // override with no ServiceNow equivalent (see
 // domain.ProjectUpdateRequest.ClosureState's own doc comment), so a request
 // that sets only ClosureState has nothing to mirror -- dispatching one would
