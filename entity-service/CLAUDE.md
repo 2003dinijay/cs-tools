@@ -8101,6 +8101,15 @@ because only one of them carries what each endpoint needs:**
   or 2) only has something to filter against there.
   `instanceDataSourceEnum` (`instance_service.go`) maps 1/2 to the enum
   labels; an unrecognized value is a `ValidationError`, not a silent no-op.
+- `POST /deployed-products/{id}/metrics/search` (the Core Usage chart on the
+  deployed-product usage pages) draws a node's cores from either source: a `CORES` row
+  of `daily_usage_summary` (offline reports, products that send cores as a usage count),
+  or `deployment_information.core_count` (the host snapshot every live heartbeat's info
+  call carries, and what `SearchInstanceMetricsStats` already reads). A `CORES` row wins
+  for its node and day; a snapshot fills the days without one, one value per node per
+  day (its latest report that day). It used to read only the usage rows, so telemetry
+  that reports cores through the snapshot never drew a chart here although the instance
+  stats showed it; the CSM portal's Core Usage panel was empty for it.
 - `SearchInstanceMetricsStats` has the same `DataSource` field on its
   request type (`InstanceStatsFilters` is shared), but `deployment_information`
   has no data-source column at all -- there's nothing to filter on Postgres.

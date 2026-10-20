@@ -42,7 +42,8 @@ type DeployedProductRepository interface {
 	SearchDeployedProducts(ctx context.Context, req domain.SearchDeployedProductsRequest) ([]domain.DeployedProductView, int, error)
 
 	// SearchDeployedProductMetrics returns per-day CORES readings (from
-	// daily_usage_summary, migration 0054) for every deployment_node resolved
+	// daily_usage_summary, migration 0054, with deployment_information's
+	// core_count filling the days that have none) for every deployment_node resolved
 	// to the given deployed product and deployment. A NotFoundError is
 	// returned if the deployed product doesn't exist or isn't linked to
 	// deploymentID.
@@ -226,14 +227,41 @@ func (r *deployedProductRepo) SearchDeployedProductMetrics(ctx context.Context, 
 		nodeNameByID[n.ID] = n.Name
 	}
 
+	// A node's core count reaches Postgres two ways: as a CORES row of
+	// daily_usage_summary (a product that reports it as a usage count, or an
+	// offline report), and as core_count on its deployment_information
+	// snapshot (what every live heartbeat's host info carries, and the only
+	// place the instance-level metrics stats read). The chart used to read only
+	// the first, so telemetry that reports cores through the host snapshot never
+	// drew a Core Usage chart here although the instance stats showed it.
+	// A CORES usage row still wins for its node and day; a snapshot fills the
+	// days that have none, one value per node per day (its latest report that
+	// day), exactly as SearchInstanceMetricsStats counts them.
 	rows, err := r.db.Query(ctx, `
-		SELECT dus.summary_date, dus.deployment_node_id, SUM(dus.value)::int
-		FROM daily_usage_summary dus
-		WHERE dus.deployment_node_id = ANY($1::uuid[])
-		AND dus.count_type = 'CORES'
-		AND dus.summary_date BETWEEN $2::date AND $3::date
-		GROUP BY dus.summary_date, dus.deployment_node_id
-		ORDER BY dus.summary_date`,
+		WITH daily AS (
+			SELECT dus.summary_date AS day, dus.deployment_node_id AS node_id, SUM(dus.value)::int AS cores
+			FROM daily_usage_summary dus
+			WHERE dus.deployment_node_id = ANY($1::uuid[])
+			AND dus.count_type = 'CORES'
+			AND dus.summary_date BETWEEN $2::date AND $3::date
+			GROUP BY dus.summary_date, dus.deployment_node_id
+		), snapshot AS (
+			SELECT DISTINCT ON (dn.id, COALESCE(di.payload_updated_on, di.payload_created_on)::date)
+			       COALESCE(di.payload_updated_on, di.payload_created_on)::date AS day,
+			       dn.id AS node_id, di.core_count AS cores
+			FROM deployment_node dn
+			JOIN deployment_information di ON di.node_id = dn.node_id
+			WHERE dn.id = ANY($1::uuid[])
+			AND di.core_count IS NOT NULL
+			AND COALESCE(di.payload_updated_on, di.payload_created_on)::date BETWEEN $2::date AND $3::date
+			ORDER BY dn.id, COALESCE(di.payload_updated_on, di.payload_created_on)::date,
+			         COALESCE(di.payload_updated_on, di.payload_created_on) DESC
+		)
+		SELECT day, node_id, cores FROM daily
+		UNION ALL
+		SELECT s.day, s.node_id, s.cores FROM snapshot s
+		WHERE NOT EXISTS (SELECT 1 FROM daily d WHERE d.day = s.day AND d.node_id = s.node_id)
+		ORDER BY day`,
 		nodeIDs, startDate, endDate,
 	)
 	if err != nil {
