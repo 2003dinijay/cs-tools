@@ -296,6 +296,17 @@ export interface PagingPhone {
   lastTestStatus?: PagingTestStatus;
 }
 
+/** The number a test call rings for a person -- the one Case Alerts dials
+ *  from CSM -- and its last test. Sent only to a reader who may test it. */
+export interface PagingTestCall {
+  /** "+94•••••123" -- the only form the page shows. */
+  masked: string;
+  /** "profile": the number on their own profile; "paging": their paging-only number. */
+  source: "profile" | "paging";
+  lastTestAt?: string;
+  lastTestStatus?: PagingTestStatus;
+}
+
 /** One membership as the Case Paging tab shows it. */
 export interface PagingChainMember {
   membershipId: string;
@@ -310,11 +321,17 @@ export interface PagingChainMember {
   role: string;
   /** 1, 2 or 3 for the team's 1st, 2nd or 3rd responder (Tier 1); 0 for none. */
   responderRank: number;
-  /** Whether the reader may add, change, remove or test this person's paging number. */
+  /** Whether the reader may change or remove this person's paging number. */
   canEditPhone?: boolean;
   pagingPhone?: PagingPhone | null;
   /** Whether their profile has a mobile number; absent when it could not be checked. */
   hasProfilePhone?: boolean;
+  /** Whether the reader may place a test call to this person (a portal admin,
+   *  or a rota admin of the person's family). */
+  canTestCall?: boolean;
+  /** What a test call would ring; absent when the reader may not test, or
+   *  CSM holds no number for the person. */
+  testCall?: PagingTestCall | null;
 }
 
 /** What the reader may change; the server checks every edit again. */
