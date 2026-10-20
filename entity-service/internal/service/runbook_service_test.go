@@ -46,12 +46,12 @@ func (r *recordingRunbookRepo) Import(_ context.Context, _ string, reqs []domain
 func TestRunbookCreate_TrimsAndDropsBlankAndRepeatedAlerts(t *testing.T) {
 	repo := &recordingRunbookRepo{}
 	_, err := NewRunbookService(repo).Create(context.Background(), domain.SaveRunbookRequest{
-		Name: "  Gateway ", RunbookURL: strp("  "), Alerts: []string{" Alert 1 ", "", "alert 1", "Alert 2"},
+		RunbookURL: strp("  "), Alerts: []string{" Alert 1 ", "", "alert 1", "Alert 2"},
 	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	want := domain.SaveRunbookRequest{Name: "Gateway", Alerts: []string{"Alert 1", "Alert 2"}}
+	want := domain.SaveRunbookRequest{Alerts: []string{"Alert 1", "Alert 2"}}
 	if !reflect.DeepEqual(repo.created, want) {
 		t.Fatalf("saved %+v, want %+v", repo.created, want)
 	}
@@ -63,10 +63,9 @@ func TestRunbookCreate_Refusals(t *testing.T) {
 		long[i] = 'a'
 	}
 	for name, req := range map[string]domain.SaveRunbookRequest{
-		"no name":       {Alerts: []string{"a"}},
-		"no alert":      {Name: "N", Alerts: []string{" "}},
-		"long alert":    {Name: "N", Alerts: []string{string(long)}},
-		"relative link": {Name: "N", Alerts: []string{"a"}, RunbookURL: strp("docs/a")},
+		"no alert":      {Alerts: []string{" "}},
+		"long alert":    {Alerts: []string{string(long)}},
+		"relative link": {Alerts: []string{"a"}, RunbookURL: strp("docs/a")},
 	} {
 		var ve *apierror.ValidationError
 		if _, err := NewRunbookService(&recordingRunbookRepo{}).Create(context.Background(), req); !errors.As(err, &ve) {
@@ -78,16 +77,17 @@ func TestRunbookCreate_Refusals(t *testing.T) {
 func TestRunbookImport_LaterEntriesWin(t *testing.T) {
 	repo := &recordingRunbookRepo{}
 	_, err := NewRunbookService(repo).Import(context.Background(), domain.ImportRunbooksRequest{Runbooks: []domain.SaveRunbookRequest{
-		{Name: "Gateway", Alerts: []string{"gw-5xx", "shared"}},
-		{Name: "Latency", Alerts: []string{"SHARED", "db"}},
-		{Name: "gateway", Alerts: []string{"gw-5xx", "gw-timeout"}},
+		{Alerts: []string{"gw-5xx", "shared", "gw-old"}},
+		{Alerts: []string{"SHARED", "db"}},
+		{Alerts: []string{"GW-5XX", "gw-timeout"}},
 	}})
 	if err != nil {
 		t.Fatalf("Import: %v", err)
 	}
 	want := []domain.SaveRunbookRequest{
-		{Name: "gateway", Alerts: []string{"gw-5xx", "gw-timeout"}},
-		{Name: "Latency", Alerts: []string{"SHARED", "db"}},
+		{Alerts: []string{"gw-old"}},
+		{Alerts: []string{"SHARED", "db"}},
+		{Alerts: []string{"GW-5XX", "gw-timeout"}},
 	}
 	if !reflect.DeepEqual(repo.imported, want) {
 		t.Fatalf("imported %+v, want %+v", repo.imported, want)
@@ -97,8 +97,8 @@ func TestRunbookImport_LaterEntriesWin(t *testing.T) {
 func TestRunbookImport_RefusesAnEntryLeftWithoutAlerts(t *testing.T) {
 	repo := &recordingRunbookRepo{}
 	_, err := NewRunbookService(repo).Import(context.Background(), domain.ImportRunbooksRequest{Runbooks: []domain.SaveRunbookRequest{
-		{Name: "A", Alerts: []string{"x"}},
-		{Name: "B", Alerts: []string{"X"}},
+		{Alerts: []string{"x"}},
+		{Alerts: []string{"X"}},
 	}})
 	var ve *apierror.ValidationError
 	if !errors.As(err, &ve) || repo.imported != nil {
@@ -110,10 +110,9 @@ func TestRunbookMergeAndUnmerge_Refusals(t *testing.T) {
 	svc := NewRunbookService(&recordingRunbookRepo{})
 	id := "11111111-1111-4111-8111-111111111111"
 	for name, req := range map[string]domain.MergeRunbooksRequest{
-		"one runbook":   {RunbookIDs: []string{id, " " + id + " "}, Name: "N"},
-		"not an id":     {RunbookIDs: []string{id, "nope"}, Name: "N"},
-		"no name":       {RunbookIDs: []string{id, "22222222-2222-4222-8222-222222222222"}},
-		"relative link": {RunbookIDs: []string{id, "22222222-2222-4222-8222-222222222222"}, Name: "N", RunbookURL: strp("docs")},
+		"one runbook":   {RunbookIDs: []string{id, " " + id + " "}},
+		"not an id":     {RunbookIDs: []string{id, "nope"}},
+		"relative link": {RunbookIDs: []string{id, "22222222-2222-4222-8222-222222222222"}, RunbookURL: strp("docs")},
 	} {
 		var ve *apierror.ValidationError
 		if _, err := svc.Merge(context.Background(), req); !errors.As(err, &ve) {

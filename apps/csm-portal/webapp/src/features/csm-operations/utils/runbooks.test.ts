@@ -30,35 +30,35 @@ describe("parseRunbookImport", () => {
     expect(
       parseRunbookImport('{"Alert 1, Alert 2 ,alert 1": "https://docs.example.com/a", " Alert B ": ""}'),
     ).toEqual([
-      { name: "Alert 1", runbookUrl: "https://docs.example.com/a", alerts: ["Alert 1", "Alert 2"] },
-      { name: "Alert B", runbookUrl: null, alerts: ["Alert B"] },
+      { runbookUrl: "https://docs.example.com/a", alerts: ["Alert 1", "Alert 2"] },
+      { runbookUrl: null, alerts: ["Alert B"] },
     ]);
   });
 
-  it("reads a list of runbooks with a list or a comma-separated string of alerts", () => {
+  it("reads a list of runbooks with a list or a comma-separated string of alerts, ignoring a name", () => {
     expect(
       parseRunbookImport('[{"name": "Gateway", "runbookUrl": null, "alerts": ["a", "b"]}, {"alerts": "c, d"}]'),
     ).toEqual([
-      { name: "Gateway", runbookUrl: null, alerts: ["a", "b"] },
-      { name: "c", runbookUrl: null, alerts: ["c", "d"] },
+      { runbookUrl: null, alerts: ["a", "b"] },
+      { runbookUrl: null, alerts: ["c", "d"] },
     ]);
   });
 
   it("still reads an older list entry with one alertName", () => {
     expect(parseRunbookImport('[{"alertName": "A", "runbookUrl": null}]')).toEqual([
-      { name: "A", runbookUrl: null, alerts: ["A"] },
+      { runbookUrl: null, alerts: ["A"] },
     ]);
   });
 
   it("reads an older alertName with a comma as one alert, never splitting it", () => {
     expect(parseRunbookImport('[{"alertName": "CPU > 90%, prod", "runbookUrl": null}]')).toEqual([
-      { name: "CPU > 90%, prod", runbookUrl: null, alerts: ["CPU > 90%, prod"] },
+      { runbookUrl: null, alerts: ["CPU > 90%, prod"] },
     ]);
   });
 
   it("refuses bad JSON, entries with no alert and links that are not http(s)", () => {
     expect(() => parseRunbookImport("{")).toThrow("not valid JSON");
-    expect(() => parseRunbookImport('[{"name": "N", "alerts": [" "]}]')).toThrow("at least one alert name");
+    expect(() => parseRunbookImport('[{"alerts": [" "]}]')).toThrow("Entry 1 needs at least one alert name");
     expect(() => parseRunbookImport('{" , ": "https://x.example"}')).toThrow("at least one alert name");
     expect(() => parseRunbookImport('{"A": "javascript:alert(1)"}')).toThrow("http(s)");
   });
@@ -72,16 +72,16 @@ describe("cleanAlertNames", () => {
 
 describe("findRunbookForIncident", () => {
   const catalog = [
-    { name: "Gateway", runbookUrl: "https://docs.example.com/gw", alerts: ["gw-5xx", "gw-latency"] },
-    { name: "Gateway prod", runbookUrl: "https://docs.example.com/long", alerts: ["gw-5xx-prod-001"] },
-    { name: "JVM", runbookUrl: null, alerts: ["JVM Heap"] },
+    { number: "RB0000001", runbookUrl: "https://docs.example.com/gw", alerts: ["gw-5xx", "gw-latency"] },
+    { number: "RB0000002", runbookUrl: "https://docs.example.com/long", alerts: ["gw-5xx-prod-001"] },
+    { number: "RB0000003", runbookUrl: null, alerts: ["JVM Heap"] },
   ];
 
   it("picks the runbook holding the longest alert name the subject contains, ignoring case", () => {
     const match = findRunbookForIncident(catalog, "Fired GW-5XX-PROD-001 on log");
-    expect(match?.runbook.name).toBe("Gateway prod");
+    expect(match?.runbook.number).toBe("RB0000002");
     expect(match?.alertName).toBe("gw-5xx-prod-001");
-    expect(findRunbookForIncident(catalog, "gw-latency spike")?.runbook.name).toBe("Gateway");
+    expect(findRunbookForIncident(catalog, "gw-latency spike")?.runbook.number).toBe("RB0000001");
   });
 
   it("finds a runbook without a link, and nothing for an unknown subject", () => {
@@ -94,7 +94,7 @@ describe("filterRunbooks", () => {
   const now = Date.parse("2026-10-20T00:00:00Z");
   const rb = (id: string, over: Partial<Runbook>): Runbook => ({
     id,
-    name: id,
+    number: `RB-${id}`,
     runbookUrl: null,
     alerts: ["a"],
     createdOn: "2026-01-01T00:00:00Z",
@@ -122,7 +122,8 @@ describe("filterRunbooks", () => {
     expect(ids({ coverage: "linked", alertCount: "single" })).toEqual(["disk"]);
   });
 
-  it("searches name, alert names and link together with the filters", () => {
+  it("searches number, alert names and link together with the filters", () => {
+    expect(ids({}, "rb-jvm")).toEqual(["jvm"]);
     expect(ids({}, "LATENCY")).toEqual(["gw"]);
     expect(ids({}, "d/disk")).toEqual(["disk"]);
     expect(ids({ coverage: "missing" }, "gw")).toEqual([]);

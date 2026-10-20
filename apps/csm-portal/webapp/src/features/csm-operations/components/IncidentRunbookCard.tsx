@@ -50,6 +50,9 @@ export default function IncidentRunbookCard({ subject }: IncidentRunbookCardProp
   } else {
     body = (
       <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
+        <Typography variant="body2" sx={{ fontFamily: "monospace" }}>
+          {match.runbook.number}
+        </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ wordBreak: "break-word" }}>
           Matched alert: <Box component="code">{match.alertName}</Box>
         </Typography>
