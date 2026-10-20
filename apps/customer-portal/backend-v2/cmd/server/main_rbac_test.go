@@ -53,7 +53,40 @@ func TestServerRBACRouteGating(t *testing.T) {
 		roles        []string
 		wantHTTPCode int
 	}{
-		// Cases
+		// Cases. Pending Verification's three routes
+		// (POST /pending-verifications, POST /pending-verifications/search,
+		// PATCH /pending-verifications/{id}) are gated on cases:create/read/
+		// update respectively -- the same module every other case-scoped
+		// route uses, including customer-facing ones (a customer both
+		// manually flags and verifies their own entries).
+		{
+			name:         "CustomerUser can create a pending-verification entry",
+			module:       middleware.ModuleCases,
+			action:       middleware.ActionCreate,
+			roles:        []string{"sn_customerservice.customer"},
+			wantHTTPCode: http.StatusOK,
+		},
+		{
+			name:         "CustomerUser can search pending-verification entries",
+			module:       middleware.ModuleCases,
+			action:       middleware.ActionRead,
+			roles:        []string{"sn_customerservice.customer"},
+			wantHTTPCode: http.StatusOK,
+		},
+		{
+			name:         "CustomerUser can mark a pending-verification entry verified",
+			module:       middleware.ModuleCases,
+			action:       middleware.ActionUpdate,
+			roles:        []string{"sn_customerservice.customer"},
+			wantHTTPCode: http.StatusOK,
+		},
+		{
+			name:         "a caller with no recognized role cannot create a pending-verification entry",
+			module:       middleware.ModuleCases,
+			action:       middleware.ActionCreate,
+			roles:        []string{},
+			wantHTTPCode: http.StatusForbidden,
+		},
 		// Projects. PATCH /projects/{id} is gated on projects:update, which
 		// the specification restricts to the WSO2-side roles; every external
 		// role is read-only on Projects.

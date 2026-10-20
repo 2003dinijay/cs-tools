@@ -62,7 +62,6 @@ export default function SideBar({
   const usageMetricsEnabled =
     portalMetadata?.featureFlags?.usageMetricsEnabled === true;
 
-
   const projectTypeLabel =
     selectedProject?.type?.label ?? projectDetails?.type?.label;
   const isProjectTypeResolved =
@@ -150,7 +149,21 @@ export default function SideBar({
                 <Sidebar.ItemIcon>
                   <item.icon />
                 </Sidebar.ItemIcon>
-                <Sidebar.ItemLabel>{item.label}</Sidebar.ItemLabel>
+                <Sidebar.ItemLabel
+                  sx={{
+                    minWidth: "0px !important",
+                    flex: "1 1 auto",
+                    overflow: "hidden",
+                    "& .MuiListItemText-primary": {
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                      display: "block",
+                    },
+                  }}
+                >
+                  {item.label}
+                </Sidebar.ItemLabel>
               </Sidebar.Item>
             </Link>
           ))}

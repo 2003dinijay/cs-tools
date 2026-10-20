@@ -288,6 +288,17 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		alertIncidentMappingHandler = handler.NewAlertIncidentMappingHandler(service.NewAlertIncidentMappingService(alertIncidentMappingRepo))
 	}
 
+	// pending_verification has no ServiceNow equivalent either — same
+	// reasoning as sla_clocks/scheduled_task_run/event_publish_failures/
+	// alert_incident_mapping above, gated the same way: nil db means nil
+	// handler means the routes below are never registered, rather than
+	// panicking on a nil pool.
+	var pendingVerificationHandler *handler.PendingVerificationHandler
+	if db != nil {
+		pendingVerificationRepo := repository.NewPendingVerificationRepository(repository.NewScoped(db))
+		pendingVerificationHandler = handler.NewPendingVerificationHandler(service.NewPendingVerificationService(pendingVerificationRepo, accessSvc))
+	}
+
 	// announcement_requests has no ServiceNow equivalent either — same
 	// reasoning as sla_clocks/scheduled_task_run/alert_incident_mapping
 	// above, gated the same way: nil db means nil handler means the routes
@@ -667,13 +678,15 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// activeProjectUpdateSvc backs PATCH /projects/{id} on every data source
 	// -- see pgProjectUpdateService's own doc comment for exactly which
 	// fields the Postgres data sources accept (a subset of the ServiceNow
-	// contract). DATA_SOURCE=postgres-servicenow-dual-write also
-	// mirrors a successful write to ServiceNow, asynchronously, via
-	// snWritebackDispatcher -- plain DATA_SOURCE=postgres never touches
-	// ServiceNow at all (snWritebackDispatcher is nil in that mode, so the
-	// nil-check inside NewProjectUpdateServiceWithSNWriteback's caller here
-	// never fires for it). projectRepo/pgProjectSvc were already constructed
-	// above for GetProject/SearchProjects.
+	// contract, now including VerificationEnabled; unsupported fields are
+	// rejected with a ValidationError, not silently dropped).
+	// DATA_SOURCE=postgres-servicenow-dual-write also mirrors a successful
+	// write to ServiceNow, asynchronously, via snWritebackDispatcher --
+	// plain DATA_SOURCE=postgres never touches ServiceNow at all
+	// (snWritebackDispatcher is nil in that mode, so the nil-check inside
+	// NewProjectUpdateServiceWithSNWriteback's caller here never fires for
+	// it). projectRepo/pgProjectSvc were already constructed above for
+	// GetProject/SearchProjects.
 	var activeProjectUpdateSvc service.ProjectUpdateService
 	switch cfg.DataSource {
 	case config.DataSourceServiceNow:
@@ -1768,6 +1781,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	if slaStatusHandler != nil {
 		mux.HandleFunc("GET /sla-status", slaStatusHandler.SearchActiveSLAStatuses)
 		mux.HandleFunc("GET /sla-status/clock-state", slaStatusHandler.GetClockState)
+	}
+	if pendingVerificationHandler != nil {
+		mux.HandleFunc("POST /pending-verifications", pendingVerificationHandler.CreatePendingVerification)
+		mux.HandleFunc("POST /pending-verifications/search", pendingVerificationHandler.SearchPendingVerifications)
+		mux.HandleFunc("PATCH /pending-verifications/{id}", pendingVerificationHandler.VerifyPendingVerification)
 	}
 	if slaDurationPolicyHandler != nil {
 		mux.HandleFunc("GET /sla-duration-policy", slaDurationPolicyHandler.ListSLADurationPolicy)
