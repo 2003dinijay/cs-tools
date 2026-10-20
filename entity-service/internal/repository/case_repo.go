@@ -3526,6 +3526,19 @@ func buildCaseSearchWhere(req domain.SearchCasesRequest, scope SearchScope) (str
 		argIdx++
 	}
 
+	// accountId notIn: a case with no account satisfies it (it is in none of
+	// them), the same NULL reading projectId notIn has. Top level only:
+	// rejectUnsupportedOrGroupFields refuses it inside an anyOf branch.
+	if len(req.Parsed.ExcludeAccountIDs) > 0 {
+		where += fmt.Sprintf(" AND (wi.account_id IS NULL OR wi.account_id <> ALL($%d::uuid[]))", argIdx)
+		filterArgs = append(filterArgs, req.Parsed.ExcludeAccountIDs)
+		argIdx++
+	}
+	// assignedUserId isEmpty: no assigned engineer. Top level only, as above.
+	if req.Parsed.Unassigned {
+		where += " AND wi.assigned_to_id IS NULL"
+	}
+
 	// number/internalId: exact-match filters parsed by case_filters.go (see
 	// ParsedCaseFilters.Number/InternalID's own doc comments) but never
 	// actually applied here until now -- every by-number/by-internal-id
