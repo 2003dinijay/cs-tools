@@ -85,18 +85,6 @@ export function useImportRunbooks(): UseMutationResult<ImportRunbooksResult, Err
   );
 }
 
-export interface MergeRunbooksInput {
-  /** The runbook to keep first, then the runbooks merged into it. */
-  runbookIds: string[];
-  runbookUrl: string | null;
-}
-
-/** Moves every alert of the other runbooks into the first one and removes the others. */
-export function useMergeRunbooks(): UseMutationResult<Runbook, Error, MergeRunbooksInput> {
-  const api = useBackendApi();
-  return useRunbookMutation((input: MergeRunbooksInput) => api.post<MergeRunbooksInput, Runbook>(`${BASE}/merge`, input));
-}
-
 /** Moves each alert out of the runbook into a new runbook of its own, with the same link. */
 export function useUnmergeRunbookAlerts(): UseMutationResult<RunbookList, Error, { id: string; alerts: string[] }> {
   const api = useBackendApi();
