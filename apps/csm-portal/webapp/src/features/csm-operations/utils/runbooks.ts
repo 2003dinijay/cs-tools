@@ -99,8 +99,8 @@ export function parseRunbookImport(text: string): RunbookInput[] {
 
 /** Runbooks as an import file: an object of alert name to link, "" for an alert with no runbook yet. */
 export function runbooksToImportJson(runbooks: Pick<Runbook, "alertName" | "runbookUrl">[]): string {
-  const out: Record<string, string> = {};
-  for (const rb of runbooks) out[rb.alertName] = rb.runbookUrl ?? "";
+  // fromEntries defines own properties, so an alert named __proto__ is kept rather than setting the prototype.
+  const out = Object.fromEntries(runbooks.map((rb) => [rb.alertName, rb.runbookUrl ?? ""]));
   return `${JSON.stringify(out, null, 2)}\n`;
 }
 

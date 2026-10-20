@@ -66,6 +66,11 @@ describe("export", () => {
     ]);
   });
 
+  it("keeps an alert named __proto__ when exporting", () => {
+    const json = runbooksToImportJson([{ alertName: "__proto__", runbookUrl: "https://docs.example.com/p" }]);
+    expect(parseRunbookImport(json)).toEqual([{ alertName: "__proto__", runbookUrl: "https://docs.example.com/p" }]);
+  });
+
   it("writes one CSV row per runbook", () => {
     expect(runbooksToCsvRows(catalog)).toEqual([
       ["gw-5xx", "https://docs.example.com/gw", "a@x", "2026-10-01T00:00:00Z"],
