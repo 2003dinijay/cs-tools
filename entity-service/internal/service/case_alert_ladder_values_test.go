@@ -82,6 +82,26 @@ func (f *fakeCaseAlertRepo) RouteTeams(context.Context) ([]repository.CaseAlertT
 	return []repository.CaseAlertTeamRow{{Key: "vega", Name: "Vega", Family: "CRE"}, {Key: "apollo", Name: "Apollo", Family: "SRE"}}, nil
 }
 
+// caseAlertAssignmentGroups are the fake's support groups.
+var caseAlertAssignmentGroups = []repository.CaseAlertGroupRow{
+	{ID: "77777777-7777-4777-8777-000000000001", Name: "WSO2 IaaS Team"},
+	{ID: "77777777-7777-4777-8777-000000000002", Name: "Apollo"},
+	{ID: "77777777-7777-4777-8777-000000000003", Name: "U2 SRE Group"},
+}
+
+func (f *fakeCaseAlertRepo) AssignmentGroups(context.Context) ([]repository.CaseAlertGroupRow, error) {
+	return caseAlertAssignmentGroups, nil
+}
+
+func (f *fakeCaseAlertRepo) AssignmentGroupByID(_ context.Context, id string) (repository.CaseAlertGroupRow, bool, error) {
+	for _, g := range caseAlertAssignmentGroups {
+		if g.ID == id {
+			return g, true, nil
+		}
+	}
+	return repository.CaseAlertGroupRow{}, false, nil
+}
+
 func (f *fakeCaseAlertRepo) SRERotas(context.Context) ([]repository.CaseAlertRotaRow, error) {
 	return []repository.CaseAlertRotaRow{{Code: "SRE_SAAS", Label: "SaaS SRE"}}, nil
 }

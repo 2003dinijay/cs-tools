@@ -182,7 +182,7 @@ func (f *fakeCaseAlertRepo) ListRoutes(context.Context) ([]repository.CaseAlertR
 
 func (f *fakeCaseAlertRepo) SaveRoute(_ context.Context, actor string, w repository.CaseAlertRouteWrite) (repository.CaseAlertRouteRow, error) {
 	f.actor, f.route = actor, &w
-	return repository.CaseAlertRouteRow{ID: routeSRE, Ladder: w.Ladder, GroupName: w.GroupName, TeamKey: w.TeamKey, RotaCode: w.RotaCode, Enabled: w.Enabled}, nil
+	return repository.CaseAlertRouteRow{ID: routeSRE, Ladder: w.Ladder, GroupName: w.GroupName, GroupID: w.GroupID, TeamKey: w.TeamKey, RotaCode: w.RotaCode, Enabled: w.Enabled}, nil
 }
 
 func (f *fakeCaseAlertRepo) DeleteRoute(_ context.Context, actor, id string) (bool, error) {

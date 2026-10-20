@@ -121,6 +121,10 @@ type EngineConfig struct {
 	SME SMEConfig
 	// IncidentChatFanout is INCIDENT_CHAT_FANOUT, so an incident's paging replies in every space its card went to.
 	IncidentChatFanout map[string][]string
+	// IncidentRoutes is the Alert Settings group fan-out the dispatcher's
+	// card uses too (cmd/server builds one and gives it to both); nil holds
+	// none.
+	IncidentRoutes *notifications.IncidentRoutes
 }
 
 // Engine runs the incident call-escalation ladder.
@@ -566,17 +570,25 @@ func (e *Engine) sreReplies(t Trigger) bool {
 	return t.sreIncident() && e.channelFor(t).Uses(ChannelChat)
 }
 
-// incidentRooms is the INCIDENT_CHAT_SPACES spaces an incident's card went to; a case or a group without one keeps the ladder's space.
+// incidentRooms is the rooms an incident's card went to: its SRE team's room from the Alert Settings
+// mapping, else its INCIDENT_CHAT_SPACES space, else the shared SRE room (IncidentFallbackAudience).
+// A case, or an incident with none of these, keeps the ladder's own spaces.
 func (e *Engine) incidentRooms(t Trigger) []chatRoom {
 	if t.isCase() || e.incidentChat == nil {
 		return nil
 	}
-	var rooms []chatRoom
-	for _, group := range notifications.IncidentGroups(e.cfg.IncidentChatFanout, t.Team) {
-		audience := notifications.IncidentAudience(group)
-		if !e.incidentChat.HasAudienceSpace(audience) || slices.ContainsFunc(rooms, func(r chatRoom) bool { return r.room == audience }) {
-			continue
+	// The dispatcher's card picks its rooms with the same call, so the
+	// replies always land in the threads the card started.
+	// The shared SRE room is the SRE ladder's: another ladder never falls back to it.
+	has := e.incidentChat.HasAudienceSpace
+	if e.cfg.Kind != LadderSRE {
+		has = func(audience string) bool {
+			return audience != notifications.IncidentFallbackAudience && e.incidentChat.HasAudienceSpace(audience)
 		}
+	}
+	audiences, _ := notifications.IncidentAudiences(e.cfg.IncidentRoutes, e.cfg.IncidentChatFanout, t.Team, has)
+	var rooms []chatRoom
+	for _, audience := range audiences {
 		rooms = append(rooms, chatRoom{chat: e.incidentChat, room: audience, reply: true})
 	}
 	return rooms

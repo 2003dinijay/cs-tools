@@ -372,3 +372,47 @@ func hasCaseAlertTeam(teams []CaseAlertTeamRow, key, family string) bool {
 	}
 	return false
 }
+
+// Routes for a "group" row (migration 0243): the id is kept, the group's
+// current name is what ListRoutes gives (a rename in ServiceNow keeps the
+// route), saving under the new name takes the same row, and a deleted group
+// leaves the route on its stored name.
+func TestCaseAlertIntegration_RoutesByGroup(t *testing.T) {
+	repo, pool := newCaseAlertIntegrationRepo(t)
+	ctx := context.Background()
+	const groupID = "ca5e0000-0000-4000-8000-0000000000a1"
+	mustExec(t, pool, `DELETE FROM "group" WHERE id = $1`, groupID)
+	mustExec(t, pool, `INSERT INTO "group" (id, created_on, updated_on, created_by, updated_by, name, is_active)
+		VALUES ($1, NOW(), NOW(), 'fixture', 'fixture', 'WSO2 IaaS Fixture', TRUE)`, groupID)
+	t.Cleanup(func() { mustExec(t, pool, `DELETE FROM "group" WHERE id = $1`, groupID) })
+
+	saved, err := repo.SaveRoute(ctx, caseAlertActor, CaseAlertRouteWrite{
+		Ladder: "SRE", GroupName: "wso2 iaas fixture", GroupID: groupID, TeamKey: caseAlertFixtureTeam, Enabled: true})
+	if err != nil || saved.GroupID != groupID {
+		t.Fatalf("SaveRoute by group = %+v, %v", saved, err)
+	}
+	if g, ok, err := repo.AssignmentGroupByID(ctx, groupID); err != nil || !ok || g.Name != "WSO2 IaaS Fixture" {
+		t.Fatalf("AssignmentGroupByID = %+v, %v, %v", g, ok, err)
+	}
+
+	mustExec(t, pool, `UPDATE "group" SET name = 'WSO2 IaaS Renamed' WHERE id = $1`, groupID)
+	routes, err := repo.ListRoutes(ctx)
+	if err != nil || len(routes) != 1 || routes[0].GroupName != "wso2 iaas renamed" || routes[0].GroupID != groupID {
+		t.Fatalf("after a rename routes = %+v, %v; want the group's new name", routes, err)
+	}
+
+	again, err := repo.SaveRoute(ctx, caseAlertActor, CaseAlertRouteWrite{
+		Ladder: "SRE", GroupName: "wso2 iaas renamed", GroupID: groupID, RotaCode: "SRE_SAAS", Enabled: true})
+	if err != nil || again.ID != saved.ID || again.GroupName != "wso2 iaas renamed" {
+		t.Fatalf("saving under the new name = %+v, %v; want the same row, renamed", again, err)
+	}
+	if n := caseAlertCount(t, pool, `SELECT count(*) FROM paging_group_route`); n != 1 {
+		t.Fatalf("routes = %d; want 1", n)
+	}
+
+	mustExec(t, pool, `DELETE FROM "group" WHERE id = $1`, groupID)
+	routes, err = repo.ListRoutes(ctx)
+	if err != nil || len(routes) != 1 || routes[0].GroupID != "" || routes[0].GroupName != "wso2 iaas renamed" {
+		t.Fatalf("after the group is deleted routes = %+v, %v; want the stored name and no id", routes, err)
+	}
+}

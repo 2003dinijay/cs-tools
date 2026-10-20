@@ -23476,6 +23476,20 @@ components:
           $ref: '#/components/schemas/CaseAlertRunning'
         routeOptions:
           $ref: '#/components/schemas/CaseAlertRouteOptions'
+        unmappedGroups:
+          type: array
+          description: >
+            SRE viewers only: active ServiceNow assignment groups (the support group of
+            at least one service) that no enabled SRE route covers and no Team Schedule
+            team is named after. Their incident cards go to the shared SRE room. Absent
+            when there are none.
+          items: { $ref: '#/components/schemas/CaseAlertAssignmentGroup' }
+    CaseAlertAssignmentGroup:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: string, format: uuid, description: 'The "group" row (an assignment group mirrored from ServiceNow).' }
+        name: { type: string }
     CaseAlertRouteOptions:
       type: object
       required: [groups, teams, rotas]
@@ -23495,6 +23509,10 @@ components:
         rotas:
           type: array
           items: { $ref: '#/components/schemas/CaseAlertRotaOption' }
+        assignmentGroups:
+          type: array
+          description: The active assignment groups (support groups of a service) a route can be picked for, by name.
+          items: { $ref: '#/components/schemas/CaseAlertAssignmentGroup' }
     CaseAlertTeamOption:
       type: object
       required: [key, name, family]
@@ -23632,7 +23650,8 @@ components:
       properties:
         id: { type: string, format: uuid }
         ladder: { type: string, enum: [CRE, SRE] }
-        groupName: { type: string, description: "Lower-cased, as the case or incident carries it." }
+        groupName: { type: string, description: "Lower-cased, as the case or incident carries it. For a route with a groupId, the group's current name." }
+        groupId: { type: string, format: uuid, description: 'The assignment group ("group" row) the route was picked for; absent for a route saved by name.' }
         teamKey: { type: string }
         rotaCode: { type: string }
         enabled: { type: boolean }
@@ -23658,7 +23677,8 @@ components:
       required: [ladder, groupName]
       properties:
         ladder: { type: string, enum: [CRE, SRE] }
-        groupName: { type: string, maxLength: 255, description: "A CSM Portal team's name: a CRE team for CRE, an SRE or SME team for SRE. SRE also takes an assignment group no CSM Portal team has (WSO2 IaaS Team), but never a CRE team's name." }
+        groupName: { type: string, maxLength: 255, description: "A CSM Portal team's name: a CRE team for CRE, an SRE or SME team for SRE. SRE also takes an assignment group no CSM Portal team has (WSO2 IaaS Team), but never a CRE team's name. With groupId, the group's own name is stored instead." }
+        groupId: { type: string, format: uuid, description: "Optional. An assignment group from routeOptions.assignmentGroups; the route follows the group if it is renamed. 400 when it is not one." }
         teamKey: { type: string }
         rotaCode: { type: string, description: "SRE only. An active SRE rota, e.g. SRE_SAAS." }
         enabled: { type: boolean, default: true }
