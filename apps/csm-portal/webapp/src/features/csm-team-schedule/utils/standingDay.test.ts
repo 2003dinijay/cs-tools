@@ -25,7 +25,7 @@ import type {
   ScheduleTeam,
   ScheduleTeamMember,
 } from "../types";
-import { atTeamOrdinaryHours, atWorkOnTheDay, instantInZone, onItsStandingCard, STANDING_DAY_SOURCE, standingDayRows } from "./standingDay";
+import { atTeamOrdinaryHours, atWorkOnTheDay, creRowsAtWork, instantInZone, onItsStandingCard, STANDING_DAY_SOURCE, standingDayRows } from "./standingDay";
 
 const COLOMBO = "Asia/Colombo";
 
@@ -444,5 +444,60 @@ describe("atWorkOnTheDay", () => {
     expect(kept([row("a", "draco", "CRE_REGULAR", MONDAY)], [{ ...span("a", "MIGRATION"), endsOn: undefined }])).toEqual(
       [],
     );
+  });
+});
+
+describe("creRowsAtWork", () => {
+  // One ABT over a whole week, the shape This week reads: a stored Regular
+  // hours (LK) day, a blank weekday, an evening turn, and two people on an
+  // allocation -- one with a stored LK row under it, one without.
+  const KINDS = [
+    { code: "ALLO_INT", label: "Allocated — internal", shortCode: "Allo-INT", bucket: "ALLOCATION", colourToken: "INT", sortOrder: 30 },
+    { code: "ALLO_EXT", label: "Allocated — external", shortCode: "Allo-EXT", bucket: "ALLOCATION", colourToken: "EXT", sortOrder: 40 },
+  ] as ScheduleAbsenceKind[];
+  const WEEK = ["2026-10-12", "2026-10-13", "2026-10-14", "2026-10-15", "2026-10-16", "2026-10-17", "2026-10-18"];
+  const draco = { ...team("draco", ["lk", "blank", "eve", "int", "ext"].map((id) => member(id))), isAbt: true };
+  const allocated = (id: string, kindCode: string): ScheduleAbsence => ({ ...away(id, WEEK[0], WEEK[6]), kindCode });
+  const assignments = WEEK.slice(0, 5).flatMap((iso) => [
+    row("lk", "draco", "CRE_REGULAR", iso),
+    row("int", "draco", "CRE_REGULAR", iso),
+    row("eve", "draco", "CRE_EVENING", iso),
+  ]);
+  const read = (teamKeysInView: string[] = []) =>
+    creRowsAtWork({
+      rotaDates: WEEK,
+      teams: [draco],
+      teamKeysInView,
+      shifts: SHIFTS,
+      assignments,
+      absences: [allocated("int", "ALLO_INT"), allocated("ext", "ALLO_EXT")],
+      absenceKinds: KINDS,
+    });
+  const regularOn = (rows: ScheduleAssignment[], iso: string) =>
+    rows
+      .filter((r) => r.rotaDate === iso && r.shiftCode === "CRE_REGULAR")
+      .map((r) => r.engineer.userId)
+      .sort();
+
+  it("counts each weekday's Regular hours as Today does: LK, blank weekdays and the crews around them", () => {
+    const rows = read();
+    for (const iso of WEEK.slice(0, 5)) expect(regularOn(rows, iso)).toEqual(["blank", "eve", "lk"]);
+  });
+
+  it("leaves out people on an allocation, with or without a stored row under it", () => {
+    const ids = new Set(read().map((r) => r.engineer.userId));
+    expect(ids.has("int")).toBe(false);
+    expect(ids.has("ext")).toBe(false);
+  });
+
+  it("adds no Regular hours at the weekend", () => {
+    const rows = read();
+    expect(regularOn(rows, WEEK[5])).toEqual([]);
+    expect(regularOn(rows, WEEK[6])).toEqual([]);
+  });
+
+  it("makes up standing days only for the teams in view", () => {
+    const rows = read(["vega"]);
+    expect(rows.some((r) => r.source === STANDING_DAY_SOURCE)).toBe(false);
   });
 });

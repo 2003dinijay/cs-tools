@@ -309,3 +309,53 @@ export function atWorkOnTheDay(
     );
   });
 }
+
+/**
+ * Who is at work on CRE's rota days, as the day view and the week view both
+ * show it.
+ *
+ * Everyone the month roster shows at work, not only those with a row: a blank
+ * weekday is the team's ordinary day, and the morning and evening crews work
+ * the ordinary day around their turn (standingDayRows). Stored Americas-side
+ * standing days are drawn at the team's own hours (atTeamOrdinaryHours), a
+ * stored row of somebody on full-day leave or an allocation that day is left
+ * out (atWorkOnTheDay), and each standing window lists only the teams whose
+ * ordinary day it is (onItsStandingCard).
+ *
+ * One function for both views: This week used to count the stored rows alone,
+ * so its Regular hours numbers disagreed with Today's for the same day --
+ * blank weekdays missing, people on an allocation still counted.
+ *
+ * Display only: nothing here is saved, and paging reads the stored rota.
+ */
+export function creRowsAtWork({
+  rotaDates,
+  teams,
+  teamKeysInView,
+  shifts,
+  assignments,
+  absences,
+  absenceKinds,
+}: {
+  rotaDates: readonly string[];
+  /** The whole catalogue's teams: which team a window is the ordinary day
+   *  of does not depend on the team picked. */
+  teams: readonly ScheduleTeam[];
+  /** The teams in view; empty for the whole family. */
+  teamKeysInView: readonly string[];
+  shifts: ReadonlyMap<string, ScheduleShift>;
+  assignments: readonly ScheduleAssignment[];
+  absences: readonly ScheduleAbsence[];
+  absenceKinds: readonly ScheduleAbsenceKind[];
+}): ScheduleAssignment[] {
+  const inScope = new Set(teamKeysInView.map((k) => k.toLowerCase()));
+  const allCreTeams = teams.filter((t) => t.family === "CRE");
+  const creTeams = allCreTeams
+    .filter((t) => inScope.size === 0 || inScope.has(t.key.toLowerCase()))
+    .sort((a, b) => a.sortOrder - b.sortOrder);
+  const standing = standingDayRows({ rotaDates, teams: creTeams, shifts, assignments, absences });
+  return [
+    ...atTeamOrdinaryHours(atWorkOnTheDay(assignments, absences, absenceKinds), shifts, allCreTeams),
+    ...standing,
+  ].filter((a) => onItsStandingCard(a, shifts, allCreTeams));
+}
