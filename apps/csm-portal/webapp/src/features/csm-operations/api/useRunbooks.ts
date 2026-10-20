@@ -34,6 +34,8 @@ interface RunbookList {
 export interface ImportRunbooksResult {
   created: number;
   updated: number;
+  /** Runbooks left without alerts because the file moved all of them elsewhere. */
+  removed: number;
 }
 
 /** The whole runbook catalog; it is small enough to filter and page on the client. */
@@ -86,7 +88,6 @@ export function useImportRunbooks(): UseMutationResult<ImportRunbooksResult, Err
 export interface MergeRunbooksInput {
   /** The runbook to keep first, then the runbooks merged into it. */
   runbookIds: string[];
-  name: string;
   runbookUrl: string | null;
 }
 
@@ -96,7 +97,7 @@ export function useMergeRunbooks(): UseMutationResult<Runbook, Error, MergeRunbo
   return useRunbookMutation((input: MergeRunbooksInput) => api.post<MergeRunbooksInput, Runbook>(`${BASE}/merge`, input));
 }
 
-/** Moves each alert out of the runbook into a runbook of its own, with the same link. */
+/** Moves each alert out of the runbook into a new runbook of its own, with the same link. */
 export function useUnmergeRunbookAlerts(): UseMutationResult<RunbookList, Error, { id: string; alerts: string[] }> {
   const api = useBackendApi();
   return useRunbookMutation(({ id, alerts }: { id: string; alerts: string[] }) =>

@@ -72,11 +72,11 @@ func TestRunbookHandler_MergeRebuildsTheBodyAndRefusesBadInput(t *testing.T) {
 	fake := &fakeRunbookClient{}
 	w := httptest.NewRecorder()
 	NewRunbookHandler(fake).MergeRunbooks(w, withUser(httptest.NewRequest(http.MethodPost, "/runbooks/merge", strings.NewReader(
-		`{"runbookIds":["`+testRunbookID+`","22222222-2222-4222-8222-222222222222"],"name":"G","runbookUrl":null,"extra":1}`))))
-	if w.Code != http.StatusOK || string(fake.body) != `{"runbookIds":["`+testRunbookID+`","22222222-2222-4222-8222-222222222222"],"name":"G","runbookUrl":null}` {
+		`{"runbookIds":["`+testRunbookID+`","22222222-2222-4222-8222-222222222222"],"runbookUrl":null,"extra":1}`))))
+	if w.Code != http.StatusOK || string(fake.body) != `{"runbookIds":["`+testRunbookID+`","22222222-2222-4222-8222-222222222222"],"runbookUrl":null}` {
 		t.Fatalf("status = %d, forwarded = %s", w.Code, fake.body)
 	}
-	for _, body := range []string{`{"runbookIds":["` + testRunbookID + `"],"name":"G"}`, `{"runbookIds":["` + testRunbookID + `","nope"],"name":"G"}`, `{"runbookIds":["` + testRunbookID + `","22222222-2222-4222-8222-222222222222"],"name":" "}`} {
+	for _, body := range []string{`{"runbookIds":["` + testRunbookID + `"]}`, `{"runbookIds":["` + testRunbookID + `","nope"]}`, `{"runbookIds":"x"}`} {
 		fake := &fakeRunbookClient{}
 		w := httptest.NewRecorder()
 		NewRunbookHandler(fake).MergeRunbooks(w, withUser(httptest.NewRequest(http.MethodPost, "/runbooks/merge", strings.NewReader(body))))
@@ -111,19 +111,19 @@ func TestRunbookHandler_CreateRebuildsTheBody(t *testing.T) {
 	fake := &fakeRunbookClient{}
 	h := NewRunbookHandler(fake)
 	r := withUser(httptest.NewRequest(http.MethodPost, "/runbooks",
-		strings.NewReader(`{"name":"A","runbookUrl":"https://x.example","alerts":["a"],"extra":"dropped"}`)))
+		strings.NewReader(`{"name":"dropped","runbookUrl":"https://x.example","alerts":["a"],"extra":"dropped"}`)))
 	w := httptest.NewRecorder()
 	h.CreateRunbook(w, r)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want 201; body %s", w.Code, w.Body.String())
 	}
-	if got := string(fake.body); got != `{"name":"A","runbookUrl":"https://x.example","alerts":["a"]}` {
+	if got := string(fake.body); got != `{"runbookUrl":"https://x.example","alerts":["a"]}` {
 		t.Fatalf("forwarded body = %s", got)
 	}
 }
 
-func TestRunbookHandler_RefusesAMissingNameOrAlert(t *testing.T) {
-	for _, body := range []string{`{"name":"  ","alerts":["a"]}`, `{"name":"A","alerts":["  "]}`, `{"name":"A"}`} {
+func TestRunbookHandler_RefusesAMissingAlert(t *testing.T) {
+	for _, body := range []string{`{"alerts":["  "]}`, `{"runbookUrl":"https://x.example"}`, `{"alerts":[]}`} {
 		fake := &fakeRunbookClient{}
 		w := httptest.NewRecorder()
 		NewRunbookHandler(fake).CreateRunbook(w, withUser(httptest.NewRequest(http.MethodPost, "/runbooks", strings.NewReader(body))))
@@ -135,7 +135,7 @@ func TestRunbookHandler_RefusesAMissingNameOrAlert(t *testing.T) {
 
 func TestRunbookHandler_UpdateRefusesBadID(t *testing.T) {
 	fake := &fakeRunbookClient{}
-	r := withUser(httptest.NewRequest(http.MethodPut, "/runbooks/nope", strings.NewReader(`{"name":"A","alerts":["a"]}`)))
+	r := withUser(httptest.NewRequest(http.MethodPut, "/runbooks/nope", strings.NewReader(`{"alerts":["a"]}`)))
 	r.SetPathValue("id", "nope")
 	w := httptest.NewRecorder()
 	NewRunbookHandler(fake).UpdateRunbook(w, r)
@@ -148,7 +148,7 @@ func TestRunbookHandler_ConflictKeepsEntityMessage(t *testing.T) {
 	fake := &fakeRunbookClient{err: &apierror.Error{StatusCode: http.StatusConflict,
 		Body: `{"code":409,"message":"alert a already belongs to runbook A"}`}}
 	w := httptest.NewRecorder()
-	NewRunbookHandler(fake).CreateRunbook(w, withUser(httptest.NewRequest(http.MethodPost, "/runbooks", strings.NewReader(`{"name":"A","alerts":["a"]}`))))
+	NewRunbookHandler(fake).CreateRunbook(w, withUser(httptest.NewRequest(http.MethodPost, "/runbooks", strings.NewReader(`{"alerts":["a"]}`))))
 	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "already belongs") {
 		t.Fatalf("status = %d, body %s; want 409 with the entity message", w.Code, w.Body.String())
 	}
@@ -166,11 +166,11 @@ func TestRunbookHandler_ImportAcceptsBodiesOverTheGeneralLimit(t *testing.T) {
 	fake := &fakeRunbookClient{}
 	var b strings.Builder
 	b.WriteString(`{"runbooks":[`)
-	for i := 0; i < 1000; i++ {
+	for i := 0; i < 2000; i++ {
 		if i > 0 {
 			b.WriteString(",")
 		}
-		b.WriteString(`{"name":"` + strings.Repeat("n", 1000) + `","alerts":["` + strings.Repeat("a", 1000) + `"],"runbookUrl":"https://docs.example.com/` + strings.Repeat("x", 900) + `"}`)
+		b.WriteString(`{"alerts":["` + strings.Repeat("a", 1000) + `"],"runbookUrl":"https://docs.example.com/` + strings.Repeat("x", 900) + `"}`)
 	}
 	b.WriteString(`]}`)
 	if b.Len() <= maxRequestBodyBytes {

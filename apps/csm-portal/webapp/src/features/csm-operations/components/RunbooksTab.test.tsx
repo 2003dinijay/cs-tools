@@ -109,7 +109,7 @@ const mocks = vi.hoisted(() => ({ create: vi.fn(), update: vi.fn(), merge: vi.fn
 const catalog = [
   {
     id: "1",
-    name: "Gateway",
+    number: "RB0000001",
     runbookUrl: "https://docs.example.com/gw",
     alerts: ["gw-5xx", "Gateway Latency High"],
     createdOn: "2026-03-02T10:00:00Z",
@@ -117,7 +117,7 @@ const catalog = [
     updatedOn: "2026-09-15T12:00:00Z",
     updatedBy: "editor@example.com",
   },
-  { id: "2", name: "JVM", runbookUrl: null, alerts: ["JVM Heap"], createdOn: "", createdBy: "", updatedOn: "", updatedBy: "" },
+  { id: "2", number: "RB0000002", runbookUrl: null, alerts: ["JVM Heap"], createdOn: "", createdBy: "", updatedOn: "", updatedBy: "" },
 ];
 
 const idleMutation = (mutate = vi.fn()) => ({ mutate, isPending: false, isError: false, error: null });
@@ -150,31 +150,32 @@ describe("RunbooksTab", () => {
     mocks.unmerge.mockReset();
   });
 
-  it("lists each runbook's alerts as tags, with its link, and no expander", () => {
+  it("lists each runbook's number and alerts as tags, with its link, and no expander", () => {
     render(<RunbooksTab />);
-    const row = screen.getByRole("checkbox", { name: "Select Gateway" }).closest("tr") as HTMLElement;
+    const row = screen.getByRole("checkbox", { name: "Select RB0000001" }).closest("tr") as HTMLElement;
     expect(within(row).getByRole("link", { name: /Open runbook/ })).toHaveAttribute("href", "https://docs.example.com/gw");
-    const tags = within(row).getByRole("list", { name: "Alerts of Gateway" });
+    expect(within(row).getByText("RB0000001")).toBeInTheDocument();
+    const tags = within(row).getByRole("list", { name: "Alerts of RB0000001" });
     expect(within(tags).getByText("gw-5xx")).toBeInTheDocument();
     expect(within(tags).getByText("Gateway Latency High")).toBeInTheDocument();
-    expect(within(row).queryByText("Gateway")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Show the alerts of/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Number" })).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "Alerts" })).toBeInTheDocument();
     expect(screen.getByText("2 runbooks covering 3 alerts, 1 without a link")).toBeInTheDocument();
   });
 
-  it("adds alerts as tags with Enter and saves them with the name", () => {
+  it("adds alerts as tags with Enter and saves them without asking for a name", () => {
     render(<RunbooksTab />);
     fireEvent.click(screen.getByRole("button", { name: "Add runbook" }));
     const dialog = screen.getByRole("dialog");
-    type(within(dialog).getByLabelText(/^Name/), "Disk");
+    expect(within(dialog).queryByLabelText(/^Name/)).not.toBeInTheDocument();
     const alerts = within(dialog).getByLabelText(/^Alerts/);
     addTag(alerts, "Disk Space Low");
     type(alerts, "disk-full");
     expect(within(dialog).getByText("Disk Space Low")).toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole("button", { name: "Add" }));
     expect(mocks.create).toHaveBeenCalledWith(
-      { name: "Disk", runbookUrl: null, alerts: ["Disk Space Low", "disk-full"] },
+      { runbookUrl: null, alerts: ["Disk Space Low", "disk-full"] },
       expect.anything(),
     );
   });
@@ -183,22 +184,21 @@ describe("RunbooksTab", () => {
     render(<RunbooksTab />);
     fireEvent.click(screen.getByRole("button", { name: "Add runbook" }));
     const dialog = screen.getByRole("dialog");
-    type(within(dialog).getByLabelText(/^Name/), "Other");
     addTag(within(dialog).getByLabelText(/^Alerts/), "JVM HEAP");
-    expect(within(dialog).getByText(/Already used by another runbook: JVM HEAP \(in JVM\)/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/Already used by another runbook: JVM HEAP \(in RB0000002\)/)).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "Add" })).toBeDisabled();
   });
 
   it("edits a runbook's alerts", () => {
     render(<RunbooksTab />);
-    fireEvent.click(screen.getByRole("button", { name: "Edit Gateway" }));
-    const dialog = screen.getByRole("dialog");
+    fireEvent.click(screen.getByRole("button", { name: "Edit RB0000001" }));
+    const dialog = screen.getByRole("dialog", { name: "Edit RB0000001" });
     addTag(within(dialog).getByLabelText(/^Alerts/), "gw-timeout");
     fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
     expect(mocks.update).toHaveBeenCalledWith(
       {
         id: "1",
-        input: { name: "Gateway", runbookUrl: "https://docs.example.com/gw", alerts: ["gw-5xx", "Gateway Latency High", "gw-timeout"] },
+        input: { runbookUrl: "https://docs.example.com/gw", alerts: ["gw-5xx", "Gateway Latency High", "gw-timeout"] },
       },
       expect.anything(),
     );
@@ -225,7 +225,7 @@ describe("RunbooksTab", () => {
     render(<RunbooksTab />);
     expect(screen.getByRole("columnheader", { name: "Created" })).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "Updated" })).toBeInTheDocument();
-    const row = screen.getByRole("checkbox", { name: "Select Gateway" }).closest("tr") as HTMLElement;
+    const row = screen.getByRole("checkbox", { name: "Select RB0000001" }).closest("tr") as HTMLElement;
     expect(within(row).getByText("Mar 2, 2026")).toBeInTheDocument();
     expect(within(row).getByText("Sep 15, 2026")).toBeInTheDocument();
     expect(within(row).queryByText("creator@example.com")).not.toBeInTheDocument();
@@ -239,31 +239,31 @@ describe("RunbooksTab", () => {
 
   it("merges the selected runbooks, previewing the alerts and choosing the link", () => {
     render(<RunbooksTab />);
-    fireEvent.click(screen.getByRole("checkbox", { name: "Select JVM" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select RB0000002" }));
     expect(screen.getByRole("button", { name: "Merge" })).toBeDisabled();
-    fireEvent.click(screen.getByRole("checkbox", { name: "Select Gateway" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select RB0000001" }));
     expect(screen.getByText("2 selected (3 alerts)")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Merge 2 runbooks" }));
 
     const dialog = screen.getByRole("dialog");
     expect(within(dialog).getByText("Alerts in the merged runbook (3)")).toBeInTheDocument();
-    expect(within(dialog).getByLabelText(/^Name/)).toHaveValue("Gateway");
+    expect(within(dialog).queryByLabelText(/^Name/)).not.toBeInTheDocument();
+    expect(within(dialog).getByText(/will share one runbook, RB0000001/)).toBeInTheDocument();
     expect(within(dialog).getByRole("radio", { name: /docs\.example\.com\/gw/ })).toBeChecked();
     const linkOption = within(dialog).getByRole("link", { name: "https://docs.example.com/gw" });
     expect(linkOption).toHaveAttribute("href", "https://docs.example.com/gw");
     expect(linkOption).toHaveAttribute("target", "_blank");
-    type(within(dialog).getByLabelText(/^Name/), "Platform");
     fireEvent.click(within(dialog).getByRole("button", { name: "Merge" }));
     expect(mocks.merge).toHaveBeenCalledWith(
-      { runbookIds: ["1", "2"], name: "Platform", runbookUrl: "https://docs.example.com/gw" },
+      { runbookIds: ["1", "2"], runbookUrl: "https://docs.example.com/gw" },
       expect.anything(),
     );
   });
 
   it("merges with another link typed in the dialog", () => {
     render(<RunbooksTab />);
-    fireEvent.click(screen.getByRole("checkbox", { name: "Select JVM" }));
-    fireEvent.click(screen.getByRole("checkbox", { name: "Select Gateway" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select RB0000002" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select RB0000001" }));
     fireEvent.click(screen.getByRole("button", { name: "Merge 2 runbooks" }));
     const dialog = screen.getByRole("dialog");
     fireEvent.click(within(dialog).getByRole("radio", { name: "Another link" }));
@@ -271,7 +271,7 @@ describe("RunbooksTab", () => {
     type(within(dialog).getByLabelText("Another runbook link"), "https://docs.example.com/platform");
     fireEvent.click(within(dialog).getByRole("button", { name: "Merge" }));
     expect(mocks.merge).toHaveBeenCalledWith(
-      { runbookIds: ["1", "2"], name: "Gateway", runbookUrl: "https://docs.example.com/platform" },
+      { runbookIds: ["1", "2"], runbookUrl: "https://docs.example.com/platform" },
       expect.anything(),
     );
   });
@@ -287,7 +287,7 @@ describe("RunbooksTab", () => {
     render(<RunbooksTab />);
     const search = screen.getByLabelText("Search runbook with alert name");
     fireEvent.change(search, { target: { value: "gateway latency high" } });
-    expect(screen.getByText("Matched alert: Gateway Latency High")).toBeInTheDocument();
+    expect(screen.getByText("RB0000001, matched alert: Gateway Latency High")).toBeInTheDocument();
     fireEvent.change(search, { target: { value: "unknown" } });
     expect(screen.getByText("No runbook covers this alert.")).toBeInTheDocument();
   });

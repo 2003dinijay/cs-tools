@@ -16,7 +16,8 @@
 
 export interface Runbook {
   id: string;
-  name: string;
+  /** The runbook's own number (RB0000001), given by the backend and never changed. */
+  number: string;
   /** Null when the runbook has not been written yet. */
   runbookUrl: string | null;
   /** Alert titles; an incident whose subject contains one gets this runbook. */
@@ -28,7 +29,6 @@ export interface Runbook {
 }
 
 export interface RunbookInput {
-  name: string;
   runbookUrl: string | null;
   alerts: string[];
 }
@@ -54,7 +54,7 @@ export function activeRunbookFilterCount(filters: RunbookFilters): number {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/** The runbooks matching the search text (name, alert name or link) and every filter. */
+/** The runbooks matching the search text (number, alert name or link) and every filter. */
 export function filterRunbooks(runbooks: Runbook[], search: string, filters: RunbookFilters, now = Date.now()): Runbook[] {
   const term = search.trim().toLowerCase();
   const since = filters.updatedWithin === "all" ? undefined : now - Number(filters.updatedWithin) * DAY_MS;
@@ -69,7 +69,7 @@ export function filterRunbooks(runbooks: Runbook[], search: string, filters: Run
     }
     return (
       !term ||
-      r.name.toLowerCase().includes(term) ||
+      r.number.toLowerCase().includes(term) ||
       r.alerts.some((a) => a.toLowerCase().includes(term)) ||
       (r.runbookUrl ?? "").toLowerCase().includes(term)
     );
@@ -100,13 +100,13 @@ export function cleanAlertNames(names: string[]): string[] {
   return out;
 }
 
-export interface RunbookMatch<T extends Pick<Runbook, "name" | "runbookUrl" | "alerts">> {
+export interface RunbookMatch<T extends Pick<Runbook, "runbookUrl" | "alerts">> {
   runbook: T;
   alertName: string;
 }
 
 /** The runbook for an incident: the one holding the longest alert name its subject contains, case-insensitively. Mirrors entity-service. */
-export function findRunbookForIncident<T extends Pick<Runbook, "name" | "runbookUrl" | "alerts">>(
+export function findRunbookForIncident<T extends Pick<Runbook, "runbookUrl" | "alerts">>(
   runbooks: T[],
   subject: string,
 ): RunbookMatch<T> | undefined {
@@ -127,10 +127,10 @@ export function findRunbookForIncident<T extends Pick<Runbook, "name" | "runbook
 
 /**
  * Reads an import file: a JSON object whose keys are comma-separated alert names
- * and whose values are links ("" for none), named after the first alert; or an
- * array of {name, runbookUrl, alerts}, where alerts is a list or a comma-separated
- * string (an older {alertName, runbookUrl} entry is read as one alert). Throws with
- * a readable message otherwise.
+ * and whose values are links ("" for none); or an array of {runbookUrl, alerts},
+ * where alerts is a list or a comma-separated string (an older {alertName,
+ * runbookUrl} entry is read as one alert, and a name is ignored). Throws with a
+ * readable message otherwise.
  */
 export function parseRunbookImport(text: string): RunbookInput[] {
   let data: unknown;
@@ -139,31 +139,30 @@ export function parseRunbookImport(text: string): RunbookInput[] {
   } catch {
     throw new Error("The file is not valid JSON.");
   }
-  const toInput = (name: unknown, alerts: unknown, url: unknown, label: string): RunbookInput => {
+  const toInput = (alerts: unknown, url: unknown, label: string): RunbookInput => {
     const alertList = cleanAlertNames(
       typeof alerts === "string" ? alerts.split(",") : Array.isArray(alerts) ? alerts.map((a) => (typeof a === "string" ? a : "")) : [],
     );
     if (alertList.length === 0) {
-      throw new Error(`"${label}" needs at least one alert name.`);
+      throw new Error(`${label} needs at least one alert name.`);
     }
-    const runbookName = typeof name === "string" && name.trim() ? name.trim() : alertList[0];
     if (url !== null && url !== undefined && typeof url !== "string") {
-      throw new Error(`The link for "${runbookName}" is not text.`);
+      throw new Error(`The link for "${alertList[0]}" is not text.`);
     }
     const link = typeof url === "string" ? url.trim() : "";
     if (!isValidRunbookUrl(link)) {
-      throw new Error(`The link for "${runbookName}" is not a full http(s) link.`);
+      throw new Error(`The link for "${alertList[0]}" is not a full http(s) link.`);
     }
-    return { name: runbookName, runbookUrl: link || null, alerts: alertList };
+    return { runbookUrl: link || null, alerts: alertList };
   };
   if (Array.isArray(data)) {
     return data.map((row, i) => {
       const r = (row ?? {}) as Record<string, unknown>;
-      return toInput(r.name, r.alerts ?? (typeof r.alertName === "string" ? [r.alertName] : r.alertName), r.runbookUrl, typeof r.name === "string" && r.name.trim() ? r.name.trim() : `Entry ${i + 1}`);
+      return toInput(r.alerts ?? (typeof r.alertName === "string" ? [r.alertName] : r.alertName), r.runbookUrl, `Entry ${i + 1}`);
     });
   }
   if (data && typeof data === "object") {
-    return Object.entries(data as Record<string, unknown>).map(([key, url]) => toInput(undefined, key, url, key));
+    return Object.entries(data as Record<string, unknown>).map(([key, url]) => toInput(key, url, `"${key}"`));
   }
   throw new Error("Expected an object of alert names to link, or a list of runbooks.");
 }

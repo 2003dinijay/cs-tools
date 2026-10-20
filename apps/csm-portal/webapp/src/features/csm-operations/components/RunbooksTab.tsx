@@ -142,7 +142,7 @@ export default function RunbooksTab(): JSX.Element {
   const pageRows = filtered.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage);
   // Ids of runbooks that no longer exist (merged away, deleted) drop out on their own.
   const selected = runbooks.filter((r) => selectedIds.has(r.id));
-  const columnCount = canWrite ? 6 : 4;
+  const columnCount = canWrite ? 7 : 5;
 
   const toggle = (set: ReadonlySet<string>, id: string): Set<string> => {
     const next = new Set(set);
@@ -155,14 +155,16 @@ export default function RunbooksTab(): JSX.Element {
     unmerge.mutate(
       { id: rb.id, alerts },
       {
-        onSuccess: () =>
+        onSuccess: (res) => {
+          const created = (res?.runbooks ?? []).slice(1).map((r) => r.number);
           setNotice({
             severity: "success",
             text:
               alerts.length === 1
-                ? `Moved ${alerts[0]} out of ${rb.name} into a runbook of its own.`
-                : `Moved ${alerts.length} alerts out of ${rb.name}, each into a runbook of its own.`,
-          }),
+                ? `Moved ${alerts[0]} out of ${rb.number} into ${created[0] ?? "a runbook of its own"}.`
+                : `Moved ${alerts.length} alerts out of ${rb.number}, each into a runbook of its own.`,
+          });
+        },
         onError: (err) => setNotice({ severity: "error", text: errorText(err, "Failed to unmerge the alert.") }),
       },
     );
@@ -187,7 +189,12 @@ export default function RunbooksTab(): JSX.Element {
       }
       importRunbooks.mutate(entries, {
         onSuccess: (res) =>
-          setNotice({ severity: "success", text: `Imported ${res.created} new and updated ${res.updated} existing runbooks.` }),
+          setNotice({
+            severity: "success",
+            text:
+              `Imported ${res.created} new and updated ${res.updated} existing runbooks.` +
+              (res.removed ? ` Removed ${res.removed} whose alerts all moved to another runbook.` : ""),
+          }),
         onError: (err) => setNotice({ severity: "error", text: errorText(err, "Failed to import runbooks.") }),
       });
     } catch (err) {
@@ -278,7 +285,7 @@ export default function RunbooksTab(): JSX.Element {
           <Box sx={{ flex: 1, minWidth: 240 }}>
             <TextField
               size="small"
-              placeholder="Search by name, alert name or runbook link…"
+              placeholder="Search by number, alert name or runbook link…"
               value={search}
               onChange={(e) => {
                 setSearch(e.target.value);
@@ -413,6 +420,7 @@ export default function RunbooksTab(): JSX.Element {
             <TableHead>
               <TableRow sx={{ bgcolor: "action.hover" }}>
                 {canWrite && <TableCell padding="checkbox" />}
+                <TableCell sx={{ width: 120 }}>Number</TableCell>
                 <TableCell>Alerts</TableCell>
                 <TableCell sx={{ width: 180 }}>Runbook</TableCell>
                 <TableCell sx={{ width: 170 }}>Created</TableCell>
@@ -425,6 +433,7 @@ export default function RunbooksTab(): JSX.Element {
                 Array.from({ length: rowsPerPage }).map((_, i) => (
                   <TableRow key={i}>
                     {canWrite && <TableCell padding="checkbox" />}
+                    <TableCell><Skeleton variant="rounded" width={80} height={18} /></TableCell>
                     <TableCell><Skeleton variant="rounded" width="70%" height={18} /></TableCell>
                     <TableCell><Skeleton variant="rounded" width={110} height={22} /></TableCell>
                     <TableCell><Skeleton variant="rounded" width={100} height={18} /></TableCell>
@@ -455,10 +464,15 @@ export default function RunbooksTab(): JSX.Element {
                           size="small"
                           checked={selectedIds.has(rb.id)}
                           onChange={() => setSelectedIds((set) => toggle(set, rb.id))}
-                          slotProps={{ input: { "aria-label": `Select ${rb.name}` } }}
+                          slotProps={{ input: { "aria-label": `Select ${rb.number}` } }}
                         />
                       </TableCell>
                     )}
+                    <TableCell sx={{ whiteSpace: "nowrap" }}>
+                      <Typography variant="body2" sx={{ fontFamily: "monospace" }}>
+                        {rb.number}
+                      </Typography>
+                    </TableCell>
                     <TableCell sx={{ wordBreak: "break-word" }}>
                       <RunbookAlertTags
                         runbook={rb}
@@ -491,12 +505,12 @@ export default function RunbooksTab(): JSX.Element {
                     {canWrite && (
                       <TableCell align="right">
                         <Tooltip title="Edit">
-                          <IconButton size="small" aria-label={`Edit ${rb.name}`} onClick={() => setDialog({ open: true, editing: rb })}>
+                          <IconButton size="small" aria-label={`Edit ${rb.number}`} onClick={() => setDialog({ open: true, editing: rb })}>
                             <Pencil size={16} />
                           </IconButton>
                         </Tooltip>
                         <Tooltip title="Delete">
-                          <IconButton size="small" aria-label={`Delete ${rb.name}`} onClick={() => setPendingDelete(rb)}>
+                          <IconButton size="small" aria-label={`Delete ${rb.number}`} onClick={() => setPendingDelete(rb)}>
                             <Trash2 size={16} />
                           </IconButton>
                         </Tooltip>
@@ -530,12 +544,11 @@ export default function RunbooksTab(): JSX.Element {
       {isMergeOpen && selected.length >= 2 && (
         <MergeRunbooksDialog
           selected={selected}
-          existing={runbooks}
           onClose={() => setIsMergeOpen(false)}
           onMerged={(merged, count) => {
             setIsMergeOpen(false);
             setSelectedIds(new Set());
-            setNotice({ severity: "success", text: `Merged ${count} runbooks into ${merged.name}.` });
+            setNotice({ severity: "success", text: `Merged ${count} runbooks into ${merged.number}.` });
           }}
         />
       )}
@@ -607,7 +620,7 @@ export default function RunbooksTab(): JSX.Element {
         <DialogContent sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
           <Typography variant="body2" sx={{ wordBreak: "break-word" }}>
             Incidents matching the {pendingDelete?.alerts.length === 1 ? "alert" : `${pendingDelete?.alerts.length ?? 0} alerts`} of{" "}
-            <strong>{pendingDelete?.name}</strong> will no longer show this runbook.
+            <strong>{pendingDelete?.number}</strong> will no longer show this runbook.
           </Typography>
           {deleteRunbook.isError && (
             <Alert severity="error">{errorText(deleteRunbook.error, "Failed to delete the runbook.")}</Alert>
@@ -659,7 +672,7 @@ function RunbookAlertTags({
   return (
     <Box
       component="ul"
-      aria-label={`Alerts of ${runbook.name}`}
+      aria-label={`Alerts of ${runbook.number}`}
       sx={{ listStyle: "none", m: 0, p: 0, display: "flex", flexWrap: "wrap", gap: 0.5 }}
     >
       {runbook.alerts.map((alert) => (
@@ -680,51 +693,35 @@ function RunbookAlertTags({
   );
 }
 
-// The start the names share, cut back to a word boundary; "" when it is too short to name a group.
-function sharedPrefix(names: string[]): string {
-  let prefix = names[0] ?? "";
-  for (const n of names.slice(1)) {
-    while (prefix && !n.toLowerCase().startsWith(prefix.toLowerCase())) prefix = prefix.slice(0, -1);
-  }
-  const trimmed = prefix.replace(/[\s\-_:/.]+[^\s\-_:/.]*$/, "").replace(/[\s\-_:/.]+$/, "");
-  return trimmed.length >= 6 ? trimmed : "";
-}
-
 type LinkChoice ={ kind: "existing"; url: string } | { kind: "none" } | { kind: "other" };
 
 function MergeRunbooksDialog({
   selected,
-  existing,
   onClose,
   onMerged,
 }: {
   selected: Runbook[];
-  existing: Runbook[];
   onClose: () => void;
   onMerged: (merged: Runbook, count: number) => void;
 }): JSX.Element {
   const merge = useMergeRunbooks();
-  // The runbook that already groups the most alerts is kept, so its name is the likely one.
-  const target = [...selected].sort((a, b) => b.alerts.length - a.alerts.length)[0];
+  // The runbook that already groups the most alerts keeps its number; on a tie, the oldest number.
+  const target = [...selected].sort((a, b) => b.alerts.length - a.alerts.length || a.number.localeCompare(b.number))[0];
   const ordered = [target, ...selected.filter((r) => r.id !== target.id)];
   const links = [...new Set(selected.map((r) => r.runbookUrl).filter((u): u is string => !!u))]
     .map((url) => ({ url, count: selected.filter((r) => r.runbookUrl === url).length }))
     .sort((a, b) => b.count - a.count);
-  const [name, setName] = useState(() => (target.alerts.length > 1 ? target.name : sharedPrefix(selected.map((r) => r.name)) || target.name));
   const [choice, setChoice] = useState<LinkChoice>(links.length > 0 ? { kind: "existing", url: links[0].url } : { kind: "none" });
   const [otherUrl, setOtherUrl] = useState("");
-  const trimmedName = name.trim();
-  const selectedIds = new Set(selected.map((r) => r.id));
-  const duplicateName = existing.some((r) => !selectedIds.has(r.id) && r.name.trim().toLowerCase() === trimmedName.toLowerCase());
   const otherInvalid = choice.kind === "other" && (!otherUrl.trim() || !isValidRunbookUrl(otherUrl));
   const alerts = ordered.flatMap((r) => r.alerts);
-  const canMerge = trimmedName.length > 0 && !duplicateName && !otherInvalid && !merge.isPending;
+  const canMerge = !otherInvalid && !merge.isPending;
   const choiceValue = choice.kind === "existing" ? `existing:${choice.url}` : choice.kind;
 
   const handleMerge = (): void => {
     const runbookUrl = choice.kind === "existing" ? choice.url : choice.kind === "other" ? otherUrl.trim() : null;
     merge.mutate(
-      { runbookIds: ordered.map((r) => r.id), name: trimmedName, runbookUrl },
+      { runbookIds: ordered.map((r) => r.id), runbookUrl },
       { onSuccess: (merged) => onMerged(merged, selected.length) },
     );
   };
@@ -734,7 +731,7 @@ function MergeRunbooksDialog({
       <DialogTitle>Merge {selected.length} runbooks</DialogTitle>
       <DialogContent sx={{ display: "flex", flexDirection: "column", gap: 2.5, pt: "8px !important" }}>
         <Typography variant="body2" color="text.secondary">
-          These alerts will share one runbook. An incident raised by any of them shows it in its Related tab.
+          These alerts will share one runbook, {target.number}. An incident raised by any of them shows it in its Related tab.
         </Typography>
 
         <Box>
@@ -747,16 +744,6 @@ function MergeRunbooksDialog({
             ))}
           </Box>
         </Box>
-
-        <TextField
-          label="Name"
-          required
-          autoFocus
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          error={duplicateName}
-          helperText={duplicateName ? "Another runbook already has this name." : "A short name for the group, e.g. Asgardeo IS HTTP 500."}
-        />
 
         <FormControl>
           <Typography variant="subtitle2" id="merge-link-label" sx={{ mb: 0.5 }}>
@@ -819,29 +806,25 @@ function MergeRunbooksDialog({
 function RunbookDialog({ editing, existing, onClose }: RunbookDialogProps): JSX.Element {
   const createRunbook = useCreateRunbook();
   const updateRunbook = useUpdateRunbook();
-  const [name, setName] = useState(editing?.name ?? "");
   const [runbookUrl, setRunbookUrl] = useState(editing?.runbookUrl ?? "");
   const [alerts, setAlerts] = useState<string[]>(editing?.alerts ?? []);
   const [pendingAlert, setPendingAlert] = useState("");
 
   const saving = createRunbook.isPending || updateRunbook.isPending;
   const saveError = createRunbook.error ?? updateRunbook.error;
-  const trimmedName = name.trim();
   const trimmedUrl = runbookUrl.trim();
   // A typed alert not yet confirmed with Enter is still saved.
   const alertsToSave = cleanAlertNames([...alerts, pendingAlert]);
   const others = existing.filter((r) => r.id !== editing?.id);
-  const duplicateName = others.some((r) => r.name.trim().toLowerCase() === trimmedName.toLowerCase());
   const takenAlerts = alertsToSave.flatMap((a) => {
     const owner = others.find((r) => r.alerts.some((b) => b.trim().toLowerCase() === a.toLowerCase()));
-    return owner ? [`${a} (in ${owner.name})`] : [];
+    return owner ? [`${a} (in ${owner.number})`] : [];
   });
   const urlInvalid = !isValidRunbookUrl(runbookUrl);
-  const canSave =
-    trimmedName.length > 0 && !duplicateName && alertsToSave.length > 0 && takenAlerts.length === 0 && !urlInvalid && !saving;
+  const canSave = alertsToSave.length > 0 && takenAlerts.length === 0 && !urlInvalid && !saving;
 
   const handleSave = (): void => {
-    const input = { name: trimmedName, runbookUrl: trimmedUrl || null, alerts: alertsToSave };
+    const input = { runbookUrl: trimmedUrl || null, alerts: alertsToSave };
     if (editing) {
       updateRunbook.mutate({ id: editing.id, input }, { onSuccess: onClose });
     } else {
@@ -851,19 +834,11 @@ function RunbookDialog({ editing, existing, onClose }: RunbookDialogProps): JSX.
 
   return (
     <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
-      <DialogTitle>{editing ? "Edit runbook" : "Add runbook"}</DialogTitle>
+      <DialogTitle>{editing ? `Edit ${editing.number}` : "Add runbook"}</DialogTitle>
       <DialogContent sx={{ display: "flex", flexDirection: "column", gap: 2, pt: "8px !important" }}>
         <TextField
-          label="Name"
-          required
-          autoFocus
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          error={duplicateName}
-          helperText={duplicateName ? "Another runbook already has this name." : undefined}
-        />
-        <TextField
           label="Runbook link"
+          autoFocus
           placeholder="https://docs.google.com/document/d/…"
           value={runbookUrl}
           onChange={(e) => setRunbookUrl(e.target.value)}
@@ -944,7 +919,7 @@ function RunbookAlertSearch({ runbooks }: { runbooks: Runbook[] }): JSX.Element 
         <Alert severity={match?.runbook.runbookUrl ? "success" : "warning"}>
           {match ? (
             <Typography variant="body2" sx={{ wordBreak: "break-word" }}>
-              Matched alert: {match.alertName}
+              {match.runbook.number}, matched alert: {match.alertName}
             </Typography>
           ) : (
             <Typography variant="body2">No runbook covers this alert.</Typography>
