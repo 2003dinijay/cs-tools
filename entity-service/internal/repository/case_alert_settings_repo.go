@@ -26,6 +26,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 )
 
 // CaseAlertSettingsRepository reads and writes the Case Alerts settings
@@ -501,6 +503,24 @@ func (r *caseAlertSettingsRepository) SaveRoute(ctx context.Context, actor strin
 	err := r.inTx(ctx, actor, func(tx pgx.Tx) error {
 		var err error
 		if w.GroupID != "" {
+			// The group's route saved under an older name, and another route
+			// already saved under its current name: the upsert would give that
+			// one the group too and break the one-route-per-group index. Say so
+			// rather than merge two routes that may send the alerts differently.
+			var older string
+			err = tx.QueryRow(ctx, `
+				SELECT r.group_name FROM paging_group_route r
+				 WHERE r.ladder = $1 AND r.group_id = $3::uuid AND r.group_name <> $2
+				   AND EXISTS (SELECT 1 FROM paging_group_route o WHERE o.ladder = $1 AND o.group_name = $2)
+				 LIMIT 1`, w.Ladder, w.GroupName, w.GroupID).Scan(&older)
+			if err == nil {
+				return &apierror.ConflictError{Msg: fmt.Sprintf(
+					"this group already has a redirect under its older name %q, and another redirect is saved under %q: remove one of them first",
+					older, w.GroupName)}
+			}
+			if !errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("check case alert route rename: %w", err)
+			}
 			// The group's route saved under an older name (renamed in
 			// ServiceNow) takes the current one, so the upsert below finds it.
 			if _, err = tx.Exec(ctx, `
@@ -661,10 +681,13 @@ func (r *caseAlertSettingsRepository) AssignmentGroups(ctx context.Context) ([]C
 	return out, rows.Err()
 }
 
-// AssignmentGroupByID implements CaseAlertSettingsRepository.
+// AssignmentGroupByID implements CaseAlertSettingsRepository: a group of the
+// same support-group set AssignmentGroups lists, so an id the tab never offered
+// (inactive, or no service's support group) is not found.
 func (r *caseAlertSettingsRepository) AssignmentGroupByID(ctx context.Context, id string) (CaseAlertGroupRow, bool, error) {
 	var g CaseAlertGroupRow
-	err := r.db.QueryRow(ctx, `SELECT id::text, btrim(COALESCE(name, '')) FROM "group" WHERE id = $1::uuid`, id).Scan(&g.ID, &g.Name)
+	err := r.db.QueryRow(ctx, `SELECT s.id::text, btrim(COALESCE(s.name, '')) FROM (`+supportGroupSetSQL+`) s
+		 WHERE s.id = $1::uuid`, id).Scan(&g.ID, &g.Name)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return CaseAlertGroupRow{}, false, nil
 	}

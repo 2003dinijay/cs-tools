@@ -25,11 +25,14 @@ package repository
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 )
 
 const (
@@ -382,9 +385,24 @@ func TestCaseAlertIntegration_RoutesByGroup(t *testing.T) {
 	ctx := context.Background()
 	const groupID = "ca5e0000-0000-4000-8000-0000000000a1"
 	mustExec(t, pool, `DELETE FROM "group" WHERE id = $1`, groupID)
+	const serviceID = "ca5e0000-0000-4000-8000-0000000000b1"
+	const otherGroupID = "ca5e0000-0000-4000-8000-0000000000a2"
+	mustExec(t, pool, `DELETE FROM service WHERE id = $1`, serviceID)
+	mustExec(t, pool, `DELETE FROM "group" WHERE id = ANY($1::uuid[])`, []string{groupID, otherGroupID})
 	mustExec(t, pool, `INSERT INTO "group" (id, created_on, updated_on, created_by, updated_by, name, is_active)
 		VALUES ($1, NOW(), NOW(), 'fixture', 'fixture', 'WSO2 IaaS Fixture', TRUE)`, groupID)
-	t.Cleanup(func() { mustExec(t, pool, `DELETE FROM "group" WHERE id = $1`, groupID) })
+	// Not a service's support group: never offered, so never accepted.
+	mustExec(t, pool, `INSERT INTO "group" (id, created_on, updated_on, created_by, updated_by, name, is_active)
+		VALUES ($1, NOW(), NOW(), 'fixture', 'fixture', 'Not A Support Group', TRUE)`, otherGroupID)
+	mustExec(t, pool, `INSERT INTO service (id, created_on, updated_on, created_by, updated_by, name, number, support_group_id)
+		VALUES ($1, NOW(), NOW(), 'fixture', 'fixture', 'case alert fixture service', 'SVC-CA-FIXTURE', $2)`, serviceID, groupID)
+	t.Cleanup(func() {
+		mustExec(t, pool, `DELETE FROM service WHERE id = $1`, serviceID)
+		mustExec(t, pool, `DELETE FROM "group" WHERE id = ANY($1::uuid[])`, []string{groupID, otherGroupID})
+	})
+	if _, ok, err := repo.AssignmentGroupByID(ctx, otherGroupID); err != nil || ok {
+		t.Fatalf("a group that is no service's support group was found: %v, %v", ok, err)
+	}
 
 	saved, err := repo.SaveRoute(ctx, caseAlertActor, CaseAlertRouteWrite{
 		Ladder: "SRE", GroupName: "wso2 iaas fixture", GroupID: groupID, TeamKey: caseAlertFixtureTeam, Enabled: true})
@@ -409,6 +427,23 @@ func TestCaseAlertIntegration_RoutesByGroup(t *testing.T) {
 	if n := caseAlertCount(t, pool, `SELECT count(*) FROM paging_group_route`); n != 1 {
 		t.Fatalf("routes = %d; want 1", n)
 	}
+
+	// A route saved by name under the group's current name, and the group's
+	// own route renamed again in ServiceNow: two rows the save cannot merge.
+	if _, err := repo.SaveRoute(ctx, caseAlertActor, CaseAlertRouteWrite{
+		Ladder: "SRE", GroupName: "wso2 iaas newest", TeamKey: caseAlertFixtureTeam, Enabled: true}); err != nil {
+		t.Fatalf("saving a route by name: %v", err)
+	}
+	_, err = repo.SaveRoute(ctx, caseAlertActor, CaseAlertRouteWrite{
+		Ladder: "SRE", GroupName: "wso2 iaas newest", GroupID: groupID, RotaCode: "SRE_SAAS", Enabled: true})
+	var conflict *apierror.ConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("saving over a renamed route and a same-name one = %v; want a conflict", err)
+	}
+	if n := caseAlertCount(t, pool, `SELECT count(*) FROM paging_group_route`); n != 2 {
+		t.Fatalf("routes after the refused save = %d; want both left as they were", n)
+	}
+	mustExec(t, pool, `DELETE FROM paging_group_route WHERE group_name = 'wso2 iaas newest'`)
 
 	mustExec(t, pool, `DELETE FROM "group" WHERE id = $1`, groupID)
 	routes, err = repo.ListRoutes(ctx)
