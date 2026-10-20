@@ -22,11 +22,46 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/wso2-open-operations/cs-tools/apps/customer-portal/backend-v2/internal/dto"
 	"github.com/wso2-open-operations/cs-tools/apps/customer-portal/backend-v2/internal/entity"
 	"github.com/wso2-open-operations/cs-tools/apps/customer-portal/backend-v2/internal/middleware"
 )
+
+// patchProjectTargetsClosureState reports whether a PATCH /projects/{id}
+// body sets closureState -- entity-service's admin-only direct override of
+// a project's overall closure status (see entity-service's own CLAUDE.md
+// and UpdateProjectRequest's own doc comment, which this route must never
+// forward it through). Reads the top-level keys as a token stream,
+// case-insensitively, mirroring apps/csm-portal/backend's own
+// projectUpdateTargetsClosureState: entity-service's JSON decoder matches a
+// key to a struct field without regard to case, so a check that only looked
+// for the one canonical spelling could be walked around by a differently-
+// cased key. A body this can't make sense of (not a JSON object) is treated
+// as not targeting it -- the strict DisallowUnknownFields decode right
+// after this call rejects it on its own merits.
+func patchProjectTargetsClosureState(body []byte) bool {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return false
+	}
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return false
+		}
+		key, _ := keyTok.(string)
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			return false
+		}
+		if strings.EqualFold(key, "closureState") {
+			return true
+		}
+	}
+	return false
+}
 
 // entityProjectClient abstracts the entity-service project operations used by ProjectHandler.
 type entityProjectClient interface {
@@ -124,6 +159,20 @@ func (h *ProjectHandler) PatchProject(w http.ResponseWriter, r *http.Request) {
 
 	body, ok := readJSONBody(w, r)
 	if !ok {
+		return
+	}
+
+	// closureState gets its own check, ahead of the generic strict decode
+	// below: the response is the same 400 any other unknown field gets, but
+	// this one is entity-service's admin-only closure-state override (see
+	// UpdateProjectRequest's own doc comment), which this route must never
+	// be a path to -- so the attempt itself is worth a WARN with the
+	// caller's id, not just a silent rejection indistinguishable from a
+	// client typo.
+	if patchProjectTargetsClosureState(body) {
+		slog.WarnContext(r.Context(), "closureState rejected on customer-portal PATCH /projects/{id}",
+			"userID", user.UserID, "projectID", id)
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
 		return
 	}
 
