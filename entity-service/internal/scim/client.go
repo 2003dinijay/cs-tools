@@ -52,6 +52,7 @@ const (
 	domainDefault  = "DEFAULT"
 	attrGivenName  = "name.givenName"
 	attrFamilyName = "name.familyName"
+	attrUserName   = "userName"
 
 	defaultTimeout   = 15 * time.Second
 	tokenExpirySlack = 30 * time.Second
@@ -89,9 +90,13 @@ type searchResponse struct {
 // user mirrors the one piece of the SCIM User resource this client reads.
 // RFC 7643 ยง4.1.1 nests given/family name under "name"; a search response
 // only returns whichever attributes were requested (see searchRequest.Attributes),
-// so a resource with no name on file at all decodes with Name nil.
+// so a resource with no name on file at all decodes with Name nil. UserName
+// is requested alongside Name purely so searchPerson can confirm a result
+// actually matches the email queried (see its own doc comment) rather than
+// trusting the server's filter match unconditionally.
 type user struct {
-	Name *userName `json:"name,omitempty"`
+	UserName string    `json:"userName,omitempty"`
+	Name     *userName `json:"name,omitempty"`
 }
 
 type userName struct {
@@ -153,6 +158,16 @@ func (c *Client) SearchPerson(ctx context.Context, email string) (*Person, error
 }
 
 func (c *Client) searchPerson(ctx context.Context, email string) (*Person, error) {
+	// email is expected to already be validated by the caller (service.
+	// validateEmail's regex excludes every character checked here), but this
+	// client has no way to enforce that on a future caller, and %q alone is
+	// not a SCIM-safe escape (it is Go's own quoting, not RFC 7644's) -- so
+	// a value this permissive would still reach the filter unescaped. Refuse
+	// it outright rather than risk the filter matching something broader
+	// than the one address asked for.
+	if strings.ContainsAny(email, `"\`) || hasControlByte(email) {
+		return nil, &apierror.ValidationError{Msg: "scim: email contains a character that cannot be used in a search filter"}
+	}
 	token, err := c.accessToken(ctx)
 	if err != nil {
 		return nil, err
@@ -162,7 +177,7 @@ func (c *Client) searchPerson(ctx context.Context, email string) (*Person, error
 	// ("userName eq \"jane@wso2.com\""), not a bare token.
 	body, err := json.Marshal(searchRequest{
 		Domain:     domainDefault,
-		Attributes: []string{attrGivenName, attrFamilyName},
+		Attributes: []string{attrUserName, attrGivenName, attrFamilyName},
 		Filter:     fmt.Sprintf("userName eq %q", email),
 		StartIndex: 1,
 	})
@@ -198,14 +213,21 @@ func (c *Client) searchPerson(ctx context.Context, email string) (*Person, error
 		if err := json.Unmarshal(raw, &result); err != nil {
 			return nil, fmt.Errorf("scim: parse search response: %w", err)
 		}
-		if len(result.Resources) == 0 {
-			return nil, nil
+		// Resources[0] is not trusted on filter match alone: a permissive or
+		// buggy server-side filter implementation could return a broader set
+		// than the exact address asked for (RFC 7644 ยง3.4.2.2 "eq" is
+		// supposed to be exact, but this client does not rely on the server
+		// getting that right for a security-relevant decision). userName is
+		// WSO2's own convention for a staff member's email (the same
+		// assumption the search filter itself already makes), so requiring
+		// it to match case-insensitively is the direct check, not a proxy.
+		for _, u := range result.Resources {
+			if !strings.EqualFold(u.UserName, email) || u.Name == nil {
+				continue
+			}
+			return &Person{GivenName: u.Name.GivenName, FamilyName: u.Name.FamilyName}, nil
 		}
-		u := result.Resources[0]
-		if u.Name == nil {
-			return nil, nil
-		}
-		return &Person{GivenName: u.Name.GivenName, FamilyName: u.Name.FamilyName}, nil
+		return nil, nil
 	case resp.StatusCode == http.StatusUnauthorized:
 		return nil, errUnauthorized
 	case resp.StatusCode >= 500:
@@ -281,4 +303,16 @@ func (c *Client) invalidateToken() {
 	defer c.mu.Unlock()
 	c.cachedToken = ""
 	c.tokenExpiry = time.Time{}
+}
+
+// hasControlByte reports whether s contains a C0/C1 control character or
+// DEL, none of which belong in an email address and some of which (CR, LF)
+// could otherwise be used to smuggle extra content into the request body.
+func hasControlByte(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x20 || s[i] == 0x7f {
+			return true
+		}
+	}
+	return false
 }

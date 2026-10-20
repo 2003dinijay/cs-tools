@@ -485,6 +485,29 @@ func (s *salesforceEventService) lookupOwner(ctx context.Context, sfID, role, em
 // not have to stay NULL. Returns (nil, nil) when SCIM has no match either --
 // the caller treats that like any other lookup miss, not an error.
 func (s *salesforceEventService) provisionOwner(ctx context.Context, sfID, role, email string) (*string, error) {
+	// userService.CreateUser (the JWT-gated HTTP path this bypasses, see the
+	// doc comment above) enforces both of these before ever writing a row;
+	// calling the repository directly skips that gate entirely unless it is
+	// re-applied here. Both are data-quality/policy checks, not provisioning
+	// failures, so either one quietly declines to provision (same as SCIM
+	// having no match) rather than erroring the whole account event.
+	if err := validateEmail(email); err != nil {
+		slog.WarnContext(ctx, "salesforce: account person reference is not a valid email, skipping auto-provision",
+			"accountSfId", sfID, "role", role, "email", email)
+		return nil, nil
+	}
+	// ownerAutoProvisionRole is always "internal", which recompute_user_type
+	// (migration 0011) resolves to user_type = INTERNAL -- the same rule
+	// requestsInternalUserType gates in userService.CreateUser. Refusing a
+	// non-@wso2.com email here, not just there, stops this path from ever
+	// granting internal-type access to whoever SCIM happens to return for
+	// an address that isn't actually a WSO2 one.
+	if !strings.HasSuffix(strings.ToLower(email), wso2EmailDomain) {
+		slog.WarnContext(ctx, "salesforce: account person reference is not a wso2.com email, skipping auto-provision",
+			"accountSfId", sfID, "role", role, "email", email)
+		return nil, nil
+	}
+
 	person, err := s.support.Owners.SCIM.SearchPerson(ctx, email)
 	if err != nil {
 		return nil, fmt.Errorf("search internal directory: %w", err)
