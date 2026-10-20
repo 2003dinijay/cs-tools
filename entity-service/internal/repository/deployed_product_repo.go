@@ -42,14 +42,36 @@ type DeployedProductRepository interface {
 	SearchDeployedProducts(ctx context.Context, req domain.SearchDeployedProductsRequest) ([]domain.DeployedProductView, int, error)
 
 	// SearchDeployedProductMetrics returns per-day CORES readings (from
-	// hourly_usage_summary, migration 0054) for every deployment_node resolved to
-	// the given deployed product and deployment. A NotFoundError is returned
-	// if the deployed product doesn't exist or isn't linked to deploymentID.
+	// daily_usage_summary, migration 0054) for every deployment_node resolved
+	// to the given deployed product and deployment. A NotFoundError is
+	// returned if the deployed product doesn't exist or isn't linked to
+	// deploymentID.
+	//
+	// Reads daily_usage_summary, not its sibling hourly_usage_summary --
+	// confirmed against real staging data that the two can disagree, and not
+	// in hourly's favor: for one real deployed product, daily_usage_summary
+	// held a reading for every one of 7 resolved nodes across months of real
+	// days, while hourly_usage_summary (this method's previous sole source)
+	// had no rows for any of them at all. Both tables are mirrored by an
+	// external sync (see migration 0054's own doc comment) with no
+	// foreign-key or rollup relationship to each other in this schema, so
+	// there is no guarantee hourly ever catches up to what daily already has
+	// -- daily_usage_summary is also the one actually shaped like what this
+	// endpoint needs (summary_date/value, already one row per node per day
+	// per count type), where hourly's per-event counted_on had to be
+	// bucketed into days in Go. This endpoint has no production traffic yet,
+	// so there's no existing behavior relying on hourly's own narrower (and,
+	// confirmed directly, occasionally non-overlapping) coverage to preserve
+	// -- a straight switch, not a union of both tables. A handful of real
+	// rows repeat the same (node, day, count_type) key (a correction/
+	// re-ingest with no dedup on the sync's side), so the query SUMs them
+	// rather than assuming exactly one row per key.
 	SearchDeployedProductMetrics(ctx context.Context, id, deploymentID, startDate, endDate string) (domain.DeployedProductMetricsResponse, error)
 
 	// SearchDeployedProductUsageCounts is the same resolution as
-	// SearchDeployedProductMetrics, but returns every hourly_usage_summary.count_type
-	// found for the resolved instances, not just CORES.
+	// SearchDeployedProductMetrics, reading the same daily_usage_summary
+	// table (see that method's own doc comment for why), but returns every
+	// count_type found for the resolved instances, not just CORES.
 	SearchDeployedProductUsageCounts(ctx context.Context, id, deploymentID, startDate, endDate string) (domain.DeployedProductUsageCountsResponse, error)
 
 	// SearchProjectsByProductVersion returns the deduplicated, paginated set
@@ -205,12 +227,13 @@ func (r *deployedProductRepo) SearchDeployedProductMetrics(ctx context.Context, 
 	}
 
 	rows, err := r.db.Query(ctx, `
-		SELECT uc.counted_on::date, uc.deployment_node_id, uc.count
-		FROM hourly_usage_summary uc
-		WHERE uc.deployment_node_id = ANY($1::uuid[])
-		AND uc.count_type = 'CORES'
-		AND uc.counted_on::date BETWEEN $2::date AND $3::date
-		ORDER BY uc.counted_on::date`,
+		SELECT dus.summary_date, dus.deployment_node_id, SUM(dus.value)::int
+		FROM daily_usage_summary dus
+		WHERE dus.deployment_node_id = ANY($1::uuid[])
+		AND dus.count_type = 'CORES'
+		AND dus.summary_date BETWEEN $2::date AND $3::date
+		GROUP BY dus.summary_date, dus.deployment_node_id
+		ORDER BY dus.summary_date`,
 		nodeIDs, startDate, endDate,
 	)
 	if err != nil {
@@ -313,11 +336,12 @@ func (r *deployedProductRepo) SearchDeployedProductUsageCounts(ctx context.Conte
 	}
 
 	rows, err := r.db.Query(ctx, `
-		SELECT uc.counted_on::date, uc.count_type, uc.deployment_node_id, uc.count
-		FROM hourly_usage_summary uc
-		WHERE uc.deployment_node_id = ANY($1::uuid[])
-		AND uc.counted_on::date BETWEEN $2::date AND $3::date
-		ORDER BY uc.counted_on::date, uc.count_type`,
+		SELECT dus.summary_date, dus.count_type, dus.deployment_node_id, SUM(dus.value)::int
+		FROM daily_usage_summary dus
+		WHERE dus.deployment_node_id = ANY($1::uuid[])
+		AND dus.summary_date BETWEEN $2::date AND $3::date
+		GROUP BY dus.summary_date, dus.count_type, dus.deployment_node_id
+		ORDER BY dus.summary_date, dus.count_type`,
 		nodeIDs, startDate, endDate,
 	)
 	if err != nil {
@@ -425,11 +449,26 @@ func (r *deployedProductRepo) SearchDeployedProducts(ctx context.Context, req do
 	// showing up in every list exactly as before, making "delete" appear to
 	// silently do nothing. NULL counts as active, the same convention
 	// AccessService.ResolveScope already uses for "user".is_active.
-	where := "WHERE dp.deployment_id IS NOT NULL AND dp.product_id IS NOT NULL AND (dp.active IS NULL OR dp.active = TRUE)"
+	// req.Active = false selects the deactivated ones only; omitted or true keeps
+	// the active-only default.
+	where := "WHERE dp.deployment_id IS NOT NULL AND dp.product_id IS NOT NULL"
+	if req.Active != nil && !*req.Active {
+		where += " AND dp.active = FALSE"
+	} else {
+		where += " AND (dp.active IS NULL OR dp.active = TRUE)"
+	}
 
 	if len(req.DeploymentIDs) > 0 {
 		where += fmt.Sprintf(" AND dp.deployment_id = ANY($%d::uuid[])", argIdx)
 		filterArgs = append(filterArgs, req.DeploymentIDs)
+		argIdx++
+	}
+
+	// Scoped by the deployed product's own project (dp.project_id), not its
+	// deployment's. project.sf_id is nullable and a NULL never matches ANY().
+	if len(req.ProjectSfIDs) > 0 {
+		where += fmt.Sprintf(" AND dp.project_id IN (SELECT id FROM project WHERE sf_id = ANY($%d::text[]))", argIdx)
+		filterArgs = append(filterArgs, req.ProjectSfIDs)
 		argIdx++
 	}
 
@@ -465,7 +504,7 @@ func (r *deployedProductRepo) SearchDeployedProducts(ctx context.Context, req do
 	dataQuery := fmt.Sprintf(
 		`SELECT dp.id, dp.created_on, dp.updated_on,
 		        dp.core_count, dp.tps_count, dp.product_category::TEXT,
-		        dp.description, dp.update_level_info,
+		        dp.description, dp.update_level_info, pr.sf_id, COALESCE(dp.active, TRUE),
 		        d.id, d.name,
 		        p.id, p.name, p.code,
 		        pv.id, pv.version, pv.release_date, pv.support_eol_date
@@ -473,6 +512,7 @@ func (r *deployedProductRepo) SearchDeployedProducts(ctx context.Context, req do
 		 JOIN deployment d ON dp.deployment_id = d.id
 		 JOIN product p ON dp.product_id = p.id
 		 LEFT JOIN product_version pv ON dp.version_id = pv.id
+		 LEFT JOIN project pr ON dp.project_id = pr.id
 		 %s
 		 ORDER BY dp.created_on DESC, dp.id
 		 LIMIT $%d OFFSET $%d`,
@@ -511,7 +551,7 @@ func (r *deployedProductRepo) SearchDeployedProducts(ctx context.Context, req do
 			if err := rows.Scan(
 				&dp.ID, &dp.CreatedOn, &dp.UpdatedOn,
 				&dp.Cores, &dp.TPS, &dp.Category,
-				&dp.Description, &updateLevelInfo,
+				&dp.Description, &updateLevelInfo, &dp.ProjectSfID, &dp.Active,
 				&dp.Deployment.ID, &dp.Deployment.Name,
 				&dp.Product.ID, &dp.Product.Name, &dp.Product.Abbreviation,
 				&pvID, &pvName, &pvReleaseDate, &pvEoLDate,

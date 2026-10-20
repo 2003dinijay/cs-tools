@@ -18,6 +18,7 @@ import { describe, expect, it } from "vitest";
 import {
   closureStatePresentation,
   endDateLabel,
+  projectOnboardingStatusPresentation,
   startDateLabel,
 } from "./projectLifecycle";
 
@@ -135,6 +136,51 @@ describe("closureStatePresentation", () => {
   it("falls back to a neutral chip for an unknown closureState", () => {
     expect(closureStatePresentation("pending_review")).toEqual({
       label: "Pending review",
+      severity: "default",
+    });
+  });
+});
+
+// Regression coverage: a project's onboardingStatus was returned by the API
+// (confirmed present on both the search row and the single-project detail
+// response) but never rendered anywhere in the UI.
+describe("projectOnboardingStatusPresentation", () => {
+  it("returns null for a missing or Not-Applicable status", () => {
+    expect(projectOnboardingStatusPresentation(undefined)).toBeNull();
+    expect(projectOnboardingStatusPresentation(null)).toBeNull();
+    expect(projectOnboardingStatusPresentation("Not-Applicable")).toBeNull();
+  });
+
+  it("maps every known onboarding status to its label and severity", () => {
+    expect(projectOnboardingStatusPresentation("In-Progress")).toEqual({
+      label: "In Progress",
+      severity: "info",
+    });
+    expect(projectOnboardingStatusPresentation("Completed")).toEqual({
+      label: "Completed",
+      severity: "success",
+    });
+    expect(projectOnboardingStatusPresentation("Not-Started")).toEqual({
+      label: "Not Started",
+      severity: "default",
+    });
+    expect(projectOnboardingStatusPresentation("Expired")).toEqual({
+      label: "Expired",
+      severity: "warning",
+    });
+    expect(projectOnboardingStatusPresentation("Cancelled")).toEqual({
+      label: "Cancelled",
+      severity: "default",
+    });
+    expect(projectOnboardingStatusPresentation("OnHold")).toEqual({
+      label: "On Hold",
+      severity: "warning",
+    });
+  });
+
+  it("falls back to a neutral chip for an unknown status rather than crashing", () => {
+    expect(projectOnboardingStatusPresentation("Some-NewStatus")).toEqual({
+      label: "Some-newstatus",
       severity: "default",
     });
   });

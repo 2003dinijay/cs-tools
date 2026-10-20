@@ -32,13 +32,10 @@ import "encoding/json"
 type Type string
 
 const (
-	TypeCaseCreated      Type = "case.created"
-	TypeCommentAdded     Type = "case.comment_added"
-	TypeStatusChanged    Type = "case.status_changed"
-	TypeCaseAssigned     Type = "case.assigned"
-	TypeSeverityChanged  Type = "case.severity_changed"
-	TypeCaseAcknowledged Type = "case.acknowledged"
-	TypeIncidentCreated  Type = "incident.created"
+	TypeCaseCreated     Type = "case.created"
+	TypeCommentAdded    Type = "case.comment_added"
+	TypeStatusChanged   Type = "case.status_changed"
+	TypeIncidentCreated Type = "incident.created"
 )
 
 // Envelope is the wire shape of every record on the case-events topic.
@@ -58,6 +55,11 @@ type Envelope struct {
 // timestamp needs.
 type CommentAddedPayload struct {
 	Timestamp string `json:"timestamp"`
+	// IsInternalNote is true when the comment is an internal (work) note that
+	// customers must never see. The producer omits the field for ordinary
+	// comments, so an absent value means customer-visible. This consumer uses
+	// it to skip the customer-facing broadcast entirely.
+	IsInternalNote bool `json:"isInternalNote"`
 }
 
 // StatusChangedPayload is the Payload shape for TypeStatusChanged.

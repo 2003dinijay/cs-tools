@@ -25,6 +25,7 @@ const NONE = {
   canWrite: false,
   canAddWorkNotes: false,
   canCreateUser: false,
+  canUpdateProjectClosureState: false,
   canUseSecurityCenter: false,
   canUsePlg: false,
   canManagePlaybooks: false,
@@ -173,6 +174,7 @@ describe("getPortalAccess", () => {
     expect(getPortalAccess(["cs_engineer"])).toEqual({
       ...all,
       canCreateUser: false,
+      canUpdateProjectClosureState: false,
       canEscalate: true,
       canManagePlaybooks: false,
       canCreateAnnouncement: false,
@@ -182,6 +184,7 @@ describe("getPortalAccess", () => {
     expect(getPortalAccess(["admin"])).toEqual({
       ...all,
       canCreateUser: true,
+      canUpdateProjectClosureState: true,
       canEscalate: true,
       canManagePlaybooks: true,
       canCreateAnnouncement: true,
@@ -225,6 +228,21 @@ describe("getPortalAccess", () => {
       "dashboard_designer",
     ]) {
       expect(getPortalAccess([role]).canCreateUser).toBe(false);
+    }
+  });
+
+  it("only admin can directly override a project's closure state -- CS engineer does not share this one", () => {
+    expect(getPortalAccess(["admin"]).canUpdateProjectClosureState).toBe(true);
+    for (const role of [
+      "cs_engineer",
+      "viewer",
+      "escalator",
+      "attachment_downloader",
+      "usage_metrics_viewer",
+      "timecard_approver",
+      "dashboard_designer",
+    ]) {
+      expect(getPortalAccess([role]).canUpdateProjectClosureState).toBe(false);
     }
   });
 

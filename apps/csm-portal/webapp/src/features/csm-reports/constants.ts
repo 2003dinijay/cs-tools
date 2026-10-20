@@ -18,4 +18,3 @@
 // subset only.
 export const CONSUMED_QUERY_HOURS = "Consumed Query Hours";
 export const REAMAINING_QUERY_HOURS = "Remaining Query Hours";
-export const HOURS = "Hours";

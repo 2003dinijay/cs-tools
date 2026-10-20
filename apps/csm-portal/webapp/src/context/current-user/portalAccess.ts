@@ -117,6 +117,15 @@ export interface PortalAccess {
    */
   canCreateUser: boolean;
   /**
+   * Directly overriding a project's overall closure state (OPEN/READ_ONLY/
+   * CLOSED/RESTRICTED/SUSPENDED) via `PATCH /projects/{id}`'s `closureState`
+   * field. `admin` only, same reasoning as {@link canCreateUser} — mirrors
+   * the backend's in-handler `PermAdmin` narrowing on that one field (see
+   * `apps/csm-portal/backend`'s own CLAUDE.md,
+   * "PATCH /projects/{id}: closureState requires PermAdmin").
+   */
+  canUpdateProjectClosureState: boolean;
+  /**
    * The Security Center section (Security reports + Vulnerabilities tabs)
    * and the API calls behind it. `admin`, `cs_engineer`, and the dedicated
    * `security_team` role (read-only) — mirrors the backend's
@@ -304,6 +313,7 @@ export function getPortalAccess(roles: string[] | undefined): PortalAccess {
       canWrite: true,
       canAddWorkNotes: true,
       canCreateUser: true,
+      canUpdateProjectClosureState: true,
       canUseSecurityCenter: true,
       canUsePlg: true,
       canManagePlaybooks: true,
@@ -338,6 +348,7 @@ export function getPortalAccess(roles: string[] | undefined): PortalAccess {
     canWrite: full,
     canAddWorkNotes: full || has(PORTAL_ROLE.worknoteCreator),
     canCreateUser: isAdmin,
+    canUpdateProjectClosureState: isAdmin,
     canUseSecurityCenter: full || has(PORTAL_ROLE.securityTeam),
     canUsePlg: full,
     canManagePlaybooks: isAdmin,

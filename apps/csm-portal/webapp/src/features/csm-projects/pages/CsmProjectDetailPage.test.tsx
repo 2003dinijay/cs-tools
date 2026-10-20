@@ -58,6 +58,7 @@ vi.mock("@config/apiConfig", () => ({
 let mockCanWrite = true;
 let mockIsSplAudience = false;
 let mockCanViewWorkItemsStaffView = true;
+let mockCanUpdateProjectClosureState = false;
 vi.mock("@context/current-user/usePortalAccess", () => ({
   usePortalAccess: () => ({
     hasAnyRole: true,
@@ -68,8 +69,28 @@ vi.mock("@context/current-user/usePortalAccess", () => ({
     canWrite: mockCanWrite,
     isSplAudience: mockIsSplAudience,
     canViewWorkItemsStaffView: mockCanViewWorkItemsStaffView,
+    canUpdateProjectClosureState: mockCanUpdateProjectClosureState,
   }),
 }));
+
+const mockPatchClosureStateMutate = vi.fn();
+let mockPatchClosureStateIsPending = false;
+let mockPatchClosureStateIsError = false;
+vi.mock("@features/csm-projects/api/usePatchProjectClosureState", async () => {
+  const actual = await vi.importActual<
+    typeof import("@features/csm-projects/api/usePatchProjectClosureState")
+  >("@features/csm-projects/api/usePatchProjectClosureState");
+  return {
+    ...actual,
+    usePatchProjectClosureState: () => ({
+      mutate: mockPatchClosureStateMutate,
+      reset: vi.fn(),
+      isPending: mockPatchClosureStateIsPending,
+      isError: mockPatchClosureStateIsError,
+      error: mockPatchClosureStateIsError ? new Error("failed") : null,
+    }),
+  };
+});
 
 import CsmProjectDetailPage from "@features/csm-projects/pages/CsmProjectDetailPage";
 
@@ -233,19 +254,11 @@ describe("CsmProjectDetailPage — tab state", () => {
   });
 });
 
-// Regression: the Time report button has no modern equivalent and must stay
-// limited to the viewer audience (isSplAudience), independently of canWrite
-// -- it must never appear for an ordinary cs_engineer/admin session that
-// doesn't separately hold the viewer role, and must appear for one that
-// does, even without write access.
-//
-// Temporarily disabled on the page itself (see CsmProjectDetailPage.tsx's own
-// comment) -- the button is hidden unconditionally right now, so the
-// isSplAudience-gating test below is skipped rather than deleted, to make
-// re-enabling the feature (and this assertion) a one-line change.
-describe("CsmProjectDetailPage — Time report button", () => {
+describe("CsmProjectDetailPage — report buttons", () => {
   beforeEach(() => {
     mockCanViewWorkItemsStaffView = true;
+    mockIsSplAudience = false;
+    mockCanWrite = false;
     mockUseGetProject.mockReturnValue({
       data: PROJECT,
       isLoading: false,
@@ -253,25 +266,49 @@ describe("CsmProjectDetailPage — Time report button", () => {
     });
   });
 
-  it("hides the Time report button for a caller without the viewer role", () => {
-    mockIsSplAudience = false;
-    renderPage();
-    expect(screen.queryByRole("link", { name: "Time Report" })).not.toBeInTheDocument();
-  });
-
-  // Rendered via component={RouterLink} (an in-app navigation, not a
-  // dialog/menu trigger), so it's an <a>, accessible role "link".
-  it.skip("shows the Time report button for a caller holding the viewer role, even without write access", () => {
-    mockIsSplAudience = true;
-    mockCanWrite = false;
+  it("shows Time and CS reports to anyone who can open the project, and keeps SLA disabled", () => {
     renderPage();
     expect(screen.getByRole("link", { name: "Time Report" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "CS Report" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "SLA Report — Coming soon" })).toBeDisabled();
+  });
+});
+
+describe("CsmProjectDetailPage — Onboarding Status", () => {
+  // Regression coverage for a real gap: onboardingStatus came back from the
+  // API (confirmed on both the search row and this detail response) but the
+  // page never rendered it anywhere — only the owner's name, and only when
+  // an owner happened to be set too.
+  it("renders the onboarding status cell independently of whether an owner is set", () => {
+    mockUseGetProject.mockReturnValue({
+      data: { ...PROJECT, onboardingStatus: "In-Progress", onboardingOwner: null },
+      isLoading: false,
+      isError: false,
+    });
+    renderPage();
+    expect(screen.getByText("Onboarding Status")).toBeInTheDocument();
+    expect(screen.getByText("In Progress")).toBeInTheDocument();
+    expect(screen.queryByText("Onboarding Owner")).not.toBeInTheDocument();
   });
 
-  it("hides the Time report button even for a caller holding the viewer role, while temporarily disabled", () => {
-    mockIsSplAudience = true;
+  it("hides the onboarding status cell when onboardingStatus is Not-Applicable", () => {
+    mockUseGetProject.mockReturnValue({
+      data: { ...PROJECT, onboardingStatus: "Not-Applicable", onboardingOwner: null },
+      isLoading: false,
+      isError: false,
+    });
     renderPage();
-    expect(screen.queryByRole("link", { name: "Time Report" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Onboarding Status")).not.toBeInTheDocument();
+  });
+
+  it("hides the onboarding status cell when there is no onboarding engagement at all", () => {
+    mockUseGetProject.mockReturnValue({
+      data: { ...PROJECT },
+      isLoading: false,
+      isError: false,
+    });
+    renderPage();
+    expect(screen.queryByText("Onboarding Status")).not.toBeInTheDocument();
   });
 });
 
@@ -321,5 +358,55 @@ describe("CsmProjectDetailPage — Onboarding Owner", () => {
     });
     renderPage();
     expect(screen.queryByText("Onboarding Owner")).not.toBeInTheDocument();
+  });
+});
+
+// Regression coverage for the admin-only direct closure-state override: the
+// edit affordance is a client-side convenience only (the backend enforces
+// the real PermAdmin gate on PATCH /projects/{id}'s closureState field, see
+// apps/csm-portal/backend's own CLAUDE.md) -- hiding it here just avoids
+// offering an action that would 403 for everyone else.
+describe("CsmProjectDetailPage — closure state edit", () => {
+  beforeEach(() => {
+    mockCanUpdateProjectClosureState = false;
+    mockPatchClosureStateMutate.mockReset();
+    mockPatchClosureStateIsPending = false;
+    mockPatchClosureStateIsError = false;
+    mockUseGetProject.mockReturnValue({
+      data: { ...PROJECT, closureState: "Open" },
+      isLoading: false,
+      isError: false,
+    });
+  });
+
+  it("hides the edit control for a caller without canUpdateProjectClosureState", () => {
+    renderPage();
+    expect(
+      screen.queryByRole("button", { name: "Edit closure state" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows the edit control for an admin and opens the dialog on click", () => {
+    mockCanUpdateProjectClosureState = true;
+    renderPage();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit closure state" }));
+
+    expect(screen.getByText("Edit closure state", { selector: "h2" })).toBeInTheDocument();
+  });
+
+  it("submits the newly selected state via the patch mutation", () => {
+    mockCanUpdateProjectClosureState = true;
+    renderPage();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit closure state" }));
+    fireEvent.mouseDown(screen.getByRole("combobox", { name: /closure state/i }));
+    fireEvent.click(screen.getByRole("option", { name: "Suspended" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(mockPatchClosureStateMutate).toHaveBeenCalledWith(
+      "SUSPENDED",
+      expect.objectContaining({ onSuccess: expect.any(Function) }),
+    );
   });
 });

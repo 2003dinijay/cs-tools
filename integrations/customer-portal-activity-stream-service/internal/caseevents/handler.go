@@ -19,8 +19,7 @@
 // of every event independent of csm-notification-service's and the sibling
 // csm-portal-activity-stream-service's own consumers.
 // Logs type/entityId for every event, and — for the event types the
-// case-activity SSE stream cares about (comment added, status changed,
-// assigned, severity changed, acknowledged) — fans a minimal broadcast payload
+// case-activity SSE stream cares about (comment added, status changed) — fans a minimal broadcast payload
 // out to internal/stream.BroadcastHub, which is what actually pushes the
 // `case_updated` event to any browser subscribed to that case on this
 // replica (see internal/handler.StreamCaseActivities).
@@ -48,9 +47,10 @@ type Handler struct {
 	hub broadcastHub
 }
 
-// NewHandler constructs a Handler that fans case.comment_added,
-// case.status_changed, case.assigned, case.severity_changed and
-// case.acknowledged events out to hub. Pass nil to disable broadcasting
+// NewHandler constructs a Handler that fans case.comment_added (customer-visible
+// comments only) and case.status_changed events out to hub. Assignment,
+// severity and acknowledgement events are deliberately not broadcast: they are
+// not relevant to customers. Pass nil to disable broadcasting
 // (Handle will still log every event as before).
 func NewHandler(hub broadcastHub) *Handler {
 	return &Handler{hub: hub}
@@ -87,12 +87,27 @@ func (h *Handler) Handle(ctx context.Context, record eventbus.Record) error {
 	if h.hub == nil || env.EntityID == "" {
 		return nil
 	}
+	if env.Type == events.TypeCommentAdded && isInternalNote(env.Payload) {
+		// Internal notes are never customer-visible: do not tell customer
+		// browsers that anything changed.
+		return nil
+	}
 	switch env.Type {
-	case events.TypeCommentAdded, events.TypeStatusChanged, events.TypeCaseAssigned,
-		events.TypeSeverityChanged, events.TypeCaseAcknowledged:
+	case events.TypeCommentAdded, events.TypeStatusChanged:
 		h.broadcast(ctx, env)
 	}
 	return nil
+}
+
+// isInternalNote reports whether a case.comment_added payload is flagged as an
+// internal note. A missing or undecodable payload counts as not internal, so
+// the broadcast behaves as it did before the flag existed.
+func isInternalNote(payload json.RawMessage) bool {
+	var p events.CommentAddedPayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return false
+	}
+	return p.IsInternalNote
 }
 
 func (h *Handler) broadcast(ctx context.Context, env events.Envelope) {

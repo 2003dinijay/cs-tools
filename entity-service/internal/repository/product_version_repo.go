@@ -65,12 +65,19 @@ func (r *productVersionRepo) SearchProductVersions(ctx context.Context, req doma
 		argIdx++
 	}
 
+	// An empty profile (an explicit opt-out) applies no profile filter.
+	if req.DeploymentProfile != nil && *req.DeploymentProfile != "" {
+		where += fmt.Sprintf(" AND lower(deployment_profile) = lower($%d)", argIdx)
+		filterArgs = append(filterArgs, *req.DeploymentProfile)
+		argIdx++
+	}
+
 	countQuery := "SELECT COUNT(*) FROM product_version " + where
 
 	dataQuery := fmt.Sprintf(
 		`SELECT id, product_id, version, current_support_status,
 		        release_date, support_eol_date, earliest_possible_support_eol_date,
-		        created_on, updated_on
+		        deployment_profile, created_on, updated_on
 		 FROM product_version %s
 		 ORDER BY release_date DESC, id
 		 LIMIT $%d OFFSET $%d`,
@@ -103,7 +110,7 @@ func (r *productVersionRepo) SearchProductVersions(ctx context.Context, req doma
 			if err := rows.Scan(
 				&pv.ID, &pv.ProductID, &pv.Version, &pv.CurrentSupportStatus,
 				&pv.ReleaseDate, &pv.SupportEOLDate, &pv.EarliestPossibleSupportEOLDate,
-				&pv.CreatedOn, &pv.UpdatedOn,
+				&pv.DeploymentProfile, &pv.CreatedOn, &pv.UpdatedOn,
 			); err != nil {
 				return fmt.Errorf("scan product_version: %w", err)
 			}

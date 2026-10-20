@@ -85,6 +85,12 @@ type ProjectRepository interface {
 	// account (project.account_id IS NULL), or a ValidationError if a closure
 	// sub-state value isn't a valid Postgres enum label for that column.
 	UpdateProject(ctx context.Context, id string, req domain.ProjectUpdateRequest, updatedBy string) (domain.ProjectUpdateResult, error)
+	// GetProjectConsumptionStatus returns the product consumption state, application ID,
+	// OAuth credentials, and HMAC license keys for the project.
+	GetProjectConsumptionStatus(ctx context.Context, id string) (domain.ProjectConsumptionStatus, error)
+	// UpdateProjectConsumption updates product consumption fields (application ID, status enum,
+	// credentials, and license signing keys) on the project.
+	UpdateProjectConsumption(ctx context.Context, id string, req domain.ProjectConsumptionUpdateRequest, updatedBy string) error
 }
 
 type projectRepo struct {
@@ -692,6 +698,19 @@ func updateProjectTx(ctx context.Context, tx pgx.Tx, id string, req domain.Proje
 			return domain.ProjectUpdateResult{}, fmt.Errorf("update project: recompute closure state: %w", err)
 		}
 	}
+
+	// A direct admin override, applied AFTER the sub-field recompute above so
+	// that a request naming both (unusual, not rejected) leaves the caller's
+	// own explicit value in place rather than whatever the sub-states would
+	// otherwise derive. See ProjectUpdateRequest.ClosureState's own doc
+	// comment for the standing caveat this creates: a LATER request that
+	// touches any of the three sub-fields recomputes over this value again,
+	// with nothing recording that it was ever manually set.
+	if req.ClosureState != nil {
+		if _, err := tx.Exec(ctx, `UPDATE project SET wso2_closure_state = $2::wso2_closure_state_enum WHERE id = $1`, id, *closureEnumLabel(req.ClosureState)); err != nil {
+			return domain.ProjectUpdateResult{}, fmt.Errorf("update project: override closure state: %w", err)
+		}
+	}
 	var complianceDate *string
 	err = tx.QueryRow(ctx, `SELECT `+projectClosureColumns+` FROM project p WHERE p.id = $1`, id).Scan(
 		&res.ClosureState, &res.EndDateClosureState, &res.InvoiceDueDateClosureState,
@@ -772,6 +791,10 @@ var (
 		"SUSPENDED_AND_PREVIOUSLY_PAID", "PENDING_NOTIFIED_AND_PREVIOUSLY_PAID", "PENDING_NOTICED_AND_PREVIOUSLY_PAID",
 		"PENDING_RESTRICTED_AND_PREVIOUSLY_PAID", "PENDING_SUSPENDED_AND_PREVIOUSLY_PAID"}
 	complianceViolationClosureLabels = []string{"OPEN", "SUSPENDED"}
+	// wso2ClosureStateLabels are wso2_closure_state_enum's own five values —
+	// the set a direct ClosureState override (ProjectUpdateRequest.ClosureState)
+	// must be one of, distinct from the three sub-state label sets above.
+	wso2ClosureStateLabels = []string{"OPEN", "READ_ONLY", "CLOSED", "RESTRICTED", "SUSPENDED"}
 )
 
 // validateClosureFields rejects a PATCH closure value with no enum label,
@@ -785,6 +808,7 @@ func validateClosureFields(req domain.ProjectUpdateRequest) error {
 		{"endDateClosureState", req.EndDateClosureState, endDateClosureLabels},
 		{"invoiceDueDateClosureState", req.InvoiceDueDateClosureState, invoiceDueDateClosureLabels},
 		{"complianceViolationClosureState", req.ComplianceViolationClosureState, complianceViolationClosureLabels},
+		{"closureState", req.ClosureState, wso2ClosureStateLabels},
 	}
 	for _, f := range fields {
 		if f.value == nil || slices.Contains(f.labels, *closureEnumLabel(f.value)) {
@@ -826,3 +850,155 @@ func closureDisplayName(label string) string {
 func projectTypeNameToSubscriptionType(name string) domain.SubscriptionType {
 	return domain.SubscriptionType(strings.ToLower(strings.ReplaceAll(name, " ", "_")))
 }
+
+// GetProjectConsumptionStatus implements ProjectRepository.
+func (r *projectRepo) GetProjectConsumptionStatus(ctx context.Context, id string) (domain.ProjectConsumptionStatus, error) {
+	ctx = WithSystemIdentity(ctx)
+	var (
+		name               *string
+		desc               *string
+		appID              *string
+		statusEnum         *string
+		consumerKey        *string
+		consumerSecret     *string
+		primarySecretKey   *string
+		secondarySecretKey *string
+		licenseSecrets     *string
+	)
+
+	err := r.db.QueryRow(ctx, `
+		SELECT 
+			p.name,
+			p.description,
+			p.choreo_application_id,
+			p.choreo_application_status::TEXT,
+			p.product_consumption_client_id,
+			p.product_consumption_client_secret,
+			p.product_consumption_primary_secret_key,
+			p.product_consumption_secondary_secret_key,
+			p.product_consumption_license_secrets
+		FROM project p
+		WHERE p.id = $1`, id,
+	).Scan(
+		&name,
+		&desc,
+		&appID,
+		&statusEnum,
+		&consumerKey,
+		&consumerSecret,
+		&primarySecretKey,
+		&secondarySecretKey,
+		&licenseSecrets,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.ProjectConsumptionStatus{}, &apierror.NotFoundError{Msg: "project not found"}
+	}
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "22P02" {
+			return domain.ProjectConsumptionStatus{}, &apierror.ValidationError{Msg: "id is not a valid UUID: " + id}
+		}
+		return domain.ProjectConsumptionStatus{}, fmt.Errorf("get project consumption status: %w", err)
+	}
+
+	status := consumptionEnumToStatus(statusEnum, primarySecretKey != nil && *primarySecretKey != "")
+
+	return domain.ProjectConsumptionStatus{
+		Status:             status,
+		ApplicationID:      appID,
+		Name:               name,
+		Description:        desc,
+		ConsumerKey:        consumerKey,
+		ConsumerSecret:     consumerSecret,
+		PrimarySecretKey:   primarySecretKey,
+		SecondarySecretKey: secondarySecretKey,
+		LicenseSecrets:     licenseSecrets,
+	}, nil
+}
+
+// UpdateProjectConsumption implements ProjectRepository.
+func (r *projectRepo) UpdateProjectConsumption(ctx context.Context, id string, req domain.ProjectConsumptionUpdateRequest, updatedBy string) error {
+	ctx = WithSystemIdentity(ctx)
+	statusEnum := consumptionStatusToEnum(req.Status)
+
+	tag, err := r.db.Exec(ctx, `
+		UPDATE project
+		SET choreo_application_id = COALESCE($2, choreo_application_id),
+		    choreo_application_status = COALESCE($3::choreo_application_status_enum, choreo_application_status),
+		    product_consumption_client_id = COALESCE($4, product_consumption_client_id),
+		    product_consumption_client_secret = COALESCE($5, product_consumption_client_secret),
+		    product_consumption_primary_secret_key = COALESCE($6, product_consumption_primary_secret_key),
+		    product_consumption_secondary_secret_key = COALESCE($7, product_consumption_secondary_secret_key),
+		    product_consumption_license_secrets = COALESCE($8, product_consumption_license_secrets),
+		    updated_on = NOW(),
+		    updated_by = $9
+		WHERE id = $1`,
+		id,
+		req.ApplicationID,
+		statusEnum,
+		req.ConsumerKey,
+		req.ConsumerSecret,
+		req.PrimarySecretKey,
+		req.SecondarySecretKey,
+		req.LicenseSecrets,
+		updatedBy,
+	)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "22P02" {
+			return &apierror.ValidationError{Msg: "id is not a valid UUID: " + id}
+		}
+		return fmt.Errorf("update project consumption: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return &apierror.NotFoundError{Msg: "project not found"}
+	}
+	return nil
+}
+
+// consumptionStatusToEnum maps the 1-based consumption lifecycle status int onto
+// choreo_application_status_enum labels. Status 0/negative returns nil so COALESCE
+// preserves the existing column value.
+func consumptionStatusToEnum(status int) *string {
+	var s string
+	switch {
+	case status == 1:
+		s = "PENDING"
+	case status == 2:
+		s = "CREATED_APPLICATION"
+	case status == 3:
+		s = "SUBSCRIBED_APPLICATION"
+	case status == 4:
+		s = "GENERATED_CREDENTIALS"
+	case status >= 5:
+		s = "COMPLETED"
+	default:
+		return nil
+	}
+	return &s
+}
+
+// consumptionEnumToStatus translates choreo_application_status_enum to the 1-based status int.
+func consumptionEnumToStatus(enumVal *string, hasSecretKey bool) int {
+	if enumVal == nil {
+		return 1
+	}
+	switch *enumVal {
+	case "PENDING":
+		return 1
+	case "CREATED_APPLICATION":
+		return 2
+	case "SUBSCRIBED_APPLICATION":
+		return 3
+	case "GENERATED_CREDENTIALS":
+		if hasSecretKey {
+			return 5
+		}
+		return 4
+	case "COMPLETED":
+		return 5
+	default:
+		return 1
+	}
+}
+

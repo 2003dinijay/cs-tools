@@ -1,13 +1,13 @@
 schemaVersion: 1.2
 
 endpoints:
-  # The SSE endpoint — a long-lived Server-Sent Events connection on a
-  # dedicated port with WriteTimeout/IdleTimeout disabled. Not on 8080
-  # alongside a REST API because the REST listener's timeouts would kill
-  # the connection. Mirrors apps/customer-portal/backend-v2's websocket
-  # endpoint (WS_PORT, its own Choreo entry) for the same reason, though
-  # this one is still a REST-style HTTP GET (Server-Sent Events), not a
-  # protocol upgrade.
+  # The service's single endpoint: the SSE routes plus GET /health (Choreo's
+  # liveness probe; unauthenticated, see middleware.Auth). The SSE connection
+  # is long-lived, so this port has WriteTimeout/IdleTimeout disabled; that is
+  # harmless for the tiny /health handler. Mirrors
+  # apps/customer-portal/backend-v2's websocket endpoint (WS_PORT, its own
+  # Choreo entry), though this one is still a REST-style HTTP GET
+  # (Server-Sent Events), not a protocol upgrade.
   - name: csm-portal-activity-stream
     displayName: CSM Portal Case Activity Stream
     service:
@@ -17,17 +17,3 @@ endpoints:
     networkVisibilities:
       - Public
     schemaFilePath: openapi-stream.yaml
-
-  # Health check endpoint on the same process but separate listener on
-  # port 8080. Choreo's liveness probe targets this. SecurityHeaders +
-  # CORS + CorrelationID + Logger middleware; Auth is NOT applied to
-  # /health (see middleware.Auth).
-  - name: csm-portal-activity-stream-service-health
-    displayName: CSM Activity Stream Service Health
-    service:
-      basePath: /
-      port: 8080
-    type: REST
-    networkVisibilities:
-      - Public
-    schemaFilePath: openapi.yaml

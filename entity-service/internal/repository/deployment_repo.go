@@ -37,6 +37,8 @@ type DeploymentRepository interface {
 	// views together with the total count of matching rows before pagination.
 	// COUNT and SELECT are executed concurrently on separate pool connections.
 	SearchDeployments(ctx context.Context, req domain.SearchDeploymentsRequest) ([]domain.DeploymentView, int, error)
+	// CreateDeployment inserts a deployment row generating id and sequential number natively in PostgreSQL.
+	CreateDeployment(ctx context.Context, req domain.CreateDeploymentRequest, createdBy string) (domain.CreatedDeployment, error)
 	// CreateDeploymentFromServiceNow inserts a deployment row using identity
 	// (id/number) ServiceNow has already assigned -- see
 	// deploymentService.createDeploymentSNFirst's own doc comment for why:
@@ -87,8 +89,13 @@ func (r *deploymentRepo) SearchDeployments(ctx context.Context, req domain.Searc
 	// that genuinely needs to see deactivated deployments too (e.g. the CSM
 	// portal backend's customer-health EOL-product check). Every existing
 	// caller leaves it unset/false and sees byte-identical behavior.
+	// req.Active, when set, picks the state explicitly (false = deactivated
+	// only); otherwise the default above applies unless IncludeInactive widens it.
 	where := "WHERE d.project_id IS NOT NULL"
-	if !req.IncludeInactive {
+	switch {
+	case req.Active != nil && !*req.Active:
+		where += " AND d.is_active = FALSE"
+	case req.Active != nil || !req.IncludeInactive:
 		where += " AND d.is_active = TRUE"
 	}
 
@@ -102,6 +109,20 @@ func (r *deploymentRepo) SearchDeployments(ctx context.Context, req domain.Searc
 	if len(req.IDs) > 0 {
 		where += fmt.Sprintf(" AND d.id = ANY($%d::uuid[])", argIdx)
 		filterArgs = append(filterArgs, req.IDs)
+		argIdx++
+	}
+
+	if len(req.Numbers) > 0 {
+		where += fmt.Sprintf(" AND d.number = ANY($%d::text[])", argIdx)
+		filterArgs = append(filterArgs, req.Numbers)
+		argIdx++
+	}
+
+	// project.sf_id is nullable and a NULL never matches ANY(), so projects
+	// with no Salesforce id are simply not returned.
+	if len(req.ProjectSfIDs) > 0 {
+		where += fmt.Sprintf(" AND d.project_id IN (SELECT id FROM project WHERE sf_id = ANY($%d::text[]))", argIdx)
+		filterArgs = append(filterArgs, req.ProjectSfIDs)
 		argIdx++
 	}
 
@@ -144,8 +165,8 @@ func (r *deploymentRepo) SearchDeployments(ctx context.Context, req domain.Searc
 	// filter exists to eliminate.
 	dataQuery := fmt.Sprintf(
 		`SELECT d.id, d.number, d.name, d.type::TEXT, d.description,
-		        d.created_on, d.updated_on,
-		        p.id, p.name,
+		        d.created_on, d.updated_on, d.is_active,
+		        p.id, p.name, p.sf_id,
 		        (SELECT COUNT(*) FROM deployed_product dp
 		          WHERE dp.deployment_id = d.id AND dp.product_id IS NOT NULL
 		            AND (dp.active IS NULL OR dp.active = TRUE))
@@ -183,8 +204,8 @@ func (r *deploymentRepo) SearchDeployments(ctx context.Context, req domain.Searc
 			var deploymentType *string
 			if err := rows.Scan(
 				&d.ID, &d.Number, &d.Name, &deploymentType, &d.Description,
-				&d.CreatedOn, &d.UpdatedOn,
-				&d.Project.ID, &d.Project.Name,
+				&d.CreatedOn, &d.UpdatedOn, &d.Active,
+				&d.Project.ID, &d.Project.Name, &d.ProjectSfID,
 				&d.DeployedProductCount,
 			); err != nil {
 				return fmt.Errorf("scan deployment: %w", err)
@@ -220,6 +241,42 @@ func (r *deploymentRepo) SearchDeployments(ctx context.Context, req domain.Searc
 	}
 
 	return deployments, total, nil
+}
+
+const createDeploymentQuery = `
+	INSERT INTO deployment (
+		id, created_on, updated_on, created_by, updated_by,
+		number, name, description, type, is_active, project_id
+	)
+	VALUES (
+		gen_random_uuid(), NOW(), NOW(), $1, $1,
+		next_portal_deployment_number(), $2, NULLIF($3, ''), $4::deployment_type_enum, TRUE, $5
+	)
+	RETURNING id, created_on, created_by`
+
+// CreateDeployment implements DeploymentRepository for the native PostgreSQL data source.
+func (r *deploymentRepo) CreateDeployment(ctx context.Context, req domain.CreateDeploymentRequest, createdBy string) (domain.CreatedDeployment, error) {
+	var deploymentType string
+	if req.Type != nil {
+		deploymentType = strings.ToUpper(string(*req.Type))
+	}
+
+	var created domain.CreatedDeployment
+	err := r.db.QueryRow(ctx, createDeploymentQuery,
+		createdBy, req.Name, req.Description, deploymentType, req.ProjectID,
+	).Scan(&created.ID, &created.CreatedOn, &created.CreatedBy)
+	if err != nil {
+		if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) {
+			switch pgErr.Code {
+			case "23505": // unique_violation -- number or id already exists
+				return domain.CreatedDeployment{}, &apierror.ValidationError{Msg: "a deployment with this identity already exists"}
+			case "23503": // foreign_key_violation -- project_id does not exist
+				return domain.CreatedDeployment{}, &apierror.ValidationError{Msg: "projectId does not exist"}
+			}
+		}
+		return domain.CreatedDeployment{}, fmt.Errorf("create deployment: %w", err)
+	}
+	return created, nil
 }
 
 const createDeploymentFromServiceNowQuery = `

@@ -130,6 +130,15 @@ type SavedFilterViewService interface {
 	Reorder(ctx context.Context, req domain.ReorderSavedFilterViewRequest) (domain.SavedFilterViewList, error)
 }
 
+// RunbookService manages the alert-name to runbook catalog (Operations > Runbooks).
+type RunbookService interface {
+	List(ctx context.Context) (domain.RunbookList, error)
+	Create(ctx context.Context, req domain.SaveRunbookRequest) (domain.Runbook, error)
+	Update(ctx context.Context, id string, req domain.SaveRunbookRequest) (domain.Runbook, error)
+	Delete(ctx context.Context, id string) error
+	Import(ctx context.Context, req domain.ImportRunbooksRequest) (domain.ImportRunbooksResponse, error)
+}
+
 // SNUserService defines the user operations backed by the ServiceNow data source.
 type SNUserService interface {
 	// SearchUsers returns a paginated list of ServiceNow users that match the
@@ -487,6 +496,10 @@ type ProjectService interface {
 	// caller-scoped access" for the full rule and why existence is hidden
 	// rather than returning a 403.
 	GetProjectByID(ctx context.Context, id string) (domain.ProjectDetailsView, error)
+	// GetProjectConsumptionStatus returns product consumption state and credentials for the project.
+	GetProjectConsumptionStatus(ctx context.Context, id string) (domain.ProjectConsumptionStatus, error)
+	// UpdateProjectConsumption updates product consumption state, application ID, credentials, and license signing keys.
+	UpdateProjectConsumption(ctx context.Context, id string, req domain.ProjectConsumptionUpdateRequest, updatedBy string) error
 }
 
 // ProjectUpdateService defines the write operations available on a project.

@@ -19,6 +19,7 @@ import {
   Button,
   Card,
   Chip,
+  IconButton,
   Menu,
   MenuItem,
   Skeleton,
@@ -26,16 +27,20 @@ import {
   Tabs,
   Typography,
 } from "@wso2/oxygen-ui";
-import { ArrowLeft, ChevronDown, Plus } from "@wso2/oxygen-ui-icons-react";
+import { ArrowLeft, ChevronDown, Pencil, Plus } from "@wso2/oxygen-ui-icons-react";
 import { useState, type JSX, type MouseEvent, type ReactNode } from "react";
 import { Link as RouterLink, useLocation, useParams } from "react-router";
 import UserRefLink from "@components/UserRefLink";
+import { BackendApiError } from "@api/backend/client";
 import { usePortalAccess } from "@context/current-user/usePortalAccess";
 import { useGetProject } from "@features/csm-projects/api/useGetProject";
+import { usePatchProjectClosureState } from "@features/csm-projects/api/usePatchProjectClosureState";
 import { useProjectMetadata } from "@features/csm-projects/api/useProjectMetadata";
 import ClosureStateChip from "@features/csm-projects/components/ClosureStateChip";
 import DeploymentsTab from "@features/csm-projects/components/DeploymentsTab";
+import EditProjectClosureStateDialog from "@features/csm-projects/components/EditProjectClosureStateDialog";
 import ProjectContactsTab from "@features/csm-projects/components/ProjectContactsTab";
+import ProjectOnboardingStatusChip from "@features/csm-projects/components/ProjectOnboardingStatusChip";
 import WorkItemsTab from "@features/csm-projects/components/WorkItemsTab";
 import {
   endDateLabel,
@@ -56,6 +61,18 @@ const PROJECT_TAB_IDS: readonly ProjectTabId[] = [
 // it (currently just Work items' own `?subTab=`) — see the `useQueryParamTabs`
 // call below.
 const PROJECT_TAB_CHANGE_CLEARS: readonly string[] = ["subTab"];
+
+/**
+ * A raw upstream message is only safe to show for a client error (<500) --
+ * a 5xx body can leak internal detail and isn't actionable by the user, so
+ * it falls back to a generic message instead. Mirrors
+ * CsmAccountDetailPage's own `accountTeamsSaveErrorMessage`.
+ */
+function closureStateSaveErrorMessage(err: unknown): string {
+  return err instanceof BackendApiError && err.status < 500 && err.message
+    ? err.message
+    : "Could not update the project's closure state. Please try again.";
+}
 
 function formatDate(value?: string | null): string {
   if (!value) return "—";
@@ -152,10 +169,10 @@ export default function CsmProjectDetailPage(): JSX.Element {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavTransition();
   const location = useLocation();
-  // isSplAudience is unused while the Time report button below is
-  // temporarily disabled — restore it to the destructure above when
-  // re-enabling it.
-  const { canWrite, canViewWorkItemsStaffView } = usePortalAccess();
+  const { canWrite, canViewWorkItemsStaffView, canUpdateProjectClosureState } =
+    usePortalAccess();
+  const patchClosureState = usePatchProjectClosureState(id);
+  const [editClosureStateOpen, setEditClosureStateOpen] = useState(false);
   // Prefer wherever the caller came from (e.g. a case's Overview panel) over
   // the hardcoded projects list, so Back returns to that page instead of
   // skipping past it — same convention as CsmCaseDetailPage's own back path.
@@ -251,26 +268,29 @@ export default function CsmProjectDetailPage(): JSX.Element {
           />
         </Box>
         <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap", flexShrink: 0 }}>
-          {/* The Time report has no modern equivalent and is limited to the
-              viewer audience (a caller holding the viewer role, regardless of
-              what else they hold). See isSplAudience's own doc comment.
-              Outlined, not contained: the single contained CTA on this page
-              is Create, below.
-
-              Temporarily disabled: removed from view for the moment.
-              Re-enable by uncommenting this block and restoring
-              isSplAudience to the usePortalAccess() destructure above. */}
-          {/* {isSplAudience && (
-            <Button
-              variant="outlined"
-              size="small"
-              className="csm-print-hide"
-              component={RouterLink}
-              to={`/customers/projects/${p.id}/timelogs-report`}
-            >
-              Time Report
-            </Button>
-          )} */}
+          {/* Shown to anyone who can open this project. Outlined, not
+              contained: the single contained CTA on this page is Create. */}
+          <Button variant="outlined" size="small" className="csm-print-hide" disabled>
+            SLA Report — Coming soon
+          </Button>
+          <Button
+            variant="outlined"
+            size="small"
+            className="csm-print-hide"
+            component={RouterLink}
+            to={`/customers/projects/${p.id}/timelogs-report`}
+          >
+            Time Report
+          </Button>
+          <Button
+            variant="outlined"
+            size="small"
+            className="csm-print-hide"
+            component={RouterLink}
+            to={`/customers/projects/${p.id}/cs-report/${p.id}`}
+          >
+            CS Report
+          </Button>
           {/* File any issue type already scoped to this project — every create
               form below locks the project field, so it can't be filed against
               the wrong one. */}
@@ -371,7 +391,25 @@ export default function CsmProjectDetailPage(): JSX.Element {
               <Mono>{p.key}</Mono>
             </MetaCell>
             <MetaCell label="State">
-              <ClosureStateChip closureState={p.closureState} />
+              <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+                <ClosureStateChip closureState={p.closureState} />
+                {canUpdateProjectClosureState && (
+                  <IconButton
+                    size="small"
+                    aria-label="Edit closure state"
+                    className="csm-print-hide"
+                    onClick={() => {
+                      // A failed save from a previous session with this
+                      // dialog would otherwise still be `isError` here,
+                      // showing a stale error the moment the dialog reopens.
+                      patchClosureState.reset();
+                      setEditClosureStateOpen(true);
+                    }}
+                  >
+                    <Pencil size={14} />
+                  </IconButton>
+                )}
+              </Box>
             </MetaCell>
             <MetaCell label="Subscription">
               <Typography variant="body2">{formatSubscriptionType(p.subscriptionType)}</Typography>
@@ -400,6 +438,11 @@ export default function CsmProjectDetailPage(): JSX.Element {
             <MetaCell label={endDateLabel(p.endDate)}>
               <Typography variant="body2">{formatDate(p.endDate)}</Typography>
             </MetaCell>
+            {p.onboardingStatus && p.onboardingStatus !== "Not-Applicable" && (
+              <MetaCell label="Onboarding Status">
+                <ProjectOnboardingStatusChip onboardingStatus={p.onboardingStatus} />
+              </MetaCell>
+            )}
             {p.onboardingStatus &&
               p.onboardingStatus !== "Not-Applicable" &&
               p.onboardingOwner && (
@@ -422,6 +465,29 @@ export default function CsmProjectDetailPage(): JSX.Element {
       {activeTab === "contacts" && <ProjectContactsTab projectId={p.id} />}
 
       {activeTab === "workItems" && <WorkItemsTab projectId={p.id} />}
+
+      {editClosureStateOpen && (
+        <EditProjectClosureStateDialog
+          currentClosureState={p.closureState}
+          isSaving={patchClosureState.isPending}
+          saveError={
+            patchClosureState.isError
+              ? closureStateSaveErrorMessage(patchClosureState.error)
+              : null
+          }
+          onClose={() => {
+            if (!patchClosureState.isPending) setEditClosureStateOpen(false);
+          }}
+          onSave={(closureState) =>
+            // No onError handler: the dialog's own inline alert (saveError
+            // above, driven by patchClosureState.isError/.error) already
+            // surfaces the failure.
+            patchClosureState.mutate(closureState, {
+              onSuccess: () => setEditClosureStateOpen(false),
+            })
+          }
+        />
+      )}
     </Box>
   );
 }
