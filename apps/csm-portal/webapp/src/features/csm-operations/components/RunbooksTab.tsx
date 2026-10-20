@@ -631,16 +631,14 @@ function RunbookAlertTags({
     >
       {runbook.alerts.map((alert) => (
         <Box component="li" key={alert} sx={{ maxWidth: "100%" }}>
-          <Tooltip title={canUnmerge ? "Unmerge: move this alert into a runbook of its own, with the same link" : ""}>
-            <Chip
-              size="small"
-              variant="outlined"
-              label={alert}
-              sx={{ maxWidth: "100%", fontFamily: "monospace" }}
-              onDelete={canUnmerge ? () => onUnmerge(alert) : undefined}
-              deleteIcon={<X size={14} aria-label={`Unmerge ${alert}`} />}
-            />
-          </Tooltip>
+          <Chip
+            size="small"
+            variant="outlined"
+            label={alert}
+            sx={{ maxWidth: "100%", fontFamily: "monospace" }}
+            onDelete={canUnmerge ? () => onUnmerge(alert) : undefined}
+            deleteIcon={<X size={14} aria-label={`Unmerge ${alert}`} />}
+          />
         </Box>
       ))}
     </Box>
