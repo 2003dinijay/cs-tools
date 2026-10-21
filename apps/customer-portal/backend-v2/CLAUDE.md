@@ -619,8 +619,10 @@ cases, change requests, deployments, etc. in *this* portal, since `permissionMat
 **The gate**: an `INTERNAL`-type caller (entity-service's `user_type`) may reach a write path here
 only if their own JWT `groups` claim — the token they authenticated with, not entity-service's
 business roles from `GetMe().Roles` — contains at least one of the names configured in
-`AUTH_INTERNAL_WRITE_GROUPS` (comma-separated, required like `AUTH_ADMIN_ROLE` — see README.md). A
-non-`INTERNAL` caller (a genuine customer/partner) is never touched by this gate; their write access
+`AUTH_INTERNAL_WRITE_GROUPS` (comma-separated, optional — see README.md). Unset/empty means the
+gate is off: every `INTERNAL` caller keeps full write access, same as before this gate existed; set
+it only once the real write-access group is known. A non-`INTERNAL` caller (a genuine
+customer/partner) is never touched by this gate; their write access
 is still decided entirely by `permissionMatrix`. `groups`, not `roles`, is deliberate: this app's
 own OAuth client has never been provisioned to emit a `roles` claim at all — the deprecated v1
 Ballerina backend's own JWT payload type (`modules/authorization/types.bal`) only ever decoded

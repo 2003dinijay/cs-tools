@@ -164,12 +164,12 @@ func main() {
 
 	// internalWriteGroups are the JWT "groups" claim values that let an
 	// INTERNAL-type caller (entity-service's own user_type) reach a write
-	// path in this portal -- required, like AUTH_ADMIN_ROLE, rather than
-	// defaulting to empty: an unset value would otherwise silently decide
-	// "no INTERNAL caller may write here", a deploy-time security posture
-	// that must be a deliberate configuration choice, not an accident of
-	// leaving the variable out. See middleware.CachedRoleResolver.IsInternalWriteBlocked.
-	internalWriteGroups := splitComma(mustEnv("AUTH_INTERNAL_WRITE_GROUPS"))
+	// path in this portal -- optional, and deliberately so: unset/empty means
+	// the gate is off, so every INTERNAL caller keeps full write access, the
+	// same as before this gate existed. Set it only once the real
+	// write-access group is known; until then this must not block startup or
+	// change behavior. See middleware.CachedRoleResolver.IsInternalWriteBlocked.
+	internalWriteGroups := splitComma(os.Getenv("AUTH_INTERNAL_WRITE_GROUPS"))
 
 	authCfg := middleware.Config{
 		JWKSEndpoint:          mustURL("AUTH_JWKS_ENDPOINT", "http", "https"),
