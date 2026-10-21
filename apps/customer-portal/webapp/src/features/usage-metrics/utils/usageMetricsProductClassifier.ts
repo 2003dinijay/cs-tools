@@ -155,8 +155,9 @@ export function classifyProductLabel(label: string): {
  */
 export function getProductMetricKeys(label: string, version?: string): string[] {
   const { type, majorVersion: labelMajorVersion } = classifyProductLabel(label);
-  const versionSource = version != null ? version : label;
-  const majorVersion = version != null ? parseMajorVersion(version) : labelMajorVersion;
+  const hasVersion = version != null && version !== "";
+  const versionSource = hasVersion ? version : label;
+  const majorVersion = hasVersion ? parseMajorVersion(version) : labelMajorVersion;
   switch (type) {
     case WsoProductType.APIM:
       return majorVersion >= 7

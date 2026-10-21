@@ -74,6 +74,11 @@ describe("usageMetricsProductClassifier", () => {
     expect(getProductMetricKeys("WSO2 Identity Server 7.1.0")).not.toContain("AGENT_OBO_TOKEN");
   });
 
+  it("treats an empty version as absent and reads the label instead", () => {
+    expect(getProductMetricKeys("WSO2 Identity Server 7.3.0", "")).toContain("AGENT_OBO_REFRESH_TOKEN");
+    expect(getProductMetricKeys("WSO2 Identity Server 7.1.0", "")).not.toContain("AGENT_OBO_TOKEN");
+  });
+
   it("leaves the other products' metrics unchanged", () => {
     expect(getProductMetricKeys("WSO2 API Manager", "4.4.0")).toEqual(["TRANSACTION_COUNT", "API_COUNT"]);
     expect(getProductMetricKeys("WSO2 API Manager", "4.5.0")).not.toContain("MAU");
