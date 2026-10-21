@@ -12746,8 +12746,8 @@ paths:
       operationId: listRunbooks
       description: >
         Every alert name with its runbook link (`runbookUrl`, null when none),
-        forwarded from the entity service. The incident page's Related tab shows
-        the runbook whose alert name the incident's subject contains.
+        forwarded from the entity service. A new incident whose subject contains
+        an alert name gets the runbook as a work note.
       responses:
         "200":
           description: Ok.

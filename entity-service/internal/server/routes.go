@@ -1481,6 +1481,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// groupless default is logged, never fatal -- the create still works, it
 	// just leaves such incidents unassigned.
 	activeIncidentSvc = service.WithIncidentDefaultService(activeIncidentSvc, cfg.IncidentDefaultServiceID)
+	if runbookRepo != nil {
+		activeIncidentSvc = service.WithRunbookCatalog(activeIncidentSvc, runbookRepo)
+	}
 	if cfg.IncidentDefaultServiceID != "" && (db != nil || cfg.DataSource == config.DataSourceServiceNow) {
 		go service.CheckIncidentDefaultService(context.Background(), activeIncidentSvc, cfg.IncidentDefaultServiceID)
 	}
