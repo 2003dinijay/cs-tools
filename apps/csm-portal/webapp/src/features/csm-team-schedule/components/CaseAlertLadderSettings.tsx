@@ -21,6 +21,7 @@ import { familyOfLadder } from "../utils/caseAlertChainSettings";
 import { useCaseAlertDrafts } from "../utils/caseAlertDrafts";
 import type {
   CaseAlertFileOnly,
+  CaseAlertLadderChannels,
   CaseAlertRoomLadder,
   CaseAlertLadderValue,
   CaseAlertRunningValue,
@@ -28,6 +29,7 @@ import type {
 } from "../types";
 import {
   LADDER_KEY_GROUPS,
+  channelWords,
   draftFor,
   fileOnlyRows,
   formatLadderValue,
@@ -163,27 +165,90 @@ export default function CaseAlertLadderSettings({ ladder, settings: s, onSaved }
         ) : null}
       </CaseAlertSection>
 
-      <FileOnlyGroup ladder={ladder} fileOnly={s.running?.fileOnly?.[ladder]} />
+      <ChannelsGroup ladder={ladder} channels={s.running?.channels?.[ladder]} />
+      <FileOnlyGroup
+        ladder={ladder}
+        fileOnly={s.running?.fileOnly?.[ladder]}
+        onTab={new Set(Object.keys(running))}
+      />
     </div>
   );
 }
 
+/** Who gets which channel, as the alert service runs it now: whether the
+ *  ladder runs, its channel, and each team's (the ladder's narrowed by the
+ *  team's own). Read-only: the ladder's switches are edited above, a team's
+ *  channel and room in Team routing. */
+function ChannelsGroup({
+  ladder,
+  channels,
+}: {
+  ladder: CaseAlertRoomLadder;
+  channels?: CaseAlertLadderChannels;
+}): JSX.Element | null {
+  if (!channels) return null;
+  const title = `${ladder}: who gets which channel`;
+  const on = channels.enabled ? (channelWords(channels.channel) ?? channels.channel) : "Off";
+  return (
+    <CaseAlertSection id={`${ladder}.channels`} label={title} summary={`${title} · ${on}`}>
+      <p className="cas-sub">
+        {channels.enabled
+          ? `The ${ladder} ladder is on: ${channelWords(channels.channel) ?? channels.channel}.`
+          : `The ${ladder} ladder is off: nobody is alerted.`}{" "}
+        A team's own channel can only narrow the ladder's.
+      </p>
+      {channels.teams.length > 0 ? (
+        <table className="ra-tbl cas-values cas-channels">
+          <thead>
+            <tr>
+              <th>Team</th>
+              <th>Channel in use</th>
+              <th>Own room</th>
+            </tr>
+          </thead>
+          <tbody>
+            {channels.teams.map((t) => (
+              <tr key={t.team}>
+                <td>
+                  <b>{t.team}</b>
+                </td>
+                <td>
+                  <span className="cas-val">
+                    {channels.enabled ? (channelWords(t.channel) ?? t.channel) : "Off"}
+                    {t.teamChannel ? " (team's own)" : ""}
+                  </span>
+                </td>
+                <td>{t.room ? "Yes" : "No (shared room)"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : (
+        <p className="cas-sub cas-empty">Every team uses the ladder's channel.</p>
+      )}
+    </CaseAlertSection>
+  );
+}
+
 /** The settings only the alert service's file can set, read-only for
- *  everyone and closed until opened: whether alerts run and what they may
- *  cost stay a reviewed change to the file, not a click. */
+ *  everyone and closed until opened. Whether a ladder runs, its channel and
+ *  its safety holds are edited above once the alert service reports them;
+ *  the rest stay a reviewed change to the file. */
 function FileOnlyGroup({
   ladder,
   fileOnly,
+  onTab,
 }: {
   ladder: CaseAlertRoomLadder;
   fileOnly?: CaseAlertFileOnly;
+  onTab: ReadonlySet<string>;
 }): JSX.Element {
   // Named by ladder: the SRE tab shows SRE's and SME's.
   const title = `${ladder}: set in the alert service's file`;
   return (
     <CaseAlertSection id={`${ladder}.file`} label={title} summary={`${title} · read-only`}>
       <p className="cas-sub">
-        These decide whether alerts run and what it may cost. They change only with a reviewed change to the file.
+        These decide what alerts may cost. They change only with a reviewed change to the file.
       </p>
       {fileOnly ? (
         <table className="ra-tbl cas-values cas-file-only">
@@ -198,7 +263,7 @@ function FileOnlyGroup({
             </tr>
           </thead>
           <tbody>
-            {fileOnlyRows(ladder, fileOnly).map((r) => (
+            {fileOnlyRows(ladder, fileOnly, onTab).map((r) => (
               <tr key={r.label}>
                 <td>
                   <b>{r.label}</b>

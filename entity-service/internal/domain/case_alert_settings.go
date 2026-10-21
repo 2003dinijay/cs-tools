@@ -222,6 +222,11 @@ type CaseAlertRunning struct {
 	// channel, safety caps (allowed numbers counted, never listed) and where
 	// phone numbers come from. Shown read-only.
 	FileOnly map[string]map[string]json.RawMessage `json:"fileOnly,omitempty"`
+	// Channels is, per ladder, whether it runs, its channel, and for each SRE
+	// and SME team the channel it actually uses (the ladder's narrowed by the
+	// team's own) and whether it has a room. Passed on as the alert service
+	// reported it, filtered to the caller's families.
+	Channels map[string]json.RawMessage `json:"channels,omitempty"`
 }
 
 // CaseAlertRunningValue is one setting as the alert service runs it. Source

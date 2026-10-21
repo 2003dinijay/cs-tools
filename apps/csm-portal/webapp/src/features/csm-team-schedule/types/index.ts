@@ -581,6 +581,27 @@ export interface CaseAlertRunning {
   /** Per ladder, the settings only the file can set. Absent from an alert
    *  service that doesn't report them yet. */
   fileOnly?: Partial<Record<CaseAlertRoomLadder, CaseAlertFileOnly>>;
+  /** Per ladder, whether it runs, its channel, and each team's channel as
+   *  the alert service runs it. Absent from an alert service that doesn't
+   *  report them yet. */
+  channels?: Partial<Record<CaseAlertRoomLadder, CaseAlertLadderChannels>>;
+}
+
+/** One team's channel as running: the ladder's narrowed by the team's own. */
+export interface CaseAlertTeamChannel {
+  team: string;
+  channel: string;
+  /** The team's own saved channel, when it has one. */
+  teamChannel?: string;
+  /** Whether the team has a chat room of its own. */
+  room: boolean;
+}
+
+export interface CaseAlertLadderChannels {
+  /** The ladder runs: its own switch and the file's master switch are on. */
+  enabled: boolean;
+  channel: string;
+  teams: CaseAlertTeamChannel[];
 }
 
 /** What decides whether a ladder pages and what it may cost: read here, set

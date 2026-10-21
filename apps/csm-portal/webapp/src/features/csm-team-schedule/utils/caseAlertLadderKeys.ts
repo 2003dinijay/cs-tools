@@ -39,9 +39,16 @@ export const CHAIN_LADDER: Partial<Record<PagingChainCode, CaseAlertLadder>> = {
  * for the inputs.
  */
 
-export type LadderKeyGroup = "Who gets alerts" | "When a ladder starts" | "How it climbs" | "Heads" | "Chat messages";
+export type LadderKeyGroup =
+  | "On/off and channel"
+  | "Who gets alerts"
+  | "When a ladder starts"
+  | "How it climbs"
+  | "Heads"
+  | "Chat messages";
 
 export const LADDER_KEY_GROUPS: LadderKeyGroup[] = [
+  "On/off and channel",
   "Who gets alerts",
   "When a ladder starts",
   "How it climbs",
@@ -89,7 +96,61 @@ const ALL: CaseAlertRoomLadder[] = ["CRE", "SRE", "SME"];
 const SRE_SME: CaseAlertRoomLadder[] = ["SRE", "SME"];
 const SME: CaseAlertRoomLadder[] = ["SME"];
 
+/** The channels a ladder can use, most to least. */
+const CHANNEL_OPTIONS = [
+  { value: "both", label: "Calls and chat" },
+  { value: "chat", label: "Chat only" },
+  { value: "call", label: "Calls only" },
+  { value: "log", label: "Log only (no calls or chat)" },
+];
+
 export const LADDER_KEYS: LadderKeySpec[] = [
+  // On/off and channel. The alert service's file keeps a master switch and an
+  // emergency off switch outside this page.
+  {
+    key: "enabled",
+    ladders: ALL,
+    group: "On/off and channel",
+    label: "Alerts on",
+    help: "Whether this ladder pages anyone at all. The alert service's own master switch must be on too.",
+    editor: "bool",
+  },
+  {
+    key: "channel",
+    ladders: ALL,
+    group: "On/off and channel",
+    label: "Channel",
+    help: "How people are reached. Calls cost money and wake people; chat only posts cards. A team's own channel can only narrow this.",
+    editor: "enum",
+    options: CHANNEL_OPTIONS,
+  },
+  {
+    key: "safety.maxCallsPerLadder",
+    ladders: BOTH,
+    group: "On/off and channel",
+    label: "Max calls per ladder",
+    help: "The most calls one incident or case may place. Extra calls are dropped and noted.",
+    editor: "int",
+    min: 1,
+    max: 50,
+  },
+  {
+    key: "safety.callWithoutVerifiedLeads",
+    ladders: BOTH,
+    group: "On/off and channel",
+    label: "Call before every lead has a number",
+    help: "Off, no calls are placed while any ABT lead has no phone number. On, calls go out anyway.",
+    editor: "bool",
+  },
+  {
+    key: "safety.callHeadsWithoutLowerTiers",
+    ladders: BOTH,
+    group: "On/off and channel",
+    label: "Call the heads when nobody below can be called",
+    help: "Off, the top steps are held when nobody on the lower steps has a number. On, they are called anyway.",
+    editor: "bool",
+  },
+
   // Who is paged
   {
     key: "teams.abtType",
@@ -575,19 +636,26 @@ function yesNo(v: boolean | undefined): string {
 /** The settings only the file can set, as rows for people. The heads row is
  *  CRE's only: SRE has no heads. Allowed numbers are a count; the numbers
  *  never reach the page. */
-export function fileOnlyRows(ladder: CaseAlertRoomLadder, f: CaseAlertFileOnly): { label: string; value: string }[] {
+export function fileOnlyRows(
+  ladder: CaseAlertRoomLadder,
+  f: CaseAlertFileOnly,
+  /** Keys reported among the ladder's tab values: shown there, not here. */
+  onTab: ReadonlySet<string> = new Set(),
+): { label: string; value: string }[] {
   const maxCalls = f["safety.maxCallsPerLadder"];
   const maxLevel = f["safety.maxLevel"];
   const allowed = f["safety.allowedNumbers"];
-  const rows = [
-    { label: "Alerts on", value: yesNo(f.enabled) },
-    { label: "Channel", value: channelWords(f.channel) ?? "—" },
+  const rows: { key: string; label: string; value: string }[] = [
+    { key: "enabled", label: "Alerts on", value: yesNo(f.enabled) },
+    { key: "channel", label: "Channel", value: channelWords(f.channel) ?? "—" },
     {
+      key: "safety.maxCallsPerLadder",
       label: "Max calls per ladder",
       value: maxCalls === undefined ? "—" : maxCalls === 0 ? "no cap" : String(maxCalls),
     },
-    { label: "Highest step", value: maxLevel === undefined ? "no cap" : `L${maxLevel}` },
+    { key: "safety.maxLevel", label: "Highest step", value: maxLevel === undefined ? "no cap" : `L${maxLevel}` },
     {
+      key: "safety.allowedNumbers",
       label: "Allowed numbers",
       value:
         allowed === undefined
@@ -596,17 +664,24 @@ export function fileOnlyRows(ladder: CaseAlertRoomLadder, f: CaseAlertFileOnly):
             ? "any number"
             : `only ${allowed} listed ${allowed === 1 ? "number" : "numbers"}`,
     },
-    { label: "Call before every lead has a number", value: yesNo(f["safety.callWithoutVerifiedLeads"]) },
+    {
+      key: "safety.callWithoutVerifiedLeads",
+      label: "Call before every lead has a number",
+      value: yesNo(f["safety.callWithoutVerifiedLeads"]),
+    },
   ];
   if (ladder === "CRE") {
     rows.push({
+      key: "safety.callHeadsWithoutLowerTiers",
       label: "Call the heads when nobody below can be called",
       value: yesNo(f["safety.callHeadsWithoutLowerTiers"]),
     });
   }
   const phones = f["phones.source"];
-  rows.push({ label: "Phone numbers from", value: phones ? (PHONE_WORDS[phones] ?? phones) : "—" });
-  return rows.map((r) => ({ ...r, value: safe(r.value) }));
+  rows.push({ key: "phones.source", label: "Phone numbers from", value: phones ? (PHONE_WORDS[phones] ?? phones) : "—" });
+  return rows
+    .filter((r) => !onTab.has(r.key))
+    .map(({ label, value }) => ({ label, value: safe(value) }));
 }
 
 /** The limits of a key, in one line, for the editor. Hints only: the server

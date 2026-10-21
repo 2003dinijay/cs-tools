@@ -421,6 +421,36 @@ describe("CaseAlertLadderSettings", () => {
     expect(within(group).queryByRole("button")).not.toBeInTheDocument();
   });
 
+  it("edits the switches on the tab once the alert service reports them there, and says who gets which channel", () => {
+    window.localStorage.clear();
+    const base = make();
+    settings.data = make({
+      running: {
+        ...base.running!,
+        ladders: {
+          CRE: {
+            ...base.running!.ladders.CRE,
+            enabled: { value: true, source: "file" },
+            channel: { value: "both", source: "saved" },
+          },
+        },
+        channels: {
+          CRE: { enabled: true, channel: "both", teams: [] },
+        },
+      },
+    });
+    render(<CaseAlertSettings chain="CRE" />);
+    // The file block no longer lists what the tab edits.
+    fireEvent.click(screen.getByText(/CRE: set in the alert service's file/));
+    const file = screen.getByRole("region", { name: /: set in the alert service's file$/ });
+    expect(within(file).queryByText("Alerts on")).not.toBeInTheDocument();
+    expect(within(file).queryByText("Channel")).not.toBeInTheDocument();
+    expect(fileValue(file, "Highest step")).toBe("L3");
+    // Who gets which channel.
+    const channels = screen.getByRole("region", { name: "CRE: who gets which channel" });
+    expect(channels.querySelector("summary")?.textContent).toBe("▸CRE: who gets which channel · Calls and chat");
+  });
+
   it("says the file-only settings are not reported yet", () => {
     const notYet = /Not reported yet: the alert service reports these when it runs in shadow or db mode\./;
     settings.data = make({ running: undefined });
@@ -478,6 +508,7 @@ describe("CaseAlertLadderSettings", () => {
       .getAllByRole("region")
       .map((r) => r.querySelector("summary")?.textContent);
     expect(groups).toEqual([
+      "▸On/off and channel · all from the file",
       "▸Who gets alerts · 1 saved here",
       "▸When a ladder starts · all from the file",
       "▸How it climbs · all from the file",

@@ -23622,14 +23622,38 @@ components:
         fileOnly:
           type: object
           description: >
-            Ladder (CRE, SRE) to what only the file sets, shown read-only:
+            Ladder (CRE, SRE, SME) to the file's own settings as running:
             enabled, channel, safety.maxCallsPerLadder, safety.maxLevel (absent
             when there is no cap), safety.allowedNumbers (a count, never the
             numbers), safety.callWithoutVerifiedLeads,
-            safety.callHeadsWithoutLowerTiers, phones.source.
+            safety.callHeadsWithoutLowerTiers, phones.source. enabled, channel
+            and the three safety values above can now also be saved as values
+            (ladders); safety.maxLevel, safety.allowedNumbers and phones.source
+            stay file-only.
           additionalProperties:
             type: object
             additionalProperties: true
+        channels:
+          type: object
+          description: >
+            Ladder (CRE, SRE, SME) to whether it runs (its own switch and the
+            file's master switch), its channel, and for each SRE and SME team
+            the channel it actually uses (the ladder's narrowed by the team's
+            own) and whether it has a room. Filtered to the caller's families.
+          additionalProperties:
+            type: object
+            properties:
+              enabled: { type: boolean }
+              channel: { type: string, enum: [call, chat, both, log] }
+              teams:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    team: { type: string }
+                    channel: { type: string }
+                    teamChannel: { type: string }
+                    room: { type: boolean }
     CaseAlertSettingsRights:
       type: object
       required: [view, roomLadders, routeLadders]
