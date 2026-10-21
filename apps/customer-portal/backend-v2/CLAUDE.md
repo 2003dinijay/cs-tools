@@ -253,17 +253,28 @@ guaranteed to always match, so don't collapse them into a single field.
 
 It backs two routes:
 - `POST /projects/{projectId}/deployments/{deploymentId}/license` — returns the deployment's
-  license. `ProcessLicenseDownload` (`internal/productconsumption/subscription.go`) is **one call**
-  to the subscription service's `POST /projects/{projectId}/deployments/{deploymentId}/license`;
-  the provisioning state machine (create the WSO2 API Manager application, subscribe it, generate
-  credentials and secret keys, each step only once and resumable) lives in that service, not here.
-  Do not move steps back into this backend: a second driver of that state machine could create a
-  duplicate application. The client refuses a `success:false` answer, missing subscription data or
-  a missing signature as a data error rather than handing back an unusable license. The handler
+  license. `PRODUCT_CONSUMPTION_LICENSE_MODE` selects how `ProcessLicenseDownload`
+  (`internal/productconsumption/subscription.go`, the single dispatch point) provisions it:
+  - `legacy` (**the default**; unset or empty means legacy): the backend itself drives the
+    subscription service's per-project state machine (`subscription_legacy.go`,
+    `types_legacy.go`, `jsonint.go`): consumption-status check, create application, patch
+    project, subscribe, generate-credentials, generate-secret-keys, then fetch the license, each
+    step only once and resuming from the project's current state. Up to 5 sequential upstream
+    requests.
+  - `service`: **one call** to the subscription service's
+    `POST /projects/{projectId}/deployments/{deploymentId}/license`; the provisioning state
+    machine lives in that service, not here.
+  Any other value fails startup (`productconsumption.ParseLicenseMode`). **The two modes must
+  never both drive the state machine for the same deployment**: in `legacy` the backend is the
+  driver, in `service` the subscription service is, and two drivers can create a duplicate
+  application. Switch the mode for the whole environment, only once the subscription service is
+  ready to own provisioning. In both modes the client refuses a `success:false` answer, missing
+  subscription data or a missing signature as a data error rather than handing back an unusable
+  license. The handler
   first calls `entity.GetProject` purely as an access-control gate, discarding the result —
   entity-service is still the authorization boundary for "does this caller own this project."
-  Provisioning a first license can still take several upstream calls inside the subscription
-  service, so the handler extends its own write deadline via
+  Provisioning a first license can take several upstream calls (made by this backend in `legacy`,
+  inside the subscription service in `service`), so the handler extends its own write deadline via
   `http.NewResponseController(w).SetWriteDeadline`, which only works because
   `middleware.responseWriter` forwards `SetWriteDeadline`/`SetReadDeadline` to the underlying
   `ResponseWriter`, the same reason it forwards `Hijack` for the WebSocket route above.

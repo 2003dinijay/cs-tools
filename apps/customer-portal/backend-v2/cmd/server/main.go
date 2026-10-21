@@ -116,6 +116,15 @@ func main() {
 	// independently-configurable base URLs — PRODUCT_CONSUMPTION_TRACKING_BASE_URL
 	// defaults to PRODUCT_CONSUMPTION_SUBSCRIPTION_URL when unset, for
 	// deployments where both happen to point at the same host.
+	//
+	// PRODUCT_CONSUMPTION_LICENSE_MODE selects the license flow: "legacy"
+	// (default when unset) drives provisioning from this backend; "service"
+	// makes one call to the subscription service, which owns provisioning.
+	licenseMode, err := productconsumption.ParseLicenseMode(os.Getenv(productconsumption.EnvLicenseMode))
+	if err != nil {
+		slog.Error("invalid product-consumption configuration", "err", err)
+		os.Exit(1)
+	}
 	productConsumptionCfg := productconsumption.Config{
 		SubscriptionBaseURL: mustURL("PRODUCT_CONSUMPTION_SUBSCRIPTION_URL", "http", "https"),
 		TrackingBaseURL:     optionalURL("PRODUCT_CONSUMPTION_TRACKING_BASE_URL", "http", "https"),
@@ -123,6 +132,7 @@ func main() {
 		ClientID:            oauth2ClientID,
 		ClientSecret:        oauth2ClientSecret,
 		Scopes:              splitComma(os.Getenv("PRODUCT_CONSUMPTION_SCOPES")),
+		LicenseMode:         licenseMode,
 	}
 	productConsumptionClient := productconsumption.NewClient(productConsumptionCfg)
 
