@@ -581,6 +581,75 @@ such as `staging`), `CASE_ALERTS_RUNTIME_CLIENT_IDS` (narrows who may read the
 URLs), and `CASE_ALERTS_SECRET_KEY` / `_KEY_ID` (only to open a URL sealed
 before 0237).
 
+## Rota import (SRE)
+
+A whole SRE rota for a period, written from one JSON file:
+`POST /team-schedule/rotas/{code}/import` (and the same path on the CSM portal
+backend, `PermWrite`). `?dryRun=true` runs the import and rolls it back, so the
+answer is exactly what it would do. No schema change: every entry goes through
+the picker's own rules (`applyRangeTx` / `applyAbsenceTx`, the transaction-taking
+cores of `ApplyRange` / `ApplyAbsence`), all inside one transaction, so the file
+lands whole or not at all.
+
+The standard structure, schema version 1:
+
+```json
+{
+  "schemaVersion": 1,
+  "family": "SRE",
+  "rotaCode": "SRE_SAAS",
+  "period": { "from": "2026-11-01", "to": "2026-11-30" },
+  "mode": "replace",
+  "assignments": [
+    { "email": "user1@example.com", "teamKey": "apollo",  "shiftCode": "SRE_TZ1_L1", "from": "2026-11-02", "to": "2026-11-06" },
+    { "email": "user2@example.com", "teamKey": "apollo",  "shiftCode": "SRE_TZ1", "tier": "L2", "from": "2026-11-02", "to": "2026-11-06" },
+    { "email": "user3@example.com", "teamKey": "artemis", "shiftCode": "SRE_TZ2_L1", "from": "2026-11-02", "to": "2026-11-06" },
+    { "email": "user4@example.com", "teamKey": "artemis", "shiftCode": "SRE_TZ2", "tier": "L3", "from": "2026-11-02", "to": "2026-11-06" },
+    { "email": "user5@example.com", "teamKey": "apollo",  "shiftCode": "SRE_TZ3", "tier": "L1", "from": "2026-11-02", "to": "2026-11-08" },
+    { "email": "user6@example.com", "teamKey": "apollo",  "shiftCode": "SRE_WE_TZ1", "tier": "L1", "from": "2026-11-07", "to": "2026-11-08" },
+    { "email": "user7@example.com", "teamKey": "artemis", "shiftCode": "SRE_TZ1_REGULAR", "from": "2026-11-02", "to": "2026-11-27" }
+  ],
+  "absences": [
+    { "email": "user2@example.com", "teamKey": "apollo",  "kindCode": "ANNUAL_LEAVE", "from": "2026-11-16", "to": "2026-11-20" },
+    { "email": "user5@example.com", "teamKey": "apollo",  "kindCode": "SRE_NIGHT_COVER", "from": "2026-11-01", "to": "2027-01-31" },
+    { "email": "user8@example.com", "teamKey": "artemis", "kindCode": "ALLO_EXT", "allocatedTo": "Example Customer", "from": "2026-11-09", "to": "2026-11-13" }
+  ]
+}
+```
+
+| Field | Rule |
+|---|---|
+| `schemaVersion` | `1` |
+| `family`, `rotaCode` | `SRE` and a rota of that family (`SRE_SAAS`, `SRE_IAAS`); `rotaCode` must equal the path's `{code}` |
+| `period` | `YYYY-MM-DD`, both ends inclusive, at most a year |
+| `mode` | `replace`: first remove every assignment of the rota's teams dated inside the period (absences are left alone). `merge`: keep them; each entry replaces only what the picker would |
+| `email` | resolved against the team schedule's members (case-insensitive); unknown, or shared by two users, is refused |
+| `teamKey` | a team on that rota (`apollo`, `artemis`, `saas-night-cover`; `iaas`) |
+| `shiftCode` | a window of one of the rota's zones; `SRE_WE_TZ2` is retired and refused |
+| `tier` | on an escalation window that does not fix one (`SRE_TZ1`, `SRE_TZ2`, `SRE_TZ3`, the weekend `SRE_WE_TZ1`, `SRE_IAAS_DAY`, `SRE_IAAS_NIGHT`), required; none on regular hours; `SRE_TZ1_L1` / `SRE_TZ2_L1` take only L1. TZ3 is one crew for the whole SaaS rota |
+| assignment `from`..`to` | inside the period; days the window is not worked are skipped and reported |
+| `kindCode` | a kind offered on the family (leave, `ALLO_INT`, `ALLO_EXT`, `ALLO_BR`, `RND`, `SRE_NIGHT_COVER`, `EXCLUDED`); retired kinds refused |
+| absence `from`..`to` | must overlap the period; may run past it (a Night cover move of three months) |
+
+**Who may.** Internal staff with a user token. Every entry needs a writer of its
+team (`requireRotaWriterOverSpan`, the picker's own rule, Night cover moves
+included), and a `replace` also needs a writer of every team of the rota, since it
+clears them all: an Apollo lead can merge Apollo's rows, only an SRE rota admin (or
+a lead of both teams) can replace the SaaS rota.
+
+**Refusals.** File-level problems are checked first and listed together (up to 25),
+each named by its entry: `the rota file has problems: assignments[0]: nobody on the
+team schedule has the email ...; absences[2]: ...`. A rule only the database can
+check (a tier somebody else holds, an overlapping turn) refuses the whole file with
+the entry named (`assignments[4]: ...`), status as the picker would give it.
+
+**Concurrency.** The import takes the same advisory lock as "Generate month"
+(`RotaGeneratorOwner(rota)`), so the two never interleave on one rota. Imported
+rows are ordinary picker rows (source as `ApplyRange` writes them, activity and audit
+recorded), so a later "Generate month" treats them as set by hand. A replace's
+deletions write no activity rows (as the generator's do not); the audit trigger
+records them.
+
 ## 5. Known gaps
 
 - **Why 0152–0156.** 0141–0150 are claimed by the open RLS work in #2094, and
@@ -597,6 +666,7 @@ before 0237).
 
 ## Change log
 
+- **Rota import (no migration).** `POST /team-schedule/rotas/{code}/import` writes a whole SRE rota for a period from one JSON file (schema version 1, people by email), all or nothing, `?dryRun=true` to preview; see "Rota import (SRE)". `ApplyRange` / `ApplyAbsence` were split into a transaction-taking core and a begin/commit wrapper so the import reuses their rules unchanged.
 - **0238 Case Alerts: SME ladder values.** `paging_ladder_value` takes ladder
   `SME`. Additive and re-runnable; no row changes.
 - **0237 Case Alerts: SME team rooms, plain URLs.** `paging_chat_room` takes
