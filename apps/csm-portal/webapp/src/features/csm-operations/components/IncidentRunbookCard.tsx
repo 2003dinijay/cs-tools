@@ -15,7 +15,7 @@
 // under the License.
 
 import { Box, Card, Chip, Link, Skeleton, Typography } from "@wso2/oxygen-ui";
-import { ExternalLink } from "@wso2/oxygen-ui-icons-react";
+import { BookOpen, ExternalLink } from "@wso2/oxygen-ui-icons-react";
 import { type JSX, useMemo } from "react";
 import { useRunbooks } from "@features/csm-operations/api/useRunbooks";
 import { findRunbookForIncident } from "@features/csm-operations/utils/runbooks";
@@ -72,7 +72,10 @@ export default function IncidentRunbookCard({ subject }: IncidentRunbookCardProp
 
   return (
     <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 1.5 }}>
-      <Typography variant="subtitle2">Runbook</Typography>
+      <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+        <BookOpen size={16} />
+        <Typography variant="subtitle2">Runbook</Typography>
+      </Box>
       {body}
     </Card>
   );
