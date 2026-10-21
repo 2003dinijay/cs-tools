@@ -44,7 +44,10 @@ import (
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/engine"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/entitycases"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/housekeeping"
+	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/httpsec"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/ledger"
+	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/migrationreport"
+	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/migrationscan"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/notify"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/opencases"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/registry"
@@ -121,6 +124,18 @@ func main() {
 	// period's natural key: with both running, matching periods can end up
 	// with two rows. Turning this on is a paired change with switching
 	// ServiceNow's job off -- the same shape as CLOUD_STATUS_ENABLED.
+	migrationReportClient, err := migrationreport.NewClient(migrationreport.Config{
+		BaseURL:      entityServiceBaseURL,
+		TokenURL:     oauthTokenURL,
+		ClientID:     oauthClientID,
+		ClientSecret: oauthClientSecret,
+		Scopes:       entityServiceScopes,
+	})
+	if err != nil {
+		slog.Error("failed to construct entity-service migration-scan client", "err", err)
+		os.Exit(1)
+	}
+
 	availabilityEnabled := envBool("AVAILABILITY_RECALC_ENABLED", false)
 	var availabilityClient *availability.Client
 	if availabilityEnabled {
@@ -303,6 +318,23 @@ func main() {
 	const openCasesTaskName = "open_cases_report"
 	openCasesTo, openCasesCc := recipientsFor(recipientOverrides, openCasesTaskName)
 
+	const migrationCaseReportTaskName = "migration_case_report"
+	migrationCaseTo, migrationCaseCc := recipientsFor(recipientOverrides, migrationCaseReportTaskName)
+	// The age a migration must reach before the weekly scan lists it. One
+	// value, read once: the source report hard-coded its window in three
+	// places and the CS team asked for six months in place of three.
+	migrationCaseOlderThanDays := int(envDays("MIGRATION_CASE_REPORT_OLDER_THAN_DAYS", 180).Hours() / 24)
+	// The CSM portal's web origin, for the links in the scan
+	// (<origin>/engagements/{id}). Unset renders the issue keys as plain
+	// text; a non-https value refuses to start, as every URL here does.
+	csmPortalWebBaseURL := strings.TrimRight(os.Getenv("CSM_PORTAL_WEB_BASE_URL"), "/")
+	if csmPortalWebBaseURL != "" {
+		if err := httpsec.RequireSecureURL(csmPortalWebBaseURL); err != nil {
+			slog.Error("invalid CSM_PORTAL_WEB_BASE_URL", "err", err)
+			os.Exit(1)
+		}
+	}
+
 	const publishScheduledAnnouncementsTaskName = "publish_scheduled_announcements"
 	publishScheduledAnnouncementsTo, publishScheduledAnnouncementsCc := recipientsFor(recipientOverrides, publishScheduledAnnouncementsTaskName)
 
@@ -361,6 +393,25 @@ func main() {
 			Handler:  opencases.SendReport(entityCasesClient, emailClient, openCasesTo, openCasesCc, alertsEnabled),
 			To:       openCasesTo,
 			Cc:       openCasesCc,
+		},
+		// Emails the weekly migration case scan — see internal/migrationscan's
+		// own doc comment. The audience is the mail groups of the teams
+		// entity-service is configured with, plus this task's own
+		// SUB_CRON_RECIPIENTS entry; an empty audience fails the run so it is
+		// noticed. Default schedule is Sunday 22:30 UTC, which is Monday
+		// 04:00 in Colombo, the hour the scan has always arrived; override
+		// via SUB_CRON_SCHEDULES if needed.
+		//
+		// To and Cc are left nil DELIBERATELY: the engine mails task.To plus
+		// ALERT_RECIPIENTS on every failed attempt, and a failed period is
+		// retried on every tick for a week. The report audience is several
+		// team mail groups; an entity-service outage must not send them an
+		// hourly FAILED notice. Failures go to ALERT_RECIPIENTS alone.
+		{
+			Name:     migrationCaseReportTaskName,
+			Schedule: scheduleFor(scheduleOverrides, migrationCaseReportTaskName, "30 22 * * 0"),
+			Handler: migrationscan.SendReport(migrationReportClient, emailClient,
+				migrationCaseOlderThanDays, migrationCaseTo, migrationCaseCc, csmPortalWebBaseURL, alertsEnabled),
 		},
 		// The first sub-cron here that does real, per-row, multi-step,
 		// partial-failure-tolerant work rather than a bulk delete or a

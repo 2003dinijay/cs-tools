@@ -75,6 +75,7 @@ per period. Every failed attempt sends a failure alert email (see [Alerting](#al
 | `housekeeping_cleanup` | `0 3 * * *` | Always | Deletes resolved (succeeded or superseded) ledger rows older than `HOUSEKEEPING_RETENTION_DAYS`. Open or failed rows are never deleted. |
 | `stale_cases_report` | `0 7 * * *` | Always | Emails a report of cases not closed and created at least 30 days ago (fixed threshold). Does nothing and still succeeds if the task has no `to` recipients. |
 | `open_cases_report` | `0 8 * * *` | Always | Emails a report of cases still in the `open` state that were created before the start of yesterday (UTC calendar-day boundary). Does nothing and still succeeds if the task has no `to` recipients. |
+| `migration_case_report` | `30 22 * * 0` | Always | Emails the weekly migration case scan: migration engagements still open after `MIGRATION_CASE_REPORT_OLDER_THAN_DAYS`, in three tables (customer asked to hold, waiting on the accounts team, neither). Sent to the mail groups of the teams entity-service is configured with (`MIGRATION_CASE_REPORT_TEAM_KEYS` there) plus this task's own `to`/`cc`; fails the run when that audience is empty. Always sent, even with empty tables. |
 | `publish_scheduled_announcements` | `*/15 * * * *` | Always | Finds scheduled announcements whose publish time has arrived and asks entity-service to publish each one. Every due item is attempted independently; failures are joined into one error. |
 | `cloud_status_webhooks` | `*/5 * * * *` | Only if `CLOUD_STATUS_ENABLED=true` | Asks entity-service which service-status transitions owe an outbound webhook, posts each to its configured status-dashboard base URL, and records delivery. |
 | `availability_recalculation` | `0 3 * * *` | Only if `AVAILABILITY_RECALC_ENABLED=true` | Triggers entity-service to recompute service availability figures; fails the run on a partial sweep or an empty subject list. The arithmetic runs in entity-service. |
@@ -111,6 +112,8 @@ csm-scheduled-tasks/
 │   ├── housekeeping/             # Handler for housekeeping_cleanup
 │   ├── stalecases/               # Handler for stale_cases_report
 │   ├── opencases/                # Handler for open_cases_report
+│   ├── migrationscan/            # Handler for migration_case_report
+│   ├── migrationreport/          # Client + types for entity-service's migration case scan
 │   ├── notify/                   # Email client and HTML templates (alert, stale/open case reports)
 │   ├── httpsec/                  # Shared https-only URL guard and redirect guard for the HTTP clients
 │   └── apierror/                 # Typed upstream-error wrapper shared by the clients
@@ -207,7 +210,9 @@ treated as unset, except where noted. All example values are placeholders.
 | `EMAIL_FROM_ADDRESS` | No | empty | Fixed From address on every email sent. | `noreply@example.com` |
 | `ALERTS_ENABLED` | No | `true` | Global kill switch for all emails (failure alerts and report emails). When false, failures are still recorded and retried, and report tasks skip their work. | `false` |
 | `ALERT_RECIPIENTS` | No | empty | Comma-separated standing audience emailed on every failed attempt of every task. | `oncall@example.com` |
-| `SUB_CRON_RECIPIENTS` | No | empty | JSON object of per-task recipients keyed by task name: `{"<task>": {"to": [...], "cc": [...]}}`. Extra failure-alert audience for most tasks; the actual report audience for `stale_cases_report` and `open_cases_report`. | `{"stale_cases_report":{"to":["team@example.com"],"cc":[]}}` |
+| `SUB_CRON_RECIPIENTS` | No | empty | JSON object of per-task recipients keyed by task name: `{"<task>": {"to": [...], "cc": [...]}}`. Extra failure-alert audience for most tasks; the actual report audience for `stale_cases_report` and `open_cases_report`, and the configured part of `migration_case_report`'s (its failure alerts go to `ALERT_RECIPIENTS` only). | `{"stale_cases_report":{"to":["team@example.com"],"cc":[]}}` |
+| `MIGRATION_CASE_REPORT_OLDER_THAN_DAYS` | No | `180` | The age, in days, a migration must reach before `migration_case_report` lists it. | `180` |
+| `CSM_PORTAL_WEB_BASE_URL` | No | empty | The CSM portal's web origin; the migration case scan links each issue to `<origin>/engagements/{id}`. Unset leaves the keys as plain text. Must be https. | `https://csm.example.com` |
 | `SUB_CRON_SCHEDULES` | No | empty | JSON object overriding task schedules by name: `{"<task>": "<cron>"}`. Unlisted tasks keep their built-in default. An invalid cron expression stops startup. | `{"housekeeping_cleanup":"0 4 * * *"}` |
 | `DRIVER_INTERVAL` | No | `1h` | Expected invocation cadence; must match the platform trigger. Go duration syntax, must be positive. Used as the default retry backoff and to size the orphaned-claim safety margin. | `15m` |
 | `HOUSEKEEPING_RETENTION_DAYS` | No | `30` | Days of resolved ledger history kept by `housekeeping_cleanup`. Plain positive integer, not a duration string. | `30` |
