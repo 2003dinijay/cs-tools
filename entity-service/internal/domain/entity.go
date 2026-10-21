@@ -1529,6 +1529,17 @@ type ProjectUpdateRequest struct {
 	// and tolerant of spaces (normalized the same way the three sub-state
 	// fields above already are).
 	ClosureState *string `json:"closureState,omitempty"`
+	// OnboardingStatus sets the project's onboarding status (Postgres data
+	// sources only; rejected on the ServiceNow data source). Accepts the labels
+	// reads return ("Not-Started", "In-Progress", "On-Hold", "Completed",
+	// "Cancelled", "Expired", "Not-Applicable"), ignoring case, hyphens,
+	// underscores and spaces.
+	OnboardingStatus *string `json:"onboardingStatus,omitempty"`
+	// OnboardingOwner sets the project's onboarding owner to this user id
+	// (Postgres data sources only; rejected on the ServiceNow data source).
+	// Must be an active internal user. Clearing the owner is not supported:
+	// null and omitted both leave it unchanged.
+	OnboardingOwner *string `json:"onboardingOwner,omitempty"`
 }
 
 // ProjectUpdateResponse is the result of a project update operation
@@ -1550,6 +1561,10 @@ type ProjectUpdateResult struct {
 	ComplianceViolationClosureState *string         `json:"complianceViolationClosureState"`
 	SuspensionProcessState          json.RawMessage `json:"suspensionProcessState"`
 	VerificationEnabled             *bool           `json:"verificationEnabled,omitempty"`
+	// OnboardingStatus and OnboardingOwner are populated on Postgres data
+	// sources only.
+	OnboardingStatus *string    `json:"onboardingStatus,omitempty"`
+	OnboardingOwner  *PersonRef `json:"onboardingOwner,omitempty"`
 }
 
 // ProjectConsumptionStatus represents the product consumption state and keys for a project.
@@ -2346,6 +2361,31 @@ type DeployedProductView struct {
 	Updates   []ProductUpdateEntry `json:"updates"`
 	CreatedOn time.Time            `json:"createdOn"`
 	UpdatedOn time.Time            `json:"updatedOn"`
+	// DeploymentType is the type of the deployment this deployed product belongs
+	// to, nil when the deployment has none or the data source does not say. It
+	// is not a field of its own on the wire: MarshalJSON nests it in "deployment".
+	DeploymentType *DeploymentType `json:"-"`
+}
+
+// MarshalJSON writes the deployment as {id, name, type}: EntityRef alone has no
+// room for the deployment type, and widening that shared type would touch every
+// endpoint that uses it. type is null when DeploymentType is nil.
+func (v DeployedProductView) MarshalJSON() ([]byte, error) {
+	type plain DeployedProductView // no MarshalJSON, so this does not recurse
+	return json.Marshal(struct {
+		plain
+		// Deployment shadows plain.Deployment (same JSON name, shallower depth).
+		Deployment struct {
+			EntityRef
+			Type *DeploymentType `json:"type"`
+		} `json:"deployment"`
+	}{
+		plain: plain(v),
+		Deployment: struct {
+			EntityRef
+			Type *DeploymentType `json:"type"`
+		}{EntityRef: v.Deployment, Type: v.DeploymentType},
+	})
 }
 
 // ProductRef is a reference to a product, carrying the short key ServiceNow
@@ -4548,6 +4588,10 @@ type ChangeRequestSortField string
 const (
 	ChangeRequestSortFieldCreatedOn ChangeRequestSortField = "createdOn"
 	ChangeRequestSortFieldUpdatedOn ChangeRequestSortField = "updatedOn"
+	// PostgreSQL only: the planned window. A change request with no planned
+	// date sorts last in either direction.
+	ChangeRequestSortFieldPlannedStartOn ChangeRequestSortField = "plannedStartOn"
+	ChangeRequestSortFieldPlannedEndOn   ChangeRequestSortField = "plannedEndOn"
 )
 
 // ChangeRequestSortOrder controls the sort direction.
@@ -4600,8 +4644,60 @@ type SearchChangeRequestsFilters struct {
 	//     "rejected". Distinct from approvedBy/approvedOn on
 	//     ChangeRequestDetail, which are derived from a narrower
 	//     Customer-Approval-stage record, not this CR-wide field.
+	//   - "tag" (op in / notIn): tag names, matched case-insensitively; in =
+	//     carries any of them, notIn = carries none. PostgreSQL only, internal
+	//     callers only.
+	//   - "updatedOn" / "plannedStartOn" / "plannedEndOn" (op gte/lte): same
+	//     value syntax as "createdOn", on the last update / planned start /
+	//     planned end. PostgreSQL only.
+	//   - "type" (op in): change types (standard, normal, emergency, ...).
+	//     PostgreSQL only.
 	// See service.ParseChangeRequestFieldFilters.
 	Filters []ChangeRequestFieldFilter `json:"filters,omitempty"`
+
+	// Tags / ExcludeTags are the parsed "tag" filter, set by the service from
+	// Filters before the repository runs. Never read from the wire.
+	Tags        []string `json:"-"`
+	ExcludeTags []string `json:"-"`
+	// The other list filters the PostgreSQL search applies from Filters, set by
+	// the service the same way. Never read from the wire.
+	AssignmentGroupIDs               []string            `json:"-"`
+	AssignedUserIDs                  []string            `json:"-"`
+	UpdatedStart, UpdatedEnd         *time.Time          `json:"-"`
+	PlannedStartFrom, PlannedStartTo *time.Time          `json:"-"`
+	PlannedEndFrom, PlannedEndTo     *time.Time          `json:"-"`
+	Types                            []ChangeRequestType `json:"-"`
+
+	// AnyOf expresses cross-field OR, as on case search: each branch's Filters
+	// are ANDed, the branches are OR'd, and the result is ANDed with everything
+	// else. Branch fields (op in only): state, impact, projectId, type,
+	// assignmentGroupId, assignedUserId, tag (tag: internal callers only).
+	// PostgreSQL only.
+	AnyOf []ChangeRequestFilterBranch `json:"anyOf,omitempty"`
+	// OrGroups is AnyOf parsed by the PostgreSQL service. Never read from the wire.
+	OrGroups []ChangeRequestFilterGroup `json:"-"`
+}
+
+// ChangeRequestFilterBranch is one branch of SearchChangeRequestsFilters.AnyOf.
+type ChangeRequestFilterBranch struct {
+	Filters []ChangeRequestFieldFilter `json:"filters"`
+}
+
+// ChangeRequestFilterGroup is one parsed, ANDed branch of
+// SearchChangeRequestsFilters.AnyOf (enum values already in their column form).
+type ChangeRequestFilterGroup struct {
+	States, Impacts, ProjectIDs, ChangeModels, AssignmentGroupIDs, AssignedUserIDs, Tags []string
+}
+
+// IncidentFilterBranch is one branch of SearchIncidentsFilters.AnyOf.
+type IncidentFilterBranch struct {
+	Filters []IncidentFieldFilter `json:"filters"`
+}
+
+// IncidentFilterGroup is one parsed, ANDed branch of SearchIncidentsFilters.AnyOf
+// (enum values already in their column form).
+type IncidentFilterGroup struct {
+	States, Priorities, Categories, ServiceIDs, AssignmentGroupIDs, AssignedUserIDs []string
 }
 
 // SearchChangeRequestsRequest is the input for a change request search operation.
@@ -5008,9 +5104,9 @@ type PatchChangeRequestRequest struct {
 	// change touches (an explicitly empty array clears it, and with it the
 	// deployment products that follow from it). Together
 	// with ProjectID and DeploymentProductIDs it is editable
-	// only before implementation starts: once the change request has reached
-	// implement (or any later state) a change is refused with a
-	// ValidationError, while resending the stored value is accepted. The
+	// only until the change request is approved: once it has reached
+	// customer_approval or scheduled (or any later state) a change is refused
+	// with a ValidationError, while resending the stored value is accepted. The
 	// relationship rules are those of CreateChangeRequestRequest.ProjectID.
 	// Changing ProjectID while deployments are stored requires DeploymentIDs
 	// in the same request. Cannot be combined with the single DeploymentID /
@@ -6357,6 +6453,10 @@ type SearchIncidentsFilters struct {
 	//     ServiceNow's raw incident_state numeric keys.
 	//   - "assignmentGroupId" (op in): sys_user_group UUIDs.
 	//   - "businessServiceId" (op in): business_service sys_id UUIDs.
+	//   - "category" (op in): incident category labels (e.g. "SOFTWARE"),
+	//     case-insensitive. PostgreSQL only.
+	//   - "updatedOn" (op gte/lte): same syntax as "createdOn", on the
+	//     incident's last update. PostgreSQL only.
 	//   - "createdOn" (op gte/lte): RFC3339 timestamp, YYYY-MM-DD date, or a
 	//     relative-date placeholder (e.g. "__daysAgo:90__"), same syntax as
 	//     case search's own "createdOn" filter.
@@ -6398,6 +6498,24 @@ type SearchIncidentsFilters struct {
 	// "taskSLABusinessElapsedPercent" filter before the request reaches the
 	// Postgres repository; it carries no wire representation of its own.
 	ParsedTaskSLA *TaskSLAFilter `json:"-"`
+
+	// AssignmentGroupIDs / Categories / UpdatedStart / UpdatedEnd are the parsed
+	// "assignmentGroupId", "category" and "updatedOn" filters, set by the
+	// Postgres incident service from Filters before the repository runs. Never
+	// read from the wire.
+	AssignmentGroupIDs []string   `json:"-"`
+	Categories         []string   `json:"-"`
+	UpdatedStart       *time.Time `json:"-"`
+	UpdatedEnd         *time.Time `json:"-"`
+
+	// AnyOf expresses cross-field OR, as on case search: each branch's Filters
+	// are ANDed, the branches are OR'd, and the result is ANDed with everything
+	// else. Branch fields (op in only): state, priority, category,
+	// businessServiceId, assignmentGroupId, assignedUserId. PostgreSQL only.
+	AnyOf []IncidentFilterBranch `json:"anyOf,omitempty"`
+	// OrGroups is AnyOf parsed by the PostgreSQL incident service. Never read
+	// from the wire.
+	OrGroups []IncidentFilterGroup `json:"-"`
 }
 
 // SearchIncidentsRequest is the input for POST /incidents/search.

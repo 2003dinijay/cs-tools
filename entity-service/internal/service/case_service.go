@@ -3270,13 +3270,10 @@ func prepareCaseSearchFilters(ctx context.Context, req domain.SearchCasesRequest
 	// escalations lookup returned every case in the system). Fixed by wiring
 	// it into caseFieldPredicates like ProjectIDs' own identical shape;
 	// accountId+notIn stays rejected below rather than silently dropping the
-	// exclusion and widening the result set -- nothing has asked for it yet.
-	if len(parsed.ExcludeAccountIDs) > 0 {
-		return domain.SearchCasesRequest{}, &apierror.ValidationError{Msg: `field "accountId" (notIn) is not supported by this data source`}
-	}
-	if parsed.Unassigned {
-		return domain.SearchCasesRequest{}, &apierror.ValidationError{Msg: `field "assignedUserId" (isEmpty) is not supported by this data source`}
-	}
+	// exclusion and widening the result set -- until the SR list's Advanced
+	// "Customer is not one of" asked for it, and it was wired in too.
+	// accountId+notIn and assignedUserId+isEmpty are applied by
+	// caseRepo.SearchCases (top level only; both are refused inside anyOf).
 	if parsed.ResolutionNotesEmpty {
 		return domain.SearchCasesRequest{}, &apierror.ValidationError{Msg: `field "resolutionNotes" is not supported by this data source`}
 	}

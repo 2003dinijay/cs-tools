@@ -66,7 +66,7 @@ import EditIncidentDialog from "@features/csm-operations/components/EditIncident
 import EntityRefLink from "@features/csm-operations/components/EntityRefLink";
 import { WorkItemSlaTable } from "@features/csm-sla/components/WorkItemSlaTable";
 import IncidentTasksWidget from "@features/csm-operations/components/IncidentTasksWidget";
-import IncidentRunbookCard from "@features/csm-operations/components/IncidentRunbookCard";
+import IncidentRunbookSection from "@features/csm-operations/components/IncidentRunbookSection";
 import IncidentActionBar from "@features/csm-operations/components/IncidentActionBar";
 import IncidentCreateMenu from "@features/csm-operations/components/IncidentCreateMenu";
 import IncidentResolutionDialog from "@features/csm-operations/components/IncidentResolutionDialog";
@@ -885,6 +885,7 @@ export default function CsmIncidentDetailPage(): JSX.Element {
             </MetaCell>
           ))}
         </Box>
+        <IncidentRunbookSection subject={incident.subject ?? ""} />
       </Card>
 
       <Box className="csm-print-hide" sx={{ borderBottom: 1, borderColor: "divider" }}>
@@ -1055,7 +1056,7 @@ export default function CsmIncidentDetailPage(): JSX.Element {
               gap: 2,
               gridTemplateColumns: {
                 xs: "1fr",
-                md: "repeat(2, minmax(0, 1fr))",
+                md: hasLinkedServiceRequests ? "repeat(2, minmax(0, 1fr))" : "1fr",
               },
               alignItems: "start",
             }}
@@ -1094,9 +1095,6 @@ export default function CsmIncidentDetailPage(): JSX.Element {
                 </Typography>
               </Card>
             )}
-
-            <IncidentRunbookCard subject={incident.subject ?? ""} />
-
 
             {hasLinkedServiceRequests && (
               <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 1.5 }}>

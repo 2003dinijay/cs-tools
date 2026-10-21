@@ -78,6 +78,7 @@ func TestCodes_AreStableLowerSnakeCase(t *testing.T) {
 		"CodeChangeRequestNoPlannedWindow":      "change_request_no_planned_window",
 		"CodeChangeRequestProposerNotRecorded":  "change_request_proposer_not_recorded",
 		"CodeIncidentAssignmentGroupNotAllowed": "incident_assignment_group_not_allowed",
+		"CodeChangeRequestApprovedReadOnly":     "change_request_approved_read_only",
 	}
 	got := map[string]string{
 		"CodeChangeRequestOnHold":               CodeChangeRequestOnHold,
@@ -90,6 +91,7 @@ func TestCodes_AreStableLowerSnakeCase(t *testing.T) {
 		"CodeChangeRequestNoPlannedWindow":      CodeChangeRequestNoPlannedWindow,
 		"CodeChangeRequestProposerNotRecorded":  CodeChangeRequestProposerNotRecorded,
 		"CodeIncidentAssignmentGroupNotAllowed": CodeIncidentAssignmentGroupNotAllowed,
+		"CodeChangeRequestApprovedReadOnly":     CodeChangeRequestApprovedReadOnly,
 	}
 	snake := regexp.MustCompile(`^[a-z][a-z0-9]*(_[a-z0-9]+)*$`)
 	seen := map[string]string{}

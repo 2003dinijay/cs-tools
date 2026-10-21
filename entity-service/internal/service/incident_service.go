@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
@@ -325,7 +326,9 @@ func parseIncidentFieldFiltersPostgres(f domain.SearchIncidentsFilters, now time
 			if err := validateUUIDs("filters: assignmentGroupId", f.Values); err != nil {
 				return nil, nil, nil, nil, nil, nil, nil, nil, err
 			}
-			// Accepted, validated, but never applied -- no backing column.
+			// Applied by parseIncidentListFiltersPostgres.
+		case "category", "updatedOn":
+			// Parsed and applied by parseIncidentListFiltersPostgres.
 		case "businessServiceId":
 			if f.Op != "in" {
 				return nil, nil, nil, nil, nil, nil, nil, nil, badIncidentFilterCombo(f)
@@ -429,6 +432,60 @@ func parseIncidentFieldFiltersPostgres(f domain.SearchIncidentsFilters, now time
 		}
 	}
 	return priorities, states, serviceIDs, assignedUserIDs, madeSla, slaViolated, createdStartDate, createdEndDate, nil
+}
+
+// parseIncidentListFiltersPostgres parses the incident list filters this data
+// source applies beyond parseIncidentFieldFiltersPostgres's tuple -- the
+// assignment group (work_item.assignment_group_id), the category and the
+// last-updated window -- into the request's internal fields, where
+// incidentWhereClause reads them. The ServiceNow data source does not take
+// "category" / "updatedOn" (ParseIncidentFieldFilters rejects them there).
+func parseIncidentListFiltersPostgres(f *domain.SearchIncidentsFilters, now time.Time) error {
+	for _, ff := range f.Filters {
+		switch ff.Field {
+		case "assignmentGroupId":
+			if ff.Op != "in" {
+				return badIncidentFilterCombo(ff)
+			}
+			if err := requireIncidentFilterValues(ff); err != nil {
+				return err
+			}
+			if err := validateUUIDs("filters: assignmentGroupId", ff.Values); err != nil {
+				return err
+			}
+			f.AssignmentGroupIDs = append(f.AssignmentGroupIDs, ff.Values...)
+		case "category":
+			if ff.Op != "in" {
+				return badIncidentFilterCombo(ff)
+			}
+			if err := requireIncidentFilterValues(ff); err != nil {
+				return err
+			}
+			for _, v := range ff.Values {
+				f.Categories = append(f.Categories, strings.ToUpper(strings.TrimSpace(v)))
+			}
+		case "updatedOn":
+			if err := requireIncidentFilterValues(ff); err != nil {
+				return err
+			}
+			t, err := parseIncidentFilterDate(ff, ff.Values[0], now)
+			if err != nil {
+				return err
+			}
+			switch ff.Op {
+			case "gte":
+				f.UpdatedStart = t
+			case "lte":
+				f.UpdatedEnd = t
+			default:
+				return badIncidentFilterCombo(ff)
+			}
+		}
+	}
+	if f.UpdatedStart != nil && f.UpdatedEnd != nil && f.UpdatedEnd.Before(*f.UpdatedStart) {
+		return &apierror.ValidationError{Msg: "filters: updatedOn lte bound must not be before its gte bound"}
+	}
+	return nil
 }
 
 // appendUniqueString appends v to list unless it is already there.
@@ -620,6 +677,12 @@ func (s *incidentService) SearchIncidents(ctx context.Context, req domain.Search
 	if err != nil {
 		return domain.SearchIncidentsResponse{}, err
 	}
+	if err := parseIncidentListFiltersPostgres(&req.Filters, time.Now().UTC()); err != nil {
+		return domain.SearchIncidentsResponse{}, err
+	}
+	if err := parseIncidentAnyOfPostgres(&req.Filters); err != nil {
+		return domain.SearchIncidentsResponse{}, err
+	}
 
 	slaViolated, taskSLA, err := incidentSLAFilters(req.Filters.Filters, slaViolated)
 	if err != nil {
@@ -652,6 +715,12 @@ func (s *incidentService) AggregateIncidents(ctx context.Context, req domain.Agg
 	priorities, states, serviceIDs, assignedUserIDs, madeSla, slaViolated, createdStart, createdEnd, err :=
 		parseIncidentFieldFiltersPostgres(req.Filters, time.Now().UTC())
 	if err != nil {
+		return domain.AggregateResponse{}, err
+	}
+	if err := parseIncidentListFiltersPostgres(&req.Filters, time.Now().UTC()); err != nil {
+		return domain.AggregateResponse{}, err
+	}
+	if err := parseIncidentAnyOfPostgres(&req.Filters); err != nil {
 		return domain.AggregateResponse{}, err
 	}
 

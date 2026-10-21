@@ -2628,8 +2628,12 @@ export default function CsmCaseDetailPage(): JSX.Element {
       {/* Always-on guidance while the case's project is Managed Cloud and/or
           has onboarding in progress. The two conditions are independent, so
           both can show. Not dismissible; nothing renders until the project
-          fetch resolves. */}
-      {!isAnnouncement && caseProject?.subscriptionType === "managed_cloud_subscription" && (
+          fetch resolves. The Managed Cloud notice is skipped for service
+          requests: they are only raised for Managed Cloud customers, so it
+          would be noise on every one. */}
+      {!isAnnouncement &&
+        !isServiceRequest &&
+        caseProject?.subscriptionType === "managed_cloud_subscription" && (
         <Alert severity="warning" role="status" data-testid="case-managed-cloud-banner">
           <AlertTitle>This is a WSO2 Managed Cloud deployment</AlertTitle>
           Do not ask the customer for logs, configuration files, deployment artefacts or

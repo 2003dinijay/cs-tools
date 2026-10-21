@@ -17,7 +17,7 @@
 import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import IncidentRunbookCard from "@features/csm-operations/components/IncidentRunbookCard";
+import IncidentRunbookSection from "@features/csm-operations/components/IncidentRunbookSection";
 
 const runbooksState = vi.hoisted(() => ({
   value: { data: undefined as unknown, isLoading: false, isError: false },
@@ -28,18 +28,19 @@ vi.mock("@features/csm-operations/api/useRunbooks", () => ({
 }));
 
 const catalog = [
-  { alertName: "gw-5xx", runbookUrl: "https://docs.example.com/gw-5xx" },
-  { alertName: "example-gw-5xx", runbookUrl: "https://docs.example.com/example-gw-5xx" },
-  { alertName: "JVM Heap", runbookUrl: null },
+  { number: "RB0000001", name: "Gateway", runbookUrl: "https://docs.example.com/gw-5xx", alerts: ["gw-5xx"] },
+  { number: "RB0000002", name: "Example gateway", runbookUrl: "https://docs.example.com/example-gw-5xx", alerts: ["gw-latency", "example-gw-5xx"] },
+  { number: "RB0000003", name: "JVM", runbookUrl: null, alerts: ["JVM Heap"] },
 ];
 
-describe("IncidentRunbookCard", () => {
+describe("IncidentRunbookSection", () => {
   beforeEach(() => {
     runbooksState.value = { data: catalog, isLoading: false, isError: false };
   });
 
   it("links the runbook of the longest alert name the subject contains", () => {
-    render(<IncidentRunbookCard subject="[Alert] Fired: EXAMPLE-GW-5xx on prod" />);
+    render(<IncidentRunbookSection subject="[Alert] Fired: EXAMPLE-GW-5xx on prod" />);
+    expect(screen.getByText("Example gateway (RB0000002)")).toBeInTheDocument();
     expect(screen.getByText("example-gw-5xx")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Open runbook/ })).toHaveAttribute(
       "href",
@@ -48,20 +49,20 @@ describe("IncidentRunbookCard", () => {
   });
 
   it("says a matched alert has no runbook yet", () => {
-    render(<IncidentRunbookCard subject="Icinga Alert: node-01 / JVM Heap" />);
+    render(<IncidentRunbookSection subject="Icinga Alert: node-01 / JVM Heap" />);
     expect(screen.getByText("JVM Heap")).toBeInTheDocument();
     expect(screen.getByText("No runbook")).toBeInTheDocument();
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
   });
 
   it("says when no alert matches", () => {
-    render(<IncidentRunbookCard subject="Login page is slow" />);
+    render(<IncidentRunbookSection subject="Login page is slow" />);
     expect(screen.getByText("No runbook matches this incident.")).toBeInTheDocument();
   });
 
   it("says when the catalog cannot be loaded", () => {
     runbooksState.value = { data: undefined, isLoading: false, isError: true };
-    render(<IncidentRunbookCard subject="gw-5xx" />);
+    render(<IncidentRunbookSection subject="gw-5xx" />);
     expect(screen.getByText("Could not load runbooks.")).toBeInTheDocument();
   });
 });
