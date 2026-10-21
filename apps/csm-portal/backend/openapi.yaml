@@ -12959,7 +12959,7 @@ paths:
         "200":
           description: >
             Counts of created and updated entries, and the runbooks removed
-            (`removedRunbooks`: number and link of each) because the import
+            (`removed`: number and link of each) because the import
             moved all of their alerts to another entry.
           content:
             application/json:
