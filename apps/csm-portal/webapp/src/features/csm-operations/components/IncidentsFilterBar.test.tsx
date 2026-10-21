@@ -32,7 +32,7 @@ vi.mock("@features/csm-operations/api/useIncidentProductNameOptions", () => ({
   useIncidentProductNameOptions: () => useIncidentProductNameOptionsMock(),
 }));
 
-// The Assignment group control's known names come from the shared team registry query —
+// The SRE Team control's options come from the shared team registry query —
 // stub it out too, same rationale as the product options above.
 const useTeamsMock = vi.fn(() => ({
   data: [
@@ -165,23 +165,21 @@ describe("IncidentsFilterBar", () => {
     expect(screen.queryByRole("button", { name: /clear filters/i })).not.toBeInTheDocument();
   });
 
-  it("filters by any assignment group, searched, and sends the group's id", () => {
+  it("offers only sre-abt-family teams as SRE Team options, keyed by sreGroupId", () => {
     const { onChange } = renderFilterBar();
 
-    const input = screen.getByRole("combobox", { name: "Assignment group" });
-    fireEvent.mouseDown(input);
-    fireEvent.change(input, { target: { value: "cab" } });
-    fireEvent.click(screen.getByRole("option", { name: "CAB Approval" }));
+    fireEvent.mouseDown(screen.getByRole("combobox", { name: "SRE Team" }));
+    expect(screen.getByRole("option", { name: "Apollo SRE Team" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Atlas CRE Team" })).not.toBeInTheDocument();
+    // Not every group: the list is the SRE teams, the way the cases list lists its CRE teams.
+    expect(screen.queryByRole("option", { name: "CAB Approval" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("option", { name: "Apollo SRE Team" }));
 
     expect(onChange).toHaveBeenCalledWith({
       ...DEFAULT_INCIDENT_FILTERS,
-      sreTeamIds: ["group-cab"],
+      sreTeamIds: ["team-apollo"],
     });
-  });
-
-  it("names a group carried in from a saved view with the SRE team registry's name", () => {
-    renderFilterBar({ filters: { ...DEFAULT_INCIDENT_FILTERS, sreTeamIds: ["team-apollo"] } });
-    expect(screen.getByText("Apollo SRE Team")).toBeInTheDocument();
   });
 
   it("calls onReset when Clear filters is clicked", () => {
@@ -192,7 +190,7 @@ describe("IncidentsFilterBar", () => {
     expect(onReset).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps State, Assignment group and Service quick, with Category, Assignee and Updated only under Advanced", () => {
+  it("keeps State, SRE Team and Service quick, with Category, Assignee and Updated only under Advanced", () => {
     const onChange = vi.fn();
     render(
       <IncidentsFilterBar
@@ -203,7 +201,7 @@ describe("IncidentsFilterBar", () => {
         onFiltersToggle={vi.fn()}
       />,
     );
-    for (const label of ["State", "Assignment group", "Service", "Priority"]) {
+    for (const label of ["State", "SRE Team", "Service", "Priority"]) {
       expect(screen.getAllByLabelText(label).length).toBeGreaterThan(0);
     }
     expect(screen.queryByLabelText("Category")).not.toBeInTheDocument();

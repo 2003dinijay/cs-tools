@@ -60,8 +60,6 @@ import {
 } from "@features/csm-operations/utils/operationsAdvancedFields";
 import OperationsAnyOfGroups, { type AnyOfFieldDef } from "@features/csm-operations/components/OperationsAnyOfGroups";
 import { completeAnyOfGroups } from "@features/csm-operations/utils/operationsAnyOf";
-import { useSearchGroups } from "@api/useSearchGroups";
-import AsyncEntityMultiSelect from "@components/AsyncEntityMultiSelect";
 import AsyncTagMultiSelect from "@features/csm-cases/components/AsyncTagMultiSelect";
 import AsyncAssignedUserIdMultiSelect from "@features/csm-cases/components/AsyncAssignedUserIdMultiSelect";
 import AsyncProjectMultiSelect from "@features/csm-cases/components/AsyncProjectMultiSelect";
@@ -141,12 +139,10 @@ export default function ChangeRequestsFilterBar({
   );
 
 
-  // The Assignment group filter searches every group; the SRE teams' groups
-  // (registry `sre-abt` family) only supply names for ids carried in from
-  // links built before. The old "SRE Team" control was scoped to the
-  // `sre-abt` team family — see `IncidentsFilterBar`'s equivalent note on
-  // why this isn't `cre-abt` (the cases list's own "SRE Team" control's
-  // family scoping).
+  // SRE Team: change requests are SRE-owned, so this control is scoped to the
+  // `sre-abt` team family and listed the way the cases list lists its CRE
+  // teams — see `IncidentsFilterBar`'s equivalent note on why this isn't
+  // `cre-abt`. It matches the record's assignment group (the team's group id).
   const { data: teams } = useTeams(true, "sre-abt");
   const sreTeamOptions = useMemo(
     () =>
@@ -157,13 +153,6 @@ export default function ChangeRequestsFilterBar({
         )
         .map((t) => ({ value: t.sreGroupId, label: t.name })),
     [teams],
-  );
-  // Names for group ids that arrive from a saved view, a bookmark or a
-  // dashboard tile before the picker has searched (those links were built from
-  // the SRE teams' groups, so the registry knows their names).
-  const groupKnownLabels = useMemo(
-    () => Object.fromEntries(sreTeamOptions.map((o) => [o.value, o.label])),
-    [sreTeamOptions],
   );
 
   // Value pickers shared by the Advanced rows and the OR-group conditions, so
@@ -193,24 +182,13 @@ export default function ChangeRequestsFilterBar({
         <AsyncTagMultiSelect id={id} label="Value(s)" values={values} onChange={set} />
       ),
       group: ({ id, values, onChange: set }: P) => (
-        <AsyncEntityMultiSelect
-          id={id}
-          label="Value(s)"
-          placeholder="Search groups…"
-          values={values}
-          onChange={set}
-          useSearch={useSearchGroups}
-          getId={(g) => g.id}
-          getLabel={(g) => g.name}
-          knownLabels={groupKnownLabels}
-          compactSelectedValues
-        />
+        <MultiSelectField id={id} label="Value(s)" values={values} options={sreTeamOptions} onChange={set} />
       ),
       assignee: ({ id, values, onChange: set }: P) => (
         <AsyncAssignedUserIdMultiSelect id={id} values={values} onChange={set} />
       ),
     };
-  }, [stateOptions, impactOptions, groupKnownLabels]);
+  }, [stateOptions, impactOptions, sreTeamOptions]);
 
   // Advanced offers every filter as a Field / Operator / Value row, as on the
   // service request list; each row reads and writes the same state the quick
@@ -222,7 +200,7 @@ export default function ChangeRequestsFilterBar({
       multiAdvancedField<ChangeRequestFilters>({ key: "project", label: "Project", prop: "projectIds", render: pickers.project }),
       multiAdvancedField<ChangeRequestFilters>({ key: "type", label: "Type", prop: "types", render: pickers.type }),
       multiAdvancedField<ChangeRequestFilters>({ key: "tag", label: "Tags", prop: "tags", render: pickers.tag }),
-      multiAdvancedField<ChangeRequestFilters>({ key: "group", label: "Assignment group", prop: "sreTeamIds", render: pickers.group }),
+      multiAdvancedField<ChangeRequestFilters>({ key: "group", label: "SRE Team", prop: "sreTeamIds", render: pickers.group }),
       multiAdvancedField<ChangeRequestFilters>({ key: "assignee", label: "Assigned engineer", prop: "assigneeIds", render: pickers.assignee }),
       dateAdvancedField<ChangeRequestFilters>({ key: "created", label: "Created", from: "createdStartDate", to: "createdEndDate" }),
       dateAdvancedField<ChangeRequestFilters>({ key: "updated", label: "Updated", from: "updatedStartDate", to: "updatedEndDate" }),
@@ -244,7 +222,7 @@ export default function ChangeRequestsFilterBar({
       { field: "projectId", label: "Project", render: pickers.project },
       { field: "type", label: "Type", render: pickers.type },
       { field: "tag", label: "Tags", render: pickers.tag },
-      { field: "assignmentGroupId", label: "Assignment group", render: pickers.group },
+      { field: "assignmentGroupId", label: "SRE Team", render: pickers.group },
       { field: "assignedUserId", label: "Assigned engineer", render: pickers.assignee },
     ],
     [pickers],
@@ -414,17 +392,12 @@ export default function ChangeRequestsFilterBar({
               />
             </Grid>
             <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-              <AsyncEntityMultiSelect
-                id="cr-filter-assignment-group"
-                label="Assignment group"
-                placeholder="Search groups…"
+              <MultiSelectField
+                id="cr-filter-sre-team"
+                label="SRE Team"
                 values={filters.sreTeamIds}
+                options={sreTeamOptions}
                 onChange={(next) => onChange({ ...filters, sreTeamIds: next })}
-                useSearch={useSearchGroups}
-                getId={(g) => g.id}
-                getLabel={(g) => g.name}
-                knownLabels={groupKnownLabels}
-                compactSelectedValues
               />
             </Grid>
             <Grid size={{ xs: 12, sm: 6, md: 3 }}>

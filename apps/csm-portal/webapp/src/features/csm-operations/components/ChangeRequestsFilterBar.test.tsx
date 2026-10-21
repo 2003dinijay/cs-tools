@@ -134,7 +134,7 @@ describe("ChangeRequestsFilterBar — field order", () => {
       ) as ReactNode,
     );
     const html = container.innerHTML;
-    const sreTeamIdx = html.indexOf("Assignment group");
+    const sreTeamIdx = html.indexOf("SRE Team");
     const projectIdx = html.indexOf(">Project<");
     const closedFromIdx = html.indexOf("Closed from");
     const closedToIdx = html.indexOf("Closed to");

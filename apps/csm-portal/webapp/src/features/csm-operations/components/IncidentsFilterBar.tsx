@@ -59,7 +59,6 @@ import {
 } from "@features/csm-operations/utils/operationsAdvancedFields";
 import OperationsAnyOfGroups, { type AnyOfFieldDef } from "@features/csm-operations/components/OperationsAnyOfGroups";
 import { completeAnyOfGroups } from "@features/csm-operations/utils/operationsAnyOf";
-import { useSearchGroups } from "@api/useSearchGroups";
 import AsyncEntityMultiSelect from "@components/AsyncEntityMultiSelect";
 import { useSearchItServices } from "@api/useSearchItServices";
 import AsyncAssignedUserIdMultiSelect from "@features/csm-cases/components/AsyncAssignedUserIdMultiSelect";
@@ -144,11 +143,9 @@ export default function IncidentsFilterBar({
     [],
   );
 
-  // Assignment group filter: any group, searched. The SRE teams' own groups
-  // (registry `sre-abt` family, below) only supply names for ids carried in
-  // from links built before. History of the old "SRE Team" control: incidents
-  // are SRE-owned, so it was scoped to the `sre-abt`
-  // team family (unlike the cases list's own "SRE Team" filter, which is
+  // SRE Team: incidents are SRE-owned, so this is scoped to the `sre-abt`
+  // team family and listed the way the cases list lists its CRE teams. It
+  // matches the record's assignment group (the team's group id) (unlike the cases list's own "SRE Team" filter, which is
   // deliberately scoped to `cre-abt` per an explicit, later-flagged-as-
   // likely-mistaken product instruction — see `CasesFilterBar.tsx`'s
   // `sreTeamOptions`. This is a fresh field on a different resource, not a
@@ -163,13 +160,6 @@ export default function IncidentsFilterBar({
         )
         .map((t) => ({ value: t.sreGroupId, label: t.name })),
     [teams],
-  );
-  // Names for group ids that arrive from a saved view, a bookmark or a
-  // dashboard tile before the picker has searched (those links were built from
-  // the SRE teams' groups, so the registry knows their names).
-  const groupKnownLabels = useMemo(
-    () => Object.fromEntries(sreTeamOptions.map((o) => [o.value, o.label])),
-    [sreTeamOptions],
   );
 
   const stateOptions = useMemo(
@@ -217,24 +207,13 @@ export default function IncidentsFilterBar({
         />
       ),
       group: ({ id, values, onChange: set }: P) => (
-        <AsyncEntityMultiSelect
-          id={id}
-          label="Value(s)"
-          placeholder="Search groups…"
-          values={values}
-          onChange={set}
-          useSearch={useSearchGroups}
-          getId={(g) => g.id}
-          getLabel={(g) => g.name}
-          knownLabels={groupKnownLabels}
-          compactSelectedValues
-        />
+        <MultiSelectField id={id} label="Value(s)" values={values} options={sreTeamOptions} onChange={set} />
       ),
       assignee: ({ id, values, onChange: set }: P) => (
         <AsyncAssignedUserIdMultiSelect id={id} values={values} onChange={set} />
       ),
     };
-  }, [stateOptions, priorityOptions, categoryOptions, groupKnownLabels]);
+  }, [stateOptions, priorityOptions, categoryOptions, sreTeamOptions]);
 
   // Advanced offers every filter as a Field / Operator / Value row, as on the
   // service request list; each row reads and writes the same state the quick
@@ -245,7 +224,7 @@ export default function IncidentsFilterBar({
       multiAdvancedField<IncidentFilters>({ key: "priority", label: "Priority", prop: "priorities", render: pickers.priority }),
       multiAdvancedField<IncidentFilters>({ key: "category", label: "Category", prop: "categories", render: pickers.category }),
       multiAdvancedField<IncidentFilters>({ key: "service", label: "Service", prop: "serviceIds", render: pickers.service }),
-      multiAdvancedField<IncidentFilters>({ key: "group", label: "Assignment group", prop: "sreTeamIds", render: pickers.group }),
+      multiAdvancedField<IncidentFilters>({ key: "group", label: "SRE Team", prop: "sreTeamIds", render: pickers.group }),
       multiAdvancedField<IncidentFilters>({ key: "assignee", label: "Assignee", prop: "assigneeIds", render: pickers.assignee }),
       multiAdvancedField<IncidentFilters>({
         key: "product",
@@ -281,7 +260,7 @@ export default function IncidentsFilterBar({
       { field: "priority", label: "Priority", render: pickers.priority },
       { field: "category", label: "Category", render: pickers.category },
       { field: "businessServiceId", label: "Service", render: pickers.service },
-      { field: "assignmentGroupId", label: "Assignment group", render: pickers.group },
+      { field: "assignmentGroupId", label: "SRE Team", render: pickers.group },
       { field: "assignedUserId", label: "Assignee", render: pickers.assignee },
     ],
     [pickers],
@@ -471,17 +450,12 @@ export default function IncidentsFilterBar({
             </Grid>
 
             <Grid size={{ xs: 12, sm: 6, md: 4 }}>
-              <AsyncEntityMultiSelect
-                id="incident-filter-assignment-group"
-                label="Assignment group"
-                placeholder="Search groups…"
+              <MultiSelectField
+                id="incident-filter-sre-team"
+                label="SRE Team"
                 values={filters.sreTeamIds}
+                options={sreTeamOptions}
                 onChange={(next) => onChange({ ...filters, sreTeamIds: next })}
-                useSearch={useSearchGroups}
-                getId={(g) => g.id}
-                getLabel={(g) => g.name}
-                knownLabels={groupKnownLabels}
-                compactSelectedValues
               />
             </Grid>
 
