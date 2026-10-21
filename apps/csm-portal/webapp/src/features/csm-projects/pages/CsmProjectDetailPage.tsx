@@ -30,7 +30,6 @@ import {
 import { ArrowLeft, ChevronDown, Pencil, Plus } from "@wso2/oxygen-ui-icons-react";
 import { useState, type JSX, type MouseEvent, type ReactNode } from "react";
 import { Link as RouterLink, useLocation, useParams } from "react-router";
-import UserRefLink from "@components/UserRefLink";
 import { BackendApiError } from "@api/backend/client";
 import { usePortalAccess } from "@context/current-user/usePortalAccess";
 import { useGetProject } from "@features/csm-projects/api/useGetProject";
@@ -41,6 +40,9 @@ import ClosureStateChip from "@features/csm-projects/components/ClosureStateChip
 import DeploymentsTab from "@features/csm-projects/components/DeploymentsTab";
 import EditProjectClosureStateDialog from "@features/csm-projects/components/EditProjectClosureStateDialog";
 import EditProjectOnboardingDialog from "@features/csm-projects/components/EditProjectOnboardingDialog";
+import ProjectMetaCell from "@features/csm-projects/components/ProjectMetaCell";
+import ProjectOnboardingOwnerValue from "@features/csm-projects/components/ProjectOnboardingOwnerValue";
+import ProjectOnboardingTab from "@features/csm-projects/components/ProjectOnboardingTab";
 import ProjectContactsTab from "@features/csm-projects/components/ProjectContactsTab";
 import ProjectOnboardingStatusChip from "@features/csm-projects/components/ProjectOnboardingStatusChip";
 import WorkItemsTab from "@features/csm-projects/components/WorkItemsTab";
@@ -52,9 +54,10 @@ import { canRaiseServiceRequests } from "@features/csm-projects/utils/subscripti
 import { useNavTransition } from "@hooks/useNavTransition";
 import { useQueryParamTabs } from "@hooks/useSectionTabs";
 
-type ProjectTabId = "overview" | "deployments" | "contacts" | "workItems";
+type ProjectTabId = "overview" | "onboarding" | "deployments" | "contacts" | "workItems";
 const PROJECT_TAB_IDS: readonly ProjectTabId[] = [
   "overview",
+  "onboarding",
   "deployments",
   "contacts",
   "workItems",
@@ -100,27 +103,6 @@ function formatDate(value?: string | null): string {
 /** "managed_cloud_subscription" -> "Managed Cloud Subscription". */
 function formatSubscriptionType(value: string): string {
   return value.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
-function MetaCell({
-  label,
-  children,
-}: {
-  label: string;
-  children: ReactNode;
-}): JSX.Element {
-  return (
-    <Box sx={{ display: "flex", flexDirection: "column", gap: 0.25, minWidth: 0 }}>
-      <Typography
-        variant="caption"
-        color="text.secondary"
-        sx={{ textTransform: "uppercase", letterSpacing: 0.4 }}
-      >
-        {label}
-      </Typography>
-      <Box sx={{ minWidth: 0 }}>{children}</Box>
-    </Box>
-  );
 }
 
 // Real anchor (RouterLink) so the account link is cmd/middle-clickable and
@@ -190,6 +172,12 @@ export default function CsmProjectDetailPage(): JSX.Element {
   const [editClosureStateOpen, setEditClosureStateOpen] = useState(false);
   const patchOnboarding = usePatchProjectOnboarding(id);
   const [editOnboardingOpen, setEditOnboardingOpen] = useState(false);
+  // One dialog for both entry points (overview pencil, Onboarding tab Edit).
+  // Drops a stale error from a previous session with the dialog.
+  const openEditOnboarding = (): void => {
+    patchOnboarding.reset();
+    setEditOnboardingOpen(true);
+  };
   // Prefer wherever the caller came from (e.g. a case's Overview panel) over
   // the hardcoded projects list, so Back returns to that page instead of
   // skipping past it — same convention as CsmCaseDetailPage's own back path.
@@ -385,6 +373,7 @@ export default function CsmProjectDetailPage(): JSX.Element {
       <Box className="csm-print-hide" sx={{ borderBottom: 1, borderColor: "divider" }}>
         <Tabs value={activeTab} onChange={(_, v) => setActiveTab(v as ProjectTabId)}>
           <Tab value="overview" label="Overview" />
+          <Tab value="onboarding" label="Onboarding" />
           <Tab value="deployments" label="Deployments" />
           <Tab value="contacts" label="Project contacts" />
           {/* A caller without the staff view never sees Chats inside this tab
@@ -408,10 +397,10 @@ export default function CsmProjectDetailPage(): JSX.Element {
               },
             }}
           >
-            <MetaCell label="Project key">
+            <ProjectMetaCell label="Project key">
               <Mono>{p.key}</Mono>
-            </MetaCell>
-            <MetaCell label="State">
+            </ProjectMetaCell>
+            <ProjectMetaCell label="State">
               <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
                 <ClosureStateChip closureState={p.closureState} />
                 {canUpdateProjectClosureState && (
@@ -431,11 +420,11 @@ export default function CsmProjectDetailPage(): JSX.Element {
                   </IconButton>
                 )}
               </Box>
-            </MetaCell>
-            <MetaCell label="Subscription">
+            </ProjectMetaCell>
+            <ProjectMetaCell label="Subscription">
               <Typography variant="body2">{formatSubscriptionType(p.subscriptionType)}</Typography>
-            </MetaCell>
-            <MetaCell label="Account">
+            </ProjectMetaCell>
+            <ProjectMetaCell label="Account">
               {p.account?.id ? (
                 <LinkText to={`/customers/accounts/${p.account.id}`}>
                   {p.account.name || p.account.id}
@@ -443,24 +432,24 @@ export default function CsmProjectDetailPage(): JSX.Element {
               ) : (
                 <Typography variant="body2">—</Typography>
               )}
-            </MetaCell>
-            <MetaCell label="Salesforce ID">
+            </ProjectMetaCell>
+            <ProjectMetaCell label="Salesforce ID">
               <Mono>{p.sfId || "—"}</Mono>
-            </MetaCell>
-            <MetaCell label="Updated on">
+            </ProjectMetaCell>
+            <ProjectMetaCell label="Updated on">
               <Typography variant="body2">{formatDate(p.updatedOn)}</Typography>
-            </MetaCell>
-            <MetaCell label="Created on">
+            </ProjectMetaCell>
+            <ProjectMetaCell label="Created on">
               <Typography variant="body2">{formatDate(p.createdOn)}</Typography>
-            </MetaCell>
-            <MetaCell label={startDateLabel(p.createdOn, p.startDate)}>
+            </ProjectMetaCell>
+            <ProjectMetaCell label={startDateLabel(p.createdOn, p.startDate)}>
               <Typography variant="body2">{formatDate(p.startDate)}</Typography>
-            </MetaCell>
-            <MetaCell label={endDateLabel(p.endDate)}>
+            </ProjectMetaCell>
+            <ProjectMetaCell label={endDateLabel(p.endDate)}>
               <Typography variant="body2">{formatDate(p.endDate)}</Typography>
-            </MetaCell>
+            </ProjectMetaCell>
             {(onboardingEnabled || canEditProjectOnboarding) && (
-              <MetaCell label="Onboarding Status">
+              <ProjectMetaCell label="Onboarding Status">
                 <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
                   {onboardingEnabled ? (
                     <ProjectOnboardingStatusChip onboardingStatus={p.onboardingStatus} />
@@ -472,37 +461,30 @@ export default function CsmProjectDetailPage(): JSX.Element {
                       size="small"
                       aria-label="Edit onboarding"
                       className="csm-print-hide"
-                      onClick={() => {
-                        // Drop a stale error from a previous session with
-                        // this dialog.
-                        patchOnboarding.reset();
-                        setEditOnboardingOpen(true);
-                      }}
+                      onClick={openEditOnboarding}
                     >
                       <Pencil size={14} />
                     </IconButton>
                   )}
                 </Box>
-              </MetaCell>
+              </ProjectMetaCell>
             )}
             {(onboardingEnabled || canEditProjectOnboarding) &&
               (p.onboardingOwner || canEditProjectOnboarding) && (
-                <MetaCell label="Onboarding Owner">
-                  <Typography variant="body2">
-                    {p.onboardingOwner ? (
-                      <UserRefLink
-                        name={p.onboardingOwner.name}
-                        email={p.onboardingOwner.email || undefined}
-                        userId={p.onboardingOwner.id}
-                      />
-                    ) : (
-                      "—"
-                    )}
-                  </Typography>
-                </MetaCell>
+                <ProjectMetaCell label="Onboarding Owner">
+                  <ProjectOnboardingOwnerValue owner={p.onboardingOwner} />
+                </ProjectMetaCell>
               )}
           </Box>
         </Card>
+      )}
+
+      {activeTab === "onboarding" && (
+        <ProjectOnboardingTab
+          project={p}
+          canEdit={canEditProjectOnboarding}
+          onEdit={openEditOnboarding}
+        />
       )}
 
       {activeTab === "deployments" && <DeploymentsTab projectId={p.id} />}
@@ -515,6 +497,7 @@ export default function CsmProjectDetailPage(): JSX.Element {
         <EditProjectOnboardingDialog
           currentStatus={p.onboardingStatus}
           currentOwner={p.onboardingOwner}
+          currentDates={p}
           isSaving={patchOnboarding.isPending}
           saveError={
             patchOnboarding.isError
