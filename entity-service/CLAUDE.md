@@ -7245,8 +7245,9 @@ list carries no group's active flag, so that set cannot leave out an inactive gr
 group's own name and id, 400 when the id is not one of them. `ListRoutes`/`Runtime` read the
 group's current name through `group_id`, so a rename in ServiceNow keeps its route.
 `CaseAlertSettings.unmappedGroups` (SRE viewers only) lists the support groups no enabled SRE route
-covers and no team is named after: csm-notification-service posts their incident cards to the shared
-SRE room. Deploy entity-service before the BFF and webapp that send `groupId` (strict decoding).
+covers, no team is named after and the running config does not route (an alias or a default group in
+the notifier's last report, `running.groups.SRE`; without a report only routes and team names count):
+csm-notification-service posts their incident cards to the shared SRE room. Deploy entity-service before the BFF and webapp that send `groupId` (strict decoding).
 
 **Who may see and change each family's Case Alerts settings** (`whoIsAsking`): a CSM or
 portal admin and the CS head (`cs_head` on any team): all three families; the CRE rota admin and

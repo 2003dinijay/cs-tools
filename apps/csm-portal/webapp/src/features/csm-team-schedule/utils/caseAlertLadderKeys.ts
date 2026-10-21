@@ -721,3 +721,33 @@ export function sameLadderValue(spec: LadderKeySpec | undefined, a: unknown, b: 
   if (spec?.editor === "head") return canonical(headOf(a)) === canonical(headOf(b));
   return canonical(a) === canonical(b);
 }
+
+/** Where "In use" comes from, in one line. */
+export function runningLine(s: CaseAlertSettings): string {
+  const r = s.running;
+  if (!r) {
+    return "The alert service hasn't reported what it uses yet. It does when it starts in shadow or db mode.";
+  }
+  // The server leaves reportedAt out when it has no time for the report.
+  const at = r.reportedAt ? ` at ${new Date(r.reportedAt).toLocaleString()}` : "";
+  const base = `"In use" is what the alert service reported${at}, in ${r.mode} mode.`;
+  return r.mode === "shadow"
+    ? `${base} In shadow mode it still uses its file; saved values take over in db mode.`
+    : base;
+}
+
+/** The ladder groups under Advanced: the rest of the paging file, after the
+ *  switches and who gets alerts. */
+export const ADVANCED_GROUPS: LadderKeyGroup[] = LADDER_KEY_GROUPS.filter(
+  (g) => g !== "On/off and channel" && g !== "Who gets alerts",
+);
+
+/** How many of a ladder's values in these groups are saved here. */
+export function savedInGroups(
+  s: CaseAlertSettings,
+  ladder: CaseAlertRoomLadder,
+  groups: readonly LadderKeyGroup[],
+): number {
+  const keys = new Set(ladderKeysFor(ladder).filter((k) => groups.includes(k.group)).map((k) => k.key));
+  return s.values.filter((v) => v.ladder === ladder && keys.has(v.key)).length;
+}

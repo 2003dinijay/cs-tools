@@ -295,17 +295,22 @@ func (s *caseAlertSettingsService) Get(ctx context.Context) (domain.CaseAlertSet
 		return domain.CaseAlertSettings{}, err
 	}
 	if c.ladder[familySRE] {
-		out.UnmappedGroups = unmappedSREGroups(out.RouteOptions, routes)
+		out.UnmappedGroups = unmappedSREGroups(out.RouteOptions, routes, reportedSRERouting(out.Running))
 	}
 	return out, nil
 }
 
 // unmappedSREGroups are the assignment groups whose incidents no SRE route
-// sends to a team or rota, and that no Team Schedule team is named as (the
-// alert service matches a group named as a team key or name without a
-// route): their cards go to the shared SRE room until a route is saved.
-func unmappedSREGroups(opts *domain.CaseAlertRouteOptions, routes []repository.CaseAlertRouteRow) []domain.CaseAlertAssignmentGroup {
+// sends to a team or rota, that no Team Schedule team is named as (the alert
+// service matches a group named as a team key or name without a route), and
+// that the alert service does not already route from its own file (routed:
+// its reported aliases and default groups): their cards go to the shared SRE
+// room until a route is saved.
+func unmappedSREGroups(opts *domain.CaseAlertRouteOptions, routes []repository.CaseAlertRouteRow, routed map[string]bool) []domain.CaseAlertAssignmentGroup {
 	covered := map[string]bool{}
+	for g := range routed {
+		covered[g] = true
+	}
 	for _, r := range routes {
 		if r.Ladder == familySRE && r.Enabled {
 			covered[r.GroupName] = true
@@ -389,6 +394,7 @@ func runningView(ctx context.Context, rev repository.CaseAlertRevisionRow, mine 
 			Ladders  map[string]map[string]domain.CaseAlertRunningValue `json:"ladders"`
 			FileOnly map[string]map[string]json.RawMessage              `json:"fileOnly"`
 			Channels map[string]json.RawMessage                         `json:"channels"`
+			Groups   map[string]json.RawMessage                         `json:"groups"`
 		} `json:"running"`
 	}
 	if err := json.Unmarshal(rev.AppliedSummary, &summary); err != nil {
@@ -420,6 +426,39 @@ func runningView(ctx context.Context, rev repository.CaseAlertRevisionRow, mine 
 			}
 			out.Channels[l] = v
 		}
+	}
+	for l, v := range summary.Running.Groups {
+		if mine[l] {
+			if out.Groups == nil {
+				out.Groups = map[string]json.RawMessage{}
+			}
+			out.Groups[l] = v
+		}
+	}
+	return out
+}
+
+// reportedSRERouting is the SRE assignment groups the alert service already
+// sends to a team, or to the default rota, without a route saved here: its
+// file's aliases and default groups, as it last reported them. Nil when it
+// has not reported them.
+func reportedSRERouting(r *domain.CaseAlertRunning) map[string]bool {
+	if r == nil || len(r.Groups[familySRE]) == 0 {
+		return nil
+	}
+	var g struct {
+		Aliases       map[string]string `json:"aliases"`
+		DefaultGroups []string          `json:"defaultGroups"`
+	}
+	if json.Unmarshal(r.Groups[familySRE], &g) != nil {
+		return nil
+	}
+	out := map[string]bool{}
+	for group := range g.Aliases {
+		out[strings.ToLower(strings.TrimSpace(group))] = true
+	}
+	for _, group := range g.DefaultGroups {
+		out[strings.ToLower(strings.TrimSpace(group))] = true
 	}
 	return out
 }

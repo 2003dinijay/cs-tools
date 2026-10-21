@@ -341,6 +341,10 @@ ticker, with Redis as its only durable state — the same `REDIS_URL`/
   (`EffectiveChannels`): per ladder whether it runs, its channel, and each SRE
   and SME team's channel in use (the ladder's narrowed by the team's own) and
   whether it has a room. Saved values still apply only at start-up.
+  It also carries `groups` (`CaseAlertGroupRouting`): per ladder the
+  assignment-group aliases (lower-cased group to team key), and for SRE the
+  default groups and the teams with a room but no rota, so the tab can say
+  where each group goes and stop warning about groups the file routes.
   The applied report carries `running` (`RunningCaseAlertValues`): every
   ladder value the process runs with and whether it came from the file or the
   tab -- in shadow the file's, so the tab can copy them. Heads go with a name

@@ -501,3 +501,44 @@ func TestEffectiveChannels(t *testing.T) {
 		t.Fatalf("unset channel = %q", got["CRE"].Channel)
 	}
 }
+
+// The running report says how each assignment group reaches a team, file and
+// saved together, so the tab can tell a group the file already routes from one
+// nothing routes.
+func TestCaseAlertGroupRouting(t *testing.T) {
+	cfg := Config{
+		SRE: LadderConfig{
+			Teams: TeamKeys{
+				ABTs:          []string{"apollo", "artemis"},
+				Aliases:       map[string]string{" Apollo SRE Group ": "Apollo", "artemis sre group": "artemis", "": "apollo"},
+				DefaultGroups: []string{"MS/PC SRE Group", "default sre group", "Default SRE Group"},
+			},
+			TeamChats:     map[string]Chat{"apollo": {Audience: "Apollo"}, "artemis": {Audience: "Artemis"}},
+			TeamlessChats: []string{"Apollo", "artemis"},
+		},
+		CRE: LadderConfig{Teams: TeamKeys{Aliases: map[string]string{"americas": "americas_cre_team"}}},
+	}
+	got := CaseAlertGroupRouting(cfg)
+	sre := got["SRE"]
+	if !reflect.DeepEqual(sre.Aliases, map[string]string{"apollo sre group": "apollo", "artemis sre group": "artemis"}) {
+		t.Fatalf("SRE aliases = %v", sre.Aliases)
+	}
+	if !reflect.DeepEqual(sre.DefaultGroups, []string{"default sre group", "ms/pc sre group"}) {
+		t.Fatalf("SRE default groups = %v", sre.DefaultGroups)
+	}
+	if !reflect.DeepEqual(sre.TeamlessRooms, []string{"apollo", "artemis"}) {
+		t.Fatalf("SRE teamless rooms = %v", sre.TeamlessRooms)
+	}
+	cre := got["CRE"]
+	if cre.Aliases["americas"] != "americas_cre_team" || len(cre.DefaultGroups) != 0 || len(cre.TeamlessRooms) != 0 {
+		t.Fatalf("CRE = %+v", cre)
+	}
+	// Empty, never null on the wire.
+	b, err := json.Marshal(CaseAlertGroupRouting(Config{}))
+	if err != nil || strings.Contains(string(b), "null") {
+		t.Fatalf("empty routing = %s, %v", b, err)
+	}
+	if _, ok := RunningCaseAlertValues(cfg, nil)["groups"]; !ok {
+		t.Fatal("the running report carries no groups")
+	}
+}

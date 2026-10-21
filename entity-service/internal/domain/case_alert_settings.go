@@ -227,6 +227,11 @@ type CaseAlertRunning struct {
 	// team's own) and whether it has a room. Passed on as the alert service
 	// reported it, filtered to the caller's families.
 	Channels map[string]json.RawMessage `json:"channels,omitempty"`
+	// Groups is, per ladder, how an assignment group reaches a team as the
+	// alert service runs (its file and the saved routes together): aliases
+	// (group -> team key), default groups (no team of their own) and the rooms
+	// such a group's cards go to. Passed on as reported, filtered by family.
+	Groups map[string]json.RawMessage `json:"groups,omitempty"`
 }
 
 // CaseAlertRunningValue is one setting as the alert service runs it. Source

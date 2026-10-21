@@ -23654,6 +23654,23 @@ components:
                     channel: { type: string }
                     teamChannel: { type: string }
                     room: { type: boolean }
+        groups:
+          type: object
+          description: >
+            Ladder (CRE, SRE) to how the running config routes an incident's
+            assignment group without a saved route: aliases (group, lower-cased,
+            to team key: the file's plus the saved routes to a team),
+            defaultGroups (SRE: groups paged on the default rota) and
+            teamlessRooms (SRE: teams with a room but no rota). The tab reads
+            it to show where each group goes, and the unmapped warning no
+            longer lists a group the file already routes. Filtered to the
+            caller's families.
+          additionalProperties:
+            type: object
+            properties:
+              aliases: { type: object, additionalProperties: { type: string } }
+              defaultGroups: { type: array, items: { type: string } }
+              teamlessRooms: { type: array, items: { type: string } }
     CaseAlertSettingsRights:
       type: object
       required: [view, roomLadders, routeLadders]

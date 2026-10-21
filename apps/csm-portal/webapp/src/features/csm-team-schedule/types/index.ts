@@ -572,7 +572,8 @@ export interface CaseAlertRunningValue {
 }
 
 export interface CaseAlertRunning {
-  reportedAt: string;
+  /** When the alert service reported; absent when the server has no time. */
+  reportedAt?: string;
   mode: "off" | "shadow" | "db";
   /** Per ladder, each key's value in use. */
   ladders: Partial<
@@ -585,6 +586,20 @@ export interface CaseAlertRunning {
    *  the alert service runs it. Absent from an alert service that doesn't
    *  report them yet. */
   channels?: Partial<Record<CaseAlertRoomLadder, CaseAlertLadderChannels>>;
+  /** Per ladder, how the running config routes an incident's assignment
+   *  group with no redirect saved here. Absent from an alert service that
+   *  doesn't report it yet. */
+  groups?: Partial<Record<CaseAlertLadder, CaseAlertGroupRouting>>;
+}
+
+/** How a ladder's running config routes assignment groups. */
+export interface CaseAlertGroupRouting {
+  /** Group name, lower-cased, to the team key it is alerted as. */
+  aliases?: Record<string, string>;
+  /** SRE: the groups paged on the default rota. */
+  defaultGroups?: string[];
+  /** SRE: teams with a chat space but no rota of their own. */
+  teamlessRooms?: string[];
 }
 
 /** One team's channel as running: the ladder's narrowed by the team's own. */
