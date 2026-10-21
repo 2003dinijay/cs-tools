@@ -332,8 +332,13 @@ func (h *UsersHandler) PatchMe(w http.ResponseWriter, r *http.Request) {
 
 	// One entity PATCH carrying only the fields this request changed.
 	entityFields := map[string]string{}
+	var phone *string
 	if payload.PhoneNumber != nil {
-		entityFields["phone"] = *payload.PhoneNumber
+		// Trimmed here, so the stored and echoed value is what was meant. A
+		// blank phone becomes "" and clears it, as an empty one always has.
+		trimmed := strings.TrimSpace(*payload.PhoneNumber)
+		phone = &trimmed
+		entityFields["phone"] = trimmed
 	}
 	if payload.TimeZone != nil {
 		entityFields["timeZone"] = *payload.TimeZone
@@ -357,7 +362,7 @@ func (h *UsersHandler) PatchMe(w http.ResponseWriter, r *http.Request) {
 			mapUpstreamError(w, entityErr, errMsg)
 			return
 		}
-		resp.PhoneNumber = payload.PhoneNumber
+		resp.PhoneNumber = phone
 		resp.TimeZone = payload.TimeZone
 	}
 

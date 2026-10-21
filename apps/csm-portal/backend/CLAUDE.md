@@ -45,7 +45,8 @@ Go HTTP server (`net/http`, Go 1.26+) that acts as a backend-for-frontend (BFF) 
 service's `"user".phone`), never the identity provider. `GET /users/me` returns the
 record's `phone` as `phoneNumber` (omitted when the record has none), and `PATCH /users/me`
 with `phoneNumber` writes it to the record through the entity service, in the same call as a
-`timeZone` change when the request carries both. The identity provider is neither read nor
+`timeZone` change when the request carries both. The phone is trimmed first; an empty or blank
+one clears it. The identity provider is neither read nor
 written for the phone. A user whose record has no phone shows none until they set one.
 Tests: `TestGetMe`, `TestPatchMe`.
 

@@ -508,6 +508,37 @@ func TestPatchMe(t *testing.T) {
 		}
 	})
 
+	t.Run("phone is trimmed before it is stored and echoed back", func(t *testing.T) {
+		for name, tc := range map[string]struct{ in, stored string }{
+			"padded": {" +15555550123 ", "+15555550123"},
+			"blank":  {"   ", ""},
+		} {
+			t.Run(name, func(t *testing.T) {
+				var entityBody []byte
+				entityClient := &mockEntityUserClient{
+					patchUserMeFn: func(_ context.Context, body []byte) ([]byte, error) {
+						entityBody = body
+						return []byte(`{}`), nil
+					},
+				}
+				h := NewUsersHandler(&mockSCIMClient{}, entityClient, testDirectory(t), false, nil)
+				r := withUser(httptest.NewRequest(http.MethodPatch, "/users/me", strings.NewReader(`{"phoneNumber":"`+tc.in+`"}`)))
+				w := httptest.NewRecorder()
+				h.PatchMe(w, r)
+				assertStatus(t, w, http.StatusOK)
+				if want := `{"phone":"` + tc.stored + `"}`; string(entityBody) != want {
+					t.Errorf("entity body = %s, want %s", entityBody, want)
+				}
+				resp := decodeJSON[struct {
+					PhoneNumber *string `json:"phoneNumber"`
+				}](t, w)
+				if resp.PhoneNumber == nil || *resp.PhoneNumber != tc.stored {
+					t.Errorf("phoneNumber = %v, want %q", resp.PhoneNumber, tc.stored)
+				}
+			})
+		}
+	})
+
 	t.Run("phone and timeZone share one entity call", func(t *testing.T) {
 		calls := 0
 		var entityBody []byte

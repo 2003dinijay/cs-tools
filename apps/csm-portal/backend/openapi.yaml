@@ -17405,7 +17405,7 @@ components:
           type: string
           description: >
             Phone number in E.164 format, written to the platform user record only (never the
-            identity provider). An empty string clears it.
+            identity provider). Surrounding whitespace is trimmed; an empty or blank string clears it.
         timeZone:
           type: string
           description: User's preferred time zone (e.g. "America/New_York")
