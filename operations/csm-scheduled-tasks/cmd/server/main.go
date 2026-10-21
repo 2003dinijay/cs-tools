@@ -48,7 +48,10 @@ import (
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/notify"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/opencases"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/registry"
+	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/rotareminder"
+	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/schedule"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/stalecases"
+	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/teamschedule"
 )
 
 func main() {
@@ -213,6 +216,38 @@ func main() {
 		}
 	}
 
+	// Rota reminders: emails to the people rostered on a rotation shift in the
+	// Team Schedule. *** OFF UNLESS ROTA_REMINDERS_ENABLED=true. *** They
+	// email real staff from the real rota, so an environment that holds the
+	// rota but must not mail people turns them on only with
+	// ROTA_REMINDER_REDIRECT_TO set. Registered only when enabled, like
+	// cloud_status_webhooks, so the ledger shows no run for a task that is off.
+	rotaRemindersEnabled := envBool("ROTA_REMINDERS_ENABLED", false)
+	var teamScheduleClient *teamschedule.Client
+	rotaZone := time.UTC
+	if rotaRemindersEnabled {
+		teamScheduleClient, err = teamschedule.NewClient(teamschedule.Config{
+			BaseURL:      entityServiceBaseURL,
+			TokenURL:     oauthTokenURL,
+			ClientID:     oauthClientID,
+			ClientSecret: oauthClientSecret,
+			Scopes:       entityServiceScopes,
+		})
+		if err != nil {
+			slog.Error("failed to construct entity-service team-schedule client", "err", err)
+			os.Exit(1)
+		}
+		rotaZone, err = time.LoadLocation(envString("ROTA_REMINDER_TIME_ZONE", "Asia/Colombo"))
+		if err != nil {
+			slog.Error("ROTA_REMINDER_TIME_ZONE is not a known time zone", "err", err)
+			os.Exit(1)
+		}
+		if u := os.Getenv("ROTA_REMINDER_SCHEDULE_URL"); u != "" && !strings.HasPrefix(u, "https://") && !strings.HasPrefix(u, "http://") {
+			slog.Error("ROTA_REMINDER_SCHEDULE_URL must be an http(s) URL", "value", u)
+			os.Exit(1)
+		}
+	}
+
 	// Global kill switch for every failure alert email — see
 	// engine.Engine.AlertsEnabled's own doc comment. Defaults to true (the
 	// current always-alert behavior); set to false to go quiet without
@@ -273,6 +308,15 @@ func main() {
 
 	const cloudStatusTaskName = "cloud_status_webhooks"
 	cloudStatusTo, cloudStatusCc := recipientsFor(recipientOverrides, cloudStatusTaskName)
+
+	const rotaWeekdayTaskName = "rota_weekday_reminder"
+	rotaWeekdayTo, rotaWeekdayCc := recipientsFor(recipientOverrides, rotaWeekdayTaskName)
+	const rotaWeekendTaskName = "rota_weekend_notice"
+	rotaWeekendTo, rotaWeekendCc := recipientsFor(recipientOverrides, rotaWeekendTaskName)
+	const rotaWeekendReminderTaskName = "rota_weekend_reminder"
+	rotaWeekendReminderTo, rotaWeekendReminderCc := recipientsFor(recipientOverrides, rotaWeekendReminderTaskName)
+	const rotaManualTaskName = "rota_manual_reminder"
+	rotaManualTo, rotaManualCc := recipientsFor(recipientOverrides, rotaManualTaskName)
 
 	tasks := []registry.Task{
 		// This component's first real sub-cron: deletes rows from
@@ -392,6 +436,122 @@ func main() {
 		})
 	}
 
+	// The three rota reminder tasks, on the days and times the rota's owners
+	// asked for (Colombo has no DST; TZ=UTC-dependent like every schedule
+	// here, see internal/schedule.PeriodKey):
+	//   - rota_weekday_reminder, 09:30 UTC = 15:00 Colombo, Mon-Fri: the next
+	//     working day's windows (Friday announces Monday), one email each with
+	//     its calendar invitation;
+	//   - rota_weekend_notice, 14:30 UTC = 20:00 Colombo, Sun-Thu: once the
+	//     coming weekend is fully marked, its summary and one invitation per
+	//     team per day, sent once; until then the rota admins are asked every
+	//     evening;
+	//   - rota_weekend_reminder, 09:30 UTC = 15:00 Colombo, Fri: the weekend
+	//     summary again, the invitations as updates, and cancellations.
+	// A task's SUB_CRON_RECIPIENTS to/cc get its failure alerts; they are
+	// copied on its emails only with ROTA_REMINDER_COPY_TASK_RECIPIENTS=true.
+	if rotaRemindersEnabled {
+		family := envString("ROTA_REMINDER_FAMILY", "CRE")
+		copyTaskRecipients := envBool("ROTA_REMINDER_COPY_TASK_RECIPIENTS", false)
+		// Invitations need an organizer: the address the emails come from.
+		organizer := strings.TrimSpace(os.Getenv("EMAIL_FROM_ADDRESS"))
+		invites := envBool("ROTA_REMINDER_INVITES_ENABLED", true)
+		if invites && !rotareminder.ValidInviteAddress(organizer) {
+			slog.Warn("rota reminder calendar invitations are off: EMAIL_FROM_ADDRESS is not set or is not a plain email address, and an invitation needs an organizer")
+			invites = false
+		}
+		scheduleURL := strings.TrimSpace(os.Getenv("ROTA_REMINDER_SCHEDULE_URL"))
+		if scheduleURL != "" && !rotareminder.ValidScheduleURL(scheduleURL) {
+			slog.Warn("ROTA_REMINDER_SCHEDULE_URL is not an http(s) URL; the rota reminders go without the Team Schedule link")
+			scheduleURL = ""
+		}
+		weekendRequired := parseRequired("ROTA_REMINDER_WEEKEND_REQUIRED",
+			envString("ROTA_REMINDER_WEEKEND_REQUIRED", "CRE_WEEKEND=3,CRE_WEEKEND_NIGHT=1"))
+		// Each task's config carries its schedule's period (the run's rota
+		// days are counted from it, so a retry announces what the scheduled
+		// run would have) and the engine's failure audience for it (a run in
+		// which only some emails failed reports them itself; see
+		// rotareminder.Config.AlertTo).
+		// A rotation worked on another clock keeps its hours there: the
+		// Americas Weekend is 08:00-18:00 in Los Angeles, whatever span of
+		// IST that is.
+		rotaWindows, err := rotareminder.ParseWindows(envString("ROTA_REMINDER_WINDOWS", "CRE_WEEKEND_NIGHT=08:00-18:00 America/Los_Angeles,CRE_WEEKEND_NIGHT_OC=08:00-18:00 America/Los_Angeles"))
+		if err != nil {
+			slog.Error("ROTA_REMINDER_WINDOWS is malformed; refusing to start", "err", err)
+			os.Exit(1)
+		}
+		rotaConfig := func(task, sched string, rotations map[string]string, to, cc []string) rotareminder.Config {
+			var copied []string
+			if copyTaskRecipients {
+				copied = append(append(copied, to...), cc...)
+			}
+			return rotareminder.Config{
+				Family:         family,
+				Rotations:      rotations,
+				Copy:           copied,
+				RedirectTo:     splitComma(os.Getenv("ROTA_REMINDER_REDIRECT_TO")),
+				ScheduleURL:    scheduleURL,
+				Invites:        invites,
+				OrganizerEmail: organizer,
+				Required:       weekendRequired,
+				Windows:        rotaWindows,
+				Settings:       teamScheduleClient,
+				EmailsEnabled:  alertsEnabled,
+				Zone:           rotaZone,
+				Now:            time.Now,
+				Anchor:         periodStart(sched),
+				Task:           task,
+				AlertTo:        append(append([]string{}, to...), alertRecipients...),
+				AlertCc:        cc,
+			}
+		}
+		weekdayRotations := parseRotations("ROTA_REMINDER_WEEKDAY_SHIFTS",
+			envString("ROTA_REMINDER_WEEKDAY_SHIFTS", "CRE_MORNING=Morning,CRE_MORNING_OC=On-call,CRE_EVENING=Evening"))
+		weekendRotations := parseRotations("ROTA_REMINDER_WEEKEND_SHIFTS",
+			envString("ROTA_REMINDER_WEEKEND_SHIFTS", "CRE_WEEKEND=LK Weekend,CRE_WEEKEND_NIGHT=Americas Weekend,CRE_WEEKEND_NIGHT_OC=LK On-call"))
+		rotaWeekdaySchedule := scheduleFor(scheduleOverrides, rotaWeekdayTaskName, "30 9 * * 1-5")
+		rotaWeekendSchedule := scheduleFor(scheduleOverrides, rotaWeekendTaskName, "30 14 * * 0-4")
+		rotaWeekendReminderSchedule := scheduleFor(scheduleOverrides, rotaWeekendReminderTaskName, "30 9 * * 5")
+		// "Send now" requests are picked up at every run: the schedule is finer
+		// than the driver, so it is due at each tick.
+		rotaManualSchedule := scheduleFor(scheduleOverrides, rotaManualTaskName, "*/5 * * * *")
+		tasks = append(tasks,
+			registry.Task{
+				Name:     rotaWeekdayTaskName,
+				Schedule: rotaWeekdaySchedule,
+				Handler: rotareminder.WeekdayReminder(teamScheduleClient, emailClient,
+					rotaConfig(rotaWeekdayTaskName, rotaWeekdaySchedule, weekdayRotations, rotaWeekdayTo, rotaWeekdayCc)),
+				To: rotaWeekdayTo,
+				Cc: rotaWeekdayCc,
+			},
+			registry.Task{
+				Name:     rotaWeekendTaskName,
+				Schedule: rotaWeekendSchedule,
+				Handler: rotareminder.WeekendNotice(teamScheduleClient, teamScheduleClient, emailClient,
+					rotaConfig(rotaWeekendTaskName, rotaWeekendSchedule, weekendRotations, rotaWeekendTo, rotaWeekendCc)),
+				To: rotaWeekendTo,
+				Cc: rotaWeekendCc,
+			},
+			registry.Task{
+				Name:     rotaWeekendReminderTaskName,
+				Schedule: rotaWeekendReminderSchedule,
+				Handler: rotareminder.WeekendReminder(teamScheduleClient, teamScheduleClient, emailClient,
+					rotaConfig(rotaWeekendReminderTaskName, rotaWeekendReminderSchedule, weekendRotations, rotaWeekendReminderTo, rotaWeekendReminderCc)),
+				To: rotaWeekendReminderTo,
+				Cc: rotaWeekendReminderCc,
+			},
+			registry.Task{
+				Name:     rotaManualTaskName,
+				Schedule: rotaManualSchedule,
+				Handler: rotareminder.ManualReminder(teamScheduleClient, teamScheduleClient, teamScheduleClient, emailClient,
+					rotaConfig(rotaManualTaskName, rotaManualSchedule, weekdayRotations, rotaManualTo, rotaManualCc),
+					rotaConfig(rotaManualTaskName, rotaManualSchedule, weekendRotations, rotaManualTo, rotaManualCc)),
+				To: rotaManualTo,
+				Cc: rotaManualCc,
+			},
+		)
+	}
+
 	var tasksWithRecipients []string
 	for _, t := range tasks {
 		if !gronx.IsValid(t.Schedule) {
@@ -411,6 +571,12 @@ func main() {
 	// just the standing ALERT_RECIPIENTS audience. Skipped entirely when
 	// ALERTS_ENABLED=false — no email will ever be sent in that case, so an
 	// unset EMAIL_BASE_URL isn't a misconfiguration.
+	// Rota reminders always have recipients (the people on the shift), so
+	// turning them on with email unconfigured is the same misconfiguration.
+	if alertsEnabled && emailBaseURL == "" && rotaRemindersEnabled {
+		slog.Error("ROTA_REMINDERS_ENABLED is true but EMAIL_BASE_URL is not set; refusing to start since no reminder could be sent")
+		os.Exit(1)
+	}
 	if alertsEnabled && emailBaseURL == "" && (len(alertRecipients) > 0 || len(tasksWithRecipients) > 0) {
 		slog.Error("failure alert recipients are configured but EMAIL_BASE_URL is not; refusing to start since those alerts could never actually send",
 			"alertRecipientsSet", len(alertRecipients) > 0, "tasksWithOwnRecipients", tasksWithRecipients)
@@ -529,6 +695,68 @@ func parseSubCronRecipients(raw string) map[string]subCronRecipients {
 func recipientsFor(overrides map[string]subCronRecipients, taskName string) (to, cc []string) {
 	r := overrides[taskName]
 	return r.To, r.Cc
+}
+
+// periodStart returns the scheduled firing time a run of expr made now belongs
+// to: the period key the engine claims it under (schedule.PeriodKey), and so
+// the same for every retry of that run. The schedule is checked at startup, so
+// the error is not expected; now is the fallback all the same.
+func periodStart(expr string) func() time.Time {
+	return func() time.Time {
+		now := time.Now()
+		if p, err := schedule.PeriodKey(expr, now); err == nil {
+			return p
+		}
+		return now
+	}
+}
+
+// parseRotations reads a rota reminder's shift list, "CODE=Name,CODE=Name": the
+// shift codes the task announces and the rotation name the email shows for
+// each. A malformed entry stops startup: a reminder that silently drops a
+// rotation is worse than one that never starts.
+func parseRotations(key, raw string) map[string]string {
+	out := map[string]string{}
+	for _, entry := range splitComma(raw) {
+		code, name, ok := strings.Cut(entry, "=")
+		code, name = strings.TrimSpace(code), strings.TrimSpace(name)
+		if !ok || code == "" || name == "" {
+			slog.Error("malformed rota reminder shift list; expected CODE=Name,CODE=Name", "key", key, "entry", entry)
+			os.Exit(1)
+		}
+		out[code] = name
+	}
+	if len(out) == 0 {
+		slog.Error("empty rota reminder shift list", "key", key)
+		os.Exit(1)
+	}
+	return out
+}
+
+// parseRequired reads the weekend's required headcounts, "CODE=N,CODE=N": how
+// many people each shift needs on each weekend day before the weekend is
+// announced. A malformed entry stops startup, like the shift lists.
+func parseRequired(key, raw string) map[string]int {
+	out := map[string]int{}
+	for _, entry := range splitComma(raw) {
+		code, n, ok := strings.Cut(entry, "=")
+		code = strings.TrimSpace(code)
+		count, err := strconv.Atoi(strings.TrimSpace(n))
+		if !ok || code == "" || err != nil || count < 0 {
+			slog.Error("malformed rota reminder headcount list; expected CODE=N,CODE=N", "key", key, "entry", entry)
+			os.Exit(1)
+		}
+		out[code] = count
+	}
+	return out
+}
+
+// envString returns the given environment variable, or def if unset or blank.
+func envString(key, def string) string {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		return v
+	}
+	return def
 }
 
 // envBool returns the given environment variable parsed with

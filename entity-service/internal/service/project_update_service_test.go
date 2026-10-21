@@ -260,6 +260,46 @@ func TestPgProjectUpdateService_PlainPostgresUpdatesFieldsAndNeverCallsSN(t *tes
 	}
 }
 
+// TestPgProjectUpdateService_AcceptsVerificationEnabledOnly proves a request
+// setting only VerificationEnabled (the field the Pending Verification
+// feature's Settings toggle sends) is not rejected by the "at least one
+// field must be provided" guard, and reaches the repository and back
+// unchanged -- locking in the fix made when this field was folded into the
+// shared pgProjectUpdateService alongside HasAgent/HasKbReferences/the
+// closure-state fields.
+func TestPgProjectUpdateService_AcceptsVerificationEnabledOnly(t *testing.T) {
+	verificationEnabled := true
+	wantResult := domain.ProjectUpdateResult{
+		ID:                  "11111111-1111-1111-1111-111111111111",
+		UpdatedBy:           "jane.doe@example.com",
+		UpdatedOn:           time.Date(2026, 9, 24, 0, 0, 0, 0, time.UTC),
+		VerificationEnabled: &verificationEnabled,
+	}
+	repo := &stubProjectUpdateRepo{
+		updateProject: func(_ context.Context, _ string, _ domain.ProjectUpdateRequest, _ string) (domain.ProjectUpdateResult, error) {
+			return wantResult, nil
+		},
+	}
+	svc := NewProjectUpdateService(repo, testProjectUserRepo(), alwaysUnrestrictedAccess{})
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	resp, err := svc.UpdateProject(ctx, wantResult.ID, domain.ProjectUpdateRequest{
+		VerificationEnabled: &verificationEnabled,
+	})
+	if err != nil {
+		t.Fatalf("UpdateProject() error = %v", err)
+	}
+	if !repo.called {
+		t.Fatal("UpdateProject() never called the repository")
+	}
+	if repo.gotReq.VerificationEnabled == nil || !*repo.gotReq.VerificationEnabled {
+		t.Fatalf("repo.UpdateProject() req.VerificationEnabled = %v, want true", repo.gotReq.VerificationEnabled)
+	}
+	if resp.Project.VerificationEnabled == nil || !*resp.Project.VerificationEnabled {
+		t.Fatalf("UpdateProject() response.Project.VerificationEnabled = %v, want true", resp.Project.VerificationEnabled)
+	}
+}
+
 // TestPgProjectUpdateService_AcceptsClosureStateOverride pins that a request
 // naming only ClosureState (the admin-only direct override -- fine-grained
 // authorization for it lives in the BFF, not here) is recognized as having
@@ -306,6 +346,36 @@ func TestPgProjectUpdateService_ClosureStateOnlyNeverDispatchesSNMirror(t *testi
 	// exactly one" test below, which has to waitFor an async failure record.
 	if mirror.calls != 0 {
 		t.Fatalf("ServiceNow mirror UpdateProject called %d times, want 0 for a ClosureState-only request", mirror.calls)
+	}
+}
+
+// TestPgProjectUpdateService_VerificationEnabledOnlyNeverDispatchesSNMirror
+// pins the identical reasoning as ClosureStateOnlyNeverDispatchesSNMirror,
+// for the other Postgres-only field this request carries: without this,
+// a dual-write request naming only VerificationEnabled would dispatch a
+// mirror write that snProjectUpdateService doesn't recognize, recording a
+// spurious sn_writeback_failures entry for a field that was never meant to
+// reach ServiceNow.
+func TestPgProjectUpdateService_VerificationEnabledOnlyNeverDispatchesSNMirror(t *testing.T) {
+	verificationEnabled := true
+	repo := &stubProjectUpdateRepo{}
+	mirror := &stubProjectMirror{}
+	failures := &recordingSNWritebackFailures{}
+	dispatcher := NewSNWritebackDispatcher(failures)
+	svc := NewProjectUpdateServiceWithSNWriteback(repo, testProjectUserRepo(), alwaysUnrestrictedAccess{}, dispatcher, mirror)
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	if _, err := svc.UpdateProject(ctx, "11111111-1111-1111-1111-111111111111", domain.ProjectUpdateRequest{VerificationEnabled: &verificationEnabled}); err != nil {
+		t.Fatalf("UpdateProject() error = %v, want success", err)
+	}
+	if !repo.called {
+		t.Fatal("UpdateProject() never called the repository")
+	}
+	// No background goroutine to race against here (mirror dispatch never
+	// happens), so a short, direct check is enough -- same reasoning as the
+	// ClosureState sibling test above.
+	if mirror.calls != 0 {
+		t.Fatalf("ServiceNow mirror UpdateProject called %d times, want 0 for a VerificationEnabled-only request", mirror.calls)
 	}
 }
 

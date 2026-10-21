@@ -33,6 +33,11 @@ export interface CaseStateConfirmDialogProps {
   isPending: boolean;
   onClose: () => void;
   onConfirm: () => void;
+  // Overrides the dialog's default title -- used by the Pending Verification
+  // "Mark as Verified" confirmation, which reuses this same dialog for a
+  // non-state-change action. See useVerifyPendingVerification/
+  // PendingVerificationsPage's own call site.
+  title?: string;
 }
 
 export default function CaseStateConfirmDialog({
@@ -41,13 +46,14 @@ export default function CaseStateConfirmDialog({
   isPending,
   onClose,
   onConfirm,
+  title = "Confirm State Change",
 }: CaseStateConfirmDialogProps): JSX.Element {
   return (
     <Dialog open={open} onClose={isPending ? undefined : onClose} maxWidth="xs" fullWidth>
       <DialogTitle
         sx={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}
       >
-        Confirm State Change
+        {title}
         <IconButton size="small" onClick={onClose} aria-label="close" disabled={isPending}>
           <X size={18} />
         </IconButton>

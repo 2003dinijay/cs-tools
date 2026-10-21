@@ -21,6 +21,7 @@ import {
   KeyRound,
   Monitor,
   Shield,
+  ShieldCheck,
   Star,
   Type,
   Users,
@@ -74,6 +75,11 @@ export const SETTINGS_PAGE_TABS = [
     id: SettingsPageTabId.AI,
     label: "AI Assistant",
     icon: Bot,
+  },
+  {
+    id: SettingsPageTabId.VERIFICATION,
+    label: "Pending Verification",
+    icon: ShieldCheck,
   },
   {
     id: SettingsPageTabId.REGISTRY_TOKENS,
@@ -350,6 +356,30 @@ export const SETTINGS_AI_ENABLED_CAPABILITIES_LABEL = (n: number) =>
 
 export const SETTINGS_AI_DISABLED_CAPABILITIES_LABEL = (n: number) =>
   `${n} capabilities disabled`;
+
+export const SETTINGS_VERIFICATION_SUCCESS_MESSAGE =
+  "Pending Verification settings were updated successfully.";
+
+export const SETTINGS_VERIFICATION_PATCH_ERROR =
+  "Failed to update Pending Verification settings.";
+
+export const SETTINGS_VERIFICATION_LOAD_ERROR =
+  "Could not load the current Pending Verification setting. Try again before changing it.";
+
+export const SETTINGS_VERIFICATION_HEADER_TITLE = "Pending Verification";
+
+export const SETTINGS_VERIFICATION_HEADER_BODY =
+  "Let customers flag a closed case for their own follow-up verification, and mark it verified once they've confirmed it's resolved.";
+
+export const SETTINGS_VERIFICATION_SECTION_TITLE = "Verification Settings";
+
+export const SETTINGS_VERIFICATION_ADMIN_ONLY_HINT =
+  "Users with Admin role can only update this setting";
+
+export const SETTINGS_VERIFICATION_TOGGLE_LABEL = "Pending Verification";
+
+export const SETTINGS_VERIFICATION_TOGGLE_DESCRIPTION =
+  "Show the Pending Verification list and let customers flag a closed case for their own follow-up verification";
 
 export const REGISTRY_ADMIN_ALERT_PREFIX = "Admin View:";
 

@@ -185,6 +185,9 @@ type ProjectDetailsView struct {
 	OnboardingExpiryDate     *time.Time `json:"onboardingExpiryDate"`
 	OnboardingStatus         *string    `json:"onboardingStatus"`
 	ProjectClosureFields
+	// VerificationEnabled gates the Pending Verification feature for this
+	// project.
+	VerificationEnabled bool `json:"verificationEnabled"`
 }
 
 // --- project metadata/stats ---
@@ -257,6 +260,9 @@ type UpdateProjectRequest struct {
 	// HasKbReferences controls whether the assistant cites knowledge-base
 	// articles in its answers.
 	HasKbReferences *bool `json:"hasKbReferences,omitempty"`
+	// VerificationEnabled turns the Pending Verification feature on or off
+	// for the project.
+	VerificationEnabled *bool `json:"verificationEnabled,omitempty"`
 }
 
 // FieldCount reports how many settings the request actually sets. The upstream
@@ -268,6 +274,9 @@ func (r UpdateProjectRequest) FieldCount() int {
 		n++
 	}
 	if r.HasKbReferences != nil {
+		n++
+	}
+	if r.VerificationEnabled != nil {
 		n++
 	}
 	return n
@@ -282,10 +291,11 @@ type UpdateProjectResponse struct {
 // UpdatedProjectRef is the project as it stands after the patch. Only the
 // fields the caller needs to confirm the change; entity-service returns more.
 type UpdatedProjectRef struct {
-	ID              string `json:"id"`
-	Name            string `json:"name"`
-	HasAgent        *bool  `json:"hasAgent,omitempty"`
-	HasKbReferences *bool  `json:"hasKbReferences,omitempty"`
+	ID                  string `json:"id"`
+	Name                string `json:"name"`
+	HasAgent            *bool  `json:"hasAgent,omitempty"`
+	HasKbReferences     *bool  `json:"hasKbReferences,omitempty"`
+	VerificationEnabled *bool  `json:"verificationEnabled,omitempty"`
 }
 
 // ProjectMetadataResponse is entity-service's response for GET /projects/{id}/metadata.
@@ -2930,4 +2940,86 @@ type InstanceUsageStatsResponse struct {
 	Total     int                       `json:"total"`
 	StartDate string                    `json:"startDate"`
 	EndDate   string                    `json:"endDate"`
+}
+
+// --- pending verifications ---
+
+// PendingVerification mirrors entity-service's domain.PendingVerification —
+// see that type's own doc comment for what it's for.
+type PendingVerification struct {
+	ID             string     `json:"id"`
+	WorkItemID     string     `json:"workItemId"`
+	RecordNumber   string     `json:"recordNumber"`
+	RecordTitle    string     `json:"recordTitle"`
+	Severity       *string    `json:"severity"`
+	RecordType     string     `json:"recordType"`
+	AddedReason    string     `json:"addedReason"`
+	PreviousStatus *string    `json:"previousStatus"`
+	AddedOn        time.Time  `json:"addedOn"`
+	AddedBy        string     `json:"addedBy"`
+	VerifiedOn     *time.Time `json:"verifiedOn"`
+	VerifiedBy     *string    `json:"verifiedBy"`
+	Note           *string    `json:"note"`
+}
+
+// CreatePendingVerificationRequest mirrors entity-service's
+// domain.CreatePendingVerificationRequest for POST /pending-verifications.
+type CreatePendingVerificationRequest struct {
+	WorkItemID     string  `json:"workItemId"`
+	AddedReason    string  `json:"addedReason"`
+	PreviousStatus *string `json:"previousStatus,omitempty"`
+	Note           *string `json:"note,omitempty"`
+}
+
+// CreatePendingVerificationResponse mirrors entity-service's
+// domain.CreatePendingVerificationResponse.
+type CreatePendingVerificationResponse struct {
+	Message             string              `json:"message"`
+	PendingVerification PendingVerification `json:"pendingVerification"`
+}
+
+// PendingVerificationSearchFilters mirrors entity-service's
+// domain.PendingVerificationSearchFilters.
+type PendingVerificationSearchFilters struct {
+	ProjectID       string   `json:"projectId"`
+	WorkItemID      *string  `json:"workItemId,omitempty"`
+	WorkItemTypes   []string `json:"workItemTypes,omitempty"`
+	AddedReason     *string  `json:"addedReason,omitempty"`
+	SearchQuery     string   `json:"searchQuery,omitempty"`
+	IncludeVerified bool     `json:"includeVerified,omitempty"`
+	VerifiedOnly    bool     `json:"verifiedOnly,omitempty"`
+}
+
+// SearchPendingVerificationsRequest mirrors entity-service's
+// domain.SearchPendingVerificationsRequest for POST /pending-verifications/search.
+type SearchPendingVerificationsRequest struct {
+	Pagination Pagination                       `json:"pagination"`
+	Filters    PendingVerificationSearchFilters `json:"filters"`
+}
+
+// PendingVerificationTypeCount mirrors entity-service's
+// domain.PendingVerificationTypeCount.
+type PendingVerificationTypeCount struct {
+	RecordType string `json:"recordType"`
+	Count      int    `json:"count"`
+}
+
+// SearchPendingVerificationsResponse mirrors entity-service's
+// domain.SearchPendingVerificationsResponse.
+type SearchPendingVerificationsResponse struct {
+	PendingVerifications []PendingVerification          `json:"pendingVerifications"`
+	Total                int                            `json:"total"`
+	AutoClosedCount      int                            `json:"autoClosedCount"`
+	ManualCount          int                            `json:"manualCount"`
+	TypeCounts           []PendingVerificationTypeCount `json:"typeCounts"`
+	Limit                int                            `json:"limit"`
+	Offset               int                            `json:"offset"`
+	HasMore              bool                           `json:"hasMore"`
+}
+
+// VerifyPendingVerificationResponse mirrors entity-service's
+// domain.VerifyPendingVerificationResponse for PATCH /pending-verifications/{id}.
+type VerifyPendingVerificationResponse struct {
+	Message             string              `json:"message"`
+	PendingVerification PendingVerification `json:"pendingVerification"`
 }

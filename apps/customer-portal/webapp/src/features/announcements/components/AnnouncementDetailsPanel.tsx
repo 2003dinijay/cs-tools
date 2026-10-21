@@ -115,6 +115,8 @@ export default function AnnouncementDetailsPanel({
   const statusColorPath = getStatusColor(statusLabel ?? undefined);
   const resolvedStatusColor = resolveColorFromTheme(statusColorPath, theme);
   const updatedOnLabel = formatAnnouncementDateDisplay(data.updatedOn);
+  const isClosed = statusLabel?.toLowerCase() === "closed";
+
   // announcementType is the real classification (entity-service's
   // announcement.announcement_type column); the tag fallback stays for
   // historical data created before that column existed (migration 0088
@@ -198,6 +200,10 @@ export default function AnnouncementDetailsPanel({
               projectId={projectId}
               caseId={caseId}
               statusLabel={data.status?.label}
+              isCaseClosed={isClosed}
+              canAddToVerification={false}
+              isPendingVerification={false}
+              pendingVerificationId={null}
               assignedEngineer={data.assignedEngineer}
               engineerInitials={
                 typeof data.assignedEngineer === "object" &&

@@ -64,6 +64,7 @@ import { useGetCsmIncidentActivities } from "@features/csm-operations/api/useCsm
 import EditIncidentDialog from "@features/csm-operations/components/EditIncidentDialog";
 import EntityRefLink from "@features/csm-operations/components/EntityRefLink";
 import IncidentTasksWidget from "@features/csm-operations/components/IncidentTasksWidget";
+import IncidentRunbookCard from "@features/csm-operations/components/IncidentRunbookCard";
 import IncidentActionBar from "@features/csm-operations/components/IncidentActionBar";
 import IncidentCreateMenu from "@features/csm-operations/components/IncidentCreateMenu";
 import IncidentResolutionDialog from "@features/csm-operations/components/IncidentResolutionDialog";
@@ -1084,6 +1085,8 @@ export default function CsmIncidentDetailPage(): JSX.Element {
                 </Typography>
               </Card>
             )}
+
+            <IncidentRunbookCard subject={incident.subject ?? ""} />
 
 
             {hasLinkedServiceRequests && (

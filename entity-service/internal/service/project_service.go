@@ -86,6 +86,7 @@ func (s *projectService) SearchProjects(ctx context.Context, req domain.SearchPr
 			OnboardingStatus:     p.OnboardingStatus,
 			OnboardingOwner:      p.OnboardingOwner,
 			GoLiveDate:           p.GoLiveDate,
+			VerificationEnabled:  p.VerificationEnabled,
 		}
 	}
 

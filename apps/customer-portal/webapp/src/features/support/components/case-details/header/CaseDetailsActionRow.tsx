@@ -30,6 +30,7 @@ import RejectSolutionDialog from "@features/support/components/case-details/dial
 import EscalateCaseModal from "../escalation/EscalateCaseModal";
 import DeescalateCaseModal from "../escalation/DeescalateCaseModal";
 import CaseFeedbackModal from "../feedback/CaseFeedbackModal";
+import VerificationActionButtons from "../verifications-tab/VerificationActionButtons";
 import { Fragment, type JSX, useState } from "react";
 import {
   CASE_STATUS_ACTIONS,
@@ -117,6 +118,12 @@ export default function CaseDetailsActionRow({
   isEscalated,
   canDeescalate,
   onDeescalateSuccess,
+  isCaseClosed = false,
+  canAddToVerification = false,
+  isPendingVerification = false,
+  pendingVerificationId,
+  onAddToVerificationSuccess,
+  onMarkVerifiedSuccess,
 }: CaseDetailsActionRowProps): JSX.Element {
   void assignedEngineer;
   void engineerInitials;
@@ -341,6 +348,16 @@ export default function CaseDetailsActionRow({
           </Box>
         </Tooltip>
       )}
+      <VerificationActionButtons
+        projectId={projectId}
+        workItemId={caseId}
+        isRecordClosed={isCaseClosed}
+        canAddToVerification={canAddToVerification}
+        isPendingVerification={isPendingVerification}
+        pendingVerificationId={pendingVerificationId}
+        onAddToVerificationSuccess={onAddToVerificationSuccess}
+        onMarkVerifiedSuccess={onMarkVerifiedSuccess}
+      />
       <CaseStateConfirmDialog
         open={!!confirmAction}
         actionLabel={confirmAction ? toPresentTenseActionLabel(confirmAction.label) : ""}
