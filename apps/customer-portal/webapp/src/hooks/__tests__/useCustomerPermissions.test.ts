@@ -97,16 +97,34 @@ describe("useCustomerPermissions & Permission Matrix", () => {
       }
     });
 
-    it("Admin has full CRUD on every module", () => {
+    it("Admin has full CRUD on every module except projects:update", () => {
       const roles: CanonicalRole[] = ["admin"];
       for (const mod of ALL_MODULES) {
         for (const act of ALL_ACTIONS) {
-          expect(hasCustomerPermission(roles, mod, act)).toBe(true);
+          const expected = !(mod === "projects" && act === "update");
+          expect(hasCustomerPermission(roles, mod, act)).toBe(expected);
         }
       }
     });
 
-    it("Agent has CRU on Cases/Timecards/CRs, RU on Projects, CRUD on Deployments", () => {
+    it("projects:update is held by customer_admin only", () => {
+      const allRoles: CanonicalRole[] = [
+        "admin",
+        "agent",
+        "internal",
+        "customer_admin",
+        "customer_user",
+        "partner_admin",
+        "partner_user",
+      ];
+      for (const role of allRoles) {
+        expect(hasCustomerPermission([role], "projects", "update")).toBe(
+          role === "customer_admin",
+        );
+      }
+    });
+
+    it("Agent has CRU on Cases/Timecards/CRs, Read-only on Projects, CRUD on Deployments", () => {
       const roles: CanonicalRole[] = ["agent"];
 
       // Cases: CRU, no D
@@ -121,10 +139,10 @@ describe("useCustomerPermissions & Permission Matrix", () => {
       expect(hasCustomerPermission(roles, "time_cards", "update")).toBe(true);
       expect(hasCustomerPermission(roles, "time_cards", "delete")).toBe(false);
 
-      // Projects: RU, no C, no D
+      // Projects: read only (update is customer_admin only)
       expect(hasCustomerPermission(roles, "projects", "create")).toBe(false);
       expect(hasCustomerPermission(roles, "projects", "read")).toBe(true);
-      expect(hasCustomerPermission(roles, "projects", "update")).toBe(true);
+      expect(hasCustomerPermission(roles, "projects", "update")).toBe(false);
       expect(hasCustomerPermission(roles, "projects", "delete")).toBe(false);
 
       // Change Requests: CRU, no D
@@ -173,11 +191,8 @@ describe("useCustomerPermissions & Permission Matrix", () => {
         expect(hasCustomerPermission(roles, "time_cards", "update")).toBe(false);
         expect(hasCustomerPermission(roles, "time_cards", "delete")).toBe(false);
 
-        // Projects: Read Only, EXCEPT customer_admin also gets Update --
-        // PATCH /projects/{id} (the route this permission gates) only ever
-        // touches the project's own AI Assistant settings (hasAgent/
-        // hasKbReferences), not general project data, so a customer's own
-        // Admin is allowed to toggle those for their own project.
+        // Projects: Read Only, EXCEPT customer_admin also gets Update (the
+        // AI-assistant settings are changeable only by a customer's own admin).
         const isCustomerAdminRole = roles.includes("customer_admin");
         expect(hasCustomerPermission(roles, "projects", "read")).toBe(true);
         expect(hasCustomerPermission(roles, "projects", "create")).toBe(false);

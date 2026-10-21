@@ -264,7 +264,7 @@ type ProjectFeatures struct {
 // accepts a closureState field -- a direct, admin-only override of a
 // project's overall closure status (see entity-service's own CLAUDE.md) --
 // and this route's RBAC entry (middleware.ModuleProjects/ActionUpdate) grants
-// RoleCustomerAdmin, an external role, specifically because this struct is
+// only RoleCustomerAdmin, an external role, specifically because this struct is
 // narrowly scoped to these two fields. Adding closureState here would hand
 // that override to a customer admin.
 type UpdateProjectRequest struct {

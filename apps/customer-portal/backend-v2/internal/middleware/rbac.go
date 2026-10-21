@@ -144,17 +144,17 @@ var permissionMatrix = map[Module]map[Action][]CanonicalRole{
 	ModuleProjects: {
 		ActionCreate: {RoleAdmin},
 		ActionRead:   {RoleAdmin, RoleAgent, RoleInternal, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
-		// RoleCustomerAdmin was deliberately re-added here: PATCH /projects/{id}
-		// (the only route gated by ModuleProjects/ActionUpdate) is narrowly
-		// scoped to exactly two AI-assistant settings (hasAgent/hasKbReferences
-		// -- see entity.UpdateProjectRequest), not general project data, so
-		// this doesn't reopen the broader write access this permission used
-		// to (over-)grant before RoleCustomerAdmin was first removed here.
-		// This grant's safety depends on entity.UpdateProjectRequest staying
-		// that narrow -- it must never gain entity-service's closureState
-		// field (a direct, admin-only closure-status override), which would
-		// silently hand that override to a customer admin through this route.
-		ActionUpdate: {RoleAdmin, RoleAgent, RoleInternal, RoleCustomerAdmin},
+		// Update is held by RoleCustomerAdmin ONLY. PATCH /projects/{id} (the
+		// only route gated by ModuleProjects/ActionUpdate) is narrowly scoped to
+		// exactly two AI-assistant settings (hasAgent/hasKbReferences -- see
+		// entity.UpdateProjectRequest), and only a customer's own admin may change
+		// them. WSO2-side roles (admin, agent, internal) are intentionally
+		// excluded: they must not toggle a customer's assistant from this portal.
+		// This grant's safety depends on entity.UpdateProjectRequest staying that
+		// narrow -- it must never gain entity-service's closureState field (a
+		// direct, admin-only closure-status override), which would silently hand
+		// that override to a customer admin through this route.
+		ActionUpdate: {RoleCustomerAdmin},
 		ActionDelete: {RoleAdmin},
 	},
 	ModuleChangeRequests: {
