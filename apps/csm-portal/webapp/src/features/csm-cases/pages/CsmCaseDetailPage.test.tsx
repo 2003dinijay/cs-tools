@@ -1306,6 +1306,30 @@ describe("CsmCaseDetailPage — managed cloud and onboarding banners", () => {
     expect(screen.getByTestId("case-onboarding-banner")).toHaveAttribute("role", "status");
   });
 
+  it("hides the managed cloud banner on a service request", () => {
+    useGetCsmCaseDetailMock.mockImplementation((id: string | undefined) => ({
+      data: id ? buildCase(id, { caseType: "service_request" }) : undefined,
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+      isFetching: false,
+      dataUpdatedAt: 0,
+    }));
+    mockProject({
+      subscriptionType: "managed_cloud_subscription",
+      onboardingStatus: "In-Progress",
+    });
+    renderPageAt(
+      "/operations/service-requests/case-1",
+      "/operations/service-requests/:caseId",
+    );
+
+    expect(screen.queryByText(MANAGED_TITLE)).not.toBeInTheDocument();
+    // Only the managed cloud notice is dropped; onboarding guidance still applies.
+    expect(screen.getByText(ONBOARDING_TITLE)).toBeInTheDocument();
+  });
+
   it("shows no banner for a project that is neither", () => {
     mockProject({ subscriptionType: "subscription", onboardingStatus: undefined });
     renderPage();
