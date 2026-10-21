@@ -16475,6 +16475,33 @@ components:
                 Overrides the default "Others" label for the summed
                 remainder bucket. Meaningless when "bucket" is set, same as
                 "maxGroups".
+        distinctBy:
+          type: object
+          description: >
+            Only meaningful for shape "count" with resourceType "case"; mutually
+            exclusive with "groupBy"/"slices" (enforced at dashboard-load
+            time). Makes the widget show the number of DISTINCT values of
+            "field" among the matching records instead of the record total.
+            The caller issues one POST /cases/aggregate request (filters = this
+            widget's own query, groupBy = field, maxGroups = maxGroups) and
+            shows the number of returned groups. If the response's
+            othersCount is greater than zero the number would be an
+            under-count, so the caller must show an error state instead of a
+            number. Omitted keeps the record-total behaviour.
+          required: [field]
+          properties:
+            field:
+              type: string
+              enum: [account, state, severity, type]
+              description: What to count distinct values of.
+            maxGroups:
+              type: integer
+              minimum: 1
+              maximum: 10000
+              description: >
+                The maxGroups to send to the aggregate call. Defaults to 1000
+                when omitted (filled in at dashboard-load time, so a loaded
+                widget always carries it).
         listLimit:
           type: integer
           description: Only meaningful for shape list; how many records to show
