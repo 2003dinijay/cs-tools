@@ -105,7 +105,7 @@ func TestSendReportMergesConfiguredAndDerivedRecipients(t *testing.T) {
 	for _, want := range []string{
 		"ENG0000001", "ACME-MIG-1", "https://support.example.com/cases/ENG0000001",
 		"Dana Example", "Team Alpha", "EU", "Morgan Example / Sam Example", "2026-03-02 15:00:00", "2026-09-01 09:35:00",
-		"over 180 days without a conclusion",
+		"<strong>180 days</strong>",
 		"Team &lt;Beta&gt;",
 	} {
 		if !strings.Contains(email.body, want) {
@@ -180,7 +180,10 @@ func TestSendReportSendsEmptyTables(t *testing.T) {
 			t.Errorf("empty scan lacks the heading %q: every table is shown, header row and all", heading)
 		}
 	}
-	if strings.Count(email.body, "<th>Case ID</th>") != 3 {
-		t.Errorf("want three header rows, got %d", strings.Count(email.body, "<th>Case ID</th>"))
+	if strings.Count(email.body, "Case ID</th>") != 3 {
+		t.Errorf("want three header rows, got %d", strings.Count(email.body, "Case ID</th>"))
+	}
+	if strings.Count(email.body, "No migrations in this table.") != 3 {
+		t.Errorf("each empty table should say so; got %d", strings.Count(email.body, "No migrations in this table."))
 	}
 }

@@ -17,6 +17,7 @@
 package notify
 
 import (
+	_ "embed"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -26,53 +27,57 @@ import (
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/migrationreport"
 )
 
-// migrationCaseReportTimezone is the zone the scan's timestamps are
-// written in: the one the team reading it works in, and the one
-// entity-service takes the age cut-off in.
+//go:embed templates/migration_case_report.html
+var migrationCaseReportTemplateRaw string
+
+var migrationCaseReportTemplate = bakeLogo(migrationCaseReportTemplateRaw)
+
+// migrationCaseReportTimezone is the zone the scan's dates are written in:
+// the one the team reading it works in, and the one entity-service takes
+// the age cut-off in.
 const migrationCaseReportTimezone = "Asia/Colombo"
 
-// migrationCaseColumns are the scan's table headings, in the order the
-// mail has always had them. The last two are the additions the CS team
-// asked for; everything before them is unchanged.
-var migrationCaseColumns = []string{
-	"Case ID", "WSO2 ID", "Created Date", "Last Customer Comment", "Assignee", "WSO2 Product", "Integration CS Team",
-	"Sales Region", "Account Manager / Technical Owner",
-}
-
-// RenderMigrationCaseReport writes the weekly migration case scan in the
-// layout its readers have always received: a short plain introduction,
-// then three headed tables with a grey header row and plain borders. No
-// banner, colours or branding. caseLinkBase is the support portal's case
-// page prefix; when set, each row's WSO2 ID links to <caseLinkBase>/<case
-// number>, else it is plain text.
+// RenderMigrationCaseReport fills in the weekly migration case scan's HTML
+// email template, the same branded shape as the stale and open case
+// reports: an introduction naming the age threshold, then the three
+// tables with the columns the scan has always had. caseLinkBase is the
+// support portal's case page prefix; when set, each row's WSO2 ID links to
+// <caseLinkBase>/<case number>, the link the scan has always carried, else
+// it is plain text. [YEAR] is today's year, the footer-only detail every
+// template here has.
 func RenderMigrationCaseReport(r migrationreport.Report, caseLinkBase string) string {
 	loc, err := time.LoadLocation(migrationCaseReportTimezone)
 	if err != nil {
 		loc = time.UTC
 	}
-	days := strconv.Itoa(r.OlderThanDays)
-	var b strings.Builder
-	b.WriteString("<html><body>\n")
-	fmt.Fprintf(&b, "<p>Hi Team,<br/>The following migration cases have been identified, which are opened for over %s days without a conclusion. Kindly review and take the necessary actions to drive them toward completion and help accelerate a successful migration.</p>\n", days)
-	renderMigrationTable(&b, "Migrations Customer Requested to Hold", r.OnHold, caseLinkBase, loc)
-	renderMigrationTable(&b, "Migrations Waiting on Accounts Team", r.WaitingOnAccounts, caseLinkBase, loc)
-	renderMigrationTable(&b, "Migrations in Progress for Over "+days+" Days That Don't Fall Under Either of the Above Categories", r.InProgress, caseLinkBase, loc)
-	b.WriteString("</body></html>\n")
-	return b.String()
+	replacer := strings.NewReplacer(
+		"<!-- [OLDER_THAN_DAYS] -->", strconv.Itoa(r.OlderThanDays),
+		"<!-- [CREATED_BEFORE] -->", escapeHTML(r.CreatedBefore.In(loc).Format("2006-01-02")),
+		"<!-- [ON_HOLD_COUNT] -->", strconv.Itoa(len(r.OnHold)),
+		"<!-- [ON_HOLD_ROWS] -->", renderMigrationRows(r.OnHold, caseLinkBase, loc),
+		"<!-- [WAITING_ON_ACCOUNTS_COUNT] -->", strconv.Itoa(len(r.WaitingOnAccounts)),
+		"<!-- [WAITING_ON_ACCOUNTS_ROWS] -->", renderMigrationRows(r.WaitingOnAccounts, caseLinkBase, loc),
+		"<!-- [IN_PROGRESS_COUNT] -->", strconv.Itoa(len(r.InProgress)),
+		"<!-- [IN_PROGRESS_ROWS] -->", renderMigrationRows(r.InProgress, caseLinkBase, loc),
+		"<!-- [YEAR] -->", strconv.Itoa(time.Now().Year()),
+	)
+	return replacer.Replace(migrationCaseReportTemplate)
 }
 
-// renderMigrationTable writes one heading and its table. An empty table
-// is a heading over its header row alone, as it always was: the reader
-// sees that the category was checked and had nothing in it.
-func renderMigrationTable(b *strings.Builder, title string, rows []migrationreport.Row, caseLinkBase string, loc *time.Location) {
-	fmt.Fprintf(b, "<h3>%s</h3>\n", escapeHTML(title))
-	b.WriteString(`<table border="1" cellpadding="5" cellspacing="0" style="border-collapse:collapse;">` + "\n")
-	b.WriteString(`<tr style="background-color:#f2f2f2;">`)
-	for _, c := range migrationCaseColumns {
-		fmt.Fprintf(b, "<th>%s</th>", escapeHTML(c))
+// migrationRowColumns is how many columns the scan's tables have; the
+// empty-table row spans them all.
+const migrationRowColumns = 9
+
+// renderMigrationRows builds one <tr> per migration, in the order given
+// (oldest first, as entity-service returns them). An empty table says so
+// rather than rendering a header over nothing.
+func renderMigrationRows(rows []migrationreport.Row, caseLinkBase string, loc *time.Location) string {
+	if len(rows) == 0 {
+		return fmt.Sprintf(`<tr><td colspan="%d" style="padding:16px 10px; text-align:center; color:#8a8f98;">No migrations in this table.</td></tr>`, migrationRowColumns)
 	}
-	b.WriteString("</tr>\n")
+	const cell = `<td style="padding:8px 10px; border-bottom:1px solid #e8eaed; vertical-align:top;">%s</td>`
 	const stamp = "2006-01-02 15:04:05"
+	var b strings.Builder
 	for _, row := range rows {
 		lastComment := ""
 		if row.LastCustomerCommentOn != nil {
@@ -80,22 +85,18 @@ func renderMigrationTable(b *strings.Builder, title string, rows []migrationrepo
 		}
 		owners := strings.Join(nonEmpty(row.AccountManager, row.TechnicalOwner), " / ")
 		b.WriteString("<tr>")
-		for _, cell := range []string{
-			escapeHTML(row.Number),
-			migrationCaseLink(caseLinkBase, row),
-			escapeHTML(row.CreatedOn.In(loc).Format(stamp)),
-			escapeHTML(lastComment),
-			escapeHTML(row.AssignedTo),
-			escapeHTML(row.Product),
-			escapeHTML(row.CsTeam),
-			escapeHTML(row.SalesRegion),
-			escapeHTML(owners),
-		} {
-			fmt.Fprintf(b, "<td>%s</td>", cell)
-		}
-		b.WriteString("</tr>\n")
+		fmt.Fprintf(&b, cell, escapeHTML(row.Number))
+		fmt.Fprintf(&b, cell, migrationCaseLink(caseLinkBase, row))
+		fmt.Fprintf(&b, cell, escapeHTML(row.CreatedOn.In(loc).Format(stamp)))
+		fmt.Fprintf(&b, cell, orDash(escapeHTML(lastComment)))
+		fmt.Fprintf(&b, cell, orDash(escapeHTML(row.AssignedTo)))
+		fmt.Fprintf(&b, cell, orDash(escapeHTML(row.Product)))
+		fmt.Fprintf(&b, cell, orDash(escapeHTML(row.CsTeam)))
+		fmt.Fprintf(&b, cell, orDash(escapeHTML(row.SalesRegion)))
+		fmt.Fprintf(&b, cell, orDash(escapeHTML(owners)))
+		b.WriteString("</tr>")
 	}
-	b.WriteString("</table><br/>\n")
+	return b.String()
 }
 
 // migrationCaseLink is the row's WSO2 ID, linked to the case page in the
@@ -111,7 +112,7 @@ func migrationCaseLink(caseLinkBase string, row migrationreport.Row) string {
 		return escapeHTML(text)
 	}
 	href := strings.TrimRight(caseLinkBase, "/") + "/" + url.PathEscape(row.Number)
-	return fmt.Sprintf(`<a href="%s" target="_blank">%s</a>`, escapeHTML(href), escapeHTML(text))
+	return fmt.Sprintf(`<a href="%s" target="_blank" style="color:#ff7300;">%s</a>`, escapeHTML(href), escapeHTML(text))
 }
 
 // nonEmpty drops the blank strings so a missing owner leaves no stray
