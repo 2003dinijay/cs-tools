@@ -3384,6 +3384,29 @@ export interface BeConfigurationItemSearchResponse {
  * UI starts sending it, after checking it against the published contract.
  */
 export interface BePatchChangeRequestPayload {
+  /** The subject. */
+  title?: string;
+  /** Rich-text description; `""` clears it. */
+  description?: string;
+  /** Rich-text justification; `""` clears it. */
+  justification?: string;
+  /** Rich-text "Risk and impact analysis" (read back as `impactDescription`); `""` clears it. */
+  impactDescription?: string;
+  impact?: BeChangeRequestImpact;
+  priority?: BeChangeRequestPriority;
+  /**
+   * The change type. It decides the approval flow, so the backend accepts a
+   * change only while the change request is New (a resend of the stored type is
+   * accepted in every state). Re-typing into `emergency` must turn both customer
+   * boxes off in the same request.
+   */
+  type?: BeChangeRequestType;
+  /**
+   * An internal work note, appended to the journal (never blank). The one thing
+   * that can still be added once the change request has been approved: every
+   * field is read-only then (400 `change_request_approved_read_only`).
+   */
+  workNote?: string;
   plannedStartOn?: string;
   plannedEndOn?: string;
   assignedTeamId?: string;
@@ -3494,12 +3517,21 @@ export interface BePatchChangeRequestResponse {
 export type BeChangeRequestFieldFilterField =
   | "createdOn"
   | "assignmentGroupId"
-  | "approval";
+  | "approval"
+  | "assignedUserId"
+  /** Tag names, `in` (carries any) or `notIn` (carries none); staff only. */
+  | "tag"
+  /** PostgreSQL only, `gte`/`lte`. */
+  | "updatedOn"
+  | "plannedStartOn"
+  | "plannedEndOn"
+  /** PostgreSQL only, `in`: change types (standard, normal, ...). */
+  | "type";
 
 /** `op` enum accepted by a change-request search's generic `filters` array
  * — mirrors `changeRequestFilterOpSet` in `change_request_filters.go`.
  * Field/op compatibility is enforced only on the backend. */
-export type BeChangeRequestFieldFilterOp = "gte" | "lte" | "in" | "eq";
+export type BeChangeRequestFieldFilterOp = "gte" | "lte" | "in" | "eq" | "notIn";
 
 /** One entry in a change-request search's generic `filters` array. */
 export interface BeChangeRequestFieldFilter {
@@ -3529,9 +3561,12 @@ export interface BeChangeRequestSearchPayload {
      * populates this today.
      */
     filters?: BeChangeRequestFieldFilter[];
+    /** OR groups (PostgreSQL only): each branch's filters ANDed, branches OR'd. */
+    anyOf?: Array<{ filters: Array<{ field: string; op: "in"; values: string[] }> }>;
   };
   sortBy?: {
-    field?: "createdOn" | "updatedOn";
+    /** `plannedStartOn` / `plannedEndOn`: PostgreSQL only. */
+    field?: "createdOn" | "updatedOn" | "plannedStartOn" | "plannedEndOn";
     order?: "asc" | "desc";
   };
   pagination?: BePagination;
@@ -3806,6 +3841,8 @@ export interface BeUpdateIncidentPayload {
   problemId?: string | null;
   causedById?: string | null;
   environment?: string | null;
+  /** The incident report (HTML); replaces what is stored. Write-only: the detail does not read it back. */
+  incidentReport?: string;
 }
 
 /** `PATCH /incidents/{id}` response — the full updated incident. */
@@ -3817,10 +3854,8 @@ export interface BePatchIncidentResponse {
 /**
  * `field` enum accepted by an incident search's generic `filters` array —
  * mirrors the entity-service's `incidentFilterFieldSet` (see
- * `incident_filters.go`) exactly. This portal currently builds controls for
- * `assignmentGroupId` (SRE Team), `slaViolated`, `createdOn`, and
- * `productName` — the remaining values (`state`, `businessServiceId`,
- * `madeSla`) are included for completeness/future controls, not dead code.
+ * `incident_filters.go`) exactly. The Incidents filter bar builds controls for
+ * all of them except `madeSla`.
  */
 export type BeIncidentFieldFilterField =
   | "state"
@@ -3829,7 +3864,12 @@ export type BeIncidentFieldFilterField =
   | "createdOn"
   | "slaViolated"
   | "madeSla"
-  | "productName";
+  | "productName"
+  | "assignedUserId"
+  /** PostgreSQL only: incident category labels, `in`. */
+  | "category"
+  /** PostgreSQL only: last update, `gte`/`lte`. */
+  | "updatedOn";
 
 /**
  * `op` enum accepted by an incident search's generic `filters` array,
@@ -3871,6 +3911,8 @@ export interface BeIncidentSearchPayload {
      * above remain flat — only those four.
      */
     filters?: BeIncidentFieldFilter[];
+    /** OR groups (PostgreSQL only): each branch's filters ANDed, branches OR'd. */
+    anyOf?: Array<{ filters: Array<{ field: string; op: "in"; values: string[] }> }>;
   };
   sortBy?: {
     field?: "createdOn" | "updatedOn" | "openedOn";

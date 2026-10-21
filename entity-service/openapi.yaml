@@ -22172,6 +22172,27 @@ components:
         message:
           type: string
 
+    ChangeRequestBranchFilter:
+      type: object
+      required: [field, op, values]
+      description: >-
+        One condition of a change request search's `anyOf` branch: "field is
+        one of values". Its own schema because a branch takes fields the generic
+        filter array does not (state, impact, projectId) and only the "in"
+        operator. `tag` is internal callers only. PostgreSQL only.
+      properties:
+        field:
+          type: string
+          enum: [state, impact, projectId, type, assignmentGroupId, assignedUserId, tag]
+        op:
+          type: string
+          enum: [in]
+        values:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: string
     ChangeRequestFieldFilter:
       type: object
       required: [field, op]
@@ -22183,9 +22204,14 @@ components:
             - assignmentGroupId
             - approval
             - assignedUserId
+            - tag
+            - updatedOn
+            - plannedStartOn
+            - plannedEndOn
+            - type
         op:
           type: string
-          enum: [gte, lte, in, eq]
+          enum: [gte, lte, in, eq, notIn]
         values:
           type: array
           items:
@@ -22212,6 +22238,14 @@ components:
           field.
         - **assignedUserId** (in): assignee UUIDs to filter the change
           request's assigned user by.
+        - **tag** (in / notIn): tag names, case-insensitive; in = carries any
+          of them, notIn = carries none. PostgreSQL only; internal callers only
+          (403 otherwise).
+        - **updatedOn** / **plannedStartOn** / **plannedEndOn** (gte / lte):
+          same value syntax as createdOn, bounding the last update, the
+          planned start and the planned end. PostgreSQL only.
+        - **type** (in): change types (standard, normal, emergency, ...). A
+          type with no equivalent on the data source is a 400. PostgreSQL only.
 
     SearchChangeRequestsRequest:
       type: object
@@ -22258,6 +22292,21 @@ components:
                 A single change request number (e.g. "CHG0010001"); matches
                 exactly. Routed as a first-class filter rather than through
                 the free-text searchQuery scan.
+            anyOf:
+              type: array
+              description: >-
+                Cross-field OR, as on case search: each branch's filters are
+                ANDed, the branches are OR'd, and the result is ANDed with the
+                other filters. At most 10 branches of at most 10 filters each,
+                op "in" only. Branch fields: state, impact, projectId, type, assignmentGroupId, assignedUserId, tag (internal callers only). PostgreSQL only (400 otherwise).
+              items:
+                type: object
+                required: [filters]
+                properties:
+                  filters:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ChangeRequestBranchFilter'
             filters:
               type: array
               items:
@@ -22272,7 +22321,7 @@ components:
           properties:
             field:
               type: string
-              enum: [createdOn, updatedOn]
+              enum: [createdOn, updatedOn, plannedStartOn, plannedEndOn]
             order:
               type: string
               enum: [asc, desc]
@@ -23572,6 +23621,16 @@ components:
       description: >
         Any combination of fields may be supplied; at least one is required.
         Omitted fields are left unchanged.
+        APPROVED CHANGE REQUESTS ARE READ-ONLY (PostgreSQL data source): once a change
+        request has been approved -- it is in customer_approval, scheduled, implement,
+        review, customer_review, closed or rollback, which it reaches only through its CAB
+        approval (a Standard change, pre-approved, through Request Approval) -- a request
+        that changes any of its fields is a 400 naming them, with errorCode
+        change_request_approved_read_only, and nothing is written. A field resent with the
+        value it already holds is accepted. Still accepted: state, onHold / onHoldReason,
+        requestApproval, workNote and comment, a Re-schedule (state authorize with a new
+        planned window, out of customer_approval) and WSO2's answer to a time the customer
+        proposed.
       properties:
         title:
           type: string
@@ -23593,8 +23652,8 @@ components:
           format: uuid
           description: >-
             Must belong to the change request's project (a change request with no project
-            takes none) and, like deploymentIds, can change only before implement; the
-            stored value resent is accepted. Cannot be combined with deploymentIds.
+            takes none) and, like deploymentIds, can change only until the change request is
+            approved; the stored value resent is accepted. Cannot be combined with deploymentIds.
         deployedProductId:
           type: string
           format: uuid
@@ -23825,9 +23884,10 @@ components:
             the stored one). Changing `projectId` while deployments are stored
             requires `deploymentIds` in the same request. Cannot be combined
             with `deploymentId` / `deployedProductId`. Deployment products are
-            always re-derived. EDIT WINDOW: `projectId`, `deploymentIds` and
-            `deploymentProductIds` can be changed only while the change request
-            has not reached `implement` (states new .. scheduled); afterwards a
+            always re-derived. EDIT WINDOW: `deploymentIds` and
+            `deploymentProductIds` can be changed only until the change request
+            is approved (states new, assess, authorize; `projectId` only in new,
+            see its own description); afterwards a
             change is a 400 ("<field> can no longer be changed: ...") while
             resending the stored value is accepted. PostgreSQL data source only.
         environmentIds:
@@ -26925,7 +26985,11 @@ components:
             `incident_assignment_group_not_allowed` (400: an assignmentGroupId that is
             not an active support group of any service; nothing created), and, on POST
             /incidents/{id}/specialist-handoffs, `incident_handoff_needs_assignee` (409:
-            the incident is assigned to nobody). The list grows, so this is
+            the incident is assigned to nobody), and, on PATCH /change-requests/{id},
+            `change_request_approved_read_only` (400: a field of a change request that has
+            been approved -- CAB approval received, or a Standard change once scheduled --
+            would change; its fields are read-only, work notes can still be added; nothing
+            written). The list grows, so this is
             deliberately not a closed enum: a value not listed here is a newer server's.
           example: change_request_on_hold
 
@@ -27378,6 +27442,27 @@ components:
         updatedOn:
           type: string
 
+    IncidentBranchFilter:
+      type: object
+      required: [field, op, values]
+      description: >-
+        One condition of an incident search's `anyOf` branch: "field is one of
+        values". Its own schema because a branch takes `priority`, which the
+        generic filter array does not, and only the "in" operator. PostgreSQL
+        only.
+      properties:
+        field:
+          type: string
+          enum: [state, priority, category, businessServiceId, assignmentGroupId, assignedUserId]
+        op:
+          type: string
+          enum: [in]
+        values:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: string
     IncidentFieldFilter:
       type: object
       required: [field, op]
@@ -27394,6 +27479,8 @@ components:
             - productName
             - assignedUserId
             - incidentStateKeys
+            - category
+            - updatedOn
         op:
           type: string
           enum: [in, gte, lte, eq]
@@ -27433,6 +27520,10 @@ components:
           narrows rather than guarantees full coverage.
         - **assignedUserId** (in): assignee UUIDs to filter the incident's
           assigned user by.
+        - **category** (in): incident category labels (e.g. INQUIRY),
+          case-insensitive. PostgreSQL only.
+        - **updatedOn** (gte/lte): same syntax as createdOn, on the incident's
+          last update. PostgreSQL only.
         - **incidentStateKeys** (in): one or more raw ServiceNow
           `incident_state` numeric keys, passed through unmapped (unlike
           state above, which translates the domain IncidentState enum to
@@ -27486,6 +27577,23 @@ components:
                 caller that set CreateIncidentRequest.correlationId find that
                 same incident again without a free-text searchQuery scan over
                 subject or workNotes.
+            anyOf:
+              type: array
+              description: >-
+                Cross-field OR, as on case search: each branch's filters are
+                ANDed, the branches are OR'd, and the result is ANDed with the
+                other filters. At most 10 branches of at most 10 filters each,
+                op "in" only. Branch fields: state, priority, category,
+                businessServiceId, assignmentGroupId, assignedUserId.
+                PostgreSQL only (400 otherwise).
+              items:
+                type: object
+                required: [filters]
+                properties:
+                  filters:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/IncidentBranchFilter'
             filters:
               type: array
               items:
