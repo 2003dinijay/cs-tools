@@ -237,7 +237,7 @@ export default function RunbooksTab(): JSX.Element {
               }}
               fullWidth
               slotProps={{
-                htmlInput: { "aria-label": "Search runbooks by name, alert name or link" },
+                htmlInput: { "aria-label": "Search runbooks by number, alert name or runbook link" },
                 input: {
                   startAdornment: (
                     <InputAdornment position="start">
