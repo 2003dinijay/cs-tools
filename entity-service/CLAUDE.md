@@ -4456,8 +4456,8 @@ on PATCH cannot be combined with `deploymentIds`.
 *PATCH.* Arrays replace. `deploymentIds` changed → deployments and products
 (re-derived) are rewritten; `[]` clears them. Changing `projectId` while deployments
 are stored requires `deploymentIds` in the same request. **Edit window:** deployments and
-deployment products can change only while the change has not reached `implement` (states
-new … scheduled); from implement/review/customer_review/rollback/closed/canceled a
+deployment products can change only until the change is approved (states new, assess,
+authorize); from customer_approval/scheduled/implement/review/customer_review/rollback/closed/canceled a
 *change* is a 400 ("<field> can no longer be changed: the change request is in state
 …") while re-sending the stored value is accepted. They are resolved against the change's
 project, which after New is the **frozen** stored one (the single-valued
@@ -4914,6 +4914,52 @@ and Request Approval now refuses that, so a test that needs the dead end uses
 `requestApprovalThenContactsLeave` (a stand-in contact that leaves right after Request Approval:
 the residual edge) or `legacyInCustomerState` (a row written with SQL, as an older build left it);
 the rest moved to a project with contacts, `createAnswerable`).
+
+### An approved change request is read-only (only work notes are added)
+
+Decision (the user's, 2026-10-21): once CAB approval has been received, every field of the change
+request is read-only, the implementation plan included; only work notes can still be added. Code:
+`change_request_approved_lock.go` (`checkApprovedContentLock`, called in `patchChangeRequestTx` right
+after `validateCreationPhaseEdits`), `CodeChangeRequestApprovedReadOnly` (`change_request_approved_read_only`).
+
+- **When:** the stored state is one of `customer_approval`, `scheduled`, `implement`, `review`,
+  `customer_review`, `closed`, `rollback` (`changeRequestApprovedStates`). Those are reached only through
+  an approval: the CAB approval for Normal and Emergency changes, and Request Approval for a Standard
+  change, which is pre-approved and has no CAB stage (so for a Standard change the lock starts at
+  Scheduled / Customer Approval). `canceled` is NOT in the set: a change can be cancelled before anybody
+  approved it. A pure function of the state, like the customer requirements lock: no column, no marker.
+- **What:** a PATCH that CHANGES any field -- title, description, justification, impactDescription
+  (compared through `COALESCE(impact_description, risk_impact_analysis)`), implementationPlan,
+  rollbackPlan (through `COALESCE(rollback_process, backout_plan)`), testPlan, serviceOutage,
+  communicationPlan, affected services / components, rollback duration, impact, priority, category,
+  the planned window, assignedTeamId, assignedEngineerId, requestedById, caseId, serviceId,
+  serviceOfferingId, isPlanningVisibleToCustomers and the two customer boxes -- is a 400 naming every
+  changed field ("description, implementationPlan can no longer be changed: the change request has been
+  approved (current state: scheduled), so its fields are read-only; only work notes can be added"), and
+  nothing is written, not even the rest of the request. The comparison is one SQL statement
+  (`approvedContentQuery`, `IS DISTINCT FROM` per field, ids and enum labels compared as text), so a
+  field resent with its stored value is the accepted no-op it is everywhere in this PATCH. The project
+  and the type keep their own (earlier, stricter) freezes; the deployments and deployment products are
+  held by `changeRequestLinksLockedStates`, whose window now closes at the same point.
+- **Still accepted:** `workNote` and `comment`, `state` (the lifecycle), `onHold` / `onHoldReason`,
+  `requestApproval`, a Re-schedule out of Customer Approval (`{state: "authorize"}` with a new window:
+  the window is exempt for a staff time response, anything else it carries is judged), WSO2's answer to
+  a time the customer proposed, and the customer's own answer / proposal (external callers return before
+  this). Tags and attachments are other endpoints and are not touched.
+- **Order:** after the pure customer-lock rules (a type that is frozen, a box that can never be unticked,
+  the Emergency consent rule keep their own words) and before the rules that ask who could be asked
+  (`checkTickedBoxCanBeAsked`, `checkRequestedByLeavesSomebodyToAsk`): past the approval no contact would
+  make an edit possible, so their words would mislead. **This supersedes the earlier "a customer box is
+  add-only until the gate it controls"** after the approval: the review box can no longer be ticked in
+  Scheduled / Implement / Review.
+- **Not enforced:** the data source that talks to the previous system directly (the PATCH goes there and
+  that system decides), and csm-sync-service's own SQL writes. The CSM webapp and microapp disable their
+  Edit forms for these states (the webapp keeps a work-note field); the backend is the authority.
+- Tests: `change_request_approved_lock_test.go` (states, fields, query, message),
+  `change_request_approved_lock_integration_test.go` (every approved state read-only, resend accepted,
+  work notes and on hold accepted, refused PATCH writes nothing; editable before approval, NULL and
+  canceled), run as a superuser and as `csm_app`. Existing tests that edited an approved change now
+  carry `onHoldReason` / a work note as "the rest of the request" (`holdReasonOf`).
 
 ### Customer Group: approving / rejecting Customer Approval and Customer Review
 

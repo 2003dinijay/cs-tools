@@ -1407,6 +1407,15 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 		if err := validateCreationPhaseEdits(gates, req); err != nil {
 			return "", err
 		}
+		// Once the change has been approved its fields are read-only (only work
+		// notes and the lifecycle move on): change_request_approved_lock.go. After
+		// the pure rules above, which keep their more specific words (a type that is
+		// frozen, a box that can never be unticked), and before the rules below that
+		// ask who could be asked: past the approval no contact would make an edit
+		// possible, so their words would mislead.
+		if err := checkApprovedContentLock(ctx, tx, id, gates, req, staffTimeResponse); err != nil {
+			return "", err
+		}
 		// A box turned on after Request Approval needs somebody who can be asked
 		// (rule 4b, after the rules that need no query).
 		if err := checkTickedBoxCanBeAsked(ctx, tx, id, gates, req.CustomerApprovalRequired, req.CustomerReviewRequired); err != nil {

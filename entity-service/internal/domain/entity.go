@@ -5064,9 +5064,9 @@ type PatchChangeRequestRequest struct {
 	// change touches (an explicitly empty array clears it, and with it the
 	// deployment products that follow from it). Together
 	// with ProjectID and DeploymentProductIDs it is editable
-	// only before implementation starts: once the change request has reached
-	// implement (or any later state) a change is refused with a
-	// ValidationError, while resending the stored value is accepted. The
+	// only until the change request is approved: once it has reached
+	// customer_approval or scheduled (or any later state) a change is refused
+	// with a ValidationError, while resending the stored value is accepted. The
 	// relationship rules are those of CreateChangeRequestRequest.ProjectID.
 	// Changing ProjectID while deployments are stored requires DeploymentIDs
 	// in the same request. Cannot be combined with the single DeploymentID /
