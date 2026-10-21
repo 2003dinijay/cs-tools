@@ -50,6 +50,9 @@ func (s *incidentService) recordIncidentFieldChanges(ctx context.Context, req do
 // them), subcategory follows category (a new category can clear it), and the service offering
 // follows the service. A field sent with the value it already had is not a change.
 //
+// Priority, impact and urgency stay separate rows, one plain value each; the incident feed groups a
+// save's rows and shows impact/urgency under the priority they moved (webapp incidentActivity.ts).
+//
 // The field names key caseActivityFieldChangeLabel's labels. Values are what a person reads:
 // enum values title-cased ("IN_PROGRESS" -> "In Progress"), references by name (their id when
 // they have none), "" for none.

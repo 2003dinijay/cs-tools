@@ -69,6 +69,22 @@ func TestIncidentFieldChanges(t *testing.T) {
 	}
 }
 
+// TestIncidentFieldChanges_PriorityUnmoved: an impact or urgency change that leaves the computed
+// priority where it was records no priority row.
+func TestIncidentFieldChanges_PriorityUnmoved(t *testing.T) {
+	before := domain.IncidentView{Priority: strPtr("LOW"), Impact: strPtr("LOW"), Urgency: strPtr("LOW")}
+	after := before
+	after.Urgency = strPtr("MEDIUM")
+	urgency := domain.IncidentUrgencyMedium
+	got := incidentFieldChanges(domain.UpdateIncidentRequest{Urgency: &urgency}, before, after)
+	want := []repository.IncidentFieldChange{
+		{Field: "urgency", OldValue: "Low", NewValue: "Medium"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("incidentFieldChanges = %+v, want %+v", got, want)
+	}
+}
+
 // TestIncidentFieldChanges_ClearedReference: unassigning reads as the old name and an empty new value.
 func TestIncidentFieldChanges_ClearedReference(t *testing.T) {
 	before := domain.IncidentView{AssignedTo: &domain.EntityRef{ID: "u1", Name: "Jane Doe"}}
@@ -100,7 +116,7 @@ func updateRecordingRepo(before, after domain.IncidentView) *stubIncidentRepo {
 // activity feed, attributed to the caller, once the update has been written.
 func TestIncidentService_UpdateIncident_RecordsFieldChangeActivity(t *testing.T) {
 	before := newTestIncidentView(testDeploymentUUID)
-	before.Impact, before.Priority = strPtr("LOW"), strPtr("LOW")
+	before.Impact, before.Urgency, before.Priority = strPtr("LOW"), strPtr("MEDIUM"), strPtr("LOW")
 	after := before
 	after.Impact, after.Priority = strPtr("HIGH"), strPtr("MODERATE")
 	repo := updateRecordingRepo(before, after)
