@@ -168,13 +168,11 @@ export const CUSTOMER_PERMISSION_MATRIX: Record<
       "partner_admin",
       "partner_user",
     ],
-    // customer_admin was deliberately re-added here: PATCH /projects/{id}
-    // (the only route this permission gates -- see rbac.go) is narrowly
-    // scoped to exactly two AI-assistant settings (hasAgent/hasKbReferences),
-    // not general project data, so letting a customer's own Admin toggle
-    // their project's AI Assistant doesn't reopen the broader write access
-    // this permission used to (over-)grant before it was first removed here.
-    update: ["admin", "agent", "internal", "customer_admin"],
+    // Held by customer_admin ONLY. PATCH /projects/{id} (the only route this
+    // permission gates) changes the project's AI-assistant settings, and only
+    // a customer's own admin may change them. WSO2-side roles (admin, agent,
+    // internal) are intentionally excluded. Must mirror rbac.go in backend-v2.
+    update: ["customer_admin"],
     delete: ["admin"],
   },
   change_requests: {
