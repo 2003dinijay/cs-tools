@@ -19,6 +19,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -52,21 +53,25 @@ func importCatalogue() domain.ScheduleCatalogue {
 		},
 		Zones: []domain.ScheduleZone{
 			{Code: "TZ1", RotaCode: saas},
+			{Code: "TZ2", RotaCode: saas},
 			{Code: "TZ3", RotaCode: saas},
 			{Code: "IAAS_D", RotaCode: iaas},
 		},
 		Shifts: []domain.ScheduleShift{
-			{Code: "SRE_TZ1_L1", Family: "SRE", ZoneCode: importStr("TZ1"), Tier: importStr("L1")},
-			{Code: "SRE_TZ1", Family: "SRE", ZoneCode: importStr("TZ1")},
-			{Code: "SRE_TZ3", Family: "SRE", ZoneCode: importStr("TZ3")},
-			{Code: "SRE_WE_TZ1", Family: "SRE", ZoneCode: importStr("TZ1")},
-			{Code: "SRE_IAAS_DAY", Family: "SRE", ZoneCode: importStr("IAAS_D")},
+			{Code: "SRE_TZ1_L1", Family: "SRE", ZoneCode: importStr("TZ1"), Tier: importStr("L1"), IsRotation: true, DayScope: "WEEKDAY", StartMinute: 360, EndMinute: 810},
+			{Code: "SRE_TZ1", Family: "SRE", ZoneCode: importStr("TZ1"), IsRotation: true, DayScope: "WEEKDAY", StartMinute: 360, EndMinute: 810},
+			{Code: "SRE_TZ2", Family: "SRE", ZoneCode: importStr("TZ2"), IsRotation: true, DayScope: "WEEKDAY", StartMinute: 810, EndMinute: 1260},
+			{Code: "SRE_TZ3", Family: "SRE", ZoneCode: importStr("TZ3"), IsRotation: true, DayScope: "ANY", StartMinute: 1260, EndMinute: 1800},
+			{Code: "SRE_WE_TZ1", Family: "SRE", ZoneCode: importStr("TZ1"), IsRotation: true, DayScope: "WEEKEND", StartMinute: 360, EndMinute: 1260},
+			{Code: "SRE_TZ1_REGULAR", Family: "SRE", ZoneCode: importStr("TZ1"), DayScope: "WEEKDAY", StartMinute: 360, EndMinute: 900},
+			{Code: "SRE_TZ2_REGULAR", Family: "SRE", ZoneCode: importStr("TZ2"), DayScope: "WEEKDAY", StartMinute: 720, EndMinute: 1260},
+			{Code: "SRE_IAAS_DAY", Family: "SRE", ZoneCode: importStr("IAAS_D"), IsRotation: true, DayScope: "ANY", StartMinute: 480, EndMinute: 1200},
 			{Code: "CRE_REGULAR", Family: "CRE"},
 		},
 		AbsenceKinds: []domain.ScheduleAbsenceKind{
 			{Code: "ANNUAL_LEAVE"},
 			{Code: "ALLO_EXT"},
-			{Code: "SRE_NIGHT_COVER", Family: sre},
+			{Code: "SRE_NIGHT_COVER", Family: sre, MovesToTeamKey: importStr("saas-night-cover")},
 			{Code: "MIGRATION", Family: cre},
 			{Code: "CUSTOMER_ON_SITE", Retired: true},
 		},
@@ -257,7 +262,7 @@ func TestImportRota_RefusesTheFileItself(t *testing.T) {
 		{name: "period runs backwards", code: "SRE_SAAS", mutate: func(f *domain.ImportRotaRequest) { f.Period.To = "2026-10-01" }, want: "period: to is before from"},
 		{name: "period longer than a year", code: "SRE_SAAS", mutate: func(f *domain.ImportRotaRequest) { f.Period.To = "2027-12-31" }, want: "period: longer than a year"},
 		{name: "nothing in the file", code: "SRE_SAAS", mutate: func(f *domain.ImportRotaRequest) { f.Assignments, f.Absences = nil, nil }, want: "no assignments and no absences"},
-		{name: "too many entries", code: "SRE_SAAS", file: &tooMany, want: "at most 2000 can be imported"},
+		{name: "too many entries", code: "SRE_SAAS", file: &tooMany, want: "at most 1000 can be imported"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -382,5 +387,182 @@ func TestImportRota_RepositoryRefusalComesBackAsIs(t *testing.T) {
 	_, err := svc.ImportRota(leadCtx("lead@example.com"), "SRE_SAAS", importFile(), false)
 	if !errors.Is(err, refusal) {
 		t.Fatalf("want the repository's ConflictError unchanged, got %v", err)
+	}
+}
+
+func importOverlapFile(assignments []domain.ImportRotaAssignment, absences []domain.ImportRotaAbsence) domain.ImportRotaRequest {
+	f := importFile()
+	f.Mode = "merge"
+	f.Assignments, f.Absences = assignments, absences
+	return f
+}
+
+func importRefusal(t *testing.T, file domain.ImportRotaRequest) string {
+	t.Helper()
+	repo := &fakeScheduleRepo{}
+	svc := newImportService(repo)
+	_, err := svc.ImportRota(leadCtx("lead@example.com"), "SRE_SAAS", file, false)
+	if err == nil {
+		return ""
+	}
+	var invalid *apierror.ValidationError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("want a ValidationError, got %v", err)
+	}
+	if repo.gotImport != nil {
+		t.Fatal("a refused file reached the repository")
+	}
+	return invalid.Msg
+}
+
+func TestImportRota_RefusesEntriesThatWouldReplaceOneAnother(t *testing.T) {
+	l2 := importStr("L2")
+	cases := []struct {
+		name        string
+		assignments []domain.ImportRotaAssignment
+		absences    []domain.ImportRotaAbsence
+		want        string
+	}{
+		{
+			name: "two turns in one zone",
+			assignments: []domain.ImportRotaAssignment{
+				{Email: "user1@example.com", TeamKey: "apollo", ShiftCode: "SRE_TZ1_L1", From: "2026-11-02", To: "2026-11-06"},
+				{Email: "user1@example.com", TeamKey: "apollo", ShiftCode: "SRE_TZ1", Tier: l2, From: "2026-11-04", To: "2026-11-04"},
+			},
+			want: "assignments[1] overlaps assignments[0]: the same person on SRE_TZ1_L1 and SRE_TZ1 on 2026-11-04",
+		},
+		{
+			name: "the same entry twice",
+			assignments: []domain.ImportRotaAssignment{
+				{Email: "user3@example.com", TeamKey: "artemis", ShiftCode: "SRE_TZ3", Tier: importStr("L1"), From: "2026-11-02", To: "2026-11-03"},
+				{Email: "user3@example.com", TeamKey: "artemis", ShiftCode: "SRE_TZ3", Tier: importStr("L1"), From: "2026-11-02", To: "2026-11-03"},
+			},
+			want: "assignments[1] overlaps assignments[0]: the same person on SRE_TZ3 and SRE_TZ3 on 2026-11-02",
+		},
+		{
+			name: "regular hours twice on one day",
+			assignments: []domain.ImportRotaAssignment{
+				{Email: "user1@example.com", TeamKey: "apollo", ShiftCode: "SRE_TZ1_REGULAR", From: "2026-11-02", To: "2026-11-06"},
+				{Email: "user1@example.com", TeamKey: "apollo", ShiftCode: "SRE_TZ2_REGULAR", From: "2026-11-06", To: "2026-11-06"},
+			},
+			want: "assignments[1] overlaps assignments[0]: the same person on SRE_TZ1_REGULAR and SRE_TZ2_REGULAR on 2026-11-06",
+		},
+		{
+			name: "two kinds of leave over the same days",
+			absences: []domain.ImportRotaAbsence{
+				{Email: "user2@example.com", TeamKey: "apollo", KindCode: "ANNUAL_LEAVE", From: "2026-11-16", To: "2026-11-20"},
+				{Email: "user2@example.com", TeamKey: "apollo", KindCode: "ALLO_EXT", From: "2026-11-19", To: "2026-11-25"},
+			},
+			want: "absences[1] overlaps absences[0]: the same person from 2026-11-19; and the later entry would shorten or split the earlier",
+		},
+		{
+			name: "a move listed after the time away inside it",
+			absences: []domain.ImportRotaAbsence{
+				{Email: "user1@example.com", TeamKey: "apollo", KindCode: "ANNUAL_LEAVE", From: "2026-11-16", To: "2026-11-20"},
+				{Email: "user1@example.com", TeamKey: "apollo", KindCode: "SRE_NIGHT_COVER", From: "2026-11-01", To: "2027-01-31"},
+			},
+			want: "absences[1] overlaps absences[0]: the same person from 2026-11-16; list the move first, so the time away inside it is kept",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := importRefusal(t, importOverlapFile(tc.assignments, tc.absences))
+			if !strings.Contains(msg, tc.want) {
+				t.Fatalf("refusal %q does not say %q", msg, tc.want)
+			}
+		})
+	}
+}
+
+func TestImportRota_AcceptsEntriesThatSitSideBySide(t *testing.T) {
+	cases := []struct {
+		name        string
+		assignments []domain.ImportRotaAssignment
+		absences    []domain.ImportRotaAbsence
+	}{
+		{
+			name: "a weekday turn over a whole week beside the weekend crew",
+			assignments: []domain.ImportRotaAssignment{
+				{Email: "user1@example.com", TeamKey: "apollo", ShiftCode: "SRE_TZ1_L1", From: "2026-11-02", To: "2026-11-08"},
+				{Email: "user1@example.com", TeamKey: "apollo", ShiftCode: "SRE_WE_TZ1", Tier: importStr("L1"), From: "2026-11-07", To: "2026-11-08"},
+			},
+		},
+		{
+			name: "regular hours under a turn",
+			assignments: []domain.ImportRotaAssignment{
+				{Email: "user1@example.com", TeamKey: "apollo", ShiftCode: "SRE_TZ1_REGULAR", From: "2026-11-02", To: "2026-11-06"},
+				{Email: "user1@example.com", TeamKey: "apollo", ShiftCode: "SRE_TZ1_L1", From: "2026-11-02", To: "2026-11-06"},
+			},
+		},
+		{
+			name: "a morning turn and an afternoon turn in two zones",
+			assignments: []domain.ImportRotaAssignment{
+				{Email: "user1@example.com", TeamKey: "apollo", ShiftCode: "SRE_TZ1_L1", From: "2026-11-02", To: "2026-11-02"},
+				{Email: "user1@example.com", TeamKey: "apollo", ShiftCode: "SRE_TZ2", Tier: importStr("L2"), From: "2026-11-02", To: "2026-11-02"},
+			},
+		},
+		{
+			name: "back to back spans of time away",
+			absences: []domain.ImportRotaAbsence{
+				{Email: "user2@example.com", TeamKey: "apollo", KindCode: "ANNUAL_LEAVE", From: "2026-11-16", To: "2026-11-18"},
+				{Email: "user2@example.com", TeamKey: "apollo", KindCode: "ALLO_EXT", From: "2026-11-19", To: "2026-11-20"},
+			},
+		},
+		{
+			name: "time away inside a move listed before it",
+			absences: []domain.ImportRotaAbsence{
+				{Email: "user1@example.com", TeamKey: "apollo", KindCode: "SRE_NIGHT_COVER", From: "2026-11-01", To: "2027-01-31"},
+				{Email: "user1@example.com", TeamKey: "apollo", KindCode: "ANNUAL_LEAVE", From: "2026-11-16", To: "2026-11-20"},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if msg := importRefusal(t, importOverlapFile(tc.assignments, tc.absences)); msg != "" {
+				t.Fatalf("refused: %s", msg)
+			}
+		})
+	}
+}
+
+// countingScheduleRepo counts the writer-rule lookups an import makes.
+type countingScheduleRepo struct {
+	*fakeScheduleRepo
+	leadsTeam, inTeam int
+}
+
+func (c *countingScheduleRepo) LeadsTeam(ctx context.Context, email, team string) (bool, error) {
+	c.leadsTeam++
+	return c.fakeScheduleRepo.LeadsTeam(ctx, email, team)
+}
+
+func (c *countingScheduleRepo) UserInTeam(ctx context.Context, user, team string) (bool, error) {
+	c.inTeam++
+	return c.fakeScheduleRepo.UserInTeam(ctx, user, team)
+}
+
+func TestImportRota_AsksTheWriterRuleOncePerTeamAndPerson(t *testing.T) {
+	file := importFile()
+	file.Mode = "merge"
+	file.Absences = nil
+	file.Assignments = nil
+	for d := 2; d <= 27; d++ {
+		day := fmt.Sprintf("2026-11-%02d", d)
+		file.Assignments = append(file.Assignments,
+			domain.ImportRotaAssignment{Email: "user1@example.com", TeamKey: "apollo", ShiftCode: "SRE_TZ3", Tier: importStr("L1"), From: day, To: day},
+			domain.ImportRotaAssignment{Email: "user3@example.com", TeamKey: "artemis", ShiftCode: "SRE_TZ3", Tier: importStr("L2"), From: day, To: day},
+		)
+	}
+	base := &fakeScheduleRepo{catalogue: importCatalogue(), ledTeams: []string{"apollo", "artemis"}}
+	repo := &countingScheduleRepo{fakeScheduleRepo: base}
+	svc := NewScheduleService(repo, alwaysUnrestrictedAccess{})
+	if _, err := svc.ImportRota(leadCtx("lead@example.com"), "SRE_SAAS", file, false); err != nil {
+		t.Fatalf("ImportRota: %v", err)
+	}
+	if base.gotImport == nil || len(base.gotImport.Assignments) != 52 {
+		t.Fatal("the import did not reach the repository whole")
+	}
+	if repo.leadsTeam != 2 || repo.inTeam != 2 {
+		t.Errorf("52 entries asked LeadsTeam %d and UserInTeam %d times, want once per team and once per person (2 and 2)", repo.leadsTeam, repo.inTeam)
 	}
 }

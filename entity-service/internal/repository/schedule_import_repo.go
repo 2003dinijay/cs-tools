@@ -24,6 +24,9 @@ import (
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 )
 
+// rotaImportReplaceNote is the note on the activity row of an assignment a replace cleared.
+const rotaImportReplaceNote = "Cleared by a rota import (replace)"
+
 // RotaImportWrite is a rota import file, resolved and authorised, ready to write.
 type RotaImportWrite struct {
 	RotaCode string
@@ -64,12 +67,22 @@ func (r *scheduleRepository) ImportRota(ctx context.Context, w RotaImportWrite, 
 
 	if w.Replace {
 		// A move's shifts (source MOVE) follow its absence, which a replace keeps, so they stay too.
+		// Each cleared row leaves a DELETED activity row, as the roster's own delete does, written from the row as it was.
 		tag, err := tx.Exec(ctx, `
-			DELETE FROM team_schedule_assignment
-			 WHERE team_key = ANY($1::text[])
-			   AND rota_date BETWEEN $2::date AND $3::date
-			   AND source <> 'MOVE'`,
-			w.TeamKeys, w.From, w.To)
+			WITH cleared AS (
+			  DELETE FROM team_schedule_assignment
+			   WHERE team_key = ANY($1::text[])
+			     AND rota_date BETWEEN $2::date AND $3::date
+			     AND source <> 'MOVE'
+			  RETURNING id, user_id, team_key, rota_date, shift_id)
+			INSERT INTO team_schedule_assignment_activity
+			  (id, created_on, created_by, assignment_id, user_id, team_key, rota_date,
+			   shift_code, action, actor_email, note)
+			SELECT gen_random_uuid(), now(), $4, c.id, c.user_id, c.team_key, c.rota_date,
+			       s.code, 'DELETED', $4, $5
+			  FROM cleared c
+			  JOIN team_schedule_shift s ON s.id = c.shift_id`,
+			w.TeamKeys, w.From, w.To, actorEmail, rotaImportReplaceNote)
 		if err != nil {
 			return out, fmt.Errorf("clear rota for import: %w", err)
 		}

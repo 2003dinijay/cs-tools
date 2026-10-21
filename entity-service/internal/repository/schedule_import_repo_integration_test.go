@@ -97,6 +97,14 @@ func TestScheduleIntegration_ImportRotaReplacesThePeriodAndWritesTheFile(t *test
 	if n := assignmentsOn(t, pool, schedOtherID, schedTeamKey, schedMonday, importSunday); n != 0 {
 		t.Errorf("%d of the replaced rows are still inside the period", n)
 	}
+	// The cleared row is in the activity feed, as a delete on the roster would be.
+	if n := countRows(t, pool, `
+		SELECT count(*) FROM team_schedule_assignment_activity
+		 WHERE user_id = $1::uuid AND team_key = $2 AND rota_date = $3::date AND shift_code = $4
+		   AND action = 'DELETED' AND actor_email = $5 AND note = $6`,
+		schedOtherID, schedTeamKey, schedMonday, shift, schedLeadEmail, rotaImportReplaceNote); n != 1 {
+		t.Errorf("%d DELETED activity rows for the cleared assignment, want 1", n)
+	}
 	if n := assignmentsOn(t, pool, schedOtherID, schedTeamKey, importNextMon, importNextMon); n != 1 {
 		t.Errorf("the row after the period was touched (%d left)", n)
 	}
@@ -138,6 +146,9 @@ func TestScheduleIntegration_ImportRotaIsAllOrNothing(t *testing.T) {
 	}
 	if n := countRows(t, pool, `SELECT count(*) FROM team_schedule_absence WHERE user_id = $1::uuid`, schedLeadID); n != 0 {
 		t.Errorf("%d absences written by a failed import", n)
+	}
+	if n := countRows(t, pool, `SELECT count(*) FROM team_schedule_assignment_activity WHERE note = $1 AND team_key = $2`, rotaImportReplaceNote, schedTeamKey); n != 0 {
+		t.Errorf("a failed import left %d activity rows for a replace it rolled back", n)
 	}
 }
 
@@ -185,6 +196,11 @@ func TestScheduleIntegration_ImportRotaReplaceKeepsTheShiftsAMoveDerives(t *test
 		 WHERE user_id = $1::uuid AND team_key = $2 AND rota_date = $3::date AND source = 'MOVE'`,
 		schedOtherID, schedTeamKey, schedMonday); n != 1 {
 		t.Errorf("a replace removed a shift its move still derives (%d left)", n)
+	}
+	if n := countRows(t, pool, `
+		SELECT count(*) FROM team_schedule_assignment_activity
+		 WHERE user_id = $1::uuid AND action = 'DELETED' AND note = $2`, schedOtherID, rotaImportReplaceNote); n != 0 {
+		t.Errorf("%d DELETED activity rows for a shift the replace kept", n)
 	}
 }
 

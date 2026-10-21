@@ -122,7 +122,7 @@ describe("ImportRotaDialog", () => {
     renderDialog();
     expect(screen.getByRole("button", { name: "Preview" })).toBeDisabled();
 
-    chooseFile(fileText());
+    chooseFile(fileText({ mode: "replace" }));
     expect(await screen.findByText(/4 assignments and 1 absence/)).toBeInTheDocument();
     expect(screen.getByText(/Replace removes every assignment/)).toBeInTheDocument();
 
@@ -141,9 +141,10 @@ describe("ImportRotaDialog", () => {
     expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
   });
 
-  it("says a merge keeps the roster", async () => {
+  it("says a merge keeps the roster, the template's own mode", async () => {
+    expect(ROTA_IMPORT_TEMPLATE.mode).toBe("merge");
     renderDialog();
-    chooseFile(fileText({ mode: "merge" }));
+    chooseFile(fileText());
     expect(await screen.findByText(/Merge keeps what is on the roster/)).toBeInTheDocument();
   });
 

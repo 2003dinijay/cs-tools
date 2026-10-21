@@ -640,20 +640,33 @@ The standard structure, schema version 1:
 team (`requireRotaWriterOverSpan`, the picker's own rule, Night cover moves
 included), and a `replace` also needs a writer of every team of the rota, since it
 clears them all: an Apollo lead can merge Apollo's rows, only an SRE rota admin (or
-a lead of both teams) can replace the SaaS rota.
+a lead of both teams) can replace the SaaS rota. The rule is asked once per team and
+once per person and team, not once per entry. It is checked before the transaction,
+as the picker checks it before its own: a lead changed in between is not seen.
 
-**Refusals.** File-level problems are checked first and listed together (up to 25),
-each named by its entry: `the rota file has problems: assignments[0]: nobody on the
-team schedule has the email ...; absences[2]: ...`. A rule only the database can
-check (a tier somebody else holds, an overlapping turn) refuses the whole file with
-the entry named (`assignments[4]: ...`), status as the picker would give it.
+**Refusals.** The file's own problems are checked first and listed together (up to
+25), each named by its entry: `the rota file has problems: assignments[0]: nobody on
+the team schedule has the email ...; absences[2]: ...`. That includes two entries
+that would replace one another, by the picker's own rule: two turns for one person
+and team on a day both are worked, in the same zone or at overlapping hours, or
+regular hours twice (`assignments[3] overlaps assignments[1]: the same person on
+SRE_TZ1_L1 and SRE_TZ1 on 2026-11-04 ...`), and two absences for one person over the
+same days. Time away inside a move is allowed when the move comes first, which is how
+the roster cuts a move around leave. A rule only the database can check (a tier
+somebody else holds, a turn on another team at the same time) is not in that list:
+it refuses the whole file at the first entry that breaks it (`assignments[4]: ...`),
+status as the picker would give it, so a dry run can still be refused for one entry
+after another.
 
-**Concurrency.** The import takes the same advisory lock as "Generate month"
-(`RotaGeneratorOwner(rota)`), so the two never interleave on one rota. Imported
-rows are ordinary picker rows (source as `ApplyRange` writes them, activity and audit
-recorded), so a later "Generate month" treats them as set by hand. A replace's
-deletions write no activity rows (as the generator's do not); the audit trigger
-records them.
+**Concurrency and size.** The import takes the same advisory lock as "Generate
+month" (`RotaGeneratorOwner(rota)`), so the two never interleave on one rota. The
+lock is held for at most the request's own deadline (`REQUEST_TIMEOUT`, 60s by
+default): a cancelled request rolls the transaction back and releases it. A file is
+at most 1000 entries and 1 MiB (both entity-service and the CSM portal backend cap
+the body). Imported rows are ordinary picker rows (source as `ApplyRange` writes
+them, activity and audit recorded), so a later "Generate month" treats them as set by
+hand. Each assignment a replace clears leaves a `DELETED` activity row, noted
+"Cleared by a rota import (replace)", as a delete on the roster does.
 
 ## 5. Known gaps
 

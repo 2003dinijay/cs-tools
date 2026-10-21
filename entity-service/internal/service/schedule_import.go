@@ -33,8 +33,8 @@ import (
 // rotaImportFamily is the one family a rota import is accepted for today.
 const rotaImportFamily = "SRE"
 
-// rotaImportMaxEntries bounds one file: a quarter of a busy rota fits well inside it.
-const rotaImportMaxEntries = 2000
+// rotaImportMaxEntries bounds one file: a month of a busy rota written as ranges is a few hundred entries.
+const rotaImportMaxEntries = 1000
 
 // rotaImportMaxProblems is how many file problems one refusal lists before it stops counting.
 const rotaImportMaxProblems = 25
@@ -59,15 +59,16 @@ func (s *scheduleService) ImportRota(ctx context.Context, rotaCode string, req d
 		return out, err
 	}
 
+	checks := newImportWriterChecks(s)
 	for i := range plan.write.Assignments {
 		a := &plan.write.Assignments[i]
-		if _, err := s.requireRotaWriterOverSpan(ctx, a.TeamKey, a.UserID, a.From, a.To, false); err != nil {
+		if _, err := checks.overSpan(ctx, a.TeamKey, a.UserID, a.From, a.To, false); err != nil {
 			return out, apierror.Prefixed(fmt.Sprintf("assignments[%d]", i), err)
 		}
 	}
 	for i := range plan.write.Absences {
 		a := &plan.write.Absences[i]
-		home, err := s.requireRotaWriterOverSpan(ctx, a.TeamKey, a.UserID, a.From, a.To, true)
+		home, err := checks.overSpan(ctx, a.TeamKey, a.UserID, a.From, a.To, true)
 		if err != nil {
 			return out, apierror.Prefixed(fmt.Sprintf("absences[%d]", i), err)
 		}
@@ -76,7 +77,7 @@ func (s *scheduleService) ImportRota(ctx context.Context, rotaCode string, req d
 	// A replace clears every team of the rota, so the caller must be able to write each of them.
 	if plan.write.Replace {
 		for _, team := range plan.write.TeamKeys {
-			if err := s.requireRotaWriter(ctx, team); err != nil {
+			if err := checks.writer(ctx, team); err != nil {
 				return out, err
 			}
 		}
@@ -110,6 +111,45 @@ func (s *scheduleService) ImportRota(ctx context.Context, rotaCode string, req d
 		out.AbsencesTrimmed += r.Trimmed
 	}
 	return out, nil
+}
+
+// importWriterChecks answers the picker's writer rule once per team and once per person and team, not once per entry.
+type importWriterChecks struct {
+	s      *scheduleService
+	teams  map[string]error
+	member map[[2]string]bool
+}
+
+func newImportWriterChecks(s *scheduleService) *importWriterChecks {
+	return &importWriterChecks{s: s, teams: map[string]error{}, member: map[[2]string]bool{}}
+}
+
+// writer is requireRotaWriter for one team, asked once.
+func (c *importWriterChecks) writer(ctx context.Context, team string) error {
+	key := strings.ToLower(team)
+	if err, ok := c.teams[key]; ok {
+		return err
+	}
+	err := c.s.requireRotaWriter(ctx, team)
+	c.teams[key] = err
+	return err
+}
+
+// overSpan is requireRotaWriterOverSpan: a member of the team is the writer rule for the team, and anyone else goes through the full rule (a move).
+func (c *importWriterChecks) overSpan(ctx context.Context, team, userID, from, to string, homeLeadMayManage bool) (string, error) {
+	key := [2]string{strings.ToLower(team), userID}
+	member, ok := c.member[key]
+	if !ok {
+		m, err := c.s.repo.UserInTeam(ctx, userID, team)
+		if err != nil {
+			return "", err
+		}
+		c.member[key], member = m, m
+	}
+	if !member {
+		return c.s.requireRotaWriterOverSpan(ctx, team, userID, from, to, homeLeadMayManage)
+	}
+	return team, c.writer(ctx, team)
 }
 
 // rotaImportPlan is a file checked against the catalogue and turned into the writes it stands for.
@@ -187,16 +227,16 @@ func planRotaImport(cat domain.ScheduleCatalogue, rotaCode string, req domain.Im
 			zones[z.Code] = true
 		}
 	}
-	shifts := map[string]bool{}
+	shifts := map[string]domain.ScheduleShift{}
 	for _, sh := range cat.Shifts {
 		if strings.EqualFold(sh.Family, rota.Family) && sh.ZoneCode != nil && zones[*sh.ZoneCode] {
-			shifts[sh.Code] = true
+			shifts[sh.Code] = sh
 		}
 	}
-	kinds := map[string]bool{}
+	kinds := map[string]domain.ScheduleAbsenceKind{}
 	for _, k := range cat.AbsenceKinds {
 		if !k.Retired && (k.Family == nil || strings.EqualFold(*k.Family, rota.Family)) {
-			kinds[k.Code] = true
+			kinds[k.Code] = k
 		}
 	}
 	people := map[string]string{}
@@ -252,7 +292,7 @@ func planRotaImport(cat domain.ScheduleCatalogue, rotaCode string, req domain.Im
 			ShiftCode: strings.ToUpper(strings.TrimSpace(a.ShiftCode)),
 			Note:      trimmedOrNil(a.Note),
 		}
-		if !shifts[w.ShiftCode] {
+		if _, ok := shifts[w.ShiftCode]; !ok {
 			problem("%s: %q is not a window of the %s rota", where, a.ShiftCode, rota.Code)
 		}
 		if a.Tier != nil && strings.TrimSpace(*a.Tier) != "" {
@@ -283,7 +323,7 @@ func planRotaImport(cat domain.ScheduleCatalogue, rotaCode string, req domain.Im
 			Note:        trimmedOrNil(a.Note),
 			AllocatedTo: trimmedOrNil(a.AllocatedTo),
 		}
-		if !kinds[w.KindCode] {
+		if _, ok := kinds[w.KindCode]; !ok {
 			problem("%s: %q is not a kind of time away offered on the %s rota", where, a.KindCode, rota.Family)
 		}
 		if w.AllocatedTo != nil && utf8.RuneCountInString(*w.AllocatedTo) > maxAllocatedToLength {
@@ -301,6 +341,11 @@ func planRotaImport(cat domain.ScheduleCatalogue, rotaCode string, req domain.Im
 		plan.write.Absences = append(plan.write.Absences, w)
 	}
 
+	// Entries that would replace one another are only looked for once every entry reads cleanly on its own.
+	if len(problems) == 0 {
+		problems = append(problems, assignmentOverlaps(plan.write.Assignments, shifts)...)
+		problems = append(problems, absenceOverlaps(plan.write.Absences, kinds)...)
+	}
 	if len(problems) > 0 {
 		more := ""
 		if len(problems) > rotaImportMaxProblems {
@@ -310,6 +355,110 @@ func planRotaImport(cat domain.ScheduleCatalogue, rotaCode string, req domain.Im
 		return rotaImportPlan{}, &apierror.ValidationError{Msg: "the rota file has problems: " + strings.Join(problems, "; ") + more}
 	}
 	return plan, nil
+}
+
+// worksOn says whether a window is worked on a day, by its day scope.
+func worksOn(sh domain.ScheduleShift, d time.Time) bool {
+	weekend := d.Weekday() == time.Saturday || d.Weekday() == time.Sunday
+	switch sh.DayScope {
+	case "WEEKDAY":
+		return !weekend
+	case "WEEKEND":
+		return weekend
+	}
+	return true
+}
+
+// displaces says whether applying b after a on one day replaces a, by the picker's own rule: a turn replaces turns in its zone or at its hours, regular hours replace regular hours.
+func displaces(a, b domain.ScheduleShift) bool {
+	switch {
+	case a.IsRotation && b.IsRotation:
+		sameZone := a.ZoneCode != nil && b.ZoneCode != nil && *a.ZoneCode == *b.ZoneCode
+		return sameZone || (a.StartMinute < b.EndMinute && b.StartMinute < a.EndMinute)
+	case !a.IsRotation && !b.IsRotation:
+		return true
+	}
+	return false
+}
+
+// assignmentOverlaps names every pair of entries where a later one would silently replace an earlier one for the same person and team, with the first day it happens.
+func assignmentOverlaps(entries []domain.ApplyScheduleRangeRequest, shifts map[string]domain.ScheduleShift) []string {
+	byDay := map[string][]int{}
+	for i, e := range entries {
+		f, t, err := parseImportSpan(e.From, e.To)
+		if err != nil {
+			continue
+		}
+		for d := f; !d.After(t); d = d.AddDate(0, 0, 1) {
+			if worksOn(shifts[e.ShiftCode], d) {
+				key := e.UserID + "|" + strings.ToLower(e.TeamKey) + "|" + d.Format(time.DateOnly)
+				byDay[key] = append(byDay[key], i)
+			}
+		}
+	}
+	first := map[[2]int]string{}
+	for key, idx := range byDay {
+		day := key[strings.LastIndex(key, "|")+1:]
+		for x := 0; x < len(idx); x++ {
+			for y := x + 1; y < len(idx); y++ {
+				i, j := idx[x], idx[y]
+				if !displaces(shifts[entries[i].ShiftCode], shifts[entries[j].ShiftCode]) {
+					continue
+				}
+				if d, ok := first[[2]int{i, j}]; !ok || day < d {
+					first[[2]int{i, j}] = day
+				}
+			}
+		}
+	}
+	return overlapMessages(first, func(i, j int, day string) string {
+		return fmt.Sprintf("assignments[%d] overlaps assignments[%d]: the same person on %s and %s on %s, and the later entry would replace the earlier",
+			j, i, entries[i].ShiftCode, entries[j].ShiftCode, day)
+	})
+}
+
+// absenceOverlaps names every pair of spans for one person where a later one would shorten or split an earlier one; time away inside a move listed before it is how the roster cuts a move, so that is allowed.
+func absenceOverlaps(entries []domain.ApplyScheduleAbsenceRequest, kinds map[string]domain.ScheduleAbsenceKind) []string {
+	isMove := func(e domain.ApplyScheduleAbsenceRequest) bool { return kinds[e.KindCode].MovesToTeamKey != nil }
+	first := map[[2]int]string{}
+	for i := range entries {
+		for j := i + 1; j < len(entries); j++ {
+			a, b := entries[i], entries[j]
+			if a.UserID != b.UserID || a.From > b.To || b.From > a.To {
+				continue
+			}
+			if isMove(a) && !isMove(b) {
+				continue
+			}
+			first[[2]int{i, j}] = max(a.From, b.From)
+		}
+	}
+	return overlapMessages(first, func(i, j int, day string) string {
+		hint := "and the later entry would shorten or split the earlier"
+		if isMove(entries[j]) && !isMove(entries[i]) {
+			hint = "list the move first, so the time away inside it is kept"
+		}
+		return fmt.Sprintf("absences[%d] overlaps absences[%d]: the same person from %s; %s", j, i, day, hint)
+	})
+}
+
+// overlapMessages renders overlapping pairs in file order.
+func overlapMessages(pairs map[[2]int]string, render func(i, j int, day string) string) []string {
+	keys := make([][2]int, 0, len(pairs))
+	for k := range pairs {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(a, b int) bool {
+		if keys[a][1] != keys[b][1] {
+			return keys[a][1] < keys[b][1]
+		}
+		return keys[a][0] < keys[b][0]
+	})
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, render(k[0], k[1], pairs[k]))
+	}
+	return out
 }
 
 // parseImportSpan reads a from..to pair of YYYY-MM-DD days, both inclusive.

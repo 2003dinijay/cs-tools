@@ -24,7 +24,8 @@ export const ROTA_IMPORT_TEMPLATE = {
   family: "SRE",
   rotaCode: "SRE_SAAS",
   period: { from: "2026-11-01", to: "2026-11-30" },
-  mode: "replace",
+  // Merge, the mode that removes nothing: the template is what people edit and send back.
+  mode: "merge",
   assignments: [
     { email: "user1@example.com", teamKey: "apollo", shiftCode: "SRE_TZ1_L1", from: "2026-11-02", to: "2026-11-06" },
     { email: "user2@example.com", teamKey: "apollo", shiftCode: "SRE_TZ1", tier: "L2", from: "2026-11-02", to: "2026-11-06" },

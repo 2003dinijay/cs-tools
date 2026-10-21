@@ -8352,7 +8352,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ImportRotaResponse'
         "400":
-          description: A malformed file, or every problem found in its entries (unknown email, team not on the rota, window of another rota, bad tier, a date outside the period, a kind not offered on the rota), or an entry the apply rules refuse.
+          description: A malformed file, or every problem found in its entries (unknown email, team not on the rota, window of another rota, bad tier, a date outside the period, a kind not offered on the rota, more than 1000 entries, two entries that would replace one another), or the first entry the apply rules refuse.
           content:
             application/json:
               schema:
