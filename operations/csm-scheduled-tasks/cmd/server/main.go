@@ -321,16 +321,25 @@ func main() {
 	const staleCaseThreshold = 30 * 24 * time.Hour
 
 	const openCasesTaskName = "open_cases_report"
-	// Where an issue key in a CS Worklogs mail points. ServiceNow linked
-	// into its agent workspace, a URL that dies at cutover. Default is
-	// EMPTY, which renders the keys as plain text: better than linking
-	// every engineer at a host nobody configured. Validated like the
-	// other outbound URLs, so a typo stops startup rather than
-	// producing a mail full of dead links.
-	worklogCaseLinkBase := strings.TrimRight(os.Getenv("CSM_PORTAL_BASE_URL"), "/")
+	// Where an issue key in a CS Worklogs mail points: the CSM portal,
+	// which is where the engineers who receive these reports work. NOT
+	// the customer portal -- that is a different audience and most of
+	// them cannot even open it. ServiceNow linked into its own agent
+	// workspace, the equivalent internal surface, and that URL dies at
+	// cutover.
+	//
+	// Same variable and same path shape as csm-notification-service's
+	// recipientlinks resolver, which already builds
+	// <CSM_PORTAL_WEB_BASE_URL>/cases/{id} for internal recipients.
+	//
+	// Default is EMPTY, which renders the keys as plain text: better
+	// than linking every engineer at a host nobody configured.
+	// Validated like the other outbound URLs, so a typo stops startup
+	// rather than producing a mail full of dead links.
+	worklogCaseLinkBase := strings.TrimRight(os.Getenv("CSM_PORTAL_WEB_BASE_URL"), "/")
 	if worklogCaseLinkBase != "" {
 		if err := httpsec.RequireSecureURL(worklogCaseLinkBase); err != nil {
-			slog.Error("invalid CSM_PORTAL_BASE_URL", "err", err)
+			slog.Error("invalid CSM_PORTAL_WEB_BASE_URL", "err", err)
 			os.Exit(1)
 		}
 	}

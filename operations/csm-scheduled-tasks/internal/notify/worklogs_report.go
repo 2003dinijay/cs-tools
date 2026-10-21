@@ -45,9 +45,15 @@ const (
 // caseLink renders one issue key, linked when a base URL is configured.
 //
 // ServiceNow linked each key into its agent workspace, a URL that stops
-// existing at cutover. caseLinkBase is the CSM portal equivalent and
-// defaults to EMPTY, which renders plain text: an unset deployment
-// shows the key rather than a link to the wrong host.
+// existing at cutover. caseLinkBase is the CSM portal, the equivalent
+// internal surface and where the engineers reading these reports
+// actually work -- not the customer portal, which is a different
+// audience most of them cannot open. The path matches
+// csm-notification-service's recipientlinks resolver, which already
+// builds <CSM base>/cases/{id} for internal recipients.
+//
+// Empty renders plain text: an unset deployment shows the key rather
+// than a link to the wrong host.
 func caseLink(caseLinkBase string, iss worklogreport.IssueRef) string {
 	key := escapeHTML(iss.Key)
 	if caseLinkBase == "" || iss.ID == "" {
