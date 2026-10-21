@@ -915,7 +915,7 @@ export default function EditChangeRequestDialog({
             customerApprovalRequired,
             setCustomerApprovalRequired,
             customerApprovalLocked,
-            isEmergency ? null : customerRequirementOnceSavedHelper(cr.state, initialCustomerApprovalRequired),
+            isEmergency || approvedLock ? null : customerRequirementOnceSavedHelper(cr.state, initialCustomerApprovalRequired),
           )}
           {renderCustomerStepCheckbox(
             "cr-edit-customer-review",
@@ -924,7 +924,7 @@ export default function EditChangeRequestDialog({
             customerReviewRequired,
             setCustomerReviewRequired,
             customerReviewLocked,
-            isEmergency ? null : customerRequirementOnceSavedHelper(cr.state, initialCustomerReviewRequired),
+            isEmergency || approvedLock ? null : customerRequirementOnceSavedHelper(cr.state, initialCustomerReviewRequired),
           )}
           {isEmergency && (
             <FormHelperText id={EMERGENCY_NOTE_ID} sx={{ mx: 0, ...FULL_ROW }}>

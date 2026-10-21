@@ -804,6 +804,8 @@ describe("EditChangeRequestDialog — Customer Approval / Customer Review checkb
         expect(approvalBox()).toBeDisabled();
         expect(reviewBox()).toBeDisabled();
         expect(screen.getByText(/CAB approval has been received/)).toBeInTheDocument();
+        // Nothing can be saved: the box does not promise an edit the form no longer offers.
+        expect(reviewBox()).not.toHaveAccessibleDescription(/Once saved this can't be removed/);
       },
     );
   });
