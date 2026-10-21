@@ -126,6 +126,7 @@ function customerStepChoices(
   projectId: string,
 ): { yes: boolean; no: boolean } {
   const lockedReason = step === "approval" ? customerApprovalLockedReason : customerReviewLockedReason;
+  /** The requirement as the change request stores it. */
   const storedOf = (cr: BeChangeRequestDetail): boolean =>
     (step === "approval" ? cr.customerApprovalRequired : cr.customerReviewRequired) ?? false;
   return {
@@ -355,6 +356,7 @@ export default function BulkEditChangeRequestsDialog({
         ? "The selected change requests have no state they can all move to."
         : "Only the moves every selected change request can make.";
 
+  /** A select whose first option is "No change" (the empty value), so an untouched field is never sent. */
   const select = <V extends string>(
     id: string,
     label: string,
@@ -389,6 +391,7 @@ export default function BulkEditChangeRequestsDialog({
     </FormControl>
   );
 
+  /** One of the dialog's sections: a heading over its fields, set off from the one above by a divider. */
   const section = (heading: string, children: ReactNode, first = false): JSX.Element => (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
       {!first && <Divider />}
@@ -402,11 +405,13 @@ export default function BulkEditChangeRequestsDialog({
   const twoColumns = { display: "grid", gridTemplateColumns: { xs: "1fr", md: "repeat(2, minmax(0, 1fr))" }, gap: 2 } as const;
   const threeColumns = { display: "grid", gridTemplateColumns: { xs: "1fr", md: "repeat(3, minmax(0, 1fr))" }, gap: 2 } as const;
 
+  /** A customer requirement's options: only the values every selected change request can take. */
   const stepChoiceOptions = (choices: { yes: boolean; no: boolean }) =>
     [
       ...(choices.yes ? [{ value: "yes" as const, label: "Required" }] : []),
       ...(choices.no ? [{ value: "no" as const, label: "Not required" }] : []),
     ];
+  /** Why a customer requirement offers less than both values (or nothing), in words. */
   const stepHelper = (choices: { yes: boolean; no: boolean }): string | undefined => {
     if (!detailsReady) return detailsNotReadyHelper;
     if (emergency) return EMERGENCY_CUSTOMER_STEPS_HELPER;
