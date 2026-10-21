@@ -35,7 +35,7 @@ export interface ImportRunbooksResult {
   created: number;
   updated: number;
   /** Runbooks left without alerts because the file moved all of them elsewhere, with the link each had. */
-  removed: { number: string; runbookUrl: string | null }[];
+  removed: { number: string; name: string; runbookUrl: string | null }[];
 }
 
 /** The whole runbook catalog; it is small enough to filter and page on the client. */
@@ -82,13 +82,5 @@ export function useImportRunbooks(): UseMutationResult<ImportRunbooksResult, Err
   const api = useBackendApi();
   return useRunbookMutation((runbooks: RunbookInput[]) =>
     api.post<{ runbooks: RunbookInput[] }, ImportRunbooksResult>(`${BASE}/import`, { runbooks }),
-  );
-}
-
-/** Moves each alert out of the runbook into a new runbook of its own, with the same link. */
-export function useUnmergeRunbookAlerts(): UseMutationResult<RunbookList, Error, { id: string; alerts: string[] }> {
-  const api = useBackendApi();
-  return useRunbookMutation(({ id, alerts }: { id: string; alerts: string[] }) =>
-    api.post<{ alerts: string[] }, RunbookList>(`${BASE}/${encodeURIComponent(id)}/unmerge`, { alerts }),
   );
 }

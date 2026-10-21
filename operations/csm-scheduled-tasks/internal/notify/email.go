@@ -167,7 +167,6 @@ func (c *Client) SendEmailWithAttachments(ctx context.Context, to, cc []string, 
 	if subject == "" {
 		return fmt.Errorf("notify: subject is required")
 	}
-
 	reqBody, err := json.Marshal(sendEmailRequest{
 		To:          to,
 		CC:          cc,

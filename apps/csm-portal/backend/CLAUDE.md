@@ -59,6 +59,21 @@ the new user into one or more portal-permission roles (`cs_engineer`, `escalator
 time — see "Granting portal roles on user creation" below for the full mechanism. It is validated and
 acted on independently of `roles`/`CSM_USER_ROLES` and never reaches entity-service at all.
 
+**`firstName`/`lastName`/phone are sourced from SCIM when the Add User form sends neither name field.**
+The webapp's Add User dialog only collects an email (plus the type/portal-role selectors) — no name
+fields at all. When `CreateUser` sees a request with both `firstName` and `lastName` blank, it runs a
+SCIM search by `email` (`scim.Client.SearchUser`, the same call `provisionCsEngineerUser` above uses)
+and fills `req.FirstName`/`req.LastName` from the result before building the entity-service request; if
+SCIM has no matching user, or has one but no name on file either, the request is rejected with a 400
+naming the problem (`please verify the email address` / `please provide a first or last name`) rather
+than forwarding a name-less create upstream. A caller that DOES send a name (any other API consumer) is
+untouched — this only fires for the email-only case, so it never overrides a caller-supplied name.
+Phone is handled the same way `provisionCsEngineerUser` handles it: entity-service's `POST /users` has
+no phone field, so a SCIM-sourced phone number is set with a second, best-effort `PATCH /users/{id}`
+call once the create has returned the new user's id — a failed phone patch does not undo the create.
+Unlike `provisionCsEngineerUser`, the created `lastName` here is **not** marked with `" Ⓦ"` — that
+marker is specific to the on-demand `cs_engineer` auto-provisioning path, not the admin Add User flow.
+
 **Constraint: an internal-type user must have a `@wso2.com` email.** Found live: the Add User form sent
 no `roles` at all, so every user it created resolved to `user_type = NOT_AVAILABLE` (the trigger's
 fallback for "no matching role, not a system user") — a real, existing data-quality gap (128 such users
@@ -257,6 +272,35 @@ pays no extra `GetUserMe` round trip. `CreateCaseEscalation` has no equivalent s
 `cs_engineer` never holds `PermEscalate` at all (see `NewAccessGuard`'s own doc
 comment), so every caller who reaches that handler is, by construction, exactly the
 audience this exists for.
+
+**`GET /users/me` has its own, separate on-demand provisioning path for `cs_engineer`,
+sourced from the token, not SCIM** (`UsersHandler.provisionCsEngineerUser`, `users.go`,
+called from `GetMe`'s existing 404 branch, right where it already checks
+`len(resp.Roles) == 0`). A `cs_engineer` caller with no `"user"` row yet — the same
+provisioning gap `ensureUserProvisioned` closes for worknote/escalation authors — gets
+one created on the first `GET /users/me` after the role is granted, rather than only on
+their next case comment or escalation.
+
+**`firstName`/`lastName`/`phone` come straight off the caller's own validated token**
+(`middleware.UserInfo`'s `given_name`/`family_name`/`phone_number` claims — the last of
+these a new field this feature added, same posture `ensureUserProvisioned` already takes
+for name, extended here to phone too since the token carries it). No SCIM call is made at
+all: unlike the admin Add User flow below, which has no token for the person it's creating
+and so has to look them up in SCIM by email, this caller IS the person being provisioned,
+so their own token already has everything needed. The created `lastName` has `" Ⓦ"`
+appended (`withCsEngineerLastNameMarker`), so a row created this way is identifiable later
+as distinct from one entered by hand or via the admin Add User flow. Unlike
+`ensureUserProvisioned`, this path does not fall back to the email's local part when both
+name claims are blank — it creates the user with whatever the token has (possibly just the
+marker alone as `lastName`).
+
+`POST /users` has no `phone` field (see "Creating a user" above), so a non-blank token
+phone is set with a second call, `PATCH /users/{id}` (`entityUserClient.UpdateUser`), once
+the create has returned the new user's id — best-effort, same as everything else in this
+path: a failed phone patch does not undo the create. A token with no `phone_number` claim
+simply creates the user without a phone. Any failure anywhere in this path (create, phone
+patch) is logged and falls through to `GetMe`'s existing token-only answer rather than
+failing the request.
 
 ## Security Center access (PermViewSecurityCenter / PermViewSecurityReportCases)
 
