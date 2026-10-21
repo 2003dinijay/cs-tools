@@ -84,6 +84,7 @@ import {
   mondayOf,
   shiftsByCode,
   toIsoDate,
+  todayClockOptions,
   zoneAbbreviation,
   zoneLabelOn,
   zoneColumnOf,
@@ -233,19 +234,18 @@ export default function CsmTeamSchedulePage(): JSX.Element {
   // not remembered, so two people comparing the rota over a call are on their
   // profile clocks unless one of them has just switched -- and the axis says
   // which clock it is.
+  //
+  // A profile zone on the same clock as IST or PDT when the page opens opens
+  // Today on that option (todayClockOptions); any other zone, or a Pacific one
+  // on winter time, keeps its own clock.
   const tz = resolveDisplayTimeZone(user?.timeZone);
+  const [openedAt] = useState(() => new Date());
+  const { options: clockOptions, initial: profileClock } = useMemo(
+    () => todayClockOptions(tz, openedAt),
+    [tz, openedAt],
+  );
   const [todayClock, setTodayClock] = useState<string | null>(null);
-  const dayTz = todayClock ?? tz;
-  const clockOptions = useMemo(() => {
-    const fixed = [
-      { value: "Asia/Colombo", label: "IST" },
-      // Americas regular hours are 08:00-18:00 on this clock, all year.
-      { value: "Etc/GMT+7", label: "PDT" },
-    ];
-    return fixed.some((o) => o.value === tz)
-      ? fixed
-      : [{ value: tz, label: `${zoneAbbreviation(tz)} (your profile)` }, ...fixed];
-  }, [tz]);
+  const dayTz = todayClock ?? profileClock;
   const catalogue = useScheduleCatalogue();
 
   /** The teams of the group on screen, in the order the catalogue gives them.
