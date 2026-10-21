@@ -8545,9 +8545,9 @@ paths:
       description: >
         The registry keys of every team this caller may edit: teams they lead,
         every team in a family they are rota admin for, and teams they are the
-        rota marker for. An empty list is a valid answer for somebody who may
+        rota manager for. An empty list is a valid answer for somebody who may
         edit nothing; the portal uses it to decide which rows to offer an edit
-        control on. markerOnlyTeamKeys are the teams held only as rota marker:
+        control on. markerOnlyTeamKeys are the teams held only as rota manager:
         the caller may mark their days but may not generate the rota or change
         the shared tags.
       operationId: getMyLeadTeams
@@ -9173,11 +9173,11 @@ paths:
       summary: Who may change the rotas beyond the team leads.
       description: >
         The Team Schedule's Rota access tab: every rota admin (cre_rota_admin,
-        sre_rota_admin, sme_rota_admin) and the rota markers of the families
+        sre_rota_admin, sme_rota_admin) and the rota managers of the families
         the caller may manage, with what the caller may change. A CSM Portal
         admin -- a token role listed in AUTH_ADMIN_ROLES, the same setting the
         portal uses -- manages everything; a rota admin manages their own family's
-        markers. Anybody else internal gets an empty answer (200), which is how
+        rota managers. Anybody else internal gets an empty answer (200), which is how
         the portal decides not to show the tab. Needs a user token.
       operationId: getRotaAccess
       responses:
@@ -9324,11 +9324,11 @@ paths:
 
   /team-schedule/rota-access/markers/{teamKey}/{userId}:
     put:
-      summary: Make somebody a team's rota marker.
+      summary: Make somebody a team's rota manager.
       description: >
-        A rota marker may mark the team's rota -- rotations, leave and
+        A rota manager may mark the team's rota -- rotations, leave and
         allocations -- and nothing else: not the shared tags, not Generate month,
-        not the paging chain. A CSM admin may name any team's marker, a rota
+        not the paging chain. A CSM admin may name any team's rota manager, a rota
         admin their own family's. The person must be active internal staff and a
         member of the team; the grant stops counting when they leave it. Audited.
       operationId: grantRotaMarker
@@ -9380,7 +9380,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
     delete:
-      summary: Take a team's rota marker away.
+      summary: Take a team's rota manager away.
       description: >
         Same permission as granting. The person need not still be on the team. Audited.
       operationId: revokeRotaMarker
@@ -9989,12 +9989,17 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
   /team-schedule/paging-contacts/{userId}/test:
     post:
-      summary: Ask for a test call to a person's paging-only number.
+      summary: Ask for a test call to the number Case Alerts dials for a person.
       description: >
-        Marks the test pending and publishes paging.test_call_requested on the
-        main event topic; csm-notification-service places the call and
-        reports the outcome (PUT .../test-result). Same permission as setting
-        the number. At most one test every two minutes per person.
+        Rings the number Case Alerts dials from CSM: the one on the person's
+        own profile ("user".phone) when it can be called, else their
+        paging-only number. Marks the test pending and publishes
+        paging.test_call_requested on the main event topic;
+        csm-notification-service places the call and reports the outcome
+        (PUT .../test-result). Only a portal admin, or the rota admin of a
+        family one of the person's teams is in, may ask (a lead or head who
+        may set the number may not ring it). At most one test every two
+        minutes per person, across both numbers.
       operationId: requestPagingTestCall
       parameters:
         - name: userId
@@ -10036,7 +10041,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         "409":
-          description: The person has no paging number.
+          description: CSM holds no number to dial for the person (no callable profile number and no paging-only number).
           content:
             application/json:
               schema:
@@ -25278,6 +25283,31 @@ components:
         hasProfilePhone:
           type: boolean
           description: Whether the person has a callable (E.164) number on their own profile ("user".phone), which paging calls ahead of the paging-only number. Absent when paging numbers are not configured.
+        canTestCall:
+          type: boolean
+          description: Whether the caller may place a test call to this person (a portal admin, or the rota admin of a family one of the person's teams is in).
+        testCall:
+          allOf:
+            - $ref: '#/components/schemas/PagingTestCall'
+          description: The number a test call would ring and its last test. Only for a caller who canTestCall; absent when CSM holds no number to dial.
+    PagingTestCall:
+      type: object
+      required: [masked, source]
+      properties:
+        masked:
+          type: string
+          description: The number with its country code and last three digits shown.
+        source:
+          type: string
+          enum: [profile, paging]
+          description: profile = the number on the person's own profile; paging = their paging-only number.
+        lastTestAt:
+          type: string
+          format: date-time
+          description: When the last test of this number was asked for or answered. Absent until one is requested, and after the number changes.
+        lastTestStatus:
+          type: string
+          enum: [pending, completed, no-answer, busy, failed]
     PagingChainPermissions:
       type: object
       required: [responderTeams, teamLeadTeams, americasTeamLead, heads]
@@ -25413,7 +25443,7 @@ components:
             tiers held in the range ("L1, L2"), or the SME teams rostered on.
     RotaEditTeams:
       type: object
-      description: Which teams the caller may edit, and which of those only as the team's rota marker.
+      description: Which teams the caller may edit, and which of those only as the team's rota manager.
       required: [teamKeys, markerOnlyTeamKeys]
       properties:
         teamKeys:
@@ -25602,7 +25632,7 @@ components:
           description: True for a CSM admin, who alone grants and removes rota admin.
         markerFamilies:
           type: array
-          description: The families whose teams' markers the caller may change.
+          description: The families whose teams' rota managers the caller may change.
           items:
             type: string
             enum: [CRE, SRE, SME]
@@ -25712,6 +25742,20 @@ components:
           $ref: '#/components/schemas/CaseAlertRunning'
         routeOptions:
           $ref: '#/components/schemas/CaseAlertRouteOptions'
+        unmappedGroups:
+          type: array
+          description: >
+            SRE viewers only: active ServiceNow assignment groups (the support group of
+            at least one service) that no enabled SRE route covers and no Team Schedule
+            team is named after. Their incident cards go to the shared SRE room. Absent
+            when there are none.
+          items: { $ref: '#/components/schemas/CaseAlertAssignmentGroup' }
+    CaseAlertAssignmentGroup:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: string, format: uuid, description: 'The "group" row (an assignment group mirrored from ServiceNow).' }
+        name: { type: string }
     CaseAlertRouteOptions:
       type: object
       required: [groups, teams, rotas]
@@ -25731,6 +25775,10 @@ components:
         rotas:
           type: array
           items: { $ref: '#/components/schemas/CaseAlertRotaOption' }
+        assignmentGroups:
+          type: array
+          description: The active assignment groups (support groups of a service) a route can be picked for, by name.
+          items: { $ref: '#/components/schemas/CaseAlertAssignmentGroup' }
     CaseAlertTeamOption:
       type: object
       required: [key, name, family]
@@ -25810,14 +25858,55 @@ components:
         fileOnly:
           type: object
           description: >
-            Ladder (CRE, SRE) to what only the file sets, shown read-only:
+            Ladder (CRE, SRE, SME) to the file's own settings as running:
             enabled, channel, safety.maxCallsPerLadder, safety.maxLevel (absent
             when there is no cap), safety.allowedNumbers (a count, never the
             numbers), safety.callWithoutVerifiedLeads,
-            safety.callHeadsWithoutLowerTiers, phones.source.
+            safety.callHeadsWithoutLowerTiers, phones.source. enabled, channel
+            and the three safety values above can now also be saved as values
+            (ladders); safety.maxLevel, safety.allowedNumbers and phones.source
+            stay file-only.
           additionalProperties:
             type: object
             additionalProperties: true
+        channels:
+          type: object
+          description: >
+            Ladder (CRE, SRE, SME) to whether it runs (its own switch and the
+            file's master switch), its channel, and for each SRE and SME team
+            the channel it actually uses (the ladder's narrowed by the team's
+            own) and whether it has a room. Filtered to the caller's families.
+          additionalProperties:
+            type: object
+            properties:
+              enabled: { type: boolean }
+              channel: { type: string, enum: [call, chat, both, log] }
+              teams:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    team: { type: string }
+                    channel: { type: string }
+                    teamChannel: { type: string }
+                    room: { type: boolean }
+        groups:
+          type: object
+          description: >
+            Ladder (CRE, SRE) to how the running config routes an incident's
+            assignment group without a saved route: aliases (group, lower-cased,
+            to team key: the file's plus the saved routes to a team),
+            defaultGroups (SRE: groups paged on the default rota) and
+            teamlessRooms (SRE: teams with a room but no rota). The tab reads
+            it to show where each group goes, and the unmapped warning no
+            longer lists a group the file already routes. Filtered to the
+            caller's families.
+          additionalProperties:
+            type: object
+            properties:
+              aliases: { type: object, additionalProperties: { type: string } }
+              defaultGroups: { type: array, items: { type: string } }
+              teamlessRooms: { type: array, items: { type: string } }
     CaseAlertSettingsRights:
       type: object
       required: [view, roomLadders, routeLadders]
@@ -25868,7 +25957,8 @@ components:
       properties:
         id: { type: string, format: uuid }
         ladder: { type: string, enum: [CRE, SRE] }
-        groupName: { type: string, description: "Lower-cased, as the case or incident carries it." }
+        groupName: { type: string, description: "Lower-cased, as the case or incident carries it. For a route with a groupId, the group's current name." }
+        groupId: { type: string, format: uuid, description: 'The assignment group ("group" row) the route was picked for; absent for a route saved by name.' }
         teamKey: { type: string }
         rotaCode: { type: string }
         enabled: { type: boolean }
@@ -25894,7 +25984,8 @@ components:
       required: [ladder, groupName]
       properties:
         ladder: { type: string, enum: [CRE, SRE] }
-        groupName: { type: string, maxLength: 255, description: "A CSM Portal team's name: a CRE team for CRE, an SRE or SME team for SRE. SRE also takes an assignment group no CSM Portal team has (WSO2 IaaS Team), but never a CRE team's name." }
+        groupName: { type: string, maxLength: 255, description: "A CSM Portal team's name: a CRE team for CRE, an SRE or SME team for SRE. SRE also takes an assignment group no CSM Portal team has (WSO2 IaaS Team), but never a CRE team's name. With groupId, the group's own name is stored instead." }
+        groupId: { type: string, format: uuid, description: "Optional. An assignment group from routeOptions.assignmentGroups; the route follows the group if it is renamed. 400 when it is not one." }
         teamKey: { type: string }
         rotaCode: { type: string, description: "SRE only. An active SRE rota, e.g. SRE_SAAS." }
         enabled: { type: boolean, default: true }

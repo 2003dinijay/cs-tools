@@ -6464,6 +6464,17 @@ components:
           type: string
         lastPasswordUpdateTime:
           type: string
+        isReadOnly:
+          type: boolean
+          description: >-
+            True only for an INTERNAL-type user (entity-service's own
+            user_type) who holds none of this deployment's configured
+            AUTH_INTERNAL_WRITE_GROUPS on their own token. Always false for a
+            genuine customer/partner, and always false for every caller when
+            AUTH_INTERNAL_WRITE_GROUPS is unset (the gate is off by default).
+            The webapp hides write-path UI when this is true; the backend
+            also enforces it on every write route independently, so this is
+            a UI hint, not the security boundary.
 
     UserUpdateRequest:
       type: object
