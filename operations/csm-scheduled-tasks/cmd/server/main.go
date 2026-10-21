@@ -44,6 +44,7 @@ import (
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/engine"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/entitycases"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/housekeeping"
+	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/httpsec"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/ledger"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/notify"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/opencases"
@@ -54,6 +55,8 @@ import (
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/schedule"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/stalecases"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/teamschedule"
+	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/worklogreport"
+	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/worklogsreport"
 )
 
 func main() {
@@ -110,6 +113,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The CS Worklogs reports' own client. Same deployment and
+	// credentials, separate client for the same reason as the others: a
+	// distinct endpoint whose timeout differs materially. A weekly report
+	// reads every time card in a seven-day window across every delivery
+	// team, so it allows ninety seconds.
 	// The query-hour client. Same deployment and credentials; its own
 	// client because a recompute walks every opportunity in service and
 	// every project linked to each, so it needs minutes rather than the
@@ -123,6 +131,18 @@ func main() {
 	})
 	if err != nil {
 		slog.Error("failed to construct entity-service query-hour client", "err", err)
+		os.Exit(1)
+	}
+
+	worklogReportClient, err := worklogreport.NewClient(worklogreport.Config{
+		BaseURL:      entityServiceBaseURL,
+		TokenURL:     oauthTokenURL,
+		ClientID:     oauthClientID,
+		ClientSecret: oauthClientSecret,
+		Scopes:       entityServiceScopes,
+	})
+	if err != nil {
+		slog.Error("failed to construct entity-service worklog-report client", "err", err)
 		os.Exit(1)
 	}
 
@@ -319,16 +339,54 @@ func main() {
 	const staleCaseThreshold = 30 * 24 * time.Hour
 
 	const openCasesTaskName = "open_cases_report"
+	// Where an issue key in a CS Worklogs mail points: the CSM portal,
+	// which is where the engineers who receive these reports work. NOT
+	// the customer portal -- that is a different audience and most of
+	// them cannot even open it. ServiceNow linked into its own agent
+	// workspace, the equivalent internal surface, and that URL dies at
+	// cutover.
+	//
+	// Same variable and same path shape as csm-notification-service's
+	// recipientlinks resolver, which already builds
+	// <CSM_PORTAL_WEB_BASE_URL>/cases/{id} for internal recipients.
+	//
+	// Default is EMPTY, which renders the keys as plain text: better
+	// than linking every engineer at a host nobody configured.
+	// Validated like the other outbound URLs, so a typo stops startup
+	// rather than producing a mail full of dead links.
+	// Where the CS Worklogs audience comes from. "configured" is the
+	// default and reproduces the delivered mails; "derived" hands the
+	// decision to the team registry and WILL change who receives them,
+	// so it is a deliberate switch rather than a fallback. The drift
+	// line logged on every send shows the size of that change first.
+	worklogRecipientSource, ok := worklogreport.ParseSource(os.Getenv("WORKLOG_RECIPIENTS_SOURCE"))
+	if !ok {
+		slog.Error("WORKLOG_RECIPIENTS_SOURCE must be configured or derived",
+			"value", os.Getenv("WORKLOG_RECIPIENTS_SOURCE"))
+		os.Exit(1)
+	}
+
+	worklogCaseLinkBase := strings.TrimRight(os.Getenv("CSM_PORTAL_WEB_BASE_URL"), "/")
+	if worklogCaseLinkBase != "" {
+		if err := httpsec.RequireSecureURL(worklogCaseLinkBase); err != nil {
+			slog.Error("invalid CSM_PORTAL_WEB_BASE_URL", "err", err)
+			os.Exit(1)
+		}
+	}
+
 	const queryHoursWeeklyTaskName = "query_hours_weekly_report"
 	const queryHoursNoticeTaskName = "query_hours_usage_notifications"
+	const worklogsDailyTaskName = "cs_worklogs_daily_report"
+	const worklogsWeeklyTaskName = "cs_worklogs_weekly_report"
 	openCasesTo, openCasesCc := recipientsFor(recipientOverrides, openCasesTaskName)
 	// For the query-hour tasks these are ADDITIONS to the derived
 	// audience, not the audience itself -- see the package doc.
 	queryHoursWeeklyTo, queryHoursWeeklyCc := recipientsFor(recipientOverrides, queryHoursWeeklyTaskName)
 	_, queryHoursNoticeCc := recipientsFor(recipientOverrides, queryHoursNoticeTaskName)
-	// A single address that replaces every derived audience, for
-	// testing against real data without mailing real account owners.
-	queryHoursOverride := splitComma(os.Getenv("QUERY_HOURS_RECIPIENT_OVERRIDE"))
+	worklogsDailyTo, worklogsDailyCc := recipientsFor(recipientOverrides, worklogsDailyTaskName)
+	worklogsWeeklyTo, worklogsWeeklyCc := recipientsFor(recipientOverrides, worklogsWeeklyTaskName)
+	worklogsDailySchedule := scheduleFor(scheduleOverrides, worklogsDailyTaskName, "55 3 * * *")
+	worklogsWeeklySchedule := scheduleFor(scheduleOverrides, worklogsWeeklyTaskName, "0 16 * * 1")
 
 	const publishScheduledAnnouncementsTaskName = "publish_scheduled_announcements"
 	publishScheduledAnnouncementsTo, publishScheduledAnnouncementsCc := recipientsFor(recipientOverrides, publishScheduledAnnouncementsTaskName)
@@ -389,28 +447,69 @@ func main() {
 			To:       openCasesTo,
 			Cc:       openCasesCc,
 		},
+		// The CS Worklogs reports. Both default schedules are the times
+		// ServiceNow actually sends at, expressed in UTC because these
+		// cron strings are UTC: WeeklyReportAutomation V2 triggers Monday
+		// 16:00 UTC, which is 21:30 Asia/Colombo and the timestamp on the
+		// delivered weekly mail; the daily one arrives 09:25 Colombo,
+		// which is 03:55 UTC. The REPORTED range is derived in
+		// Asia/Colombo regardless -- see worklogsreport.ReportTimezone --
+		// because at 03:55 UTC the two zones disagree about which day
+		// "yesterday" is.
+		//
+		// Recipients come from SUB_CRON_RECIPIENTS and the two lists are
+		// NOT the same: the delivered mails have different audiences,
+		// with group addresses in To on the daily and in Cc on the
+		// weekly. Sends nothing (but still succeeds) if the To list is
+		// empty.
+		//
+		// To and Cc are left nil DELIBERATELY. The engine mails
+		// task.To plus ALERT_RECIPIENTS on every failed attempt, and a
+		// failed period is retried on every tick until the next
+		// firing. These two audiences are the whole CS leadership plus
+		// several distribution lists, so an entity-service outage
+		// would send them an hourly FAILED notice for up to a day
+		// (daily) or a week (weekly). The report audience and the
+		// alert audience are not the same people: the recipients go to
+		// the handler, the failures go to ALERT_RECIPIENTS.
 		// Query-hour utilisation, ported from ServiceNow's two flows.
 		//
 		// The weekly report's audience is DERIVED from the accounts it
-		// reports on, so To and Cc are left nil here: the failure
-		// alerts go to ALERT_RECIPIENTS, and the report goes to the
-		// owners of whichever accounts are breaching that week.
+		// reports on, so To and Cc are left nil here: failure alerts
+		// go to ALERT_RECIPIENTS, and the report goes to the owners of
+		// whichever accounts are breaching that week.
 		//
-		// The notification task also RECOMPUTES, which is what makes
-		// the crossings detectable at all -- it compares the state it
-		// derives against the one already stored. Scheduled hourly so
-		// a breach is noticed the same day rather than at the weekly.
+		// The notification task also RECOMPUTES, which is what makes a
+		// crossing detectable at all -- it compares the state it
+		// derives against the one already stored. Hourly, so a breach
+		// is noticed the same day rather than at the weekly.
 		{
 			Name:     queryHoursNoticeTaskName,
 			Schedule: scheduleFor(scheduleOverrides, queryHoursNoticeTaskName, "15 * * * *"),
 			Handler: queryhoursreport.SendUsageNotifications(queryHourClient, emailClient,
-				queryHoursNoticeCc, queryHoursOverride, alertsEnabled),
+				queryHoursNoticeCc, nil, alertsEnabled),
 		},
 		{
 			Name:     queryHoursWeeklyTaskName,
 			Schedule: scheduleFor(scheduleOverrides, queryHoursWeeklyTaskName, "0 4 * * 1"),
 			Handler: queryhoursreport.SendWeeklyReport(queryHourClient, emailClient,
-				queryHoursWeeklyTo, queryHoursWeeklyCc, queryHoursOverride, alertsEnabled),
+				queryHoursWeeklyTo, queryHoursWeeklyCc, nil, alertsEnabled),
+		},
+		{
+			Name:     worklogsDailyTaskName,
+			Schedule: worklogsDailySchedule,
+			Handler: worklogsreport.SendDaily(worklogReportClient, emailClient,
+				periodStart(worklogsDailySchedule),
+				worklogsDailyTo, worklogsDailyCc, worklogRecipientSource,
+				worklogCaseLinkBase, alertsEnabled),
+		},
+		{
+			Name:     worklogsWeeklyTaskName,
+			Schedule: worklogsWeeklySchedule,
+			Handler: worklogsreport.SendWeekly(worklogReportClient, emailClient,
+				periodStart(worklogsWeeklySchedule),
+				worklogsWeeklyTo, worklogsWeeklyCc, worklogRecipientSource,
+				worklogCaseLinkBase, alertsEnabled),
 		},
 		// The first sub-cron here that does real, per-row, multi-step,
 		// partial-failure-tolerant work rather than a bulk delete or a
