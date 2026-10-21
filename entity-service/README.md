@@ -417,6 +417,8 @@ group marked "together" must be all set or all unset.
 | `REQUEST_TIMEOUT` | No | `60s` | Per-request context deadline. Must be > 0. | `60s` |
 | `UPSTREAM_CLIENT_TIMEOUT` | No | `60s` | Timeout of the HTTP client used for upstream calls. Must be > 0. | `60s` |
 | `AVAILABILITY_TIMEZONE` | No | `Asia/Colombo` | IANA zone in which availability sweeps resolve period boundaries. | `UTC` |
+| `WORKLOG_REPORT_TEAM_TYPES` | No | `cre-abt,cre` | `team.type` values the CS Worklogs reports cover. |
+| `WORKLOG_REPORT_EXCLUDED_TEAM_KEYS` | No | empty | `team.key` values dropped from that scope — no section, no members in the totals, no lead on the derived audience. |
 
 ### Database
 

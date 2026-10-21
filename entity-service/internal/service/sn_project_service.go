@@ -1079,4 +1079,3 @@ func (s *snProjectService) UpdateProjectConsumption(ctx context.Context, id stri
 	}
 	return fmt.Errorf("consumption update not supported without postgres fallback")
 }
-
