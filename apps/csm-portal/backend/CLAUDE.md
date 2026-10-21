@@ -39,6 +39,17 @@ Go HTTP server (`net/http`, Go 1.26+) that acts as a backend-for-frontend (BFF) 
 - **`PermViewAllDashboards` (CS engineer and admin) is the one permission with no route.** A `dashboard.Dashboard` may set `"restricted": true`; `DashboardHandler` calls the newly-exported `AccessGuard.Permits(perm, roles)` itself to filter it out of `GET /dashboards` and 403 a direct `GET /dashboards/{id}` for anyone else, while both routes stay `PermView` so the list route still runs for every viewer. `Permits` exists specifically for this — a handler that must gate one specific resource against a caller's roles from inside its own logic, not a whole route via `Require`.
 - Handler tests call handlers directly and bypass the guard; test the guard in `access_test.go`. `dashboards_test.go`'s `withRestrictedDashboard` temporarily swaps the package-level `dashboard.Active()` registry for one that adds a `Restricted` dashboard, restored via `t.Cleanup` — every other test in that file depends on the shared two-dashboard fixture's exact count, so never add a permanent third dashboard to it.
 
+## The user's phone (`/users/me`)
+
+`phoneNumber` is read from and written to the platform user record only (the entity
+service's `"user".phone`), never the identity provider. `GET /users/me` returns the
+record's `phone` as `phoneNumber` (omitted when the record has none), and `PATCH /users/me`
+with `phoneNumber` writes it to the record through the entity service, in the same call as a
+`timeZone` change when the request carries both. The phone is trimmed first; an empty or blank
+one clears it. The identity provider is neither read nor
+written for the phone. A user whose record has no phone shows none until they set one.
+Tests: `TestGetMe`, `TestPatchMe`.
+
 ## Creating a user (POST /users)
 
 Admin-only (`PermAdmin`, see "Access control" above) — the CSM portal's Add User UI is the one

@@ -149,7 +149,9 @@ type userMeResponse struct {
 	// caller's token roles grant: several are possible. It is not the entity
 	// service's role data, which this response no longer carries. Always
 	// present, [] when they hold none.
-	Roles       []string          `json:"roles"`
+	Roles []string `json:"roles"`
+	// PhoneNumber is the phone on the caller's platform user record. It is never
+	// read from the identity provider. Omitted when the record has none.
 	PhoneNumber *string           `json:"phoneNumber,omitempty"`
 	Team        *userTeamResponse `json:"team"`
 	// SftpgoAttachmentStorageEnabled mirrors the backend's
@@ -188,6 +190,9 @@ type entityUserMeResponse struct {
 	FirstName *string `json:"firstName"`
 	LastName  string  `json:"lastName"`
 	TimeZone  *string `json:"timeZone"`
+	// Phone is "user".phone; the entity service omits it when NULL. It is the
+	// source of GET /users/me phoneNumber.
+	Phone *string `json:"phone"`
 	// Groups is every group the caller belongs to, or absent when the upstream
 	// membership lookup failed. The team is derived from it here rather than
 	// upstream, since the registry lives in this service.
@@ -207,8 +212,9 @@ type userUpdateResponse struct {
 }
 
 // GetMe handles GET /users/me.
-// id, firstName, lastName, timeZone, and roles are sourced from the entity service.
-// phoneNumber is sourced from SCIM.
+// id, firstName, lastName, timeZone, and phoneNumber (the platform user record's
+// phone) are sourced from the entity service; roles from the caller's token. The
+// phone saved with the identity provider is never read.
 func (h *UsersHandler) GetMe(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserInfoFromContext(r.Context())
 	if user == nil {
@@ -254,7 +260,6 @@ func (h *UsersHandler) GetMe(w http.ResponseWriter, r *http.Request) {
 			if user.LastName != "" {
 				resp.LastName = &user.LastName
 			}
-			h.fillPhoneNumber(r.Context(), user, &resp)
 			writeJSONValue(w, http.StatusOK, resp)
 			return
 		}
@@ -271,28 +276,17 @@ func (h *UsersHandler) GetMe(w http.ResponseWriter, r *http.Request) {
 		resp.FirstName = entityResp.FirstName
 		resp.LastName = &entityResp.LastName
 		resp.TimeZone = entityResp.TimeZone
+		resp.PhoneNumber = entityResp.Phone
 		resp.Team = h.teamForGroups(entityResp.Groups)
 	}
 
-	h.fillPhoneNumber(r.Context(), user, &resp)
 	writeJSONValue(w, http.StatusOK, resp)
 }
 
-// fillPhoneNumber sets resp.PhoneNumber from SCIM, best-effort.
-func (h *UsersHandler) fillPhoneNumber(ctx context.Context, user *middleware.UserInfo, resp *userMeResponse) {
-	scimInfo, err := h.scim.SearchUser(ctx, user.Email)
-	if err != nil {
-		slog.ErrorContext(ctx, "scim SearchUser failed", "userID", user.UserID, "err", err)
-	} else if scimInfo == nil {
-		slog.WarnContext(ctx, "no SCIM user found", "userID", user.UserID)
-	} else {
-		resp.PhoneNumber = scimInfo.PhoneNumber
-	}
-}
-
 // PatchMe handles PATCH /users/me.
-// phoneNumber is updated via SCIM and then mirrored to the entity service; timeZone is updated
-// via the entity service. A request carrying both makes one entity call.
+// phoneNumber and timeZone are both written to the platform user record through the
+// entity service, in one call when a request carries both. The identity provider is
+// never written.
 func (h *UsersHandler) PatchMe(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserInfoFromContext(r.Context())
 	if user == nil {
@@ -328,7 +322,7 @@ func (h *UsersHandler) PatchMe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Entity treats an empty timeZone as absent, so reject it up front rather than
-	// report a value that was never stored. Must precede the identity provider call.
+	// report a value that was never stored.
 	if payload.TimeZone != nil && strings.TrimSpace(*payload.TimeZone) == "" {
 		writeError(w, http.StatusBadRequest, "timeZone must not be empty.")
 		return
@@ -336,27 +330,15 @@ func (h *UsersHandler) PatchMe(w http.ResponseWriter, r *http.Request) {
 
 	resp := userUpdateResponse{}
 
-	if payload.PhoneNumber != nil {
-		updatedPhone, err := h.scim.UpdateUserPhone(r.Context(), user.UserID, *payload.PhoneNumber)
-		if err != nil {
-			slog.ErrorContext(r.Context(), "scim UpdateUserPhone failed", "userID", user.UserID, "err", err)
-			mapUpstreamError(w, err, "Failed to update phone number.")
-			return
-		}
-		resp.PhoneNumber = updatedPhone
-	}
-
-	// Mirror into the platform database with one entity PATCH carrying only the
-	// fields this request changed. SCIM has already succeeded; it is idempotent,
-	// so a client retry after an entity failure is safe.
+	// One entity PATCH carrying only the fields this request changed.
 	entityFields := map[string]string{}
+	var phone *string
 	if payload.PhoneNumber != nil {
-		// Store what the identity provider actually kept, falling back to the request.
-		stored := *payload.PhoneNumber
-		if resp.PhoneNumber != nil {
-			stored = *resp.PhoneNumber
-		}
-		entityFields["phone"] = stored
+		// Trimmed here, so the stored and echoed value is what was meant. A
+		// blank phone becomes "" and clears it, as an empty one always has.
+		trimmed := strings.TrimSpace(*payload.PhoneNumber)
+		phone = &trimmed
+		entityFields["phone"] = trimmed
 	}
 	if payload.TimeZone != nil {
 		entityFields["timeZone"] = *payload.TimeZone
@@ -380,6 +362,7 @@ func (h *UsersHandler) PatchMe(w http.ResponseWriter, r *http.Request) {
 			mapUpstreamError(w, entityErr, errMsg)
 			return
 		}
+		resp.PhoneNumber = phone
 		resp.TimeZone = payload.TimeZone
 	}
 
