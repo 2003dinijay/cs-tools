@@ -442,6 +442,15 @@ type Config struct {
 	// recipients is not swept at all, so its decisions are not used up.
 	OutageNotificationRecipients  []string
 	OutageCommunicationRecipients []string
+	// MigrationCaseReportHoldTag and MigrationCaseReportAccountsTag are the
+	// tag names (matched ignoring case) that place a long-running migration
+	// in the weekly scan's "customer asked to hold" and "waiting on the
+	// accounts team" tables. MigrationCaseReportTeamKeys are the teams whose
+	// mail groups (team.group_email) receive the scan; empty means the scan
+	// derives no recipients and the scheduled task must configure its own.
+	MigrationCaseReportHoldTag     string
+	MigrationCaseReportAccountsTag string
+	MigrationCaseReportTeamKeys    []string
 	// CustomerRoles is a comma-separated list of ServiceNow role names
 	// (organisation-specific vocabulary, the same reasoning
 	// apps/csm-portal/backend's own CSM_TEAM_REGISTRY uses for not shipping
@@ -798,6 +807,9 @@ func Load() *Config {
 		OutageNoticePollInterval:                      envDuration("OUTAGE_NOTICE_POLL_INTERVAL", 60*time.Second),
 		OutageNotificationRecipients:                  splitComma(os.Getenv("OUTAGE_NOTIFICATION_RECIPIENTS")),
 		OutageCommunicationRecipients:                 splitComma(os.Getenv("OUTAGE_COMMUNICATION_RECIPIENTS")),
+		MigrationCaseReportHoldTag:                    getEnvOrDefault("MIGRATION_CASE_REPORT_HOLD_TAG", "s_mig_hold"),
+		MigrationCaseReportAccountsTag:                getEnvOrDefault("MIGRATION_CASE_REPORT_ACCOUNTS_TAG", "s_acc"),
+		MigrationCaseReportTeamKeys:                   splitComma(os.Getenv("MIGRATION_CASE_REPORT_TEAM_KEYS")),
 		AuthIssuer:                                    os.Getenv("AUTH_ISSUER"),
 		AuthJWKSURL:                                   os.Getenv("AUTH_JWKS_URL"),
 		AuthUserTokenAudiences:                        splitComma(os.Getenv("AUTH_USER_TOKEN_AUDIENCES")),
