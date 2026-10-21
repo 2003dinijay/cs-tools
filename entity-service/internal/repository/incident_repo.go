@@ -1331,8 +1331,9 @@ func (r *incidentRepo) UpdateIncidentLifecycle(ctx context.Context, id string, u
 // Work notes ServiceNow's OOB "Cascade closure of Incident Tasks" writes on
 // each task it closes (incident, after insert/update, state changes to
 // Closed or Canceled; on when com.snc.incident.incident_task.closure is
-// "true", as it is on WSO2's instance). Discovery scripts 57-59 in
-// integrations/csm-flow-service/docs/servicenow-discovery have the evidence.
+// "true", as it is on WSO2's instance). Established by reading the
+// business rule on the live instance; the discovery scripts that did so
+// are kept out of this repository.
 const (
 	incidentTaskClosedOnCloseNote  = "Incident Task is Closed Incomplete based on closure of %s."
 	incidentTaskClosedOnCancelNote = "Incident Task is Closed Skipped based on cancelation of %s."
