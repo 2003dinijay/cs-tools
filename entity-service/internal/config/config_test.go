@@ -18,6 +18,7 @@ package config
 
 import (
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -29,6 +30,7 @@ func baseValidConfig() Config {
 	return Config{
 		DataSource:           DataSourcePostgres,
 		SLADataSource:        SLADataSourcePostgres,
+		UsageReadMode:        UsageReadModePostgres,
 		AttachmentDataSource: AttachmentDataSourcePostgres,
 		DBUser:               "user",
 		DBPassword:           "password",
@@ -391,6 +393,7 @@ func baseValidServiceNowConfig() Config {
 	return Config{
 		DataSource:                               DataSourceServiceNow,
 		SLADataSource:                            SLADataSourcePostgres,
+		UsageReadMode:                            UsageReadModePostgres,
 		AttachmentDataSource:                     AttachmentDataSourcePostgres,
 		ServiceNowIntegrationServiceBaseURL:      "https://example.com",
 		ServiceNowIntegrationServiceTokenURL:     "https://example.com/token",
@@ -1260,5 +1263,72 @@ func TestConfig_GithubServiceNowFirst(t *testing.T) {
 	c.GithubSRServiceNowFirst = false
 	if c.GithubServiceNowFirst() {
 		t.Error("on without GITHUB_SR_SERVICENOW_FIRST")
+	}
+}
+
+func TestConfig_Validate_UsageReadMode(t *testing.T) {
+	for _, m := range []UsageReadMode{UsageReadModePostgres, UsageReadModeLegacy} {
+		c := baseValidConfig()
+		c.UsageReadMode = m
+		if err := c.Validate(); err != nil {
+			t.Errorf("Validate() with PRODUCT_CONSUMPTION_DATA_READ_MODE=%q: %v", m, err)
+		}
+	}
+	for _, bad := range []UsageReadMode{"bogus", "Legacy", ""} {
+		c := baseValidConfig()
+		c.UsageReadMode = bad
+		err := c.Validate()
+		if err == nil || !strings.Contains(err.Error(), "PRODUCT_CONSUMPTION_DATA_READ_MODE") {
+			t.Errorf("Validate() with PRODUCT_CONSUMPTION_DATA_READ_MODE=%q = %v, want a PRODUCT_CONSUMPTION_DATA_READ_MODE error", bad, err)
+		}
+	}
+}
+
+func TestLoad_UsageReadMode(t *testing.T) {
+	cases := []struct {
+		name  string
+		set   bool
+		value string
+		want  UsageReadMode
+	}{
+		{"unset defaults to postgres", false, "", UsageReadModePostgres},
+		{"empty defaults to postgres", true, "", UsageReadModePostgres},
+		{"postgres", true, "postgres", UsageReadModePostgres},
+		{"legacy", true, "legacy", UsageReadModeLegacy},
+		{"invalid is carried through for Validate to reject", true, "bogus", UsageReadMode("bogus")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("PRODUCT_CONSUMPTION_DATA_READ_MODE", "")
+			if tc.set {
+				t.Setenv("PRODUCT_CONSUMPTION_DATA_READ_MODE", tc.value)
+			} else {
+				os.Unsetenv("PRODUCT_CONSUMPTION_DATA_READ_MODE")
+			}
+			if got := Load().UsageReadMode; got != tc.want {
+				t.Errorf("UsageReadMode = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestConfig_UsageReadRoute(t *testing.T) {
+	cases := []struct {
+		ds   DataSource
+		mode UsageReadMode
+		want UsageReadRoute
+	}{
+		{DataSourcePostgres, UsageReadModePostgres, UsageReadRoutePostgres},
+		{DataSourcePostgres, UsageReadModeLegacy, UsageReadRoutePostgres},
+		{DataSourceServiceNow, UsageReadModePostgres, UsageReadRouteServiceNowOnly},
+		{DataSourceServiceNow, UsageReadModeLegacy, UsageReadRouteServiceNowOnly},
+		{DataSourcePostgresServiceNowDualWrite, UsageReadModePostgres, UsageReadRoutePostgres},
+		{DataSourcePostgresServiceNowDualWrite, UsageReadModeLegacy, UsageReadRoutePreviousPathFallback},
+	}
+	for _, tc := range cases {
+		c := Config{DataSource: tc.ds, UsageReadMode: tc.mode}
+		if got := c.UsageReadRoute(); got != tc.want {
+			t.Errorf("DataSource=%s mode=%s: route = %d, want %d", tc.ds, tc.mode, got, tc.want)
+		}
 	}
 }

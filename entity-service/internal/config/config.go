@@ -61,6 +61,40 @@ const (
 	DataSourcePostgresServiceNowDualWrite DataSource = "postgres-servicenow-dual-write"
 )
 
+// UsageReadMode selects how the instance and usage/metrics reads are routed
+// under DATA_SOURCE=postgres-servicenow-dual-write. The covered reads are
+// InstanceService's five methods and DeployedProductService's
+// SearchDeployedProductMetrics/SearchDeployedProductUsageCounts.
+// UsageReadRoute is the single place that turns DataSource + UsageReadMode
+// into a routing decision. Other DATA_SOURCE values are not affected by it.
+type UsageReadMode string
+
+const (
+	// UsageReadModePostgres always reads these from Postgres (except
+	// instances under DATA_SOURCE=servicenow, which has no pool). The default.
+	UsageReadModePostgres UsageReadMode = "postgres"
+	// UsageReadModeLegacy restores the previous read routing: under
+	// DATA_SOURCE=postgres-servicenow-dual-write these reads go to the
+	// backing system the dual-write mode mirrors to, not to Postgres.
+	UsageReadModeLegacy UsageReadMode = "legacy"
+)
+
+// UsageReadRoute is the read source UsageReadRoute picks for the instance and
+// usage/metrics reads.
+type UsageReadRoute int
+
+const (
+	// UsageReadRoutePostgres reads this service's own Postgres tables.
+	UsageReadRoutePostgres UsageReadRoute = iota
+	// UsageReadRouteServiceNowOnly is DATA_SOURCE=servicenow: the whole
+	// service is backed by the integration service, there is no Postgres.
+	UsageReadRouteServiceNowOnly
+	// UsageReadRoutePreviousPathFallback is the legacy dual-write routing:
+	// Postgres-backed service whose usage/metrics reads are delegated to the
+	// mirror service.
+	UsageReadRoutePreviousPathFallback
+)
+
 // SLADataSource identifies which backend SLA-related reads use -- task SLAs
 // (GET /slas/{id}, POST /slas/search, what backs a case's SLA display) and
 // the slaBreached/taskSLABusinessElapsedPercent case-search filters, and the
@@ -182,6 +216,10 @@ type Config struct {
 	// independent of DataSource. Defaults to "postgres" -- see
 	// SLADataSource's own doc comment.
 	SLADataSource SLADataSource
+	// UsageReadMode selects the read routing of the instance and
+	// usage/metrics reads under DATA_SOURCE=postgres-servicenow-dual-write.
+	// Defaults to "postgres" -- see UsageReadMode's own doc comment.
+	UsageReadMode UsageReadMode
 	// AttachmentDataSource controls which backend two case attachment reads
 	// and the activity feed use, independent of DataSource and
 	// SLADataSource. Defaults to "postgres" -- see AttachmentDataSource's
@@ -766,6 +804,7 @@ func Load() *Config {
 		HealthPort:                               getEnvOrDefault("HEALTH_PORT", "8081"),
 		DataSource:                               DataSource(getEnvOrDefault("DATA_SOURCE", string(DataSourcePostgres))),
 		SLADataSource:                            SLADataSource(getEnvOrDefault("SLA_DATA_SOURCE", string(SLADataSourcePostgres))),
+		UsageReadMode:                            UsageReadMode(getEnvOrDefault("PRODUCT_CONSUMPTION_DATA_READ_MODE", string(UsageReadModePostgres))),
 		AttachmentDataSource:                     AttachmentDataSource(getEnvOrDefault("ATTACHMENT_DATA_SOURCE", string(AttachmentDataSourcePostgres))),
 		ServiceNowIntegrationServiceBaseURL:      os.Getenv("SERVICENOW_INTEGRATION_SERVICE_BASE_URL"),
 		ServiceNowIntegrationServiceTokenURL:     os.Getenv("SERVICENOW_INTEGRATION_SERVICE_TOKEN_URL"),
@@ -1074,6 +1113,12 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("invalid SLA_DATA_SOURCE %q: must be %q or %q", c.SLADataSource, SLADataSourcePostgres, SLADataSourceServiceNow)
 	}
+	switch c.UsageReadMode {
+	case UsageReadModePostgres, UsageReadModeLegacy:
+		// valid
+	default:
+		return fmt.Errorf("invalid PRODUCT_CONSUMPTION_DATA_READ_MODE %q: must be %q or %q", c.UsageReadMode, UsageReadModePostgres, UsageReadModeLegacy)
+	}
 	switch c.AttachmentDataSource {
 	case AttachmentDataSourcePostgres, AttachmentDataSourceServiceNow:
 		// valid
@@ -1276,6 +1321,25 @@ func isSysID(v string) bool {
 // escalation is emailed twice.
 func (c *Config) CaseEscalationNoticesOn() bool {
 	return c.PostgresAuthoritative() && c.CaseEscalationNotices != "false"
+}
+
+// UsageReadRoute decides where the instance and usage/metrics reads are
+// served from, from DataSource and UsageReadMode. It is the only place that
+// decision is made; routes.go wires services from its result.
+//
+//	DATA_SOURCE=servicenow                                -> ServiceNowOnly (either mode)
+//	DATA_SOURCE=postgres                                  -> Postgres (either mode)
+//	DATA_SOURCE=postgres-servicenow-dual-write, postgres  -> Postgres
+//	DATA_SOURCE=postgres-servicenow-dual-write, legacy    -> PreviousPathFallback
+func (c *Config) UsageReadRoute() UsageReadRoute {
+	switch {
+	case c.DataSource == DataSourceServiceNow:
+		return UsageReadRouteServiceNowOnly
+	case c.DataSource == DataSourcePostgresServiceNowDualWrite && c.UsageReadMode == UsageReadModeLegacy:
+		return UsageReadRoutePreviousPathFallback
+	default:
+		return UsageReadRoutePostgres
+	}
 }
 
 func (c *Config) PostgresAuthoritative() bool {
