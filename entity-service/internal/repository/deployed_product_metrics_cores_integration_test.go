@@ -130,3 +130,78 @@ func TestSearchDeployedProductMetrics_NoCoresInRangeIsAnEmptyChart(t *testing.T)
 		t.Errorf("expected an empty chart and no summary cores, got %+v", got)
 	}
 }
+
+// seedSnapshotNodes adds four more nodes for August, each exercising one way a
+// snapshot's days are decided:
+//   - D re-reports one unchanged hash from 10 to 12 Aug (only payload_updated_on moves),
+//   - E reports at 22:30 UTC on 5 Aug, which is already 6 Aug in the session zone,
+//   - F reports 4 cores and later the same day a snapshot with no core count,
+//   - G holds 4 cores from 25 to 27 Aug until a changed snapshot with 6 cores on the 27th.
+func seedSnapshotNodes(t *testing.T, ctx context.Context, exec func(context.Context, string, ...any) error) {
+	t.Helper()
+	snap := func(node, hash, cores, created, updated string) string {
+		return `INSERT INTO deployment_information (id, created_on, updated_on, created_by, updated_by, node_id, deployment_info, deployment_info_hash, core_count, payload_created_on, payload_updated_on)
+			VALUES (gen_random_uuid(), NOW(), NOW(), 't', 't', '` + node + `', '{}', '` + hash + `', ` + cores + `, '` + created + `', '` + updated + `')`
+	}
+	for _, stmt := range []string{
+		`INSERT INTO deployment_node (id, created_on, updated_on, created_by, updated_by, node_id, project_key, deployment_number, product_version_id)
+			SELECT v.id::uuid, NOW(), NOW(), 't', 't', v.node_id, 'CUPRSUBDEV', 'DEP-OLD', '` + ingestVersionAM420 + `'
+			FROM (VALUES ('6f100000-0000-4000-8000-000000000004', 'core-node-d'), ('6f100000-0000-4000-8000-000000000005', 'core-node-e'),
+			             ('6f100000-0000-4000-8000-000000000006', 'core-node-f'), ('6f100000-0000-4000-8000-000000000007', 'core-node-g')) AS v(id, node_id)`,
+		snap("core-node-d", "hd", "4", "2026-08-10T08:00:00Z", "2026-08-12T09:00:00Z"),
+		snap("core-node-e", "he", "2", "2026-08-05T22:30:00Z", "2026-08-05T22:30:00Z"),
+		snap("core-node-f", "hf1", "4", "2026-08-20T08:00:00Z", "2026-08-20T08:00:00Z"),
+		snap("core-node-f", "hf2", "NULL", "2026-08-20T10:00:00Z", "2026-08-20T10:00:00Z"),
+		snap("core-node-g", "hg1", "4", "2026-08-25T08:00:00Z", "2026-08-27T08:00:00Z"),
+		snap("core-node-g", "hg2", "6", "2026-08-27T10:00:00Z", "2026-08-27T10:00:00Z"),
+	} {
+		if err := exec(ctx, stmt); err != nil {
+			t.Fatalf("seed %.60q: %v", stmt, err)
+		}
+	}
+}
+
+// A snapshot stands for every UTC day between its first and last report, days are
+// UTC whatever the session zone, the latest snapshot of a day decides it even
+// when it has no core count, and a snapshot first reported later replaces an
+// earlier one on a day they share.
+func TestSearchDeployedProductMetrics_SnapshotDaysAreSpansInUTC(t *testing.T) {
+	pool := instanceIngestionTestPool(t)
+	ctx := internalCtx()
+	exec := func(c context.Context, q string, a ...any) error {
+		_, err := pool.Exec(c, q, a...)
+		return err
+	}
+	seedCoreNodes(t, ctx, exec)
+	seedSnapshotNodes(t, ctx, exec)
+
+	repo := repository.NewDeployedProductRepository(repository.NewScoped(pool))
+	got, err := repo.SearchDeployedProductMetrics(ctx, coresDeployedProduct, coresDeploymentID, "2026-08-01", "2026-08-31")
+	if err != nil {
+		t.Fatalf("SearchDeployedProductMetrics: %v", err)
+	}
+
+	want := map[string]int{
+		"2026-08-05": 2, // E, at 22:30 UTC (not the 6th)
+		"2026-08-10": 4, // D, first report
+		"2026-08-11": 4, // D, covered although it only re-reported on the 12th
+		"2026-08-12": 4, // D, last report
+		"2026-08-25": 4, // G, first hash
+		"2026-08-26": 4, // G, first hash
+		"2026-08-27": 6, // G, the changed snapshot replaces the first on the day they share
+	}
+	for _, e := range got.ChartData {
+		w, ok := want[e.Date]
+		if !ok {
+			t.Errorf("unexpected day %s with %d cores (F's NULL snapshot must leave 20 Aug empty, E must not move to the 6th)", e.Date, e.TotalCores)
+			continue
+		}
+		if e.TotalCores != w || e.InstanceCount != 1 {
+			t.Errorf("%s: totalCores=%d instanceCount=%d, want %d and 1", e.Date, e.TotalCores, e.InstanceCount, w)
+		}
+		delete(want, e.Date)
+	}
+	for day, w := range want {
+		t.Errorf("missing day %s (want %d cores)", day, w)
+	}
+}

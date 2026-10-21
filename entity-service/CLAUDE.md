@@ -8107,7 +8107,10 @@ because only one of them carries what each endpoint needs:**
   or `deployment_information.core_count` (the host snapshot every live heartbeat's info
   call carries, and what `SearchInstanceMetricsStats` already reads). A `CORES` row wins
   for its node and day; a snapshot fills the days without one, one value per node per
-  day (its latest report that day). It used to read only the usage rows, so telemetry
+  day. A snapshot stands for every UTC day from its first to its last report (a repeated
+  hash only moves `payload_updated_on`, and an unchanged hash means unchanged cores);
+  where two overlap on a day the one first reported later wins, and if it has no
+  `core_count` the node has no reading that day. It used to read only the usage rows, so telemetry
   that reports cores through the snapshot never drew a chart here although the instance
   stats showed it; the CSM portal's Core Usage panel was empty for it.
 - `SearchInstanceMetricsStats` has the same `DataSource` field on its

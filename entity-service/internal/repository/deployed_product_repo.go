@@ -234,9 +234,16 @@ func (r *deployedProductRepo) SearchDeployedProductMetrics(ctx context.Context, 
 	// place the instance-level metrics stats read). The chart used to read only
 	// the first, so telemetry that reports cores through the host snapshot never
 	// drew a Core Usage chart here although the instance stats showed it.
-	// A CORES usage row still wins for its node and day; a snapshot fills the
-	// days that have none, one value per node per day (its latest report that
-	// day), exactly as SearchInstanceMetricsStats counts them.
+	// A CORES usage row still wins for its node and day. A snapshot fills the
+	// days that have none, one value per node per day:
+	//   - A snapshot covers every UTC day from its first report to its last. The
+	//     same (node, hash) being reported again only moves payload_updated_on
+	//     forward, and an unchanged hash means unchanged host info, so the cores
+	//     held for all the days in between.
+	//   - Days are taken in UTC, not in the session time zone.
+	//   - Where snapshots overlap on a day, the one first reported later wins (it
+	//     replaced the other). If that one carries no core count the node has no
+	//     reading that day, rather than falling back to an older value.
 	rows, err := r.db.Query(ctx, `
 		WITH daily AS (
 			SELECT dus.summary_date AS day, dus.deployment_node_id AS node_id, SUM(dus.value)::int AS cores
@@ -246,16 +253,29 @@ func (r *deployedProductRepo) SearchDeployedProductMetrics(ctx context.Context, 
 			AND dus.summary_date BETWEEN $2::date AND $3::date
 			GROUP BY dus.summary_date, dus.deployment_node_id
 		), snapshot AS (
-			SELECT DISTINCT ON (dn.id, COALESCE(di.payload_updated_on, di.payload_created_on)::date)
-			       COALESCE(di.payload_updated_on, di.payload_created_on)::date AS day,
-			       dn.id AS node_id, di.core_count AS cores
-			FROM deployment_node dn
-			JOIN deployment_information di ON di.node_id = dn.node_id
-			WHERE dn.id = ANY($1::uuid[])
-			AND di.core_count IS NOT NULL
-			AND COALESCE(di.payload_updated_on, di.payload_created_on)::date BETWEEN $2::date AND $3::date
-			ORDER BY dn.id, COALESCE(di.payload_updated_on, di.payload_created_on)::date,
-			         COALESCE(di.payload_updated_on, di.payload_created_on) DESC
+			SELECT day, node_id, cores FROM (
+				SELECT DISTINCT ON (dn.id, g.day)
+				       g.day, dn.id AS node_id, di.core_count AS cores
+				FROM deployment_node dn
+				JOIN deployment_information di ON di.node_id = dn.node_id
+				CROSS JOIN LATERAL (
+					SELECT (LEAST(di.payload_created_on, di.payload_updated_on) AT TIME ZONE 'UTC')::date AS first_day,
+					       (GREATEST(di.payload_created_on, di.payload_updated_on) AT TIME ZONE 'UTC')::date AS last_day
+				) span
+				CROSS JOIN LATERAL (
+					SELECT d::date AS day
+					FROM generate_series(
+						GREATEST(span.first_day, $2::date)::timestamp,
+						LEAST(span.last_day, $3::date)::timestamp,
+						interval '1 day'
+					) AS d
+				) g
+				WHERE dn.id = ANY($1::uuid[])
+				ORDER BY dn.id, g.day,
+				         COALESCE(di.payload_created_on, di.payload_updated_on) DESC,
+				         COALESCE(di.payload_updated_on, di.payload_created_on) DESC
+			) latest
+			WHERE cores IS NOT NULL
 		)
 		SELECT day, node_id, cores FROM daily
 		UNION ALL
