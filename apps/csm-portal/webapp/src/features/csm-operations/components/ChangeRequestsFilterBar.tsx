@@ -34,7 +34,7 @@ import {
   Search,
   X,
 } from "@wso2/oxygen-ui-icons-react";
-import { useMemo, type JSX } from "react";
+import { useMemo, useState, type JSX } from "react";
 import { useTeams } from "@features/csm-dashboard/api/useTeams";
 import {
   CHANGE_REQUEST_FILTER_TYPE_OPTIONS,
@@ -51,11 +51,17 @@ import {
 } from "@features/csm-operations/utils/changeRequestsFiltersUrl";
 import SavedViewsMenu from "@features/csm-operations/components/SavedViewsMenu";
 import MultiSelectField from "@components/MultiSelectField";
+import OperationsAdvancedFilters from "@features/csm-operations/components/OperationsAdvancedFilters";
+import {
+  countAdvancedRows,
+  dateAdvancedField,
+  multiAdvancedField,
+  type OperationsAdvancedField,
+} from "@features/csm-operations/utils/operationsAdvancedFields";
 import { useSearchGroups } from "@api/useSearchGroups";
 import AsyncEntityMultiSelect from "@components/AsyncEntityMultiSelect";
 import AsyncTagMultiSelect from "@features/csm-cases/components/AsyncTagMultiSelect";
 import AsyncAssignedUserIdMultiSelect from "@features/csm-cases/components/AsyncAssignedUserIdMultiSelect";
-import DateRangeFilterFields from "@features/csm-operations/components/DateRangeFilterFields";
 import AsyncProjectMultiSelect from "@features/csm-cases/components/AsyncProjectMultiSelect";
 
 const { DatePicker, LocalizationProvider } = DatePickers;
@@ -131,6 +137,38 @@ export default function ChangeRequestsFilterBar({
       })),
     [],
   );
+
+  // Less-used filters live under Advanced (Field / Operator / Value rows, as on
+  // the service request list), so the quick grid stays short.
+  const advancedFields = useMemo<OperationsAdvancedField<ChangeRequestFilters>[]>(
+    () => [
+      multiAdvancedField<ChangeRequestFilters>({
+        key: "assignee",
+        label: "Assigned engineer",
+        prop: "assigneeIds",
+        render: ({ id, values, onChange: set }) => (
+          <AsyncAssignedUserIdMultiSelect id={id} values={values} onChange={set} />
+        ),
+      }),
+      dateAdvancedField<ChangeRequestFilters>({
+        key: "created", label: "Created", from: "createdStartDate", to: "createdEndDate",
+      }),
+      dateAdvancedField<ChangeRequestFilters>({
+        key: "updated", label: "Updated", from: "updatedStartDate", to: "updatedEndDate",
+      }),
+      dateAdvancedField<ChangeRequestFilters>({
+        key: "plannedStart", label: "Planned start", from: "plannedStartFrom", to: "plannedStartTo",
+        capAtToday: false,
+      }),
+      dateAdvancedField<ChangeRequestFilters>({
+        key: "plannedEnd", label: "Planned end", from: "plannedEndFrom", to: "plannedEndTo",
+        capAtToday: false,
+      }),
+    ],
+    [],
+  );
+  const advancedCount = countAdvancedRows(advancedFields, filters);
+  const [mode, setMode] = useState<"quick" | "advanced">("quick");
 
   // The Assignment group filter searches every group; the SRE teams' groups
   // (registry `sre-abt` family) only supply names for ids carried in from
@@ -259,6 +297,36 @@ export default function ChangeRequestsFilterBar({
       {isFiltersOpen && (
         <>
           <Divider />
+          <Box role="group" aria-label="Filter mode" sx={{ display: "flex", alignSelf: "flex-start" }}>
+            <Button
+              size="small"
+              variant={mode === "quick" ? "contained" : "outlined"}
+              color={mode === "quick" ? "primary" : "inherit"}
+              aria-pressed={mode === "quick"}
+              onClick={() => setMode("quick")}
+              sx={{ borderTopRightRadius: 0, borderBottomRightRadius: 0 }}
+            >
+              Quick filters
+            </Button>
+            <Button
+              size="small"
+              variant={mode === "advanced" ? "contained" : "outlined"}
+              color={mode === "advanced" ? "primary" : "inherit"}
+              aria-pressed={mode === "advanced"}
+              onClick={() => setMode("advanced")}
+              sx={{ borderTopLeftRadius: 0, borderBottomLeftRadius: 0, ml: "-1px" }}
+            >
+              {advancedCount > 0 ? `Advanced (${advancedCount})` : "Advanced"}
+            </Button>
+          </Box>
+          {mode === "advanced" ? (
+            <OperationsAdvancedFilters
+              idPrefix="cr"
+              fields={advancedFields}
+              filters={filters}
+              onChange={onChange}
+            />
+          ) : (
           <Grid container spacing={2}>
             <Grid size={{ xs: 12, sm: 6, md: 3 }}>
               <MultiSelectField
@@ -297,14 +365,6 @@ export default function ChangeRequestsFilterBar({
                 id="cr-filter-project"
                 values={filters.projectIds}
                 onChange={(next) => onChange({ ...filters, projectIds: next })}
-              />
-            </Grid>
-            <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-              <AsyncAssignedUserIdMultiSelect
-                id="cr-filter-assignee"
-                label="Assigned engineer"
-                values={filters.assigneeIds}
-                onChange={(next) => onChange({ ...filters, assigneeIds: next })}
               />
             </Grid>
             <Grid size={{ xs: 12, sm: 6, md: 3 }}>
@@ -353,29 +413,8 @@ export default function ChangeRequestsFilterBar({
                 />
               </LocalizationProvider>
             </Grid>
-            <DateRangeFilterFields
-              label="Created"
-              value={{ from: filters.createdStartDate, to: filters.createdEndDate }}
-              onChange={(r) => onChange({ ...filters, createdStartDate: r.from, createdEndDate: r.to })}
-            />
-            <DateRangeFilterFields
-              label="Updated"
-              value={{ from: filters.updatedStartDate, to: filters.updatedEndDate }}
-              onChange={(r) => onChange({ ...filters, updatedStartDate: r.from, updatedEndDate: r.to })}
-            />
-            <DateRangeFilterFields
-              label="Planned start"
-              capAtToday={false}
-              value={{ from: filters.plannedStartFrom, to: filters.plannedStartTo }}
-              onChange={(r) => onChange({ ...filters, plannedStartFrom: r.from, plannedStartTo: r.to })}
-            />
-            <DateRangeFilterFields
-              label="Planned end"
-              capAtToday={false}
-              value={{ from: filters.plannedEndFrom, to: filters.plannedEndTo }}
-              onChange={(r) => onChange({ ...filters, plannedEndFrom: r.from, plannedEndTo: r.to })}
-            />
           </Grid>
+          )}
           {activeCount > 0 && (
             <Box sx={{ display: "flex", justifyContent: "flex-end" }}>
               <Typography variant="caption" color="text.secondary">

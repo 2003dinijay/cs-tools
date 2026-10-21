@@ -3540,7 +3540,8 @@ export interface BeChangeRequestSearchPayload {
     filters?: BeChangeRequestFieldFilter[];
   };
   sortBy?: {
-    field?: "createdOn" | "updatedOn";
+    /** `plannedStartOn` / `plannedEndOn`: PostgreSQL only. */
+    field?: "createdOn" | "updatedOn" | "plannedStartOn" | "plannedEndOn";
     order?: "asc" | "desc";
   };
   pagination?: BePagination;

@@ -66,6 +66,8 @@ import {
   type IncidentOptionalColumnId,
 } from "@features/csm-operations/utils/incidentListColumns";
 import IncidentsFilterBar from "@features/csm-operations/components/IncidentsFilterBar";
+import SortableHeaderCell from "@features/csm-operations/components/SortableHeaderCell";
+import type { ListSort } from "@features/csm-operations/utils/listSort";
 import RefreshButton from "@components/RefreshButton";
 import type { BeIncident, BeIncidentSearchPayload, BeIncidentSearchResponse } from "@api/backend/types";
 
@@ -113,6 +115,8 @@ function renderOptionalCell(id: IncidentOptionalColumnId, incident: BeIncident):
  * params) rather than local state, so a plain tab switch doesn't reset it and
  * a filtered list can be bookmarked or shared.
  */
+type IncidentSortField = "createdOn" | "updatedOn" | "openedOn";
+
 export default function IncidentsTab(): JSX.Element {
   const navigate = useNavTransition();
   const api = useBackendApi();
@@ -126,13 +130,20 @@ export default function IncidentsTab(): JSX.Element {
   const [rowsPerPage, setRowsPerPage] = useState(DEFAULT_ROWS_PER_PAGE);
   const debouncedSearch = useDebouncedValue(filters.search.trim(), 300);
 
+  // Date columns sort by a click on their header; newest created first until then.
+  const [sort, setSort] = useState<ListSort<IncidentSortField>>({ field: "createdOn", order: "desc" });
+  const handleSort = (next: ListSort<IncidentSortField>): void => {
+    setSort(next);
+    setPage(0);
+  };
+
   const payload = useMemo(
     () => ({
       filters: buildIncidentSearchFilters(filters, debouncedSearch),
-      sortBy: { field: "createdOn" as const, order: "desc" as const },
+      sortBy: sort,
       pagination: { offset: page * rowsPerPage, limit: rowsPerPage },
     }),
-    [filters, debouncedSearch, page, rowsPerPage],
+    [filters, debouncedSearch, sort, page, rowsPerPage],
   );
 
   const { data, isLoading, isError, error, isFetching, refetch, dataUpdatedAt } =
@@ -288,10 +299,20 @@ export default function IncidentsTab(): JSX.Element {
                 <TableCell>State</TableCell>
                 <TableCell>Priority</TableCell>
                 {visibleOptionalColumns.map((id) => (
-                  <TableCell key={id}>{INCIDENT_OPTIONAL_COLUMNS[id].label}</TableCell>
+                  id === "createdOn" ? (
+                    <SortableHeaderCell
+                      key={id}
+                      label={INCIDENT_OPTIONAL_COLUMNS[id].label}
+                      field="createdOn"
+                      sort={sort}
+                      onSort={handleSort}
+                    />
+                  ) : (
+                    <TableCell key={id}>{INCIDENT_OPTIONAL_COLUMNS[id].label}</TableCell>
+                  )
                 ))}
-                <TableCell>Opened</TableCell>
-                <TableCell>Updated</TableCell>
+                <SortableHeaderCell label="Opened" field="openedOn" sort={sort} onSort={handleSort} />
+                <SortableHeaderCell label="Updated" field="updatedOn" sort={sort} onSort={handleSort} />
               </TableRow>
             </TableHead>
             <TableBody>

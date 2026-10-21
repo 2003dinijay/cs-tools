@@ -63,6 +63,8 @@ import {
   type ChangeRequestOptionalColumnId,
 } from "@features/csm-operations/utils/changeRequestListColumns";
 import ChangeRequestsFilterBar from "@features/csm-operations/components/ChangeRequestsFilterBar";
+import SortableHeaderCell from "@features/csm-operations/components/SortableHeaderCell";
+import type { ListSort } from "@features/csm-operations/utils/listSort";
 import RefreshButton from "@components/RefreshButton";
 import type {
   BeChangeRequestSearchPayload,
@@ -129,6 +131,15 @@ function formatDate(value?: string | null): string {
  * `POST /change-requests/search` with server-side pagination and filters
  * (state, impact, closed date range, free-text search).
  */
+type CrSortField = "createdOn" | "updatedOn" | "plannedStartOn" | "plannedEndOn";
+
+/** The optional columns that are dates, and the sort field each one sorts by. */
+const CR_SORT_FIELD_BY_COLUMN: Partial<Record<ChangeRequestOptionalColumnId, CrSortField>> = {
+  plannedStart: "plannedStartOn",
+  plannedEnd: "plannedEndOn",
+  createdOn: "createdOn",
+};
+
 export default function ChangeRequestsTab(): JSX.Element {
   const navigate = useNavTransition();
   const api = useBackendApi();
@@ -142,12 +153,20 @@ export default function ChangeRequestsTab(): JSX.Element {
   const [rowsPerPage, setRowsPerPage] = useState(DEFAULT_ROWS_PER_PAGE);
   const debouncedSearch = useDebouncedValue(filters.search.trim(), 300);
 
+  // Date columns sort by a click on their header; newest created first until then.
+  const [sort, setSort] = useState<ListSort<CrSortField>>({ field: "createdOn", order: "desc" });
+  const handleSort = (next: ListSort<CrSortField>): void => {
+    setSort(next);
+    setPage(0);
+  };
+
   const payload = useMemo(
     () => ({
       filters: buildChangeRequestSearchFilters(filters, debouncedSearch),
+      sortBy: sort,
       pagination: { offset: page * rowsPerPage, limit: rowsPerPage },
     }),
-    [filters, debouncedSearch, page, rowsPerPage],
+    [filters, debouncedSearch, sort, page, rowsPerPage],
   );
 
   const { data, isLoading, isError, error, isFetching, refetch, dataUpdatedAt } =
@@ -296,10 +315,20 @@ export default function ChangeRequestsTab(): JSX.Element {
                 <TableCell>Number</TableCell>
                 <TableCell>Subject</TableCell>
                 {visibleOptionalColumns.map((id) => (
-                  <TableCell key={id}>{CHANGE_REQUEST_OPTIONAL_COLUMNS[id].label}</TableCell>
+                  CR_SORT_FIELD_BY_COLUMN[id] ? (
+                    <SortableHeaderCell
+                      key={id}
+                      label={CHANGE_REQUEST_OPTIONAL_COLUMNS[id].label}
+                      field={CR_SORT_FIELD_BY_COLUMN[id]!}
+                      sort={sort}
+                      onSort={handleSort}
+                    />
+                  ) : (
+                    <TableCell key={id}>{CHANGE_REQUEST_OPTIONAL_COLUMNS[id].label}</TableCell>
+                  )
                 ))}
                 <TableCell>State</TableCell>
-                <TableCell>Updated</TableCell>
+                <SortableHeaderCell label="Updated" field="updatedOn" sort={sort} onSort={handleSort} />
               </TableRow>
             </TableHead>
             <TableBody>

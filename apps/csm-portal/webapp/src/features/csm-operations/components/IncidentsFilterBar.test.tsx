@@ -192,7 +192,7 @@ describe("IncidentsFilterBar", () => {
     expect(onReset).toHaveBeenCalledTimes(1);
   });
 
-  it("offers state, category, service, assignee and updated-date filters", () => {
+  it("keeps State, Assignment group and Service quick, and moves Category, Assignee and Updated to Advanced", () => {
     const onChange = vi.fn();
     render(
       <IncidentsFilterBar
@@ -203,10 +203,36 @@ describe("IncidentsFilterBar", () => {
         onFiltersToggle={vi.fn()}
       />,
     );
-    for (const label of ["State", "Category", "Service", "Assignee"]) {
+    for (const label of ["State", "Assignment group", "Service", "Priority"]) {
       expect(screen.getAllByLabelText(label).length).toBeGreaterThan(0);
     }
-    expect(screen.getAllByText("Updated from (UTC)").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Updated to (UTC)").length).toBeGreaterThan(0);
+    expect(screen.queryByLabelText("Category")).not.toBeInTheDocument();
+    expect(screen.queryByText("Updated from (UTC)")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Advanced" }));
+    expect(screen.getByText("Advanced filters")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Add filter" }));
+    // A new row starts on the first Advanced field, Category ("is one of").
+    expect(screen.getByRole("combobox", { name: "Field" })).toHaveTextContent("Category");
+    expect(screen.getByRole("combobox", { name: "Operator" })).toHaveTextContent("is one of");
+  });
+
+  it("shows an Advanced filter that is already set as a row, and counts it on the toggle", () => {
+    const onChange = vi.fn();
+    render(
+      <IncidentsFilterBar
+        filters={{ ...DEFAULT_INCIDENT_FILTERS, updatedStartDate: "2026-01-01" }}
+        onChange={onChange}
+        onReset={vi.fn()}
+        isFiltersOpen
+        onFiltersToggle={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Advanced (1)" }));
+    expect(screen.getByRole("combobox", { name: "Field" })).toHaveTextContent("Updated");
+    expect(screen.getByRole("combobox", { name: "Operator" })).toHaveTextContent("on or after");
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove filter row" }));
+    expect(onChange).toHaveBeenCalledWith({ ...DEFAULT_INCIDENT_FILTERS, updatedStartDate: "" });
   });
 });

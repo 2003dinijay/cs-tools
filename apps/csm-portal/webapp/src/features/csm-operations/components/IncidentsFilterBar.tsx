@@ -30,7 +30,7 @@ import {
   Typography,
 } from "@wso2/oxygen-ui";
 import { ChevronDown, ChevronUp, ListFilter, Search, X } from "@wso2/oxygen-ui-icons-react";
-import { useMemo, type JSX } from "react";
+import { useMemo, useState, type JSX } from "react";
 import type { BeIncidentPriority } from "@api/backend/types";
 import { useTeams } from "@features/csm-dashboard/api/useTeams";
 import {
@@ -49,11 +49,17 @@ import {
 import IncidentProductMultiSelect from "@features/csm-operations/components/IncidentProductMultiSelect";
 import SavedViewsMenu from "@features/csm-operations/components/SavedViewsMenu";
 import MultiSelectField from "@components/MultiSelectField";
+import OperationsAdvancedFilters from "@features/csm-operations/components/OperationsAdvancedFilters";
+import {
+  countAdvancedRows,
+  dateAdvancedField,
+  multiAdvancedField,
+  type OperationsAdvancedField,
+} from "@features/csm-operations/utils/operationsAdvancedFields";
 import { useSearchGroups } from "@api/useSearchGroups";
 import AsyncEntityMultiSelect from "@components/AsyncEntityMultiSelect";
 import { useSearchItServices } from "@api/useSearchItServices";
 import AsyncAssignedUserIdMultiSelect from "@features/csm-cases/components/AsyncAssignedUserIdMultiSelect";
-import DateRangeFilterFields from "@features/csm-operations/components/DateRangeFilterFields";
 
 const { DatePicker, LocalizationProvider } = DatePickers;
 
@@ -180,6 +186,38 @@ export default function IncidentsFilterBar({
     [],
   );
 
+  // Less-used filters live under Advanced (Field / Operator / Value rows, as on
+  // the service request list), so the quick grid stays short.
+  const advancedFields = useMemo<OperationsAdvancedField<IncidentFilters>[]>(
+    () => [
+      multiAdvancedField<IncidentFilters>({
+        key: "category",
+        label: "Category",
+        prop: "categories",
+        render: ({ id, values, onChange: set }) => (
+          <MultiSelectField id={id} label="Value(s)" values={values} options={categoryOptions} onChange={set} />
+        ),
+      }),
+      multiAdvancedField<IncidentFilters>({
+        key: "assignee",
+        label: "Assignee",
+        prop: "assigneeIds",
+        render: ({ id, values, onChange: set }) => (
+          <AsyncAssignedUserIdMultiSelect id={id} values={values} onChange={set} />
+        ),
+      }),
+      dateAdvancedField<IncidentFilters>({
+        key: "updated",
+        label: "Updated",
+        from: "updatedStartDate",
+        to: "updatedEndDate",
+      }),
+    ],
+    [categoryOptions],
+  );
+  const advancedCount = countAdvancedRows(advancedFields, filters);
+  const [mode, setMode] = useState<"quick" | "advanced">("quick");
+
   const handlePriorityChange = (next: BeIncidentPriority[]): void => {
     onChange({ ...filters, priorities: next });
   };
@@ -280,6 +318,36 @@ export default function IncidentsFilterBar({
       {isFiltersOpen && (
         <>
           <Divider />
+          <Box role="group" aria-label="Filter mode" sx={{ display: "flex", alignSelf: "flex-start" }}>
+            <Button
+              size="small"
+              variant={mode === "quick" ? "contained" : "outlined"}
+              color={mode === "quick" ? "primary" : "inherit"}
+              aria-pressed={mode === "quick"}
+              onClick={() => setMode("quick")}
+              sx={{ borderTopRightRadius: 0, borderBottomRightRadius: 0 }}
+            >
+              Quick filters
+            </Button>
+            <Button
+              size="small"
+              variant={mode === "advanced" ? "contained" : "outlined"}
+              color={mode === "advanced" ? "primary" : "inherit"}
+              aria-pressed={mode === "advanced"}
+              onClick={() => setMode("advanced")}
+              sx={{ borderTopLeftRadius: 0, borderBottomLeftRadius: 0, ml: "-1px" }}
+            >
+              {advancedCount > 0 ? `Advanced (${advancedCount})` : "Advanced"}
+            </Button>
+          </Box>
+          {mode === "advanced" ? (
+            <OperationsAdvancedFilters
+              idPrefix="incident"
+              fields={advancedFields}
+              filters={filters}
+              onChange={onChange}
+            />
+          ) : (
           <Grid container spacing={2}>
             <Grid size={{ xs: 12, sm: 6, md: 4 }}>
               <MultiSelectField
@@ -301,16 +369,6 @@ export default function IncidentsFilterBar({
             </Grid>
 
             <Grid size={{ xs: 12, sm: 6, md: 4 }}>
-              <MultiSelectField
-                id="incident-filter-category"
-                label="Category"
-                values={filters.categories}
-                options={categoryOptions}
-                onChange={(next) => onChange({ ...filters, categories: next })}
-              />
-            </Grid>
-
-            <Grid size={{ xs: 12, sm: 6, md: 4 }}>
               <AsyncEntityMultiSelect
                 id="incident-filter-service"
                 label="Service"
@@ -321,15 +379,6 @@ export default function IncidentsFilterBar({
                 getId={(svc) => svc.id}
                 getLabel={(svc) => svc.name ?? svc.id}
                 compactSelectedValues
-              />
-            </Grid>
-
-            <Grid size={{ xs: 12, sm: 6, md: 4 }}>
-              <AsyncAssignedUserIdMultiSelect
-                id="incident-filter-assignee"
-                label="Assignee"
-                values={filters.assigneeIds}
-                onChange={(next) => onChange({ ...filters, assigneeIds: next })}
               />
             </Grid>
 
@@ -402,13 +451,8 @@ export default function IncidentsFilterBar({
                 />
               </LocalizationProvider>
             </Grid>
-
-            <DateRangeFilterFields
-              label="Updated"
-              value={{ from: filters.updatedStartDate, to: filters.updatedEndDate }}
-              onChange={(r) => onChange({ ...filters, updatedStartDate: r.from, updatedEndDate: r.to })}
-            />
           </Grid>
+          )}
           {activeCount > 0 && (
             <Box sx={{ display: "flex", justifyContent: "flex-end" }}>
               <Typography variant="caption" color="text.secondary">

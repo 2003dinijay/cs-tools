@@ -16,31 +16,9 @@
 
 import { AdapterDateFns, DatePickers, Grid } from "@wso2/oxygen-ui";
 import type { JSX } from "react";
+import { formatDateOnly, parseDateOnly, todayUTCDateOnly } from "@features/csm-operations/utils/dateOnly";
 
 const { DatePicker, LocalizationProvider } = DatePickers;
-
-/** "YYYY-MM-DD" to a local-midnight Date, so the calendar shows the picked day
- * whatever the viewer's timezone (`new Date(string)` would parse it as UTC). */
-function parseDateOnly(value: string): Date | null {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
-  if (!match) return null;
-  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
-  return Number.isNaN(date.getTime()) ? null : date;
-}
-
-function formatDateOnly(date: Date): string {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  const d = String(date.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
-}
-
-/** Today's UTC calendar date as a local-midnight Date. Recomputed per render,
- * so a session left open past midnight still caps at the right day. */
-function todayUTCDateOnly(): Date {
-  const now = new Date();
-  return new Date(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-}
 
 export interface DateRange {
   /** `YYYY-MM-DD` (a UTC calendar date on the wire), or empty. */

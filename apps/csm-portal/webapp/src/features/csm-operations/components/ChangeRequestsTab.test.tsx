@@ -240,3 +240,20 @@ describe("ChangeRequestsTab — customise columns", () => {
     expect(remainingChecked[0]).toBeDisabled();
   });
 });
+
+describe("ChangeRequestsTab — sorting by date columns", () => {
+  it("sorts by a date column when its header is clicked, and flips on a second click", () => {
+    mockResult({ data: { changeRequests: [CR], total: 1, limit: 20, offset: 0 } });
+    render(<ChangeRequestsTab />);
+    const lastSortBy = (): unknown => mockedUseSearch.mock.calls.at(-1)?.[0]?.sortBy;
+    expect(lastSortBy()).toEqual({ field: "createdOn", order: "desc" });
+
+    fireEvent.click(screen.getByText("Planned start"));
+    expect(lastSortBy()).toEqual({ field: "plannedStartOn", order: "desc" });
+    fireEvent.click(screen.getByText("Planned start"));
+    expect(lastSortBy()).toEqual({ field: "plannedStartOn", order: "asc" });
+
+    fireEvent.click(screen.getByText("Updated"));
+    expect(lastSortBy()).toEqual({ field: "updatedOn", order: "desc" });
+  });
+});
