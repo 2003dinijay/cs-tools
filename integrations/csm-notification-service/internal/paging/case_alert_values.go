@@ -602,7 +602,51 @@ func RunningCaseAlertValues(cfg Config, saved map[string]map[string]bool) map[st
 		}
 		ladders[ladder] = out
 	}
-	return map[string]any{"ladders": ladders, "fileOnly": fileOnly, "channels": EffectiveChannels(cfg)}
+	return map[string]any{"ladders": ladders, "fileOnly": fileOnly, "channels": EffectiveChannels(cfg), "groups": CaseAlertGroupRouting(cfg)}
+}
+
+// GroupRouting is how one ladder sends an assignment group to a team as the
+// service runs now: the file's teams.aliases and teams.defaultGroups with the
+// saved routes merged in (a route to a team is an alias, a route to a rota a
+// default group). Group names are lower-cased and trimmed, as the resolver
+// matches them; teams are team keys. TeamlessRooms are the SRE team rooms a
+// default group's cards go to (sre.teamlessChats); empty, they go to the
+// ladder's shared room. The tab uses it to say where each assignment group's
+// alerts go, and which groups nothing routes.
+type GroupRouting struct {
+	Aliases       map[string]string `json:"aliases"`
+	DefaultGroups []string          `json:"defaultGroups"`
+	TeamlessRooms []string          `json:"teamlessRooms"`
+}
+
+// CaseAlertGroupRouting reports GroupRouting for the CRE and SRE ladders.
+// Only SRE has default groups and teamless rooms.
+func CaseAlertGroupRouting(cfg Config) map[string]GroupRouting {
+	out := map[string]GroupRouting{}
+	for _, ladder := range caseAlertBoth {
+		l := ladderFor(&cfg, ladder)
+		g := GroupRouting{Aliases: map[string]string{}, DefaultGroups: []string{}, TeamlessRooms: []string{}}
+		for group, team := range l.Teams.Aliases {
+			if k := teamKeyFor(group); k != "" && teamKeyFor(team) != "" {
+				g.Aliases[k] = teamKeyFor(team)
+			}
+		}
+		if ladder == "SRE" {
+			for _, d := range l.Teams.DefaultGroups {
+				if k := teamKeyFor(d); k != "" && !slices.Contains(g.DefaultGroups, k) {
+					g.DefaultGroups = append(g.DefaultGroups, k)
+				}
+			}
+			for _, k := range l.TeamlessChats {
+				if k = teamKeyFor(k); k != "" && !slices.Contains(g.TeamlessRooms, k) {
+					g.TeamlessRooms = append(g.TeamlessRooms, k)
+				}
+			}
+			sort.Strings(g.DefaultGroups)
+		}
+		out[ladder] = g
+	}
+	return out
 }
 
 // EffectiveChannel is how one ladder, or one team on it, reaches people as

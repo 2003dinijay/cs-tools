@@ -17,6 +17,7 @@
 package service
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
@@ -74,5 +75,56 @@ func TestCaseAlertSettings_AssignmentGroupsAndUnmapped(t *testing.T) {
 	}
 	if cre.UnmappedGroups != nil {
 		t.Errorf("a CRE-only viewer sees the SRE warning: %+v", cre.UnmappedGroups)
+	}
+}
+
+// A group the mounted file already routes (an alias to a team, or a default
+// group) is not unmapped: the alert service reports that routing and the
+// warning reads it.
+func TestCaseAlertSettings_FileRoutedGroupsAreNotUnmapped(t *testing.T) {
+	repo := newFakeCaseAlertRepo()
+	mode := "db"
+	repo.mode = &mode
+	repo.summary = []byte(`{"running":{
+		"ladders":{"SRE":{"enabled":{"value":true,"source":"file"}}},
+		"groups":{"SRE":{"aliases":{"WSO2 IaaS Team":"iaas"},"defaultGroups":["U2 SRE Group"],"teamlessRooms":[]}}
+	}}`)
+	svc, _ := newCaseAlerts(repo, testCaseAlertKey)
+	got, err := svc.Get(asPerson("sre.rota@wso2.com"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.UnmappedGroups) != 0 {
+		t.Errorf("unmapped = %+v; want none: the file routes every group", got.UnmappedGroups)
+	}
+	if got.Running == nil || len(got.Running.Groups["SRE"]) == 0 {
+		t.Errorf("running.groups.SRE not passed on: %+v", got.Running)
+	}
+
+	// Without a report the warning falls back to routes and team names.
+	repo.summary = nil
+	got, err = svc.Get(asPerson("sre.rota@wso2.com"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.UnmappedGroups) != 2 {
+		t.Errorf("unmapped = %+v; want U2 SRE Group and WSO2 IaaS Team", got.UnmappedGroups)
+	}
+}
+
+func TestReportedSRERouting(t *testing.T) {
+	if reportedSRERouting(nil) != nil {
+		t.Error("no report should mean no routing")
+	}
+	r := &domain.CaseAlertRunning{Groups: map[string]json.RawMessage{
+		"SRE": json.RawMessage(`{"aliases":{" Apollo SRE Group ":"apollo"},"defaultGroups":["MS/PC SRE Group"]}`),
+		"CRE": json.RawMessage(`{"aliases":{"cre only":"x"}}`),
+	}}
+	got := reportedSRERouting(r)
+	if !got["apollo sre group"] || !got["ms/pc sre group"] || got["cre only"] {
+		t.Errorf("routing = %v", got)
+	}
+	if reportedSRERouting(&domain.CaseAlertRunning{Groups: map[string]json.RawMessage{"SRE": json.RawMessage(`not json`)}}) != nil {
+		t.Error("an unreadable report should be ignored")
 	}
 }

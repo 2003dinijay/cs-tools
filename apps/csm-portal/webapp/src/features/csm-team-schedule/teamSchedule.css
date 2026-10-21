@@ -3118,7 +3118,7 @@
 .csm-ts .cas-dlg .cas-edit label.cas-check { flex-direction: row; }
 .csm-ts .cas-dlg-file { margin-top: 4px; }
 
-/* Team chat routing: its heading and Add on one line. */
+/* Chat space for each team: its heading and Add on one line. */
 .csm-ts .cas-h4row { display: flex; align-items: center; gap: 10px; margin: 16px 0 6px; }
 .csm-ts .cas-h4row h4 { margin: 0; }
 /* The confirmation after a save: one line, replaced by the next. */
@@ -3134,6 +3134,18 @@
 .csm-ts .cas-sec > .cas-det > summary:focus-visible { outline: none; box-shadow: var(--focus); }
 .csm-ts .cas-mark { width: 12px; color: var(--muted); }
 .csm-ts .cas-sec .cas-sec { margin-left: 14px; }
+/* The status chip in the settings' header: what the alert service does with them. */
+.csm-ts .cas-state { white-space: nowrap; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line-2); background: var(--surface-2); color: var(--ink-2); cursor: help; }
+.csm-ts .cas-state.ok { background: color-mix(in srgb, var(--ok) 12%, var(--surface)); border-color: color-mix(in srgb, var(--ok) 35%, var(--line)); }
+.csm-ts .cas-state.warn { background: color-mix(in srgb, var(--warn) 12%, var(--surface)); border-color: color-mix(in srgb, var(--warn) 35%, var(--line)); }
+/* A part of a section: a ladder's group, the assignment groups, the chat spaces. */
+.csm-ts .cas-block { margin-top: 10px; }
+/* A chip never breaks inside its words, on a phone either. */
+.csm-ts .cas-chip { white-space: nowrap; display: inline-block; }
+.csm-ts .cas h5 { margin: 12px 0 4px; font-size: 12.5px; font-weight: 600; color: var(--ink-2); }
+.csm-ts .cas-sec > .cas-det > .cas-block:first-of-type,
+.csm-ts .cas-sec > .cas-det > .cas-sub:first-of-type { margin-top: 4px; }
+.csm-ts .cas-groups tr.cas-unmapped td:first-child { font-weight: 600; }
 
 /* A note said in the page rather than in a disabled button's tooltip. */
 .csm-ts .cas-note { margin: 4px 0 8px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); }
