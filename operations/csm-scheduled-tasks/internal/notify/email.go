@@ -28,6 +28,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -53,6 +54,13 @@ type Config struct {
 	// email — a config value, not a SendEmail argument, so every email
 	// this component sends comes from one pre-approved sender.
 	FromAddress string
+	// DebugRecipients, when set, turns on debug mail mode: every email
+	// this client sends goes to these addresses instead of its intended
+	// To/Cc, with "[Test copy]" prefixed to the subject and a notice at
+	// the top of the body naming who it would have gone to. It is how a
+	// report is exercised in a production deployment, real data and all,
+	// without reaching its real audience. Empty is the normal mode.
+	DebugRecipients []string
 }
 
 // Client is an HTTP client for the internal email notification service,
@@ -68,9 +76,10 @@ type Config struct {
 // integrations/csm-notification-service's own
 // internal/notifications.EmailClient, whose constructor never fails.
 type Client struct {
-	http        *http.Client
-	baseURL     string
-	fromAddress string
+	http            *http.Client
+	baseURL         string
+	fromAddress     string
+	debugRecipients []string
 }
 
 // NewClient constructs a Client that authenticates against the email
@@ -107,10 +116,49 @@ func NewClient(cfg Config) (*Client, error) {
 	httpsec.RejectInsecureRedirects(httpClient)
 
 	return &Client{
-		http:        httpClient,
-		baseURL:     strings.TrimRight(cfg.BaseURL, "/"),
-		fromAddress: cfg.FromAddress,
+		http:            httpClient,
+		baseURL:         strings.TrimRight(cfg.BaseURL, "/"),
+		fromAddress:     cfg.FromAddress,
+		debugRecipients: cleanAddresses(cfg.DebugRecipients),
 	}, nil
+}
+
+// DebugMode reports whether debug mail mode is on (see
+// Config.DebugRecipients).
+func (c *Client) DebugMode() bool {
+	return len(c.debugRecipients) > 0
+}
+
+// cleanAddresses trims the addresses and drops blanks, so a trailing
+// comma in configuration never becomes an empty recipient.
+func cleanAddresses(in []string) []string {
+	var out []string
+	for _, a := range in {
+		if a = strings.TrimSpace(a); a != "" {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// testCopyNotice prepends the debug-mode notice to htmlBody: who the
+// email would have gone to. It goes just inside <body> when the body has
+// one, so a full HTML document keeps its head and styles, and at the very
+// start otherwise.
+func testCopyNotice(htmlBody string, to, cc []string) string {
+	intended := "To: " + strings.Join(to, ", ")
+	if len(cc) > 0 {
+		intended += "; Cc: " + strings.Join(cc, ", ")
+	}
+	notice := `<p style="margin:0; padding:12px 16px; background-color:#fff4e5; color:#7a4100; font-family:Arial, Helvetica, sans-serif; font-size:13px;"><b>[Test copy]</b> Debug mail mode is on. This email would have been sent to ` +
+		escapeHTML(intended) + `.</p>` + "\n"
+	if i := strings.Index(strings.ToLower(htmlBody), "<body"); i >= 0 {
+		if j := strings.Index(htmlBody[i:], ">"); j >= 0 {
+			at := i + j + 1
+			return htmlBody[:at] + "\n" + notice + htmlBody[at:]
+		}
+	}
+	return notice + htmlBody
 }
 
 // sendEmailRequest is the wire shape expected by POST /send-email.
@@ -166,6 +214,16 @@ func (c *Client) SendEmailWithAttachments(ctx context.Context, to, cc []string, 
 	}
 	if subject == "" {
 		return fmt.Errorf("notify: subject is required")
+	}
+	if c.DebugMode() {
+		// Debug mail mode: the real audience is named in the body and
+		// never addressed. The log line is the audit trail of what was
+		// redirected; the addresses themselves stay out of the logs.
+		slog.Info("debug mail mode: redirecting email to the debug recipients",
+			"subject", subject, "intendedTo", len(to), "intendedCc", len(cc), "debugRecipients", len(c.debugRecipients))
+		htmlBody = testCopyNotice(htmlBody, to, cc)
+		subject = "[Test copy] " + subject
+		to, cc = c.debugRecipients, nil
 	}
 
 	reqBody, err := json.Marshal(sendEmailRequest{

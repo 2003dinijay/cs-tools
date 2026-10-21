@@ -260,6 +260,16 @@ func main() {
 	// check below covers this list too, once every task's own To is known.
 	alertRecipients := splitComma(os.Getenv("ALERT_RECIPIENTS"))
 	emailBaseURL := os.Getenv("EMAIL_BASE_URL")
+	// Debug mail mode -- see notify.Config.DebugRecipients. Every email
+	// this component sends, reports and failure alerts alike, goes to
+	// these addresses instead of its real audience. It is the way to run
+	// a report against production data for a few people before it goes to
+	// everyone, and the precondition for TRYOUT_TASK below.
+	emailDebugRecipients := splitComma(os.Getenv("EMAIL_DEBUG_RECIPIENTS"))
+	if len(emailDebugRecipients) > 0 {
+		slog.Warn("debug mail mode is on: every email goes to the debug recipients only, with [Test copy] in the subject",
+			"debugRecipients", len(emailDebugRecipients))
+	}
 
 	// Email itself is not required for every deployment — EMAIL_BASE_URL is
 	// read with os.Getenv, not mustEnv, matching
@@ -269,12 +279,13 @@ func main() {
 	// the same shared OAUTH2_* credentials as ledgerClient above, not its
 	// own — only BaseURL/Scopes/FromAddress are specific to this client.
 	emailClient, err := notify.NewClient(notify.Config{
-		BaseURL:      emailBaseURL,
-		TokenURL:     oauthTokenURL,
-		ClientID:     oauthClientID,
-		ClientSecret: oauthClientSecret,
-		Scopes:       splitComma(os.Getenv("EMAIL_SCOPES")),
-		FromAddress:  os.Getenv("EMAIL_FROM_ADDRESS"),
+		BaseURL:         emailBaseURL,
+		TokenURL:        oauthTokenURL,
+		ClientID:        oauthClientID,
+		ClientSecret:    oauthClientSecret,
+		Scopes:          splitComma(os.Getenv("EMAIL_SCOPES")),
+		FromAddress:     os.Getenv("EMAIL_FROM_ADDRESS"),
+		DebugRecipients: emailDebugRecipients,
 	})
 	if err != nil {
 		slog.Error("failed to construct email client", "err", err)
@@ -583,6 +594,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	// A tryout runs one named task's handler once, right now, outside its
+	// schedule and without touching the ledger, so the run is neither
+	// recorded as the period's success nor retried. It exists to see a
+	// report land -- which is why it refuses to run without debug mail
+	// mode: a tryout is for checking, and checking must not reach the real
+	// audience. The process exits once the handler returns; the engine
+	// never ticks. In Choreo: set the two variables, run the task once by
+	// hand, read the log, unset them.
+	if tryout := strings.TrimSpace(os.Getenv("TRYOUT_TASK")); tryout != "" {
+		runTryout(tasks, tryout, emailDebugRecipients, alertsEnabled)
+		return
+	}
+
 	eng := engine.New(tasks, ledgerClient, emailClient, driverInterval, alertRecipients, alertsEnabled)
 
 	// No app-level execution timeout here — Choreo's own Scheduled Task
@@ -695,6 +719,48 @@ func parseSubCronRecipients(raw string) map[string]subCronRecipients {
 func recipientsFor(overrides map[string]subCronRecipients, taskName string) (to, cc []string) {
 	r := overrides[taskName]
 	return r.To, r.Cc
+}
+
+// runTryout runs the task named name once and exits the process: 0 when the
+// handler returned nil, 1 when it failed or when the tryout was refused.
+// It is refused without debug recipients, since the only thing a tryout
+// must never do is send a real report to real people on somebody's
+// say-so; and it warns, rather than refuses, when ALERTS_ENABLED is false,
+// because every report task then succeeds without sending anything, which
+// is a confusing way to learn nothing.
+func runTryout(tasks []registry.Task, name string, debugRecipients []string, emailsEnabled bool) {
+	if len(debugRecipients) == 0 {
+		slog.Error("TRYOUT_TASK is set but EMAIL_DEBUG_RECIPIENTS is not; refusing: a tryout sends to the debug recipients only",
+			"task", name)
+		os.Exit(1)
+	}
+	var names []string
+	var task *registry.Task
+	for i := range tasks {
+		names = append(names, tasks[i].Name)
+		if tasks[i].Name == name {
+			task = &tasks[i]
+		}
+	}
+	if task == nil {
+		slog.Error("TRYOUT_TASK names no registered task", "task", name, "registered", names)
+		os.Exit(1)
+	}
+	if !emailsEnabled {
+		slog.Warn("tryout with ALERTS_ENABLED=false: report tasks send nothing in that mode, so expect no email", "task", name)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	slog.Warn("tryout: running the task once, outside its schedule and the ledger",
+		"task", name, "debugRecipients", len(debugRecipients))
+	start := time.Now()
+	if err := task.Handler(ctx); err != nil {
+		slog.Error("tryout failed", "task", name, "elapsed", time.Since(start).String(), "err", err)
+		os.Exit(1)
+	}
+	slog.Info("tryout complete", "task", name, "elapsed", time.Since(start).String())
 }
 
 // periodStart returns the scheduled firing time a run of expr made now belongs
