@@ -24,6 +24,8 @@ import {
   findRunbookForIncident,
   parseRunbookImport,
   type Runbook,
+  runbooksToCsvRows,
+  runbooksToImportJson,
 } from "./runbooks";
 
 describe("parseRunbookImport", () => {
@@ -149,5 +151,36 @@ describe("filterRunbooks", () => {
   it("counts the filters that differ from the default", () => {
     expect(activeRunbookFilterCount(DEFAULT_RUNBOOK_FILTERS)).toBe(0);
     expect(activeRunbookFilterCount({ ...DEFAULT_RUNBOOK_FILTERS, alertCount: "multiple", updatedWithin: "7" })).toBe(2);
+  });
+});
+
+describe("export", () => {
+  const catalog: Runbook[] = [
+    {
+      id: "1",
+      number: "RB0000002",
+      alerts: ["gw-5xx", "CPU > 90%, prod"],
+      runbookUrl: "https://docs.example.com/gw",
+      createdOn: "",
+      createdBy: "",
+      updatedOn: "2026-10-01T00:00:00Z",
+      updatedBy: "a@x",
+    },
+    { id: "2", number: "RB0000001", alerts: ["__proto__"], runbookUrl: null, createdOn: "", createdBy: "", updatedOn: "2026-10-02T00:00:00Z", updatedBy: "b@x" },
+  ];
+
+  it("writes JSON the importer reads back, alert names with commas and __proto__ included", () => {
+    expect(parseRunbookImport(runbooksToImportJson(catalog))).toEqual([
+      { runbookUrl: "https://docs.example.com/gw", alerts: ["gw-5xx", "CPU > 90%, prod"] },
+      { runbookUrl: null, alerts: ["__proto__"] },
+    ]);
+    expect(JSON.parse(runbooksToImportJson(catalog))[0].number).toBe("RB0000002");
+  });
+
+  it("writes one CSV row per runbook, its alerts one per line in one cell", () => {
+    expect(runbooksToCsvRows(catalog)).toEqual([
+      ["RB0000002", "gw-5xx\nCPU > 90%, prod", "https://docs.example.com/gw", "2026-10-01T00:00:00Z"],
+      ["RB0000001", "__proto__", "", "2026-10-02T00:00:00Z"],
+    ]);
   });
 });

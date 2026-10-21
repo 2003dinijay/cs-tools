@@ -79,6 +79,7 @@ type stubCaseRepo struct {
 	accountDefaultWatcherEmails   func(ctx context.Context, projectID string) ([]string, error)
 	projectOnboardingInfo         func(ctx context.Context, projectID string) (string, bool, error)
 	getCaseEtaSharedOn            func(ctx context.Context, caseID string) (*time.Time, error)
+	getCaseWorkaroundProvidedOn   func(ctx context.Context, caseID string) (*time.Time, error)
 	projectContactEmailsByRole    func(ctx context.Context, projectID, role string) ([]string, error)
 	updateCaseAssignee            func(ctx context.Context, caseID string, userID *string, callerEmail string) (time.Time, bool, error)
 	acknowledgeCase               func(ctx context.Context, caseID, actorID, actorEmail string) (bool, domain.AssignedEngineerRef, string, time.Time, error)
@@ -315,6 +316,15 @@ func (s *stubCaseRepo) ProjectOnboardingInfo(ctx context.Context, projectID stri
 func (s *stubCaseRepo) GetCaseEtaSharedOn(ctx context.Context, caseID string) (*time.Time, error) {
 	if s.getCaseEtaSharedOn != nil {
 		return s.getCaseEtaSharedOn(ctx, caseID)
+	}
+	return nil, nil
+}
+
+// GetCaseWorkaroundProvidedOn defaults to nil (no workaround marked) rather
+// than panicking, same reasoning as GetCaseEtaSharedOn above.
+func (s *stubCaseRepo) GetCaseWorkaroundProvidedOn(ctx context.Context, caseID string) (*time.Time, error) {
+	if s.getCaseWorkaroundProvidedOn != nil {
+		return s.getCaseWorkaroundProvidedOn(ctx, caseID)
 	}
 	return nil, nil
 }

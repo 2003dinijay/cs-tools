@@ -24,7 +24,15 @@ vi.hoisted(() => {
   window.config = { ...window.config, CSM_PORTAL_BACKEND_BASE_URL: "http://localhost:9090" };
 });
 
-const mocks = vi.hoisted(() => ({ create: vi.fn(), update: vi.fn(), unmerge: vi.fn(), importRunbooks: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  create: vi.fn(),
+  update: vi.fn(),
+  unmerge: vi.fn(),
+  importRunbooks: vi.fn(),
+  saveBlob: vi.fn(),
+  downloadCsv: vi.fn(),
+  access: { canWrite: true },
+}));
 
 const catalog = [
   {
@@ -42,7 +50,9 @@ const catalog = [
 
 const idleMutation = (mutate = vi.fn()) => ({ mutate, isPending: false, isError: false, error: null });
 
-vi.mock("@context/current-user/usePortalAccess", () => ({ usePortalAccess: () => ({ canWrite: true }) }));
+vi.mock("@context/current-user/usePortalAccess", () => ({ usePortalAccess: () => mocks.access }));
+vi.mock("@utils/saveBlob", () => ({ saveBlob: mocks.saveBlob }));
+vi.mock("@utils/csvExport", () => ({ downloadCsv: mocks.downloadCsv }));
 vi.mock("@features/csm-operations/api/useRunbooks", () => ({
   useRunbooks: () => ({ data: catalog, isLoading: false, isError: false, error: null, refetch: vi.fn() }),
   useCreateRunbook: () => idleMutation(mocks.create),
@@ -67,6 +77,9 @@ describe("RunbooksTab", () => {
     mocks.update.mockReset();
     mocks.unmerge.mockReset();
     mocks.importRunbooks.mockReset();
+    mocks.saveBlob.mockReset();
+    mocks.downloadCsv.mockReset();
+    mocks.access.canWrite = true;
   });
 
   it("lists each runbook's number and alerts as tags, with its link, and no expander", () => {
@@ -220,5 +233,41 @@ describe("RunbooksTab", () => {
     expect(screen.getByText(/RB0000001: Gateway Latency High/)).toBeInTheDocument();
     fireEvent.change(search, { target: { value: "unknown" } });
     expect(screen.getByText("No runbook covers this alert.")).toBeInTheDocument();
+  });
+
+  it("exports the shown runbooks as importable JSON, with their numbers", async () => {
+    render(<RunbooksTab />);
+    fireEvent.click(screen.getByRole("button", { name: "Export" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "JSON (can be imported again)" }));
+    const [blob, name] = mocks.saveBlob.mock.calls[0] as [Blob, string];
+    expect(name).toMatch(/^runbooks-\d{4}-\d{2}-\d{2}\.json$/);
+    const text = await new Promise<string>((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.readAsText(blob);
+    });
+    expect(JSON.parse(text)).toEqual([
+      { number: "RB0000001", runbookUrl: "https://docs.example.com/gw", alerts: ["gw-5xx", "Gateway Latency High"] },
+      { number: "RB0000002", runbookUrl: null, alerts: ["JVM Heap"] },
+    ]);
+  });
+
+  it("exports only the runbooks the search leaves, as CSV", () => {
+    render(<RunbooksTab />);
+    fireEvent.change(screen.getByLabelText("Search runbooks by number, alert name or runbook link"), { target: { value: "jvm" } });
+    fireEvent.click(screen.getByRole("button", { name: "Export" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "CSV" }));
+    expect(mocks.downloadCsv).toHaveBeenCalledWith(
+      ["Number", "Alerts", "Runbook link", "Last updated"],
+      [["RB0000002", "JVM Heap", "", ""]],
+      expect.stringMatching(/^runbooks-\d{4}-\d{2}-\d{2}\.csv$/),
+    );
+  });
+
+  it("offers Export to someone who cannot edit runbooks", () => {
+    mocks.access.canWrite = false;
+    render(<RunbooksTab />);
+    expect(screen.getByRole("button", { name: "Export" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Import JSON" })).not.toBeInTheDocument();
   });
 });
