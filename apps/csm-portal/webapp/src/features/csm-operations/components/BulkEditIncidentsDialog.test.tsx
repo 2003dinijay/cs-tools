@@ -184,6 +184,64 @@ describe("BulkEditIncidentsDialog", () => {
     expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual(["No change", "On Hold", "Resolved", "Cancelled"]);
   });
 
+  it("needs a subcategory with a new category: the old one can't be cleared otherwise", () => {
+    render(
+      <BulkEditIncidentsDialog incidents={[incident("a", "NEW", "SECURITY")]} isApplying={false} onClose={vi.fn()} onApply={onApply} />,
+    );
+    const dialog = screen.getByRole("dialog", { name: "Edit 1 incident" });
+    pick(dialog, "Category", "Inquiry / Help");
+    const apply = within(dialog).getByRole("button", { name: "Apply to 1 incident" });
+    expect(apply).toBeDisabled();
+    expect(within(dialog).getByRole("status")).toHaveTextContent("A new category needs a subcategory.");
+    fireEvent.mouseDown(within(dialog).getByRole("combobox", { name: /Subcategory/ }));
+    fireEvent.click(screen.getAllByRole("option")[1]);
+    expect(apply).toBeEnabled();
+    fireEvent.click(apply);
+    expect(onApply.mock.calls[0][0].patch).toMatchObject({ category: "INQUIRY" });
+    expect(onApply.mock.calls[0][0].patch.subcategory).toBeTruthy();
+  });
+
+  it("offers a service offering only once a service is set", () => {
+    render(
+      <BulkEditIncidentsDialog incidents={[incident("a", "NEW")]} isApplying={false} onClose={vi.fn()} onApply={onApply} />,
+    );
+    const dialog = screen.getByRole("dialog", { name: "Edit 1 incident" });
+    expect(within(dialog).getByRole("combobox", { name: "Service offering" })).toBeDisabled();
+    expect(within(dialog).getByText(/Set a Service first/)).toBeInTheDocument();
+  });
+
+  it("caps the environment at the 40 characters the backend takes", () => {
+    render(
+      <BulkEditIncidentsDialog incidents={[incident("a", "NEW")]} isApplying={false} onClose={vi.fn()} onApply={onApply} />,
+    );
+    const dialog = screen.getByRole("dialog", { name: "Edit 1 incident" });
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Environment" }), { target: { value: "x".repeat(55) } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Apply to 1 incident" }));
+    expect(onApply.mock.calls[0][0].patch.environment).toBe("x".repeat(40));
+  });
+
+  it("leaves the incident report out while resolving: resolving generates it", () => {
+    render(
+      <BulkEditIncidentsDialog incidents={[incident("a", "IN_PROGRESS")]} isApplying={false} onClose={vi.fn()} onApply={onApply} />,
+    );
+    const dialog = screen.getByRole("dialog", { name: "Edit 1 incident" });
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Incident report" }), { target: { value: "Root cause: DNS." } });
+    pick(dialog, "State", "Resolved");
+    expect(within(dialog).getByRole("textbox", { name: "Incident report" })).toBeDisabled();
+    expect(within(dialog).getByText(/Resolving generates each incident's report/)).toBeInTheDocument();
+    pick(dialog, "Resolution code", "False Alarm");
+    fireEvent.change(within(dialog).getByRole("textbox", { name: /Resolution notes/ }), { target: { value: "Nothing wrong." } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Apply to 1 incident" }));
+    expect(onApply.mock.calls[0][0].patch).not.toHaveProperty("incidentReport");
+  });
+
+  it("opens wide, so its columns never squeeze a field", () => {
+    render(
+      <BulkEditIncidentsDialog incidents={[incident("a", "NEW")]} isApplying={false} onClose={vi.fn()} onApply={onApply} />,
+    );
+    expect(screen.getByRole("dialog", { name: "Edit 1 incident" })).toHaveClass("MuiDialog-paperWidthLg");
+  });
+
   it("keeps everything still while applying", () => {
     render(
       <BulkEditIncidentsDialog incidents={[incident("a", "NEW")]} isApplying onClose={vi.fn()} onApply={onApply} />,

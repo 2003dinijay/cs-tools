@@ -94,6 +94,8 @@ interface BulkEditIncidentsDialogProps {
 const NO_CHANGE = "";
 /** The short description's limit, as on ServiceNow's form. */
 const SUBJECT_MAX = 500;
+/** `incident.environment` is VARCHAR(40): a longer value is refused for every incident. */
+const ENVIRONMENT_MAX = 40;
 
 function incidentLinkLabel(i: BeIncident): string {
   return [i.number, i.subject].filter(Boolean).join(" — ") || i.id || "";
@@ -117,7 +119,13 @@ function problemLinkLabel(p: BeProblemSearchView): string {
  *   dialog's own table); Resolved and Closed need a resolution code and notes,
  *   the same for all of them. Resolution code and notes can also be set alone.
  * - Subcategory follows the category being set, or the category every selected
- *   incident already shares; Service offering narrows to the service being set.
+ *   incident already shares. A new category needs a subcategory too: the
+ *   PATCH can't clear one, so the old category's subcategory would stay on the
+ *   ServiceNow paths (the single Edit dialog's rule).
+ * - Service offering needs the service being set, and narrows to it: an
+ *   offering is never written onto incidents of another service.
+ * - Incident report is off while resolving: resolving generates the report,
+ *   which would overwrite what was typed seconds later.
  * - The watch list can have people added or removed (from each incident's own
  *   list) or be replaced.
  * - Parent incident never offers a selected incident.
@@ -159,6 +167,8 @@ export default function BulkEditIncidentsDialog({ incidents, isApplying, onClose
   const targetStates = useMemo(() => bulkIncidentTargetStates(editable.map((i) => i.state)), [editable]);
   const needsResolution = state === "RESOLVED" || state === "CLOSED";
   const resolutionMissing = needsResolution && (!resolutionCode || !resolutionNotes.trim());
+  // Resolving generates the incident report (entity-service's IncidentReportService), overwriting a typed one.
+  const reportGenerated = state === "RESOLVED";
 
   // The category the subcategory belongs to: the one being set, else the one every selected incident shares.
   const sharedCategory = useMemo(() => {
@@ -168,6 +178,8 @@ export default function BulkEditIncidentsDialog({ incidents, isApplying, onClose
   }, [editable]);
   const subcategoryCategory = category || sharedCategory;
   const subcategoryOptions = subcategoryCategory ? SUBCATEGORY_OPTIONS_BY_CATEGORY[subcategoryCategory] ?? [] : [];
+  // A PATCH can't clear a subcategory, so a new category goes with one of its own (when it has any).
+  const subcategoryMissing = !!category && subcategoryOptions.length > 0 && !subcategory;
   const excludedParents = useMemo(() => incidents.map((i) => i.id).filter(Boolean).join(","), [incidents]);
 
   const edit = useMemo<BulkIncidentEdit>(() => {
@@ -193,18 +205,19 @@ export default function BulkEditIncidentsDialog({ incidents, isApplying, onClose
     if (causedById) patch.causedById = causedById;
     if (resolutionCode) patch.resolutionCode = resolutionCode;
     if (resolutionNotes.trim()) patch.resolutionNotes = resolutionNotes.trim();
-    if (incidentReport.trim()) patch.incidentReport = incidentReport.trim();
+    if (incidentReport.trim() && !reportGenerated) patch.incidentReport = incidentReport.trim();
     // "Replace with nobody" would clear every watch list: only a real list of people is a change here.
     const watchList = watchers.length > 0 ? { mode: watchListMode, userIds: watchers } : undefined;
     return watchList ? { patch, watchList } : { patch };
   }, [
     subject, state, channel, impact, urgency, category, subcategory, environment, serviceId, serviceOfferingId,
     configurationItemId, assignmentGroupId, assignedEngineerId, workNotes, additionalComments, parentId,
-    changeRequestId, problemId, causedById, resolutionCode, resolutionNotes, incidentReport, watchers, watchListMode,
+    changeRequestId, problemId, causedById, resolutionCode, resolutionNotes, incidentReport, reportGenerated, watchers,
+    watchListMode,
   ]);
 
   const hasChanges = Object.keys(edit.patch).length > 0 || !!edit.watchList;
-  const canApply = hasChanges && !resolutionMissing && !isApplying;
+  const canApply = hasChanges && !resolutionMissing && !subcategoryMissing && !isApplying;
   const count = incidents.length;
   const noun = `incident${count === 1 ? "" : "s"}`;
 
@@ -251,11 +264,12 @@ export default function BulkEditIncidentsDialog({ incidents, isApplying, onClose
       {children}
     </Box>
   );
-  const twoColumns = { display: "grid", gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" }, gap: 2 } as const;
-  const threeColumns = { display: "grid", gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr 1fr" }, gap: 2 } as const;
+  // Wide, with columns that never squeeze a field below a readable size.
+  const twoColumns = { display: "grid", gridTemplateColumns: { xs: "1fr", md: "repeat(2, minmax(0, 1fr))" }, gap: 2 } as const;
+  const threeColumns = { display: "grid", gridTemplateColumns: { xs: "1fr", md: "repeat(3, minmax(0, 1fr))" }, gap: 2 } as const;
 
   return (
-    <Dialog open onClose={isApplying ? undefined : onClose} maxWidth="md" fullWidth>
+    <Dialog open onClose={isApplying ? undefined : onClose} maxWidth="lg" fullWidth>
       <DialogTitle>
         Edit {count} {noun}
       </DialogTitle>
@@ -309,9 +323,10 @@ export default function BulkEditIncidentsDialog({ incidents, isApplying, onClose
                 placeholder="No change"
                 size="small"
                 value={environment}
-                onChange={(e) => setEnvironment(e.target.value)}
+                onChange={(e) => setEnvironment(e.target.value.slice(0, ENVIRONMENT_MAX))}
                 disabled={isApplying}
                 slotProps={{ inputLabel: { shrink: true } }}
+                helperText={environment ? `${ENVIRONMENT_MAX - environment.length} characters left.` : undefined}
               />
             </Box>
             <Box sx={twoColumns}>
@@ -322,9 +337,10 @@ export default function BulkEditIncidentsDialog({ incidents, isApplying, onClose
               }, CATEGORY_OPTIONS)}
               {select("bulk-incident-subcategory", "Subcategory", subcategory, setSubcategory, subcategoryOptions, {
                 disabled: !subcategoryCategory,
+                required: subcategoryMissing,
                 helper: subcategoryCategory
-                  ? category
-                    ? "An incident keeps its subcategory only if it belongs to the new category."
+                  ? category && subcategoryOptions.length > 0
+                    ? "Required when the category changes: an incident's old subcategory can't be cleared otherwise."
                     : undefined
                   : "Set a category first: the selected incidents have different categories.",
               })}
@@ -340,6 +356,7 @@ export default function BulkEditIncidentsDialog({ incidents, isApplying, onClose
               id="bulk-incident-service"
               label="Service"
               placeholder="No change"
+              shrinkLabel
               value={serviceId}
               onChange={(v) => {
                 setServiceId(v);
@@ -354,19 +371,23 @@ export default function BulkEditIncidentsDialog({ incidents, isApplying, onClose
               id="bulk-incident-service-offering"
               label="Service offering"
               placeholder="No change"
+              shrinkLabel
               value={serviceOfferingId}
               onChange={setServiceOfferingId}
-              disabled={isApplying}
+              disabled={isApplying || !serviceId}
               useSearch={useSearchServiceOfferings}
               searchExtra={serviceId || undefined}
               getId={(o) => o.id}
               getLabel={(o) => o.name}
-              helperText={serviceId ? undefined : "Narrows to a Service once one is set."}
+              helperText={
+                serviceId ? undefined : "Set a Service first: an offering must belong to the incidents' service."
+              }
             />
             <AsyncEntitySelect<BeConfigurationItem>
               id="bulk-incident-configuration-item"
               label="Configuration item"
               placeholder="No change"
+              shrinkLabel
               value={configurationItemId}
               onChange={setConfigurationItemId}
               disabled={isApplying}
@@ -384,6 +405,7 @@ export default function BulkEditIncidentsDialog({ incidents, isApplying, onClose
               id="bulk-incident-assignment-group"
               label="Assignment group"
               placeholder="No change"
+              shrinkLabel
               value={assignmentGroupId}
               onChange={setAssignmentGroupId}
               disabled={isApplying}
@@ -395,6 +417,7 @@ export default function BulkEditIncidentsDialog({ incidents, isApplying, onClose
               id="bulk-incident-assigned-to"
               label="Assigned to"
               placeholder="No change"
+              shrinkLabel
               value={assignedEngineerId}
               onChange={setAssignedEngineerId}
               disabled={isApplying}
@@ -429,6 +452,7 @@ export default function BulkEditIncidentsDialog({ incidents, isApplying, onClose
               id="bulk-incident-watch-list"
               label="Watch list"
               placeholder="No change"
+              shrinkLabel
               values={watchers}
               onChange={setWatchers}
               disabled={isApplying}
@@ -481,6 +505,7 @@ export default function BulkEditIncidentsDialog({ incidents, isApplying, onClose
               id="bulk-incident-parent"
               label="Parent incident"
               placeholder="No change"
+              shrinkLabel
               value={parentId}
               onChange={setParentId}
               disabled={isApplying}
@@ -494,6 +519,7 @@ export default function BulkEditIncidentsDialog({ incidents, isApplying, onClose
               id="bulk-incident-change-request"
               label="Change request"
               placeholder="No change"
+              shrinkLabel
               value={changeRequestId}
               onChange={setChangeRequestId}
               disabled={isApplying}
@@ -505,6 +531,7 @@ export default function BulkEditIncidentsDialog({ incidents, isApplying, onClose
               id="bulk-incident-problem"
               label="Problem"
               placeholder="No change"
+              shrinkLabel
               value={problemId}
               onChange={setProblemId}
               disabled={isApplying}
@@ -516,6 +543,7 @@ export default function BulkEditIncidentsDialog({ incidents, isApplying, onClose
               id="bulk-incident-caused-by"
               label="Caused by change"
               placeholder="No change"
+              shrinkLabel
               value={causedById}
               onChange={setCausedById}
               disabled={isApplying}
@@ -565,17 +593,23 @@ export default function BulkEditIncidentsDialog({ incidents, isApplying, onClose
             multiline
             minRows={3}
             size="small"
-            value={incidentReport}
+            value={reportGenerated ? "" : incidentReport}
             onChange={(e) => setIncidentReport(e.target.value)}
-            disabled={isApplying}
+            disabled={isApplying || reportGenerated}
             slotProps={{ inputLabel: { shrink: true } }}
-            helperText="Replaces each selected incident's report."
+            helperText={
+              reportGenerated
+                ? "Resolving generates each incident's report, so it can't be set in the same edit. Edit it once they are resolved."
+                : "Replaces each selected incident's report."
+            }
           />,
         )}
 
-        {resolutionMissing && (
+        {(resolutionMissing || subcategoryMissing) && (
           <Alert severity="info" role="status">
-            {incidentStateLabel(state)} needs a resolution code and notes.
+            {resolutionMissing
+              ? `${incidentStateLabel(state)} needs a resolution code and notes.`
+              : "A new category needs a subcategory."}
           </Alert>
         )}
       </DialogContent>

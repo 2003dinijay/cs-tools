@@ -843,7 +843,43 @@ func (r *incidentRepo) GetIncidentByID(ctx context.Context, id string) (domain.I
 		return domain.IncidentView{}, err
 	}
 	v.SpecialistHandoff = sum
+	watchers, err := incidentWatchers(ctx, r.db, id2)
+	if err != nil {
+		return domain.IncidentView{}, err
+	}
+	v.WatchList = watchers
 	return v, nil
+}
+
+// incidentWatchers reads the incident's watch list from work_item_watcher, the
+// table UpdateIncidentLifecycle's watchList replaces, so a caller that adds to
+// or removes from the list it reads (the list's bulk edit) starts from what is
+// stored rather than from nothing. Ordered by name, then id, for a stable list.
+func incidentWatchers(ctx context.Context, q rowsQuerier, incidentID string) ([]domain.IncidentWatchListItem, error) {
+	rows, err := q.Query(ctx, `
+		SELECT u.id::text,
+		       COALESCE(u.name, NULLIF(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), ''), u.user_name, ''),
+		       COALESCE(u.email, '')
+		FROM work_item_watcher w
+		JOIN "user" u ON u.id = w.user_id
+		WHERE w.work_item_id = $1
+		ORDER BY 2, 1`, incidentID)
+	if err != nil {
+		return nil, fmt.Errorf("get incident watch list: %w", err)
+	}
+	defer rows.Close()
+	watchers := []domain.IncidentWatchListItem{}
+	for rows.Next() {
+		var w domain.IncidentWatchListItem
+		if err := rows.Scan(&w.ID, &w.Name, &w.Email); err != nil {
+			return nil, fmt.Errorf("get incident watch list: %w", err)
+		}
+		watchers = append(watchers, w)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("get incident watch list: %w", err)
+	}
+	return watchers, nil
 }
 
 // recentHandoffNotes reads the incident's latest work notes for the handoff's

@@ -34,6 +34,11 @@ export interface AsyncEntityMultiSelectProps<T> {
   id: string;
   label: string;
   placeholder?: string;
+  /**
+   * Keeps the label above the field even while it is empty, so the placeholder
+   * shows (e.g. a bulk edit's "No change", beside selects that read the same way).
+   */
+  shrinkLabel?: boolean;
   /** Selected entity ids. */
   values: string[];
   onChange: (next: string[]) => void;
@@ -70,6 +75,7 @@ export default function AsyncEntityMultiSelect<T>({
   id,
   label,
   placeholder,
+  shrinkLabel = false,
   values,
   onChange,
   disabled,
@@ -188,6 +194,7 @@ export default function AsyncEntityMultiSelect<T>({
         <TextField
           {...params}
           label={label}
+          slotProps={shrinkLabel ? { inputLabel: { ...params.InputLabelProps, shrink: true } } : undefined}
           placeholder={values.length ? undefined : placeholder}
           error={isError}
           helperText={isError ? "Search failed." : helperText}

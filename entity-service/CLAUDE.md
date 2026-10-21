@@ -7841,14 +7841,14 @@ impact or urgency recomputes priority with ServiceNow's lookup; a new category t
 the current subcategory clears it; `watchList` replaces `work_item_watcher`. A field sent as
 `null` is ignored, as on the ServiceNow path; only `environment` can be cleared.
 
-`IncidentView.WatchList`/`LinkedServiceRequests` are always empty slices on
-this data source (never populated) -- `work_item_watcher` could back the
-former (same table `SetCaseWatchList`/`fetchCaseWatchers` already use for
-cases) and `work_item.parent_id` reverse lookups could back the latter,
-matching the pattern `ProblemRepository.GetProblem`'s `LinkedIncidents`
-already uses for `incident.problem_id`'s own reverse lookup -- left as a
-known, flagged gap rather than built out further given the size of this
-change, not because either is infeasible.
+`IncidentView.WatchList` is read from `work_item_watcher` (`incidentWatchers`), the
+table `UpdateIncidentLifecycle`'s `watchList` replaces. The CSM list's bulk edit adds
+people to, or removes them from, the list it reads, so an empty read would replace
+the stored watchers instead. `TestIncidentUpdateIntegration_DetailReadsWatchList`
+holds the round trip. `LinkedServiceRequests` is still always an empty slice on this
+data source (never populated) -- `work_item.parent_id` reverse lookups could back it,
+matching the pattern `ProblemRepository.GetProblem`'s `LinkedIncidents` already uses
+for `incident.problem_id`'s own reverse lookup -- left as a known, flagged gap.
 
 **`SearchIncidentActivities`/`SearchCaseActivities` verify the id is
 actually an incident/case-like work item before reading its activity

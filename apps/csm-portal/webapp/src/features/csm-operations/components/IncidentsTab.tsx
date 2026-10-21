@@ -238,7 +238,8 @@ export default function IncidentsTab(): JSX.Element {
     try {
       const watchers = readWatchers
         ? await mapWithConcurrency(rows, async (row) => {
-            const detail = await queryClient.fetchQuery(incidentDetailQuery(api, row.id!));
+            // Read now, never from the cache: the list sent back replaces the whole watch list.
+            const detail = await queryClient.fetchQuery({ ...incidentDetailQuery(api, row.id!), staleTime: 0 });
             return detail ? (detail.watchList ?? []).map((w) => w.id) : undefined;
           })
         : [];
