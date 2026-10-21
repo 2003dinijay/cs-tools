@@ -16,12 +16,10 @@
 
 export interface Runbook {
   id: string;
-  /** The runbook's own number (RB0000001), given by the backend and never changed. */
-  number: string;
-  /** Null when the runbook has not been written yet. */
+  /** Alert title; an incident whose subject contains it gets this runbook. */
+  alertName: string;
+  /** Null when the alert is known but no runbook has been written yet. */
   runbookUrl: string | null;
-  /** Alert titles; an incident whose subject contains one gets this runbook. */
-  alerts: string[];
   createdOn: string;
   createdBy: string;
   updatedOn: string;
@@ -29,124 +27,43 @@ export interface Runbook {
 }
 
 export interface RunbookInput {
+  alertName: string;
   runbookUrl: string | null;
-  alerts: string[];
 }
 
 export type RunbookCoverage = "all" | "linked" | "missing";
-export type RunbookAlertCount = "all" | "single" | "multiple";
-export type RunbookUpdatedWithin = "all" | "7" | "30" | "90";
-
-export interface RunbookFilters {
-  coverage: RunbookCoverage;
-  alertCount: RunbookAlertCount;
-  updatedWithin: RunbookUpdatedWithin;
-}
-
-export const DEFAULT_RUNBOOK_FILTERS: RunbookFilters = { coverage: "all", alertCount: "all", updatedWithin: "all" };
-
-/** How many filters differ from their default. */
-export function activeRunbookFilterCount(filters: RunbookFilters): number {
-  return (Object.keys(DEFAULT_RUNBOOK_FILTERS) as (keyof RunbookFilters)[]).filter(
-    (k) => filters[k] !== DEFAULT_RUNBOOK_FILTERS[k],
-  ).length;
-}
-
-const DAY_MS = 24 * 60 * 60 * 1000;
-
-/** The runbooks matching the search text (number, alert name or link) and every filter. */
-export function filterRunbooks(runbooks: Runbook[], search: string, filters: RunbookFilters, now = Date.now()): Runbook[] {
-  const term = search.trim().toLowerCase();
-  const since = filters.updatedWithin === "all" ? undefined : now - Number(filters.updatedWithin) * DAY_MS;
-  return runbooks.filter((r) => {
-    if (filters.coverage === "linked" && !r.runbookUrl) return false;
-    if (filters.coverage === "missing" && r.runbookUrl) return false;
-    if (filters.alertCount === "single" && r.alerts.length !== 1) return false;
-    if (filters.alertCount === "multiple" && r.alerts.length < 2) return false;
-    if (since !== undefined) {
-      const updated = Date.parse(r.updatedOn);
-      if (Number.isNaN(updated) || updated < since) return false;
-    }
-    return (
-      !term ||
-      r.number.toLowerCase().includes(term) ||
-      r.alerts.some((a) => a.toLowerCase().includes(term)) ||
-      (r.runbookUrl ?? "").toLowerCase().includes(term)
-    );
-  });
-}
 
 export function isValidRunbookUrl(value: string): boolean {
-  const link = value.trim();
-  if (!link) return true;
-  // The browser parser turns "http:foo" or "http:///foo" into a host; entity-service's parser does not, so the authority must be written out.
-  if (!/^https?:\/\/[^/?#\s]/i.test(link)) return false;
+  if (!value.trim()) return true;
   try {
-    return new URL(link).host !== "";
+    const url = new URL(value.trim());
+    return url.protocol === "https:" || url.protocol === "http:";
   } catch {
     return false;
   }
 }
 
-/** Trimmed alert names with blanks and repeats (ignoring case) dropped, in their first order. */
-export function cleanAlertNames(names: string[]): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const raw of names) {
-    const name = raw.trim();
-    const key = name.toLowerCase();
-    if (!name || seen.has(key)) continue;
-    seen.add(key);
-    out.push(name);
-  }
-  return out;
-}
-
-export interface RunbookMatch<T extends Pick<Runbook, "runbookUrl" | "alerts">> {
-  runbook: T;
-  alertName: string;
-}
-
-/** The runbook for an incident: the one holding the longest alert name its subject contains, case-insensitively. Mirrors entity-service. */
-export function findRunbookForIncident<T extends Pick<Runbook, "runbookUrl" | "alerts">>(
-  runbooks: T[],
+/** The runbook for an incident: the longest alert name its subject contains, case-insensitively. Mirrors entity-service. */
+export function findRunbookForIncident(
+  runbooks: Pick<Runbook, "alertName" | "runbookUrl">[],
   subject: string,
-): RunbookMatch<T> | undefined {
+): Pick<Runbook, "alertName" | "runbookUrl"> | undefined {
   const haystack = subject.toLowerCase();
-  let best: RunbookMatch<T> | undefined;
+  let best: Pick<Runbook, "alertName" | "runbookUrl"> | undefined;
   let bestLen = 0;
-  for (const runbook of runbooks) {
-    for (const alertName of runbook.alerts) {
-      const needle = alertName.trim().toLowerCase();
-      if (needle && needle.length > bestLen && haystack.includes(needle)) {
-        best = { runbook, alertName };
-        bestLen = needle.length;
-      }
+  for (const rb of runbooks) {
+    const needle = rb.alertName.trim().toLowerCase();
+    if (needle && needle.length > bestLen && haystack.includes(needle)) {
+      best = rb;
+      bestLen = needle.length;
     }
   }
   return best;
 }
 
-/** Alerts whose name contains the query, ignoring case, shortest first: for a partial alert name that no alert is contained in. */
-export function findAlertsContaining<T extends Pick<Runbook, "runbookUrl" | "alerts">>(
-  runbooks: T[],
-  query: string,
-  limit = 5,
-): RunbookMatch<T>[] {
-  const q = query.trim().toLowerCase();
-  if (!q) return [];
-  return runbooks
-    .flatMap((runbook) => runbook.alerts.filter((a) => a.toLowerCase().includes(q)).map((alertName) => ({ runbook, alertName })))
-    .sort((a, b) => a.alertName.length - b.alertName.length)
-    .slice(0, limit);
-}
-
 /**
- * Reads an import file: a JSON object whose keys are alert names and whose values
- * are links ("" for none); or an array of {runbookUrl, alerts}, where alerts is a
- * list (an older {alertName, runbookUrl} entry is read as one alert, and a name is
- * ignored). A key or a text alerts value is one alert name, commas included, so
- * several alerts need the list form. Throws with a readable message otherwise.
+ * Reads an import file: a JSON object of alert name to link ("" for none),
+ * or an array of {alertName, runbookUrl}. Throws with a readable message otherwise.
  */
 export function parseRunbookImport(text: string): RunbookInput[] {
   let data: unknown;
@@ -155,43 +72,41 @@ export function parseRunbookImport(text: string): RunbookInput[] {
   } catch {
     throw new Error("The file is not valid JSON.");
   }
-  const toInput = (alerts: unknown, url: unknown, label: string): RunbookInput => {
-    const alertList = cleanAlertNames(
-      typeof alerts === "string" ? [alerts] : Array.isArray(alerts) ? alerts.map((a) => (typeof a === "string" ? a : "")) : [],
-    );
-    if (alertList.length === 0) {
-      throw new Error(`${label} needs at least one alert name.`);
+  const toInput = (alertName: unknown, url: unknown): RunbookInput => {
+    if (typeof alertName !== "string" || !alertName.trim()) {
+      throw new Error("Every entry needs an alert name.");
     }
     if (url !== null && url !== undefined && typeof url !== "string") {
-      throw new Error(`The link for "${alertList[0]}" is not text.`);
+      throw new Error(`The link for "${alertName}" is not text.`);
     }
     const link = typeof url === "string" ? url.trim() : "";
     if (!isValidRunbookUrl(link)) {
-      throw new Error(`The link for "${alertList[0]}" is not a full http(s) link.`);
+      throw new Error(`The link for "${alertName}" is not a full http(s) link.`);
     }
-    return { runbookUrl: link || null, alerts: alertList };
+    return { alertName: alertName.trim(), runbookUrl: link || null };
   };
   if (Array.isArray(data)) {
-    return data.map((row, i) => {
+    return data.map((row) => {
       const r = (row ?? {}) as Record<string, unknown>;
-      return toInput(r.alerts ?? (typeof r.alertName === "string" ? [r.alertName] : r.alertName), r.runbookUrl, `Entry ${i + 1}`);
+      return toInput(r.alertName, r.runbookUrl);
     });
   }
   if (data && typeof data === "object") {
-    return Object.entries(data as Record<string, unknown>).map(([key, url]) => toInput(key, url, `"${key}"`));
+    return Object.entries(data as Record<string, unknown>).map(([name, url]) => toInput(name, url));
   }
-  throw new Error("Expected an object of alert names to link, or a list of runbooks.");
+  throw new Error("Expected an object of alert name to link, or a list of entries.");
 }
 
-/** Runbooks as an import file: a list of {number, runbookUrl, alerts}; the import ignores the number and matches by alert. */
-export function runbooksToImportJson(runbooks: Pick<Runbook, "number" | "runbookUrl" | "alerts">[]): string {
-  const out = runbooks.map((rb) => ({ number: rb.number, runbookUrl: rb.runbookUrl, alerts: rb.alerts }));
+/** Runbooks as an import file: an object of alert name to link, "" for an alert with no runbook yet. */
+export function runbooksToImportJson(runbooks: Pick<Runbook, "alertName" | "runbookUrl">[]): string {
+  // fromEntries defines own properties, so an alert named __proto__ is kept rather than setting the prototype.
+  const out = Object.fromEntries(runbooks.map((rb) => [rb.alertName, rb.runbookUrl ?? ""]));
   return `${JSON.stringify(out, null, 2)}\n`;
 }
 
-export const RUNBOOK_CSV_HEADER = ["Number", "Alerts", "Runbook link", "Last updated"];
+export const RUNBOOK_CSV_HEADER = ["Alert name", "Runbook link", "Last updated by", "Last updated"];
 
-/** One CSV row per runbook, in the order of RUNBOOK_CSV_HEADER; the alerts share a cell, one per line. */
+/** One CSV row per runbook, in the order of RUNBOOK_CSV_HEADER. */
 export function runbooksToCsvRows(runbooks: Runbook[]): string[][] {
-  return runbooks.map((rb) => [rb.number, rb.alerts.join("\n"), rb.runbookUrl ?? "", rb.updatedOn]);
+  return runbooks.map((rb) => [rb.alertName, rb.runbookUrl ?? "", rb.updatedBy, rb.updatedOn]);
 }
