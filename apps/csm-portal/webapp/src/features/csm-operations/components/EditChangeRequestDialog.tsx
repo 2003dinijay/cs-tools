@@ -57,7 +57,7 @@ import ChangeRequestScopeFields, {
   ChangeRequestCustomerGroupField,
 } from "@features/csm-operations/components/ChangeRequestScopeFields";
 import { useChangeRequestScope } from "@features/csm-operations/hooks/useChangeRequestScope";
-import Editor from "@components/rich-text-editor/Editor";
+import ExpandableRichTextField from "@features/csm-operations/components/ExpandableRichTextField";
 import {
   backendUtcToZonedInput,
   formatDateTimeLocal,
@@ -532,27 +532,18 @@ export default function EditChangeRequestDialog({
     field: RichTextPlanField,
     helperText: string,
   ): JSX.Element => (
-    <Box sx={FULL_ROW}>
-      <Typography
-        id={`${id}-label`}
-        variant="caption"
-        color="text.secondary"
-        sx={{ display: "block", mb: 0.5 }}
-      >
-        {label}
-      </Typography>
-      <Box role="group" aria-labelledby={`${id}-label`} aria-describedby={`${id}-help`}>
-        <Editor
-          value={field.initialHtml}
-          onChange={field.onChange}
-          minHeight={100}
-          maxHeight={300}
-          toolbarVariant="full"
-          disabled={fieldsDisabled}
-        />
-      </Box>
-      <FormHelperText id={`${id}-help`}>{helperText}</FormHelperText>
-    </Box>
+    // Resizable, and Expand opens it full screen (ExpandableRichTextField); the
+    // editor is seeded with the frozen `initialHtml` so dirty tracking holds.
+    <ExpandableRichTextField
+      id={id}
+      label={label}
+      value={field.html}
+      seedHtml={field.initialHtml}
+      onChange={field.onChange}
+      disabled={fieldsDisabled}
+      helperText={helperText}
+      sx={FULL_ROW}
+    />
   );
 
   // One of the two customer-step checkboxes. When locked it is disabled and
