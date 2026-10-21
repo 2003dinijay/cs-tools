@@ -29,9 +29,16 @@ vi.mock("@api/useSearchGroups", () => ({
 vi.mock("@api/useSearchItServices", () => ({
   useSearchItServices: () => ({ data: [], isFetching: false, isError: false }),
 }));
+const { noResults } = vi.hoisted(() => ({ noResults: () => ({ data: [], isFetching: false, isError: false }) }));
+vi.mock("@api/useSearchServiceOfferings", () => ({ useSearchServiceOfferings: noResults }));
+vi.mock("@api/useSearchConfigurationItems", () => ({ useSearchConfigurationItems: noResults }));
+vi.mock("@features/csm-operations/api/useSearchIncidentsForSelect", () => ({ useSearchIncidentsExcludingIds: noResults }));
+vi.mock("@features/csm-operations/api/useSearchChangeRequestsForSelect", () => ({ useSearchChangeRequestsForSelect: noResults }));
+vi.mock("@features/csm-operations/api/useSearchProblemsForSelect", () => ({ useSearchProblemsForSelect: noResults }));
 
 const onApply = vi.fn();
-const incident = (id: string, state: BeIncident["state"]): BeIncident => ({ id, number: id, state }) as BeIncident;
+const incident = (id: string, state: BeIncident["state"], category: BeIncident["category"] = null): BeIncident =>
+  ({ id, number: id, state, category }) as BeIncident;
 
 function pick(dialog: HTMLElement, field: string, option: string): void {
   fireEvent.mouseDown(within(dialog).getByRole("combobox", { name: field }));
@@ -85,13 +92,11 @@ describe("BulkEditIncidentsDialog", () => {
     expect(apply).toBeEnabled();
     fireEvent.click(apply);
     expect(onApply).toHaveBeenCalledWith({
-      state: "RESOLVED",
-      resolutionCode: "SOLVED_PERMANENTLY",
-      resolutionNotes: "Patched the node pool.",
+      patch: { state: "RESOLVED", resolutionCode: "SOLVED_PERMANENTLY", resolutionNotes: "Patched the node pool." },
     });
   });
 
-  it("drops the resolution again when the state moves away from Resolved", () => {
+  it("takes a resolution code and notes on their own, without a state change", () => {
     render(
       <BulkEditIncidentsDialog
         incidents={[incident("a", "IN_PROGRESS")]}
@@ -101,12 +106,82 @@ describe("BulkEditIncidentsDialog", () => {
       />,
     );
     const dialog = screen.getByRole("dialog", { name: "Edit 1 incident" });
-    pick(dialog, "State", "Resolved");
     pick(dialog, "Resolution code", "False Alarm");
-    pick(dialog, "State", "On Hold");
-    expect(within(dialog).queryByRole("combobox", { name: "Resolution code" })).not.toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole("button", { name: "Apply to 1 incident" }));
-    expect(onApply).toHaveBeenCalledWith({ state: "ON_HOLD" });
+    expect(onApply).toHaveBeenCalledWith({ patch: { resolutionCode: "FALSE_ALARM" } });
+  });
+
+  it("sends every set field of the incident form, and only those", () => {
+    render(
+      <BulkEditIncidentsDialog
+        incidents={[incident("a", "NEW"), incident("b", "NEW")]}
+        isApplying={false}
+        onClose={vi.fn()}
+        onApply={onApply}
+      />,
+    );
+    const dialog = screen.getByRole("dialog", { name: "Edit 2 incidents" });
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Short description" }), { target: { value: " Gateway latency " } });
+    pick(dialog, "Channel", "Email");
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Environment" }), { target: { value: "Production" } });
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Additional comment (customer-visible)" }), {
+      target: { value: "We are on it." },
+    });
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Incident report" }), { target: { value: "Root cause: DNS." } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Apply to 2 incidents" }));
+    expect(onApply).toHaveBeenCalledWith({
+      patch: {
+        subject: "Gateway latency",
+        contactType: "EMAIL",
+        environment: "Production",
+        additionalComments: "We are on it.",
+        incidentReport: "Root cause: DNS.",
+      },
+    });
+  });
+
+  it("offers subcategories of the category being set, or of the one every selected incident shares", () => {
+    const { unmount } = render(
+      <BulkEditIncidentsDialog
+        incidents={[incident("a", "NEW", "SECURITY"), incident("b", "NEW", "INQUIRY")]}
+        isApplying={false}
+        onClose={vi.fn()}
+        onApply={onApply}
+      />,
+    );
+    let dialog = screen.getByRole("dialog", { name: "Edit 2 incidents" });
+    // Different categories: no subcategory until a category is set.
+    expect(within(dialog).getByRole("combobox", { name: "Subcategory" })).toHaveAttribute("aria-disabled", "true");
+    expect(within(dialog).getByText("Set a category first: the selected incidents have different categories.")).toBeInTheDocument();
+    pick(dialog, "Category", "Security");
+    expect(within(dialog).getByRole("combobox", { name: "Subcategory" })).not.toHaveAttribute("aria-disabled");
+    unmount();
+
+    render(
+      <BulkEditIncidentsDialog
+        incidents={[incident("a", "NEW", "SECURITY"), incident("b", "NEW", "SECURITY")]}
+        isApplying={false}
+        onClose={vi.fn()}
+        onApply={onApply}
+      />,
+    );
+    dialog = screen.getByRole("dialog", { name: "Edit 2 incidents" });
+    expect(within(dialog).getByRole("combobox", { name: "Subcategory" })).not.toHaveAttribute("aria-disabled");
+  });
+
+  it("says how many selected incidents were closed since they were picked, and leaves them out of the states", () => {
+    render(
+      <BulkEditIncidentsDialog
+        incidents={[incident("a", "IN_PROGRESS"), incident("b", "CLOSED")]}
+        isApplying={false}
+        onClose={vi.fn()}
+        onApply={onApply}
+      />,
+    );
+    const dialog = screen.getByRole("dialog", { name: "Edit 2 incidents" });
+    expect(within(dialog).getByText(/1 of the selected incidents has been closed or cancelled/)).toBeInTheDocument();
+    fireEvent.mouseDown(within(dialog).getByRole("combobox", { name: "State" }));
+    expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual(["No change", "On Hold", "Resolved", "Cancelled"]);
   });
 
   it("keeps everything still while applying", () => {

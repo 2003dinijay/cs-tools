@@ -374,9 +374,24 @@ Both lists have a checkbox column (for `canWrite` only), a selection bar (`BulkS
   never stops on a refusal: the banner lists each record that was not updated with the backend's own 4xx words
   (`bulkFailureMessage`; a 5xx is a generic line) and each record skipped before sending. The backend stays the authority
   for every rule; the dialogs only keep from offering what cannot work.
-- **Edit, incidents** (`BulkEditIncidentsDialog`): "No change" is the default of every field and only changed fields are
-  sent. State offers what every selected incident can move to (`bulkIncidentTargetStates`, the Edit dialog's table);
-  Resolved / Closed need a resolution code and notes, applied to all.
+- **Edit, incidents** (`BulkEditIncidentsDialog`): the whole incident form, laid out in ServiceNow's sections, with
+  every field `PATCH /incidents/{id}` accepts: short description, state, channel, impact, urgency, environment,
+  category, subcategory, service, service offering, configuration item, assignment group, assigned to, watch list,
+  work note, additional comment (customer-visible), parent incident, change request, problem, caused by change,
+  resolution code and notes, incident report. "No change" is the default of every field and only set fields are sent
+  (`bulkIncidentPlan`, `utils/bulkIncidentEdit.ts`).
+  - State offers what every selected incident can move to (`bulkIncidentTargetStates`, the Edit dialog's table), never
+    narrowed by one closed since it was picked (it is skipped). Resolved / Closed need a resolution code and notes,
+    applied to all; the two can also be set alone.
+  - Subcategory follows the category being set, or the category every selected incident shares (else it is disabled
+    with the reason). Service offering narrows to the service being set.
+  - Watch list: add people to each incident's own list, remove them, or replace the list. The API only replaces, so
+    adding or removing reads each incident's detail first (`incidentDetailQuery`, the detail page's cache entry);
+    one whose list cannot be read is skipped, and a list that would not change is not sent.
+  - Parent incident never offers a selected incident (`useSearchIncidentsExcludingIds`), and the plan refuses one as
+    its own parent. Caused by change is a change request picker (its column references `change_request`).
+  - Not offered: priority (it follows from impact and urgency) and `parentIncidentId` (a second parent column with no
+    label in the portal).
 - **Edit, change requests** (`BulkEditChangeRequestsDialog`): State offers the moves every selected change request can
   make, read from each one's own `legalNextStates` (fetched with `changeRequestDetailQuery`, the detail page's own cache
   entry) through the action bar's filter (`bulkChangeRequestTargets`: `isOfferedChangeRequestTarget`, never `authorize`,

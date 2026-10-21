@@ -47,8 +47,18 @@ vi.mock("@context/current-user/usePortalAccess", () => ({
 }));
 // The bulk edit dialog's pickers.
 vi.mock("@api/useSearchUsersByName", () => ({
-  useSearchInternalUsersByName: () => ({ data: [], isFetching: false, isError: false }),
+  useSearchInternalUsersByName: () => ({
+    data: [{ id: "user-7", name: "Wanda Watcher", email: "wanda@example.test" }],
+    isFetching: false,
+    isError: false,
+  }),
 }));
+const { noResults } = vi.hoisted(() => ({ noResults: () => ({ data: [], isFetching: false, isError: false }) }));
+vi.mock("@api/useSearchServiceOfferings", () => ({ useSearchServiceOfferings: noResults }));
+vi.mock("@api/useSearchConfigurationItems", () => ({ useSearchConfigurationItems: noResults }));
+vi.mock("@features/csm-operations/api/useSearchIncidentsForSelect", () => ({ useSearchIncidentsExcludingIds: noResults }));
+vi.mock("@features/csm-operations/api/useSearchChangeRequestsForSelect", () => ({ useSearchChangeRequestsForSelect: noResults }));
+vi.mock("@features/csm-operations/api/useSearchProblemsForSelect", () => ({ useSearchProblemsForSelect: noResults }));
 vi.mock("@api/useSearchGroups", () => ({
   useSearchGroups: () => ({ data: [], isFetching: false, isError: false }),
 }));
@@ -133,6 +143,7 @@ function mockResult(overrides: Partial<ReturnType<typeof useSearchIncidents>>): 
 beforeEach(() => {
   mockedUseSearch.mockReset();
   apiMock.patch.mockReset();
+  apiMock.get.mockReset();
   access.canWrite = false;
   window.localStorage?.clear();
 });
@@ -412,5 +423,35 @@ describe("IncidentsTab — bulk runs follow the incident as it is now", () => {
     expect(keys).toContain(JSON.stringify(["incidents"]));
     // The outcome takes focus: the button that started the run has gone.
     expect(screen.getByText("Assigned to you 2 of 2 incidents.").closest("[role=status]")).toHaveFocus();
+  });
+});
+
+describe("IncidentsTab — bulk watch list", () => {
+  it("adds a person to each selected incident's own watch list, reading each list first", async () => {
+    access.canWrite = true;
+    apiMock.get.mockImplementation((path: string) =>
+      Promise.resolve(
+        path.endsWith("inc-1")
+          ? { id: "inc-1", watchList: [{ id: "user-3", name: "Caller Person", email: "c@example.test" }] }
+          : { id: "inc-2", watchList: [] },
+      ),
+    );
+    apiMock.patch.mockResolvedValue({ id: "x" });
+    showRows([INCIDENT, INCIDENT_NEW]);
+    render(<IncidentsTab />);
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select all incidents on this page" }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit (2)" }));
+    const dialog = screen.getByRole("dialog", { name: "Edit 2 incidents" });
+    const watchInput = within(dialog).getByRole("combobox", { name: "Watch list" });
+    watchInput.focus();
+    fireEvent.keyDown(watchInput, { key: "ArrowDown" });
+    fireEvent.click(await screen.findByRole("option", { name: /wanda@example.test/ }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Apply to 2 incidents" }));
+
+    await waitFor(() => expect(screen.getByText("Updated 2 of 2 incidents.")).toBeInTheDocument());
+    expect(apiMock.get).toHaveBeenCalledWith("/incidents/inc-1");
+    expect(apiMock.patch).toHaveBeenCalledWith("/incidents/inc-1", { watchList: ["user-3", "user-7"] });
+    expect(apiMock.patch).toHaveBeenCalledWith("/incidents/inc-2", { watchList: ["user-7"] });
   });
 });

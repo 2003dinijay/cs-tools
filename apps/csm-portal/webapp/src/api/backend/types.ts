@@ -3841,6 +3841,8 @@ export interface BeUpdateIncidentPayload {
   problemId?: string | null;
   causedById?: string | null;
   environment?: string | null;
+  /** The incident report (HTML); replaces what is stored. Write-only: the detail does not read it back. */
+  incidentReport?: string;
 }
 
 /** `PATCH /incidents/{id}` response — the full updated incident. */

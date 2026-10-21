@@ -62,8 +62,20 @@ import {
   isIncidentTerminal,
   type IncidentFilters,
 } from "@features/csm-operations/utils/incidents";
-import { runBulkUpdate, type BulkFailure, type BulkResult } from "@features/csm-operations/utils/bulkUpdate";
+import {
+  mapWithConcurrency,
+  runBulkUpdate,
+  type BulkFailure,
+  type BulkResult,
+} from "@features/csm-operations/utils/bulkUpdate";
+import {
+  assignIncidentToMePlan,
+  bulkIncidentPlan,
+  bulkWatchListNeedsCurrent,
+  type BulkIncidentPlan,
+} from "@features/csm-operations/utils/bulkIncidentEdit";
 import { refreshIncidentRecord } from "@features/csm-operations/api/usePatchIncident";
+import { incidentDetailQuery } from "@features/csm-operations/api/useGetIncident";
 import { useRowSelection } from "@features/csm-operations/hooks/useRowSelection";
 import BulkSelectionBar from "@features/csm-operations/components/BulkSelectionBar";
 import BulkResultAlert from "@features/csm-operations/components/BulkResultAlert";
@@ -210,27 +222,34 @@ export default function IncidentsTab(): JSX.Element {
   /**
    * One bulk action over the selection, from each incident as the list shows
    * it now (a selected incident on the current page is its refetched row). One
-   * closed or cancelled since it was picked is skipped with the reason. After
-   * the run the dialog is closed first, then each incident is refreshed the way
-   * a single edit refreshes it (detail, tasks, the flows' follow-up).
+   * closed or cancelled since it was picked is skipped with the reason. Adding
+   * people to (or removing them from) the watch list needs each incident's own
+   * list, so its detail is read first (`readWatchers`). After the run the dialog
+   * is closed first, then each incident is refreshed the way a single edit
+   * refreshes it (detail, tasks, the flows' follow-up).
    */
   const runBulk = async (
-    patchFor: (incident: BeIncident) => BeUpdateIncidentPayload | { skip: string },
+    planFor: (incident: BeIncident, currentWatchers?: string[]) => BulkIncidentPlan,
     verb: string,
+    readWatchers = false,
   ): Promise<void> => {
     setBulkBusy(true);
     const rows = selection.selected;
     try {
+      const watchers = readWatchers
+        ? await mapWithConcurrency(rows, async (row) => {
+            const detail = await queryClient.fetchQuery(incidentDetailQuery(api, row.id!));
+            return detail ? (detail.watchList ?? []).map((w) => w.id) : undefined;
+          })
+        : [];
       const skipped: BulkFailure[] = [];
       const toSend: Array<{ id: string; number?: string; patch: BeUpdateIncidentPayload }> = [];
-      for (const row of rows) {
+      rows.forEach((row, i) => {
         const number = row.number || row.id!;
-        const plan = isIncidentTerminal(row.state)
-          ? { skip: "Closed or cancelled: it can't be edited." }
-          : patchFor(row);
+        const plan = planFor(row, readWatchers ? watchers[i] : undefined);
         if ("skip" in plan) skipped.push({ id: row.id!, number, message: plan.skip });
-        else toSend.push({ id: row.id!, number: row.number ?? undefined, patch: plan });
-      }
+        else toSend.push({ id: row.id!, number: row.number ?? undefined, patch: plan.patch });
+      });
       const patches = new Map(toSend.map((t) => [t.id, t.patch]));
       const outcome = await runBulkUpdate(toSend, (t) =>
         api.patch<BeUpdateIncidentPayload, BePatchIncidentResponse>(
@@ -374,15 +393,7 @@ export default function IncidentsTab(): JSX.Element {
           busy={bulkBusy}
           onEdit={() => setBulkEditOpen(true)}
           onAssignToMe={() => {
-            if (currentUserId) {
-              void runBulk(
-                (incident) =>
-                  incident.assignedTo?.id === currentUserId
-                    ? { skip: "Already assigned to you." }
-                    : { assignedEngineerId: currentUserId },
-                "Assigned to you",
-              );
-            }
+            if (currentUserId) void runBulk((incident) => assignIncidentToMePlan(incident, currentUserId), "Assigned to you");
           }}
           assignToMeDisabledReason={currentUserId ? null : "Your user record is still loading."}
           onClear={clearAndRefocus}
@@ -393,7 +404,13 @@ export default function IncidentsTab(): JSX.Element {
           incidents={selection.selected}
           isApplying={bulkBusy}
           onClose={() => setBulkEditOpen(false)}
-          onApply={(patch) => void runBulk(() => patch, "Updated")}
+          onApply={(edit) =>
+            void runBulk(
+              (incident, currentWatchers) => bulkIncidentPlan(incident, edit, currentWatchers),
+              "Updated",
+              bulkWatchListNeedsCurrent(edit),
+            )
+          }
         />
       )}
 

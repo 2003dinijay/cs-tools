@@ -35,6 +35,8 @@ interface FakeRecord {
   subject: string;
   state: string;
   legalNextStates?: string[];
+  /** Incidents: the watch list the detail returns. */
+  watchList?: Array<{ id: string; name: string; email: string }>;
 }
 
 interface FakeLists {
@@ -51,7 +53,13 @@ const CHANGE_REQUESTS: FakeRecord[] = [
 ];
 
 const INCIDENTS: FakeRecord[] = [
-  { id: "00000000-0000-4000-8000-0000000a0001", number: "INC-E2E-1", subject: "Disk full", state: "IN_PROGRESS" },
+  {
+    id: "00000000-0000-4000-8000-0000000a0001",
+    number: "INC-E2E-1",
+    subject: "Disk full",
+    state: "IN_PROGRESS",
+    watchList: [{ id: "00000000-0000-4000-8000-00000000d001", name: "Existing Watcher", email: "existing@example.com" }],
+  },
   { id: "00000000-0000-4000-8000-0000000a0002", number: "INC-E2E-2", subject: "Latency spike", state: "IN_PROGRESS" },
   { id: "00000000-0000-4000-8000-0000000a0003", number: "INC-E2E-3", subject: "Resolved long ago", state: "CLOSED" },
 ];
@@ -139,8 +147,13 @@ async function fakeLists(page: Page): Promise<FakeLists> {
     (url) => /\/incidents\/[0-9a-f-]{36}$/.test(url.pathname),
     async (route) => {
       if (!(await apiCall(route))) return;
-      if (route.request().method() !== "PATCH") return route.fallback();
       const id = new URL(route.request().url()).pathname.split("/").pop()!;
+      if (route.request().method() === "GET") {
+        const record = INCIDENTS.find((r) => r.id === id);
+        if (!record) return json(route, { code: 404, message: "incident not found" }, 404);
+        return json(route, { id: record.id, number: record.number, subject: record.subject, state: record.state, watchList: record.watchList ?? [] });
+      }
+      if (route.request().method() !== "PATCH") return route.fallback();
       patches.push({ path: `/incidents/${id}`, body: route.request().postDataJSON() });
       const refusal = refusals.get(id);
       if (refusal) return json(route, { code: 400, message: refusal }, 400);
@@ -209,10 +222,14 @@ test.describe("change request list — bulk actions", () => {
 
     await expect(page.getByText("Updated 1 of 2 change requests. 1 could not be updated.")).toBeVisible();
     await expect(page.getByRole("list", { name: "Not updated" })).toContainText("CHG-E2E-2: change request is on hold");
-    expect(api.patches).toEqual([
-      { path: `/change-requests/${CHANGE_REQUESTS[0].id}`, body: { state: "canceled", priority: "low", workNote: "Superseded by CHG-E2E-9." } },
-      { path: `/change-requests/${CHANGE_REQUESTS[1].id}`, body: { state: "canceled", workNote: "Superseded by CHG-E2E-9." } },
-    ]);
+    // The PATCHes run concurrently, so their order is not fixed.
+    expect(api.patches).toHaveLength(2);
+    expect(api.patches).toEqual(
+      expect.arrayContaining([
+        { path: `/change-requests/${CHANGE_REQUESTS[0].id}`, body: { state: "canceled", priority: "low", workNote: "Superseded by CHG-E2E-9." } },
+        { path: `/change-requests/${CHANGE_REQUESTS[1].id}`, body: { state: "canceled", workNote: "Superseded by CHG-E2E-9." } },
+      ]),
+    );
   });
 });
 
@@ -236,10 +253,59 @@ test.describe("incident list — bulk actions", () => {
 
     await expect(page.getByText("Updated 2 of 2 incidents.")).toBeVisible();
     const body = { state: "RESOLVED", resolutionCode: "SOLVED_PERMANENTLY", resolutionNotes: "Freed the volume." };
-    expect(api.patches).toEqual([
-      { path: `/incidents/${INCIDENTS[0].id}`, body },
-      { path: `/incidents/${INCIDENTS[1].id}`, body },
-    ]);
+    expect(api.patches).toHaveLength(2);
+    expect(api.patches).toEqual(
+      expect.arrayContaining([
+        { path: `/incidents/${INCIDENTS[0].id}`, body },
+        { path: `/incidents/${INCIDENTS[1].id}`, body },
+      ]),
+    );
+  });
+
+  test("Edit adds a watcher to each incident's own watch list and sets fields from several sections", async ({ page }) => {
+    const api = await fakeLists(page);
+    await page.goto("/operations/incidents");
+
+    await page.getByRole("checkbox", { name: "Select all incidents on this page" }).check();
+    await page.getByRole("button", { name: "Edit (2)" }).click();
+    const dialog = page.getByRole("dialog", { name: "Edit 2 incidents" });
+
+    await dialog.getByRole("textbox", { name: "Short description" }).fill("Storage alerts");
+    await dialog.getByRole("combobox", { name: "Channel" }).click();
+    await page.getByRole("option", { name: "Email", exact: true }).click();
+    await dialog.getByRole("textbox", { name: "Additional comment (customer-visible)" }).fill("We are looking into it.");
+
+    // The change request picker searches the (faked) change request list.
+    await dialog.getByRole("combobox", { name: "Change request" }).click();
+    await page.getByRole("option", { name: /CHG-E2E-1/ }).click();
+
+    // A real person from the local directory, added to each incident's own list.
+    const watch = dialog.getByRole("combobox", { name: "Watch list" });
+    await watch.click();
+    await watch.fill("alice");
+    const alice = page.getByRole("option", { name: /alice/i }).first();
+    await expect(alice).toBeVisible();
+    await alice.click();
+    await dialog.getByRole("heading", { name: "Watch list" }).click();
+
+    await dialog.getByRole("button", { name: "Apply to 2 incidents" }).click();
+    await expect(page.getByText("Updated 2 of 2 incidents.")).toBeVisible();
+
+    expect(api.patches).toHaveLength(2);
+    const first = api.patches.find((p) => p.path.endsWith(INCIDENTS[0].id))!;
+    const second = api.patches.find((p) => p.path.endsWith(INCIDENTS[1].id))!;
+    for (const p of [first, second]) {
+      expect(p.body).toMatchObject({
+        subject: "Storage alerts",
+        contactType: "EMAIL",
+        additionalComments: "We are looking into it.",
+        changeRequestId: CHANGE_REQUESTS[0].id,
+      });
+    }
+    const aliceId = (second.body.watchList as string[])[0];
+    // INC-E2E-1 keeps its existing watcher; INC-E2E-2 had none.
+    expect(first.body.watchList).toEqual(["00000000-0000-4000-8000-00000000d001", aliceId]);
+    expect(second.body.watchList).toEqual([aliceId]);
   });
 
   test("Assign to me assigns every selected incident", async ({ page }) => {

@@ -261,12 +261,23 @@ Each row links to a detail page. **Export** downloads the filtered incidents as
 CSV, Excel (.xlsx), JSON or PDF, as on the Change requests tab.
 
 **Bulk actions**: select incidents with the box at the start of each row (a
-closed or cancelled incident can't be selected), then use **Edit (n)** to apply
-one change to all of them (state, impact, urgency, category, service,
-assignment group, assignee, a work note) or **Assign to me (n)**. State offers
-only what every selected incident can move to; Resolved and Closed need a
-resolution code and notes, which apply to all of them. An incident the backend
-refuses is listed with the reason, and the rest are still updated.
+closed or cancelled incident can't be selected), then use **Edit (n)** or
+**Assign to me (n)**. Edit opens the whole incident form, and only the fields
+you set are applied: short description, state, channel, impact, urgency,
+environment, category and subcategory, service, service offering,
+configuration item, assignment group, assignee, watch list, a work note, an
+additional comment (visible to the customer), parent incident, change request,
+problem, caused by change, resolution code and notes, and the incident report.
+
+- State offers only what every selected incident can move to; Resolved and
+  Closed need a resolution code and notes, which apply to all of them.
+- Subcategory needs a category: the one you set, or the one every selected
+  incident already has.
+- The watch list can have people **added** to or **removed** from each
+  incident's own list, or be **replaced**.
+
+An incident the backend refuses is listed with the reason, and the rest are
+still updated.
 
 Like Change requests, this tab has its own **Saved views** button for
 naming and reapplying a filter combination — scoped to this tab, on this
