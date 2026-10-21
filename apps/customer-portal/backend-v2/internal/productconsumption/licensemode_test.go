@@ -111,3 +111,26 @@ func TestProcessLicenseDownload_Dispatch(t *testing.T) {
 		t.Errorf("explicit legacy mode: want status call then license call, got %v", paths)
 	}
 }
+
+func TestParseUsageImportMode(t *testing.T) {
+	tests := []struct {
+		in      string
+		want    UsageImportMode
+		wantErr bool
+	}{
+		{"", UsageImportModeService, false},
+		{"service", UsageImportModeService, false},
+		{"legacy", UsageImportModeLegacy, false},
+		{"Legacy", "", true},
+		{"both", "", true},
+	}
+	for _, tt := range tests {
+		got, err := ParseUsageImportMode(tt.in)
+		if (err != nil) != tt.wantErr || got != tt.want {
+			t.Errorf("ParseUsageImportMode(%q) = %q, %v; want %q, err=%v", tt.in, got, err, tt.want, tt.wantErr)
+		}
+	}
+	if _, err := ParseUsageImportMode("bad"); err == nil || !strings.Contains(err.Error(), EnvUsageImportMode) {
+		t.Errorf("error should name %s, got %v", EnvUsageImportMode, err)
+	}
+}

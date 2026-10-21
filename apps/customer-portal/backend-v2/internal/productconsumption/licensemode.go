@@ -33,16 +33,46 @@ const (
 // EnvLicenseMode is the environment variable that selects the LicenseMode.
 const EnvLicenseMode = "PRODUCT_CONSUMPTION_LICENSE_MODE"
 
+// UsageImportMode selects how POST /deployment-usages treats an uploaded
+// usage report. It is independent of LicenseMode.
+type UsageImportMode string
+
+const (
+	// UsageImportModeLegacy forwards the upload without inspecting the report
+	// or checking that the caller can see its deployment. It must be set
+	// explicitly.
+	UsageImportModeLegacy UsageImportMode = "legacy"
+	// UsageImportModeService reads the report's deployment number, requires
+	// the caller to be able to see that deployment, then forwards. It is the
+	// default.
+	UsageImportModeService UsageImportMode = "service"
+)
+
+// EnvUsageImportMode is the environment variable that selects the UsageImportMode.
+const EnvUsageImportMode = "PRODUCT_CONSUMPTION_USAGE_IMPORT_MODE"
+
 // ParseLicenseMode validates the raw value of EnvLicenseMode. An empty value
 // selects LicenseModeService, so an environment that must keep the old flow
 // has to set "legacy" explicitly; anything other than "legacy" or "service" is an error.
 func ParseLicenseMode(raw string) (LicenseMode, error) {
-	switch LicenseMode(raw) {
-	case "", LicenseModeService:
-		return LicenseModeService, nil
-	case LicenseModeLegacy:
-		return LicenseModeLegacy, nil
+	m, err := parseMode(EnvLicenseMode, raw)
+	return LicenseMode(m), err
+}
+
+// ParseUsageImportMode validates the raw value of EnvUsageImportMode with the
+// same rules as ParseLicenseMode: empty selects UsageImportModeService.
+func ParseUsageImportMode(raw string) (UsageImportMode, error) {
+	m, err := parseMode(EnvUsageImportMode, raw)
+	return UsageImportMode(m), err
+}
+
+// parseMode is the shared "legacy" | "service" parser; empty means "service".
+func parseMode(env, raw string) (string, error) {
+	switch raw {
+	case "", "service":
+		return "service", nil
+	case "legacy":
+		return "legacy", nil
 	}
-	return "", fmt.Errorf("%s=%q is invalid: must be %q or %q (default %q)",
-		EnvLicenseMode, raw, LicenseModeLegacy, LicenseModeService, LicenseModeService)
+	return "", fmt.Errorf("%s=%q is invalid: must be %q or %q (default %q)", env, raw, "legacy", "service", "service")
 }

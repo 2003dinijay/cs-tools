@@ -126,6 +126,15 @@ func main() {
 		slog.Error("invalid product-consumption configuration", "err", err)
 		os.Exit(1)
 	}
+	//
+	// PRODUCT_CONSUMPTION_USAGE_IMPORT_MODE independently selects the usage
+	// import behaviour: "service" (default) requires the report's deployment to
+	// be visible to the caller; "legacy" forwards the upload unchecked.
+	usageImportMode, err := productconsumption.ParseUsageImportMode(os.Getenv(productconsumption.EnvUsageImportMode))
+	if err != nil {
+		slog.Error("invalid product-consumption configuration", "err", err)
+		os.Exit(1)
+	}
 	productConsumptionCfg := productconsumption.Config{
 		SubscriptionBaseURL: mustURL("PRODUCT_CONSUMPTION_SUBSCRIPTION_URL", "http", "https"),
 		TrackingBaseURL:     optionalURL("PRODUCT_CONSUMPTION_TRACKING_BASE_URL", "http", "https"),
@@ -227,7 +236,7 @@ func main() {
 	timeCardHandler := handler.NewTimeCardHandler(entityClient)
 	aiChatHandler := handler.NewAIChatHandler(aiChatAgentClient, entityClient)
 	webSocketHandler := handler.NewWebSocketHandler(aiChatAgentWsClient, entityClient, tokenValidator, nil)
-	productConsumptionHandler := handler.NewProductConsumptionHandler(productConsumptionClient, entityClient)
+	productConsumptionHandler := handler.NewProductConsumptionHandler(productConsumptionClient, entityClient).WithUsageImportMode(usageImportMode)
 	globalHandler := handler.NewGlobalHandler(entityClient)
 	pendingVerificationHandler := handler.NewPendingVerificationHandler(entityClient)
 	instanceHandler := handler.NewInstanceHandler(entityClient)

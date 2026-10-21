@@ -293,6 +293,18 @@ It backs two routes:
   report for someone else's deployment is a 404 and is never forwarded. Anything that is not such a
   report is a 400. The product-consumption service then verifies the report's signature against that
   deployment's key and refuses a report the product marked invalid; this backend checks neither.
+  **`PRODUCT_CONSUMPTION_USAGE_IMPORT_MODE`** (independent of the license mode) selects whether
+  that pre-check runs, dispatched in one place in `ImportDeploymentUsage`:
+  - `service` (**the default**; unset or empty means service): the behaviour just described.
+  - `legacy` (must be set explicitly): the upload is forwarded as is, with no report inspection
+    and no deployment lookup, so the 400-for-non-report and 404-for-invisible-deployment
+    answers above do not occur from this backend (only the content-type and size checks and the
+    upstream's own errors remain). The request and response shapes are the same in both modes.
+  Any other value fails startup (`productconsumption.ParseUsageImportMode`).
+
+  **Holding an environment on the old behaviour:** set both `PRODUCT_CONSUMPTION_LICENSE_MODE=legacy`
+  and `PRODUCT_CONSUMPTION_USAGE_IMPORT_MODE=legacy`. The two flags are independent, so all four
+  combinations work.
 
 ## The registry service
 
