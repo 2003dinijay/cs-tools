@@ -77,10 +77,12 @@ export function filterRunbooks(runbooks: Runbook[], search: string, filters: Run
 }
 
 export function isValidRunbookUrl(value: string): boolean {
-  if (!value.trim()) return true;
+  const link = value.trim();
+  if (!link) return true;
+  // The browser parser turns "http:foo" or "http:///foo" into a host; entity-service's parser does not, so the authority must be written out.
+  if (!/^https?:\/\/[^/?#\s]/i.test(link)) return false;
   try {
-    const url = new URL(value.trim());
-    return url.protocol === "https:" || url.protocol === "http:";
+    return new URL(link).host !== "";
   } catch {
     return false;
   }
