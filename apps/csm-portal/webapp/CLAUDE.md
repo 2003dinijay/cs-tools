@@ -308,6 +308,23 @@ Who the customer is (the **Customer Project**, from which the read-only Customer
 - **One table, two modules.** `utils/__tests__/changeRequests.test.ts` writes the rule out one row per state under the ids `"<STATE>/<column>"` and outcome codes of the backend's Go truth table (`entity-service/internal/repository/change_request_customer_lock_test.go`); neither imports the other's file (the container tests copy only entity-service), so a rule change must change both and a drift shows as a failing row. `NO_CUSTOMER_CONTACTS_HELPER` no longer promises that changing the project routes the step (it cannot be changed any more).
 - e2e: the fake API enforces the same freeze, add-only and Request Approval rules with the backend's own messages (`projectFrozenMessage`, `requirementCannotBeRemovedMessage`, `requirementNeedsProjectMessage`, `requirementGatePassedMessage`, `REQUEST_APPROVAL_NEEDS_PROJECT`, `CANNOT_RETURN_TO_NEW`, exported from `fakeChangeRequestApi.ts`). A spec whose change has a customer box ticked needs a Customer Project (`{ projectId }` as the fake's scope) with a registered contact other than the creator (Acme: Mia and Max) before Request Approval; Gamma has none, so `describe("Request Approval is refused when nobody can be asked")` uses it. The dead end that remains for OLDER changes (already at a gate with nobody asked) starts there instead: `api.startAtState("customer_approval" | "customer_review" | "review")` in the Playwright fake (`openOlderChangeAt` in the lifecycle spec) and `lcSeedAtGate` in the page test's fake backend; a real-stack row is CHG0039104 (below). Real stack, in "the customer requirements lock": the refusal test finds a project whose throwaway change reports no `customerContacts` (the generated projects hold no registered portal-user contact, so the backend's own answer picks it, not a second definition in the spec) and asserts the fake's exported words against the real API, the disabled button and the Edit dialog's `saveError`; it skips when every project of the database has a contact.
 
+### Every create field is editable, and an approved change request is read-only
+
+The edit form (`EditChangeRequestDialog`, inline on the detail page) offers every field the create form sets: Subject,
+Type (New only: it decides the approval flow, `CHANGE_REQUEST_TYPE_FROZEN_REASON` after; choosing Emergency unticks both
+customer boxes in the same request, which the backend requires), Impact, Priority (read through
+`changeRequestPriorityValue`: a value, or the previous system's `{ id, label }` ref), Description, Justification and Risk and
+impact analysis (sent as `impactDescription`), beside the fields it already had. Only what changed is sent.
+
+Once the change request has been approved (`changeRequestApprovedReadOnlyReason`: Customer Approval, Scheduled, Implement,
+Review, Customer Review, Closed, Rollback -- CAB approval received, or a Standard change scheduled; not Canceled) every
+field is disabled under one notice and the form's only input is the internal **Work note**, sent as `workNote` with the
+button "Add work note". This mirrors entity-service's approved-content lock (400 `change_request_approved_read_only`),
+which is the authority; the deployments' window (`changeRequestScopeLockedReason`) closes at the same point, and the review
+box can no longer be added after the approval. A work note can ride with any save before the approval too;
+`usePatchChangeRequest` refreshes the comments query when one was sent. The CSM microapp disables its Edit button in the
+same states. e2e: the fake API refuses the same edits in the backend's words (`approvedReadOnlyMessage`, `APPROVED_STATES`).
+
 ### Customers never decide in the CSM portal
 
 Customers do **not** sign in to the CSM portal: they answer a change request's Customer Approval / Customer Review in the **customer portal** (`apps/customer-portal`). So the Approvals tab only *displays* the customer stages (the Customer Group's rows, Requested) and, once the customer has answered, the outcome (the deciding contact's row Approved / Rejected, the others' Cancelled, the change Scheduled / Closed / Canceled / Rollback); an internal user who is not an approver gets no Approve / Reject there, and nobody on staff can answer for the customer (below). Consequences for tests:

@@ -84,6 +84,13 @@ export function usePatchChangeRequest(): UseMutationResult<
       void queryClient.invalidateQueries({
         queryKey: [ApiQueryKeys.CHANGE_REQUEST_APPROVALS, variables.id],
       });
+      // A work note sent with the patch is a journal entry: the activity feed
+      // reads it through the comments query.
+      if (variables.patch.workNote) {
+        void queryClient.invalidateQueries({
+          queryKey: [ApiQueryKeys.CHANGE_REQUEST_COMMENTS, variables.id],
+        });
+      }
     },
   });
 }

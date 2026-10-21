@@ -3384,6 +3384,29 @@ export interface BeConfigurationItemSearchResponse {
  * UI starts sending it, after checking it against the published contract.
  */
 export interface BePatchChangeRequestPayload {
+  /** The subject. */
+  title?: string;
+  /** Rich-text description; `""` clears it. */
+  description?: string;
+  /** Rich-text justification; `""` clears it. */
+  justification?: string;
+  /** Rich-text "Risk and impact analysis" (read back as `impactDescription`); `""` clears it. */
+  impactDescription?: string;
+  impact?: BeChangeRequestImpact;
+  priority?: BeChangeRequestPriority;
+  /**
+   * The change type. It decides the approval flow, so the backend accepts a
+   * change only while the change request is New (a resend of the stored type is
+   * accepted in every state). Re-typing into `emergency` must turn both customer
+   * boxes off in the same request.
+   */
+  type?: BeChangeRequestType;
+  /**
+   * An internal work note, appended to the journal (never blank). The one thing
+   * that can still be added once the change request has been approved: every
+   * field is read-only then (400 `change_request_approved_read_only`).
+   */
+  workNote?: string;
   plannedStartOn?: string;
   plannedEndOn?: string;
   assignedTeamId?: string;

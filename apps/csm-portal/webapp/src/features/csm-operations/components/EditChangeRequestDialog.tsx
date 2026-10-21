@@ -44,6 +44,9 @@ import { useSearchServiceRequestsForSelect } from "@features/csm-operations/api/
 import type {
   BeChangeRequestCategory,
   BeChangeRequestDetail,
+  BeChangeRequestImpact,
+  BeChangeRequestPriority,
+  BeChangeRequestType,
   BeGroup,
   BeCaseSearchView,
   BePatchChangeRequestPayload,
@@ -66,7 +69,14 @@ import { isBlankHtml, sanitizeRichTextHtml } from "@utils/sanitizeHtml";
 import { userLabel } from "@features/csm-operations/utils/incidentFormOptions";
 import {
   CHANGE_REQUEST_CATEGORY_OPTIONS,
+  CHANGE_REQUEST_CREATE_TYPE_OPTIONS,
+  CHANGE_REQUEST_IMPACT_OPTIONS,
+  CHANGE_REQUEST_PRIORITY_OPTIONS,
+  CHANGE_REQUEST_TYPE_FROZEN_REASON,
+  changeRequestApprovedReadOnlyReason,
   changeRequestCategoryValue,
+  changeRequestImpactValue,
+  changeRequestPriorityValue,
   changeRequestScopeLockedReason,
   customerApprovalLockedReason,
   customerProjectLockedReason,
@@ -104,6 +114,15 @@ interface EditChangeRequestDialogProps {
    * request page uses this so its fields aren't squeezed into a narrow modal.
    */
   variant?: "dialog" | "inline";
+}
+
+/** The create form's subject cap. */
+const SUBJECT_MAX = 500;
+
+/** A detail response's type as one of the create form's three, or "" (a legacy type the form does not offer). */
+function creatableTypeValue(type: string | null | undefined): BeChangeRequestType | "" {
+  const lower = type?.trim().toLowerCase() ?? "";
+  return CHANGE_REQUEST_CREATE_TYPE_OPTIONS.find((o) => o.value === lower)?.value ?? "";
 }
 
 /** Grid placement for a field that should span both columns in the inline
@@ -184,7 +203,10 @@ function useRichTextPlanField(storedHtml?: string | null): RichTextPlanField {
 }
 
 /**
- * Edit the change-request fields the BE allows updating: the originating
+ * Edit the change-request fields the BE allows updating -- every field the
+ * create form sets: the subject, type (in New only: it decides the approval
+ * flow), impact, priority, description, justification and risk and impact
+ * analysis, the originating
  * service request (`caseId`; a change request raised without one can be linked
  * afterwards, and a wrong link corrected), the planned window,
  * the assignment group, the individual assignee, requester, customer group,
@@ -218,10 +240,16 @@ function useRichTextPlanField(storedHtml?: string | null): RichTextPlanField {
  * (saving clears it); after New nothing can untick it (add-only), so a ticked box
  * is shown as stored, disabled.
  *
+ * ONCE THE CHANGE REQUEST HAS BEEN APPROVED (CAB approval received; a Standard
+ * change once Request Approval scheduled it) every field is read-only
+ * (`changeRequestApprovedReadOnlyReason`): the form shows them disabled under
+ * the reason and offers only a work note, which is all the backend accepts
+ * then (400 `change_request_approved_read_only` otherwise). A work note can be
+ * added with any save, before the approval too.
+ *
  * Deliberately NOT here, even though the backend's write contract accepts
- * them: `priorityKey` (no metadata endpoint yet for the picker),
- * `comment`/`workNote` (these append journal entries, which the Comments tab
- * already covers), and `durationInput` (only succeeds against an exact-match
+ * them: the customer-visible `comment` (the Comments tab covers it), and
+ * `durationInput` (only succeeds against an exact-match
  * validation rule not worth half-implementing here — see
  * `BePatchChangeRequestPayload`'s doc comment for the full reasoning on each).
  *
@@ -259,10 +287,27 @@ export default function EditChangeRequestDialog({
   const initialIsPlanningVisibleToCustomers = cr.isPlanningVisibleToCustomers ?? false;
   const initialCustomerApprovalRequired = cr.customerApprovalRequired ?? false;
   const initialCustomerReviewRequired = cr.customerReviewRequired ?? false;
+  // Once approved, every field is read-only: only a work note can be added.
+  const approvedLock = changeRequestApprovedReadOnlyReason(cr.state);
+  const fieldsDisabled = isSaving || !!approvedLock;
+  const initialTitle = cr.subject ?? "";
+  const [title, setTitle] = useState(initialTitle);
+  const initialImpact = changeRequestImpactValue(cr.impact);
+  const [impact, setImpact] = useState<BeChangeRequestImpact | "">(initialImpact);
+  const initialPriority = changeRequestPriorityValue(cr.priority);
+  const [priority, setPriority] = useState<BeChangeRequestPriority | "">(initialPriority);
+  // The type decides the approval flow: editable in New only (the backend's rule).
+  const initialType = creatableTypeValue(cr.type);
+  const [type, setType] = useState<BeChangeRequestType | "">(initialType);
+  const typeLocked = isChangeRequestCreationPhase(cr.state) ? null : CHANGE_REQUEST_TYPE_FROZEN_REASON;
+  const [workNote, setWorkNote] = useState("");
   // Emergency: no customer steps (see the doc comment above). In New the form seeds
-  // them OFF, so a leftover tick from before the rule is cleared by saving.
-  const isEmergency = isEmergencyChangeRequestType(cr.type);
-  const emergencyClearsCustomerSteps = isEmergency && isChangeRequestCreationPhase(cr.state);
+  // them OFF, so a leftover tick from before the rule is cleared by saving. The
+  // stored type decides the locks; the chosen one (it can change in New) decides
+  // whether the boxes are offered.
+  const storedIsEmergency = isEmergencyChangeRequestType(cr.type);
+  const isEmergency = isEmergencyChangeRequestType(type || cr.type);
+  const emergencyClearsCustomerSteps = storedIsEmergency && isChangeRequestCreationPhase(cr.state);
   // After New the customer's part is add-only (see the rules in utils/changeRequests.ts):
   // a ticked box is read-only, an unticked one may still be ticked until the gate it
   // controls has passed and only when a Customer Project is set. The backend refuses
@@ -273,14 +318,14 @@ export default function EditChangeRequestDialog({
   // the boxes), not for one of these reasons; a box a change of that type still has
   // ticked from before the rule keeps its add-only one.
   const customerApprovalLocked =
-    isEmergency && !initialCustomerApprovalRequired
+    storedIsEmergency && !initialCustomerApprovalRequired
       ? null
       : customerApprovalLockedReason(cr.state, {
           stored: initialCustomerApprovalRequired,
           hasProject: hasStoredProject,
         });
   const customerReviewLocked =
-    isEmergency && !initialCustomerReviewRequired
+    storedIsEmergency && !initialCustomerReviewRequired
       ? null
       : customerReviewLockedReason(cr.state, {
           stored: initialCustomerReviewRequired,
@@ -323,6 +368,9 @@ export default function EditChangeRequestDialog({
   const implementationPlan = useRichTextPlanField(cr.implementationPlan);
   const affectedServicesText = useRichTextPlanField(cr.affectedServicesText);
   const affectedComponentsText = useRichTextPlanField(cr.affectedComponentsText);
+  const description = useRichTextPlanField(cr.description);
+  const justification = useRichTextPlanField(cr.justification);
+  const impactDescription = useRichTextPlanField(cr.impactDescription);
 
   // Client-side only, and only when both ends are set: the backing system
   // does its own validation and this must not become the thing that blocks a
@@ -333,8 +381,18 @@ export default function EditChangeRequestDialog({
   const plannedEndBeforeStart =
     !!startDate && !!endDate && endDate.getTime() <= startDate.getTime();
 
+  const titleMissing = !title.trim();
+
   const patch = useMemo<BePatchChangeRequestPayload>(() => {
     const next: BePatchChangeRequestPayload = {};
+    if (title.trim() && title.trim() !== initialTitle.trim()) next.title = title.trim();
+    if (description.isDirty) next.description = description.outgoing;
+    if (justification.isDirty) next.justification = justification.outgoing;
+    if (impactDescription.isDirty) next.impactDescription = impactDescription.outgoing;
+    if (impact && impact !== initialImpact) next.impact = impact;
+    if (priority && priority !== initialPriority) next.priority = priority;
+    if (!typeLocked && type && type !== initialType) next.type = type;
+    if (workNote.trim()) next.workNote = workNote.trim();
     // The form holds wall-clock values in the user's timezone (seeded from the
     // record's UTC value above); the BE takes UTC.
     if (plannedStart !== initialPlannedStart && plannedStart) {
@@ -399,6 +457,22 @@ export default function EditChangeRequestDialog({
     }
     return next;
   }, [
+    title,
+    initialTitle,
+    description.isDirty,
+    description.outgoing,
+    justification.isDirty,
+    justification.outgoing,
+    impactDescription.isDirty,
+    impactDescription.outgoing,
+    impact,
+    initialImpact,
+    priority,
+    initialPriority,
+    typeLocked,
+    type,
+    initialType,
+    workNote,
     plannedStart,
     initialPlannedStart,
     plannedEnd,
@@ -474,7 +548,7 @@ export default function EditChangeRequestDialog({
           minHeight={100}
           maxHeight={300}
           toolbarVariant="full"
-          disabled={isSaving}
+          disabled={fieldsDisabled}
         />
       </Box>
       <FormHelperText id={`${id}-help`}>{helperText}</FormHelperText>
@@ -497,7 +571,7 @@ export default function EditChangeRequestDialog({
     const control = (
       <FormControlLabel
         sx={{ alignItems: "flex-start", m: 0 }}
-        disabled={isSaving || !!lockedReason || isEmergency}
+        disabled={fieldsDisabled || !!lockedReason || isEmergency}
         control={
           <Checkbox
             size="small"
@@ -530,6 +604,24 @@ export default function EditChangeRequestDialog({
     );
   };
 
+  // Internal only: a work note is journaled with the save and never shown to the
+  // customer. The one input left once the change has been approved.
+  const workNoteField = (
+    <TextField
+      id="cr-edit-work-note"
+      label="Work note (internal)"
+      value={workNote}
+      onChange={(e) => setWorkNote(e.target.value)}
+      fullWidth
+      multiline
+      minRows={2}
+      size="small"
+      disabled={isSaving}
+      helperText="Added to the activity as an internal work note; never shown to the customer."
+      sx={FULL_ROW}
+    />
+  );
+
   const inline = variant === "inline";
   const fields = (
         <Box
@@ -550,6 +642,113 @@ export default function EditChangeRequestDialog({
               {saveError}
             </Alert>
           )}
+          {approvedLock && (
+            // An explanation, not an error: a status, so a save error stays the form's one alert.
+            <Alert severity="info" role="status" sx={FULL_ROW}>
+              {approvedLock}
+            </Alert>
+          )}
+          {approvedLock && workNoteField}
+          <TextField
+            id="cr-edit-subject"
+            label="Subject"
+            required
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            fullWidth
+            size="small"
+            disabled={fieldsDisabled}
+            error={titleMissing && !approvedLock}
+            helperText={titleMissing && !approvedLock ? "A change request needs a subject." : undefined}
+            slotProps={{ htmlInput: { maxLength: SUBJECT_MAX } }}
+            sx={FULL_ROW}
+          />
+          <FormControl fullWidth size="small" disabled={fieldsDisabled || !!typeLocked}>
+            <InputLabel id="cr-edit-type-label" shrink>
+              Type
+            </InputLabel>
+            <Select
+              labelId="cr-edit-type-label"
+              label="Type"
+              value={type}
+              displayEmpty
+              inputProps={{ "aria-describedby": typeLocked ? "cr-edit-type-help" : undefined }}
+              onChange={(e) => {
+                const next = String(e.target.value) as BeChangeRequestType | "";
+                setType(next);
+                // An Emergency change takes no customer step: the backend requires
+                // both boxes off in the request that re-types it.
+                if (isEmergencyChangeRequestType(next)) {
+                  setCustomerApprovalRequired(false);
+                  setCustomerReviewRequired(false);
+                }
+              }}
+            >
+              {!initialType && (
+                <MenuItem value="">
+                  <Typography component="span" color="text.secondary">
+                    {cr.type ? cr.type : "-- Select --"}
+                  </Typography>
+                </MenuItem>
+              )}
+              {CHANGE_REQUEST_CREATE_TYPE_OPTIONS.map((o) => (
+                <MenuItem key={o.value} value={o.value}>
+                  {o.label}
+                </MenuItem>
+              ))}
+            </Select>
+            {typeLocked && !approvedLock && <FormHelperText id="cr-edit-type-help">{typeLocked}</FormHelperText>}
+          </FormControl>
+          <FormControl fullWidth size="small" disabled={fieldsDisabled}>
+            <InputLabel id="cr-edit-impact-label" shrink>
+              Impact
+            </InputLabel>
+            <Select
+              labelId="cr-edit-impact-label"
+              label="Impact"
+              value={impact}
+              displayEmpty
+              onChange={(e) => setImpact(String(e.target.value) as BeChangeRequestImpact | "")}
+            >
+              {!initialImpact && (
+                <MenuItem value="">
+                  <Typography component="span" color="text.secondary">
+                    -- Select --
+                  </Typography>
+                </MenuItem>
+              )}
+              {CHANGE_REQUEST_IMPACT_OPTIONS.map((o) => (
+                <MenuItem key={o.value} value={o.value}>
+                  {o.label}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+          <FormControl fullWidth size="small" disabled={fieldsDisabled}>
+            <InputLabel id="cr-edit-priority-label" shrink>
+              Priority
+            </InputLabel>
+            <Select
+              labelId="cr-edit-priority-label"
+              label="Priority"
+              value={priority}
+              displayEmpty
+              onChange={(e) => setPriority(String(e.target.value) as BeChangeRequestPriority | "")}
+            >
+              {!initialPriority && (
+                <MenuItem value="">
+                  <Typography component="span" color="text.secondary">
+                    -- Select --
+                  </Typography>
+                </MenuItem>
+              )}
+              {CHANGE_REQUEST_PRIORITY_OPTIONS.map((o) => (
+                <MenuItem key={o.value} value={o.value}>
+                  {o.label}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
           {/*
             No `clearable` on either picker. The patch payload has no way to
             express "remove the planned date" — `plannedStartOn`/`plannedEndOn`
@@ -561,6 +760,7 @@ export default function EditChangeRequestDialog({
           <LocalizationProvider dateAdapter={AdapterDateFns}>
             <DateTimePicker
               label="Planned start"
+              disabled={fieldsDisabled}
               value={startDate}
               onChange={(next) =>
                 setPlannedStart(
@@ -581,6 +781,7 @@ export default function EditChangeRequestDialog({
             />
             <DateTimePicker
               label="Planned end"
+              disabled={fieldsDisabled}
               value={endDate}
               onChange={(next) =>
                 setPlannedEnd(
@@ -607,7 +808,7 @@ export default function EditChangeRequestDialog({
             placeholder="Search groups…"
             value={assignedTeamId}
             onChange={setAssignedTeamId}
-            disabled={isSaving}
+            disabled={fieldsDisabled}
             useSearch={useSearchGroups}
             getId={(g) => g.id}
             getLabel={(g) => g.name}
@@ -620,7 +821,7 @@ export default function EditChangeRequestDialog({
             placeholder="Search people…"
             value={assignedEngineerId}
             onChange={setAssignedEngineerId}
-            disabled={isSaving}
+            disabled={fieldsDisabled}
             useSearch={useSearchInternalUsersByName}
             getId={(u) => u.id!}
             getLabel={userLabel}
@@ -637,7 +838,7 @@ export default function EditChangeRequestDialog({
             placeholder="Search service requests by CS number or subject…"
             value={caseId}
             onChange={setCaseId}
-            disabled={isSaving}
+            disabled={fieldsDisabled}
             useSearch={useSearchServiceRequestsForSelect}
             searchExtra={cr.project?.id}
             getId={(c) => c.id}
@@ -655,7 +856,7 @@ export default function EditChangeRequestDialog({
             placeholder="Search people…"
             value={requestedById}
             onChange={setRequestedById}
-            disabled={isSaving}
+            disabled={fieldsDisabled}
             useSearch={useSearchInternalUsersByName}
             getId={(u) => u.id!}
             getLabel={userLabel}
@@ -675,7 +876,7 @@ export default function EditChangeRequestDialog({
             )}
             <ChangeRequestScopeFields
               scope={scope}
-              disabled={isSaving || !!scopeLocked}
+              disabled={fieldsDisabled || !!scopeLocked}
               projectDisabled={!!projectLocked}
               idPrefix="cr-edit"
               // A saved project can be swapped for another but not removed —
@@ -684,7 +885,7 @@ export default function EditChangeRequestDialog({
             />
             <ChangeRequestCustomerGroupField scope={scope} idPrefix="cr-edit" />
           </Box>
-          <FormControl fullWidth size="small" disabled={isSaving}>
+          <FormControl fullWidth size="small" disabled={fieldsDisabled}>
             <InputLabel id="cr-edit-category-label" shrink>
               Category
             </InputLabel>
@@ -736,7 +937,7 @@ export default function EditChangeRequestDialog({
             onChange={(e) => setRollbackDurationText(e.target.value)}
             fullWidth
             size="small"
-            disabled={isSaving}
+            disabled={fieldsDisabled}
             placeholder="e.g. 30 mins"
             helperText="Free text — ServiceNow does not parse this into a structured duration."
           />
@@ -748,7 +949,7 @@ export default function EditChangeRequestDialog({
                 size="small"
                 checked={isPlanningVisibleToCustomers}
                 onChange={(e) => setIsPlanningVisibleToCustomers(e.target.checked)}
-                disabled={isSaving}
+                disabled={fieldsDisabled}
                 inputProps={{ "aria-label": "Implementation Plan visible to customers" }}
               />
             }
@@ -758,6 +959,19 @@ export default function EditChangeRequestDialog({
               </Typography>
             }
           />
+          {renderPlanField("cr-edit-description", "Description", description, "What is changing?")}
+          {renderPlanField(
+            "cr-edit-justification",
+            "Justification",
+            justification,
+            "Why this change is needed.",
+          )}
+          {renderPlanField(
+            "cr-edit-risk-impact",
+            "Risk and impact analysis",
+            impactDescription,
+            "What could go wrong, and what is affected if it does.",
+          )}
           {renderPlanField(
             "cr-edit-implementation-plan",
             "Implementation plan",
@@ -788,6 +1002,7 @@ export default function EditChangeRequestDialog({
             affectedComponentsText,
             "Components impacted by this change.",
           )}
+          {!approvedLock && workNoteField}
         </Box>
   );
 
@@ -799,9 +1014,9 @@ export default function EditChangeRequestDialog({
       <Button
         variant="contained"
         onClick={() => onSave(patch)}
-        disabled={isSaving || !hasChanges || plannedEndBeforeStart}
+        disabled={isSaving || !hasChanges || plannedEndBeforeStart || (titleMissing && !approvedLock)}
       >
-        {isSaving ? "Saving…" : "Save"}
+        {isSaving ? "Saving…" : approvedLock ? "Add work note" : "Save"}
       </Button>
     </>
   );

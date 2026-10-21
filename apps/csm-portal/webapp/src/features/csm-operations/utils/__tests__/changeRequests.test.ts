@@ -30,6 +30,10 @@ import {
   changeRequestCategoryLabel,
   changeRequestCategoryValue,
   changeRequestScopeLockedReason,
+  changeRequestApprovedReadOnlyReason,
+  CHANGE_REQUEST_APPROVED_READ_ONLY_REASON,
+  changeRequestPriorityValue,
+  changeRequestImpactValue,
   changeRequestTransitionLabel,
   changeRequestTransitionRequiresReason,
   countActiveCRFilters,
@@ -1228,14 +1232,61 @@ describe("change request category helpers", () => {
 });
 
 describe("changeRequestScopeLockedReason (the deployments; the Customer Project is frozen earlier)", () => {
-  it("is editable before implementation and locked from implement onwards", () => {
-    for (const state of ["new", "assess", "authorize", "customer_approval", "scheduled"]) {
+  it("is editable until the approval and locked from it onwards (the backend's changeRequestLinksLockedStates)", () => {
+    for (const state of ["new", "assess", "authorize"]) {
       expect(changeRequestScopeLockedReason(state)).toBeNull();
     }
-    for (const state of ["implement", "review", "customer_review", "closed", "rollback", "canceled"]) {
-      expect(changeRequestScopeLockedReason(state)).toMatch(/deployments can't be changed/);
+    for (const state of ["customer_approval", "scheduled", "implement", "review", "customer_review", "closed", "rollback", "canceled"]) {
+      expect(changeRequestScopeLockedReason(state)).toMatch(/deployments can't be changed once the change request has been approved/);
     }
     expect(changeRequestScopeLockedReason(undefined)).toBeNull();
+  });
+});
+
+// The entity service's changeRequestApprovedStates (change_request_approved_lock.go): one row per
+// state, so a drift on either side shows as a failing row.
+describe("changeRequestApprovedReadOnlyReason (every field read-only once approved)", () => {
+  it.each([
+    ["new", false],
+    ["assess", false],
+    ["authorize", false],
+    ["customer_approval", true],
+    ["scheduled", true],
+    ["implement", true],
+    ["review", true],
+    ["customer_review", true],
+    ["closed", true],
+    ["rollback", true],
+    // A change can be cancelled before anybody approved it.
+    ["canceled", false],
+  ] as const)("%s -> read-only %s", (state, readOnly) => {
+    expect(changeRequestApprovedReadOnlyReason(state) !== null).toBe(readOnly);
+  });
+
+  it("is editable with no state, and says what is still possible", () => {
+    expect(changeRequestApprovedReadOnlyReason(undefined)).toBeNull();
+    expect(changeRequestApprovedReadOnlyReason("scheduled")).toBe(CHANGE_REQUEST_APPROVED_READ_ONLY_REASON);
+    expect(CHANGE_REQUEST_APPROVED_READ_ONLY_REASON).toMatch(/Only work notes can be added/);
+  });
+});
+
+describe("changeRequestPriorityValue / changeRequestImpactValue", () => {
+  it("reads the value the Postgres data source returns", () => {
+    expect(changeRequestPriorityValue("moderate")).toBe("moderate");
+    expect(changeRequestPriorityValue(" CRITICAL ")).toBe("critical");
+    expect(changeRequestImpactValue("High")).toBe("high");
+  });
+
+  it("reads the { id, label } ref the previous system's response carried", () => {
+    expect(changeRequestPriorityValue({ id: 2, label: "2 - High" })).toBe("high");
+    expect(changeRequestPriorityValue({ id: 4, label: "4 - Low" })).toBe("low");
+  });
+
+  it("is empty for nothing, or for a value the form does not offer", () => {
+    expect(changeRequestPriorityValue(null)).toBe("");
+    expect(changeRequestPriorityValue("planning")).toBe("");
+    expect(changeRequestImpactValue(undefined)).toBe("");
+    expect(changeRequestImpactValue("extreme")).toBe("");
   });
 });
 

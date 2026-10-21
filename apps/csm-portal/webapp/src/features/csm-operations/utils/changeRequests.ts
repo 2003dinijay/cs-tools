@@ -20,6 +20,7 @@ import type {
   BeChangeRequestCustomerProposal,
   BeChangeRequestDetail,
   BeChangeRequestImpact,
+  BeChangeRequestPriority,
   BeChangeRequestSearchPayload,
   BeChangeRequestState,
   BeChangeRequestType,
@@ -1042,24 +1043,90 @@ export function requestApprovalNeedsContactReason(
 }
 
 /**
- * States from which the deployments / deployment products can no longer be
- * changed (the backend refuses with a 400 from `implement` onward). The Customer
- * Project is frozen far earlier (see `customerProjectLockedReason`).
+ * The states a change request is in only once it has been approved: CAB approval
+ * received (Normal, Emergency), or Request Approval having scheduled a Standard
+ * change, which is pre-approved. Canceled is not one: a change can be cancelled
+ * before anybody approved it. Mirrors the entity service's
+ * `changeRequestApprovedStates` (change_request_approved_lock.go).
  */
-const SCOPE_LOCKED_STATES: readonly string[] = [
+const CHANGE_REQUEST_APPROVED_STATES: readonly string[] = [
+  "customer_approval",
+  "scheduled",
   "implement",
   "review",
   "customer_review",
   "closed",
   "rollback",
-  "canceled",
 ];
+
+/** Why an approved change request's fields are read-only. */
+export const CHANGE_REQUEST_APPROVED_READ_ONLY_REASON =
+  "CAB approval has been received, so this change request's fields are read-only. Only work notes can be added.";
+
+/**
+ * Why every field of the change request is read-only in `state` (it has been
+ * approved), or `null` while it can still be edited. The entity service refuses
+ * the edit itself (400 `change_request_approved_read_only`); the form only keeps
+ * its fields from offering it. Work notes are still added.
+ */
+export function changeRequestApprovedReadOnlyReason(state?: string | null): string | null {
+  return state && CHANGE_REQUEST_APPROVED_STATES.includes(state) ? CHANGE_REQUEST_APPROVED_READ_ONLY_REASON : null;
+}
+
+/**
+ * States from which the deployments / deployment products can no longer be
+ * changed: the change has been approved (or it is over), so the scope it was
+ * approved for is fixed. The Customer Project is frozen far earlier (see
+ * `customerProjectLockedReason`).
+ */
+const SCOPE_LOCKED_STATES: readonly string[] = [...CHANGE_REQUEST_APPROVED_STATES, "canceled"];
 
 /** Why the deployments (and their products) are locked in `state`, or `null` when editable. */
 export function changeRequestScopeLockedReason(state?: string | null): string | null {
   return state && SCOPE_LOCKED_STATES.includes(state)
-    ? "Locked: the deployments can't be changed once implementation has started."
+    ? "Locked: the deployments can't be changed once the change request has been approved."
     : null;
+}
+
+/** Why the type cannot be changed once approval has been requested (the backend's own rule). */
+export const CHANGE_REQUEST_TYPE_FROZEN_REASON =
+  "The type decides the approval flow, so it is fixed once approval has been requested. Cancel and clone to change it.";
+
+/** The priorities a change request can be given (the create form's list). */
+export const CHANGE_REQUEST_PRIORITY_OPTIONS: ReadonlyArray<{ value: BeChangeRequestPriority; label: string }> = [
+  { value: "critical", label: "Critical" },
+  { value: "high", label: "High" },
+  { value: "moderate", label: "Moderate" },
+  { value: "low", label: "Low" },
+];
+
+/** The impacts a change request can be given (the create form's list). */
+export const CHANGE_REQUEST_IMPACT_OPTIONS: ReadonlyArray<{ value: BeChangeRequestImpact; label: string }> = [
+  { value: "high", label: "High" },
+  { value: "medium", label: "Medium" },
+  { value: "low", label: "Low" },
+];
+
+/**
+ * A detail response's priority as one of the form's values, or "" when unset or
+ * unknown. The Postgres data source returns the value ("moderate"); the response
+ * of the previous system carried an `{ id, label }` ref ("3 - Moderate").
+ */
+export function changeRequestPriorityValue(priority: unknown): BeChangeRequestPriority | "" {
+  const raw =
+    typeof priority === "string"
+      ? priority
+      : priority && typeof priority === "object" && "label" in priority
+        ? String((priority as { label?: unknown }).label ?? "")
+        : "";
+  const lower = raw.trim().toLowerCase();
+  return CHANGE_REQUEST_PRIORITY_OPTIONS.find((o) => lower === o.value || lower.endsWith(` ${o.value}`))?.value ?? "";
+}
+
+/** A detail response's impact as one of the form's values, or "" when unset or unknown. */
+export function changeRequestImpactValue(impact: string | null | undefined): BeChangeRequestImpact | "" {
+  const lower = impact?.trim().toLowerCase() ?? "";
+  return CHANGE_REQUEST_IMPACT_OPTIONS.find((o) => o.value === lower)?.value ?? "";
 }
 
 // ---------------------------------------------------------------------------

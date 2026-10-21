@@ -423,6 +423,21 @@ export class ChangeRequestDetailPage {
     return this.editDialog().getByRole("button", { name: /^(Save|Saving…)$/ });
   }
 
+  /** The form's one action once the change request has been approved: every field is read-only, a work note is all it adds. */
+  addWorkNoteButton(): Locator {
+    return this.editDialog().getByRole("button", { name: /^(Add work note|Saving…)$/ });
+  }
+
+  /** The notice over the form once the change request has been approved (CAB approval received). */
+  editApprovedNotice(): Locator {
+    return this.editDialog().getByText(/CAB approval has been received, so this change request's fields are read-only/);
+  }
+
+  /** The form's internal work note. */
+  editWorkNoteField(): Locator {
+    return this.editDialog().getByRole("textbox", { name: /work note/i });
+  }
+
   async saveEdit(): Promise<void> {
     await this.saveButton().click();
   }
