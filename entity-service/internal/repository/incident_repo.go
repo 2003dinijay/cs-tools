@@ -429,11 +429,12 @@ func incidentWhereClause(f domain.SearchIncidentsFilters, priorities, states, se
 		add("inc.is_sla_met = $%d", *madeSla)
 	}
 	if slaViolated != nil {
-		if *slaViolated {
-			where += fmt.Sprintf(" AND EXISTS (SELECT 1 FROM sla_live sla WHERE sla.work_item_id = wi.id AND sla.live_has_breached = true)")
-		} else {
-			where += fmt.Sprintf(" AND NOT EXISTS (SELECT 1 FROM sla_live sla WHERE sla.work_item_id = wi.id AND sla.live_has_breached = true)")
-		}
+		where += slaBreachedPredicate("wi.id", *slaViolated)
+	}
+	{
+		var slaClause string
+		slaClause, args, argIdx = slaPercentPredicate("wi.id", f.ParsedTaskSLA, args, argIdx)
+		where += slaClause
 	}
 	if createdStartDate != nil {
 		add("wi.created_on >= $%d", *createdStartDate)
