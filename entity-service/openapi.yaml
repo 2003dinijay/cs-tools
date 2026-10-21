@@ -16370,7 +16370,7 @@ components:
           type: string
         currentSupportStatus:
           type: string
-          enum: [available, extended, deprecated, discontinued]
+          enum: [available, extended, deprecated, discontinued, null]
           nullable: true
         releaseDate:
           type: string
@@ -16693,6 +16693,7 @@ components:
             - stress
             - uat
             - development
+            - null
 
     DeployedProductView:
       type: object

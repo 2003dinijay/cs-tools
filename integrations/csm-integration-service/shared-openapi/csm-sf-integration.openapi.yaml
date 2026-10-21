@@ -375,6 +375,7 @@ components:
           - EXTENDED
           - DEPRECATED
           - DISCONTINUED
+          - null
           nullable: true
         releaseDate:
           type: string
@@ -584,6 +585,7 @@ components:
           - STRESS
           - UAT
           - DEVELOPMENT
+          - null
     DeployedProductView:
       type: object
       properties:

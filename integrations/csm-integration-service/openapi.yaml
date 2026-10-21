@@ -2136,7 +2136,7 @@ components:
           type: string
         currentSupportStatus:
           type: string
-          enum: [AVAILABLE, EXTENDED, DEPRECATED, DISCONTINUED]
+          enum: [AVAILABLE, EXTENDED, DEPRECATED, DISCONTINUED, null]
           nullable: true
         releaseDate:
           type: string
@@ -2226,6 +2226,7 @@ components:
             - STRESS
             - UAT
             - DEVELOPMENT
+            - null
 
     DeployedProductView:
       type: object
