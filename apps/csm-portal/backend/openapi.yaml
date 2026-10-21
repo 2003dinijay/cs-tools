@@ -12188,8 +12188,8 @@ paths:
       operationId: getTeamScheduleMyLeadTeams
       description: >
         Response is the entity service's payload, forwarded unchanged: `teamKeys` (teams the caller
-        leads, runs as rota admin, or marks as rota marker) and `markerOnlyTeamKeys` (the ones held
-        only as rota marker, which may be marked but not generated, and give no say over the tags).
+        leads, runs as rota admin, or marks as rota manager) and `markerOnlyTeamKeys` (the ones held
+        only as rota manager, which may be marked but not generated, and give no say over the tags).
         Whether the caller may edit a team's rota is decided by the entity service.
       responses:
         "200":
@@ -12232,11 +12232,11 @@ paths:
 
   /team-schedule/rota-access:
     get:
-      summary: Rota admins and rota markers, and what the caller may change.
+      summary: Rota admins and rota managers, and what the caller may change.
       operationId: getTeamScheduleRotaAccess
       description: >
         The Rota access tab. The entity service's payload, forwarded unchanged: `canManage`
-        (`rotaAdmins` for a CSM admin, `markerFamilies` for the families whose markers the caller
+        (`rotaAdmins` for a CSM admin, `markerFamilies` for the families whose rota managers the caller
         may change), `rotaAdmins[]` and `markers[]`. A caller who may change nothing gets empty
         lists, which is how the page decides not to show the tab.
       responses:
@@ -12373,11 +12373,11 @@ paths:
 
   /team-schedule/rota-access/markers/{teamKey}/{userId}:
     put:
-      summary: Make somebody a team's rota marker.
+      summary: Make somebody a team's rota manager.
       operationId: putTeamScheduleRotaMarker
       description: >
-        A rota marker may mark the team's rotations, leave and allocations, and nothing else. A CSM
-        admin may name any team's marker, the family's rota admin their own family's; the entity
+        A rota manager may mark the team's rotations, leave and allocations, and nothing else. A CSM
+        admin may name any team's rota manager, the family's rota admin their own family's; the entity
         service decides. The person must be active internal staff on the team.
       parameters:
         - name: teamKey
@@ -12425,7 +12425,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
     delete:
-      summary: Take a team's rota marker away.
+      summary: Take a team's rota manager away.
       operationId: deleteTeamScheduleRotaMarker
       description: >
         Same permission as granting; the entity service decides.
