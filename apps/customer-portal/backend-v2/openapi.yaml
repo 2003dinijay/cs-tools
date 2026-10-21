@@ -171,6 +171,8 @@ paths:
       summary: Update a project's AI chat assistant settings.
       description: |
         Patches the AI chat assistant (Novera) settings for a project.
+        Requires `projects:update`, which only a customer's own admin
+        (`customer_admin`) holds; WSO2-side roles are refused with 403.
         Exactly one field may be supplied per request; sending both or
         neither is rejected with 400.
       operationId: patchProjectsId

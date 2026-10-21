@@ -148,10 +148,14 @@ func TestHasPermissionMatrix(t *testing.T) {
 		}
 	})
 
-	t.Run("Admin has full CRUD on every module", func(t *testing.T) {
+	t.Run("Admin has full CRUD on every module except projects:update", func(t *testing.T) {
 		admin := []CanonicalRole{RoleAdmin}
 		for _, mod := range allModules {
 			for _, act := range allActions {
+				// projects:update is customer_admin only (AI assistant settings).
+				if mod == ModuleProjects && act == ActionUpdate {
+					continue
+				}
 				if !HasPermission(admin, mod, act) {
 					t.Errorf("Admin must have %s on %s", act, mod)
 				}
@@ -178,12 +182,12 @@ func TestHasPermissionMatrix(t *testing.T) {
 			t.Error("Agent must NOT have Delete on TimeCards")
 		}
 
-		// Projects: RU (no C, no D)
-		if HasPermission(agent, ModuleProjects, ActionCreate) || HasPermission(agent, ModuleProjects, ActionDelete) {
-			t.Error("Agent must NOT have Create or Delete on Projects")
+		// Projects: R only (no C, no U, no D). Update is customer_admin only.
+		if HasPermission(agent, ModuleProjects, ActionCreate) || HasPermission(agent, ModuleProjects, ActionUpdate) || HasPermission(agent, ModuleProjects, ActionDelete) {
+			t.Error("Agent must NOT have Create, Update or Delete on Projects")
 		}
-		if !HasPermission(agent, ModuleProjects, ActionRead) || !HasPermission(agent, ModuleProjects, ActionUpdate) {
-			t.Error("Agent must have RU on Projects")
+		if !HasPermission(agent, ModuleProjects, ActionRead) {
+			t.Error("Agent must have Read on Projects")
 		}
 
 		// Change Requests: CRU (no D)
@@ -237,7 +241,7 @@ func TestHasPermissionMatrix(t *testing.T) {
 			// gates) only ever touches the project's own AI Assistant settings
 			// (hasAgent/hasKbReferences), not general project data, so a
 			// customer's own Admin is allowed to toggle those for their own
-			// project.
+			// project. WSO2-side roles are intentionally excluded from Update.
 			isCustomerAdmin := rName == string(RoleCustomerAdmin)
 			if !HasPermission(roleSet, ModuleProjects, ActionRead) {
 				t.Errorf("%s must have Read on Projects", rName)
@@ -559,12 +563,12 @@ func TestPermissionMatrixOtherModulesUnchanged(t *testing.T) {
 	all := []CanonicalRole{RoleAdmin, RoleAgent, RoleInternal, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser}
 	staff := []CanonicalRole{RoleAdmin, RoleAgent, RoleInternal}
 	admin := []CanonicalRole{RoleAdmin}
-	withCustomerAdmin := append(append([]CanonicalRole{}, staff...), RoleCustomerAdmin)
+	customerAdminOnly := []CanonicalRole{RoleCustomerAdmin}
 
 	want := map[Module]map[Action][]CanonicalRole{
 		ModuleCases:               {ActionCreate: all, ActionRead: all, ActionUpdate: all, ActionDelete: admin},
 		ModuleTimeCards:           {ActionCreate: staff, ActionRead: all, ActionUpdate: staff, ActionDelete: admin},
-		ModuleProjects:            {ActionCreate: admin, ActionRead: all, ActionUpdate: withCustomerAdmin, ActionDelete: admin},
+		ModuleProjects:            {ActionCreate: admin, ActionRead: all, ActionUpdate: customerAdminOnly, ActionDelete: admin},
 		ModuleChangeRequests:      {ActionCreate: staff, ActionRead: all, ActionUpdate: staff, ActionDelete: admin},
 		ModuleDeployments:         {ActionCreate: all, ActionRead: all, ActionUpdate: all, ActionDelete: all},
 		ModuleDeploymentProducts:  {ActionCreate: all, ActionRead: all, ActionUpdate: all, ActionDelete: all},
@@ -825,4 +829,37 @@ func TestRequirePermissionOneOfMiddleware(t *testing.T) {
 			t.Error("a bare context must not report a granted action")
 		}
 	})
+}
+
+// TestProjectsUpdateOnlyCustomerAdmin pins projects:update (PATCH
+// /projects/{id}, the AI assistant settings) to customer_admin: every
+// WSO2-side role and every other external role is refused with 403 by
+// RequirePermission itself.
+func TestProjectsUpdateOnlyCustomerAdmin(t *testing.T) {
+	tests := []struct {
+		role CanonicalRole
+		want int
+	}{
+		{RoleAdmin, http.StatusForbidden},
+		{RoleAgent, http.StatusForbidden},
+		{RoleInternal, http.StatusForbidden},
+		{RoleCustomerAdmin, http.StatusOK},
+		{RoleCustomerUser, http.StatusForbidden},
+		{RolePartnerAdmin, http.StatusForbidden},
+		{RolePartnerUser, http.StatusForbidden},
+	}
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	for _, tt := range tests {
+		t.Run(string(tt.role), func(t *testing.T) {
+			resolver := &mockRoleResolver{roles: []CanonicalRole{tt.role}}
+			h := RequirePermission(resolver, ModuleProjects, ActionUpdate)(next)
+			ctx := WithUserInfo(context.Background(), &UserInfo{UserID: "usr-test"})
+			req := httptest.NewRequestWithContext(ctx, http.MethodPatch, "/projects/x", nil)
+			rr := httptest.NewRecorder()
+			h.ServeHTTP(rr, req)
+			if rr.Code != tt.want {
+				t.Fatalf("role %s: got HTTP %d, want %d", tt.role, rr.Code, tt.want)
+			}
+		})
+	}
 }
