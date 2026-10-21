@@ -212,3 +212,37 @@ func TestIncidentService_UpdateIncident_NotesOnlyRecordNoFieldChange(t *testing.
 		t.Errorf("a notes-only update recorded %+v, want nothing", repo.recordedChanges)
 	}
 }
+
+// TestIncidentService_SearchIncidentActivities_HasMore: hasMore says whether rows lie past this
+// page, so a client paging until it is false reads the whole feed.
+func TestIncidentService_SearchIncidentActivities_HasMore(t *testing.T) {
+	for _, tt := range []struct {
+		name          string
+		offset, total int
+		rows          int
+		want          bool
+	}{
+		{"first of several pages", 0, 120, 50, true},
+		{"last full page", 50, 100, 50, false},
+		{"short last page", 100, 120, 20, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &stubIncidentRepo{
+				searchActivities: func(context.Context, domain.SearchIncidentActivitiesRequest) ([]domain.CaseActivity, int, error) {
+					return make([]domain.CaseActivity, tt.rows), tt.total, nil
+				},
+			}
+			svc := NewIncidentServiceWithPublisher(repo, stubUpdateIncidentUserRepo{}, nil)
+			resp, err := svc.SearchIncidentActivities(context.Background(), domain.SearchIncidentActivitiesRequest{
+				IncidentID: testDeploymentUUID,
+				Pagination: domain.Pagination{Offset: tt.offset, Limit: 50},
+			})
+			if err != nil {
+				t.Fatalf("SearchIncidentActivities: %v", err)
+			}
+			if resp.HasMore != tt.want {
+				t.Errorf("HasMore = %v, want %v", resp.HasMore, tt.want)
+			}
+		})
+	}
+}

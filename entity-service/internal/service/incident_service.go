@@ -667,6 +667,8 @@ func (s *incidentService) SearchIncidentActivities(ctx context.Context, req doma
 		Total:    total,
 		Limit:    req.Pagination.Limit,
 		Offset:   req.Pagination.Offset,
+		// The webapp pages until hasMore is false; without it a feed stopped at its first page.
+		HasMore: req.Pagination.Offset+len(activity) < total,
 	}, nil
 }
 

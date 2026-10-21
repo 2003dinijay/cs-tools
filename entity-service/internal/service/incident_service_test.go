@@ -90,6 +90,7 @@ type stubIncidentRepo struct {
 	getIncidentByID         func(ctx context.Context, id string) (domain.IncidentView, error)
 	updateIncidentLifecycle func(ctx context.Context, id string, u repository.IncidentLifecycleUpdate, actorEmail string) error
 	applySpecialistHandoff  func(ctx context.Context, id, actorEmail string, plan func(repository.SpecialistHandoffSnapshot) (repository.SpecialistHandoffPlan, error)) (repository.SpecialistHandoffWritten, error)
+	searchActivities        func(ctx context.Context, req domain.SearchIncidentActivitiesRequest) ([]domain.CaseActivity, int, error)
 	// recordedChanges collects every RecordIncidentFieldChanges call; recordChangesErr fails them.
 	// Unlike the other hooks it is not a panic when unset: the activity write rides on every update.
 	recordedChanges  []recordedIncidentChanges
@@ -146,7 +147,10 @@ func (s *stubIncidentRepo) GetIncidentByID(ctx context.Context, id string) (doma
 	}
 	panic("not implemented")
 }
-func (s *stubIncidentRepo) SearchIncidentActivities(context.Context, domain.SearchIncidentActivitiesRequest) ([]domain.CaseActivity, int, error) {
+func (s *stubIncidentRepo) SearchIncidentActivities(ctx context.Context, req domain.SearchIncidentActivitiesRequest) ([]domain.CaseActivity, int, error) {
+	if s.searchActivities != nil {
+		return s.searchActivities(ctx, req)
+	}
 	panic("not implemented")
 }
 
