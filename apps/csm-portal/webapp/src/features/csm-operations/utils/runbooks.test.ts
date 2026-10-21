@@ -23,6 +23,7 @@ import {
   filterRunbooks,
   findAlertsContaining,
   findRunbookForIncident,
+  isValidRunbookUrl,
   parseRunbookImport,
   type Runbook,
 } from "./runbooks";
@@ -63,6 +64,20 @@ describe("parseRunbookImport", () => {
     expect(() => parseRunbookImport('[{"alerts": [" "]}]')).toThrow("Entry 1 needs at least one alert name");
     expect(() => parseRunbookImport('{" ": "https://x.example"}')).toThrow("at least one alert name");
     expect(() => parseRunbookImport('{"A": "javascript:alert(1)"}')).toThrow("http(s)");
+  });
+});
+
+describe("isValidRunbookUrl", () => {
+  it("takes a full http(s) link, or nothing", () => {
+    expect(isValidRunbookUrl("https://docs.example.com/a")).toBe(true);
+    expect(isValidRunbookUrl("HTTP://docs.example.com")).toBe(true);
+    expect(isValidRunbookUrl("  ")).toBe(true);
+  });
+
+  it("refuses a link without a written-out host, which the server would refuse", () => {
+    for (const link of ["http:foo", "https:docs.example.com", "http:///foo", "http://", "docs.example.com", "ftp://x.example"]) {
+      expect(isValidRunbookUrl(link), link).toBe(false);
+    }
   });
 });
 
