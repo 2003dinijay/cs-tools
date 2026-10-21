@@ -272,23 +272,32 @@ func TestIncidentCreate_CheckFromServiceNow(t *testing.T) {
 	}
 
 	unknownWatcher := icRequest()
-	unknownWatcher.WatchList = []string{"nobody@test.local"}
+	unknownWatcher.WatchList = []string{icWatcherID, "nobody@test.local"}
+	malformedWatcher := icRequest()
+	malformedWatcher.WatchList = []string{"jdoe"}
 	unknownEngineer := icRequest()
 	missing := "d1000000-0000-0000-0000-0000000000ff"
 	unknownEngineer.AssignedEngineerID = &missing
 	otherCategory := "dns" // a NETWORK subcategory, under SERVICE_INTERRUPTION
 	for name, tc := range map[string]struct {
-		req domain.CreateIncidentRequest
-		sub *string
+		req  domain.CreateIncidentRequest
+		sub  *string
+		want string // the message, when it matters
 	}{
-		"unknown watcher":                 {unknownWatcher, &sub},
-		"unknown assigned engineer":       {unknownEngineer, &sub},
-		"subcategory of another category": {icRequest(), &otherCategory},
+		// Named by position, never by the address: the message is logged.
+		"unknown watcher":                 {unknownWatcher, &sub, "watchList entry 2 is not a known user"},
+		"malformed watcher":               {malformedWatcher, &sub, "watchList contains an entry that is neither a valid email address nor a valid user identifier"},
+		"unknown assigned engineer":       {unknownEngineer, &sub, ""},
+		"subcategory of another category": {icRequest(), &otherCategory, ""},
 	} {
 		err := repo.CheckIncidentFromServiceNow(ctx, tc.req, tc.sub, "HIGH", "sn.user@test.local")
 		var ve *apierror.ValidationError
 		if !errors.As(err, &ve) {
 			t.Errorf("%s: got %v, want a ValidationError", name, err)
+			continue
+		}
+		if tc.want != "" && ve.Msg != tc.want {
+			t.Errorf("%s: message %q, want %q", name, ve.Msg, tc.want)
 		}
 	}
 

@@ -29,6 +29,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/validate"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -1907,10 +1908,14 @@ func insertIncidentWatcherRowsTx(ctx context.Context, tx pgx.Tx, incidentID stri
 // create path accepts (watchListEmails). Every entry must name an existing
 // user: ServiceNow resolves each one before inserting, and an unresolvable
 // entry fails the request there too. Duplicates collapse to one watcher.
+//
+// An entry is never echoed in an error, as in watchListEmails: it can be a
+// third party's email address, and writeServiceError logs every
+// ValidationError's Msg verbatim. A refused entry is named by its position.
 func resolveIncidentWatchers(ctx context.Context, tx pgx.Tx, entries []string) ([]string, error) {
 	seen := make(map[string]bool, len(entries))
 	ids := make([]string, 0, len(entries))
-	for _, raw := range entries {
+	for i, raw := range entries {
 		entry := strings.TrimSpace(raw)
 		if entry == "" {
 			continue
@@ -1919,11 +1924,14 @@ func resolveIncidentWatchers(ctx context.Context, tx pgx.Tx, entries []string) (
 		var err error
 		if strings.Contains(entry, "@") {
 			err = tx.QueryRow(ctx, `SELECT id::text FROM "user" WHERE lower(email) = lower($1) ORDER BY id LIMIT 1`, entry).Scan(&id)
-		} else {
+		} else if validate.IsUUID(entry) {
 			err = tx.QueryRow(ctx, `SELECT id::text FROM "user" WHERE id = $1::uuid`, entry).Scan(&id)
+		} else {
+			// Checked here, not left to the ::uuid cast: its error names no field.
+			return nil, &apierror.ValidationError{Msg: "watchList contains an entry that is neither a valid email address nor a valid user identifier"}
 		}
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, &apierror.ValidationError{Msg: "watchList contains an unknown user: " + entry}
+			return nil, &apierror.ValidationError{Msg: fmt.Sprintf("watchList entry %d is not a known user", i+1)}
 		}
 		if err != nil {
 			return nil, fmt.Errorf("resolve incident watcher: %w", err)

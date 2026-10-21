@@ -1240,7 +1240,10 @@ revisited.
   refuse (an id it does not hold, a subcategory of another category, an unknown
   watcher) is then refused before anything exists, and never leaves an incident
   in ServiceNow with no CSM row. Its rules are the insert's own, so the two
-  cannot drift. Tests:
+  cannot drift. A watch-list entry is checked for shape before any lookup,
+  with the same wording as `watchListEmails`. An unknown one is named by its
+  position, never its value, because an entry can be a third party's email
+  and `writeServiceError` logs every ValidationError. Tests:
   - repository: `TestIncidentCreate_FromServiceNowPersistsEveryField`,
     `TestIncidentCreate_CheckFromServiceNow`;
   - service: `TestIncidentService_CreateIncident_ChecksPostgresBeforeServiceNow`,

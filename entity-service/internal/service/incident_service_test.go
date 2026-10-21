@@ -366,7 +366,7 @@ func TestIncidentService_CreateIncident_DoesNotRetryValidationError(t *testing.T
 // before ServiceNow creates anything -- never an incident in ServiceNow with no
 // CSM row. The check sees the same subcategory and priority the insert gets.
 func TestIncidentService_CreateIncident_ChecksPostgresBeforeServiceNow(t *testing.T) {
-	refusal := &apierror.ValidationError{Msg: "watchList contains an unknown user: nobody@example.com"}
+	refusal := &apierror.ValidationError{Msg: "watchList entry 1 is not a known user"}
 	mirror := &stubMirrorIncidentService{
 		createIncident: func(context.Context, domain.CreateIncidentRequest) (domain.CreateIncidentResponse, error) {
 			t.Fatal("ServiceNow must never be called when Postgres would refuse the incident")
