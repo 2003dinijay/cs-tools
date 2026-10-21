@@ -1228,6 +1228,23 @@ revisited.
   (`incidentPriorityFor`), the optional fields it sets (subcategory,
   assigned engineer, `cmdb_ci_id`, watch list), and `additionalComments` /
   `workNotes` as COMMENT / WORK_NOTE rows, all in one transaction.
+- **`incidentService.createIncidentSNFirst`** (dual-write, ServiceNow writes on)
+  writes the same fields to Postgres as the plain create
+  (`CreateIncidentFromServiceNow`): assignment group, assigned engineer,
+  subcategory, `cmdb_ci_id`, the watch list and the journal rows. The CSM
+  database is the record of truth, so nothing is left for a later sync to fill
+  in. `configurationItemId` is accepted on this path; it used to be a 400,
+  because Postgres had no column for it. Before ServiceNow is called,
+  `CheckIncidentFromServiceNow` runs that same insert under a placeholder id and
+  number, in a transaction that is always rolled back. A request Postgres would
+  refuse (an id it does not hold, a subcategory of another category, an unknown
+  watcher) is then refused before anything exists, and never leaves an incident
+  in ServiceNow with no CSM row. Its rules are the insert's own, so the two
+  cannot drift. Tests:
+  - repository: `TestIncidentCreate_FromServiceNowPersistsEveryField`,
+    `TestIncidentCreate_CheckFromServiceNow`;
+  - service: `TestIncidentService_CreateIncident_ChecksPostgresBeforeServiceNow`,
+    `..._StoresEveryFieldInPostgres`.
 - **`snCaseService.CreateCaseComment`** publishes `case.comment_added` via
   `publishCommentAdded`, called after the SN comment-create call succeeds.
   Enriches via `GetCaseByID` for `ProjectID`/`CaseTitle`/`Recipients`, the
