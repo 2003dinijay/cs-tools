@@ -81,7 +81,7 @@ func TestSendReportMergesConfiguredAndDerivedRecipients(t *testing.T) {
 	email := &fakeEmail{}
 	handler := migrationscan.SendReport(reports, email, 180,
 		[]string{"leads@example.com", " Team-Alpha@example.com "}, []string{"management@example.com", "leads@example.com"},
-		"https://portal.example.com", true)
+		"https://support.example.com/cases/", true)
 
 	if err := handler(context.Background()); err != nil {
 		t.Fatalf("handler: %v", err)
@@ -103,8 +103,9 @@ func TestSendReportMergesConfiguredAndDerivedRecipients(t *testing.T) {
 		t.Errorf("subject = %q", email.subject)
 	}
 	for _, want := range []string{
-		"ENG0000001", "ACME-MIG-1", "https://portal.example.com/engagements/11111111-1111-1111-1111-111111111111",
-		"Dana Example", "Team Alpha", "EU", "Morgan Example", "Sam Example", "2026-03-02",
+		"ENG0000001", "ACME-MIG-1", "https://support.example.com/cases/ENG0000001",
+		"Dana Example", "Team Alpha", "EU", "Morgan Example / Sam Example", "2026-03-02 15:00:00", "2026-09-01 09:35:00",
+		"over 180 days without a conclusion",
 		"Team &lt;Beta&gt;",
 	} {
 		if !strings.Contains(email.body, want) {
@@ -174,7 +175,12 @@ func TestSendReportSendsEmptyTables(t *testing.T) {
 	if email.calls != 1 {
 		t.Fatalf("an empty scan must still be sent; calls = %d", email.calls)
 	}
-	if strings.Count(email.body, "No migrations") != 3 {
-		t.Errorf("each of the three empty tables should say so; body has %d such rows", strings.Count(email.body, "No migrations"))
+	for _, heading := range []string{"Migrations Customer Requested to Hold", "Migrations Waiting on Accounts Team", "Migrations in Progress for Over 180 Days"} {
+		if !strings.Contains(email.body, heading) {
+			t.Errorf("empty scan lacks the heading %q: every table is shown, header row and all", heading)
+		}
+	}
+	if strings.Count(email.body, "<th>Case ID</th>") != 3 {
+		t.Errorf("want three header rows, got %d", strings.Count(email.body, "<th>Case ID</th>"))
 	}
 }

@@ -324,13 +324,14 @@ func main() {
 	// value, read once: the source report hard-coded its window in three
 	// places and the CS team asked for six months in place of three.
 	migrationCaseOlderThanDays := int(envDays("MIGRATION_CASE_REPORT_OLDER_THAN_DAYS", 180).Hours() / 24)
-	// The CSM portal's web origin, for the links in the scan
-	// (<origin>/engagements/{id}). Unset renders the issue keys as plain
-	// text; a non-https value refuses to start, as every URL here does.
-	csmPortalWebBaseURL := strings.TrimRight(os.Getenv("CSM_PORTAL_WEB_BASE_URL"), "/")
-	if csmPortalWebBaseURL != "" {
-		if err := httpsec.RequireSecureURL(csmPortalWebBaseURL); err != nil {
-			slog.Error("invalid CSM_PORTAL_WEB_BASE_URL", "err", err)
+	// The support portal's case page prefix for the links in the scan
+	// (<prefix>/<case number>), the link the scan has always carried.
+	// Unset renders the issue keys as plain text; a non-https value
+	// refuses to start, as every URL here does.
+	migrationCaseLinkBase := strings.TrimRight(os.Getenv("MIGRATION_CASE_REPORT_LINK_BASE_URL"), "/")
+	if migrationCaseLinkBase != "" {
+		if err := httpsec.RequireSecureURL(migrationCaseLinkBase); err != nil {
+			slog.Error("invalid MIGRATION_CASE_REPORT_LINK_BASE_URL", "err", err)
 			os.Exit(1)
 		}
 	}
@@ -411,7 +412,7 @@ func main() {
 			Name:     migrationCaseReportTaskName,
 			Schedule: scheduleFor(scheduleOverrides, migrationCaseReportTaskName, "30 22 * * 0"),
 			Handler: migrationscan.SendReport(migrationReportClient, emailClient,
-				migrationCaseOlderThanDays, migrationCaseTo, migrationCaseCc, csmPortalWebBaseURL, alertsEnabled),
+				migrationCaseOlderThanDays, migrationCaseTo, migrationCaseCc, migrationCaseLinkBase, alertsEnabled),
 		},
 		// The first sub-cron here that does real, per-row, multi-step,
 		// partial-failure-tolerant work rather than a bulk delete or a

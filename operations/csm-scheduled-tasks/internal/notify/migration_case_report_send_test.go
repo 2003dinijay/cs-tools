@@ -37,7 +37,7 @@ import (
 //
 //	MIGRATION_E2E_TO=you@example.com \
 //	MIGRATION_SCAN_JSON=/path/to/scan.json \
-//	CSM_PORTAL_WEB_BASE_URL=https://... \
+//	MIGRATION_CASE_REPORT_LINK_BASE_URL=https://.../cases \
 //	OAUTH2_CLIENT_ID=... OAUTH2_CLIENT_SECRET=... OAUTH2_TOKEN_URL=... \
 //	EMAIL_BASE_URL=... EMAIL_FROM_ADDRESS=... EMAIL_SCOPES=... \
 //	  go test -run TestMigrationCaseReportE2ESend ./internal/notify/
@@ -59,7 +59,7 @@ func TestMigrationCaseReportE2ESend(t *testing.T) {
 		t.Fatalf("decode scan: %v", err)
 	}
 
-	body := notify.RenderMigrationCaseReport(report, os.Getenv("CSM_PORTAL_WEB_BASE_URL"))
+	body := notify.RenderMigrationCaseReport(report, os.Getenv("MIGRATION_CASE_REPORT_LINK_BASE_URL"))
 	if out := os.Getenv("MIGRATION_E2E_HTML_OUT"); out != "" {
 		if err := os.WriteFile(out, []byte(body), 0o600); err != nil {
 			t.Fatalf("write %s: %v", out, err)
