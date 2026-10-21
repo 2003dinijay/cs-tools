@@ -53,23 +53,55 @@ type Audience struct {
 	Cc []string
 }
 
+// Source selects where the audience comes from.
+type Source string
+
+const (
+	// SourceConfigured uses the lists in SUB_CRON_RECIPIENTS. The
+	// default, and what reproduces the delivered mails exactly.
+	SourceConfigured Source = "configured"
+	// SourceDerived uses the audience entity-service builds from the
+	// team registry. Switching to it is a deliberate decision that the
+	// registry is now the truth and the hand-maintained lists are
+	// stale -- it WILL change who receives the report. Drift() shows
+	// the size of that change before anyone commits to it.
+	SourceDerived Source = "derived"
+)
+
 // Resolve decides the real audience. Precedence, highest first:
 //
 //  1. override -- replaces everything, To and Cc both, so a test run
 //     cannot reach the real lists.
-//  2. configured -- the authoritative lists, reproducing the delivered
-//     mail exactly.
+//  2. the chosen source.
 //
-// There is NO fallback to the derived audience. An earlier version fell
-// through to it when nothing was configured, which turned a blank entry
-// -- {"to": [""]} -- into a mail to the registry-derived recipients:
-// precisely what configuring the lists exists to prevent. A deployment
-// that forgets the lists now sends nothing, which is the safe failure.
-func Resolve(_ Recipients, configured Audience, override []string) Audience {
+// Neither source falls back to the other. An earlier version fell
+// through from configured to derived when nothing was configured, which
+// turned a blank entry -- {"to": [""]} -- into a mail to the
+// registry-derived recipients: precisely what configuring the lists
+// exists to prevent. Whichever source is selected and comes back empty,
+// nothing is sent, which is the safe failure.
+func Resolve(derived Recipients, configured Audience, source Source, override []string) Audience {
 	if o := clean(override); len(o) > 0 {
 		return Audience{To: o}
 	}
+	if source == SourceDerived {
+		return Audience{To: dedupe(derived.To), Cc: dedupe(derived.Cc)}
+	}
 	return Audience{To: dedupe(configured.To), Cc: dedupe(configured.Cc)}
+}
+
+// ParseSource reads the configured source, defaulting to configured for
+// anything unrecognised -- including a typo, where quietly mailing a
+// different set of people is the worse failure.
+func ParseSource(raw string) (Source, bool) {
+	switch Source(strings.ToLower(strings.TrimSpace(raw))) {
+	case SourceDerived:
+		return SourceDerived, true
+	case SourceConfigured, "":
+		return SourceConfigured, true
+	default:
+		return SourceConfigured, false
+	}
 }
 
 // Drift reports addresses the team registry says should receive this

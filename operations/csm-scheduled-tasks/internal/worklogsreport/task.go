@@ -80,14 +80,16 @@ func DailyDate(now time.Time, loc *time.Location) time.Time {
 // SendDaily returns the daily sub-cron handler. anchor supplies the
 // scheduled firing time this run belongs to -- see send.
 func SendDaily(reports ReportFetcher, email EmailSender, anchor func() time.Time,
-	to, cc []string, caseLinkBase string, emailsEnabled bool) func(ctx context.Context) error {
-	return send(reports, email, worklogreport.CadenceDaily, anchor, to, cc, caseLinkBase, emailsEnabled)
+	to, cc []string, source worklogreport.Source, caseLinkBase string,
+	emailsEnabled bool) func(ctx context.Context) error {
+	return send(reports, email, worklogreport.CadenceDaily, anchor, to, cc, source, caseLinkBase, emailsEnabled)
 }
 
 // SendWeekly returns the weekly sub-cron handler.
 func SendWeekly(reports ReportFetcher, email EmailSender, anchor func() time.Time,
-	to, cc []string, caseLinkBase string, emailsEnabled bool) func(ctx context.Context) error {
-	return send(reports, email, worklogreport.CadenceWeekly, anchor, to, cc, caseLinkBase, emailsEnabled)
+	to, cc []string, source worklogreport.Source, caseLinkBase string,
+	emailsEnabled bool) func(ctx context.Context) error {
+	return send(reports, email, worklogreport.CadenceWeekly, anchor, to, cc, source, caseLinkBase, emailsEnabled)
 }
 
 // send fetches, renders and sends one report for the period its anchor
@@ -113,8 +115,8 @@ func SendWeekly(reports ReportFetcher, email EmailSender, anchor func() time.Tim
 // and a day where the mail simply does not arrive is indistinguishable
 // from a day where the job broke.
 func send(reports ReportFetcher, email EmailSender, cadence worklogreport.Cadence,
-	anchor func() time.Time, to, cc []string, caseLinkBase string,
-	emailsEnabled bool) func(ctx context.Context) error {
+	anchor func() time.Time, to, cc []string, source worklogreport.Source,
+	caseLinkBase string, emailsEnabled bool) func(ctx context.Context) error {
 
 	// Gate on the CLEANED list, not the raw one. {"to": [""]} has
 	// length one and is no audience at all; checking len(to) let it
@@ -122,8 +124,13 @@ func send(reports ReportFetcher, email EmailSender, cadence worklogreport.Cadenc
 	cleanTo := nonBlank(to)
 	cleanCc := nonBlank(cc)
 
+	// With the derived source the configured lists are irrelevant, so
+	// an empty one is not a reason to skip -- the audience is not known
+	// until the report comes back.
+	skipWithoutRecipients := source != worklogreport.SourceDerived
+
 	return func(ctx context.Context) error {
-		if !emailsEnabled || len(cleanTo) == 0 {
+		if !emailsEnabled || (skipWithoutRecipients && len(cleanTo) == 0) {
 			return nil
 		}
 
@@ -156,7 +163,14 @@ func send(reports ReportFetcher, email EmailSender, cadence worklogreport.Cadenc
 		}
 
 		audience := worklogreport.Resolve(report.Recipients,
-			worklogreport.Audience{To: cleanTo, Cc: cleanCc}, nil)
+			worklogreport.Audience{To: cleanTo, Cc: cleanCc}, source, nil)
+
+		// Whichever source is in use, an empty audience is an error
+		// worth seeing: SendEmail treats no recipients as success, so
+		// the failure mode is a report that silently never arrives.
+		if len(audience.To) == 0 {
+			return fmt.Errorf("worklogsreport: %s report has no recipients from source %q", cadence, source)
+		}
 
 		// The drift check the configured lists are worth having: who
 		// the team registry says should receive this against who
@@ -167,6 +181,7 @@ func send(reports ReportFetcher, email EmailSender, cadence worklogreport.Cadenc
 		if missing, extra := worklogreport.Drift(report.Recipients, audience); len(missing) > 0 || len(extra) > 0 {
 			slog.Info("worklog report audience drifts from the team registry",
 				"cadence", cadence,
+				"source", source,
 				"derivedButNotConfigured", strings.Join(missing, ","),
 				"configuredButNotDerived", strings.Join(extra, ","))
 		}

@@ -62,7 +62,8 @@ func TestResolveReproducesDeliveredHeaders(t *testing.T) {
 	}
 
 	weekly := worklogreport.Resolve(derived,
-		worklogreport.Audience{To: weeklyTo, Cc: weeklyCc}, nil)
+		worklogreport.Audience{To: weeklyTo, Cc: weeklyCc},
+		worklogreport.SourceConfigured, nil)
 	if strings.Join(weekly.To, ",") != strings.Join(weeklyTo, ",") {
 		t.Errorf("weekly To = %v, want the delivered header %v", weekly.To, weeklyTo)
 	}
@@ -71,7 +72,8 @@ func TestResolveReproducesDeliveredHeaders(t *testing.T) {
 	}
 
 	daily := worklogreport.Resolve(derived,
-		worklogreport.Audience{To: dailyTo, Cc: dailyCc}, nil)
+		worklogreport.Audience{To: dailyTo, Cc: dailyCc},
+		worklogreport.SourceConfigured, nil)
 	if strings.Join(daily.To, ",") != strings.Join(dailyTo, ",") {
 		t.Errorf("daily To = %v, want the delivered header %v", daily.To, dailyTo)
 	}
@@ -107,7 +109,8 @@ func TestResolveReproducesDeliveredHeaders(t *testing.T) {
 // A person in both To and Cc of the same mail must stay in both.
 func TestResolveKeepsCrossListDuplicates(t *testing.T) {
 	got := worklogreport.Resolve(worklogreport.Recipients{},
-		worklogreport.Audience{To: dailyTo, Cc: dailyCc}, nil)
+		worklogreport.Audience{To: dailyTo, Cc: dailyCc},
+		worklogreport.SourceConfigured, nil)
 	for _, addr := range []string{"mara@example.com", "said@example.com"} {
 		if !contains(got.To, addr) || !contains(got.Cc, addr) {
 			t.Errorf("%s is in both To and Cc of the delivered daily mail and must stay in both", addr)
@@ -121,7 +124,7 @@ func TestResolvePrecedence(t *testing.T) {
 
 	// Override beats everything, and clears Cc: a test run must not
 	// merely prepend itself to a live list.
-	got := worklogreport.Resolve(derived, cfg, []string{"tester@example.com"})
+	got := worklogreport.Resolve(derived, cfg, worklogreport.SourceConfigured, []string{"tester@example.com"})
 	if strings.Join(got.To, ",") != "tester@example.com" || len(got.Cc) != 0 {
 		t.Errorf("override did not replace the audience: %+v", got)
 	}
@@ -131,13 +134,13 @@ func TestResolvePrecedence(t *testing.T) {
 	// would otherwise mail the registry-derived recipients, which is
 	// what configuring the lists exists to prevent. Sending nothing is
 	// the safe failure.
-	got = worklogreport.Resolve(derived, worklogreport.Audience{}, nil)
+	got = worklogreport.Resolve(derived, worklogreport.Audience{}, worklogreport.SourceConfigured, nil)
 	if len(got.To) != 0 || len(got.Cc) != 0 {
 		t.Errorf("want no audience when nothing is configured, got %+v", got)
 	}
 
 	// And a blank configured entry is not an audience either.
-	got = worklogreport.Resolve(derived, worklogreport.Audience{To: []string{" "}}, nil)
+	got = worklogreport.Resolve(derived, worklogreport.Audience{To: []string{" "}}, worklogreport.SourceConfigured, nil)
 	if len(got.To) != 0 {
 		t.Errorf("a blank configured to produced an audience: %v", got.To)
 	}

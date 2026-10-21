@@ -155,7 +155,8 @@ func TestSendUsesTheAnchorNotTheClock(t *testing.T) {
 	email := &fakeEmail{}
 	handler := worklogsreport.SendDaily(reports, email,
 		func() time.Time { return firing },
-		[]string{"leads-list@example.com"}, []string{"all-list@example.com"}, "", true)
+		[]string{"leads-list@example.com"}, []string{"all-list@example.com"},
+		worklogreport.SourceConfigured, "", true)
 
 	if err := handler(context.Background()); err != nil {
 		t.Fatalf("handler: %v", err)
@@ -186,7 +187,7 @@ func TestSendWeeklyUsesTheAnchor(t *testing.T) {
 	reports := &fakeReports{}
 	handler := worklogsreport.SendWeekly(reports, &fakeEmail{},
 		func() time.Time { return firing },
-		[]string{"leads-list@example.com"}, nil, "", true)
+		[]string{"leads-list@example.com"}, nil, worklogreport.SourceConfigured, "", true)
 
 	if err := handler(context.Background()); err != nil {
 		t.Fatalf("handler: %v", err)
@@ -203,7 +204,7 @@ func TestSendWithNoRecipientsFetchesNothing(t *testing.T) {
 	reports := &fakeReports{}
 	email := &fakeEmail{}
 	handler := worklogsreport.SendDaily(reports, email,
-		func() time.Time { return time.Now() }, nil, nil, "", true)
+		func() time.Time { return time.Now() }, nil, nil, worklogreport.SourceConfigured, "", true)
 
 	if err := handler(context.Background()); err != nil {
 		t.Fatalf("handler: %v", err)
@@ -223,7 +224,7 @@ func TestSendTreatsABlankRecipientListAsEmpty(t *testing.T) {
 		reports := &fakeReports{}
 		email := &fakeEmail{}
 		handler := worklogsreport.SendDaily(reports, email,
-			func() time.Time { return time.Now() }, blank, nil, "", true)
+			func() time.Time { return time.Now() }, blank, nil, worklogreport.SourceConfigured, "", true)
 
 		if err := handler(context.Background()); err != nil {
 			t.Fatalf("handler: %v", err)
@@ -234,5 +235,79 @@ func TestSendTreatsABlankRecipientListAsEmpty(t *testing.T) {
 		if !reports.from.IsZero() {
 			t.Errorf("to=%q fetched a report nobody would receive", blank)
 		}
+	}
+}
+
+// fakeDerived returns a report carrying a registry-derived audience.
+type fakeDerived struct{ to, cc []string }
+
+func (f *fakeDerived) Report(_ context.Context, c worklogreport.Cadence, from, to time.Time) (worklogreport.Report, error) {
+	return worklogreport.Report{
+		Cadence:    c,
+		Recipients: worklogreport.Recipients{To: f.to, Cc: f.cc},
+	}, nil
+}
+
+// Switching the source to "derived" hands the audience to the team
+// registry. It is a config change, not a code change -- but it changes
+// who receives the report, so it must take effect completely rather
+// than merging with the configured lists.
+func TestSendDerivedSourceUsesTheRegistryAudience(t *testing.T) {
+	reports := &fakeDerived{
+		to: []string{"registry-lead@example.com"},
+		cc: []string{"registry-list@example.com"},
+	}
+	email := &fakeEmail{}
+	handler := worklogsreport.SendDaily(reports, email,
+		func() time.Time { return time.Now() },
+		[]string{"configured@example.com"}, []string{"configured-cc@example.com"},
+		worklogreport.SourceDerived, "", true)
+
+	if err := handler(context.Background()); err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if len(email.to) != 1 || email.to[0] != "registry-lead@example.com" {
+		t.Errorf("to = %v, want the registry's audience alone", email.to)
+	}
+	if len(email.cc) != 1 || email.cc[0] != "registry-list@example.com" {
+		t.Errorf("cc = %v, want the registry's audience alone", email.cc)
+	}
+}
+
+// A derived audience that comes back empty must fail loudly. SendEmail
+// treats no recipients as success, so the alternative is a report that
+// silently never arrives -- the worst failure this feature has.
+func TestSendDerivedSourceFailsOnAnEmptyAudience(t *testing.T) {
+	email := &fakeEmail{}
+	handler := worklogsreport.SendDaily(&fakeDerived{}, email,
+		func() time.Time { return time.Now() },
+		[]string{"configured@example.com"}, nil,
+		worklogreport.SourceDerived, "", true)
+
+	err := handler(context.Background())
+	if err == nil {
+		t.Fatal("want an error when the derived audience is empty")
+	}
+	if email.sent != 0 {
+		t.Errorf("sent %d mails with no audience", email.sent)
+	}
+}
+
+func TestParseSource(t *testing.T) {
+	for raw, want := range map[string]worklogreport.Source{
+		"":           worklogreport.SourceConfigured,
+		"configured": worklogreport.SourceConfigured,
+		"derived":    worklogreport.SourceDerived,
+		"DERIVED":    worklogreport.SourceDerived,
+		"  derived ": worklogreport.SourceDerived,
+	} {
+		got, ok := worklogreport.ParseSource(raw)
+		if !ok || got != want {
+			t.Errorf("ParseSource(%q) = %v, %v; want %v, true", raw, got, ok, want)
+		}
+	}
+	// A typo must not quietly mail a different set of people.
+	if got, ok := worklogreport.ParseSource("drived"); ok || got != worklogreport.SourceConfigured {
+		t.Errorf("ParseSource(typo) = %v, %v; want configured, false", got, ok)
 	}
 }

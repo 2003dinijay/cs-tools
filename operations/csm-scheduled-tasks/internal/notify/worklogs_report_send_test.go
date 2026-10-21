@@ -99,7 +99,8 @@ func TestWorklogsReportE2ESend(t *testing.T) {
 
 	// The real audience is derived from the team registry; WORKLOG_E2E_TO
 	// overrides it outright so a test run cannot reach it.
-	audience := worklogreport.Resolve(report.Recipients, worklogreport.Audience{}, []string{to})
+	audience := worklogreport.Resolve(report.Recipients, worklogreport.Audience{},
+		worklogreport.SourceConfigured, []string{to})
 	t.Logf("derived audience (NOT used): to=%v cc=%v", report.Recipients.To, report.Recipients.Cc)
 	if len(audience.Cc) != 0 || len(audience.To) != 1 || audience.To[0] != to {
 		t.Fatalf("override did not take: %+v", audience)

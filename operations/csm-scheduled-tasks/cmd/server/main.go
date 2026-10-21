@@ -336,6 +336,18 @@ func main() {
 	// than linking every engineer at a host nobody configured.
 	// Validated like the other outbound URLs, so a typo stops startup
 	// rather than producing a mail full of dead links.
+	// Where the CS Worklogs audience comes from. "configured" is the
+	// default and reproduces the delivered mails; "derived" hands the
+	// decision to the team registry and WILL change who receives them,
+	// so it is a deliberate switch rather than a fallback. The drift
+	// line logged on every send shows the size of that change first.
+	worklogRecipientSource, ok := worklogreport.ParseSource(os.Getenv("WORKLOG_RECIPIENTS_SOURCE"))
+	if !ok {
+		slog.Error("WORKLOG_RECIPIENTS_SOURCE must be configured or derived",
+			"value", os.Getenv("WORKLOG_RECIPIENTS_SOURCE"))
+		os.Exit(1)
+	}
+
 	worklogCaseLinkBase := strings.TrimRight(os.Getenv("CSM_PORTAL_WEB_BASE_URL"), "/")
 	if worklogCaseLinkBase != "" {
 		if err := httpsec.RequireSecureURL(worklogCaseLinkBase); err != nil {
@@ -441,14 +453,16 @@ func main() {
 			Schedule: worklogsDailySchedule,
 			Handler: worklogsreport.SendDaily(worklogReportClient, emailClient,
 				periodStart(worklogsDailySchedule),
-				worklogsDailyTo, worklogsDailyCc, worklogCaseLinkBase, alertsEnabled),
+				worklogsDailyTo, worklogsDailyCc, worklogRecipientSource,
+				worklogCaseLinkBase, alertsEnabled),
 		},
 		{
 			Name:     worklogsWeeklyTaskName,
 			Schedule: worklogsWeeklySchedule,
 			Handler: worklogsreport.SendWeekly(worklogReportClient, emailClient,
 				periodStart(worklogsWeeklySchedule),
-				worklogsWeeklyTo, worklogsWeeklyCc, worklogCaseLinkBase, alertsEnabled),
+				worklogsWeeklyTo, worklogsWeeklyCc, worklogRecipientSource,
+				worklogCaseLinkBase, alertsEnabled),
 		},
 		// The first sub-cron here that does real, per-row, multi-step,
 		// partial-failure-tolerant work rather than a bulk delete or a
