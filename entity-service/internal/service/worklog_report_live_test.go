@@ -60,7 +60,7 @@ func TestWorklogReportAgainstLiveDatabase(t *testing.T) {
 
 	svc := service.NewWorklogReportService(
 		repository.NewWorklogReportRepository(repository.NewScoped(pool)),
-		[]string{"cre-abt", "cre"})
+		[]string{"cre-abt", "cre"}, nil)
 
 	for _, tc := range []struct {
 		cadence domain.WorklogReportCadence

@@ -122,6 +122,17 @@ type Config struct {
 	// uses — it is the system zone, NOT the commitment's recorded one.
 	AvailabilityTimezone string
 
+	// WorklogReportTeamTypes scopes the CS Worklogs reports: the
+	// team.type values whose teams get a section. Defaults to the CRE
+	// delivery teams, which is what the delivered mails cover -- the
+	// SME and SRE teams appear in neither.
+	WorklogReportTeamTypes []string
+	// WorklogReportExcludedTeamKeys drops individual teams from that
+	// scope by key. A type filter is broad by nature and catches teams
+	// nobody wants in the report; this takes them out without
+	// narrowing the type list to the point of brittleness.
+	WorklogReportExcludedTeamKeys []string
+
 	DBUser     string
 	DBPassword string
 	DBName     string
@@ -727,9 +738,12 @@ func Load() *Config {
 		return n
 	}
 	cfg := &Config{
-		DBHost:                                   getEnvOrDefault("DB_HOST", "localhost"),
-		DBPort:                                   getEnvOrDefault("DB_PORT", "5432"),
-		AvailabilityTimezone:                     os.Getenv("AVAILABILITY_TIMEZONE"),
+		DBHost:               getEnvOrDefault("DB_HOST", "localhost"),
+		DBPort:               getEnvOrDefault("DB_PORT", "5432"),
+		AvailabilityTimezone: os.Getenv("AVAILABILITY_TIMEZONE"),
+		WorklogReportTeamTypes: splitCommaOrDefault(
+			os.Getenv("WORKLOG_REPORT_TEAM_TYPES"), []string{"cre-abt", "cre"}),
+		WorklogReportExcludedTeamKeys:            splitComma(os.Getenv("WORKLOG_REPORT_EXCLUDED_TEAM_KEYS")),
 		DBUser:                                   os.Getenv("DB_USER"),
 		DBPassword:                               os.Getenv("DB_PASSWORD"),
 		DBName:                                   os.Getenv("DB_NAME"),
@@ -950,6 +964,17 @@ func splitComma(s string) []string {
 		}
 	}
 	return result
+}
+
+// splitCommaOrDefault is splitComma with a fallback, for a list whose
+// empty value would mean something materially different from its
+// intended default -- an unset team-type scope would widen a report to
+// every team rather than narrow it to none.
+func splitCommaOrDefault(s string, def []string) []string {
+	if v := splitComma(s); len(v) > 0 {
+		return v
+	}
+	return def
 }
 
 // HasDatabase reports whether a Postgres connection is configured. It is the

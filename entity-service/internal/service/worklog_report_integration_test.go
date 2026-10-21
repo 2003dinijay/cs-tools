@@ -64,7 +64,7 @@ func TestWorklogDailyReportMatchesDeliveredMail(t *testing.T) {
 	// so a viewer-scoped read would silently drop rows.
 	ctx = repository.WithSystemIdentity(ctx)
 	svc := service.NewWorklogReportService(
-		repository.NewWorklogReportRepository(repository.NewScoped(pool)), nil)
+		repository.NewWorklogReportRepository(repository.NewScoped(pool)), nil, nil)
 	day := time.Date(2026, 10, 18, 0, 0, 0, 0, time.UTC)
 	got, err := svc.BuildReport(ctx, domain.WorklogReportRequest{
 		Cadence: domain.WorklogReportCadenceDaily,
@@ -587,7 +587,7 @@ func TestWorklogDailyDoesNotExcludeLeads(t *testing.T) {
 	seedWorklogDailyFixture(ctx, t, pool)
 	ctx = repository.WithSystemIdentity(ctx)
 	svc := service.NewWorklogReportService(
-		repository.NewWorklogReportRepository(repository.NewScoped(pool)), nil)
+		repository.NewWorklogReportRepository(repository.NewScoped(pool)), nil, nil)
 	day := time.Date(2026, 10, 18, 0, 0, 0, 0, time.UTC)
 	got, err := svc.BuildReport(ctx, domain.WorklogReportRequest{
 		Cadence: domain.WorklogReportCadenceDaily, From: day, To: day})
@@ -635,7 +635,7 @@ func TestWorklogDailyDoesNotExcludeLeads(t *testing.T) {
 
 func svcWeekly(ctx context.Context, pool *pgxpool.Pool) (domain.WorklogReport, error) {
 	svc := service.NewWorklogReportService(
-		repository.NewWorklogReportRepository(repository.NewScoped(pool)), nil)
+		repository.NewWorklogReportRepository(repository.NewScoped(pool)), nil, nil)
 	return svc.BuildReport(repository.WithSystemIdentity(ctx), domain.WorklogReportRequest{
 		Cadence: domain.WorklogReportCadenceWeekly,
 		From:    time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC),
@@ -711,7 +711,7 @@ func TestWorklogWeeklyAndDailyAudiencesDiffer(t *testing.T) {
 
 	ctx = repository.WithSystemIdentity(ctx)
 	svc := service.NewWorklogReportService(
-		repository.NewWorklogReportRepository(repository.NewScoped(pool)), nil)
+		repository.NewWorklogReportRepository(repository.NewScoped(pool)), nil, nil)
 	day := time.Date(2026, 10, 18, 0, 0, 0, 0, time.UTC)
 
 	daily, err := svc.BuildReport(ctx, domain.WorklogReportRequest{
@@ -805,7 +805,7 @@ func TestWorklogDailyAppliesLeaveOnAWeekend(t *testing.T) {
 	absence("00000000-0000-0000-0000-000000000004", "castor", "EXCLUDED")
 
 	svc := service.NewWorklogReportService(
-		repository.NewWorklogReportRepository(repository.NewScoped(pool)), nil)
+		repository.NewWorklogReportRepository(repository.NewScoped(pool)), nil, nil)
 	day := time.Date(2026, 10, 18, 0, 0, 0, 0, time.UTC)
 	got, err := svc.BuildReport(ctx, domain.WorklogReportRequest{
 		Cadence: domain.WorklogReportCadenceDaily, From: day, To: day})
@@ -872,7 +872,7 @@ func TestWorklogTypeCountsAreCaseDaysNotCases(t *testing.T) {
 	ctx = repository.WithSystemIdentity(ctx)
 
 	svc := service.NewWorklogReportService(
-		repository.NewWorklogReportRepository(repository.NewScoped(pool)), nil)
+		repository.NewWorklogReportRepository(repository.NewScoped(pool)), nil, nil)
 	week := func() domain.WorklogReport {
 		r, err := svc.BuildReport(ctx, domain.WorklogReportRequest{
 			Cadence: domain.WorklogReportCadenceWeekly,
@@ -919,5 +919,65 @@ func TestWorklogTypeCountsAreCaseDaysNotCases(t *testing.T) {
 	}
 	if sum(after) == after.Totals.Issues {
 		t.Error("byType still reconciles with the total; the case-day counter is not case-days")
+	}
+}
+
+// Which teams appear is deployment configuration. The type filter is
+// broad -- 'cre' catches approval and review teams alongside the real
+// delivery ones -- so a deployment must be able to drop particular
+// teams without narrowing the types until they are brittle.
+//
+// An excluded team must vanish completely: no section, no members in
+// the totals, and no lead on the derived audience.
+func TestWorklogExcludedTeamsDisappearEntirely(t *testing.T) {
+	dsn := os.Getenv("ENTITY_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("ENTITY_TEST_DATABASE_URL is not set; skipping the live-database tests")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer pool.Close()
+
+	seedWorklogDailyFixture(ctx, t, pool)
+	ctx = repository.WithSystemIdentity(ctx)
+	day := time.Date(2026, 10, 18, 0, 0, 0, 0, time.UTC)
+
+	build := func(excluded []string) domain.WorklogReport {
+		svc := service.NewWorklogReportService(
+			repository.NewWorklogReportRepository(repository.NewScoped(pool)), nil, excluded)
+		r, err := svc.BuildReport(ctx, domain.WorklogReportRequest{
+			Cadence: domain.WorklogReportCadenceDaily, From: day, To: day})
+		if err != nil {
+			t.Fatalf("BuildReport: %v", err)
+		}
+		return r
+	}
+
+	before := build(nil)
+	after := build([]string{"draco", "vega"})
+
+	if len(after.Teams) != len(before.Teams)-2 {
+		t.Errorf("teams = %d, want %d -- two were excluded", len(after.Teams), len(before.Teams)-2)
+	}
+	for _, tr := range after.Teams {
+		if tr.TeamName == "Draco" || tr.TeamName == "Vega" {
+			t.Errorf("%s is excluded and must not have a section", tr.TeamName)
+		}
+	}
+	// Their members leave the totals with them.
+	if after.Totals.Members >= before.Totals.Members {
+		t.Errorf("members = %d, want fewer than %d", after.Totals.Members, before.Totals.Members)
+	}
+	// And their leads leave the derived audience.
+	for _, addr := range after.Recipients.To {
+		if addr == "dracolead@example.com" || addr == "vegalead@example.com" {
+			t.Errorf("%s leads an excluded team and must not be a recipient", addr)
+		}
+	}
+	if len(after.Recipients.To) >= len(before.Recipients.To) {
+		t.Errorf("derived To = %d, want fewer than %d", len(after.Recipients.To), len(before.Recipients.To))
 	}
 }

@@ -128,7 +128,7 @@ type WorklogReportRepository interface {
 	// roster outright, so they appear in no team section and in no count.
 	// Migration 0170 renamed our roles to engineer / sub_lead / lead /
 	// cre_head / cs_head, and the two head roles are that role.
-	Roster(ctx context.Context, teamTypes []string) ([]WorklogRosterRow, error)
+	Roster(ctx context.Context, teamTypes, excludedTeamKeys []string) ([]WorklogRosterRow, error)
 	// TimeRows returns logged time whose work_date falls in [from, to].
 	// Rejected cards are included so the daily report can count
 	// disapproved entries; the service excludes their hours.
@@ -145,7 +145,7 @@ type WorklogReportRepository interface {
 	// email of every member holding role 'lead'. It is a separate read
 	// from Roster because Roster collapses to one row per person, which
 	// would lose a team whose every member was attributed elsewhere.
-	TeamContacts(ctx context.Context, teamTypes []string) ([]WorklogTeamContacts, error)
+	TeamContacts(ctx context.Context, teamTypes, excludedTeamKeys []string) ([]WorklogTeamContacts, error)
 }
 
 // WorklogTeamContacts is one team's derived audience. Members and leads
@@ -193,16 +193,17 @@ SELECT DISTINCT ON (u.id)
   JOIN "user" u ON u.id = m.user_id
  WHERE t.key IS NOT NULL
    AND (cardinality($1::text[]) = 0 OR LOWER(COALESCE(t.type, '')) = ANY($1))
+   AND NOT (t.key = ANY($2))
    AND m.role NOT IN ('cre_head', 'cs_head', 'americas_team_lead')
    AND COALESCE(u.is_active, TRUE)
  ORDER BY u.id, (m.role = 'lead') DESC, t.key`
 
-func (r *worklogReportRepo) Roster(ctx context.Context, teamTypes []string) ([]WorklogRosterRow, error) {
+func (r *worklogReportRepo) Roster(ctx context.Context, teamTypes, excludedTeamKeys []string) ([]WorklogRosterRow, error) {
 	// Both queries compare the type case-insensitively, so the caller's
 	// values are normalised to match. lowerAll never returns nil, which
 	// matters: pgx will not bind a nil slice to text[].
 	teamTypes = lowerAll(teamTypes)
-	rows, err := r.db.Query(ctx, worklogRosterQuery, teamTypes)
+	rows, err := r.db.Query(ctx, worklogRosterQuery, teamTypes, nonNil(excludedTeamKeys))
 	if err != nil {
 		return nil, fmt.Errorf("query worklog roster: %w", err)
 	}
@@ -302,15 +303,16 @@ SELECT t.key,
   LEFT JOIN "user" u ON u.id = m.user_id AND COALESCE(u.is_active, TRUE)
  WHERE t.key IS NOT NULL
    AND (cardinality($1::text[]) = 0 OR LOWER(COALESCE(t.type, '')) = ANY($1))
+   AND NOT (t.key = ANY($2))
  GROUP BY t.key, t.name, t.type, t.group_email
  ORDER BY t.key`
 
-func (r *worklogReportRepo) TeamContacts(ctx context.Context, teamTypes []string) ([]WorklogTeamContacts, error) {
+func (r *worklogReportRepo) TeamContacts(ctx context.Context, teamTypes, excludedTeamKeys []string) ([]WorklogTeamContacts, error) {
 	// Both queries compare the type case-insensitively, so the caller's
 	// values are normalised to match. lowerAll never returns nil, which
 	// matters: pgx will not bind a nil slice to text[].
 	teamTypes = lowerAll(teamTypes)
-	rows, err := r.db.Query(ctx, worklogTeamContactsQuery, teamTypes)
+	rows, err := r.db.Query(ctx, worklogTeamContactsQuery, teamTypes, nonNil(excludedTeamKeys))
 	if err != nil {
 		return nil, fmt.Errorf("query worklog team contacts: %w", err)
 	}

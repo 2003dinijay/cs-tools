@@ -237,14 +237,15 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	var worklogReportHandler *handler.WorklogReportHandler
 	if db != nil {
 		scheduledTaskRunHandler = handler.NewScheduledTaskRunHandler(service.NewScheduledTaskRunService(repository.NewScheduledTaskRunRepository(db)))
-		// The CS Worklogs reports cover the CRE delivery teams: the two
-		// ABTs and the standalone regional ones. Leadership and the SME
-		// and SRE teams are out of scope -- they appear in neither
-		// delivered mail.
+		// Which teams the CS Worklogs reports cover is deployment
+		// configuration, not a constant: the default is the CRE
+		// delivery teams, which is what the delivered mails show, but
+		// type 'cre' also catches approval and review teams nobody
+		// wants in a report, and teams come and go.
 		worklogReportHandler = handler.NewWorklogReportHandler(
 			service.NewWorklogReportService(
 				repository.NewWorklogReportRepository(repository.NewScoped(db)),
-				[]string{"cre-abt", "cre"}))
+				cfg.WorklogReportTeamTypes, cfg.WorklogReportExcludedTeamKeys))
 		if cfg.HasGithubIntegration() {
 			githubLabels, labelErr := service.NewGithubLabels(service.GithubLabelOverrides{
 				TypeIncident:       cfg.GithubLabelTypeIncident,

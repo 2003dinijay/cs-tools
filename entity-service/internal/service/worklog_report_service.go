@@ -136,11 +136,22 @@ type worklogReportService struct {
 	// teamTypes restricts the roster to these team.type values. Empty
 	// means every team that has a key.
 	teamTypes []string
+	// excludedTeamKeys drops individual teams from that scope. The
+	// type filter is broad by nature -- type 'cre' catches approval
+	// and review teams alongside the real delivery ones -- and a
+	// deployment needs to take particular teams out without having to
+	// narrow the types to the point of brittleness.
+	excludedTeamKeys []string
 }
 
 // NewWorklogReportService constructs a WorklogReportService.
-func NewWorklogReportService(repo repository.WorklogReportRepository, teamTypes []string) WorklogReportService {
-	return &worklogReportService{repo: repo, teamTypes: teamTypes}
+func NewWorklogReportService(repo repository.WorklogReportRepository,
+	teamTypes, excludedTeamKeys []string) WorklogReportService {
+	return &worklogReportService{
+		repo:             repo,
+		teamTypes:        teamTypes,
+		excludedTeamKeys: excludedTeamKeys,
+	}
 }
 
 // perUser is the working accumulator for one person.
@@ -176,7 +187,7 @@ func (s *worklogReportService) BuildReport(ctx context.Context, req domain.Workl
 		return domain.WorklogReport{}, &apierror.ValidationError{Msg: "to must not be before from"}
 	}
 
-	roster, err := s.repo.Roster(ctx, s.teamTypes)
+	roster, err := s.repo.Roster(ctx, s.teamTypes, s.excludedTeamKeys)
 	if err != nil {
 		return domain.WorklogReport{}, err
 	}
@@ -194,7 +205,7 @@ func (s *worklogReportService) BuildReport(ctx context.Context, req domain.Workl
 	}
 	// Every team, not just the ones in the report's scope: the leadership
 	// team contributes recipients while appearing in no team section.
-	contacts, err := s.repo.TeamContacts(ctx, nil)
+	contacts, err := s.repo.TeamContacts(ctx, nil, s.excludedTeamKeys)
 	if err != nil {
 		return domain.WorklogReport{}, err
 	}
