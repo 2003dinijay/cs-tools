@@ -163,6 +163,31 @@ func TestScheduleIntegration_ImportRotaDryRunWritesNothing(t *testing.T) {
 	}
 }
 
+func TestScheduleIntegration_ImportRotaReplaceKeepsTheShiftsAMoveDerives(t *testing.T) {
+	repo, pool := newScheduleIntegrationRepo(t)
+	shift := shiftWithScope(t, pool, "CRE", "WEEKDAY")
+	seedImportRows(t, repo, shift)
+	// The seeded row inside the week stands in for a shift a move absence derives.
+	mustExec(t, pool, `
+		UPDATE team_schedule_assignment SET source = 'MOVE'
+		 WHERE user_id = $1::uuid AND team_key = $2 AND rota_date = $3::date`,
+		schedOtherID, schedTeamKey, schedMonday)
+
+	res, err := repo.ImportRota(context.Background(), importWeek(shift), schedLeadEmail)
+	if err != nil {
+		t.Fatalf("ImportRota: %v", err)
+	}
+	if res.Cleared != 0 {
+		t.Errorf("cleared %d, want the move's shift left alone", res.Cleared)
+	}
+	if n := countRows(t, pool, `
+		SELECT count(*) FROM team_schedule_assignment
+		 WHERE user_id = $1::uuid AND team_key = $2 AND rota_date = $3::date AND source = 'MOVE'`,
+		schedOtherID, schedTeamKey, schedMonday); n != 1 {
+		t.Errorf("a replace removed a shift its move still derives (%d left)", n)
+	}
+}
+
 func TestScheduleIntegration_ImportRotaMergeKeepsWhatIsThere(t *testing.T) {
 	repo, pool := newScheduleIntegrationRepo(t)
 	shift := shiftWithScope(t, pool, "CRE", "WEEKDAY")

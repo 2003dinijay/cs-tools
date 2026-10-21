@@ -627,7 +627,7 @@ The standard structure, schema version 1:
 | `schemaVersion` | `1` |
 | `family`, `rotaCode` | `SRE` and a rota of that family (`SRE_SAAS`, `SRE_IAAS`); `rotaCode` must equal the path's `{code}` |
 | `period` | `YYYY-MM-DD`, both ends inclusive, at most a year |
-| `mode` | `replace`: first remove every assignment of the rota's teams dated inside the period (absences are left alone). `merge`: keep them; each entry replaces only what the picker would |
+| `mode` | `replace`: first remove every assignment of the rota's teams dated inside the period, except the shifts a move derives (`source` MOVE, e.g. the SaaS Night cover); absences, and so their moves, are left alone. `merge`: keep them; each entry replaces only what the picker would |
 | `email` | resolved against the team schedule's members (case-insensitive); unknown, or shared by two users, is refused |
 | `teamKey` | a team on that rota (`apollo`, `artemis`, `saas-night-cover`; `iaas`) |
 | `shiftCode` | a window of one of the rota's zones; `SRE_WE_TZ2` is retired and refused |

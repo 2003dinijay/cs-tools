@@ -63,10 +63,12 @@ func (r *scheduleRepository) ImportRota(ctx context.Context, w RotaImportWrite, 
 	}
 
 	if w.Replace {
+		// A move's shifts (source MOVE) follow its absence, which a replace keeps, so they stay too.
 		tag, err := tx.Exec(ctx, `
 			DELETE FROM team_schedule_assignment
 			 WHERE team_key = ANY($1::text[])
-			   AND rota_date BETWEEN $2::date AND $3::date`,
+			   AND rota_date BETWEEN $2::date AND $3::date
+			   AND source <> 'MOVE'`,
 			w.TeamKeys, w.From, w.To)
 		if err != nil {
 			return out, fmt.Errorf("clear rota for import: %w", err)

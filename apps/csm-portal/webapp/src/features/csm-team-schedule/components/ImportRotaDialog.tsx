@@ -196,7 +196,7 @@ export default function ImportRotaDialog({ open, onClose, rotaCode }: ImportRota
             {file.mode === "replace" ? (
               <Alert severity="warning" sx={{ mt: 1 }}>
                 Replace removes every assignment of the rota&rsquo;s teams from {file.period.from} to {file.period.to}{" "}
-                before writing the file. Time away is kept.
+                before writing the file. Time away, and the shifts a move such as the Night cover gives, are kept.
               </Alert>
             ) : (
               <Alert severity="info" sx={{ mt: 1 }}>

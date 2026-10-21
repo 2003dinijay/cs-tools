@@ -8311,8 +8311,9 @@ paths:
         team schedule's members. Only SRE rotas are accepted. Every entry needs a writer
         of its team (a lead, the team's rota marker, or the family's rota admin), and a
         replace also needs a writer of every team of the rota. mode "replace" first
-        removes every assignment of the rota's teams dated inside the period (absences
-        are left alone); "merge" keeps them. With dryRun=true the import runs and is
+        removes every assignment of the rota's teams dated inside the period, except
+        the shifts a move (such as the SaaS Night cover) derives (absences, and so
+        their moves, are left alone); "merge" keeps them. With dryRun=true the import runs and is
         rolled back, so the response is exactly what it would do. A refusal names the
         entry at fault, e.g. "assignments[2]: ...". Shares "Generate month"'s lock, so
         the two never interleave on one rota.

@@ -14904,21 +14904,20 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              description: Entity-service's ImportRotaRequest, passed through.
+              $ref: '#/components/schemas/ImportRotaRequest'
       responses:
         "200":
           description: What the import would do (dryRun). Entity-service's ImportRotaResponse, passed through.
           content:
             application/json:
               schema:
-                type: object
+                $ref: '#/components/schemas/ImportRotaResponse'
         "201":
           description: The file, written. Entity-service's ImportRotaResponse, passed through.
           content:
             application/json:
               schema:
-                type: object
+                $ref: '#/components/schemas/ImportRotaResponse'
         "400":
           description: A malformed file or dryRun, or the problems found in its entries.
           content:
@@ -15732,6 +15731,79 @@ components:
             phone gaps are listed errors first, then by this tier. A missing number is an error
             except for the 2nd and 3rd responders (called together with the 1st), where it is a
             warning.
+    ImportRotaRequest:
+      type: object
+      description: The rota import file, schema version 1.
+      required: [schemaVersion, family, rotaCode, period, mode]
+      properties:
+        schemaVersion:
+          type: integer
+          enum: [1]
+        family:
+          type: string
+          enum: [SRE]
+        rotaCode:
+          type: string
+          example: SRE_SAAS
+        period:
+          type: object
+          required: [from, to]
+          properties:
+            from: {type: string, format: date}
+            to: {type: string, format: date}
+        mode:
+          type: string
+          enum: [replace, merge]
+        assignments:
+          type: array
+          items:
+            type: object
+            required: [email, teamKey, shiftCode, from, to]
+            properties:
+              email: {type: string, format: email, example: user1@example.com}
+              teamKey: {type: string, example: apollo}
+              shiftCode: {type: string, example: SRE_TZ1}
+              tier:
+                type: string
+                enum: [L1, L2, L3]
+                description: Required on an escalation window that does not fix one (SRE_TZ1, SRE_TZ2, SRE_TZ3, the weekend SRE_WE_TZ1, IaaS Day/Night); not allowed on regular hours; a window that fixes a tier takes only that one.
+              from: {type: string, format: date, description: Inside the period.}
+              to: {type: string, format: date, description: Inside the period.}
+              note: {type: string}
+        absences:
+          type: array
+          items:
+            type: object
+            required: [email, teamKey, kindCode, from, to]
+            properties:
+              email: {type: string, format: email, example: user2@example.com}
+              teamKey: {type: string, example: apollo}
+              kindCode: {type: string, example: ANNUAL_LEAVE}
+              allocatedTo: {type: string, maxLength: 100, description: Who an allocation is for; kept only for ALLOCATION kinds.}
+              from: {type: string, format: date, description: The span must overlap the period; it may run past it.}
+              to: {type: string, format: date}
+              note: {type: string}
+    ImportRotaResponse:
+      type: object
+      properties:
+        rotaCode: {type: string}
+        from: {type: string, format: date}
+        to: {type: string, format: date}
+        mode: {type: string, enum: [replace, merge]}
+        dryRun: {type: boolean}
+        cleared: {type: integer, description: Assignments a replace removed first.}
+        applied: {type: integer, description: Assignment days written.}
+        skipped: {type: integer, description: Assignment days the window is not worked on.}
+        skippedDays:
+          type: array
+          items:
+            type: object
+            properties:
+              index: {type: integer, description: The assignment's position in the file.}
+              dates: {type: array, items: {type: string, format: date}}
+        absencesCreated: {type: integer}
+        absencesRemoved: {type: integer, description: Earlier absences the file's spans covered entirely.}
+        absencesTrimmed: {type: integer, description: Earlier absences the file's spans shortened.}
     ErrorPayload:
       type: object
       description: >-
