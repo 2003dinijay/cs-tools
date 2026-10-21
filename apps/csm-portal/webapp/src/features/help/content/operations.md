@@ -66,7 +66,11 @@ change request can't be selected. The selection bar then offers:
     offered, since each change needs its own window. Cancel change and Roll back
     need a reason, which is added to each one as an internal work note.
   - **Type** and **Customer Project** can be set only when every selected change
-    request is still New: they are fixed once approval has been requested.
+    request is still New: they are fixed once approval has been requested. Until
+    CAB approval the **deployments** can still change, within the project, when
+    all the selected change requests share one.
+  - A planned date set on its own is checked against each change request's
+    other planned date; one it wouldn't fit is skipped.
   - **Customer approval** and **Customer review** offer only what every selected
     change request can take: after New a requirement can be added but not
     removed, adding one needs a Customer Project, and an Emergency change has

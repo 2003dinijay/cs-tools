@@ -275,6 +275,9 @@ export function isChangeRequestCategory(value: string | null | undefined): value
 /** Maximum length of the Additional comments / Work notes fields (ServiceNow journal limit). */
 export const CHANGE_REQUEST_JOURNAL_MAX = 4000;
 
+/** `change_request.rollback_duration` is VARCHAR(255): a longer value fails the whole save with a 500. */
+export const CHANGE_REQUEST_ROLLBACK_DURATION_MAX = 255;
+
 /**
  * Reads a category off a detail response: the enum value itself (Postgres data
  * source) or an entity ref whose `id` is the enum value.

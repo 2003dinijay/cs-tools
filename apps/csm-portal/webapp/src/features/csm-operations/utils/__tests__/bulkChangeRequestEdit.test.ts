@@ -22,9 +22,9 @@ import {
   bulkChangeRequestEditProblem,
   bulkChangeRequestPlan,
   bulkEditTouchesContent,
-  bulkEditTouchesNewOnlyFields,
   NEW_ONLY_FIELDS_SKIPPED,
   ON_HOLD_STATE_SKIPPED,
+  PLANNED_WINDOW_SKIPPED,
   type BulkChangeRequestEdit,
 } from "@features/csm-operations/utils/bulkChangeRequestEdit";
 import {
@@ -131,14 +131,44 @@ describe("bulkChangeRequestPlan", () => {
   });
 
   it.each(["assess", "authorize"])(
-    "skips a change request in %s asked for its type or Customer Project: fixed once approval was requested",
+    "skips a change request in %s asked for another type or Customer Project: fixed once approval was requested",
     (state) => {
-      expect(bulkChangeRequestPlan({ state }, { type: "standard", impact: "low" })).toEqual({ skip: NEW_ONLY_FIELDS_SKIPPED });
-      expect(bulkChangeRequestPlan({ state }, { projectId: "proj-2", deploymentIds: [] })).toEqual({
+      const project = { id: "proj-1", name: "P" };
+      expect(bulkChangeRequestPlan({ state, type: "normal" }, { type: "standard", impact: "low" })).toEqual({
         skip: NEW_ONLY_FIELDS_SKIPPED,
+      });
+      expect(bulkChangeRequestPlan({ state, project }, { projectId: "proj-2", deploymentIds: [] })).toEqual({
+        skip: NEW_ONLY_FIELDS_SKIPPED,
+      });
+      // Its own type and project are a no-op resend.
+      expect(bulkChangeRequestPlan({ state, type: "Normal" }, { type: "normal", impact: "low" })).toEqual({
+        patch: { impact: "low" },
       });
     },
   );
+
+  it.each(["assess", "authorize"])("changes the deployments of a change request in %s, within its own project", (state) => {
+    const project = { id: "proj-1", name: "P" };
+    const edit = { projectId: "proj-1", deploymentIds: ["d-1"], deploymentProductIds: ["dp-1"] };
+    expect(bulkChangeRequestPlan({ state, project }, edit)).toEqual({ patch: edit });
+  });
+
+  it("judges the planned window as it will stand: one date set alone meets the change request's own other date", () => {
+    const window = { plannedStartOn: "2026-11-01T10:00:00Z", plannedEndOn: "2026-11-01T12:00:00Z" };
+    expect(bulkChangeRequestPlan({ state: "new", ...window }, { plannedStartOn: "2026-11-03T09:00:00Z" })).toEqual({
+      skip: PLANNED_WINDOW_SKIPPED,
+    });
+    expect(bulkChangeRequestPlan({ state: "new", ...window }, { plannedEndOn: "2026-11-01T09:00:00Z" })).toEqual({
+      skip: PLANNED_WINDOW_SKIPPED,
+    });
+    expect(bulkChangeRequestPlan({ state: "new", ...window }, { plannedStartOn: "2026-11-01T11:00:00Z" })).toEqual({
+      patch: { plannedStartOn: "2026-11-01T11:00:00Z" },
+    });
+    // No stored other date: nothing to judge against.
+    expect(bulkChangeRequestPlan({ state: "new" }, { plannedStartOn: "2026-11-03T09:00:00Z" })).toEqual({
+      patch: { plannedStartOn: "2026-11-03T09:00:00Z" },
+    });
+  });
 
   it("leaves the New-only fields out for an approved change request, as every other field", () => {
     expect(bulkChangeRequestPlan({ state: "scheduled" }, { type: "standard", workNote: "x" })).toEqual({
@@ -160,6 +190,15 @@ describe("bulkChangeRequestPlan", () => {
       expect(bulkChangeRequestPlan({ state: "new", type: "emergency" }, { customerReviewRequired: true })).toEqual({
         skip: EMERGENCY_CUSTOMER_STEPS_HELPER,
       });
+    });
+
+    it("leaves alone an Emergency change already ticked from before the rule, and edits the rest of it", () => {
+      expect(
+        bulkChangeRequestPlan(
+          { state: "assess", type: "emergency", customerApprovalRequired: true },
+          { customerApprovalRequired: true, assignedTeamId: "g-1" },
+        ),
+      ).toEqual({ patch: { assignedTeamId: "g-1" } });
     });
 
     it("does not send one that already reads as asked", () => {
@@ -244,11 +283,6 @@ describe("bulkEditTouchesContent", () => {
     expect(bulkEditTouchesContent({ deploymentIds: [] })).toBe(true);
   });
 
-  it("names the fields only a change request in New can take", () => {
-    expect(bulkEditTouchesNewOnlyFields({ type: "normal" })).toBe(true);
-    expect(bulkEditTouchesNewOnlyFields({ deploymentIds: [] })).toBe(true);
-    expect(bulkEditTouchesNewOnlyFields({ impact: "low", customerApprovalRequired: true })).toBe(false);
-  });
 });
 
 describe("assignChangeRequestToMePlan", () => {

@@ -419,17 +419,28 @@ Both lists have a checkbox column (for `canWrite` only), a selection bar (`BulkS
   - An approved change request (Customer Approval and later) gets only the state, on hold and the two journals: an
     allow-list (`APPROVED_ALLOWED_FIELDS`), so a field added later is read-only once approved until it is listed (the
     backend's `approvedLockFields` refuses the rest, 400 `change_request_approved_read_only`).
-  - Type and Customer Project + deployments are enabled only while every not-yet-approved selected change request is
-    New (they are fixed once approval is requested); the plan skips one that has left New since. Project, deployments
-    and deployment products go together (the backend validates them as a unit), and Apply waits for the products.
+  - Type and Customer Project are enabled only while every not-yet-approved selected change request is New (they are
+    fixed once approval is requested). Past New the **deployments** still change until approval (the backend's
+    `changeRequestLinksLockedStates`): when every not-yet-approved one shares a stored project, that project is shown
+    fixed and the deployments are offered within it; with different projects neither is. The scope goes out only when
+    it was changed in the dialog (`scopeTouched`; past New only with deployments picked), so the project shown is never
+    sent on its own (it would clear the deployments). Project, deployments and deployment products go together (the
+    backend validates them as a unit), and Apply waits for the products. The plan skips one asked for another type or
+    project after New; resending its own is a no-op.
   - Customer approval / review offer "Required" and "Not required" only as far as every selected one can take them
     (`customerApprovalLockedReason` / `customerReviewLockedReason`: add-only after New, a Customer Project needed, never
     for an Emergency change). Choosing type Emergency disables both, and the plan turns a ticked one off in the same
-    PATCH (the backend refuses re-typing into Emergency while a box stays ticked). A box already as asked is not sent.
+    PATCH (the backend refuses re-typing into Emergency while a box stays ticked). A box already as asked is not sent,
+    checked before the Emergency refusal (an older Emergency change still ticked is left alone, not skipped). A choice
+    is used only while it is offered (`offered`), so one a type change took off the list is never sent unseen.
   - On hold: "Put on hold" on one already on hold sends only the reason (a second `onHold: true` would clear it), "Take
     off hold" on one that isn't is not sent, and one on hold is skipped when the edit changes its state without taking
     it off hold (the backend's gate). The dialog says how many of the selection are on hold.
-  - A blank text is never sent (a bulk edit clears nothing); the planned end must be after the planned start.
+  - A blank text is never sent (a bulk edit clears nothing). The planned window is judged as it will stand: nothing
+    in the backend orders the two bounds, so one date set alone is checked against each record's own other date and
+    a record it doesn't fit is skipped (`PLANNED_WINDOW_SKIPPED`). Rollback duration is capped at 255 characters
+    (`CHANGE_REQUEST_ROLLBACK_DURATION_MAX`, `VARCHAR(255)`; the single edit form too). While the details are
+    loading, or if one can't be loaded, the fields that depend on them say which.
 - **Assign to me** sends `{assignedEngineerId: <me>}`; it skips a record already assigned to the user, and for change
   requests `assignChangeRequestToMePlan` also skips an approved one (its assignee is read-only).
 - **Plan from the record as it is now.** A change request run reads each one's detail again just before planning

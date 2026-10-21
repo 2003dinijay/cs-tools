@@ -34,7 +34,7 @@ import {
   Typography,
 } from "@wso2/oxygen-ui";
 import { useQueries } from "@tanstack/react-query";
-import { useMemo, useState, type JSX, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type JSX, type ReactNode } from "react";
 import { useBackendApi } from "@api/backend/client";
 import { useSearchGroups } from "@api/useSearchGroups";
 import { useSearchItServices } from "@api/useSearchItServices";
@@ -45,7 +45,7 @@ import { changeRequestDetailQuery } from "@features/csm-operations/api/useGetCha
 import { useSearchServiceRequestsForSelect } from "@features/csm-operations/api/useSearchServiceRequestsForSelect";
 import ChangeRequestScopeFields from "@features/csm-operations/components/ChangeRequestScopeFields";
 import ExpandableRichTextField from "@features/csm-operations/components/ExpandableRichTextField";
-import { useChangeRequestScope } from "@features/csm-operations/hooks/useChangeRequestScope";
+import { useChangeRequestScope, type ChangeRequestScope } from "@features/csm-operations/hooks/useChangeRequestScope";
 import { itServiceLabel, userLabel } from "@features/csm-operations/utils/incidentFormOptions";
 import {
   bulkChangeRequestTargets,
@@ -54,6 +54,7 @@ import {
   CHANGE_REQUEST_IMPACT_OPTIONS,
   CHANGE_REQUEST_JOURNAL_MAX,
   CHANGE_REQUEST_PRIORITY_OPTIONS,
+  CHANGE_REQUEST_ROLLBACK_DURATION_MAX,
   changeRequestApprovedReadOnlyReason,
   changeRequestStateLabel,
   changeRequestTransitionLabel,
@@ -201,6 +202,8 @@ export default function BulkEditChangeRequestsDialog({
   const [workNote, setWorkNote] = useState("");
   const [comment, setComment] = useState("");
   const scope = useChangeRequestScope();
+  // Whether the Customer Project or the deployments were changed here: only then are they sent.
+  const [scopeTouched, setScopeTouched] = useState(false);
 
   // Each change request's own legal moves (and its type, hold, customer steps) come with its detail, not the list row.
   const details = useQueries({
@@ -224,14 +227,63 @@ export default function BulkEditChangeRequestsDialog({
   const fieldsDisabled = isApplying || (editable.length > 0 && open.length === 0);
   // Type and Customer Project: only while every one whose fields change is still New.
   const allNew = detailsReady && open.length > 0 && open.every((cr) => isChangeRequestCreationPhase(cr.state));
+  const detailsNotReadyHelper = detailsFailed
+    ? "Couldn't load the selected change requests, so this can't be changed here. Try again later."
+    : "Loading the selected change requests…";
   const newOnlyHelper = !detailsReady
-    ? "Loading the selected change requests…"
+    ? detailsNotReadyHelper
     : allNew
       ? undefined
       : "Only when every selected change request is New: it is fixed once approval has been requested.";
+  // Past New the deployments still change until approval, within the project: offered when all share one.
+  const sharedProject = useMemo(() => {
+    if (!detailsReady || allNew || open.length === 0) return null;
+    const first = open[0].project;
+    return first?.id && open.every((cr) => cr.project?.id === first.id) ? first : null;
+  }, [detailsReady, allNew, open]);
+  const scopeMode: "project" | "deployments" | "none" = allNew ? "project" : sharedProject ? "deployments" : "none";
+  const sharedProjectId = sharedProject?.id;
+  const sharedProjectName = sharedProject?.name;
+  const { setProject: seedScopeProject } = scope;
+  useEffect(() => {
+    // The project shown, fixed, above the deployments: never sent changed.
+    if (scopeMode === "deployments" && sharedProjectId) seedScopeProject(sharedProjectId, sharedProjectName);
+  }, [scopeMode, sharedProjectId, sharedProjectName, seedScopeProject]);
+  const scopeForFields = useMemo<ChangeRequestScope>(
+    () => ({
+      ...scope,
+      setProject: (id: string, label?: string) => {
+        setScopeTouched(true);
+        scope.setProject(id, label);
+      },
+      setDeployments: (ids: string[]) => {
+        setScopeTouched(true);
+        scope.setDeployments(ids);
+      },
+    }),
+    [scope],
+  );
+  const scopeHelper =
+    scopeMode === "project"
+      ? undefined
+      : scopeMode === "deployments"
+        ? "The Customer Project is fixed once approval has been requested; the deployments can still change, within it, until approval."
+        : !detailsReady
+          ? `Customer Project and deployments: ${detailsNotReadyHelper.charAt(0).toLowerCase()}${detailsNotReadyHelper.slice(1)}`
+          : "The Customer Project changes only while every selected change request is New, and the deployments only while they share one project.";
+  // What is sent: a project picked in New (with its deployments, even none), or past New new deployments in the shared project.
+  const sendScope =
+    scopeTouched &&
+    !!scope.projectId &&
+    (scopeMode === "project" || (scopeMode === "deployments" && scope.deploymentIds.length > 0));
   const emergency = isEmergencyChangeRequestType(type);
   const approvalChoices = customerStepChoices(open, "approval", type, scope.projectId);
   const reviewChoices = customerStepChoices(open, "review", type, scope.projectId);
+  // A choice is kept only while it is offered (a type change can withdraw it): never sent unseen.
+  const offered = (value: YesNoChoice, choices: { yes: boolean; no: boolean }): YesNoChoice =>
+    detailsReady && !emergency && ((value === "yes" && choices.yes) || (value === "no" && choices.no)) ? value : NO_CHANGE;
+  const effectiveApproval = offered(customerApproval, approvalChoices);
+  const effectiveReview = offered(customerReview, reviewChoices);
 
   const startDate = parseDateTimeLocal(plannedStart);
   const endDate = parseDateTimeLocal(plannedEnd);
@@ -262,14 +314,14 @@ export default function BulkEditChangeRequestsDialog({
     const endUtc = plannedEnd ? zonedInputToBackendUtc(plannedEnd) : null;
     if (endUtc) next.plannedEndOn = endUtc;
     if (rollbackDuration.trim()) next.rollbackDurationText = rollbackDuration.trim();
-    if (scope.projectId) {
+    if (sendScope) {
       // Validated by the backend as a unit: the project, its deployments and their products go together.
       next.projectId = scope.projectId;
       next.deploymentIds = scope.deploymentIds;
       if (scope.productsReady) next.deploymentProductIds = scope.deploymentProductIds;
     }
-    if (customerApproval) next.customerApprovalRequired = customerApproval === "yes";
-    if (customerReview) next.customerReviewRequired = customerReview === "yes";
+    if (effectiveApproval) next.customerApprovalRequired = effectiveApproval === "yes";
+    if (effectiveReview) next.customerReviewRequired = effectiveReview === "yes";
     if (planVisible) next.isPlanningVisibleToCustomers = planVisible === "yes";
     // Sanitized on the way out, the same policy the detail page renders it back through.
     for (const f of PLAN_FIELDS) {
@@ -283,12 +335,12 @@ export default function BulkEditChangeRequestsDialog({
   }, [
     state, title, type, category, impact, priority, caseId, hold, holdReason, serviceId, serviceOfferingId,
     assignedTeamId, assignedEngineerId, requestedById, plannedStart, plannedEnd, rollbackDuration,
-    scope.projectId, scope.deploymentIds, scope.deploymentProductIds, scope.productsReady, customerApproval,
-    customerReview, planVisible, plans, serviceOutage, communicationPlan, workNote, comment,
+    sendScope, scope.projectId, scope.deploymentIds, scope.deploymentProductIds, scope.productsReady,
+    effectiveApproval, effectiveReview, planVisible, plans, serviceOutage, communicationPlan, workNote, comment,
   ]);
 
   const problem = bulkChangeRequestEditProblem(edit);
-  const productsPending = !!scope.projectId && !scope.productsReady;
+  const productsPending = sendScope && !scope.productsReady;
   const canApply = Object.keys(edit).length > 0 && !problem && !productsPending && !isApplying;
   const count = changeRequests.length;
   const noun = `change request${count === 1 ? "" : "s"}`;
@@ -354,7 +406,7 @@ export default function BulkEditChangeRequestsDialog({
       ...(choices.no ? [{ value: "no" as const, label: "Not required" }] : []),
     ];
   const stepHelper = (choices: { yes: boolean; no: boolean }): string | undefined => {
-    if (!detailsReady) return "Loading the selected change requests…";
+    if (!detailsReady) return detailsNotReadyHelper;
     if (emergency) return EMERGENCY_CUSTOMER_STEPS_HELPER;
     if (!choices.yes && !choices.no) return "Can't be changed for all the selected change requests.";
     if (!choices.no) return "Can be added but not removed once approval has been requested.";
@@ -597,7 +649,16 @@ export default function BulkEditChangeRequestsDialog({
                 }
                 slotProps={{
                   field: { clearable: true },
-                  textField: { id: "bulk-cr-planned-start", size: "small", fullWidth: true, placeholder: "No change" },
+                  textField: {
+                    id: "bulk-cr-planned-start",
+                    size: "small",
+                    fullWidth: true,
+                    placeholder: "No change",
+                    // One date set alone: the other is each change request's own.
+                    helperText: (plannedStart === "") !== (plannedEnd === "")
+                      ? "Checked against each change request's own other planned date: one it wouldn't fit is skipped."
+                      : undefined,
+                  },
                 }}
               />
               <DateTimePicker
@@ -625,10 +686,14 @@ export default function BulkEditChangeRequestsDialog({
               placeholder="No change"
               size="small"
               value={rollbackDuration}
-              onChange={(e) => setRollbackDuration(e.target.value)}
+              onChange={(e) => setRollbackDuration(e.target.value.slice(0, CHANGE_REQUEST_ROLLBACK_DURATION_MAX))}
               disabled={fieldsDisabled}
               slotProps={{ inputLabel: { shrink: true } }}
-              helperText="Free text, e.g. 30 mins."
+              helperText={
+                rollbackDuration
+                  ? `${CHANGE_REQUEST_ROLLBACK_DURATION_MAX - rollbackDuration.length} characters left.`
+                  : "Free text, e.g. 30 mins."
+              }
             />
           </Box>,
         )}
@@ -637,20 +702,23 @@ export default function BulkEditChangeRequestsDialog({
           "Customer",
           <>
             <Box role="group" aria-label="Customer project and deployments" sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
-              {newOnlyHelper && (
+              {scopeHelper && (
                 <Typography variant="caption" color="text.secondary">
-                  Customer Project and deployments: {newOnlyHelper.charAt(0).toLowerCase() + newOnlyHelper.slice(1)}
+                  {scopeHelper}
                 </Typography>
               )}
               <ChangeRequestScopeFields
-                scope={scope}
-                disabled={fieldsDisabled || !allNew}
+                scope={scopeForFields}
+                disabled={fieldsDisabled || scopeMode === "none"}
+                projectDisabled={scopeMode !== "project"}
                 idPrefix="bulk-cr"
-                projectClearable
+                projectClearable={scopeMode === "project"}
               />
-              {scope.projectId && (
+              {sendScope && (
                 <Typography variant="caption" color="text.secondary">
-                  Replaces each selected change request&apos;s Customer Project and deployments with these.
+                  {scopeMode === "project"
+                    ? "Replaces each selected change request's Customer Project and deployments with these."
+                    : "Replaces each selected change request's deployments with these."}
                 </Typography>
               )}
             </Box>
@@ -658,7 +726,7 @@ export default function BulkEditChangeRequestsDialog({
               {select(
                 "bulk-cr-customer-approval",
                 "Customer approval",
-                customerApproval,
+                effectiveApproval,
                 setCustomerApproval,
                 emergency ? [] : stepChoiceOptions(approvalChoices),
                 {
@@ -669,7 +737,7 @@ export default function BulkEditChangeRequestsDialog({
               {select(
                 "bulk-cr-customer-review",
                 "Customer review",
-                customerReview,
+                effectiveReview,
                 setCustomerReview,
                 emergency ? [] : stepChoiceOptions(reviewChoices),
                 {

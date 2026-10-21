@@ -89,9 +89,6 @@ export type BulkChangeRequestPlan = { patch: BePatchChangeRequestPayload } | { s
  */
 const APPROVED_ALLOWED_FIELDS: ReadonlySet<string> = new Set(["state", "onHold", "onHoldReason", "workNote", "comment"]);
 
-/** The fields fixed once approval has been requested (the change request has left New). */
-const NEW_ONLY_FIELDS = ["type", "projectId", "deploymentIds", "deploymentProductIds"] as const;
-
 /**
  * Whether `key` is set in `edit`: a blank text is not (a bulk edit never clears
  * a field), while `false` and an empty list of deployments are values.
@@ -107,11 +104,6 @@ export function bulkEditTouchesContent(edit: BulkChangeRequestEdit): boolean {
   return (Object.keys(edit) as Array<keyof BulkChangeRequestEdit>).some(
     (key) => !APPROVED_ALLOWED_FIELDS.has(key) && isSet(edit, key),
   );
-}
-
-/** Whether `edit` sets a field that only a change request in New can take. */
-export function bulkEditTouchesNewOnlyFields(edit: BulkChangeRequestEdit): boolean {
-  return NEW_ONLY_FIELDS.some((key) => isSet(edit, key));
 }
 
 /** Why a bulk edit cannot be applied as it stands, or `null`. */
@@ -135,9 +127,13 @@ export function bulkChangeRequestEditProblem(edit: BulkChangeRequestEdit): strin
 export const APPROVED_FIELDS_SKIPPED =
   "Approved, so its fields are read-only; only the state, on hold and notes can be changed.";
 
-/** The words for a change request that has left New and was asked for a New-only field. */
+/** The words for a change request that has left New and was asked for another type or Customer Project. */
 export const NEW_ONLY_FIELDS_SKIPPED =
   "Approval has been requested, so its type and Customer Project can no longer be changed.";
+
+/** The words for a change request whose planned window the edit would turn inside out. */
+export const PLANNED_WINDOW_SKIPPED =
+  "Its planned end would not be after its planned start: the date set doesn't fit its other planned date.";
 
 /** The words for a change request on hold that was asked to change state without being taken off hold. */
 export const ON_HOLD_STATE_SKIPPED = "On hold, so its state can't change. Take it off hold in the same edit.";
@@ -146,7 +142,14 @@ export const ON_HOLD_STATE_SKIPPED = "On hold, so its state can't change. Take i
 export type BulkChangeRequestRecord = Partial<
   Pick<
     BeChangeRequestDetail,
-    "state" | "type" | "onHold" | "project" | "customerApprovalRequired" | "customerReviewRequired"
+    | "state"
+    | "type"
+    | "onHold"
+    | "project"
+    | "customerApprovalRequired"
+    | "customerReviewRequired"
+    | "plannedStartOn"
+    | "plannedEndOn"
   >
 >;
 
@@ -156,11 +159,15 @@ export type BulkChangeRequestRecord = Partial<
  * - A closed, canceled or rolled-back one is never edited.
  * - Once approved (Customer Approval and later) its fields are read-only: only
  *   the state, on hold and the journals are sent.
- * - The type and the Customer Project (with its deployments) change only in
- *   New; one that has left New since it was picked is skipped with the reason.
+ * - The type and the Customer Project change only in New (resending its own is
+ *   a no-op); the deployments change until approval, within its own project.
+ *   One that has left New and is asked for another type or project is skipped.
+ * - The planned window is judged as it will stand: one bound set alone is
+ *   checked against the change request's own other bound.
  * - A customer requirement follows the edit form's add-only rule; one that
- *   already reads as asked is not sent, and one this change request can't take
- *   (Emergency, its gate passed, no Customer Project) skips it with the reason.
+ *   already reads as asked is not sent (Emergency or not), and one this change
+ *   request can't take (Emergency, its gate passed, no Customer Project) skips
+ *   it with the reason.
  *   Re-typing to Emergency turns both off in the same request.
  * - On hold: putting one on hold that already is only updates the reason (a
  *   second "on hold" would clear it), taking one off that isn't is not sent, and
@@ -181,8 +188,18 @@ export function bulkChangeRequestPlan(cr: BulkChangeRequestRecord, edit: BulkCha
     const value = edit[key];
     (patch as Record<string, unknown>)[key] = typeof value === "string" ? value.trim() : value;
   }
-  if (!approved && !isChangeRequestCreationPhase(cr.state) && bulkEditTouchesNewOnlyFields(edit)) {
-    return { skip: NEW_ONLY_FIELDS_SKIPPED };
+  if (!approved && !isChangeRequestCreationPhase(cr.state)) {
+    // Fixed once approval was requested; resending the stored value is accepted as a no-op.
+    if (patch.type && patch.type !== cr.type?.trim().toLowerCase()) return { skip: NEW_ONLY_FIELDS_SKIPPED };
+    delete patch.type;
+    if (patch.projectId && patch.projectId !== cr.project?.id) return { skip: NEW_ONLY_FIELDS_SKIPPED };
+  }
+
+  if (!approved && (patch.plannedStartOn || patch.plannedEndOn)) {
+    // Nothing downstream orders the two bounds, so the window is judged here as it will stand.
+    const start = Date.parse(patch.plannedStartOn ?? cr.plannedStartOn ?? "");
+    const end = Date.parse(patch.plannedEndOn ?? cr.plannedEndOn ?? "");
+    if (!Number.isNaN(start) && !Number.isNaN(end) && end <= start) return { skip: PLANNED_WINDOW_SKIPPED };
   }
 
   if (!approved) {
@@ -200,12 +217,13 @@ export function bulkChangeRequestPlan(cr: BulkChangeRequestRecord, edit: BulkCha
     for (const [key, stored, lockedReason] of boxes) {
       const wanted = patch[key];
       if (wanted === undefined) continue;
-      if (wanted && emergency) return { skip: EMERGENCY_CUSTOMER_STEPS_HELPER };
-      // Already as asked: not sent (the backend takes it as a no-op, but it would still judge the lock).
+      // Already as asked: not sent (the backend takes it as a no-op, but it would still judge the lock),
+      // so an Emergency change that holds a tick from before the rule is not refused for it.
       if (wanted === stored) {
         delete patch[key];
         continue;
       }
+      if (wanted && emergency) return { skip: EMERGENCY_CUSTOMER_STEPS_HELPER };
       const locked = lockedReason(cr.state, { stored, hasProject });
       if (locked) return { skip: locked };
     }

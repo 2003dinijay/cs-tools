@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
@@ -51,9 +51,19 @@ vi.mock("@features/csm-cases/components/AsyncProjectSelect", () => ({
     <input aria-label={label} disabled={disabled} value={value} onChange={(e) => onChange(e.target.value, "Acme")} />
   ),
 }));
+// Project "proj-a" has one deployment; its products come back once it is chosen, as the real lookup does.
 vi.mock("@features/csm-operations/api/useChangeRequestScopeLookups", () => ({
-  useChangeRequestScopeLookups: () => ({
-    deployments: [],
+  useChangeRequestScopeLookups: (projectId: string | undefined, deploymentIds: string[]) => ({
+    deployments:
+      projectId === "proj-a"
+        ? [
+            {
+              id: "dep-1",
+              label: "Acme Production",
+              products: deploymentIds.includes("dep-1") ? [{ id: "dp-1", label: "API Manager 4.3.0" }] : undefined,
+            },
+          ]
+        : [],
     customerContacts: [],
     contactsReady: true,
     isLoading: false,
@@ -85,8 +95,10 @@ function cr(id: string, fields: Partial<BeChangeRequestDetail> = {}): BeChangeRe
   return detail;
 }
 
+let queryClient: QueryClient;
+
 function renderDialog(changeRequests: BeChangeRequestDetail[], isApplying = false): HTMLElement {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={queryClient}>
       <BulkEditChangeRequestsDialog
@@ -194,6 +206,95 @@ describe("BulkEditChangeRequestsDialog", () => {
     expect(within(dialog).getAllByText(/fixed once approval has been requested/).length).toBeGreaterThan(0);
     // The rest of the fields still apply.
     expect(within(dialog).getByRole("combobox", { name: "Impact" })).not.toHaveAttribute("aria-disabled");
+  });
+
+  it("changes the deployments past New within the project every selected change request shares, and only when asked", async () => {
+    const project = { id: "proj-a", name: "Acme" };
+    let dialog = renderDialog([
+      cr("a", { state: "assess", project, legalNextStates: ["canceled"] }),
+      cr("b", { state: "authorize", project, legalNextStates: ["canceled"] }),
+    ]);
+    await loaded(dialog);
+    const projectInput = within(dialog).getByRole("textbox", { name: "Customer Project" });
+    expect(projectInput).toBeDisabled();
+    expect(projectInput).toHaveValue("proj-a");
+    expect(within(dialog).getByText(/the deployments can still change, within it, until approval/)).toBeInTheDocument();
+
+    // The project shown is never sent on its own.
+    type(dialog, "Work note (internal)", "Checked.");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Apply to 2 change requests" }));
+    expect(onApply).toHaveBeenLastCalledWith({ workNote: "Checked." });
+
+    const deployments = within(dialog).getByRole("combobox", { name: "Deployments" });
+    deployments.focus();
+    fireEvent.keyDown(deployments, { key: "ArrowDown" });
+    fireEvent.click(await screen.findByRole("option", { name: "Acme Production" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Apply to 2 change requests" }));
+    expect(onApply).toHaveBeenLastCalledWith({
+      workNote: "Checked.",
+      projectId: "proj-a",
+      deploymentIds: ["dep-1"],
+      deploymentProductIds: ["dp-1"],
+    });
+    cleanup();
+
+    // Different projects: neither the project nor the deployments are common.
+    dialog = renderDialog([
+      cr("c", { state: "assess", project, legalNextStates: ["canceled"] }),
+      cr("d", { state: "assess", project: { id: "proj-b", name: "Beta" }, legalNextStates: ["canceled"] }),
+    ]);
+    await loaded(dialog);
+    expect(within(dialog).getByRole("textbox", { name: "Customer Project" })).toBeDisabled();
+    expect(within(dialog).getByRole("combobox", { name: "Deployments" })).toBeDisabled();
+    expect(within(dialog).getByText(/the deployments only while they share one project/)).toBeInTheDocument();
+  }, 20_000);
+
+  it("never sends the project it showed fixed, even when the selection turns out to be New on a refresh", async () => {
+    const project = { id: "proj-a", name: "Acme" };
+    const dialog = renderDialog([
+      cr("a", { state: "assess", project, legalNextStates: ["canceled"] }),
+      cr("b", { state: "assess", project, legalNextStates: ["canceled"] }),
+    ]);
+    await loaded(dialog);
+    expect(within(dialog).getByRole("textbox", { name: "Customer Project" })).toHaveValue("proj-a");
+
+    // Both read back as New (the project picker opens), still holding the project it showed.
+    cr("a", { project });
+    cr("b", { project });
+    await queryClient.invalidateQueries();
+    await waitFor(() => expect(within(dialog).getByRole("textbox", { name: "Customer Project" })).toBeEnabled());
+    type(dialog, "Work note (internal)", "Checked.");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Apply to 2 change requests" }));
+    // Not {projectId, deploymentIds: []}, which would clear every one's deployments.
+    expect(onApply).toHaveBeenCalledWith({ workNote: "Checked." });
+  });
+
+  it("says the selection couldn't be loaded, rather than loading forever", async () => {
+    cr("a");
+    apiMock.get.mockImplementation(() => Promise.reject(new Error("unavailable")));
+    const dialog = renderDialog([details.get("a") as BeChangeRequestDetail]);
+    await within(dialog).findByText(/Couldn't load the selected change requests' moves/);
+    expect(within(dialog).getAllByText(/Couldn't load the selected change requests, so this can't be changed here/).length).toBeGreaterThan(0);
+    expect(within(dialog).queryByText(/Loading the selected change requests/)).not.toBeInTheDocument();
+  });
+
+  it("drops a customer-step choice that a type change takes off the list, so it is never sent unseen", async () => {
+    const dialog = renderDialog([cr("a", { type: "emergency" }), cr("b", { type: "emergency" })]);
+    await loaded(dialog);
+    pick(dialog, "Type", "Normal");
+    pick(dialog, "Customer approval", "Required");
+    pick(dialog, "Type", "No change");
+    type(dialog, "Work note (internal)", "Re-typed back.");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Apply to 2 change requests" }));
+    expect(onApply).toHaveBeenCalledWith({ workNote: "Re-typed back." });
+  });
+
+  it("caps the rollback duration at the 255 characters the backend stores", async () => {
+    const dialog = renderDialog([cr("a")]);
+    await loaded(dialog);
+    type(dialog, "Rollback duration", "x".repeat(300));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Apply to 1 change request" }));
+    expect(onApply.mock.calls[0][0].rollbackDurationText).toBe("x".repeat(255));
   });
 
   it("offers a customer step only as far as every selected change request can take it", async () => {

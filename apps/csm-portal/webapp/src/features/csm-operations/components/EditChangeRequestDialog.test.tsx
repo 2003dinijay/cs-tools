@@ -691,6 +691,13 @@ describe("EditChangeRequestDialog — Customer Approval / Customer Review checkb
       expect(onSave).not.toHaveBeenCalled();
     });
 
+    it("caps the rollback duration at the 255 characters the backend stores", () => {
+      const { onSave } = renderDialog({ type: "normal", state: "new" });
+      fireEvent.change(screen.getByLabelText(/rollback duration/i), { target: { value: "x".repeat(300) } });
+      fireEvent.click(saveButton());
+      expect(onSave.mock.calls[0]![0].rollbackDurationText).toBe("x".repeat(255));
+    });
+
     it("leaves the other fields editable: a planned-window change still saves, with no customer flag in the patch", () => {
       const { onSave } = renderDialog({ type: "emergency", state: "new" });
       fireEvent.change(screen.getByLabelText(/rollback duration/i), { target: { value: "15 mins" } });
