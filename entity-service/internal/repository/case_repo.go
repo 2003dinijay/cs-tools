@@ -3615,11 +3615,7 @@ func buildCaseSearchWhere(req domain.SearchCasesRequest, scope SearchScope) (str
 	// ServiceNow side restricts this to ten named SLA definitions; this
 	// matches any breached row until that list is mapped onto sla_policy.
 	if req.Parsed.HasBreachedSLA != nil {
-		if *req.Parsed.HasBreachedSLA {
-			where += " AND EXISTS (SELECT 1 FROM sla_live bs WHERE bs.work_item_id = wi.id AND bs.live_has_breached IS TRUE)"
-		} else {
-			where += " AND NOT EXISTS (SELECT 1 FROM sla_live bs WHERE bs.work_item_id = wi.id AND bs.live_has_breached IS TRUE)"
-		}
+		where += slaBreachedPredicate("wi.id", *req.Parsed.HasBreachedSLA)
 	}
 	if req.Parsed.StartCreatedDate != nil {
 		where += fmt.Sprintf(" AND wi.created_on >= $%d", argIdx)
@@ -3700,26 +3696,11 @@ func buildCaseSearchWhere(req domain.SearchCasesRequest, scope SearchScope) (str
 		argIdx++
 	}
 
-	// taskSLABusinessElapsedPercent: matches a case with at least one SLA row
-	// whose business_elapsed_percentage is within the bound(s). Both bounds
-	// apply to the SAME row (a range like 75..100 means one SLA in that range,
-	// not one row >= 75 and another <= 100), which is why this is a single
-	// EXISTS. Any SLA row counts, whatever its stage -- the contract of
-	// domain.TaskSLAFilter. The percentage is uncapped (long-overdue SLAs
-	// climb far past 100), and 0 is a real bound, hence the nil checks.
-	if f := req.Parsed.TaskSLAFilter; f != nil && (f.MinBusinessElapsedPercent != nil || f.MaxBusinessElapsedPercent != nil) {
-		slaWhere := "tsla.work_item_id = wi.id"
-		if f.MinBusinessElapsedPercent != nil {
-			slaWhere += fmt.Sprintf(" AND tsla.live_elapsed_percentage >= $%d::numeric", argIdx)
-			filterArgs = append(filterArgs, *f.MinBusinessElapsedPercent)
-			argIdx++
-		}
-		if f.MaxBusinessElapsedPercent != nil {
-			slaWhere += fmt.Sprintf(" AND tsla.live_elapsed_percentage <= $%d::numeric", argIdx)
-			filterArgs = append(filterArgs, *f.MaxBusinessElapsedPercent)
-			argIdx++
-		}
-		where += " AND EXISTS (SELECT 1 FROM sla_live tsla WHERE " + slaWhere + ")"
+	// taskSLABusinessElapsedPercent: see slaPercentPredicate.
+	{
+		var slaClause string
+		slaClause, filterArgs, argIdx = slaPercentPredicate("wi.id", req.Parsed.TaskSLAFilter, filterArgs, argIdx)
+		where += slaClause
 	}
 
 	// product: matched on the deployed product's own catalog name (prod is

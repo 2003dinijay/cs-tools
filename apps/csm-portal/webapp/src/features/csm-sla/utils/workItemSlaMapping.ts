@@ -16,16 +16,16 @@
 
 /**
  * Pure mapping helpers between the task-SLA search wire shape
- * ({@link TaskSlaView}) and the {@link CaseSla} row model the SLA table
+ * ({@link TaskSlaView}) and the {@link WorkItemSla} row model the SLA table
  * renders. Kept free of any API-client import so this stays unit-testable
  * without the backend config the client requires.
  */
 
 import type {
-  CaseSla,
   SlaStage,
   TaskSlaView,
-} from "@features/csm-cases/types/csmCases";
+  WorkItemSla,
+} from "@features/csm-sla/types/workItemSla";
 
 /** The known, closed set of SLA stages the backend documents today. */
 type KnownSlaStage = "in_progress" | "paused" | "completed" | "cancelled" | "breached";
@@ -65,8 +65,8 @@ export function normalizeStage(raw: string | null): { stage: SlaStage; label: st
   return { stage: normalized, label: trimmed };
 }
 
-/** Maps one wire-shape SLA record onto the row model {@link CaseSlaTable} renders. */
-export function toCaseSla(view: TaskSlaView): CaseSla {
+/** Maps one wire-shape SLA record onto the row model {@link WorkItemSlaTable} renders. */
+export function toWorkItemSla(view: TaskSlaView): WorkItemSla {
   const { stage, label } = normalizeStage(view.stage);
   const businessElapsedPercent = view.businessElapsedPercentage ?? 0;
 

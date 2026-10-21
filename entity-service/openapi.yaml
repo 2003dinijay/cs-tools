@@ -27614,6 +27614,8 @@ components:
             - productName
             - assignedUserId
             - incidentStateKeys
+            - slaBreached
+            - taskSLABusinessElapsedPercent
             - category
             - updatedOn
         op:
@@ -27642,6 +27644,16 @@ components:
         - **slaViolated** (eq): a single boolean value ("true"/"false").
           Restricts to incidents with (or without) at least one breached SLA
           record.
+        - **slaBreached** (eq): a single boolean value ("true"/"false"),
+          the same filter case search accepts. Identical in meaning to
+          **slaViolated**; supplying both with different values is a 400.
+        - **taskSLABusinessElapsedPercent** (gte/lte): a non-negative integer
+          percentage (uncapped above), the same filter case search accepts.
+          Restricts to incidents having an SLA record whose business-elapsed
+          percentage is within the bound(s); gte and lte together describe a
+          single SLA record. Not supported when the search is served by an
+          external backing data source (the incident data source, or the SLA
+          data source routing an SLA-filtered search there): answered 400.
         - **madeSla** (eq): a single boolean value ("true"/"false").
           Restricts to incidents matching ServiceNow's raw `made_sla` field.
           Deliberately separate from **slaViolated** above: slaViolated is

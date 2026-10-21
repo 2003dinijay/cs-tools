@@ -571,6 +571,15 @@ type incidentService struct {
 	// (NewIncidentServiceWithPublisher, NewIncidentServiceWithSNMirror). NewIncidentService stays
 	// read-only for updates whatever it is given.
 	updatable bool
+	// slaSearchDelegate: see slaDelegate. When set (SLA_DATA_SOURCE=servicenow),
+	// an SLA-shaped search or aggregate is answered by it instead of the
+	// Postgres sla_live-backed query, exactly as caseService does.
+	slaSearchDelegate slaDelegate[IncidentService]
+}
+
+// setSLADelegate implements slaDelegateAcceptor[IncidentService].
+func (s *incidentService) setSLADelegate(delegate IncidentService) {
+	s.slaSearchDelegate = slaDelegate[IncidentService]{backend: delegate, set: delegate != nil}
 }
 
 // NewIncidentService constructs an IncidentService backed by Postgres.
@@ -675,6 +684,16 @@ func (s *incidentService) SearchIncidents(ctx context.Context, req domain.Search
 		return domain.SearchIncidentsResponse{}, err
 	}
 
+	slaViolated, taskSLA, err := incidentSLAFilters(req.Filters.Filters, slaViolated)
+	if err != nil {
+		return domain.SearchIncidentsResponse{}, err
+	}
+	// Incident search has no caller scoping (every caller is internal).
+	if delegate, ok := s.slaSearchDelegate.route(true, slaViolated != nil || taskSLA != nil); ok {
+		return delegate.SearchIncidents(ctx, req)
+	}
+	req.Filters.ParsedTaskSLA = taskSLA
+
 	views, total, err := s.repo.SearchIncidents(ctx, req, priorities, states, serviceIDs, assignedUserIDs, madeSla, slaViolated, createdStart, createdEnd)
 	if err != nil {
 		return domain.SearchIncidentsResponse{}, err
@@ -705,7 +724,15 @@ func (s *incidentService) AggregateIncidents(ctx context.Context, req domain.Agg
 		return domain.AggregateResponse{}, err
 	}
 
+	slaViolated, taskSLA, err := incidentSLAFilters(req.Filters.Filters, slaViolated)
+	if err != nil {
+		return domain.AggregateResponse{}, err
+	}
+	if delegate, ok := s.slaSearchDelegate.route(true, slaViolated != nil || taskSLA != nil); ok {
+		return delegate.AggregateIncidents(ctx, req)
+	}
 	searchReq := domain.SearchIncidentsRequest{Filters: req.Filters}
+	searchReq.Filters.ParsedTaskSLA = taskSLA
 	return s.repo.AggregateIncidents(ctx, searchReq, priorities, states, serviceIDs, assignedUserIDs, madeSla, slaViolated, createdStart, createdEnd, req.GroupBy, req.MaxGroups)
 }
 

@@ -1412,6 +1412,14 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// (what the call-escalation ladders start from) and takes work notes, with no ServiceNow behind it.
 		activeIncidentSvc = service.NewIncidentServiceWithPublisher(incidentRepo, userRepo, incidentEventPublisher)
 	}
+	// SLA_DATA_SOURCE=servicenow: SLA-filtered incident search/aggregate is
+	// answered by a read-only ServiceNow-backed incident service instead of the
+	// Postgres sla_live query, the same routing the case service gets via
+	// snSLASearchDelegate. Not DataSourceServiceNow, where the whole incident
+	// service is already ServiceNow-backed.
+	if cfg.SLADataSource == config.SLADataSourceServiceNow && cfg.DataSource != config.DataSourceServiceNow {
+		activeIncidentSvc = service.WithSLASearchDelegate(activeIncidentSvc, service.NewServiceNowIncidentMirrorService(serviceNowIntegrationServiceClient))
+	}
 	// Which Special Ops team a handoff goes to, and which GitHub repository
 	// its internal issue goes to, is configuration. A value that does not
 	// parse would silently offer no handoff anywhere; refuse to start instead.

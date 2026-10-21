@@ -164,8 +164,8 @@ import { TasksWidget } from "@features/csm-cases/components/TasksWidget";
 import { useSearchCaseTasks } from "@features/csm-cases/api/useSearchCaseTasks";
 import { useSearchDeployments } from "@features/csm-cases/api/useSearchDeployments";
 import { useGetProject } from "@features/csm-projects/api/useGetProject";
-import { CaseSlaTable } from "@features/csm-cases/components/CaseSlaTable";
-import { useGetCsmCaseSlas } from "@features/csm-cases/api/useGetCsmCaseSlas";
+import { WorkItemSlaTable } from "@features/csm-sla/components/WorkItemSlaTable";
+import { useGetWorkItemSlas } from "@features/csm-sla/api/useGetWorkItemSlas";
 import CaseTimeCardsPanel from "@features/csm-timecards/components/CaseTimeCardsPanel";
 import LogTimeCardDialog from "@features/csm-timecards/components/LogTimeCardDialog";
 import {
@@ -644,7 +644,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
   // Skipped for announcements (undefined caseId disables the query) since
   // neither tab is shown there, and for a caller without canViewSlaTab, since
   // the tab itself is hidden for them.
-  const { data: slaList } = useGetCsmCaseSlas(
+  const { data: slaList } = useGetWorkItemSlas(
     isAnnouncement || !canViewSlaTab ? undefined : caseId,
   );
   const {
@@ -3202,7 +3202,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
       )}
 
       {activeTab === "sla" && canViewSlaTab && caseId && (
-        <CaseSlaTable caseId={caseId} />
+        <WorkItemSlaTable workItemId={caseId} workItemLabel="case" />
       )}
 
       {activeTab === "attachments" && (

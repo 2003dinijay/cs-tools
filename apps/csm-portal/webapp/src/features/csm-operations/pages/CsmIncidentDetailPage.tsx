@@ -18,6 +18,7 @@ import { Box, Button, Card, Chip, Skeleton, Tab, Tabs, Tooltip, Typography } fro
 import {
   Activity,
   ArrowLeft,
+  Clock,
   Eye,
   FileText,
   GitBranch,
@@ -63,6 +64,7 @@ import {
 import { useGetCsmIncidentActivities } from "@features/csm-operations/api/useCsmIncidentActivities";
 import EditIncidentDialog from "@features/csm-operations/components/EditIncidentDialog";
 import EntityRefLink from "@features/csm-operations/components/EntityRefLink";
+import { WorkItemSlaTable } from "@features/csm-sla/components/WorkItemSlaTable";
 import IncidentTasksWidget from "@features/csm-operations/components/IncidentTasksWidget";
 import IncidentRunbookSection from "@features/csm-operations/components/IncidentRunbookSection";
 import IncidentActionBar from "@features/csm-operations/components/IncidentActionBar";
@@ -220,12 +222,19 @@ function RefText({ value }: { value?: BeEntityRef | null }): JSX.Element {
   return <Typography variant="body2">{value?.name || "—"}</Typography>;
 }
 
-type IncidentTabId = "activities" | "details" | "related" | "watchers" | "attachments";
+type IncidentTabId =
+  | "activities"
+  | "details"
+  | "related"
+  | "sla"
+  | "watchers"
+  | "attachments";
 
 const TAB_DEFS: Array<{ id: IncidentTabId; label: string; icon: JSX.Element }> = [
   { id: "activities", label: "Activities", icon: <Activity size={16} /> },
   { id: "details", label: "Details", icon: <FileText size={16} /> },
   { id: "related", label: "Related", icon: <LinkIcon size={16} /> },
+  { id: "sla", label: "SLA", icon: <Clock size={16} /> },
   { id: "watchers", label: "Watchers", icon: <Eye size={16} /> },
   { id: "attachments", label: "Attachments", icon: <Paperclip size={16} /> },
 ];
@@ -1107,6 +1116,13 @@ export default function CsmIncidentDetailPage(): JSX.Element {
             )}
           </Box>
         </Box>
+      )}
+
+      {activeTab === "sla" && (
+        // Mounted only while this tab is active, so the SLA fetch is lazy.
+        // Not gated by role: the backend decides, and a refusal shows in the
+        // table's own error state.
+        <WorkItemSlaTable workItemId={incident.id as string} workItemLabel="incident" />
       )}
 
       {activeTab === "watchers" && (

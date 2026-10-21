@@ -17,17 +17,17 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { CaseSlaTable } from "@features/csm-cases/components/CaseSlaTable";
-import type { CaseSla, CaseSlaList } from "@features/csm-cases/types/csmCases";
-import { useGetCsmCaseSlas } from "@features/csm-cases/api/useGetCsmCaseSlas";
+import { WorkItemSlaTable } from "@features/csm-sla/components/WorkItemSlaTable";
+import type { WorkItemSla, WorkItemSlaList } from "@features/csm-sla/types/workItemSla";
+import { useGetWorkItemSlas } from "@features/csm-sla/api/useGetWorkItemSlas";
 
-vi.mock("@features/csm-cases/api/useGetCsmCaseSlas", () => ({
-  useGetCsmCaseSlas: vi.fn(),
+vi.mock("@features/csm-sla/api/useGetWorkItemSlas", () => ({
+  useGetWorkItemSlas: vi.fn(),
 }));
 
-const mockedUseGetCsmCaseSlas = vi.mocked(useGetCsmCaseSlas);
+const mockedUseGetWorkItemSlas = vi.mocked(useGetWorkItemSlas);
 
-const SLA_ROW: CaseSla = {
+const SLA_ROW: WorkItemSla = {
   id: "sla-1",
   definition: "S1 - Response",
   target: "1 Business Hour",
@@ -41,8 +41,8 @@ const SLA_ROW: CaseSla = {
   stopTime: null,
 };
 
-function mockResult(overrides: Partial<ReturnType<typeof useGetCsmCaseSlas>>): void {
-  mockedUseGetCsmCaseSlas.mockReturnValue({
+function mockResult(overrides: Partial<ReturnType<typeof useGetWorkItemSlas>>): void {
+  mockedUseGetWorkItemSlas.mockReturnValue({
     data: null,
     isLoading: false,
     isError: false,
@@ -50,31 +50,31 @@ function mockResult(overrides: Partial<ReturnType<typeof useGetCsmCaseSlas>>): v
     dataUpdatedAt: 0,
     refetch: vi.fn(),
     ...overrides,
-  } as unknown as ReturnType<typeof useGetCsmCaseSlas>);
+  } as unknown as ReturnType<typeof useGetWorkItemSlas>);
 }
 
-describe("CaseSlaTable", () => {
+describe("WorkItemSlaTable", () => {
   beforeEach(() => {
-    mockedUseGetCsmCaseSlas.mockReset();
+    mockedUseGetWorkItemSlas.mockReset();
   });
 
   it("renders a loading skeleton while the query is in flight", () => {
     mockResult({ isLoading: true });
-    render(<CaseSlaTable caseId="case-1" />);
+    render(<WorkItemSlaTable workItemId="case-1" workItemLabel="case" />);
     expect(screen.getByText("SLAs")).toBeInTheDocument();
   });
 
   it("renders an empty state when there are no SLAs", () => {
-    const empty: CaseSlaList = { caseId: "case-1", count: 0, slas: [] };
+    const empty: WorkItemSlaList = { count: 0, slas: [] };
     mockResult({ data: empty });
-    render(<CaseSlaTable caseId="case-1" />);
+    render(<WorkItemSlaTable workItemId="case-1" workItemLabel="case" />);
     expect(screen.getByText("No SLAs on this case.")).toBeInTheDocument();
   });
 
   it("renders SLA rows with definition, stage, and time labels", () => {
-    const list: CaseSlaList = { caseId: "case-1", count: 1, slas: [SLA_ROW] };
+    const list: WorkItemSlaList = { count: 1, slas: [SLA_ROW] };
     mockResult({ data: list });
-    render(<CaseSlaTable caseId="case-1" />);
+    render(<WorkItemSlaTable workItemId="case-1" workItemLabel="case" />);
     expect(screen.getByText("S1 - Response")).toBeInTheDocument();
     expect(screen.getByText("In progress")).toBeInTheDocument();
     expect(screen.getAllByText("30 minutes").length).toBeGreaterThan(0);
@@ -86,7 +86,7 @@ describe("CaseSlaTable", () => {
   it("renders an error state with a retry action that refetches", () => {
     const refetch = vi.fn();
     mockResult({ isError: true, refetch });
-    render(<CaseSlaTable caseId="case-1" />);
+    render(<WorkItemSlaTable workItemId="case-1" workItemLabel="case" />);
     expect(screen.getByText("Could not load SLAs for this case.")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /retry/i }));
     expect(refetch).toHaveBeenCalled();
@@ -94,18 +94,18 @@ describe("CaseSlaTable", () => {
 
   it("calls refetch when the header refresh button is clicked", () => {
     const refetch = vi.fn();
-    const list: CaseSlaList = { caseId: "case-1", count: 1, slas: [SLA_ROW] };
+    const list: WorkItemSlaList = { count: 1, slas: [SLA_ROW] };
     mockResult({ data: list, refetch });
-    render(<CaseSlaTable caseId="case-1" />);
+    render(<WorkItemSlaTable workItemId="case-1" workItemLabel="case" />);
     fireEvent.click(screen.getByRole("button", { name: /refresh slas/i }));
     expect(refetch).toHaveBeenCalled();
   });
 
   it("shows the 'Last refreshed' hint only after a manual refresh click, not on initial load", () => {
     const refetch = vi.fn();
-    const list: CaseSlaList = { caseId: "case-1", count: 1, slas: [SLA_ROW] };
+    const list: WorkItemSlaList = { count: 1, slas: [SLA_ROW] };
     mockResult({ data: list, refetch, dataUpdatedAt: Date.now() });
-    render(<CaseSlaTable caseId="case-1" />);
+    render(<WorkItemSlaTable workItemId="case-1" workItemLabel="case" />);
 
     // Initial load already set `dataUpdatedAt`, but the hint must stay hidden.
     expect(screen.queryByText(/last refreshed/i)).not.toBeInTheDocument();
@@ -117,9 +117,38 @@ describe("CaseSlaTable", () => {
   });
 
   it("shows a truncation notice when fewer rows are rendered than the total count", () => {
-    const list: CaseSlaList = { caseId: "case-1", count: 51, slas: [SLA_ROW] };
+    const list: WorkItemSlaList = { count: 51, slas: [SLA_ROW] };
     mockResult({ data: list });
-    render(<CaseSlaTable caseId="case-1" />);
+    render(<WorkItemSlaTable workItemId="case-1" workItemLabel="case" />);
     expect(screen.getByText("Showing first 1 of 51")).toBeInTheDocument();
+  });
+
+  it("uses the work item label in the empty and error copy, so it reads right for an incident", () => {
+    mockResult({ data: { count: 0, slas: [] } });
+    const { unmount } = render(
+      <WorkItemSlaTable workItemId="inc-1" workItemLabel="incident" />,
+    );
+    expect(screen.getByText("No SLAs on this incident.")).toBeInTheDocument();
+    expect(mockedUseGetWorkItemSlas).toHaveBeenCalledWith("inc-1");
+    unmount();
+
+    mockResult({ isError: true });
+    render(<WorkItemSlaTable workItemId="inc-1" workItemLabel="incident" />);
+    expect(screen.getByText("Could not load SLAs for this incident.")).toBeInTheDocument();
+  });
+
+  it("renders a breached row for an incident in error styling with its elapsed percent", () => {
+    mockResult({
+      data: {
+        count: 1,
+        slas: [{ ...SLA_ROW, hasBreached: true, stage: "breached", stageLabel: "Breached", businessElapsedPercent: 120 }],
+      },
+    });
+    render(<WorkItemSlaTable workItemId="inc-1" workItemLabel="incident" />);
+    expect(screen.getByText("Breached")).toBeInTheDocument();
+    expect(screen.getByText("120%")).toBeInTheDocument();
+    expect(
+      screen.getByRole("row", { name: "S1 - Response 100% elapsed" }),
+    ).toBeInTheDocument();
   });
 });

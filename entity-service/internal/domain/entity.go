@@ -6482,8 +6482,22 @@ type SearchIncidentsFilters struct {
 	//     column, so the keys (1 New, 2 In Progress, 3 On Hold, 6 Resolved,
 	//     7 Closed, 8 Canceled) are applied to `state`, ANDed with any "state"
 	//     filter; a key with no state is a 400.
+	//   - "slaBreached" (op eq): a single boolean value; identical in meaning
+	//     to "slaViolated" (restricts to incidents with, or without, a
+	//     currently-breached SLA record) under the name every work-item type
+	//     shares. Supplying both with different values is a 400.
+	//   - "taskSLABusinessElapsedPercent" (op gte/lte): a non-negative
+	//     integer; restricts to incidents having an SLA record whose
+	//     business-elapsed percentage is within the bound(s) (both bounds
+	//     apply to the same SLA record). Uncapped above. Not supported by the
+	//     ServiceNow-backed incident service: rejected with a 400 there, and
+	//     therefore also when SLA_DATA_SOURCE routes the search to it.
 	// See service.ParseIncidentFieldFilters.
 	Filters []IncidentFieldFilter `json:"filters,omitempty"`
+	// ParsedTaskSLA is populated by the service layer from the
+	// "taskSLABusinessElapsedPercent" filter before the request reaches the
+	// Postgres repository; it carries no wire representation of its own.
+	ParsedTaskSLA *TaskSLAFilter `json:"-"`
 
 	// AssignmentGroupIDs / Categories / UpdatedStart / UpdatedEnd are the parsed
 	// "assignmentGroupId", "category" and "updatedOn" filters, set by the
