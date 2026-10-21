@@ -17,9 +17,10 @@
 // Package salesentity reads the Salesforce data the closure sweep needs
 // (project dates, the account's people and classification, contacts, linked
 // opportunities, opportunities and invoices) live from REST
-// sales/sales-entity-service. CSM keeps the closure sweep's own records (the
-// open-project list, closure states and the notices sent); everything
-// Salesforce owns is read here, so it is never a stale copy.
+// sales/sales-entity-service, and writes a suspended project's State__c back.
+// CSM keeps the closure sweep's own records (the open-project list, closure
+// states and the notices sent); everything Salesforce owns is read here, so
+// it is never a stale copy.
 package salesentity
 
 import (
@@ -30,6 +31,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -235,6 +237,13 @@ func (c *Client) Opportunities(ctx context.Context, ids []string) ([]Opportunity
 	return all, nil
 }
 
+// UpdateProjectStatus sets a project's State__c ("Open" or "Suspended") by its
+// Salesforce id, through PATCH /projects/{id}. The response (the project
+// re-read after the write) is not used.
+func (c *Client) UpdateProjectStatus(ctx context.Context, id, status string) error {
+	return c.send(ctx, http.MethodPatch, "/projects/"+url.PathEscape(id), map[string]string{"status": status}, nil)
+}
+
 // pagedSearch reads filter=value page by page until a short page, up to
 // maxPages.
 func pagedSearch[T any](ctx context.Context, c *Client, path, filter, value string) ([]T, error) {
@@ -253,14 +262,20 @@ func pagedSearch[T any](ctx context.Context, c *Client, path, filter, value stri
 	return nil, fmt.Errorf("salesentity: %s still returns full pages after %d pages; stopping", path, maxPages)
 }
 
-// post sends body as JSON and decodes a 2xx JSON response into out. A non-2xx
-// is an *apierror.Error carrying the status and at most 256 bytes of body.
+// post sends body as JSON and decodes a 2xx JSON response into out.
 func (c *Client) post(ctx context.Context, path string, body any, out any) error {
+	return c.send(ctx, http.MethodPost, path, body, out)
+}
+
+// send sends body as JSON with method and, when out is not nil, decodes a 2xx
+// JSON response into it. A non-2xx is an *apierror.Error carrying the status
+// and at most 256 bytes of body.
+func (c *Client) send(ctx context.Context, method, path string, body any, out any) error {
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return fmt.Errorf("salesentity: marshal %s request: %w", path, err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, bytes.NewReader(payload))
 	if err != nil {
 		return fmt.Errorf("salesentity: build %s request: %w", path, err)
 	}
@@ -269,7 +284,7 @@ func (c *Client) post(ctx context.Context, path string, body any, out any) error
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("salesentity: POST %s: %w", path, err)
+		return fmt.Errorf("salesentity: %s %s: %w", method, path, err)
 	}
 	defer resp.Body.Close()
 
@@ -284,6 +299,9 @@ func (c *Client) post(ctx context.Context, path string, body any, out any) error
 	raw, err := httpsec.ReadBounded(resp.Body, maxResponseBody)
 	if err != nil {
 		return fmt.Errorf("salesentity: read %s response: %w", path, err)
+	}
+	if out == nil {
+		return nil
 	}
 	if err := json.Unmarshal(raw, out); err != nil {
 		return fmt.Errorf("salesentity: parse %s response: %w", path, err)

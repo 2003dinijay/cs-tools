@@ -34,7 +34,9 @@ reviewed cutover.
   closure states, notices sent and every write
 - Reads each project's Salesforce data (dates, account people and
   classification, primary partner, contacts, opportunities, invoices) live
-  from `sales-entity-service` (`internal/salesentity`)
+  from `sales-entity-service` (`internal/salesentity`), and sets a
+  suspended project's Salesforce `State__c` to `Suspended` there
+  (`PATCH /projects/{sfId}`)
 - Authentication: OAuth2 client-credentials (M2M), scoped via
   `entity.RequiredScopes`
 
@@ -115,7 +117,7 @@ acp-closure-service/
 │   ├── entity/                    # HTTP client for csm-integration-service
 │   ├── notify/                    # Notice shape + logging notifier (real sending: not yet built)
 │   ├── recipients/                # Pure customer-contact fallback + AM-email resolution
-│   ├── salesentity/               # HTTP client for sales-entity-service (Salesforce reads)
+│   ├── salesentity/               # HTTP client for sales-entity-service (Salesforce reads, State__c write)
 │   ├── suspensionstate/           # suspensionProcessState blob <-> closure.NoticeWindow translation
 │   └── sweep/                     # Orchestration: fetch -> decide -> notify -> write back
 ├── .env.example

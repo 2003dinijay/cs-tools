@@ -17,9 +17,8 @@ no in-process ticker, no long-running state, no health endpoint.
 ## Two sources: CSM for ACP's own records, Salesforce for the rest
 
 Agreed with Sajith: Salesforce data is read live from sales-entity-service
-instead of CSM's copy; ACP's own records stay on CSM; writes go to CSM, and
-entity-service passes the overall closure state on to Salesforce
-(cs-tools #2780 with digiops-sales #1725).
+instead of CSM's copy; ACP's own records stay on CSM; ACP writes to both
+itself (see "Writes" below). Nothing syncs CSM to Salesforce.
 
 | Read | From | How |
 |---|---|---|
@@ -66,6 +65,27 @@ Closed Won one; contacts are read only when a notice goes out
 for every project because the invoice gate needs the classification; reading it
 only when a project has a due invoice would save one call per project, at the
 cost of changing the sweep's decision code.
+
+### Writes
+
+| Write | To | How |
+|---|---|---|
+| Notice sent (`suspensionProcessState`) | CSM | `PATCH /projects/{csmId}` |
+| Suspension (`endDateClosureState: Closed` / `invoiceDueDateClosureState: Suspended`) | CSM | `PATCH /projects/{csmId}` |
+| `State__c = Suspended`, after the CSM suspension succeeded | Salesforce | sales-entity-service `PATCH /projects/{sfId}` `{"status":"Suspended"}` (digiops-sales #1725) |
+
+`suspend` and `suspendInvoice` call `suspendInSalesforce` after their CSM write;
+the suspend guard that skips the CSM write skips this too. `sweep.Writer`
+(`writer.go`) is the real `projectUpdater`: CSM writes to `*entity.Client`,
+`SuspendInSalesforce` to `*salesentity.Client`. If the CSM write fails,
+Salesforce is not written. If the Salesforce write fails, CSM stays suspended
+and the project is a failure of the run; the next run will not retry it (the
+project is no longer Open in CSM), so `State__c` must be set by hand.
+
+ACP never reopens, so it never writes `Open`. Whoever reopens a project (by
+hand today, the back-to-Open workflow later) sets both: CSM
+`PATCH /projects/{csmId}` and sales-entity-service `PATCH /projects/{sfId}`
+`{"status":"Open"}`.
 
 ## Calls csm-integration-service, not entity-service directly
 
@@ -305,9 +325,9 @@ issue was fixed.
 have exactly two side-effecting dependencies — `projectUpdater` (writes) and
 `notifier` (sends) — expressed as small interfaces. `main.go` decides which
 concrete implementation to inject for `projectUpdater` based on `DRY_RUN`:
-`sweep.DryRunProjectUpdater` (silently no-ops, never calls `UpdateProject`
-— see the notice-content-redesign section below for why it deliberately
-doesn't log) vs. the real `*entity.Client`. Reads (`SearchProjects`, `GetAccount`,
+`sweep.DryRunProjectUpdater` (silently no-ops, writes neither CSM nor
+Salesforce — see the notice-content-redesign section below for why it
+deliberately doesn't log) vs. the real `*sweep.Writer`. Reads (`SearchProjects`, `GetAccount`,
 `SearchProjectContacts`, `SearchAccountContacts`) are never dry-run-gated —
 fetching and deciding has no write effect to protect against.
 

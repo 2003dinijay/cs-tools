@@ -39,11 +39,12 @@ import (
 )
 
 // projectUpdater is declared locally so main can hold either the real
-// *entity.Client or *sweep.DryRunProjectUpdater in one variable — Go
-// interface satisfaction is structural, so neither concrete type needs to
-// reference this declaration.
+// *sweep.Writer (CSM + Salesforce) or *sweep.DryRunProjectUpdater in one
+// variable — Go interface satisfaction is structural, so neither concrete
+// type needs to reference this declaration.
 type projectUpdater interface {
 	UpdateProject(ctx context.Context, id string, body []byte) ([]byte, error)
+	SuspendInSalesforce(ctx context.Context, sfID string) error
 }
 
 // notifier is declared locally, mirroring projectUpdater above, so main can
@@ -90,8 +91,9 @@ func main() {
 	}
 
 	// Salesforce-owned project details (dates, account people, contacts,
-	// opportunities, invoices) are read live from sales-entity-service; CSM
-	// keeps the open-project list, closure states and notices sent.
+	// opportunities, invoices) are read live from sales-entity-service, and a
+	// suspension's State__c is written there; CSM keeps the open-project list,
+	// closure states and notices sent.
 	salesEntityClient, err := salesentity.NewClient(salesentity.Config{
 		BaseURL:      mustEnv("SALES_ENTITY_BASE_URL"),
 		TokenURL:     mustEnv("SALES_ENTITY_TOKEN_URL"),
@@ -104,7 +106,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	var updater projectUpdater = entityClient
+	// Writes: notices sent and suspensions go to CSM; a suspension also sets
+	// the Salesforce project's State__c, written by ACP itself.
+	var updater projectUpdater = sweep.NewWriter(entityClient, salesEntityClient)
 	if dryRun {
 		updater = &sweep.DryRunProjectUpdater{}
 	}

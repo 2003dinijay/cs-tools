@@ -41,18 +41,19 @@ func tokenServer(t *testing.T) *httptest.Server {
 	return srv
 }
 
-// fakeSalesEntity records every request body by path and answers from
-// responses, a function of the path and the decoded body.
+// fakeSalesEntity records every request body and method by path and answers
+// from responses, a function of the path and the decoded body.
 type fakeSalesEntity struct {
 	mu        sync.Mutex
 	requests  map[string][]map[string]any
+	methods   map[string][]string
 	responses func(path string, body map[string]any) (int, string)
 }
 
 func (f *fakeSalesEntity) handler(t *testing.T) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Errorf("%s %s, want POST", r.Method, r.URL.Path)
+		if r.Method != http.MethodPost && r.Method != http.MethodPatch {
+			t.Errorf("%s %s, want POST or PATCH", r.Method, r.URL.Path)
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
 			t.Errorf("Authorization = %q, want the bearer token", got)
@@ -65,8 +66,10 @@ func (f *fakeSalesEntity) handler(t *testing.T) http.Handler {
 		f.mu.Lock()
 		if f.requests == nil {
 			f.requests = map[string][]map[string]any{}
+			f.methods = map[string][]string{}
 		}
 		f.requests[r.URL.Path] = append(f.requests[r.URL.Path], body)
+		f.methods[r.URL.Path] = append(f.methods[r.URL.Path], r.Method)
 		f.mu.Unlock()
 		status, resp := f.responses(r.URL.Path, body)
 		w.Header().Set("Content-Type", "application/json")
@@ -79,6 +82,12 @@ func (f *fakeSalesEntity) bodies(path string) []map[string]any {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.requests[path]
+}
+
+func (f *fakeSalesEntity) methodsFor(path string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.methods[path]
 }
 
 func newTestClient(t *testing.T, f *fakeSalesEntity) *Client {
@@ -338,6 +347,57 @@ func TestOpportunities(t *testing.T) {
 
 	if got, err := c.Opportunities(context.Background(), nil); err != nil || got != nil {
 		t.Errorf("no ids: %v, %v; want no call", got, err)
+	}
+}
+
+// TestUpdateProjectStatus: the status goes to PATCH /projects/{id}, the
+// endpoint that writes the project's State__c; an upstream error is returned.
+func TestUpdateProjectStatus(t *testing.T) {
+	f := &fakeSalesEntity{responses: func(path string, _ map[string]any) (int, string) {
+		if path == "/projects/a0dmissing" {
+			return http.StatusNotFound, `{"message":"not found"}`
+		}
+		return http.StatusOK, `{"id":"a0dE200000E7CxNIAV","status":"Suspended"}`
+	}}
+	c := newTestClient(t, f)
+
+	if err := c.UpdateProjectStatus(context.Background(), "a0dE200000E7CxNIAV", "Suspended"); err != nil {
+		t.Fatalf("UpdateProjectStatus: %v", err)
+	}
+	if got := f.methodsFor("/projects/a0dE200000E7CxNIAV"); len(got) != 1 || got[0] != http.MethodPatch {
+		t.Errorf("methods = %v, want one PATCH", got)
+	}
+	body := f.bodies("/projects/a0dE200000E7CxNIAV")[0]
+	if len(body) != 1 || body["status"] != "Suspended" {
+		t.Errorf("request = %v, want {status: Suspended}", body)
+	}
+
+	err := c.UpdateProjectStatus(context.Background(), "a0dmissing", "Suspended")
+	var apiErr *apierror.Error
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
+		t.Errorf("missing project: err = %v, want a 404 *apierror.Error", err)
+	}
+}
+
+// TestUpdateProjectStatus_EscapesTheID: an id is one path segment, never a
+// path of its own.
+func TestUpdateProjectStatus_EscapesTheID(t *testing.T) {
+	var gotPath string
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.EscapedPath()
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(api.Close)
+	c, err := NewClient(Config{BaseURL: api.URL, TokenURL: tokenServer(t).URL, ClientID: "id", ClientSecret: "secret"})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	if err := c.UpdateProjectStatus(context.Background(), "../customer-search", "Suspended"); err != nil {
+		t.Fatalf("UpdateProjectStatus: %v", err)
+	}
+	if gotPath != "/projects/..%2Fcustomer-search" {
+		t.Errorf("path = %q, want the id escaped into one segment", gotPath)
 	}
 }
 
