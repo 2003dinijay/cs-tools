@@ -93,6 +93,7 @@ import RefreshButton from "@components/RefreshButton";
 import type {
   BeChangeRequestSearchPayload,
   BeChangeRequestSearchResponse,
+  BeChangeRequestDetail,
   BeChangeRequestSearchView,
   BePatchChangeRequestPayload,
   BePatchChangeRequestResponse,
@@ -242,17 +243,21 @@ export default function ChangeRequestsTab(): JSX.Element {
   const [bulkResult, setBulkResult] = useState<{ result: BulkResult; verb: string } | null>(null);
   /**
    * One bulk action over the selection. Each change request is planned from
-   * what it is now (its detail, which the edit dialog has just read and the
-   * cache still holds), not from the row as it was when picked: one approved in
-   * the meantime then gets only its state and work note, as promised. After
+   * what it is now (its detail, read again just before the run), not from the
+   * row as it was when picked: one approved in the meantime then gets only its
+   * state, hold and notes, as promised, and one whose detail can't be read is
+   * skipped with the reason. After
    * the run the dialog is closed first, so its detail queries are gone before
    * the records are refreshed the way a single edit refreshes them.
    */
-  const runBulk = async (planFor: (cr: BeChangeRequestSearchView) => BulkChangeRequestPlan, verb: string): Promise<void> => {
+  const runBulk = async (planFor: (cr: BeChangeRequestDetail) => BulkChangeRequestPlan, verb: string): Promise<void> => {
     setBulkBusy(true);
     const rows = selection.selected;
     try {
-      const current = await mapWithConcurrency(rows, (cr) => queryClient.fetchQuery(changeRequestDetailQuery(api, cr.id)));
+      // Read now, never from the cache: the plan follows each one's state, hold and customer steps as they are.
+      const current = await mapWithConcurrency(rows, (cr) =>
+        queryClient.fetchQuery({ ...changeRequestDetailQuery(api, cr.id), staleTime: 0 }),
+      );
       const skipped: BulkFailure[] = [];
       const toSend: Array<{ id: string; number?: string; patch: BePatchChangeRequestPayload }> = [];
       rows.forEach((row, i) => {
@@ -261,8 +266,13 @@ export default function ChangeRequestsTab(): JSX.Element {
           skipped.push({ id: row.id, number, message: "Not found: it may have been deleted." });
           return;
         }
-        // A detail that could not be read leaves the row as it was picked; the backend still decides.
-        const plan = planFor(current[i] ?? row);
+        // Without its detail its hold, type and customer steps are unknown: nothing is sent blind.
+        const detail = current[i];
+        if (!detail) {
+          skipped.push({ id: row.id, number, message: "Couldn't read it just now, so it was not changed. Try again." });
+          return;
+        }
+        const plan = planFor(detail);
         if ("skip" in plan) skipped.push({ id: row.id, number, message: plan.skip });
         else toSend.push({ id: row.id, number: row.number, patch: plan.patch });
       });

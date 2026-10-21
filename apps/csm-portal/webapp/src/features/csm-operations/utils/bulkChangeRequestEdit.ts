@@ -17,90 +17,208 @@
 import {
   changeRequestApprovedReadOnlyReason,
   changeRequestTransitionRequiresReason,
+  customerApprovalLockedReason,
+  customerReviewLockedReason,
+  EMERGENCY_CUSTOMER_STEPS_HELPER,
+  isChangeRequestCreationPhase,
   isChangeRequestTerminal,
+  isEmergencyChangeRequestType,
 } from "@features/csm-operations/utils/changeRequests";
-import type {
-  BeChangeRequestCategory,
-  BeChangeRequestImpact,
-  BeChangeRequestPriority,
-  BePatchChangeRequestPayload,
-} from "@api/backend/types";
+import type { BeChangeRequestDetail, BePatchChangeRequestPayload } from "@api/backend/types";
 
 /**
  * The one change a bulk edit applies to every selected change request: only
  * the fields set here are sent, so each change request keeps its own value for
- * the rest.
+ * the rest. Every field `PATCH /change-requests/{id}` takes from the edit form,
+ * plus the state (a move every selected change request can make, from
+ * `bulkChangeRequestTargets`), on hold and the two journals. Not here: Request
+ * approval and the answers to a customer's proposed time, which are one change
+ * request's own conversation.
+ *
+ * `workNote` is required with a state that needs a stated reason (Roll back,
+ * Cancel change): it is that reason, and it rides in the same request as the
+ * state, so a refused move records no reason either.
  */
-export interface BulkChangeRequestEdit {
-  /** A move every selected change request can make (`bulkChangeRequestTargets`). */
-  state?: string;
-  impact?: BeChangeRequestImpact;
-  priority?: BeChangeRequestPriority;
-  category?: BeChangeRequestCategory;
-  assignedTeamId?: string;
-  assignedEngineerId?: string;
-  /**
-   * An internal work note added to every selected change request. Required
-   * with a state that needs a stated reason (Roll back, Cancel change): it is
-   * that reason, and it rides in the same request as the state, so a refused
-   * move records no reason either.
-   */
-  workNote?: string;
-}
+export type BulkChangeRequestEdit = Pick<
+  BePatchChangeRequestPayload,
+  | "state"
+  | "title"
+  | "description"
+  | "type"
+  | "category"
+  | "impact"
+  | "priority"
+  | "onHold"
+  | "onHoldReason"
+  | "serviceId"
+  | "serviceOfferingId"
+  | "assignedTeamId"
+  | "assignedEngineerId"
+  | "requestedById"
+  | "caseId"
+  | "plannedStartOn"
+  | "plannedEndOn"
+  | "rollbackDurationText"
+  | "justification"
+  | "implementationPlan"
+  | "impactDescription"
+  | "rollbackPlan"
+  | "testPlan"
+  | "serviceOutage"
+  | "communicationPlan"
+  | "affectedServicesText"
+  | "affectedComponentsText"
+  | "projectId"
+  | "deploymentIds"
+  | "deploymentProductIds"
+  | "customerApprovalRequired"
+  | "customerReviewRequired"
+  | "isPlanningVisibleToCustomers"
+  | "workNote"
+  | "comment"
+>;
 
 /** What is sent to one change request, or why nothing is. */
 export type BulkChangeRequestPlan = { patch: BePatchChangeRequestPayload } | { skip: string };
 
-/** The fields of a bulk edit that are the change request's own content (read-only once it is approved). */
-const CONTENT_FIELDS = ["impact", "priority", "category", "assignedTeamId", "assignedEngineerId"] as const;
+/**
+ * What can still be sent to a change request that has been approved: the
+ * lifecycle (state, on hold) and the two journals. Everything else is its own
+ * content, which the entity service then refuses (`approvedLockFields`), so an
+ * allow-list: a field added later is read-only once approved until it is listed.
+ */
+const APPROVED_ALLOWED_FIELDS: ReadonlySet<string> = new Set(["state", "onHold", "onHoldReason", "workNote", "comment"]);
 
-/** Whether `edit` changes any of the change request's own fields (not just its state or journal). */
-export function bulkEditTouchesContent(edit: BulkChangeRequestEdit): boolean {
-  return CONTENT_FIELDS.some((field) => !!edit[field]);
+/** The fields fixed once approval has been requested (the change request has left New). */
+const NEW_ONLY_FIELDS = ["type", "projectId", "deploymentIds", "deploymentProductIds"] as const;
+
+/**
+ * Whether `key` is set in `edit`: a blank text is not (a bulk edit never clears
+ * a field), while `false` and an empty list of deployments are values.
+ */
+function isSet(edit: BulkChangeRequestEdit, key: keyof BulkChangeRequestEdit): boolean {
+  const value = edit[key];
+  if (typeof value === "string") return value.trim() !== "";
+  return value !== undefined && value !== null;
 }
 
-/** Why a bulk edit cannot be applied as it stands (a reason is missing), or `null`. */
+/** Whether `edit` changes any of the change request's own fields (not just its state, hold or journals). */
+export function bulkEditTouchesContent(edit: BulkChangeRequestEdit): boolean {
+  return (Object.keys(edit) as Array<keyof BulkChangeRequestEdit>).some(
+    (key) => !APPROVED_ALLOWED_FIELDS.has(key) && isSet(edit, key),
+  );
+}
+
+/** Whether `edit` sets a field that only a change request in New can take. */
+export function bulkEditTouchesNewOnlyFields(edit: BulkChangeRequestEdit): boolean {
+  return NEW_ONLY_FIELDS.some((key) => isSet(edit, key));
+}
+
+/** Why a bulk edit cannot be applied as it stands, or `null`. */
 export function bulkChangeRequestEditProblem(edit: BulkChangeRequestEdit): string | null {
   if (edit.state && changeRequestTransitionRequiresReason(edit.state) && !edit.workNote?.trim()) {
     return "A reason is required for this state change. It is added to every selected change request as an internal work note.";
+  }
+  if (edit.plannedStartOn && edit.plannedEndOn && Date.parse(edit.plannedEndOn) <= Date.parse(edit.plannedStartOn)) {
+    return "Planned end must be after planned start.";
+  }
+  if (edit.onHoldReason && edit.onHold !== true) {
+    return "A hold reason goes with putting the change requests on hold.";
+  }
+  if (isEmergencyChangeRequestType(edit.type) && (edit.customerApprovalRequired || edit.customerReviewRequired)) {
+    return EMERGENCY_CUSTOMER_STEPS_HELPER;
   }
   return null;
 }
 
 /** The words for a change request that has been approved and was asked to change a field. */
 export const APPROVED_FIELDS_SKIPPED =
-  "Approved, so its fields are read-only; only the state and work notes can be changed.";
+  "Approved, so its fields are read-only; only the state, on hold and notes can be changed.";
+
+/** The words for a change request that has left New and was asked for a New-only field. */
+export const NEW_ONLY_FIELDS_SKIPPED =
+  "Approval has been requested, so its type and Customer Project can no longer be changed.";
+
+/** The words for a change request on hold that was asked to change state without being taken off hold. */
+export const ON_HOLD_STATE_SKIPPED = "On hold, so its state can't change. Take it off hold in the same edit.";
+
+/** What a bulk plan needs to know about one change request (its detail, read just before the run). */
+export type BulkChangeRequestRecord = Partial<
+  Pick<
+    BeChangeRequestDetail,
+    "state" | "type" | "onHold" | "project" | "customerApprovalRequired" | "customerReviewRequired"
+  >
+>;
 
 /**
  * The PATCH for one change request in a bulk edit, from its current state.
- * Once a change request has been approved (Customer Approval and later) its
- * fields are read-only and only the state and a work note are sent; a change
- * request left with nothing to send is skipped with the reason. A closed,
- * canceled or rolled-back one is never edited. The backend stays the authority:
- * a move it refuses for one change request (on hold, nobody to ask, no
- * assignment group) is reported for that one and the rest go through.
+ *
+ * - A closed, canceled or rolled-back one is never edited.
+ * - Once approved (Customer Approval and later) its fields are read-only: only
+ *   the state, on hold and the journals are sent.
+ * - The type and the Customer Project (with its deployments) change only in
+ *   New; one that has left New since it was picked is skipped with the reason.
+ * - A customer requirement follows the edit form's add-only rule; one that
+ *   already reads as asked is not sent, and one this change request can't take
+ *   (Emergency, its gate passed, no Customer Project) skips it with the reason.
+ *   Re-typing to Emergency turns both off in the same request.
+ * - On hold: putting one on hold that already is only updates the reason (a
+ *   second "on hold" would clear it), taking one off that isn't is not sent, and
+ *   one on hold can't change state unless the same edit takes it off hold.
+ *
+ * A change request left with nothing to send is skipped with the reason. The
+ * backend stays the authority: what it refuses for one change request (nobody
+ * to ask, no assignment group) is reported for that one and the rest go through.
  */
-export function bulkChangeRequestPlan(
-  cr: { state?: string | null },
-  edit: BulkChangeRequestEdit,
-): BulkChangeRequestPlan {
+export function bulkChangeRequestPlan(cr: BulkChangeRequestRecord, edit: BulkChangeRequestEdit): BulkChangeRequestPlan {
   if (isChangeRequestTerminal(cr.state)) {
     return { skip: "Closed, canceled or rolled back: it can't be edited." };
   }
   const approved = !!changeRequestApprovedReadOnlyReason(cr.state);
   const patch: BePatchChangeRequestPayload = {};
-  if (edit.state) patch.state = edit.state;
-  if (!approved) {
-    if (edit.impact) patch.impact = edit.impact;
-    if (edit.priority) patch.priority = edit.priority;
-    if (edit.category) patch.category = edit.category;
-    if (edit.assignedTeamId) patch.assignedTeamId = edit.assignedTeamId;
-    if (edit.assignedEngineerId) patch.assignedEngineerId = edit.assignedEngineerId;
+  for (const key of Object.keys(edit) as Array<keyof BulkChangeRequestEdit>) {
+    if (!isSet(edit, key) || (approved && !APPROVED_ALLOWED_FIELDS.has(key))) continue;
+    const value = edit[key];
+    (patch as Record<string, unknown>)[key] = typeof value === "string" ? value.trim() : value;
   }
-  const note = edit.workNote?.trim();
-  if (note) patch.workNote = note;
+  if (!approved && !isChangeRequestCreationPhase(cr.state) && bulkEditTouchesNewOnlyFields(edit)) {
+    return { skip: NEW_ONLY_FIELDS_SKIPPED };
+  }
+
+  if (!approved) {
+    const emergency = isEmergencyChangeRequestType(patch.type ?? cr.type);
+    if (isEmergencyChangeRequestType(patch.type)) {
+      // An Emergency change has no customer steps: re-typing to it turns both off.
+      patch.customerApprovalRequired = false;
+      patch.customerReviewRequired = false;
+    }
+    const hasProject = !!(patch.projectId ?? cr.project?.id);
+    const boxes = [
+      ["customerApprovalRequired", cr.customerApprovalRequired ?? false, customerApprovalLockedReason],
+      ["customerReviewRequired", cr.customerReviewRequired ?? false, customerReviewLockedReason],
+    ] as const;
+    for (const [key, stored, lockedReason] of boxes) {
+      const wanted = patch[key];
+      if (wanted === undefined) continue;
+      if (wanted && emergency) return { skip: EMERGENCY_CUSTOMER_STEPS_HELPER };
+      // Already as asked: not sent (the backend takes it as a no-op, but it would still judge the lock).
+      if (wanted === stored) {
+        delete patch[key];
+        continue;
+      }
+      const locked = lockedReason(cr.state, { stored, hasProject });
+      if (locked) return { skip: locked };
+    }
+  }
+
+  if (patch.onHold === true && cr.onHold) delete patch.onHold;
+  if (patch.onHold === false && !cr.onHold) delete patch.onHold;
+  if (cr.onHold && patch.state && patch.onHold !== false) return { skip: ON_HOLD_STATE_SKIPPED };
+
   if (Object.keys(patch).length === 0) {
-    return { skip: approved && bulkEditTouchesContent(edit) ? APPROVED_FIELDS_SKIPPED : "Nothing to change." };
+    if (approved && bulkEditTouchesContent(edit)) return { skip: APPROVED_FIELDS_SKIPPED };
+    if (edit.onHold !== undefined) return { skip: edit.onHold ? "Already on hold." : "Not on hold." };
+    return { skip: "Nothing to change." };
   }
   return { patch };
 }
