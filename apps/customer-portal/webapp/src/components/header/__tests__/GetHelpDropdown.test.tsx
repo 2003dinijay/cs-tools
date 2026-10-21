@@ -114,4 +114,14 @@ describe("GetHelpDropdown", () => {
     const { container } = render(<GetHelpDropdown />);
     expect(container).toBeEmptyDOMElement();
   });
+
+  it("should not render while permissions are still loading", () => {
+    useCustomerPermissionsMock.mockReturnValue({
+      canCreateCase: true,
+      isLoading: true,
+    });
+
+    const { container } = render(<GetHelpDropdown />);
+    expect(container).toBeEmptyDOMElement();
+  });
 });

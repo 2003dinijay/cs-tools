@@ -100,8 +100,11 @@ export default function ActivityCommentInput({
   if (isCaseClosed) return null;
   // Posting a comment is POST /cases/{id}/comments, which the backend gates
   // on the same cases/create permission -- hide the composer rather than let
-  // the customer type a comment the submit will 403.
-  if (!isPermissionsLoading && !canCreateCase) return null;
+  // the customer type a comment the submit will 403. Fails closed while
+  // permissions are still loading: rendering the editor optimistically would
+  // let a read-only user start typing before canCreateCase resolves to
+  // false, only for the composer to vanish out from under their draft.
+  if (isPermissionsLoading || !canCreateCase) return null;
 
   const isDisabled =
     !isSignedIn ||

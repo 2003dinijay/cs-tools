@@ -141,4 +141,13 @@ describe("ActivityCommentInput", () => {
     const { container } = renderInput();
     expect(container).toBeEmptyDOMElement();
   });
+
+  it("renders nothing while permissions are still loading", () => {
+    useCustomerPermissionsMock.mockReturnValue({
+      canCreateCase: true,
+      isLoading: true,
+    });
+    const { container } = renderInput();
+    expect(container).toBeEmptyDOMElement();
+  });
 });

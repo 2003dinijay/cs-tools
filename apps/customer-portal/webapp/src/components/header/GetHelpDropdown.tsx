@@ -333,7 +333,11 @@ export default function GetHelpDropdown(): JSX.Element {
     isProjectsLoading ||
     (isProjectsFetching && projects.length === 0) ||
     (!!projectId && isProjectDetailsLoading);
-  if (!isPermissionsLoading && !canCreateCase) {
+  // Fails closed while permissions are still loading, matching
+  // CustomerRoleGuard's own posture -- rendering the controls optimistically
+  // would let a read-only user briefly see (and click into) a case-creation
+  // action before canCreateCase resolves to false.
+  if (isPermissionsLoading || !canCreateCase) {
     return <></>;
   }
   if (
