@@ -1236,9 +1236,11 @@ describe("changeRequestScopeLockedReason (the deployments; the Customer Project 
     for (const state of ["new", "assess", "authorize"]) {
       expect(changeRequestScopeLockedReason(state)).toBeNull();
     }
-    for (const state of ["customer_approval", "scheduled", "implement", "review", "customer_review", "closed", "rollback", "canceled"]) {
+    for (const state of ["customer_approval", "scheduled", "implement", "review", "customer_review", "closed", "rollback"]) {
       expect(changeRequestScopeLockedReason(state)).toMatch(/deployments can't be changed once the change request has been approved/);
     }
+    // A change can be cancelled before anybody approved it: the reason says what is true.
+    expect(changeRequestScopeLockedReason("canceled")).toMatch(/deployments can't be changed once the change request has been cancelled/);
     expect(changeRequestScopeLockedReason(undefined)).toBeNull();
   });
 });

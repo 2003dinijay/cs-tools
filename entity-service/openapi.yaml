@@ -23142,9 +23142,10 @@ components:
             the stored one). Changing `projectId` while deployments are stored
             requires `deploymentIds` in the same request. Cannot be combined
             with `deploymentId` / `deployedProductId`. Deployment products are
-            always re-derived. EDIT WINDOW: `projectId`, `deploymentIds` and
+            always re-derived. EDIT WINDOW: `deploymentIds` and
             `deploymentProductIds` can be changed only until the change request
-            is approved (states new, assess, authorize); afterwards a
+            is approved (states new, assess, authorize; `projectId` only in new,
+            see its own description); afterwards a
             change is a 400 ("<field> can no longer be changed: ...") while
             resending the stored value is accepted. PostgreSQL data source only.
         environmentIds:

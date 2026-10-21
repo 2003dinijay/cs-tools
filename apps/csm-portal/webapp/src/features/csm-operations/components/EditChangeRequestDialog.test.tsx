@@ -1016,7 +1016,13 @@ describe("EditChangeRequestDialog — customer project, deployments, deployment 
     "locks the deployments as well, with their reason, once the change request is in %s",
     (state) => {
       const { onSave } = renderDialog({ ...SCOPED_CR, state });
-      expect(screen.getByText(/deployments can't be changed once the change request has been approved/i)).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          state === "canceled"
+            ? /deployments can't be changed once the change request has been cancelled/i
+            : /deployments can't be changed once the change request has been approved/i,
+        ),
+      ).toBeInTheDocument();
       expect(screen.getByLabelText("Customer Project")).toBeDisabled();
       expect(screen.getByRole("combobox", { name: "Deployments" })).toBeDisabled();
       expect(saveButton()).toBeDisabled();
@@ -1059,7 +1065,7 @@ describe("EditChangeRequestDialog — the Customer Project is fixed once approva
       renderDialog({ ...SCOPED_CR, state });
       expect(project()).toBeDisabled();
       expect(screen.getByText(FROZEN)).toBeInTheDocument();
-      expect(screen.getByText(/deployments can't be changed once the change request has been approved/i)).toBeInTheDocument();
+      expect(screen.getByText(/deployments can't be changed once the change request has been (approved|cancelled)/i)).toBeInTheDocument();
     },
   );
 

@@ -1075,17 +1075,19 @@ export function changeRequestApprovedReadOnlyReason(state?: string | null): stri
 
 /**
  * States from which the deployments / deployment products can no longer be
- * changed: the change has been approved (or it is over), so the scope it was
- * approved for is fixed. The Customer Project is frozen far earlier (see
+ * changed: the change has been approved (the scope it was approved for is
+ * fixed), or it was cancelled. The Customer Project is frozen far earlier (see
  * `customerProjectLockedReason`).
  */
 const SCOPE_LOCKED_STATES: readonly string[] = [...CHANGE_REQUEST_APPROVED_STATES, "canceled"];
 
-/** Why the deployments (and their products) are locked in `state`, or `null` when editable. */
+/** Why the deployments (and their products) are locked in `state`, or `null` when editable. A
+ * change can be cancelled before anybody approved it, so that state has its own words. */
 export function changeRequestScopeLockedReason(state?: string | null): string | null {
-  return state && SCOPE_LOCKED_STATES.includes(state)
-    ? "Locked: the deployments can't be changed once the change request has been approved."
-    : null;
+  if (!state || !SCOPE_LOCKED_STATES.includes(state)) return null;
+  return state === "canceled"
+    ? "Locked: the deployments can't be changed once the change request has been cancelled."
+    : "Locked: the deployments can't be changed once the change request has been approved.";
 }
 
 /** Why the type cannot be changed once approval has been requested (the backend's own rule). */
