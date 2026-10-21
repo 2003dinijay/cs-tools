@@ -89,6 +89,11 @@ export default function CallRequestCard({
     call.preferredTimes,
     userTimeZone,
   );
+  // The agreed meeting instant, set when an agent schedules or reschedules.
+  // Distinct from preferredTimes, which stay the customer's proposed options.
+  const scheduledTimeLine = call.scheduleTime
+    ? formatUtcToLocal(call.scheduleTime, "short", false, userTimeZone)
+    : null;
 
   return (
     <Card variant="outlined">
@@ -281,6 +286,18 @@ export default function CallRequestCard({
               </Box>
             )}
           </Box>
+          {scheduledTimeLine && (
+            <Box>
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                display="block"
+              >
+                Scheduled Time
+              </Typography>
+              <Typography variant="body2">{scheduledTimeLine}</Typography>
+            </Box>
+          )}
           <Box>
             <Typography
               variant="caption"
