@@ -844,6 +844,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// asymmetry as deploymentService/caseService).
 		snDeployedProductMirrorSvc := service.NewServiceNowDeployedProductService(serviceNowIntegrationServiceClient, activeDeploymentSvc, activeProjectSvc)
 		activeDeployedProductSvc = service.NewDeployedProductServiceWithSNWriteback(deployedProductRepo, snWritebackDispatcher, snDeployedProductMirrorSvc)
+		if cfg.UsageReadRoute() == config.UsageReadRoutePreviousPathFallback {
+			activeDeployedProductSvc = service.WithLegacyUsageReads(activeDeployedProductSvc)
+		}
 	default:
 		activeDeployedProductSvc = service.NewDeployedProductService(deployedProductRepo)
 	}
@@ -1663,21 +1666,20 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// source.
 	instanceRepo := repository.NewInstanceRepository(repository.NewScoped(db))
 	var activeInstanceSvc service.InstanceService
-	switch cfg.DataSource {
-	case config.DataSourceServiceNow:
+	// Read source comes from cfg.UsageReadRoute (DATA_SOURCE x
+	// USAGE_READ_MODE); see config.UsageReadMode.
+	switch cfg.UsageReadRoute() {
+	case config.UsageReadRouteServiceNowOnly:
 		activeInstanceSvc = service.NewServiceNowInstanceService(serviceNowIntegrationServiceClient)
+	case config.UsageReadRoutePreviousPathFallback:
+		// USAGE_READ_MODE=legacy under dual-write: the previous read path
+		// (see service.NewInstanceServiceWithSNFallback's own doc comment
+		// for the backfill gap it existed to paper over).
+		snInstanceMirrorSvc := service.NewServiceNowInstanceService(serviceNowIntegrationServiceClient)
+		activeInstanceSvc = service.NewInstanceServiceWithSNFallback(instanceRepo, snInstanceMirrorSvc)
 	default:
-		// Deliberately always Postgres here, regardless of DATA_SOURCE --
-		// by explicit product decision, instance/usage-tracking data must
-		// be served from Postgres directly, not mirrored from elsewhere the
-		// way deploymentService/deployedProductService's write paths still
-		// are. This used to fall back to a different read path under
-		// config.DataSourcePostgresServiceNowDualWrite (see
-		// service.NewInstanceServiceWithSNFallback's own doc comment for
-		// the backfill gap it existed to paper over); that fallback is no
-		// longer wired up here on purpose. DataSourceServiceNow is the one
-		// true exception, since that mode may run with no Postgres pool at
-		// all.
+		// Postgres directly, by explicit product decision (USAGE_READ_MODE
+		// default). No fallback is wired up here.
 		activeInstanceSvc = service.NewInstanceService(instanceRepo)
 	}
 	instanceHandler := handler.NewInstanceHandler(activeInstanceSvc)
