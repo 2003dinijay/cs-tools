@@ -144,6 +144,8 @@ so set both here too.
 | `PRODUCT_CONSUMPTION_SUBSCRIPTION_URL` | Base URL of the subscription/license API |
 | `PRODUCT_CONSUMPTION_TRACKING_BASE_URL` | Base URL of the usage-tracking API (optional — falls back to `PRODUCT_CONSUMPTION_SUBSCRIPTION_URL` when unset) |
 | `PRODUCT_CONSUMPTION_SCOPES` | Comma-separated OAuth2 scopes (optional) |
+| `PRODUCT_CONSUMPTION_LICENSE_MODE` | `service` (default when unset) or `legacy`; see CLAUDE.md. Any other value fails startup |
+| `PRODUCT_CONSUMPTION_USAGE_IMPORT_MODE` | `service` (default when unset) or `legacy`, independent of the license mode; see CLAUDE.md. Any other value fails startup |
 
 ### Registry service
 

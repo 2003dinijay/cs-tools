@@ -116,6 +116,25 @@ func main() {
 	// independently-configurable base URLs — PRODUCT_CONSUMPTION_TRACKING_BASE_URL
 	// defaults to PRODUCT_CONSUMPTION_SUBSCRIPTION_URL when unset, for
 	// deployments where both happen to point at the same host.
+	//
+	// PRODUCT_CONSUMPTION_LICENSE_MODE selects the license flow: "service"
+	// (default when unset) makes one call to the subscription service, which
+	// owns provisioning; "legacy" drives provisioning from this backend and
+	// must be set explicitly.
+	licenseMode, err := productconsumption.ParseLicenseMode(os.Getenv(productconsumption.EnvLicenseMode))
+	if err != nil {
+		slog.Error("invalid product-consumption configuration", "err", err)
+		os.Exit(1)
+	}
+	//
+	// PRODUCT_CONSUMPTION_USAGE_IMPORT_MODE independently selects the usage
+	// import behaviour: "service" (default) requires the report's deployment to
+	// be visible to the caller; "legacy" forwards the upload unchecked.
+	usageImportMode, err := productconsumption.ParseUsageImportMode(os.Getenv(productconsumption.EnvUsageImportMode))
+	if err != nil {
+		slog.Error("invalid product-consumption configuration", "err", err)
+		os.Exit(1)
+	}
 	productConsumptionCfg := productconsumption.Config{
 		SubscriptionBaseURL: mustURL("PRODUCT_CONSUMPTION_SUBSCRIPTION_URL", "http", "https"),
 		TrackingBaseURL:     optionalURL("PRODUCT_CONSUMPTION_TRACKING_BASE_URL", "http", "https"),
@@ -123,6 +142,7 @@ func main() {
 		ClientID:            oauth2ClientID,
 		ClientSecret:        oauth2ClientSecret,
 		Scopes:              splitComma(os.Getenv("PRODUCT_CONSUMPTION_SCOPES")),
+		LicenseMode:         licenseMode,
 	}
 	productConsumptionClient := productconsumption.NewClient(productConsumptionCfg)
 
@@ -216,7 +236,7 @@ func main() {
 	timeCardHandler := handler.NewTimeCardHandler(entityClient)
 	aiChatHandler := handler.NewAIChatHandler(aiChatAgentClient, entityClient)
 	webSocketHandler := handler.NewWebSocketHandler(aiChatAgentWsClient, entityClient, tokenValidator, nil)
-	productConsumptionHandler := handler.NewProductConsumptionHandler(productConsumptionClient, entityClient)
+	productConsumptionHandler := handler.NewProductConsumptionHandler(productConsumptionClient, entityClient).WithUsageImportMode(usageImportMode)
 	globalHandler := handler.NewGlobalHandler(entityClient)
 	pendingVerificationHandler := handler.NewPendingVerificationHandler(entityClient)
 	instanceHandler := handler.NewInstanceHandler(entityClient)
