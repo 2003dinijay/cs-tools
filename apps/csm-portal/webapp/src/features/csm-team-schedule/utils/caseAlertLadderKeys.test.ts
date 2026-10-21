@@ -25,6 +25,7 @@ import {
   formatLadderValue,
   ladderKeysFor,
   parseDraft,
+  runningLine,
   valuesToCopy,
   type LadderKeySpec,
 } from "./caseAlertLadderKeys";
@@ -145,5 +146,25 @@ describe("caseAlertLadderKeys", () => {
     } as unknown as CaseAlertSettings;
     expect(valuesToCopy(s, "CRE")).toEqual({ "heads.cre": { name: "N", email: "n@x" } });
     expect(valuesToCopy(s, "SRE")).toEqual({});
+  });
+});
+
+describe("runningLine", () => {
+  const settings = (running: CaseAlertSettings["running"]) => ({ running }) as CaseAlertSettings;
+
+  it("says when the alert service reported, and in which mode", () => {
+    const line = runningLine(settings({ reportedAt: "2026-10-13T10:00:00Z", mode: "db", ladders: {} }));
+    expect(line).toMatch(/^"In use" is what the alert service reported at .+, in db mode\.$/);
+    expect(line).not.toContain("Invalid Date");
+  });
+
+  it("leaves the time out when the report has none", () => {
+    expect(runningLine(settings({ mode: "shadow", ladders: {} }))).toBe(
+      '"In use" is what the alert service reported, in shadow mode. In shadow mode it still uses its file; saved values take over in db mode.',
+    );
+  });
+
+  it("says it hasn't reported yet when there is no report", () => {
+    expect(runningLine(settings(undefined))).toMatch(/hasn't reported what it uses yet/);
   });
 });

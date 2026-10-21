@@ -572,7 +572,8 @@ export interface CaseAlertRunningValue {
 }
 
 export interface CaseAlertRunning {
-  reportedAt: string;
+  /** When the alert service reported; absent when the server has no time. */
+  reportedAt?: string;
   mode: "off" | "shadow" | "db";
   /** Per ladder, each key's value in use. */
   ladders: Partial<

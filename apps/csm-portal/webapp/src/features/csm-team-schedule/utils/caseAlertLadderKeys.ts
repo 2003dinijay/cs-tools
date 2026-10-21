@@ -728,7 +728,9 @@ export function runningLine(s: CaseAlertSettings): string {
   if (!r) {
     return "The alert service hasn't reported what it uses yet. It does when it starts in shadow or db mode.";
   }
-  const base = `"In use" is what the alert service reported at ${new Date(r.reportedAt).toLocaleString()}, in ${r.mode} mode.`;
+  // The server leaves reportedAt out when it has no time for the report.
+  const at = r.reportedAt ? ` at ${new Date(r.reportedAt).toLocaleString()}` : "";
+  const base = `"In use" is what the alert service reported${at}, in ${r.mode} mode.`;
   return r.mode === "shadow"
     ? `${base} In shadow mode it still uses its file; saved values take over in db mode.`
     : base;
