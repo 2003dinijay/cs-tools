@@ -234,7 +234,17 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		githubSync service.GithubSyncService
 	)
 	var scheduledTaskRunHandler *handler.ScheduledTaskRunHandler
+	var queryHourHandler *handler.QueryHourHandler
 	if db != nil {
+		// Query-hour utilisation. No table of its own: the entitlement
+		// comes from the Salesforce mirror, the consumption from time
+		// cards, and the result is written back to columns that already
+		// exist -- sf_opportunity.query_hour_state and project's three
+		// duration fields.
+		queryHourHandler = handler.NewQueryHourHandler(
+			service.NewQueryHourService(
+				repository.NewQueryHourRepository(repository.NewScoped(db)),
+				cfg.QueryHourInternalEmailDomain))
 		scheduledTaskRunHandler = handler.NewScheduledTaskRunHandler(service.NewScheduledTaskRunService(repository.NewScheduledTaskRunRepository(db)))
 		if cfg.HasGithubIntegration() {
 			githubLabels, labelErr := service.NewGithubLabels(service.GithubLabelOverrides{
@@ -1814,6 +1824,12 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("POST /github/service-requests", githubServiceRequestHandler.Create)
 	}
 
+	if queryHourHandler != nil {
+		// internalOnly: the report names accounts, their owners and
+		// what each has spent. A customer token must never reach it.
+		mux.HandleFunc("GET /reports/query-hours", internalOnly(accessSvc, queryHourHandler.GetWeeklyReport))
+		mux.HandleFunc("POST /query-hours/recompute", internalOnly(accessSvc, queryHourHandler.RecomputeQueryHours))
+	}
 	if scheduledTaskRunHandler != nil {
 		mux.HandleFunc("POST /scheduled-tasks/attempts", scheduledTaskRunHandler.AttemptScheduledTaskRun)
 		mux.HandleFunc("PATCH /scheduled-tasks/attempts/{id}", scheduledTaskRunHandler.UpdateScheduledTaskRunAttempt)

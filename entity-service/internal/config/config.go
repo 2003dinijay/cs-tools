@@ -122,6 +122,13 @@ type Config struct {
 	// uses — it is the system zone, NOT the commitment's recorded one.
 	AvailabilityTimezone string
 
+	// QueryHourInternalEmailDomain restricts the query-hour report's
+	// derived audience to internal addresses. ServiceNow checks
+	// `includes("@wso2.com")` before adding an account owner, so a
+	// customer contact mistakenly recorded as an owner is not mailed an
+	// internal report.
+	QueryHourInternalEmailDomain string
+
 	DBUser     string
 	DBPassword string
 	DBName     string
