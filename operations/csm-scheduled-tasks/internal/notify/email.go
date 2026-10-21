@@ -28,7 +28,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -54,17 +53,6 @@ type Config struct {
 	// email — a config value, not a SendEmail argument, so every email
 	// this component sends comes from one pre-approved sender.
 	FromAddress string
-	// DebugRecipients diverts EVERY email this component sends to a
-	// fixed list, for exercising a report against production data
-	// without mailing the people it would normally reach.
-	//
-	// It is enforced here rather than in each task on purpose. A task
-	// deciding for itself whether to honour a debug setting is a task
-	// that can forget to, and the cost of forgetting is a real report
-	// reaching thirty-four people mid-test. Routed through one
-	// chokepoint, no caller can bypass it and no future task has to
-	// remember it exists.
-	DebugRecipients []string
 }
 
 // Client is an HTTP client for the internal email notification service,
@@ -80,10 +68,9 @@ type Config struct {
 // integrations/csm-notification-service's own
 // internal/notifications.EmailClient, whose constructor never fails.
 type Client struct {
-	http            *http.Client
-	baseURL         string
-	fromAddress     string
-	debugRecipients []string
+	http        *http.Client
+	baseURL     string
+	fromAddress string
 }
 
 // NewClient constructs a Client that authenticates against the email
@@ -119,22 +106,10 @@ func NewClient(cfg Config) (*Client, error) {
 	httpClient.Timeout = 25 * time.Second
 	httpsec.RejectInsecureRedirects(httpClient)
 
-	var debug []string
-	for _, r := range cfg.DebugRecipients {
-		if r = strings.TrimSpace(r); r != "" {
-			debug = append(debug, r)
-		}
-	}
-	if len(debug) > 0 {
-		slog.Warn("DEBUG MAIL MODE: every email will be diverted",
-			"recipients", strings.Join(debug, ","))
-	}
-
 	return &Client{
-		http:            httpClient,
-		baseURL:         strings.TrimRight(cfg.BaseURL, "/"),
-		fromAddress:     cfg.FromAddress,
-		debugRecipients: debug,
+		http:        httpClient,
+		baseURL:     strings.TrimRight(cfg.BaseURL, "/"),
+		fromAddress: cfg.FromAddress,
 	}, nil
 }
 
@@ -193,20 +168,6 @@ func (c *Client) SendEmailWithAttachments(ctx context.Context, to, cc []string, 
 		return fmt.Errorf("notify: subject is required")
 	}
 
-	// Debug mode diverts the whole audience, Cc included. Prepending
-	// the debug address to a live list would be worse than useless --
-	// the point is that the real recipients receive nothing.
-	if len(c.debugRecipients) > 0 {
-		slog.Info("debug mail mode: diverting",
-			"subject", subject,
-			"intendedTo", strings.Join(to, ","),
-			"intendedCc", strings.Join(cc, ","),
-			"divertedTo", strings.Join(c.debugRecipients, ","))
-		htmlBody = debugBanner(to, cc) + htmlBody
-		subject = "[DEBUG] " + subject
-		to, cc = c.debugRecipients, nil
-	}
-
 	reqBody, err := json.Marshal(sendEmailRequest{
 		To:          to,
 		CC:          cc,
@@ -245,24 +206,4 @@ func (c *Client) SendEmailWithAttachments(ctx context.Context, to, cc []string, 
 		return &apierror.Error{StatusCode: resp.StatusCode, Body: string(excerpt)}
 	}
 	return nil
-}
-
-// debugBanner heads a diverted email with the audience it would have
-// reached. Without it a tester sees a plausible-looking report and has
-// no way to tell whether the routing was right -- which is most of what
-// they are trying to check.
-func debugBanner(to, cc []string) string {
-	line := func(label string, addrs []string) string {
-		if len(addrs) == 0 {
-			return "<div><b>" + label + ":</b> (none)</div>"
-		}
-		return "<div><b>" + label + ":</b> " + escapeHTML(strings.Join(addrs, ", ")) + "</div>"
-	}
-	return `<div style="margin:0 0 16px; padding:12px 16px; background:#fff4e5;` +
-		` border:1px solid #ff9000; border-radius:6px; font-family:monospace;` +
-		` font-size:12px; color:#663c00;">` +
-		`<div style="font-weight:700; margin-bottom:6px;">DEBUG MAIL MODE &mdash; not delivered to the real audience</div>` +
-		line("Would have gone to", to) +
-		line("Would have been copied to", cc) +
-		`</div>`
 }
