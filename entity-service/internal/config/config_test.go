@@ -1271,15 +1271,15 @@ func TestConfig_Validate_UsageReadMode(t *testing.T) {
 		c := baseValidConfig()
 		c.UsageReadMode = m
 		if err := c.Validate(); err != nil {
-			t.Errorf("Validate() with USAGE_READ_MODE=%q: %v", m, err)
+			t.Errorf("Validate() with PRODUCT_CONSUMPTION_DATA_READ_MODE=%q: %v", m, err)
 		}
 	}
 	for _, bad := range []UsageReadMode{"bogus", "Legacy", ""} {
 		c := baseValidConfig()
 		c.UsageReadMode = bad
 		err := c.Validate()
-		if err == nil || !strings.Contains(err.Error(), "USAGE_READ_MODE") {
-			t.Errorf("Validate() with USAGE_READ_MODE=%q = %v, want a USAGE_READ_MODE error", bad, err)
+		if err == nil || !strings.Contains(err.Error(), "PRODUCT_CONSUMPTION_DATA_READ_MODE") {
+			t.Errorf("Validate() with PRODUCT_CONSUMPTION_DATA_READ_MODE=%q = %v, want a PRODUCT_CONSUMPTION_DATA_READ_MODE error", bad, err)
 		}
 	}
 }
@@ -1299,11 +1299,11 @@ func TestLoad_UsageReadMode(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("USAGE_READ_MODE", "")
+			t.Setenv("PRODUCT_CONSUMPTION_DATA_READ_MODE", "")
 			if tc.set {
-				t.Setenv("USAGE_READ_MODE", tc.value)
+				t.Setenv("PRODUCT_CONSUMPTION_DATA_READ_MODE", tc.value)
 			} else {
-				os.Unsetenv("USAGE_READ_MODE")
+				os.Unsetenv("PRODUCT_CONSUMPTION_DATA_READ_MODE")
 			}
 			if got := Load().UsageReadMode; got != tc.want {
 				t.Errorf("UsageReadMode = %q, want %q", got, tc.want)

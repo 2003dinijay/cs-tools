@@ -117,7 +117,7 @@ func equalCalls(a, b []string) bool {
 	return true
 }
 
-// Default (USAGE_READ_MODE=postgres): NewInstanceService, all five reads hit
+// Default (PRODUCT_CONSUMPTION_DATA_READ_MODE=postgres): NewInstanceService, all five reads hit
 // the repository and none reaches a mirror.
 func TestInstanceService_PostgresRoute_AllFiveReadsHitRepo(t *testing.T) {
 	repo := &usageRouteRepo{}
@@ -127,7 +127,7 @@ func TestInstanceService_PostgresRoute_AllFiveReadsHitRepo(t *testing.T) {
 	}
 }
 
-// USAGE_READ_MODE=legacy under dual-write: NewInstanceServiceWithSNFallback,
+// PRODUCT_CONSUMPTION_DATA_READ_MODE=legacy under dual-write: NewInstanceServiceWithSNFallback,
 // all five reads go to the mirror and the repository is never touched.
 func TestInstanceService_PreviousPathFallback_AllFiveReadsHitMirror(t *testing.T) {
 	repo := &usageRouteRepo{}

@@ -7947,14 +7947,14 @@ and return real usage/metrics data, even though that same record is treated
 everywhere else as having no product at all. The resolver's own lookup now
 requires `product_id IS NOT NULL` too.
 
-**`USAGE_READ_MODE` (`postgres` default, or `legacy`) -- added because production is
+**`PRODUCT_CONSUMPTION_DATA_READ_MODE` (`postgres` default, or `legacy`) -- added because production is
 not yet ready for the Postgres-only read path under dual-write.** `postgres` is the
 behaviour described above. `legacy` restores the previous routing for exactly those
 seven methods and only under `DATA_SOURCE=postgres-servicenow-dual-write`: the five
 `InstanceService` methods are wired through `NewInstanceServiceWithSNFallback` and the
 two `DeployedProductService` methods delegate to the mirror (`WithLegacyUsageReads`).
 The decision is made in one place, `Config.UsageReadRoute()` (DATA_SOURCE x
-USAGE_READ_MODE), and `routes.go` only switches on its result. `DATA_SOURCE=postgres`
+PRODUCT_CONSUMPTION_DATA_READ_MODE), and `routes.go` only switches on its result. `DATA_SOURCE=postgres`
 and `DATA_SOURCE=servicenow` ignore the flag. An invalid value fails startup in
 `Config.Validate`. The repository-level fixes below stay in the Postgres queries and
 are simply not reached under `legacy`.

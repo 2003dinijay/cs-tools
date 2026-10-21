@@ -804,7 +804,7 @@ func Load() *Config {
 		HealthPort:                               getEnvOrDefault("HEALTH_PORT", "8081"),
 		DataSource:                               DataSource(getEnvOrDefault("DATA_SOURCE", string(DataSourcePostgres))),
 		SLADataSource:                            SLADataSource(getEnvOrDefault("SLA_DATA_SOURCE", string(SLADataSourcePostgres))),
-		UsageReadMode:                            UsageReadMode(getEnvOrDefault("USAGE_READ_MODE", string(UsageReadModePostgres))),
+		UsageReadMode:                            UsageReadMode(getEnvOrDefault("PRODUCT_CONSUMPTION_DATA_READ_MODE", string(UsageReadModePostgres))),
 		AttachmentDataSource:                     AttachmentDataSource(getEnvOrDefault("ATTACHMENT_DATA_SOURCE", string(AttachmentDataSourcePostgres))),
 		ServiceNowIntegrationServiceBaseURL:      os.Getenv("SERVICENOW_INTEGRATION_SERVICE_BASE_URL"),
 		ServiceNowIntegrationServiceTokenURL:     os.Getenv("SERVICENOW_INTEGRATION_SERVICE_TOKEN_URL"),
@@ -1117,7 +1117,7 @@ func (c *Config) Validate() error {
 	case UsageReadModePostgres, UsageReadModeLegacy:
 		// valid
 	default:
-		return fmt.Errorf("invalid USAGE_READ_MODE %q: must be %q or %q", c.UsageReadMode, UsageReadModePostgres, UsageReadModeLegacy)
+		return fmt.Errorf("invalid PRODUCT_CONSUMPTION_DATA_READ_MODE %q: must be %q or %q", c.UsageReadMode, UsageReadModePostgres, UsageReadModeLegacy)
 	}
 	switch c.AttachmentDataSource {
 	case AttachmentDataSourcePostgres, AttachmentDataSourceServiceNow:

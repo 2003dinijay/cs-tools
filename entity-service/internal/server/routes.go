@@ -1667,18 +1667,18 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	instanceRepo := repository.NewInstanceRepository(repository.NewScoped(db))
 	var activeInstanceSvc service.InstanceService
 	// Read source comes from cfg.UsageReadRoute (DATA_SOURCE x
-	// USAGE_READ_MODE); see config.UsageReadMode.
+	// PRODUCT_CONSUMPTION_DATA_READ_MODE); see config.UsageReadMode.
 	switch cfg.UsageReadRoute() {
 	case config.UsageReadRouteServiceNowOnly:
 		activeInstanceSvc = service.NewServiceNowInstanceService(serviceNowIntegrationServiceClient)
 	case config.UsageReadRoutePreviousPathFallback:
-		// USAGE_READ_MODE=legacy under dual-write: the previous read path
+		// PRODUCT_CONSUMPTION_DATA_READ_MODE=legacy under dual-write: the previous read path
 		// (see service.NewInstanceServiceWithSNFallback's own doc comment
 		// for the backfill gap it existed to paper over).
 		snInstanceMirrorSvc := service.NewServiceNowInstanceService(serviceNowIntegrationServiceClient)
 		activeInstanceSvc = service.NewInstanceServiceWithSNFallback(instanceRepo, snInstanceMirrorSvc)
 	default:
-		// Postgres directly, by explicit product decision (USAGE_READ_MODE
+		// Postgres directly, by explicit product decision (PRODUCT_CONSUMPTION_DATA_READ_MODE
 		// default). No fallback is wired up here.
 		activeInstanceSvc = service.NewInstanceService(instanceRepo)
 	}

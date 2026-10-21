@@ -43,7 +43,7 @@ type deployedProductService struct {
 	// write onto snMirror via snWriteback instead.
 	snWriteback *SNWritebackDispatcher
 	snMirror    DeployedProductService
-	// legacyUsageReads is set only by WithLegacyUsageReads (USAGE_READ_MODE=
+	// legacyUsageReads is set only by WithLegacyUsageReads (PRODUCT_CONSUMPTION_DATA_READ_MODE=
 	// legacy under dual-write). When true, SearchDeployedProductMetrics and
 	// SearchDeployedProductUsageCounts are served by snMirror -- the previous
 	// read path -- instead of Postgres. snMirror is also what the write
@@ -371,7 +371,7 @@ func (s *deployedProductService) resolveActorEmail(ctx context.Context) (string,
 // comment on resolveDeployedProductNodes for how a deployed product's
 // instances are resolved.
 //
-// Postgres by default, regardless of DATA_SOURCE (USAGE_READ_MODE=legacy under
+// Postgres by default, regardless of DATA_SOURCE (PRODUCT_CONSUMPTION_DATA_READ_MODE=legacy under
 // dual-write restores the previous read path, see WithLegacyUsageReads) -- by the same
 // explicit product decision as instanceService's own identical fix (see
 // routes.go's instanceService wiring): usage/metrics data must be served
@@ -385,7 +385,7 @@ func (s *deployedProductService) resolveActorEmail(ctx context.Context) (string,
 // linked, Postgres has real data and should be read, not papered over with a
 // permanent fallback.
 func (s *deployedProductService) SearchDeployedProductMetrics(ctx context.Context, id string, req domain.DeployedProductMetricsRequest) (domain.DeployedProductMetricsResponse, error) {
-	// USAGE_READ_MODE=legacy under dual-write: the previous read path.
+	// PRODUCT_CONSUMPTION_DATA_READ_MODE=legacy under dual-write: the previous read path.
 	if s.legacyUsageReads {
 		return s.snMirror.SearchDeployedProductMetrics(ctx, id, req)
 	}
@@ -407,7 +407,7 @@ func (s *deployedProductService) SearchDeployedProductMetrics(ctx context.Contex
 // resolution and validation as SearchDeployedProductMetrics -- and the same
 // always-Postgres reasoning (see that method's own doc comment).
 func (s *deployedProductService) SearchDeployedProductUsageCounts(ctx context.Context, id string, req domain.DeployedProductUsageCountsRequest) (domain.DeployedProductUsageCountsResponse, error) {
-	// USAGE_READ_MODE=legacy under dual-write: the previous read path.
+	// PRODUCT_CONSUMPTION_DATA_READ_MODE=legacy under dual-write: the previous read path.
 	if s.legacyUsageReads {
 		return s.snMirror.SearchDeployedProductUsageCounts(ctx, id, req)
 	}
