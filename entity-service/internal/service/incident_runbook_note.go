@@ -18,6 +18,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"html"
 	"log/slog"
 	"strings"
@@ -30,7 +31,14 @@ type runbookLister interface {
 	List(ctx context.Context) ([]domain.Runbook, error)
 }
 
-const noRunbookNoteText = "No runbook available for this alert."
+const (
+	runbookNoteHeading = "Runbook for this alert"
+	noRunbookNoteText  = "No runbook available for this alert."
+	// The table styles match sre-alert-core-service's incident creation note, so the two notes read alike.
+	runbookNoteTableStyle = "border:1px solid #dcdcdc; border-collapse:collapse; width:100%; font-family:Arial, sans-serif; font-size:13px;"
+	runbookNoteKeyStyle   = "background:#f5f5f5; font-weight:bold; width:30%; padding:8px; border:1px solid #dcdcdc;"
+	runbookNoteValueStyle = "padding:8px; border:1px solid #dcdcdc;"
+)
 
 // matchRunbook is the entry whose alert name the subject contains, ignoring case; the longest name wins.
 func matchRunbook(runbooks []domain.Runbook, subject string) *domain.Runbook {
@@ -48,25 +56,36 @@ func matchRunbook(runbooks []domain.Runbook, subject string) *domain.Runbook {
 	return best
 }
 
-// runbookNote is the runbook work note for a new incident, or "" when it gets none: a catalog match, or an alert-born incident with no match.
+// runbookNote is the HTML work note for a new incident, or "" when it gets none: a catalog match, or an alert-born incident with no match.
 func runbookNote(runbooks []domain.Runbook, req domain.CreateIncidentRequest) string {
-	const heading = "<p><strong>Runbook</strong></p>"
 	if rb := matchRunbook(runbooks, req.Subject); rb != nil {
-		// Paragraphs are joined with no line break: comments render source line breaks as gaps.
-		note := heading + "<p>Matched alert: <code>" + html.EscapeString(rb.AlertName) + "</code></p>"
 		if rb.RunbookURL != nil && strings.TrimSpace(*rb.RunbookURL) != "" {
 			link := html.EscapeString(strings.TrimSpace(*rb.RunbookURL))
-			return note + `<p><a href="` + link + `" target="_blank" rel="noopener noreferrer">Open runbook</a></p>`
+			return "<p>" + runbookNoteHeading + "</p>" + runbookNoteTable(
+				[2]string{"alert_name", html.EscapeString(rb.AlertName)},
+				[2]string{"runbook", `<a href="` + link + `" target="_blank" rel="noopener noreferrer">` + link + `</a>`},
+			)
 		}
-		return note + "<p>" + noRunbookNoteText + "</p>"
+		return "<p>" + noRunbookNoteText + "</p>" + runbookNoteTable([2]string{"alert_name", html.EscapeString(rb.AlertName)})
 	}
 	if req.CorrelationID != nil && strings.TrimSpace(*req.CorrelationID) != "" {
-		return heading + "<p>" + noRunbookNoteText + "</p>"
+		return "<p>" + noRunbookNoteText + "</p>"
 	}
 	return ""
 }
 
-// withRunbookNote sets the request's runbook work note, written as its own work note; a catalog read failure is logged and leaves the request as it was.
+// runbookNoteTable renders already-escaped key/value rows as the bordered table alert-core's note uses.
+func runbookNoteTable(rows ...[2]string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "<table style='%s'>", runbookNoteTableStyle)
+	for _, r := range rows {
+		fmt.Fprintf(&b, "<tr><td style='%s'>%s</td><td style='%s'>%s</td></tr>", runbookNoteKeyStyle, r[0], runbookNoteValueStyle, r[1])
+	}
+	b.WriteString("</table>")
+	return b.String()
+}
+
+// withRunbookNote appends the runbook work note right after the caller's own; a catalog read failure is logged and leaves the request as it was.
 func withRunbookNote(ctx context.Context, req domain.CreateIncidentRequest, catalog runbookLister) domain.CreateIncidentRequest {
 	if catalog == nil {
 		return req
@@ -76,9 +95,15 @@ func withRunbookNote(ctx context.Context, req domain.CreateIncidentRequest, cata
 		slog.WarnContext(ctx, "incident create: runbook catalog unavailable; creating the incident without a runbook note", "error", err)
 		return req
 	}
-	if note := runbookNote(runbooks, req); note != "" {
-		req.RunbookWorkNote = &note
+	note := runbookNote(runbooks, req)
+	if note == "" {
+		return req
 	}
+	// Joined with no line break: the note starts with its own block element, and comments render source line breaks as gaps.
+	if req.WorkNotes != nil && strings.TrimSpace(*req.WorkNotes) != "" {
+		note = *req.WorkNotes + note
+	}
+	req.WorkNotes = &note
 	return req
 }
 

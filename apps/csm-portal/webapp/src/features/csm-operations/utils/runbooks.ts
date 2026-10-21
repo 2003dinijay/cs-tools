@@ -61,6 +61,14 @@ export function findRunbookForIncident(
   return best;
 }
 
+/** The work note a new incident gets for its matched runbook, or the lack of one. */
+export function runbookWorkNote(runbook: Pick<Runbook, "runbookUrl"> | undefined): string {
+  if (runbook?.runbookUrl) {
+    return `Runbook for this alert: ${runbook.runbookUrl}`;
+  }
+  return "No runbook available for this alert.";
+}
+
 /**
  * Reads an import file: a JSON object of alert name to link ("" for none),
  * or an array of {alertName, runbookUrl}. Throws with a readable message otherwise.

@@ -43,23 +43,30 @@ var testRunbooks = []domain.Runbook{
 func TestRunbookNote(t *testing.T) {
 	linked := runbookNote(testRunbooks, domain.CreateIncidentRequest{
 		Subject: "[Alert]Fired:Sev0 Azure Monitor Alert EXAMPLE-gw-CriticalHTTP5xxCountLimitExceeded-prod-001 on log-002"})
-	want := `<p><strong>Runbook</strong></p><p>Matched alert: <code>example-gw-CriticalHTTP5xxCountLimitExceeded-prod-001</code></p>` +
-		`<p><a href="https://docs.example.com/gw-5xx" target="_blank" rel="noopener noreferrer">Open runbook</a></p>`
-	if linked != want {
-		t.Fatalf("linked note = %q, want %q", linked, want)
+	for _, want := range []string{
+		"<p>Runbook for this alert</p><table style='border:1px solid #dcdcdc; border-collapse:collapse;",
+		">alert_name</td><td style='padding:8px; border:1px solid #dcdcdc;'>example-gw-CriticalHTTP5xxCountLimitExceeded-prod-001</td>",
+		`<a href="https://docs.example.com/gw-5xx" target="_blank" rel="noopener noreferrer">https://docs.example.com/gw-5xx</a>`,
+	} {
+		if !strings.Contains(linked, want) {
+			t.Fatalf("linked note %q does not contain %q", linked, want)
+		}
+	}
+	if strings.Contains(linked, "[code]") {
+		t.Fatalf("note must not carry a [code] wrapper: %q", linked)
 	}
 
 	short := runbookNote(testRunbooks, domain.CreateIncidentRequest{Subject: "example-gw-CriticalHTTP5xx spike"})
-	if !strings.Contains(short, `href="https://docs.example.com/short"`) {
+	if !strings.Contains(short, "https://docs.example.com/short") {
 		t.Fatalf("shorter entry did not match on its own: %q", short)
 	}
 
 	unlinked := runbookNote(testRunbooks, domain.CreateIncidentRequest{Subject: "Icinga Alert: demo-node-01 / JVM Heap"})
-	if want := `<p><strong>Runbook</strong></p><p>Matched alert: <code>Icinga Alert: demo-node-01 / JVM Heap</code></p><p>` + noRunbookNoteText + `</p>`; unlinked != want {
-		t.Fatalf("unlinked note = %q, want %q", unlinked, want)
+	if !strings.HasPrefix(unlinked, "<p>"+noRunbookNoteText+"</p><table") || !strings.Contains(unlinked, "Icinga Alert: demo-node-01 / JVM Heap") {
+		t.Fatalf("unlinked note = %q", unlinked)
 	}
 
-	if got := runbookNote(testRunbooks, domain.CreateIncidentRequest{Subject: "unknown alert", CorrelationID: strp("fp-1")}); got != "<p><strong>Runbook</strong></p><p>"+noRunbookNoteText+"</p>" {
+	if got := runbookNote(testRunbooks, domain.CreateIncidentRequest{Subject: "unknown alert", CorrelationID: strp("fp-1")}); got != "<p>"+noRunbookNoteText+"</p>" {
 		t.Fatalf("alert-born no-match note = %q", got)
 	}
 	for _, corr := range []*string{nil, strp("  ")} {
@@ -77,29 +84,27 @@ func TestRunbookNote_EscapesCatalogValues(t *testing.T) {
 	}
 }
 
-func TestWithRunbookNote_IsASeparateNote(t *testing.T) {
+func TestWithRunbookNote_AppendsAfterCallerNotes(t *testing.T) {
 	req := domain.CreateIncidentRequest{Subject: "Icinga Alert: demo-node-01 / JVM Heap", WorkNotes: strp("<p>Created by alert-core.</p>")}
 	got := withRunbookNote(context.Background(), req, fakeRunbookLister{runbooks: testRunbooks})
-	if got.WorkNotes == nil || *got.WorkNotes != "<p>Created by alert-core.</p>" {
-		t.Fatalf("WorkNotes = %v, want the caller's note untouched", got.WorkNotes)
-	}
-	if got.RunbookWorkNote == nil || !strings.HasPrefix(*got.RunbookWorkNote, "<p><strong>Runbook</strong></p>") {
-		t.Fatalf("RunbookWorkNote = %v, want the runbook note", got.RunbookWorkNote)
+	want := "<p>Created by alert-core.</p><p>" + noRunbookNoteText + "</p>"
+	if got.WorkNotes == nil || !strings.HasPrefix(*got.WorkNotes, want) {
+		t.Fatalf("WorkNotes = %v, want %q", got.WorkNotes, want)
 	}
 }
 
 func TestWithRunbookNote_CatalogFailureLeavesRequestAlone(t *testing.T) {
 	req := domain.CreateIncidentRequest{Subject: "Icinga Alert: demo-node-01 / JVM Heap", WorkNotes: strp("keep")}
 	got := withRunbookNote(context.Background(), req, fakeRunbookLister{err: errors.New("db down")})
-	if got.WorkNotes == nil || *got.WorkNotes != "keep" || got.RunbookWorkNote != nil {
-		t.Fatalf("WorkNotes = %v, RunbookWorkNote = %v; want unchanged and no runbook note", got.WorkNotes, got.RunbookWorkNote)
+	if got.WorkNotes == nil || *got.WorkNotes != "keep" {
+		t.Fatalf("WorkNotes = %v, want unchanged", got.WorkNotes)
 	}
 }
 
 func TestWithRunbookNote_NoCatalogIsNoOp(t *testing.T) {
 	req := domain.CreateIncidentRequest{Subject: "x", CorrelationID: strp("fp")}
-	if got := withRunbookNote(context.Background(), req, nil); got.WorkNotes != nil || got.RunbookWorkNote != nil {
-		t.Fatalf("WorkNotes = %v, RunbookWorkNote = %v; want both nil", got.WorkNotes, got.RunbookWorkNote)
+	if got := withRunbookNote(context.Background(), req, nil); got.WorkNotes != nil {
+		t.Fatalf("WorkNotes = %v, want nil", *got.WorkNotes)
 	}
 }
 
