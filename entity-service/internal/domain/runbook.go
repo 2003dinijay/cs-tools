@@ -18,11 +18,13 @@ package domain
 
 import "time"
 
-// Runbook is one runbook of the catalog (migrations 0241-0243): a numbered link and the alert names that lead to it.
+// Runbook is one runbook of the catalog (migrations 0241-0244): a numbered, named link and the alert names that lead to it.
 type Runbook struct {
 	ID string `json:"id"`
 	// Number is the runbook's own number (RB0000001), given when it is created and never changed.
 	Number string `json:"number"`
+	// Name is unique, ignoring case and surrounding spaces.
+	Name string `json:"name"`
 	// RunbookURL is nil when the runbook is not written yet.
 	RunbookURL *string `json:"runbookUrl"`
 	// Alerts are the alert names an incident subject is matched against, ordered by name.
@@ -40,19 +42,15 @@ type RunbookList struct {
 
 // SaveRunbookRequest is the body of POST /runbooks and PUT /runbooks/{id}.
 type SaveRunbookRequest struct {
+	Name       string   `json:"name"`
 	RunbookURL *string  `json:"runbookUrl"`
 	Alerts     []string `json:"alerts"`
 }
 
-// ImportRunbooksRequest is the body of POST /runbooks/import: each entry replaces the runbook that holds its first listed alert, or is created.
+// ImportRunbooksRequest is the body of POST /runbooks/import: each entry replaces the runbook that holds its first listed alert, or is
+// created; an entry with no name keeps the matched runbook's name, and a new one is named after its first alert.
 type ImportRunbooksRequest struct {
 	Runbooks []SaveRunbookRequest `json:"runbooks"`
-}
-
-// UnmergeRunbookAlertsRequest is the body of POST /runbooks/{id}/unmerge: each alert leaves the runbook and becomes a
-// runbook of its own, with a new number and the same link.
-type UnmergeRunbookAlertsRequest struct {
-	Alerts []string `json:"alerts"`
 }
 
 // ImportRunbooksResponse counts what an import did.
@@ -63,8 +61,9 @@ type ImportRunbooksResponse struct {
 	Removed []RemovedRunbook `json:"removed"`
 }
 
-// RemovedRunbook is a runbook an import removed: its number and the link it had.
+// RemovedRunbook is a runbook an import removed: its number, name and the link it had.
 type RemovedRunbook struct {
 	Number     string  `json:"number"`
+	Name       string  `json:"name"`
 	RunbookURL *string `json:"runbookUrl"`
 }

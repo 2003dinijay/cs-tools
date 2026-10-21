@@ -26,11 +26,12 @@ vi.mock("@api/backend/client", () => ({
   useBackendApi: () => ({ get: getMock, post: postMock }),
 }));
 
-import { useImportRunbooks, useRunbooks, useUnmergeRunbookAlerts } from "@features/csm-operations/api/useRunbooks";
+import { useCreateRunbook, useImportRunbooks, useRunbooks } from "@features/csm-operations/api/useRunbooks";
 
 const runbook = {
   id: "1",
   number: "RB0000001",
+  name: "Gateway",
   runbookUrl: null,
   alerts: ["a", "b"],
   createdOn: "",
@@ -42,7 +43,7 @@ const runbook = {
 function setup() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
-  return renderHook(() => ({ list: useRunbooks(), unmerge: useUnmergeRunbookAlerts(), importRunbooks: useImportRunbooks() }), {
+  return renderHook(() => ({ list: useRunbooks(), create: useCreateRunbook(), importRunbooks: useImportRunbooks() }), {
     wrapper,
   });
 }
@@ -53,29 +54,29 @@ describe("useRunbooks mutations", () => {
     postMock.mockReset();
   });
 
-  it("reads the catalog again after an unmerge, and posts the alerts to the runbook's unmerge route", async () => {
-    postMock.mockResolvedValue({ runbooks: [runbook] });
+  it("reads the catalog again after a runbook is added, and posts it to the runbooks route", async () => {
+    postMock.mockResolvedValue(runbook);
     const { result } = setup();
     await waitFor(() => expect(result.current.list.data).toHaveLength(1));
     expect(getMock).toHaveBeenCalledTimes(1);
 
     await act(async () => {
-      await result.current.unmerge.mutateAsync({ id: "1", alerts: ["a"] });
+      await result.current.create.mutateAsync({ name: "Gateway", runbookUrl: null, alerts: ["a"] });
     });
-    expect(postMock).toHaveBeenCalledWith("/runbooks/1/unmerge", { alerts: ["a"] });
+    expect(postMock).toHaveBeenCalledWith("/runbooks", { name: "Gateway", runbookUrl: null, alerts: ["a"] });
     await waitFor(() => expect(getMock).toHaveBeenCalledTimes(2));
   });
 
-  it("reads the catalog again after a refused unmerge too, and hands the error to the caller", async () => {
-    postMock.mockRejectedValue(new Error("a runbook must keep at least one alert"));
+  it("reads the catalog again after a refused add too, and hands the error to the caller", async () => {
+    postMock.mockRejectedValue(new Error("a runbook named Gateway already exists"));
     const { result } = setup();
     await waitFor(() => expect(result.current.list.data).toHaveLength(1));
 
     let error: unknown;
     await act(async () => {
-      await result.current.unmerge.mutateAsync({ id: "1", alerts: ["a", "b"] }).catch((e: unknown) => (error = e));
+      await result.current.create.mutateAsync({ name: "Gateway", runbookUrl: null, alerts: ["b"] }).catch((e: unknown) => (error = e));
     });
-    expect((error as Error).message).toBe("a runbook must keep at least one alert");
+    expect((error as Error).message).toBe("a runbook named Gateway already exists");
     await waitFor(() => expect(getMock).toHaveBeenCalledTimes(2));
   });
 
@@ -85,9 +86,9 @@ describe("useRunbooks mutations", () => {
     await waitFor(() => expect(result.current.list.data).toHaveLength(1));
 
     await act(async () => {
-      await result.current.importRunbooks.mutateAsync([{ runbookUrl: null, alerts: ["c"] }]);
+      await result.current.importRunbooks.mutateAsync([{ name: "", runbookUrl: null, alerts: ["c"] }]);
     });
-    expect(postMock).toHaveBeenCalledWith("/runbooks/import", { runbooks: [{ runbookUrl: null, alerts: ["c"] }] });
+    expect(postMock).toHaveBeenCalledWith("/runbooks/import", { runbooks: [{ name: "", runbookUrl: null, alerts: ["c"] }] });
     await waitFor(() => expect(getMock).toHaveBeenCalledTimes(2));
   });
 });

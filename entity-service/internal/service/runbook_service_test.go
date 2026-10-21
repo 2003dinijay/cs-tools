@@ -46,12 +46,12 @@ func (r *recordingRunbookRepo) Import(_ context.Context, _ string, reqs []domain
 func TestRunbookCreate_TrimsAndDropsBlankAndRepeatedAlerts(t *testing.T) {
 	repo := &recordingRunbookRepo{}
 	_, err := NewRunbookService(repo).Create(context.Background(), domain.SaveRunbookRequest{
-		RunbookURL: strp("  "), Alerts: []string{" Alert 1 ", "", "alert 1", "Alert 2"},
+		Name: "  Gateway ", RunbookURL: strp("  "), Alerts: []string{" Alert 1 ", "", "alert 1", "Alert 2"},
 	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	want := domain.SaveRunbookRequest{Alerts: []string{"Alert 1", "Alert 2"}}
+	want := domain.SaveRunbookRequest{Name: "Gateway", Alerts: []string{"Alert 1", "Alert 2"}}
 	if !reflect.DeepEqual(repo.created, want) {
 		t.Fatalf("saved %+v, want %+v", repo.created, want)
 	}
@@ -63,9 +63,11 @@ func TestRunbookCreate_Refusals(t *testing.T) {
 		long[i] = 'a'
 	}
 	for name, req := range map[string]domain.SaveRunbookRequest{
-		"no alert":      {Alerts: []string{" "}},
-		"long alert":    {Alerts: []string{string(long)}},
-		"relative link": {Alerts: []string{"a"}, RunbookURL: strp("docs/a")},
+		"no name":       {Name: "  ", Alerts: []string{"a"}},
+		"long name":     {Name: string(long), Alerts: []string{"a"}},
+		"no alert":      {Name: "N", Alerts: []string{" "}},
+		"long alert":    {Name: "N", Alerts: []string{string(long)}},
+		"relative link": {Name: "N", Alerts: []string{"a"}, RunbookURL: strp("docs/a")},
 	} {
 		var ve *apierror.ValidationError
 		if _, err := NewRunbookService(&recordingRunbookRepo{}).Create(context.Background(), req); !errors.As(err, &ve) {
@@ -77,17 +79,17 @@ func TestRunbookCreate_Refusals(t *testing.T) {
 func TestRunbookImport_LaterEntriesWin(t *testing.T) {
 	repo := &recordingRunbookRepo{}
 	_, err := NewRunbookService(repo).Import(context.Background(), domain.ImportRunbooksRequest{Runbooks: []domain.SaveRunbookRequest{
-		{Alerts: []string{"gw-5xx", "shared", "gw-old"}},
+		{Name: " Old gateway ", Alerts: []string{"gw-5xx", "shared", "gw-old"}},
 		{Alerts: []string{"SHARED", "db"}},
-		{Alerts: []string{"GW-5XX", "gw-timeout"}},
+		{Name: "Gateway", Alerts: []string{"GW-5XX", "gw-timeout"}},
 	}})
 	if err != nil {
 		t.Fatalf("Import: %v", err)
 	}
 	want := []domain.SaveRunbookRequest{
-		{Alerts: []string{"gw-old"}},
+		{Name: "Old gateway", Alerts: []string{"gw-old"}},
 		{Alerts: []string{"SHARED", "db"}},
-		{Alerts: []string{"GW-5XX", "gw-timeout"}},
+		{Name: "Gateway", Alerts: []string{"GW-5XX", "gw-timeout"}},
 	}
 	if !reflect.DeepEqual(repo.imported, want) {
 		t.Fatalf("imported %+v, want %+v", repo.imported, want)
@@ -106,14 +108,14 @@ func TestRunbookImport_RefusesAnEntryLeftWithoutAlerts(t *testing.T) {
 	}
 }
 
-func TestRunbookUnmerge_Refusals(t *testing.T) {
-	svc := NewRunbookService(&recordingRunbookRepo{})
-	id := "11111111-1111-4111-8111-111111111111"
+func TestRunbookImport_RefusesTwoEntriesWithOneName(t *testing.T) {
+	repo := &recordingRunbookRepo{}
+	_, err := NewRunbookService(repo).Import(context.Background(), domain.ImportRunbooksRequest{Runbooks: []domain.SaveRunbookRequest{
+		{Name: "Gateway", Alerts: []string{"a"}},
+		{Name: " GATEWAY ", Alerts: []string{"b"}},
+	}})
 	var ve *apierror.ValidationError
-	if _, err := svc.Unmerge(context.Background(), id, domain.UnmergeRunbookAlertsRequest{Alerts: []string{" "}}); !errors.As(err, &ve) {
-		t.Errorf("unmerge with no alert: err = %v, want a ValidationError", err)
-	}
-	if _, err := svc.Unmerge(context.Background(), "nope", domain.UnmergeRunbookAlertsRequest{Alerts: []string{"a"}}); !errors.As(err, &ve) {
-		t.Errorf("unmerge with a bad id: err = %v, want a ValidationError", err)
+	if !errors.As(err, &ve) || ve.Msg != `runbooks[1] repeats the name "GATEWAY" of runbooks[0]` || repo.imported != nil {
+		t.Fatalf("err = %v, imported = %v; want the repeated-name refusal and nothing imported", err, repo.imported)
 	}
 }

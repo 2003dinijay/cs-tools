@@ -18,6 +18,8 @@ export interface Runbook {
   id: string;
   /** The runbook's own number (RB0000001), given by the backend and never changed. */
   number: string;
+  /** Unique, ignoring case and surrounding spaces. */
+  name: string;
   /** Null when the runbook has not been written yet. */
   runbookUrl: string | null;
   /** Alert titles; an incident whose subject contains one gets this runbook. */
@@ -29,6 +31,8 @@ export interface Runbook {
 }
 
 export interface RunbookInput {
+  /** Required on add and edit; on import, empty keeps a matched runbook's name and names a new one after its first alert. */
+  name: string;
   runbookUrl: string | null;
   alerts: string[];
 }
@@ -70,6 +74,7 @@ export function filterRunbooks(runbooks: Runbook[], search: string, filters: Run
     return (
       !term ||
       r.number.toLowerCase().includes(term) ||
+      r.name.toLowerCase().includes(term) ||
       r.alerts.some((a) => a.toLowerCase().includes(term)) ||
       (r.runbookUrl ?? "").toLowerCase().includes(term)
     );
@@ -143,10 +148,11 @@ export function findAlertsContaining<T extends Pick<Runbook, "runbookUrl" | "ale
 
 /**
  * Reads an import file: a JSON object whose keys are alert names and whose values
- * are links ("" for none); or an array of {runbookUrl, alerts}, where alerts is a
- * list (an older {alertName, runbookUrl} entry is read as one alert, and a name is
- * ignored). A key or a text alerts value is one alert name, commas included, so
- * several alerts need the list form. Throws with a readable message otherwise.
+ * are links ("" for none); or an array of {name?, runbookUrl, alerts}, where alerts
+ * is a list (an older {alertName, runbookUrl} entry is read as one alert). A key or
+ * a text alerts value is one alert name, commas included, so several alerts need
+ * the list form. An entry with no name keeps a matched runbook's name and names a
+ * new one after its first alert. Throws with a readable message otherwise.
  */
 export function parseRunbookImport(text: string): RunbookInput[] {
   let data: unknown;
@@ -155,7 +161,7 @@ export function parseRunbookImport(text: string): RunbookInput[] {
   } catch {
     throw new Error("The file is not valid JSON.");
   }
-  const toInput = (alerts: unknown, url: unknown, label: string): RunbookInput => {
+  const toInput = (name: unknown, alerts: unknown, url: unknown, label: string): RunbookInput => {
     const alertList = cleanAlertNames(
       typeof alerts === "string" ? [alerts] : Array.isArray(alerts) ? alerts.map((a) => (typeof a === "string" ? a : "")) : [],
     );
@@ -169,16 +175,16 @@ export function parseRunbookImport(text: string): RunbookInput[] {
     if (!isValidRunbookUrl(link)) {
       throw new Error(`The link for "${alertList[0]}" is not a full http(s) link.`);
     }
-    return { runbookUrl: link || null, alerts: alertList };
+    return { name: typeof name === "string" ? name.trim() : "", runbookUrl: link || null, alerts: alertList };
   };
   if (Array.isArray(data)) {
     return data.map((row, i) => {
       const r = (row ?? {}) as Record<string, unknown>;
-      return toInput(r.alerts ?? (typeof r.alertName === "string" ? [r.alertName] : r.alertName), r.runbookUrl, `Entry ${i + 1}`);
+      return toInput(r.name, r.alerts ?? (typeof r.alertName === "string" ? [r.alertName] : r.alertName), r.runbookUrl, `Entry ${i + 1}`);
     });
   }
   if (data && typeof data === "object") {
-    return Object.entries(data as Record<string, unknown>).map(([key, url]) => toInput(key, url, `"${key}"`));
+    return Object.entries(data as Record<string, unknown>).map(([key, url]) => toInput(undefined, key, url, `"${key}"`));
   }
   throw new Error("Expected an object of alert names to link, or a list of runbooks.");
 }
@@ -191,8 +197,16 @@ export function runbooksToImportJson(runbooks: Pick<Runbook, "alertName" | "runb
 }
 
 export const RUNBOOK_CSV_HEADER = ["Alert name", "Runbook link", "Last updated by", "Last updated"];
+/** Runbooks as an import file: a list of {number, name, runbookUrl, alerts}; the import ignores the number and matches by alert. */
+export function runbooksToImportJson(runbooks: Pick<Runbook, "number" | "name" | "runbookUrl" | "alerts">[]): string {
+  const out = runbooks.map((rb) => ({ number: rb.number, name: rb.name, runbookUrl: rb.runbookUrl, alerts: rb.alerts }));
+  return `${JSON.stringify(out, null, 2)}\n`;
+}
+
+export const RUNBOOK_CSV_HEADER = ["Number", "Name", "Alerts", "Runbook link", "Last updated"];
 
 /** One CSV row per runbook, in the order of RUNBOOK_CSV_HEADER. */
 export function runbooksToCsvRows(runbooks: Runbook[]): string[][] {
   return runbooks.map((rb) => [rb.alertName, rb.runbookUrl ?? "", rb.updatedBy, rb.updatedOn]);
+  return runbooks.map((rb) => [rb.number, rb.name, rb.alerts.join("\n"), rb.runbookUrl ?? "", rb.updatedOn]);
 }
