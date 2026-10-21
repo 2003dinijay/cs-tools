@@ -441,10 +441,59 @@ func incidentWhereClause(f domain.SearchIncidentsFilters, priorities, states, se
 	if createdEndDate != nil {
 		add("wi.created_on <= $%d", *createdEndDate)
 	}
-	// assignmentGroupId/productName have no backing column or confirmed
-	// mapping -- deliberately not applied here, matching
-	// changeRequestWhereClause's own precedent for the identical class of
-	// gap. businessServiceId itself IS applied above, mapped to
+	if len(f.AssignmentGroupIDs) > 0 {
+		add("wi.assignment_group_id = ANY($%d::uuid[])", f.AssignmentGroupIDs)
+	}
+	if len(f.Categories) > 0 {
+		// Text, not an enum cast: a label the enum does not have matches
+		// nothing instead of failing the query.
+		add("inc.category::TEXT = ANY($%d::text[])", f.Categories)
+	}
+	if f.UpdatedStart != nil {
+		add("wi.updated_on >= $%d", *f.UpdatedStart)
+	}
+	if f.UpdatedEnd != nil {
+		add("wi.updated_on <= $%d", *f.UpdatedEnd)
+	}
+	// anyOf: each branch is the AND of its own conditions, the branches are
+	// OR'd, and the whole is ANDed with everything above (case search's shape).
+	if len(f.OrGroups) > 0 {
+		branches := make([]string, 0, len(f.OrGroups))
+		for _, g := range f.OrGroups {
+			var preds []string
+			bind := func(clause string, val any) {
+				preds = append(preds, fmt.Sprintf(clause, argIdx))
+				args = append(args, val)
+				argIdx++
+			}
+			if len(g.States) > 0 {
+				bind("inc.state::TEXT = ANY($%d::text[])", g.States)
+			}
+			if len(g.Priorities) > 0 {
+				bind("inc.priority::TEXT = ANY($%d::text[])", g.Priorities)
+			}
+			if len(g.Categories) > 0 {
+				bind("inc.category::TEXT = ANY($%d::text[])", g.Categories)
+			}
+			if len(g.ServiceIDs) > 0 {
+				bind("inc.service_id = ANY($%d::uuid[])", g.ServiceIDs)
+			}
+			if len(g.AssignmentGroupIDs) > 0 {
+				bind("wi.assignment_group_id = ANY($%d::uuid[])", g.AssignmentGroupIDs)
+			}
+			if len(g.AssignedUserIDs) > 0 {
+				bind("wi.assigned_to_id = ANY($%d::uuid[])", g.AssignedUserIDs)
+			}
+			if len(preds) == 0 {
+				branches = append(branches, "TRUE")
+				continue
+			}
+			branches = append(branches, "("+strings.Join(preds, " AND ")+")")
+		}
+		where += " AND (" + strings.Join(branches, " OR ") + ")"
+	}
+	// productName has no confirmed product-to-incident mapping -- deliberately
+	// not applied here. businessServiceId IS applied above, mapped to
 	// inc.service_id -- "business service" is ServiceNow's own name for
 	// what this schema calls "service" (service_offering.parent_id in
 	// service_offering_repo.go already makes the same identification).
@@ -459,7 +508,13 @@ const incidentSelectColumns = `
 	parent_wi.id, parent_wi.number,
 	parent_inc.id, parent_inc_wi.number,
 	ae.id, COALESCE(ae.name, NULLIF(TRIM(CONCAT_WS(' ', ae.first_name, ae.last_name)), '')),
-	wi.created_on, wi.created_by, wi.updated_on, wi.updated_by`
+	wi.created_on, wi.created_by, wi.updated_on, wi.updated_by,
+	sag.id, sag.name`
+
+// incidentSearchGroupJoin resolves the assignment group the search list shows
+// (its own alias: GetIncidentByID joins "group" as ag after incidentFromJoins).
+const incidentSearchGroupJoin = `
+	LEFT JOIN "group" sag ON sag.id = wi.assignment_group_id`
 
 func scanSearchIncidentView(row interface{ Scan(...any) error }) (domain.SearchIncidentView, error) {
 	var (
@@ -472,6 +527,7 @@ func scanSearchIncidentView(row interface{ Scan(...any) error }) (domain.SearchI
 		aeID, aeName                 *string
 		createdOn, updatedOn         time.Time
 		createdBy, updatedBy         string
+		agID, agName                 *string
 	)
 	if err := row.Scan(
 		&id, &number, &subject, &openedOn,
@@ -481,6 +537,7 @@ func scanSearchIncidentView(row interface{ Scan(...any) error }) (domain.SearchI
 		&parentIncID, &parentIncNumber,
 		&aeID, &aeName,
 		&createdOn, &createdBy, &updatedOn, &updatedBy,
+		&agID, &agName,
 	); err != nil {
 		return domain.SearchIncidentView{}, err
 	}
@@ -506,6 +563,9 @@ func scanSearchIncidentView(row interface{ Scan(...any) error }) (domain.SearchI
 	if aeID != nil {
 		v.AssignedTo = &domain.EntityRef{ID: *aeID, Name: stringOrEmpty(aeName)}
 	}
+	if agID != nil {
+		v.AssignmentGroup = &domain.EntityRef{ID: *agID, Name: stringOrEmpty(agName)}
+	}
 	return v, nil
 }
 
@@ -529,8 +589,8 @@ func (r *incidentRepo) SearchIncidents(ctx context.Context, req domain.SearchInc
 
 	countQuery := "SELECT COUNT(*) " + incidentFromJoins + " " + where
 	dataQuery := fmt.Sprintf(
-		`SELECT %s %s %s ORDER BY %s %s, wi.id LIMIT $%d OFFSET $%d`,
-		incidentSelectColumns, incidentFromJoins, where, sortCol, sortDir, len(args)+1, len(args)+2,
+		`SELECT %s %s %s %s ORDER BY %s %s, wi.id LIMIT $%d OFFSET $%d`,
+		incidentSelectColumns, incidentFromJoins, incidentSearchGroupJoin, where, sortCol, sortDir, len(args)+1, len(args)+2,
 	)
 	dataArgs := append(append([]any{}, args...), req.Pagination.Limit, req.Pagination.Offset)
 
@@ -1331,8 +1391,9 @@ func (r *incidentRepo) UpdateIncidentLifecycle(ctx context.Context, id string, u
 // Work notes ServiceNow's OOB "Cascade closure of Incident Tasks" writes on
 // each task it closes (incident, after insert/update, state changes to
 // Closed or Canceled; on when com.snc.incident.incident_task.closure is
-// "true", as it is on WSO2's instance). Discovery scripts 57-59 in
-// integrations/csm-flow-service/docs/servicenow-discovery have the evidence.
+// "true", as it is on WSO2's instance). Established by reading the
+// business rule on the live instance; the discovery scripts that did so
+// are kept out of this repository.
 const (
 	incidentTaskClosedOnCloseNote  = "Incident Task is Closed Incomplete based on closure of %s."
 	incidentTaskClosedOnCancelNote = "Incident Task is Closed Skipped based on cancelation of %s."

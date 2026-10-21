@@ -447,9 +447,10 @@ report emails" below for why that's not a generic engine feature.
 | `EMAIL_FROM_ADDRESS` | No | Fixed "From" address for every email this component sends |
 | `ALERTS_ENABLED` | No (default `true`) | Global kill switch for every email this component sends — failure alerts and report-style tasks' own success emails alike — see "Alerting" above |
 | `ALERT_RECIPIENTS` | No | Comma-separated email addresses alerted on every failed sub-cron attempt, for every task — see "Alerting" above |
+| `TRYOUT_TASK` | No | Runs the named task's handler once, now, outside the schedule and the ledger, then exits (`runTryout` in `cmd/server/main.go`). Refuses unless that task has a `debug` list in `SUB_CRON_RECIPIENTS` |
 | `DRIVER_INTERVAL` | No (default `1h`) | This component's own expected invocation cadence — must match the cron trigger configured on the Choreo Scheduled Task component itself |
 | `SUB_CRON_SCHEDULES` | No | JSON object `{"<task.Name>": "<cron expression>"}` overriding any registered task's schedule by name — see "Adding a sub-cron" above. A task not mentioned keeps its own hardcoded default |
-| `SUB_CRON_RECIPIENTS` | No | JSON object `{"<task.Name>": {"to": [...], "cc": [...]}}` giving a registered task its own extra failure-alert audience, on top of `ALERT_RECIPIENTS` — or, for a report-style task, its report's actual recipients (see "Alerting" above for which tasks work which way). A task not mentioned gets no per-task recipients |
+| `SUB_CRON_RECIPIENTS` | No | JSON object `{"<task.Name>": {"to": [...], "cc": [...], "debug": [...]}}` giving a registered task its own extra failure-alert audience, on top of `ALERT_RECIPIENTS` — or, for a report-style task, its report's actual recipients (see "Alerting" above for which tasks work which way). `debug` on a report task is debug mail mode for that report alone (`notify.ForReport`): it goes to that list only, `[Test copy]`-prefixed, with the intended To/Cc named in the body; startup warns naming every such task. A task not mentioned gets no per-task recipients |
 | `ROTA_REMINDERS_ENABLED` | No (default `false`) | Registers the two rota reminder tasks — see "Rota reminders" above |
 | `ROTA_REMINDER_REDIRECT_TO` | No | Comma-separated test inbox(es) that receive every rota reminder instead of the people on the shift |
 | `ROTA_REMINDER_SCHEDULE_URL` | No | Link to the CSM portal's Team Schedule page, shown in every reminder |
@@ -460,6 +461,8 @@ report emails" below for why that's not a generic engine feature.
 | `ROTA_REMINDER_WINDOWS` | No (default `CRE_WEEKEND_NIGHT=08:00-18:00 America/Los_Angeles,CRE_WEEKEND_NIGHT_OC=08:00-18:00 America/Los_Angeles`) | A rotation's hours on its own clock, used in the emails and invitations instead of the Team Schedule's (`CODE=HH:MM-HH:MM Zone`, comma-separated). The Americas Weekend and the LK On-call that covers it are 08:00-18:00 Pacific time, so it moves an hour in UTC and IST when US daylight saving changes; the weekend summary says so when a change is within five weeks. A malformed value stops startup |
 | `ROTA_REMINDER_TIME_ZONE` | No (default `Asia/Colombo`) | The calendar "tomorrow" and "the coming weekend" are counted in |
 | `HOUSEKEEPING_RETENTION_DAYS` | No (default `30`) | Plain integer number of days of resolved history the `housekeeping_cleanup` sub-cron keeps — see "Housekeeping" above |
+| `MIGRATION_CASE_REPORT_OLDER_THAN_DAYS` | No (default `180`) | Plain integer number of days a migration must have been open before the `migration_case_report` sub-cron lists it — see "Per-task report emails" below |
+| `MIGRATION_CASE_REPORT_LINK_BASE_URL` | No | The support portal's case page prefix (https), for the links in the migration case scan (`<prefix>/<case number>`). Unset renders plain text |
 
 No app-level execution timeout is configured here — Choreo's own Scheduled Task execution-time
 limit already bounds how long one invocation can run. `cmd/server/main.go` instead cancels its
@@ -478,8 +481,14 @@ succeeded" template was tried and dropped early on: different sub-crons want gen
 report content (a usage report reads nothing like a billing summary), so one shared shape would
 either stay generic to the point of being useless or grow special cases per task.
 
-`stale_cases_report` and `open_cases_report` (see "Stale cases report"/"Open cases report" above)
-are the two real instances of the shape that replaced it. Each sub-cron's own package
+`stale_cases_report`, `open_cases_report` (see "Stale cases report"/"Open cases report" above) and
+`migration_case_report` are the real instances of the shape that replaced it. The third differs in
+two ways worth knowing: entity-service builds the whole report (`GET /reports/migration-cases`,
+client in `internal/migrationreport`) and derives part of the audience from the team table, so the
+task merges those mail groups with its own `SUB_CRON_RECIPIENTS` entry (`migrationscan.Audience`)
+and **fails the run when the merged audience is empty** rather than quietly skipping — a scan nobody
+receives looks exactly like a quiet week. Its `registry.Task` leaves `To`/`Cc` nil so failure
+alerts reach `ALERT_RECIPIENTS` only, never the team mail groups. Each sub-cron's own package
 (`internal/stalecases`, `internal/opencases`) owns its own template
 (`internal/notify/templates/{stale,open}_cases_report.html`, following `alert.html`'s pattern) and
 its own recipients (its own `SUB_CRON_RECIPIENTS` entry, passed in as plain `to`/`cc` slices) — the

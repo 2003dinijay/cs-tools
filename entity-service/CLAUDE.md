@@ -81,6 +81,9 @@ The server loads `.env` automatically on startup (silently ignored if absent). P
 | `USER_CACHE_TTL` | no | `10m` | Backstop lifetime of a cached user; an unparseable or non-positive value falls back to `10m` |
 | `INCIDENT_DEFAULT_SERVICE_ID` | no | — | UUID of the service whose support group a new incident gets when no `assignmentGroupId` is sent and its own service has no support group (logged WARN each time). Unset / missing / groupless: such incidents are created unassigned (logged ERROR). A non-UUID refuses to start; checked at startup, log only. See "Incident assignment group on create" |
 | `CR_STRICT_VISIBILITY_FROM` | no | — | RFC 3339 instant **with a zone**: change requests created at or after it are visible to a customer only when designated to them; earlier ones are "legacy" and keep today's visibility. Unset/empty = no cutover, every change request is legacy (the safe default and the rollback; a WARN is logged at startup). An unparsable value refuses to start. Set once per environment at release and never move it — see "Customer visibility and the cutover" |
+| `MIGRATION_CASE_REPORT_HOLD_TAG` | no | `s_mig_hold` | Tag (ignoring case) for the weekly migration scan's "customer requested to hold" table |
+| `MIGRATION_CASE_REPORT_ACCOUNTS_TAG` | no | `s_acc` | Tag (ignoring case) for its "waiting on accounts team" table |
+| `MIGRATION_CASE_REPORT_TEAM_KEYS` | no | none | Team keys whose `group_email` the scan returns as recipients |
 
 \* `DB_USER`/`DB_PASSWORD`/`DB_NAME` are required when `DATA_SOURCE=postgres`
 and **optional** when `DATA_SOURCE=servicenow`, where entity reads and writes
@@ -4467,8 +4470,8 @@ on PATCH cannot be combined with `deploymentIds`.
 *PATCH.* Arrays replace. `deploymentIds` changed → deployments and products
 (re-derived) are rewritten; `[]` clears them. Changing `projectId` while deployments
 are stored requires `deploymentIds` in the same request. **Edit window:** deployments and
-deployment products can change only while the change has not reached `implement` (states
-new … scheduled); from implement/review/customer_review/rollback/closed/canceled a
+deployment products can change only until the change is approved (states new, assess,
+authorize); from customer_approval/scheduled/implement/review/customer_review/rollback/closed/canceled a
 *change* is a 400 ("<field> can no longer be changed: the change request is in state
 …") while re-sending the stored value is accepted. They are resolved against the change's
 project, which after New is the **frozen** stored one (the single-valued
@@ -4925,6 +4928,52 @@ and Request Approval now refuses that, so a test that needs the dead end uses
 `requestApprovalThenContactsLeave` (a stand-in contact that leaves right after Request Approval:
 the residual edge) or `legacyInCustomerState` (a row written with SQL, as an older build left it);
 the rest moved to a project with contacts, `createAnswerable`).
+
+### An approved change request is read-only (only work notes are added)
+
+Decision (the user's, 2026-10-21): once CAB approval has been received, every field of the change
+request is read-only, the implementation plan included; only work notes can still be added. Code:
+`change_request_approved_lock.go` (`checkApprovedContentLock`, called in `patchChangeRequestTx` right
+after `validateCreationPhaseEdits`), `CodeChangeRequestApprovedReadOnly` (`change_request_approved_read_only`).
+
+- **When:** the stored state is one of `customer_approval`, `scheduled`, `implement`, `review`,
+  `customer_review`, `closed`, `rollback` (`changeRequestApprovedStates`). Those are reached only through
+  an approval: the CAB approval for Normal and Emergency changes, and Request Approval for a Standard
+  change, which is pre-approved and has no CAB stage (so for a Standard change the lock starts at
+  Scheduled / Customer Approval). `canceled` is NOT in the set: a change can be cancelled before anybody
+  approved it. A pure function of the state, like the customer requirements lock: no column, no marker.
+- **What:** a PATCH that CHANGES any field -- title, description, justification, impactDescription
+  (compared through `COALESCE(impact_description, risk_impact_analysis)`), implementationPlan,
+  rollbackPlan (through `COALESCE(rollback_process, backout_plan)`), testPlan, serviceOutage,
+  communicationPlan, affected services / components, rollback duration, impact, priority, category,
+  the planned window, assignedTeamId, assignedEngineerId, requestedById, caseId, serviceId,
+  serviceOfferingId, isPlanningVisibleToCustomers and the two customer boxes -- is a 400 naming every
+  changed field ("description, implementationPlan can no longer be changed: the change request has been
+  approved (current state: scheduled), so its fields are read-only; only work notes can be added"), and
+  nothing is written, not even the rest of the request. The comparison is one SQL statement
+  (`approvedContentQuery`, `IS DISTINCT FROM` per field, ids and enum labels compared as text), so a
+  field resent with its stored value is the accepted no-op it is everywhere in this PATCH. The project
+  and the type keep their own (earlier, stricter) freezes; the deployments and deployment products are
+  held by `changeRequestLinksLockedStates`, whose window now closes at the same point.
+- **Still accepted:** `workNote` and `comment`, `state` (the lifecycle), `onHold` / `onHoldReason`,
+  `requestApproval`, a Re-schedule out of Customer Approval (`{state: "authorize"}` with a new window:
+  the window is exempt for a staff time response, anything else it carries is judged), WSO2's answer to
+  a time the customer proposed, and the customer's own answer / proposal (external callers return before
+  this). Tags and attachments are other endpoints and are not touched.
+- **Order:** after the pure customer-lock rules (a type that is frozen, a box that can never be unticked,
+  the Emergency consent rule keep their own words) and before the rules that ask who could be asked
+  (`checkTickedBoxCanBeAsked`, `checkRequestedByLeavesSomebodyToAsk`): past the approval no contact would
+  make an edit possible, so their words would mislead. **This supersedes the earlier "a customer box is
+  add-only until the gate it controls"** after the approval: the review box can no longer be ticked in
+  Scheduled / Implement / Review.
+- **Not enforced:** the data source that talks to the previous system directly (the PATCH goes there and
+  that system decides), and csm-sync-service's own SQL writes. The CSM webapp and microapp disable their
+  Edit forms for these states (the webapp keeps a work-note field); the backend is the authority.
+- Tests: `change_request_approved_lock_test.go` (states, fields, query, message),
+  `change_request_approved_lock_integration_test.go` (every approved state read-only, resend accepted,
+  work notes and on hold accepted, refused PATCH writes nothing; editable before approval, NULL and
+  canceled), run as a superuser and as `csm_app`. Existing tests that edited an approved change now
+  carry `onHoldReason` / a work note as "the rest of the request" (`holdReasonOf`).
 
 ### Customer Group: approving / rejecting Customer Approval and Customer Review
 
@@ -7369,6 +7418,28 @@ gap), so the note lands in ServiceNow only. `DATA_SOURCE=servicenow` uses the sa
 ServiceNow's services (`scanSNServices`: only a complete scan may conclude "not there"); the service
 list carries no group's active flag, so that set cannot leave out an inactive group.
 `GET /incidents/create-defaults` (internal only) reports the default service and its group.
+
+## Case Alerts group routes reference the assignment group (migration 0243)
+
+`paging_group_route` (0233) matched an incident's assignment group by its typed name only.
+0243 adds a nullable `group_id` (FK `"group"`, `ON DELETE SET NULL`), a unique partial index
+`(ladder, group_id)` and a backfill where exactly one `"group"` row has the route's name;
+`IF NOT EXISTS` throughout, re-runnable. `SaveRoute` with a `groupId` (Alert Settings picks it from
+`routeOptions.assignmentGroups`, the active support groups, `supportGroupSetSQL`) stores the
+group's own name and id, 400 when the id is not one of them. `ListRoutes`/`Runtime` read the
+group's current name through `group_id`, so a rename in ServiceNow keeps its route.
+`CaseAlertSettings.unmappedGroups` (SRE viewers only) lists the support groups no enabled SRE route
+covers, no team is named after and the running config does not route (an alias or a default group in
+the notifier's last report, `running.groups.SRE`; without a report only routes and team names count):
+csm-notification-service posts their incident cards to the shared SRE room. Deploy entity-service before the BFF and webapp that send `groupId` (strict decoding).
+
+**Who may see and change each family's Case Alerts settings** (`whoIsAsking`): a CSM or
+portal admin and the CS head (`cs_head` on any team): all three families; the CRE rota admin and
+the CRE head (`cre_head`): CRE; the SRE rota admin: SRE; the SME rota admin: SME. Seeing and changing
+go together, and another family's rooms, routes, values and running report are never sent. The saved
+values include each ladder's own switches (`enabled`, `channel` for CRE, SRE and SME;
+`safety.maxCallsPerLadder` 1-50, `safety.callWithoutVerifiedLeads`, `safety.callHeadsWithoutLowerTiers`
+for CRE and SRE), so they follow the same per-family rule.
 
 ## IT services (CMDB services)
 

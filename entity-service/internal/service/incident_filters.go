@@ -31,6 +31,7 @@ var incidentFilterFieldSet = map[string]bool{
 	"state": true, "assignmentGroupId": true, "businessServiceId": true,
 	"createdOn": true, "slaViolated": true, "madeSla": true, "productName": true,
 	"assignedUserId": true, "incidentStateKeys": true,
+	"category": true, "updatedOn": true,
 }
 
 // incidentFilterOpSet is the exact set of IncidentFieldFilter.Op values
@@ -191,6 +192,11 @@ func ParseIncidentFieldFilters(filters []domain.IncidentFieldFilter, now time.Ti
 		}
 
 		switch f.Field {
+		case "category", "updatedOn":
+			// Applied on the PostgreSQL data source only
+			// (parseIncidentListFiltersPostgres); refused here rather than
+			// dropped, which would answer with a wider list than asked for.
+			return parsedIncidentFilters{}, &apierror.ValidationError{Msg: fmt.Sprintf("filters: field %q is not supported by this data source", f.Field)}
 		case "state":
 			if f.Op != "in" {
 				return parsedIncidentFilters{}, badIncidentFilterCombo(f)
