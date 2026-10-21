@@ -63,6 +63,16 @@ type UserService interface {
 	// ServiceUnavailableError naming any requested role not seeded in the role
 	// table.
 	CreateUser(ctx context.Context, req domain.CreateUserRequest) (domain.User, error)
+	// UpdateUser sets the given user's timezone and/or "user".phone (the
+	// number the incident call-escalation ladder dials) by id, not by
+	// resolving the caller from their own token the way PatchMe does -- an
+	// internal caller (RequireInternalCaller) acting on someone else's
+	// profile, e.g. a portal admin recording a newly-assigned team lead's
+	// paging number. Both fields are optional but at least one must be
+	// present. A ValidationError is returned for a malformed id, neither
+	// field present, or an over-long phone; a NotFoundError when no user has
+	// that id.
+	UpdateUser(ctx context.Context, userID string, req domain.UpdateUserRequest) (domain.PatchUserMeResponse, error)
 }
 
 // UserCacheInvalidator clears a user's cached GET /users/{id} and
@@ -477,6 +487,10 @@ type ProjectService interface {
 	// caller-scoped access" for the full rule and why existence is hidden
 	// rather than returning a 403.
 	GetProjectByID(ctx context.Context, id string) (domain.ProjectDetailsView, error)
+	// GetProjectConsumptionStatus returns product consumption state and credentials for the project.
+	GetProjectConsumptionStatus(ctx context.Context, id string) (domain.ProjectConsumptionStatus, error)
+	// UpdateProjectConsumption updates product consumption state, application ID, credentials, and license signing keys.
+	UpdateProjectConsumption(ctx context.Context, id string, req domain.ProjectConsumptionUpdateRequest, updatedBy string) error
 }
 
 // ProjectUpdateService defines the write operations available on a project.
@@ -1095,6 +1109,23 @@ type CommentService interface {
 	DeleteComment(ctx context.Context, id string) error
 	// GetCommentEditHistory returns a comment's prior versions, newest first.
 	GetCommentEditHistory(ctx context.Context, id string) (domain.GetCommentEditHistoryResponse, error)
+}
+
+// PendingVerificationService defines the operations available on the
+// pending-verifications entity -- see domain.PendingVerification's own doc
+// comment for what it's for. Like SLAClockService/EventPublishFailureService,
+// this has no ServiceNow equivalent and is always backed by Postgres
+// regardless of DATA_SOURCE.
+type PendingVerificationService interface {
+	// CreatePendingVerification adds a work item to a project's Pending
+	// Verification list.
+	CreatePendingVerification(ctx context.Context, req domain.CreatePendingVerificationRequest) (domain.CreatePendingVerificationResponse, error)
+	// SearchPendingVerifications returns a paginated, filtered page of a
+	// project's Pending Verification list.
+	SearchPendingVerifications(ctx context.Context, req domain.SearchPendingVerificationsRequest) (domain.SearchPendingVerificationsResponse, error)
+	// VerifyPendingVerification marks an entry verified, removing it from
+	// the active list without altering the underlying work item.
+	VerifyPendingVerification(ctx context.Context, req domain.VerifyPendingVerificationRequest) (domain.VerifyPendingVerificationResponse, error)
 }
 
 // TaskSlaService defines the operations available on the task-slas entity.

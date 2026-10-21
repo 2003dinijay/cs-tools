@@ -349,16 +349,20 @@ func (s *deployedProductService) resolveActorEmail(ctx context.Context) (string,
 // hourly_usage_summary (migration 0054) -- see DeployedProductRepository's own doc
 // comment on resolveDeployedProductNodes for how a deployed product's
 // instances are resolved.
+//
+// Deliberately always Postgres, regardless of DATA_SOURCE -- by the same
+// explicit product decision as instanceService's own identical fix (see
+// routes.go's instanceService wiring): usage/metrics data must be served
+// from Postgres directly, never mirrored from elsewhere. This used to fall
+// back to a different read path on the belief that hourly_usage_summary/
+// deployment_information had no row linked to a real deployment_node
+// anywhere in this database -- true only until the backing deployment_node/
+// deployed_product rows are actually linked correctly (see the staging data
+// fix that corrected deployment_node.deployment_number/product_version_id
+// and deployed_product.product_id for the dedicated test deployment); once
+// linked, Postgres has real data and should be read, not papered over with a
+// permanent fallback.
 func (s *deployedProductService) SearchDeployedProductMetrics(ctx context.Context, id string, req domain.DeployedProductMetricsRequest) (domain.DeployedProductMetricsResponse, error) {
-	// DATA_SOURCE=postgres-servicenow-dual-write reads from ServiceNow, not
-	// hourly_usage_summary/deployment_information -- those tables have no
-	// row linked to a real deployment_node anywhere in this database (a
-	// confirmed, environment-wide gap, not specific to any one deployment),
-	// while ServiceNow has always had the complete history.
-	if s.snMirror != nil {
-		return s.snMirror.SearchDeployedProductMetrics(ctx, id, req)
-	}
-
 	if err := validateUUIDs("id", []string{id}); err != nil {
 		return domain.DeployedProductMetricsResponse{}, err
 	}
@@ -374,12 +378,8 @@ func (s *deployedProductService) SearchDeployedProductMetrics(ctx context.Contex
 
 // SearchDeployedProductUsageCounts implements DeployedProductService, same
 // resolution and validation as SearchDeployedProductMetrics -- and the same
-// dual-write ServiceNow-read reasoning.
+// always-Postgres reasoning (see that method's own doc comment).
 func (s *deployedProductService) SearchDeployedProductUsageCounts(ctx context.Context, id string, req domain.DeployedProductUsageCountsRequest) (domain.DeployedProductUsageCountsResponse, error) {
-	if s.snMirror != nil {
-		return s.snMirror.SearchDeployedProductUsageCounts(ctx, id, req)
-	}
-
 	if err := validateUUIDs("id", []string{id}); err != nil {
 		return domain.DeployedProductUsageCountsResponse{}, err
 	}

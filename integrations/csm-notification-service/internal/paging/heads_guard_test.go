@@ -266,3 +266,17 @@ func TestEngine_HeldCallIsNotDialled(t *testing.T) {
 		t.Errorf("an unheld entry dialled %d calls, want 1", len(caller.placed))
 	}
 }
+
+// A plan with no calls has nothing to hold: marking it CallsHeld would end
+// schedule() silently and swallow the "no reachable recipients" work note.
+func TestApplySafety_NoCallsIsNotHeld(t *testing.T) {
+	ctx := context.Background()
+	for _, ch := range []Channel{ChannelCall, ChannelBoth} {
+		e := &Engine{resolver: poolResolver{}, cfg: EngineConfig{Channel: ch}}
+		plan := Plan{}
+		e.applySafety(ctx, &plan)
+		if plan.CallsHeld {
+			t.Errorf("%s: CallsHeld set on a plan with no calls", ch)
+		}
+	}
+}

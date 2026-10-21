@@ -50,6 +50,7 @@ import type { NormalizedUser } from "@features/csm-users/types/csmUsers";
 import { useRecentApprovers } from "@features/csm-timecards/api/useTimeSheets";
 import TimeCardStatusChip from "@features/csm-timecards/components/TimeCardStatusChip";
 import type { SeverityOrUnset } from "@features/csm-dashboard/types/abtDashboard";
+import type { BeCaseType } from "@api/backend/types";
 import {
   ACTIVITY_BUCKETS,
   DEFAULT_BILLABLE,
@@ -57,6 +58,7 @@ import {
   ISSUE_COMPLEXITY_OPTIONS,
   NON_BILLABLE_SEVERITIES,
   TIMECARD_APPROVER_GROUP,
+  isFocPaymentType,
   WORK_LOG_MAX,
 } from "@features/csm-timecards/constants/timeCardConstants";
 import type {
@@ -97,6 +99,15 @@ interface LogTimeCardDialogProps {
    * case has no severity value at all — treated the same as "no severity to
    * hand in" below (switch stays enabled, backend still enforces server-side). */
   caseSeverity?: SeverityOrUnset;
+  /** The case's type. Engagement time defaults to non-billable (the engineer
+   * can still switch it on) — engagements carry no severity, so the severity
+   * rule above never applies to them. Optional for the same cross-case reason
+   * as `caseSeverity`. */
+  caseType?: BeCaseType;
+  /** The engagement's payment type display label, only meaningful when
+   * `caseType` is `"engagement"`. An FOC engagement locks the switch to
+   * non-billable — see {@link isFocPaymentType}. */
+  engagementPaymentType?: string;
   projectId: string;
   projectName: string;
   /** True while the create/edit mutation is in flight. */
@@ -239,6 +250,8 @@ export default function LogTimeCardDialog({
   caseId,
   caseNumber,
   caseSeverity,
+  caseType,
+  engagementPaymentType,
   projectId,
   projectName,
   isSubmitting,
@@ -249,17 +262,28 @@ export default function LogTimeCardDialog({
   const me = resolveUserInfo(useIdTokenClaims());
   const isEditMode = !!editingCard;
 
-  const isAlwaysNonBillable =
+  const isEngagement = caseType === "engagement";
+  // FOC engagements are locked off in edit mode too, unlike the severity rule
+  // below, which keeps an edited card's saved value.
+  const isFocEngagement = isEngagement && isFocPaymentType(engagementPaymentType);
+  const isNonBillableSeverity =
     !!caseSeverity &&
     caseSeverity !== "unset" &&
     NON_BILLABLE_SEVERITIES.includes(caseSeverity);
+  const isAlwaysNonBillable = isNonBillableSeverity || isFocEngagement;
 
   const [date, setDate] = useState(editingCard?.workDate ?? localTodayIso());
   const [issueComplexity, setIssueComplexity] = useState<IssueComplexity>(
     editingCard?.issueComplexity ?? DEFAULT_ISSUE_COMPLEXITY,
   );
   const [billable, setBillable] = useState<boolean>(
-    editingCard ? editingCard.billable : isAlwaysNonBillable ? false : DEFAULT_BILLABLE,
+    isFocEngagement
+      ? false
+      : editingCard
+        ? editingCard.billable
+        : isAlwaysNonBillable || isEngagement
+          ? false
+          : DEFAULT_BILLABLE,
   );
   const [breakdown, setBreakdown] = useState<ActivityBreakdown>(
     editingCard?.breakdown ?? emptyBreakdown(),
@@ -581,7 +605,9 @@ export default function LogTimeCardDialog({
               />
               {isAlwaysNonBillable && (
                 <Typography variant="caption" color="text.secondary">
-                  Always non-billable for {caseSeverity} cases.
+                  {isFocEngagement
+                    ? "Always non-billable for FOC engagements."
+                    : `Always non-billable for ${caseSeverity} cases.`}
                 </Typography>
               )}
             </Box>

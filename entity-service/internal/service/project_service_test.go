@@ -54,6 +54,14 @@ func (r *recordingProjectRepo) UpdateProject(context.Context, string, domain.Pro
 	panic("UpdateProject: not exercised by these tests")
 }
 
+func (r *recordingProjectRepo) GetProjectConsumptionStatus(context.Context, string) (domain.ProjectConsumptionStatus, error) {
+	panic("GetProjectConsumptionStatus: not exercised by these tests")
+}
+
+func (r *recordingProjectRepo) UpdateProjectConsumption(context.Context, string, domain.ProjectConsumptionUpdateRequest, string) error {
+	panic("UpdateProjectConsumption: not exercised by these tests")
+}
+
 // TestSearchProjectsExcludeClosureStatesAndProjectKeysPassThrough locks in
 // that ExcludeClosureStates, ExcludeProjectKeys, and ExcludeSubscriptionTypes
 // (individually, and together) are NOT rejected — they all map onto real
@@ -160,6 +168,28 @@ func TestSearchProjects_GoLiveDateReachesResponse(t *testing.T) {
 	}
 	if resp.Projects[1].GoLiveDate != nil {
 		t.Fatalf("Projects[1].GoLiveDate = %v, want nil (no go-live date recorded)", resp.Projects[1].GoLiveDate)
+	}
+}
+
+// TestSearchProjects_VerificationEnabledReachesResponse pins that
+// domain.Project's VerificationEnabled (project.verification_enabled, now
+// selected by SearchProjects alongside GoLiveDate) reaches the mapped
+// ProjectView -- the same class of "repository returns it, service layer
+// silently drops it" bug TestSearchProjects_ClosureStateReachesResponse
+// already guards for ClosureState.
+func TestSearchProjects_VerificationEnabledReachesResponse(t *testing.T) {
+	repo := &recordingProjectRepo{toReturn: []domain.Project{{ID: "p1", VerificationEnabled: true}, {ID: "p2"}}}
+	svc := NewProjectService(repo, alwaysUnrestrictedAccess{})
+
+	resp, err := svc.SearchProjects(t.Context(), domain.SearchProjectsRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.Projects) != 2 || !resp.Projects[0].VerificationEnabled {
+		t.Fatalf("Projects[0].VerificationEnabled = %+v, want true", resp.Projects)
+	}
+	if resp.Projects[1].VerificationEnabled {
+		t.Fatalf("Projects[1].VerificationEnabled = %v, want false (project.verification_enabled was NULL/false)", resp.Projects[1].VerificationEnabled)
 	}
 }
 

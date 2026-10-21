@@ -4,7 +4,7 @@ info:
   description: >
     Server-Sent Events endpoint served by csm-portal-activity-stream-service's
     dedicated :9092 listener (see cmd/server/main.go). Behind the same JWT
-    auth as every other endpoint.
+    auth as every other endpoint except `/health`.
   version: 1.0.0
 security:
   - jwtAssertion: []
@@ -16,6 +16,23 @@ servers:
       port:
         default: "9092"
 paths:
+  /health:
+    get:
+      summary: Health check.
+      description: Liveness probe. Returns 200 OK if the service is running. No auth required.
+      operationId: getHealth
+      security: []
+      responses:
+        "200":
+          description: Ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [ok]
   /cases/activities/stream:
     get:
       summary: Live activity updates for several cases on one connection.

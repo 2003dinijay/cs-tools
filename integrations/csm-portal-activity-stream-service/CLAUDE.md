@@ -40,13 +40,12 @@ The incoming `x-user-id-token` is forwarded to the entity-service `GetCase` call
 
 | Variable | Required | Description |
 |---|---|---|
-| `EVENT_HUB_BROKER` | No — optional feature gate | Kafka-compatible bootstrap address, e.g. `<namespace>.servicebus.windows.net:9093`. Left unset, the service starts and serves only the health check; the SSE endpoint returns 503 |
+| `EVENT_HUB_BROKER` | No — optional feature gate | Kafka-compatible bootstrap address, e.g. `<namespace>.servicebus.windows.net:9093`. Left unset, the service starts and serves only the health check; the SSE endpoints return 503 |
 | `EVENT_HUB_CONNECTION_STRING` | Required once `EVENT_HUB_BROKER` is set | Shared Access Policy connection string (namespace-scoped, no EntityPath) |
 | `EVENT_HUB_TOPIC` | Required once `EVENT_HUB_BROKER` is set | Event Hub name = Kafka topic (`case-events`) |
 | `EVENT_HUB_CONSUMER_GROUP` | No (default `csm-portal-activity-stream-service`) | Base consumer group name (suffixed per-replica with `-replica-<hostname>`) |
 | `STREAM_PORT` | No (default 9092) | Port the SSE listener binds to |
 | `STREAM_CORS_ALLOWED_ORIGINS` | No | Comma-separated browser Origins for the SSE endpoint; fail-closed |
-| `CORS_ALLOWED_ORIGINS` | No | Comma-separated browser Origins for the health listener (:8080); fail-closed |
 | `AUTH_JWKS_ENDPOINT` | Yes | JWKS URL for JWT validation |
 | `AUTH_ISSUER` | Yes | Expected `iss` claim |
 | `AUTH_AUDIENCE` | Yes | Comma-separated accepted `aud` values |
@@ -74,7 +73,7 @@ go test -race ./...
 
 ## Deployment (Choreo)
 
-See `.choreo/component.yaml` (two endpoints: health on :8080, SSE on :9092 with `openapi-stream.yaml`). The stream endpoint is Public network visibility.
+See `.choreo/component.yaml` (one endpoint: :9092 with `openapi-stream.yaml`, serving the SSE routes and `GET /health`, which is the liveness probe and skips auth). Public network visibility.
 
 ## Packages
 

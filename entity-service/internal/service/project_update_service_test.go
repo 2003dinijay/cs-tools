@@ -59,6 +59,14 @@ func (r *stubProjectUpdateRepo) UpdateProject(ctx context.Context, id string, re
 	return domain.ProjectUpdateResult{ID: id, UpdatedBy: updatedBy, UpdatedOn: time.Now()}, nil
 }
 
+func (r *stubProjectUpdateRepo) GetProjectConsumptionStatus(context.Context, string) (domain.ProjectConsumptionStatus, error) {
+	panic("GetProjectConsumptionStatus: not exercised by these tests")
+}
+
+func (r *stubProjectUpdateRepo) UpdateProjectConsumption(context.Context, string, domain.ProjectConsumptionUpdateRequest, string) error {
+	panic("UpdateProjectConsumption: not exercised by these tests")
+}
+
 // stubProjectMirror is a ProjectUpdateService whose UpdateProject records the
 // call and returns either a canned error or a canned response -- used as the
 // dual-write mode's ServiceNow mirror, standing in for the real
@@ -252,6 +260,125 @@ func TestPgProjectUpdateService_PlainPostgresUpdatesFieldsAndNeverCallsSN(t *tes
 	}
 }
 
+// TestPgProjectUpdateService_AcceptsVerificationEnabledOnly proves a request
+// setting only VerificationEnabled (the field the Pending Verification
+// feature's Settings toggle sends) is not rejected by the "at least one
+// field must be provided" guard, and reaches the repository and back
+// unchanged -- locking in the fix made when this field was folded into the
+// shared pgProjectUpdateService alongside HasAgent/HasKbReferences/the
+// closure-state fields.
+func TestPgProjectUpdateService_AcceptsVerificationEnabledOnly(t *testing.T) {
+	verificationEnabled := true
+	wantResult := domain.ProjectUpdateResult{
+		ID:                  "11111111-1111-1111-1111-111111111111",
+		UpdatedBy:           "jane.doe@example.com",
+		UpdatedOn:           time.Date(2026, 9, 24, 0, 0, 0, 0, time.UTC),
+		VerificationEnabled: &verificationEnabled,
+	}
+	repo := &stubProjectUpdateRepo{
+		updateProject: func(_ context.Context, _ string, _ domain.ProjectUpdateRequest, _ string) (domain.ProjectUpdateResult, error) {
+			return wantResult, nil
+		},
+	}
+	svc := NewProjectUpdateService(repo, testProjectUserRepo(), alwaysUnrestrictedAccess{})
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	resp, err := svc.UpdateProject(ctx, wantResult.ID, domain.ProjectUpdateRequest{
+		VerificationEnabled: &verificationEnabled,
+	})
+	if err != nil {
+		t.Fatalf("UpdateProject() error = %v", err)
+	}
+	if !repo.called {
+		t.Fatal("UpdateProject() never called the repository")
+	}
+	if repo.gotReq.VerificationEnabled == nil || !*repo.gotReq.VerificationEnabled {
+		t.Fatalf("repo.UpdateProject() req.VerificationEnabled = %v, want true", repo.gotReq.VerificationEnabled)
+	}
+	if resp.Project.VerificationEnabled == nil || !*resp.Project.VerificationEnabled {
+		t.Fatalf("UpdateProject() response.Project.VerificationEnabled = %v, want true", resp.Project.VerificationEnabled)
+	}
+}
+
+// TestPgProjectUpdateService_AcceptsClosureStateOverride pins that a request
+// naming only ClosureState (the admin-only direct override -- fine-grained
+// authorization for it lives in the BFF, not here) is recognized as having
+// something to store and reaches the repository, the same as any other
+// stored field.
+func TestPgProjectUpdateService_AcceptsClosureStateOverride(t *testing.T) {
+	closureState := "SUSPENDED"
+	repo := &stubProjectUpdateRepo{}
+	svc := NewProjectUpdateService(repo, testProjectUserRepo(), alwaysUnrestrictedAccess{})
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	if _, err := svc.UpdateProject(ctx, "11111111-1111-1111-1111-111111111111", domain.ProjectUpdateRequest{ClosureState: &closureState}); err != nil {
+		t.Fatalf("UpdateProject() error = %v, want success", err)
+	}
+	if !repo.called || repo.gotReq.ClosureState == nil || *repo.gotReq.ClosureState != closureState {
+		t.Fatalf("repo called = %v with closureState %v, want %q", repo.called, repo.gotReq.ClosureState, closureState)
+	}
+}
+
+// TestPgProjectUpdateService_ClosureStateOnlyNeverDispatchesSNMirror pins
+// hasSNMirrorableProjectFields's whole reason for existing: ClosureState has
+// no ServiceNow equivalent (it's a Postgres-only direct override), so a
+// dual-write request naming only it must not dispatch a mirror write at all
+// -- one would only ever fail against snProjectUpdateService's own "at least
+// one field must be provided" check, since none of the fields it knows about
+// would be set.
+func TestPgProjectUpdateService_ClosureStateOnlyNeverDispatchesSNMirror(t *testing.T) {
+	closureState := "READ_ONLY"
+	repo := &stubProjectUpdateRepo{}
+	mirror := &stubProjectMirror{}
+	failures := &recordingSNWritebackFailures{}
+	dispatcher := NewSNWritebackDispatcher(failures)
+	svc := NewProjectUpdateServiceWithSNWriteback(repo, testProjectUserRepo(), alwaysUnrestrictedAccess{}, dispatcher, mirror)
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	if _, err := svc.UpdateProject(ctx, "11111111-1111-1111-1111-111111111111", domain.ProjectUpdateRequest{ClosureState: &closureState}); err != nil {
+		t.Fatalf("UpdateProject() error = %v, want success", err)
+	}
+	if !repo.called {
+		t.Fatal("UpdateProject() never called the repository")
+	}
+	// No background goroutine to race against here (mirror dispatch never
+	// happens), so a short, direct check is enough -- unlike the "dispatches
+	// exactly one" test below, which has to waitFor an async failure record.
+	if mirror.calls != 0 {
+		t.Fatalf("ServiceNow mirror UpdateProject called %d times, want 0 for a ClosureState-only request", mirror.calls)
+	}
+}
+
+// TestPgProjectUpdateService_VerificationEnabledOnlyNeverDispatchesSNMirror
+// pins the identical reasoning as ClosureStateOnlyNeverDispatchesSNMirror,
+// for the other Postgres-only field this request carries: without this,
+// a dual-write request naming only VerificationEnabled would dispatch a
+// mirror write that snProjectUpdateService doesn't recognize, recording a
+// spurious sn_writeback_failures entry for a field that was never meant to
+// reach ServiceNow.
+func TestPgProjectUpdateService_VerificationEnabledOnlyNeverDispatchesSNMirror(t *testing.T) {
+	verificationEnabled := true
+	repo := &stubProjectUpdateRepo{}
+	mirror := &stubProjectMirror{}
+	failures := &recordingSNWritebackFailures{}
+	dispatcher := NewSNWritebackDispatcher(failures)
+	svc := NewProjectUpdateServiceWithSNWriteback(repo, testProjectUserRepo(), alwaysUnrestrictedAccess{}, dispatcher, mirror)
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	if _, err := svc.UpdateProject(ctx, "11111111-1111-1111-1111-111111111111", domain.ProjectUpdateRequest{VerificationEnabled: &verificationEnabled}); err != nil {
+		t.Fatalf("UpdateProject() error = %v, want success", err)
+	}
+	if !repo.called {
+		t.Fatal("UpdateProject() never called the repository")
+	}
+	// No background goroutine to race against here (mirror dispatch never
+	// happens), so a short, direct check is enough -- same reasoning as the
+	// ClosureState sibling test above.
+	if mirror.calls != 0 {
+		t.Fatalf("ServiceNow mirror UpdateProject called %d times, want 0 for a VerificationEnabled-only request", mirror.calls)
+	}
+}
+
 // TestPgProjectUpdateService_DualWriteDispatchesExactlyOneMirrorCallOnSuccess
 // proves DATA_SOURCE=postgres-servicenow-dual-write mode dispatches exactly
 // one best-effort ServiceNow mirror write after a successful Postgres write,
@@ -287,5 +414,72 @@ func TestPgProjectUpdateService_DualWriteDispatchesExactlyOneMirrorCallOnSuccess
 	}
 	if mirror.gotID != id {
 		t.Fatalf("ServiceNow mirror UpdateProject id = %q, want %q", mirror.gotID, id)
+	}
+}
+
+// TestPgProjectUpdateService_AcceptsOnboardingFields pins that an onboarding-only
+// request counts as a stored field, reaches the repository, and is never
+// dispatched to the dual-write mirror.
+func TestPgProjectUpdateService_AcceptsOnboardingFields(t *testing.T) {
+	status := "In-Progress"
+	owner := "00000000-0000-0000-0000-000000000001"
+	repo := &stubProjectUpdateRepo{}
+	mirror := &stubProjectMirror{}
+	dispatcher := NewSNWritebackDispatcher(&recordingSNWritebackFailures{})
+	svc := NewProjectUpdateServiceWithSNWriteback(repo, testProjectUserRepo(), alwaysUnrestrictedAccess{}, dispatcher, mirror)
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	req := domain.ProjectUpdateRequest{OnboardingStatus: &status, OnboardingOwner: &owner}
+	if _, err := svc.UpdateProject(ctx, "11111111-1111-1111-1111-111111111111", req); err != nil {
+		t.Fatalf("UpdateProject() error = %v, want success", err)
+	}
+	if !repo.called || repo.gotReq.OnboardingStatus == nil || *repo.gotReq.OnboardingStatus != status ||
+		repo.gotReq.OnboardingOwner == nil || *repo.gotReq.OnboardingOwner != owner {
+		t.Fatalf("repo called = %v with %+v, want onboarding fields passed through", repo.called, repo.gotReq)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if mirror.calls != 0 {
+		t.Fatalf("mirror calls = %d, want 0 for an onboarding-only request", mirror.calls)
+	}
+}
+
+// TestPgProjectUpdateService_RejectsMalformedOnboardingOwner pins that a
+// non-UUID owner is a 400 from the service, before the repository is called.
+func TestPgProjectUpdateService_RejectsMalformedOnboardingOwner(t *testing.T) {
+	owner := "not-a-uuid"
+	repo := &stubProjectUpdateRepo{}
+	svc := NewProjectUpdateService(repo, testProjectUserRepo(), alwaysUnrestrictedAccess{})
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	_, err := svc.UpdateProject(ctx, "11111111-1111-1111-1111-111111111111", domain.ProjectUpdateRequest{OnboardingOwner: &owner})
+	var ve *apierror.ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("UpdateProject() error = %v, want *apierror.ValidationError", err)
+	}
+	if repo.called {
+		t.Fatal("repository must not be called for a malformed onboardingOwner")
+	}
+}
+
+// TestSNProjectUpdateService_RejectsOnboardingFields pins that the ServiceNow
+// data source rejects the Postgres-only onboarding fields with a 400 before
+// any upstream call (the nil client would panic if one were attempted).
+func TestSNProjectUpdateService_RejectsOnboardingFields(t *testing.T) {
+	status := "Completed"
+	owner := "00000000-0000-0000-0000-000000000001"
+	hasAgent := true
+	svc := &snProjectUpdateService{}
+	for name, req := range map[string]domain.ProjectUpdateRequest{
+		"status":            {OnboardingStatus: &status},
+		"owner":             {OnboardingOwner: &owner},
+		"with other fields": {HasAgent: &hasAgent, OnboardingStatus: &status},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := svc.UpdateProject(context.Background(), "11111111-1111-1111-1111-111111111111", req)
+			var ve *apierror.ValidationError
+			if !errors.As(err, &ve) {
+				t.Fatalf("err = %v, want ValidationError", err)
+			}
+		})
 	}
 }

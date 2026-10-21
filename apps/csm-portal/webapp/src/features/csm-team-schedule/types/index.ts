@@ -216,6 +216,8 @@ export interface SearchScheduleAssignmentsPayload {
   /** Widen the window to catch a block that began before `from` and is still
    *  running into it -- the night crew a day view shows at the top. */
   includeOvernight?: boolean;
+  /** Leave out anybody on leave that day: who a reminder would reach. */
+  excludeAbsent?: boolean;
 }
 
 export interface SearchScheduleAbsencesPayload {
@@ -633,3 +635,59 @@ export interface CaseAlertFileOnly {
   "safety.callHeadsWithoutLowerTiers"?: boolean;
   "phones.source"?: string;
 }
+
+/** A rotation's reminder window: "HH:MM" on the 24-hour clock of an IANA zone. */
+export type ReminderWindow = { start: string; end: string; timeZone: string };
+
+/**
+ * What a group's rota reminder emails may be changed to: whether the weekday
+ * and weekend reminders and the calendar invitations go out, how many people a
+ * weekend rotation needs each day before the weekend is announced, the hours of
+ * the rotations kept on a fixed clock, and who is copied on every reminder.
+ * Keyed by rotation code; a code this form does not show is kept as saved.
+ */
+export type SaveRotaReminderSettings = {
+  weekdayEnabled: boolean;
+  weekendEnabled: boolean;
+  invitesEnabled: boolean;
+  weekendRequired: Record<string, number>;
+  windows: Record<string, ReminderWindow>;
+  copyTo: string[];
+};
+
+/** The saved settings of one group, with who last changed them. */
+export type RotaReminderSettings = SaveRotaReminderSettings & {
+  family: RotaFamily;
+  updatedBy: string;
+  updatedOn: string;
+};
+
+/** Which reminder is asked for: the next working day's, or the weekend's. */
+export type RotaReminderKind = "weekday" | "weekend";
+
+/** Where a request is: waiting for the scheduled task, being sent, or done. */
+export type RotaReminderStatus = "QUEUED" | "SENDING" | "SENT" | "FAILED";
+
+/**
+ * One ask to send a group's rota reminders now, picked up by the scheduled task.
+ * `test` is true for a test copy, which goes only to the person who asked.
+ */
+export type RotaReminderRequest = {
+  id: string;
+  family: RotaFamily;
+  kind: RotaReminderKind;
+  test: boolean;
+  status: RotaReminderStatus;
+  requestedBy: string;
+  requestedOn: string;
+  claimedOn?: string;
+  handledOn?: string;
+  result?: string;
+};
+
+/**
+ * What is posted to ask for a reminder now. With `test` the reminder goes only
+ * to the person asking (marked "[Test copy]"), never to the rota, and is not
+ * recorded as a real reminder.
+ */
+export type SendRotaReminder = { kind: RotaReminderKind; test: boolean };

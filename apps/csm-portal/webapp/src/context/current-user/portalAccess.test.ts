@@ -25,6 +25,8 @@ const NONE = {
   canWrite: false,
   canAddWorkNotes: false,
   canCreateUser: false,
+  canUpdateProjectClosureState: false,
+  canEditProjectOnboarding: false,
   canUseSecurityCenter: false,
   canUsePlg: false,
   canManagePlaybooks: false,
@@ -173,6 +175,8 @@ describe("getPortalAccess", () => {
     expect(getPortalAccess(["cs_engineer"])).toEqual({
       ...all,
       canCreateUser: false,
+      canUpdateProjectClosureState: false,
+      canEditProjectOnboarding: false,
       canEscalate: true,
       canManagePlaybooks: false,
       canCreateAnnouncement: false,
@@ -182,6 +186,8 @@ describe("getPortalAccess", () => {
     expect(getPortalAccess(["admin"])).toEqual({
       ...all,
       canCreateUser: true,
+      canUpdateProjectClosureState: true,
+      canEditProjectOnboarding: true,
       canEscalate: true,
       canManagePlaybooks: true,
       canCreateAnnouncement: true,
@@ -226,6 +232,46 @@ describe("getPortalAccess", () => {
     ]) {
       expect(getPortalAccess([role]).canCreateUser).toBe(false);
     }
+  });
+
+  it("only admin can directly override a project's closure state -- CS engineer does not share this one", () => {
+    expect(getPortalAccess(["admin"]).canUpdateProjectClosureState).toBe(true);
+    for (const role of [
+      "cs_engineer",
+      "viewer",
+      "escalator",
+      "attachment_downloader",
+      "usage_metrics_viewer",
+      "timecard_approver",
+      "dashboard_designer",
+    ]) {
+      expect(getPortalAccess([role]).canUpdateProjectClosureState).toBe(false);
+    }
+  });
+
+  it("only onboarding_lead and admin can edit a project's onboarding fields -- CS engineer alone cannot", () => {
+    expect(getPortalAccess(["onboarding_lead"]).canEditProjectOnboarding).toBe(true);
+    expect(getPortalAccess(["admin"]).canEditProjectOnboarding).toBe(true);
+    // The realistic holder: an engineer who also carries the lead role.
+    expect(
+      getPortalAccess(["cs_engineer", "onboarding_lead"]).canEditProjectOnboarding,
+    ).toBe(true);
+    for (const role of [
+      "cs_engineer",
+      "viewer",
+      "escalator",
+      "attachment_downloader",
+      "usage_metrics_viewer",
+      "timecard_approver",
+      "dashboard_designer",
+    ]) {
+      expect(getPortalAccess([role]).canEditProjectOnboarding).toBe(false);
+    }
+    expect(getPortalAccess(undefined).canEditProjectOnboarding).toBe(false);
+  });
+
+  it("onboarding_lead alone grants no portal access, only the onboarding edit", () => {
+    expect(getPortalAccess(["onboarding_lead"]).hasAnyRole).toBe(false);
   });
 
   it("admin, CS engineer and escalator can escalate -- any internal engineer, as in ServiceNow", () => {

@@ -40,7 +40,7 @@ const caseActivityStreamHeartbeat = 15 * time.Second
 // internal/caseevents.Handler observes a comment, status, assignee, severity or
 // acknowledge event for this case on any backend replica (see internal/stream.BroadcastHub).
 // It is registered on the dedicated :9092 listener (see cmd/server/main.go)
-// so the health check listener's timeouts can't kill the connection, but it
+// so a REST-style listener's timeouts can't kill the connection, but it
 // sits behind the same middleware.Auth chain as every other endpoint — there
 // is no separate auth mechanism for streaming; the browser connects with its
 // normal x-jwt-assertion/x-user-id-token headers via a fetch-backed EventSource

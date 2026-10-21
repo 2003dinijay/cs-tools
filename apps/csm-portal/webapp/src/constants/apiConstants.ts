@@ -163,6 +163,7 @@ export const ApiQueryKeys = {
   CSM_ADMIN_GROUP_DETAIL: "csm-admin-group-detail",
   CSM_ADMIN_TEAMS: "csm-admin-teams",
   CSM_ADMIN_TEAM_DETAIL: "csm-admin-team-detail",
+  CSM_ADMIN_TEAM_MEMBERS: "csm-admin-team-members",
   CSM_ADMIN_PERMISSIONS: "csm-admin-permissions",
   CSM_PRODUCT_REPO_MAPPING: "csm-product-repo-mapping",
   SAVED_FILTER_VIEWS: "saved-filter-views",

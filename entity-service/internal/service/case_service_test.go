@@ -50,20 +50,23 @@ func (alwaysUnrestrictedAccess) ResolveScope(context.Context) (AccessScope, erro
 // an unsupported field happens before the Postgres backend ever reaches the
 // repository, not merely that the repository ignores the field.
 type stubCaseRepo struct {
-	aggregateCases                func(ctx context.Context, req domain.SearchCasesRequest, groupBy string) ([]domain.AggregateBucket, error)
-	caseVolumeTrend               func(ctx context.Context, req domain.SearchCasesRequest, days []string) (map[string]domain.CaseVolumeDayCount, error)
-	searchCases                   func(ctx context.Context, req domain.SearchCasesRequest) ([]domain.SearchCaseView, int, error)
-	createCaseAttachment          func(ctx context.Context, req domain.CreateAttachmentRequest) (domain.Attachment, error)
-	createCaseAttachmentFromSN    func(ctx context.Context, req domain.CreateAttachmentRequest, id string, sizeBytes int, uploadedBy string) (domain.Attachment, error)
-	searchCaseAttachments         func(ctx context.Context, caseID string, pagination domain.Pagination) ([]domain.Attachment, int, error)
-	searchWorkItemAttachments     func(ctx context.Context, workItemID string, referenceType domain.ReferenceType, pagination domain.Pagination) ([]domain.Attachment, int, error)
-	getCaseAttachmentByID         func(ctx context.Context, id string) (domain.Attachment, error)
-	deleteCaseAttachment          func(ctx context.Context, id string) error
-	updateAttachmentName          func(ctx context.Context, id, name, updatedBy string) (time.Time, error)
-	confirmCaseAttachment         func(ctx context.Context, id string) (domain.Attachment, error)
-	addCaseWatcherIfAbsent        func(ctx context.Context, caseID, userID string) error
-	searchCaseComments            func(ctx context.Context, req domain.SearchCaseCommentsRequest) ([]domain.CaseComment, int, error)
-	updateCase                    func(ctx context.Context, req domain.UpdateCaseRequest) (domain.Case, *domain.CaseSeverity, error)
+	aggregateCases             func(ctx context.Context, req domain.SearchCasesRequest, groupBy string) ([]domain.AggregateBucket, error)
+	caseVolumeTrend            func(ctx context.Context, req domain.SearchCasesRequest, days []string) (map[string]domain.CaseVolumeDayCount, error)
+	searchCases                func(ctx context.Context, req domain.SearchCasesRequest) ([]domain.SearchCaseView, int, error)
+	createCaseAttachment       func(ctx context.Context, req domain.CreateAttachmentRequest) (domain.Attachment, error)
+	createCaseAttachmentFromSN func(ctx context.Context, req domain.CreateAttachmentRequest, id string, sizeBytes int, uploadedBy string) (domain.Attachment, error)
+	searchCaseAttachments      func(ctx context.Context, caseID string, pagination domain.Pagination) ([]domain.Attachment, int, error)
+	searchWorkItemAttachments  func(ctx context.Context, workItemID string, referenceType domain.ReferenceType, pagination domain.Pagination) ([]domain.Attachment, int, error)
+	getCaseAttachmentByID      func(ctx context.Context, id string) (domain.Attachment, error)
+	deleteCaseAttachment       func(ctx context.Context, id string) error
+	updateAttachmentName       func(ctx context.Context, id, name, updatedBy string) (time.Time, error)
+	confirmCaseAttachment      func(ctx context.Context, id string) (domain.Attachment, error)
+	addCaseWatcherIfAbsent     func(ctx context.Context, caseID, userID string) error
+	searchCaseComments         func(ctx context.Context, req domain.SearchCaseCommentsRequest) ([]domain.CaseComment, int, error)
+	updateCase                 func(ctx context.Context, req domain.UpdateCaseRequest) (domain.Case, *domain.CaseSeverity, error)
+	// updateCasePrev, when set, takes precedence over updateCase and also
+	// reports the repository's under-lock previous state.
+	updateCasePrev                func(ctx context.Context, req domain.UpdateCaseRequest) (domain.Case, *domain.CaseSeverity, *domain.CaseState, error)
 	createCaseFromServiceNow      func(ctx context.Context, req domain.CreateCaseRequest, id, number, wso2ID, createdBy, state string) (domain.Case, error)
 	createCaseComment             func(ctx context.Context, req domain.CreateCaseCommentRequest, createdOn *time.Time) (domain.CaseComment, error)
 	createCaseCommentAsSystem     func(ctx context.Context, req domain.CreateCaseCommentRequest, createdOn *time.Time) (domain.CaseComment, error)
@@ -76,6 +79,7 @@ type stubCaseRepo struct {
 	accountDefaultWatcherEmails   func(ctx context.Context, projectID string) ([]string, error)
 	projectOnboardingInfo         func(ctx context.Context, projectID string) (string, bool, error)
 	getCaseEtaSharedOn            func(ctx context.Context, caseID string) (*time.Time, error)
+	getCaseWorkaroundProvidedOn   func(ctx context.Context, caseID string) (*time.Time, error)
 	projectContactEmailsByRole    func(ctx context.Context, projectID, role string) ([]string, error)
 	updateCaseAssignee            func(ctx context.Context, caseID string, userID *string, callerEmail string) (time.Time, bool, error)
 	acknowledgeCase               func(ctx context.Context, caseID, actorID, actorEmail string) (bool, domain.AssignedEngineerRef, string, time.Time, error)
@@ -93,6 +97,8 @@ type stubCaseRepo struct {
 	// than left nil -- see CaseRepository.UpdateCase's own interface doc
 	// comment on what actorID is for.
 	updateCaseActorID *string
+	// updateCaseActorMu guards updateCaseActorID against concurrent UpdateCase calls.
+	updateCaseActorMu sync.Mutex
 }
 
 func (s *stubCaseRepo) ResolveRelatedCaseID(ctx context.Context, relatedCaseID string) (*string, error) {
@@ -158,10 +164,16 @@ func (s *stubCaseRepo) SearchCaseComments(ctx context.Context, req domain.Search
 	}
 	panic("not implemented")
 }
-func (s *stubCaseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest, actorID *string) (domain.Case, *domain.CaseSeverity, error) {
+func (s *stubCaseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest, actorID *string) (domain.Case, *domain.CaseSeverity, *domain.CaseState, error) {
+	s.updateCaseActorMu.Lock()
 	s.updateCaseActorID = actorID
+	s.updateCaseActorMu.Unlock()
+	if s.updateCasePrev != nil {
+		return s.updateCasePrev(ctx, req)
+	}
 	if s.updateCase != nil {
-		return s.updateCase(ctx, req)
+		c, sev, err := s.updateCase(ctx, req)
+		return c, sev, nil, err
 	}
 	panic("not implemented")
 }
@@ -304,6 +316,15 @@ func (s *stubCaseRepo) ProjectOnboardingInfo(ctx context.Context, projectID stri
 func (s *stubCaseRepo) GetCaseEtaSharedOn(ctx context.Context, caseID string) (*time.Time, error) {
 	if s.getCaseEtaSharedOn != nil {
 		return s.getCaseEtaSharedOn(ctx, caseID)
+	}
+	return nil, nil
+}
+
+// GetCaseWorkaroundProvidedOn defaults to nil (no workaround marked) rather
+// than panicking, same reasoning as GetCaseEtaSharedOn above.
+func (s *stubCaseRepo) GetCaseWorkaroundProvidedOn(ctx context.Context, caseID string) (*time.Time, error) {
+	if s.getCaseWorkaroundProvidedOn != nil {
+		return s.getCaseWorkaroundProvidedOn(ctx, caseID)
 	}
 	return nil, nil
 }
@@ -2135,6 +2156,81 @@ func TestCaseService_UpdateCase_SameStateResendSkipsMirror(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if mirrorCalled {
 		t.Error("mirror.patchCaseFields must not be called for a same-state resend")
+	}
+}
+
+// TestCaseService_UpdateCase_ConcurrentSameStateDispatchesMirrorOnce proves
+// the mirror decision comes from the previous state the repository read under
+// its row lock, not from the pre-write read. Two UpdateCase calls both read the
+// case as work_in_progress (a barrier holds each pre-write read until both have
+// happened, so neither write has committed yet) and both ask for
+// waiting_on_wso2. The fake repository serializes the writes like the real row
+// lock: the first sees work_in_progress as its previous state, the second sees
+// waiting_on_wso2. Only the first committed a real transition, so exactly one
+// mirror PATCH may be dispatched; a second would be a self-transition the
+// downstream data source rejects.
+func TestCaseService_UpdateCase_ConcurrentSameStateDispatchesMirrorOnce(t *testing.T) {
+	prior := domain.CaseStateWorkInProgress
+	target := domain.CaseStateWaitingOnWSO2
+
+	var (
+		mu       sync.Mutex
+		stored   = prior
+		arrived  int
+		released = make(chan struct{})
+	)
+	var mirrorCalls atomic.Int32
+	mirror := &stubMirrorCaseService{
+		patchCaseFieldsFn: func(context.Context, string, *domain.CaseState, *domain.CaseSeverity, *domain.CaseWorkState, *bool, *caseResolutionFields, bool) (domain.UpdatedCase, error) {
+			mirrorCalls.Add(1)
+			return domain.UpdatedCase{}, nil
+		},
+	}
+	repo := &stubCaseRepo{
+		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
+			// Both calls take their pre-write snapshot before either writes.
+			snapshot := prior
+			mu.Lock()
+			arrived++
+			if arrived == 2 {
+				close(released)
+			}
+			mu.Unlock()
+			select {
+			case <-released:
+			case <-time.After(2 * time.Second):
+			}
+			return domain.CaseView{ID: testDeploymentUUID, State: &snapshot}, nil
+		},
+		updateCasePrev: func(_ context.Context, req domain.UpdateCaseRequest) (domain.Case, *domain.CaseSeverity, *domain.CaseState, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			prev := stored
+			stored = *req.State
+			return domain.Case{ID: req.ID, State: req.State}, nil, &prev, nil
+		},
+	}
+	dispatcher := NewSNWritebackDispatcher(&recordingSNWritebackFailures{})
+	svc := NewCaseServiceWithSNWriteback(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, nil, dispatcher, mirror, nil, "")
+
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			st := target
+			if _, err := svc.UpdateCase(context.Background(), domain.UpdateCaseRequest{ID: testDeploymentUUID, State: &st}); err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	// The mirror dispatches asynchronously; give any (erroneous) second
+	// dispatch time to land before counting.
+	time.Sleep(100 * time.Millisecond)
+	if got := mirrorCalls.Load(); got != 1 {
+		t.Errorf("mirror dispatched %d times for two racing identical state updates, want exactly 1", got)
 	}
 }
 

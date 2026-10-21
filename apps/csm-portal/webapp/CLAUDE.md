@@ -41,8 +41,26 @@ gating on top of a real server-side gate, by explicit choice rather than by the 
 default. If a future admin-only action is added, default to the show-and-reject norm unless there's a
 specific reason (as here) to also hide it.
 
+**Editing a project's closure state** (`CsmProjectDetailPage.tsx`'s pencil icon next to the "State"
+chip, `EditProjectClosureStateDialog.tsx`) is a third such exception, gated on
+`usePortalAccess().canUpdateProjectClosureState` — `admin` only, same shape as `canCreateUser`. The
+backend genuinely enforces it too: `PATCH /projects/{id}` narrows its `closureState` field to
+`PermAdmin` in-handler while every other field on the same route stays at the ordinary write
+permission (see `apps/csm-portal/backend`'s own `CLAUDE.md`, "PATCH /projects/{id}: closureState
+requires PermAdmin") — hiding the pencil icon for a `cs_engineer` just avoids offering an action that
+would 403 for them.
+
+**`AddUserDialog.tsx` only collects an email — there are no first/last name fields.** The backend
+(`apps/csm-portal/backend`'s own `CLAUDE.md`, "Creating a user") looks that email up in SCIM and fills
+`firstName`/`lastName`/phone from that record; a 400 from SCIM having no matching user (or a match with
+no name on file) surfaces in the form's error banner like any other create failure. This is a different
+mechanism from the token-sourced `cs_engineer` auto-provisioning on `GET /users/me` (same backend
+doc) — that path has the-caller's-own token to read from, this one doesn't (the admin is creating a
+row for someone else's email), so it has no choice but to ask SCIM.
+
 `AddUserDialog.tsx` has two independent role-shaped controls that must not be confused with each
-other. One narrower, required control: **"User type" (Internal/External)**. entity-service's `user_type` has no plain settable
+other. One narrower, required control: **"User type" (Internal/External)**, defaulting to **Internal**
+(`EMPTY_FORM.userType`). entity-service's `user_type` has no plain settable
 column — it's derived by a DB trigger from role membership (`recompute_user_type`, migration 0011) —
 so this selector works by sending exactly one of `roles: ["internal"]`/`["external"]` on submit, not a
 `type` field on the wire; `external` (not `customer`/`partner`/...) is the role every
@@ -505,6 +523,10 @@ Four of the five shapes do the same thing — issue that `resourceType`'s own `P
 - `incident`, `change_request` and `problem` lists read only a few named filters from their URL (`INCIDENT_LIST_FILTER_KEYS`, `CHANGE_REQUEST_LIST_FILTER_KEYS`, none for problems); any other filter value sends the click to the preview page via `hasFiltersBeyond`. `buildHref`'s `ctx` (widget id and name) is what the preview link needs, so every caller passes it; without one the link gets a generic title instead of a dead end.
 - `reopened` is a real case state (cases carried over from the previous system hold it and the tiles count them), so it is in `PRIMARY_STATES` and the URL reader, not only a `nextStates` marker.
 - `widgetResourceConfig.clickThrough.test.ts` holds one fixture per widget shape of a real overview dashboard and asserts, for each, that the list sends the widget's own request or the click opens the preview page with every filter intact. Add a fixture there when a dashboard grows a new filter shape.
+
+**`project`'s own `buildHref` used to ignore `filters` entirely and always return the bare `/customers/projects` path** — a real, reported bug, not a deliberate "no filter support" choice (unlike `problem`/`task`/`call_request`'s own entries, each of which documents why they have none): clicking a dashboard tile like "Active Onboarding" (`query: {onboardingStatus: ["In-Progress"]}`) landed on the plain, unfiltered Projects page with no way to tell which status it meant, and no URL-driven filtering existed on that page to apply one even if `buildHref` had sent it. Fixed on both ends: `project.buildHref` now encodes `filters.onboardingStatus` as a comma-joined `?onboardingStatus=` query param (the same array-as-comma-list encoding the preview page's own URL round-trip already uses), and `CsmProjectsPage.tsx` reads that param on mount into its own `onboardingStatus` filter state, keeps it synced to the URL via `useSearchParams` as the filter control changes, and sends it through to `POST /projects/search` (a field that endpoint already accepted — see `WIDGET_RESOURCE_CONFIG.project.buildSearchRequestBody`'s own comment on that request's flat shape — but `SearchProjectsRequest`/this page never had a way to set it before). Any other `resourceType` whose `buildHref` returns a bare, filter-ignoring path should be treated as a similar bug unless its own comment says otherwise. `onboardingStatus` is also the only key `PROJECT_LIST_FILTER_KEYS` lists as representable on that URL — a widget filtering by anything else `/projects/search` accepts (`accountId`, `subRegion`, ...) goes through `hasFiltersBeyond`/`widgetPreviewFallbackHref` to the preview page instead, the same lossless-or-preview shape `incident`/`change_request`/`problem` already use, rather than silently landing on a broader list than the tile counted.
+
+Separately, `CsmProjectsPage.tsx`'s `onboardingStatus` used to be seeded from the URL **only in a `useState` initializer**, which only ever runs once on mount — so a URL change that doesn't remount the page (the route stays `/customers/projects`, only the query string differs: browser back/forward across two different dashboard-tile click-throughs, or any other same-route navigation) left the filter control and the search request showing the first click's status instead of the URL's current one. Fixed by dropping the separate state entirely: `onboardingStatus` is now derived straight from `searchParams.get("onboardingStatus")` on every render (`useMemo`, keyed on that string so the array reference stays stable across unrelated re-renders), and `handleOnboardingStatusChange` writes directly to the URL instead of to local state — one source of truth, nothing to go stale. Pagination still needs resetting whenever the param changes, including from an external navigation `handleOnboardingStatusChange` didn't cause (and so didn't already reset itself for) — a small `useEffect` keyed on the param handles that one piece, with the same `eslint-disable-next-line react-hooks/set-state-in-effect` escape hatch (and the same justification: syncing state to an external source) `QuickNav.tsx`'s own initial-`q`/`goto`-param sync already uses.
 
 ### Current-user placeholder
 

@@ -512,6 +512,36 @@ func TestRLSScopedRemaining_ProjectUpdate(t *testing.T) {
 			t.Errorf("UpdateProject with a bogus state: err = %v, want *apierror.ValidationError", err)
 		}
 	})
+
+	t.Run("a direct closureState override is written as-is, bypassing the sub-state derivation", func(t *testing.T) {
+		closureState := "SUSPENDED"
+		got, err := repo.UpdateProject(ctx, rsProjectB, domain.ProjectUpdateRequest{ClosureState: &closureState}, "rs-test")
+		if err != nil {
+			t.Fatalf("UpdateProject: %v", err)
+		}
+		if got.ClosureState == nil || *got.ClosureState != "Suspended" {
+			t.Errorf("UpdateProject result ClosureState = %v, want Suspended", deref(got.ClosureState))
+		}
+		var state string
+		if err := pool.QueryRow(ctx, `SELECT wso2_closure_state::text FROM project WHERE id = $1`, rsProjectB).Scan(&state); err != nil {
+			t.Fatalf("read back: %v", err)
+		}
+		if state != "SUSPENDED" {
+			t.Errorf("stored wso2_closure_state = %q, want SUSPENDED", state)
+		}
+	})
+
+	t.Run("closureState wins when sent alongside a sub-state in the same request", func(t *testing.T) {
+		restricted := "Restricted"
+		openOverride := "OPEN"
+		got, err := repo.UpdateProject(ctx, rsProjectA, domain.ProjectUpdateRequest{EndDateClosureState: &restricted, ClosureState: &openOverride}, "rs-test")
+		if err != nil {
+			t.Fatalf("UpdateProject: %v", err)
+		}
+		if got.ClosureState == nil || *got.ClosureState != "Open" {
+			t.Errorf("UpdateProject result ClosureState = %v, want Open -- the explicit override, not the Restricted the sub-state would otherwise derive", deref(got.ClosureState))
+		}
+	})
 }
 
 func deref(s *string) string {

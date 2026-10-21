@@ -73,6 +73,17 @@ export const NON_BILLABLE_SEVERITIES: readonly Severity[] = [
   "S3",
 ];
 
+/**
+ * Whether an engagement's payment type marks it free of charge. The backend
+ * returns the ServiceNow choice's display label (see `BeCaseView`), not the
+ * `"foc"` enum code, so either wording is matched case-insensitively (e.g.
+ * "FOC", "Free of Charge", "FOC (Free of Charge)"). Time on an FOC engagement
+ * is never billable; the FE billable switch is locked off.
+ */
+export function isFocPaymentType(paymentType: string | null | undefined): boolean {
+  return !!paymentType && /\bfoc\b|free of charge/i.test(paymentType);
+}
+
 /** Short label for a card's billable classification. */
 export function billableLabel(billable: boolean): string {
   return billable ? "Billable" : "Non-billable";

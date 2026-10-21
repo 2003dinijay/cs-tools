@@ -25,6 +25,28 @@ export type SubscriptionType =
   | "cloud_support"
   | "professional_services";
 
+export type ProjectOnboardingStatus =
+  | "Not-Started"
+  | "In-Progress"
+  | "OnHold"
+  | "On-Hold"
+  | "Completed"
+  | "Expired"
+  | "Cancelled"
+  | "Not-Applicable"
+  | null;
+
+/** The onboarding consultant/owner assigned to a project. `null` for most
+ *  projects — only set for onboarding-enabled ones. `email` can genuinely be
+ *  `null` (unlike `UserReference.email`, which the backend always populates
+ *  with something, even a non-email placeholder) — this is a raw
+ *  ServiceNow-sourced contact and may have no email on file. */
+export interface ProjectOnboardingOwnerRef {
+  id: string;
+  name: string;
+  email: string | null;
+}
+
 export interface Project {
   id: string;
   /** Null/absent when the project has no linked account. */
@@ -52,6 +74,15 @@ export interface Project {
   /** Opaque JSON describing in-flight suspension processing; not rendered
    *  today. */
   suspensionProcessState: unknown;
+  /** Onboarding engagement status. `null`/absent when the project has no
+   *  onboarding engagement at all. Treat the project as onboarding-enabled —
+   *  and only then show {@link onboardingOwner} — when this is present and
+   *  not `"Not-Applicable"`. Also on the search row (not just the single-
+   *  project detail response), per entity-service's `ProjectView` schema. */
+  onboardingStatus?: ProjectOnboardingStatus;
+  /** See {@link ProjectOnboardingOwnerRef}. Only meaningful when
+   *  {@link onboardingStatus} indicates onboarding is enabled. */
+  onboardingOwner?: ProjectOnboardingOwnerRef | null;
 }
 
 /**
@@ -96,24 +127,10 @@ export interface ProjectDetails {
    *  elsewhere and when the project has no onboarding engagement at all).
    *  Treat the project as onboarding-enabled — and only then show
    *  {@link onboardingOwner} — when this is present and not `"Not-Applicable"`. */
-  onboardingStatus?:
-    | "Not-Started"
-    | "In-Progress"
-    | "OnHold"
-    | "Completed"
-    | "Expired"
-    | "Cancelled"
-    | "Not-Applicable"
-    | null;
-  /** The onboarding consultant/owner assigned to this project. `null` for
-   *  most projects — only set for onboarding-enabled ones. Only meaningful
-   *  when {@link onboardingStatus} indicates onboarding is enabled.
-   *  Mirrors the shared {@link UserReference} shape (id/name/email), except
-   *  `email` here can genuinely be `null` (unlike `UserReference.email`,
-   *  which the backend always populates with something, even a non-email
-   *  placeholder) — this is a raw ServiceNow-sourced contact and may have no
-   *  email on file. */
-  onboardingOwner?: { id: string; name: string; email: string | null } | null;
+  onboardingStatus?: ProjectOnboardingStatus;
+  /** See {@link ProjectOnboardingOwnerRef}. Only meaningful when
+   *  {@link onboardingStatus} indicates onboarding is enabled. */
+  onboardingOwner?: ProjectOnboardingOwnerRef | null;
 }
 
 export interface SearchProjectsRequest {
@@ -124,6 +141,11 @@ export interface SearchProjectsRequest {
   searchQuery?: string;
   /** Filter to projects belonging to this account (ServiceNow data source only). */
   accountId?: string;
+  /** Filter to projects whose onboarding engagement is in one of these
+   *  states — see {@link Project.onboardingStatus} for the value set. Also
+   *  the field name a dashboard widget's `resourceType: "project"` tile uses
+   *  on the wire (its `query` is passed verbatim as this request body). */
+  onboardingStatus?: string[];
 }
 
 export interface SearchProjectsResponse {

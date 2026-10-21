@@ -103,3 +103,38 @@ export function closureStatePresentation(
     severity: CLOSURE_STATE_SEVERITY[trimmed.toLowerCase()] ?? "default",
   };
 }
+
+export type ProjectOnboardingStatusSeverity = "success" | "info" | "warning" | "error" | "default";
+
+export interface ProjectOnboardingStatusPresentation {
+  label: string;
+  severity: ProjectOnboardingStatusSeverity;
+}
+
+const PROJECT_ONBOARDING_STATUS_PRESENTATION: Record<string, ProjectOnboardingStatusPresentation> = {
+  "In-Progress": { label: "In Progress", severity: "info" },
+  Completed: { label: "Completed", severity: "success" },
+  "Not-Started": { label: "Not Started", severity: "default" },
+  Expired: { label: "Expired", severity: "warning" },
+  Cancelled: { label: "Cancelled", severity: "default" },
+  OnHold: { label: "On Hold", severity: "warning" },
+  "On-Hold": { label: "On Hold", severity: "warning" },
+};
+
+/**
+ * Chip presentation for a project's `onboardingStatus`. Returns `null` for a
+ * missing status or `"Not-Applicable"` (the project has no onboarding
+ * engagement at all, so there is nothing to show — same gate
+ * `CsmProjectDetailPage.tsx`'s own onboarding owner cell already uses). An
+ * upstream value this build does not know still renders — as a neutral chip
+ * with the raw value humanised — rather than crashing or rendering blank.
+ */
+export function projectOnboardingStatusPresentation(
+  onboardingStatus?: string | null,
+): ProjectOnboardingStatusPresentation | null {
+  if (!onboardingStatus || onboardingStatus === "Not-Applicable") return null;
+  return PROJECT_ONBOARDING_STATUS_PRESENTATION[onboardingStatus] ?? {
+    label: humanize(onboardingStatus),
+    severity: "default",
+  };
+}

@@ -80,37 +80,96 @@ type GoogleChatConfig struct {
 // for a given deployment) — an unconfigured audience only surfaces as a
 // logged no-op the first time it's needed (see sendCardToAudience).
 type GoogleChatClient struct {
-	http                  *http.Client
-	webhookURLsByAudience map[string]string
+	http *http.Client
+	// staticAudienceSpaces are the config-sourced spaces (GOOGLE_CHAT_SPACES,
+	// INCIDENT_CHAT_SPACES, ...) — immutable after construction, same as
+	// before this type gained a second, dynamic source. Meant for the
+	// standing audiences that aren't teams at all ("Incident Monitor",
+	// "Onboarding", "Americas", "Evaluation") — see teamAudienceSpaces below
+	// for where a real team's own space now comes from instead.
+	staticAudienceSpaces map[string]string
+	// teamAudienceSpaces holds each team's own Chat webhook URL, resolved
+	// from entity-service's "team" table (team.chat_webhook_url) rather than
+	// hand-listed in GOOGLE_CHAT_SPACES — see SetTeamAudienceSpaces. Guarded
+	// by mu: cmd/server/main.go refreshes this on a ticker from a background
+	// goroutine while request-handling goroutines concurrently read it via
+	// HasAudienceSpace/sendCardToAudience.
+	mu                 sync.RWMutex
+	teamAudienceSpaces map[string]string
 	// routedIncidentSpaces are incident audiences (IncidentAudience, and
 	// IncidentFallbackAudience) taken from the Alert Settings mapping: an
 	// assignment group -> its SRE team's saved room. Set once the paging
 	// configuration is loaded (SetIncidentRouteSpaces), guarded by mu, and
-	// checked before webhookURLsByAudience, so the mapping wins over an
+	// checked before staticAudienceSpaces, so the mapping wins over an
 	// INCIDENT_CHAT_SPACES entry for the same group.
-	mu                   sync.RWMutex
 	routedIncidentSpaces map[string]string
 }
 
 // NewGoogleChatClient constructs a GoogleChatClient that routes alerts to the
-// webhook configured for each audience in cfg.AudienceSpaces.
+// webhook configured for each audience in cfg.AudienceSpaces. Starts with no
+// team-sourced spaces at all — SetTeamAudienceSpaces populates those once
+// entity-service has been reached (see that method's own doc comment); until
+// then, a team with no entry in cfg.AudienceSpaces simply has nowhere to
+// route to yet, same as any other unconfigured audience.
 func NewGoogleChatClient(cfg GoogleChatConfig) *GoogleChatClient {
-	webhookURLsByAudience := make(map[string]string, len(cfg.AudienceSpaces))
+	staticAudienceSpaces := make(map[string]string, len(cfg.AudienceSpaces))
 	for _, space := range cfg.AudienceSpaces {
 		audience := strings.TrimSpace(space.Audience)
 		if audience == "" || strings.TrimSpace(space.WebhookURL) == "" {
 			continue
 		}
-		if _, exists := webhookURLsByAudience[audience]; exists {
-			webhookURLsByAudience[audience] = ""
+		if _, exists := staticAudienceSpaces[audience]; exists {
+			staticAudienceSpaces[audience] = ""
 			continue
 		}
-		webhookURLsByAudience[audience] = space.WebhookURL
+		staticAudienceSpaces[audience] = space.WebhookURL
 	}
 	return &GoogleChatClient{
-		http:                  &http.Client{Timeout: 10 * time.Second},
-		webhookURLsByAudience: webhookURLsByAudience,
+		http:                 &http.Client{Timeout: 10 * time.Second},
+		staticAudienceSpaces: staticAudienceSpaces,
+		teamAudienceSpaces:   map[string]string{},
 	}
+}
+
+// SetTeamAudienceSpaces atomically replaces the team-sourced audience spaces
+// with spaces (team name -> Chat webhook URL, as entity.CustomerEntityClient.
+// GetTeamChatWebhooks returns), so this client always routes by whatever the
+// "team" table currently holds rather than a snapshot from process start.
+// Called periodically (not just once) from cmd/server/main.go, since an
+// operator can set a team's chat_webhook_url at any time without restarting
+// this service. A nil or empty map clears every team-sourced space — the
+// caller is expected to pass the full current set each call, not a diff.
+func (c *GoogleChatClient) SetTeamAudienceSpaces(spaces map[string]string) {
+	c.mu.Lock()
+	c.teamAudienceSpaces = spaces
+	c.mu.Unlock()
+}
+
+// webhookURLFor resolves audience to its configured Chat webhook URL, if
+// any. A routed incident audience (the Alert Settings mapping) wins first;
+// then staticAudienceSpaces (the standing, config-driven audiences) is
+// checked first and wins on a name collision — in practice there should
+// never be one, since a real team's own space now comes from
+// teamAudienceSpaces exclusively, but checking the static map first keeps a
+// deployment safe during the migration window where a team might still be
+// listed in both.
+func (c *GoogleChatClient) webhookURLFor(audience string) (string, bool) {
+	audience = strings.TrimSpace(audience)
+	if strings.HasPrefix(audience, IncidentAudiencePrefix) {
+		c.mu.RLock()
+		url := c.routedIncidentSpaces[audience]
+		c.mu.RUnlock()
+		if url != "" {
+			return url, true
+		}
+	}
+	if url, ok := c.staticAudienceSpaces[audience]; ok && url != "" {
+		return url, true
+	}
+	c.mu.RLock()
+	url, ok := c.teamAudienceSpaces[audience]
+	c.mu.RUnlock()
+	return url, ok && url != ""
 }
 
 // HasAudienceSpace reports whether audience has a real, configured Chat
@@ -149,22 +208,6 @@ func (c *GoogleChatClient) SetIncidentRouteSpaces(spaces map[string]string) {
 // never logged.
 func (c *GoogleChatClient) AudienceWebhookURL(audience string) (string, bool) {
 	return c.webhookURLFor(audience)
-}
-
-// webhookURLFor resolves audience to its webhook URL: a routed incident
-// audience first, then the configured spaces.
-func (c *GoogleChatClient) webhookURLFor(audience string) (string, bool) {
-	audience = strings.TrimSpace(audience)
-	if strings.HasPrefix(audience, IncidentAudiencePrefix) {
-		c.mu.RLock()
-		url := c.routedIncidentSpaces[audience]
-		c.mu.RUnlock()
-		if url != "" {
-			return url, true
-		}
-	}
-	url, ok := c.webhookURLsByAudience[audience]
-	return url, ok && url != ""
 }
 
 // withThreadReplyOption adds the reply option a threaded webhook message

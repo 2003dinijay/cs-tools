@@ -42,14 +42,36 @@ type DeployedProductRepository interface {
 	SearchDeployedProducts(ctx context.Context, req domain.SearchDeployedProductsRequest) ([]domain.DeployedProductView, int, error)
 
 	// SearchDeployedProductMetrics returns per-day CORES readings (from
-	// hourly_usage_summary, migration 0054) for every deployment_node resolved to
-	// the given deployed product and deployment. A NotFoundError is returned
-	// if the deployed product doesn't exist or isn't linked to deploymentID.
+	// daily_usage_summary, migration 0054) for every deployment_node resolved
+	// to the given deployed product and deployment. A NotFoundError is
+	// returned if the deployed product doesn't exist or isn't linked to
+	// deploymentID.
+	//
+	// Reads daily_usage_summary, not its sibling hourly_usage_summary --
+	// confirmed against real staging data that the two can disagree, and not
+	// in hourly's favor: for one real deployed product, daily_usage_summary
+	// held a reading for every one of 7 resolved nodes across months of real
+	// days, while hourly_usage_summary (this method's previous sole source)
+	// had no rows for any of them at all. Both tables are mirrored by an
+	// external sync (see migration 0054's own doc comment) with no
+	// foreign-key or rollup relationship to each other in this schema, so
+	// there is no guarantee hourly ever catches up to what daily already has
+	// -- daily_usage_summary is also the one actually shaped like what this
+	// endpoint needs (summary_date/value, already one row per node per day
+	// per count type), where hourly's per-event counted_on had to be
+	// bucketed into days in Go. This endpoint has no production traffic yet,
+	// so there's no existing behavior relying on hourly's own narrower (and,
+	// confirmed directly, occasionally non-overlapping) coverage to preserve
+	// -- a straight switch, not a union of both tables. A handful of real
+	// rows repeat the same (node, day, count_type) key (a correction/
+	// re-ingest with no dedup on the sync's side), so the query SUMs them
+	// rather than assuming exactly one row per key.
 	SearchDeployedProductMetrics(ctx context.Context, id, deploymentID, startDate, endDate string) (domain.DeployedProductMetricsResponse, error)
 
 	// SearchDeployedProductUsageCounts is the same resolution as
-	// SearchDeployedProductMetrics, but returns every hourly_usage_summary.count_type
-	// found for the resolved instances, not just CORES.
+	// SearchDeployedProductMetrics, reading the same daily_usage_summary
+	// table (see that method's own doc comment for why), but returns every
+	// count_type found for the resolved instances, not just CORES.
 	SearchDeployedProductUsageCounts(ctx context.Context, id, deploymentID, startDate, endDate string) (domain.DeployedProductUsageCountsResponse, error)
 
 	// SearchProjectsByProductVersion returns the deduplicated, paginated set
@@ -121,7 +143,14 @@ func (r *deployedProductRepo) GetDeployedProductCategory(ctx context.Context, id
 func (r *deployedProductRepo) resolveDeployedProductNodes(ctx context.Context, id, deploymentID string) (domain.ReferenceTableItem, []domain.ReferenceTableItem, error) {
 	var name, number *string
 	var dpDeploymentID, versionID *string
-	err := r.db.QueryRow(ctx, `SELECT name, number, deployment_id, version_id FROM deployed_product WHERE id = $1`, id).
+	// product_id IS NOT NULL matches the same "is this a real deployed
+	// product" definition the deployment picker's own productCount already
+	// enforces (see deployment_repo.go's own doc comment on that subquery)
+	// -- without it, a caller who already knows a deployed product's id
+	// could reach its usage/metrics directly even though that same record
+	// is treated as having no product at all everywhere else, including
+	// being hidden from ever being offered as a choice in the first place.
+	err := r.db.QueryRow(ctx, `SELECT name, number, deployment_id, version_id FROM deployed_product WHERE id = $1 AND product_id IS NOT NULL`, id).
 		Scan(&name, &number, &dpDeploymentID, &versionID)
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -198,12 +227,13 @@ func (r *deployedProductRepo) SearchDeployedProductMetrics(ctx context.Context, 
 	}
 
 	rows, err := r.db.Query(ctx, `
-		SELECT uc.counted_on::date, uc.deployment_node_id, uc.count
-		FROM hourly_usage_summary uc
-		WHERE uc.deployment_node_id = ANY($1::uuid[])
-		AND uc.count_type = 'CORES'
-		AND uc.counted_on::date BETWEEN $2::date AND $3::date
-		ORDER BY uc.counted_on::date`,
+		SELECT dus.summary_date, dus.deployment_node_id, SUM(dus.value)::int
+		FROM daily_usage_summary dus
+		WHERE dus.deployment_node_id = ANY($1::uuid[])
+		AND dus.count_type = 'CORES'
+		AND dus.summary_date BETWEEN $2::date AND $3::date
+		GROUP BY dus.summary_date, dus.deployment_node_id
+		ORDER BY dus.summary_date`,
 		nodeIDs, startDate, endDate,
 	)
 	if err != nil {
@@ -306,11 +336,12 @@ func (r *deployedProductRepo) SearchDeployedProductUsageCounts(ctx context.Conte
 	}
 
 	rows, err := r.db.Query(ctx, `
-		SELECT uc.counted_on::date, uc.count_type, uc.deployment_node_id, uc.count
-		FROM hourly_usage_summary uc
-		WHERE uc.deployment_node_id = ANY($1::uuid[])
-		AND uc.counted_on::date BETWEEN $2::date AND $3::date
-		ORDER BY uc.counted_on::date, uc.count_type`,
+		SELECT dus.summary_date, dus.count_type, dus.deployment_node_id, SUM(dus.value)::int
+		FROM daily_usage_summary dus
+		WHERE dus.deployment_node_id = ANY($1::uuid[])
+		AND dus.summary_date BETWEEN $2::date AND $3::date
+		GROUP BY dus.summary_date, dus.count_type, dus.deployment_node_id
+		ORDER BY dus.summary_date, dus.count_type`,
 		nodeIDs, startDate, endDate,
 	)
 	if err != nil {
@@ -474,7 +505,7 @@ func (r *deployedProductRepo) SearchDeployedProducts(ctx context.Context, req do
 		`SELECT dp.id, dp.created_on, dp.updated_on,
 		        dp.core_count, dp.tps_count, dp.product_category::TEXT,
 		        dp.description, dp.update_level_info, pr.sf_id, COALESCE(dp.active, TRUE),
-		        d.id, d.name,
+		        d.id, d.name, d.type::TEXT,
 		        p.id, p.name, p.code,
 		        pv.id, pv.version, pv.release_date, pv.support_eol_date
 		 FROM deployed_product dp
@@ -517,15 +548,22 @@ func (r *deployedProductRepo) SearchDeployedProducts(ctx context.Context, req do
 			// update_level_info is nullable JSONB; decoded below into
 			// dp.Updates once the row is scanned.
 			var updateLevelInfo []byte
+			// deployment.type is nullable (see SearchDeployments).
+			var deploymentType *string
 			if err := rows.Scan(
 				&dp.ID, &dp.CreatedOn, &dp.UpdatedOn,
 				&dp.Cores, &dp.TPS, &dp.Category,
 				&dp.Description, &updateLevelInfo, &dp.ProjectSfID, &dp.Active,
-				&dp.Deployment.ID, &dp.Deployment.Name,
+				&dp.Deployment.ID, &dp.Deployment.Name, &deploymentType,
 				&dp.Product.ID, &dp.Product.Name, &dp.Product.Abbreviation,
 				&pvID, &pvName, &pvReleaseDate, &pvEoLDate,
 			); err != nil {
 				return fmt.Errorf("scan deployed product: %w", err)
+			}
+			if deploymentType != nil {
+				// Lower case, the same canonical form SearchDeployments returns.
+				t := domain.DeploymentType(strings.ToLower(*deploymentType))
+				dp.DeploymentType = &t
 			}
 			if pvID != nil {
 				dp.Version = &domain.DeployedProductVersionRef{

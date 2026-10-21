@@ -45,6 +45,9 @@ vi.mock("@features/csm-projects/components/WorkItemsTab", () => ({
 // item) — resolving `null` exercises this page's fail-open path, same as an
 // unconfirmed/unloaded metadata response would.
 vi.mock("@api/backend/client", () => ({
+  BackendApiError: class BackendApiError extends Error {
+    status = 0;
+  },
   useBackendApi: () => ({ post: vi.fn(), get: vi.fn(() => Promise.resolve(null)) }),
 }));
 vi.mock("@config/apiConfig", () => ({
@@ -58,6 +61,8 @@ vi.mock("@config/apiConfig", () => ({
 let mockCanWrite = true;
 let mockIsSplAudience = false;
 let mockCanViewWorkItemsStaffView = true;
+let mockCanUpdateProjectClosureState = false;
+let mockCanEditProjectOnboarding = false;
 vi.mock("@context/current-user/usePortalAccess", () => ({
   usePortalAccess: () => ({
     hasAnyRole: true,
@@ -68,6 +73,60 @@ vi.mock("@context/current-user/usePortalAccess", () => ({
     canWrite: mockCanWrite,
     isSplAudience: mockIsSplAudience,
     canViewWorkItemsStaffView: mockCanViewWorkItemsStaffView,
+    canUpdateProjectClosureState: mockCanUpdateProjectClosureState,
+    canEditProjectOnboarding: mockCanEditProjectOnboarding,
+  }),
+}));
+
+const mockPatchClosureStateMutate = vi.fn();
+let mockPatchClosureStateIsPending = false;
+let mockPatchClosureStateIsError = false;
+vi.mock("@features/csm-projects/api/usePatchProjectClosureState", async () => {
+  const actual = await vi.importActual<
+    typeof import("@features/csm-projects/api/usePatchProjectClosureState")
+  >("@features/csm-projects/api/usePatchProjectClosureState");
+  return {
+    ...actual,
+    usePatchProjectClosureState: () => ({
+      mutate: mockPatchClosureStateMutate,
+      reset: vi.fn(),
+      isPending: mockPatchClosureStateIsPending,
+      isError: mockPatchClosureStateIsError,
+      error: mockPatchClosureStateIsError ? new Error("failed") : null,
+    }),
+  };
+});
+
+const mockPatchOnboardingMutate = vi.fn();
+let mockPatchOnboardingIsError = false;
+vi.mock("@features/csm-projects/api/usePatchProjectOnboarding", async () => {
+  const actual = await vi.importActual<
+    typeof import("@features/csm-projects/api/usePatchProjectOnboarding")
+  >("@features/csm-projects/api/usePatchProjectOnboarding");
+  return {
+    ...actual,
+    usePatchProjectOnboarding: () => ({
+      mutate: mockPatchOnboardingMutate,
+      reset: vi.fn(),
+      isPending: false,
+      isError: mockPatchOnboardingIsError,
+      error: mockPatchOnboardingIsError ? new Error("failed") : null,
+    }),
+  };
+});
+// The owner picker's directory search is exercised on its own in
+// useSearchInternalUsers.test.tsx; here it just supplies options.
+vi.mock("@features/csm-projects/api/useSearchInternalUsers", () => ({
+  useSearchInternalUsers: () => ({
+    data: [
+      {
+        id: "00000000-0000-0000-0000-000000000000",
+        name: "Jane Doe",
+        email: "jane.doe@example.com",
+      },
+    ],
+    isFetching: false,
+    isError: false,
   }),
 }));
 
@@ -253,6 +312,44 @@ describe("CsmProjectDetailPage — report buttons", () => {
   });
 });
 
+describe("CsmProjectDetailPage — Onboarding Status", () => {
+  // Regression coverage for a real gap: onboardingStatus came back from the
+  // API (confirmed on both the search row and this detail response) but the
+  // page never rendered it anywhere — only the owner's name, and only when
+  // an owner happened to be set too.
+  it("renders the onboarding status cell independently of whether an owner is set", () => {
+    mockUseGetProject.mockReturnValue({
+      data: { ...PROJECT, onboardingStatus: "In-Progress", onboardingOwner: null },
+      isLoading: false,
+      isError: false,
+    });
+    renderPage();
+    expect(screen.getByText("Onboarding Status")).toBeInTheDocument();
+    expect(screen.getByText("In Progress")).toBeInTheDocument();
+    expect(screen.queryByText("Onboarding Owner")).not.toBeInTheDocument();
+  });
+
+  it("hides the onboarding status cell when onboardingStatus is Not-Applicable", () => {
+    mockUseGetProject.mockReturnValue({
+      data: { ...PROJECT, onboardingStatus: "Not-Applicable", onboardingOwner: null },
+      isLoading: false,
+      isError: false,
+    });
+    renderPage();
+    expect(screen.queryByText("Onboarding Status")).not.toBeInTheDocument();
+  });
+
+  it("hides the onboarding status cell when there is no onboarding engagement at all", () => {
+    mockUseGetProject.mockReturnValue({
+      data: { ...PROJECT },
+      isLoading: false,
+      isError: false,
+    });
+    renderPage();
+    expect(screen.queryByText("Onboarding Status")).not.toBeInTheDocument();
+  });
+});
+
 describe("CsmProjectDetailPage — Onboarding Owner", () => {
   it("renders the onboarding owner cell when onboarding is enabled and an owner is set", () => {
     mockUseGetProject.mockReturnValue({
@@ -299,5 +396,160 @@ describe("CsmProjectDetailPage — Onboarding Owner", () => {
     });
     renderPage();
     expect(screen.queryByText("Onboarding Owner")).not.toBeInTheDocument();
+  });
+});
+
+// Regression coverage for the admin-only direct closure-state override: the
+// edit affordance is a client-side convenience only (the backend enforces
+// the real PermAdmin gate on PATCH /projects/{id}'s closureState field, see
+// apps/csm-portal/backend's own CLAUDE.md) -- hiding it here just avoids
+// offering an action that would 403 for everyone else.
+describe("CsmProjectDetailPage — closure state edit", () => {
+  beforeEach(() => {
+    mockCanUpdateProjectClosureState = false;
+    mockPatchClosureStateMutate.mockReset();
+    mockPatchClosureStateIsPending = false;
+    mockPatchClosureStateIsError = false;
+    mockUseGetProject.mockReturnValue({
+      data: { ...PROJECT, closureState: "Open" },
+      isLoading: false,
+      isError: false,
+    });
+  });
+
+  it("hides the edit control for a caller without canUpdateProjectClosureState", () => {
+    renderPage();
+    expect(
+      screen.queryByRole("button", { name: "Edit closure state" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows the edit control for an admin and opens the dialog on click", () => {
+    mockCanUpdateProjectClosureState = true;
+    renderPage();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit closure state" }));
+
+    expect(screen.getByText("Edit closure state", { selector: "h2" })).toBeInTheDocument();
+  });
+
+  it("submits the newly selected state via the patch mutation", () => {
+    mockCanUpdateProjectClosureState = true;
+    renderPage();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit closure state" }));
+    fireEvent.mouseDown(screen.getByRole("combobox", { name: /closure state/i }));
+    fireEvent.click(screen.getByRole("option", { name: "Suspended" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(mockPatchClosureStateMutate).toHaveBeenCalledWith(
+      "SUSPENDED",
+      expect.objectContaining({ onSuccess: expect.any(Function) }),
+    );
+  });
+});
+
+// The onboarding edit is gated client-side only to avoid offering an action
+// that would 403 (the backend enforces onboarding_lead/admin on those two
+// fields). For an editor it must stay reachable even when the project has no
+// onboarding engagement yet, otherwise nobody could ever start one.
+describe("CsmProjectDetailPage — onboarding edit", () => {
+  beforeEach(() => {
+    mockCanEditProjectOnboarding = false;
+    mockPatchOnboardingMutate.mockReset();
+    mockPatchOnboardingIsError = false;
+    mockUseGetProject.mockReturnValue({
+      data: {
+        ...PROJECT,
+        onboardingStatus: "In-Progress",
+        onboardingOwner: { id: "owner-1", name: "John Roe", email: "john.roe@example.com" },
+      },
+      isLoading: false,
+      isError: false,
+    });
+  });
+
+  it("hides the edit control for a caller without canEditProjectOnboarding (e.g. cs_engineer only)", () => {
+    renderPage();
+    expect(screen.getByText("Onboarding Status")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit onboarding" })).not.toBeInTheDocument();
+  });
+
+  it("shows the edit control for an authorized caller and opens the dialog with controls", () => {
+    mockCanEditProjectOnboarding = true;
+    renderPage();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit onboarding" }));
+
+    expect(screen.getByText("Edit onboarding", { selector: "h2" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: /onboarding status/i })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: /onboarding owner/i })).toBeInTheDocument();
+    // The owner can be changed but never cleared.
+    expect(screen.queryByRole("button", { name: /clear/i })).not.toBeInTheDocument();
+  });
+
+  it("stays reachable for an editor when the project has no onboarding status", () => {
+    mockCanEditProjectOnboarding = true;
+    mockUseGetProject.mockReturnValue({
+      data: { ...PROJECT, onboardingStatus: "Not-Applicable", onboardingOwner: null },
+      isLoading: false,
+      isError: false,
+    });
+    renderPage();
+    expect(screen.getByRole("button", { name: "Edit onboarding" })).toBeInTheDocument();
+    expect(screen.getByText("Onboarding Owner")).toBeInTheDocument();
+  });
+
+  it("keeps the read-only display unchanged for a non-editor when there is no onboarding", () => {
+    mockUseGetProject.mockReturnValue({
+      data: { ...PROJECT, onboardingStatus: "Not-Applicable", onboardingOwner: null },
+      isLoading: false,
+      isError: false,
+    });
+    renderPage();
+    expect(screen.queryByText("Onboarding Status")).not.toBeInTheDocument();
+    expect(screen.queryByText("Onboarding Owner")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit onboarding" })).not.toBeInTheDocument();
+  });
+
+  it("submits only the changed status", () => {
+    mockCanEditProjectOnboarding = true;
+    renderPage();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit onboarding" }));
+    fireEvent.mouseDown(screen.getByRole("combobox", { name: /onboarding status/i }));
+    fireEvent.click(screen.getByRole("option", { name: "On Hold" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(mockPatchOnboardingMutate).toHaveBeenCalledWith(
+      { onboardingStatus: "On-Hold" },
+      expect.objectContaining({ onSuccess: expect.any(Function) }),
+    );
+  });
+
+  it("submits a newly picked owner by id", () => {
+    mockCanEditProjectOnboarding = true;
+    renderPage();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit onboarding" }));
+    const owner = screen.getByRole("combobox", { name: /onboarding owner/i });
+    fireEvent.mouseDown(owner);
+    fireEvent.click(screen.getByRole("option", { name: "Jane Doe" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(mockPatchOnboardingMutate).toHaveBeenCalledWith(
+      { onboardingOwner: "00000000-0000-0000-0000-000000000000" },
+      expect.objectContaining({ onSuccess: expect.any(Function) }),
+    );
+  });
+
+  it("shows the save error inside the dialog", () => {
+    mockCanEditProjectOnboarding = true;
+    mockPatchOnboardingIsError = true;
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: "Edit onboarding" }));
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Could not update the project's onboarding details",
+    );
   });
 });

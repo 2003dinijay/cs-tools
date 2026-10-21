@@ -17,6 +17,7 @@ info:
     | `escalate` | `POST /cases/{id}/escalations` | cs_engineer, escalator, admin (de-escalating also requires being one of the case's ABT team leads) |
     | `download_attachment` | `GET /attachments/{id}/content`, `POST /attachments/{id}/share` | attachment-downloader, cs-engineer, admin |
     | `create_work_note` | `POST /cases/{id}/comments` with `type=work_note` (internal note) — and nothing else | worknote-creator, cs-engineer, admin |
+    | `manage_onboarding` | `PATCH /projects/{id}` when the body sets `onboardingStatus` or `onboardingOwner`; any other field in that body still needs `write` | onboarding-lead, admin |
     | `write` | every other `POST`/`PATCH`/`DELETE`, including incident and change-request comments and case comments of any type other than `work_note` | cs-engineer, admin |
     | `admin` | `POST /users` | admin only |
     | `security_center` | `POST /products/vulnerabilities/search`, `GET /products/vulnerabilities/{id}`, `GET /products/vulnerabilities/meta`, and a `POST /cases/search`/`GET /cases/{id}` naming case type security_report_analysis | cs-engineer, admin |
@@ -1455,8 +1456,12 @@ paths:
       description: >
         A caller whose token has no backing entity service user row at all gets 403, unless
         their token roles grant at least one portal role (see UserResponse.roles) -- in that
-        case the response is 200, sourced from the token alone (email, firstName, lastName,
-        roles), with id/timeZone/team null.
+        case the response is 200. A caller whose token grants cs_engineer gets a user row
+        created on the spot, sourced from the token itself (firstName/lastName/phoneNumber --
+        the given_name/family_name/phone_number claims; lastName has " Ⓦ" appended) -- the
+        response then carries that row's id. Any other caller holding a portal role but no
+        user row gets a 200 sourced from the token alone (email, firstName, lastName, roles),
+        with id/timeZone/team null.
       operationId: getUsersMe
       responses:
         "200":
@@ -1791,6 +1796,67 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
+    patch:
+      summary: Update another user's profile (timezone and/or phone).
+      description: >
+        Restricted to cs_engineer or admin. Lets one of those roles update
+        someone else's profile — unlike PATCH /users/me, which only ever
+        resolves the caller's own id from their token. Both fields are
+        optional but at least one must be present. Needed when reassigning a
+        team's lead (POST /teams/{id}/lead): the incident call-escalation
+        ladder dials the lead's own phone number, so a newly assigned lead
+        with none on file is a silent paging gap until this is set here.
+      operationId: updateUser
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BeUpdateUserRequest'
+      responses:
+        "200":
+          description: The user's profile after the update.
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: Bad request (malformed id, neither field present, or phone too long).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden (cs_engineer or admin only).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: User not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
 
   /roles/search:
     post:
@@ -2004,6 +2070,191 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
+  /teams/{id}:
+    get:
+      summary: Get a team's own id/name/type and its configured Chat space link.
+      description: >
+        Backed by entity-service. Restricted to an Asgardeo admin or this
+        specific team's own lead — every other caller holding the route's own
+        view permission gets 403, since a Chat webhook URL is a bearer
+        credential once set. A single generic team resource (mirroring
+        GET /users/{id}) rather than a dedicated /teams/{id}/chat-webhook
+        route.
+      operationId: getTeam
+      parameters:
+        - name: id
+          in: path
+          description: UUID of the team (backing CRE/SRE group).
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The team's own details.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TeamDetail'
+        "400":
+          description: Bad request (e.g. malformed UUID).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden (not an admin or this team's own lead).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: Team not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+    patch:
+      summary: Update a team — today, only its Google Chat space link.
+      description: >
+        Backed by entity-service. Restricted to an Asgardeo admin or this
+        specific team's own lead. chatWebhookUrl is the only settable field
+        today and is required; an empty value clears the team's webhook,
+        and a non-empty value must be a well-formed
+        https://chat.googleapis.com/... URL (any other host, or a non-https
+        scheme, is rejected and entity-service's reason is echoed verbatim).
+      operationId: updateTeam
+      parameters:
+        - name: id
+          in: path
+          description: UUID of the team (backing CRE/SRE group).
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTeamRequest'
+      responses:
+        "200":
+          description: The team's own details after the update.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TeamDetail'
+        "400":
+          description: >-
+            Bad request (malformed UUID, or chatWebhookUrl is not a
+            well-formed https://chat.googleapis.com/... URL).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden (not an admin or this team's own lead).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: Team not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
+  /teams/{id}/lead:
+    post:
+      summary: Assign a user as the team's one lead.
+      description: >
+        Backed by entity-service. Admin-only. Reassigns the team's real,
+        paging-connected 'lead' role — entity-service's incident
+        call-escalation ladder reads this exact column to decide who gets
+        paged for this team, so this changes who is called during an
+        incident, immediately.
+      operationId: assignTeamLead
+      parameters:
+        - name: id
+          in: path
+          description: UUID of the team (backing CRE/SRE group).
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId]
+              properties:
+                userId:
+                  type: string
+                  format: uuid
+      responses:
+        "204":
+          description: The team's lead was reassigned.
+        "400":
+          description: >-
+            Bad request (malformed team id or userId, or userId does not
+            refer to an existing user).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden (admin only).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: Team not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
   /users:
     post:
       summary: Create a new user.
@@ -2016,7 +2267,12 @@ paths:
         service derives user_type from role membership, so this is the only way
         to set it. Granting "internal" or "admin" for an email that is not
         @wso2.com is rejected with 400: an internal-type user must have a
-        wso2.com address.
+        wso2.com address. The Add User form only collects an email (plus the
+        type/portal-role selectors) — it sends no firstName/lastName at all.
+        When both are omitted/blank, this endpoint looks the email up in SCIM
+        and fills firstName/lastName/phone from that record instead; if SCIM
+        has no matching user, or the match has no name on file either, the
+        request is rejected with 400 rather than creating a nameless user.
       operationId: postUsers
       requestBody:
         required: true
@@ -2033,12 +2289,14 @@ paths:
                 $ref: '#/components/schemas/User'
         "400":
           description: >-
-            Bad request — missing/invalid email, neither firstName nor lastName
-            supplied, an unrecognized role, roles requests an
-            internal-resolving role (admin/internal) for a non-@wso2.com email,
-            or roles requests an external-resolving role
+            Bad request — missing/invalid email, an unrecognized role, roles
+            requests an internal-resolving role (admin/internal) for a
+            non-@wso2.com email, roles requests an external-resolving role
             (external/partner/customer/partner_admin/customer_admin) — creating
-            an external-type user is temporarily disabled regardless of email.
+            an external-type user is temporarily disabled regardless of email —
+            or, when neither firstName nor lastName was supplied, SCIM has no
+            matching user for the email (or the match itself has no name on
+            file) so the name could not be filled in.
           content:
             application/json:
               schema:
@@ -2473,11 +2731,18 @@ paths:
                 $ref: '#/components/schemas/ErrorPayload'
 
     patch:
-      summary: Update a project's closure sub-state fields or KB/agent toggles.
+      summary: Update a project's closure sub-state fields, KB/agent toggles, or onboarding status and owner.
       description: >
         Request body is forwarded to the integration service as-is and the
         response is returned verbatim. At least one field must be provided;
         the integration service validates this and rejects an empty update.
+        Reachable by cs_engineer, onboarding_lead and admin; which fields a
+        caller may set is then decided per field. onboardingStatus and
+        onboardingOwner need onboarding_lead or admin (a cs_engineer alone gets
+        403); every other field needs cs_engineer or admin (an onboarding_lead
+        alone gets 403); closureState needs admin. A body mixing fields needs
+        every permission the fields it sets require. The caller also needs
+        read access to the project separately: onboarding_lead grants none.
       operationId: patchProjectsId
       parameters:
         - name: id
@@ -12475,6 +12740,242 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
+  /team-schedule/reminder-settings/{family}:
+    get:
+      summary: A family's rota reminder settings.
+      operationId: getTeamScheduleRotaReminderSettings
+      description: >
+        The Rota Reminders card on the Rota access tab. The entity service's payload, forwarded
+        unchanged: weekdayEnabled, weekendEnabled, invitesEnabled, weekendRequired (people each
+        weekend shift needs per day, by shift code), windows (a rotation's hours on its own clock,
+        by shift code), copyTo, updatedBy, updatedOn. 404 when nothing was saved: the reminders then
+        use their built-in settings, which the card shows.
+      parameters:
+        - name: family
+          in: path
+          required: true
+          schema: { type: string, enum: [CRE, SRE, SME] }
+      responses:
+        "200":
+          description: Ok.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "400":
+          description: "Bad family."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: "Unauthorized."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: "Forbidden."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: "Nothing saved for this family."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: "Internal server error."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+    put:
+      summary: Replace a family's rota reminder settings.
+      operationId: putTeamScheduleRotaReminderSettings
+      description: >
+        The whole card form. Only the fields below are forwarded; the entity service decides who may
+        (a CSM admin or the family's rota admin) and checks the values.
+      parameters:
+        - name: family
+          in: path
+          required: true
+          schema: { type: string, enum: [CRE, SRE, SME] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [weekdayEnabled, weekendEnabled, invitesEnabled]
+              properties:
+                weekdayEnabled: { type: boolean }
+                weekendEnabled: { type: boolean }
+                invitesEnabled: { type: boolean }
+                weekendRequired:
+                  type: object
+                  additionalProperties: { type: integer, minimum: 0, maximum: 20 }
+                windows:
+                  type: object
+                  additionalProperties:
+                    type: object
+                    required: [start, end, timeZone]
+                    properties:
+                      start: { type: string, example: "08:00" }
+                      end: { type: string, example: "18:00" }
+                      timeZone: { type: string, example: America/Los_Angeles }
+                copyTo:
+                  type: array
+                  maxItems: 20
+                  items: { type: string, format: email }
+      responses:
+        "200":
+          description: The settings as saved.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "400":
+          description: "Bad request, or a value the entity service refused (its reason)."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: "Unauthorized."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: "Forbidden: entity-service's reason, e.g. only a CSM admin or the CRE rota admin can change the CRE rota reminder settings."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: "Internal server error."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
+  /team-schedule/reminder-requests/{family}:
+    get:
+      summary: The family's latest "Send now" rota reminder requests (5, newest first).
+      operationId: listTeamScheduleRotaReminderRequests
+      description: >
+        The entity service's payload, forwarded unchanged: {requests: [{id, family, kind, status
+        (QUEUED, SENDING, SENT, FAILED), requestedBy, requestedOn, claimedOn, handledOn, result}]}.
+      parameters:
+        - name: family
+          in: path
+          required: true
+          schema: { type: string, enum: [CRE, SRE, SME] }
+      responses:
+        "200":
+          description: Ok.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "400":
+          description: "Bad family."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: "Unauthorized."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: "Forbidden."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: "Internal server error."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+    post:
+      summary: Ask for the family's rota reminders to be sent now.
+      operationId: createTeamScheduleRotaReminderRequest
+      description: >
+        Queued for the scheduled task's next run. Only kind is forwarded; the entity service
+        decides who may (a CSM admin or the family's rota admin).
+      parameters:
+        - name: family
+          in: path
+          required: true
+          schema: { type: string, enum: [CRE, SRE, SME] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind]
+              properties:
+                kind: { type: string, enum: [weekday, weekend] }
+                test:
+                  type: boolean
+                  description: Send it only to the person asking, as a test copy; their own queue, 2 minutes apart.
+      responses:
+        "201":
+          description: Queued.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "400":
+          description: "Bad request."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: "Unauthorized."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: "Forbidden: entity-service's reason, e.g. only a CSM admin or the CRE rota admin can send the CRE rota reminders."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "409":
+          description: "One of the same kind is already waiting to be sent."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "429":
+          description: "One of the same kind was asked for less than 10 minutes ago (a FAILED one does not count)."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: "Internal server error."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
   /team-schedule/case-alerts/settings:
     get:
       summary: Case Alerts chat rooms, group routes and ladder values, and what the caller may change.
@@ -17384,7 +17885,7 @@ components:
           type: array
           items:
             type: string
-            enum: [viewer, escalator, attachment_downloader, cs_engineer, usage_metrics_viewer, timecard_approver, dashboard_designer, admin]
+            enum: [viewer, escalator, attachment_downloader, cs_engineer, usage_metrics_viewer, timecard_approver, dashboard_designer, onboarding_lead, admin]
           description: >
             The portal roles the caller holds, decided from the roles on their token. A caller can
             hold several. Always present; empty when they hold none. This is not the entity
@@ -17596,6 +18097,47 @@ components:
           type: string
         role:
           type: string
+
+    TeamDetail:
+      type: object
+      required: [id, name, type]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        type:
+          type: string
+        chatWebhookUrl:
+          type: string
+          nullable: true
+
+    UpdateTeamRequest:
+      type: object
+      required: [chatWebhookUrl]
+      properties:
+        chatWebhookUrl:
+          type: string
+          description: >-
+            The only settable field today. Empty string clears the webhook;
+            a non-empty value must be a well-formed
+            https://chat.googleapis.com/... URL.
+
+    BeUpdateUserRequest:
+      type: object
+      description: At least one of timeZone or phone is required.
+      anyOf:
+        - required: [timeZone]
+        - required: [phone]
+      properties:
+        timeZone:
+          type: string
+        phone:
+          type: string
+          description: >-
+            Trimmed. At most 32 characters after trimming (400 otherwise).
+            Empty (after trimming) clears the stored phone.
 
     UserGroupRef:
       type: object
@@ -18139,6 +18681,10 @@ components:
         region:
           type: string
           nullable: true
+        country:
+          type: string
+          nullable: true
+          description: The account's country (account.country). null when none is on record.
         supportTier:
           type: string
           nullable: true
@@ -18211,6 +18757,10 @@ components:
         region:
           type: string
           nullable: true
+        country:
+          type: string
+          nullable: true
+          description: The account's country (account.country). null when none is on record.
         supportTier:
           nullable: true
           allOf:
@@ -18620,6 +19170,7 @@ components:
                 - Not-Started
                 - In-Progress
                 - OnHold
+                - On-Hold
                 - Completed
                 - Expired
                 - Cancelled
@@ -18669,8 +19220,27 @@ components:
         At least one field must be provided. hasAgent and hasKbReferences are
         simple toggles; the closure-state fields track sub-states of an
         Account Closure Process and are only applicable to projects sourced
-        from the backing data source.
+        from the backing data source. closureState requires the admin role;
+        onboardingStatus and onboardingOwner require the onboarding_lead or
+        admin role; every other field requires the ordinary write permission
+        (cs_engineer or admin).
       properties:
+        onboardingStatus:
+          type: string
+          enum: [Not-Started, In-Progress, On-Hold, Completed, Cancelled, Expired, Not-Applicable]
+          description: >
+            Sets the project's onboarding status. Matched ignoring case,
+            hyphens, underscores and spaces. Requires onboarding_lead or admin
+            -- a 403 for a cs_engineer alone. Only applicable to projects
+            sourced from the database; an unrecognized value is a 400.
+        onboardingOwner:
+          type: string
+          format: uuid
+          description: >
+            Id of the user to set as the project's onboarding owner. Must be an
+            active internal user (otherwise 400); clearing the owner is not
+            supported. Requires onboarding_lead or admin -- a 403 for a
+            cs_engineer alone.
         hasAgent:
           type: boolean
         hasKbReferences:
@@ -18681,6 +19251,16 @@ components:
           type: string
         complianceViolationClosureState:
           type: string
+        closureState:
+          type: string
+          enum: [OPEN, READ_ONLY, CLOSED, RESTRICTED, SUSPENDED]
+          description: >
+            Directly overrides the project's overall closure status, bypassing
+            the usual derivation from the three closure-state fields above.
+            Admin only — a caller holding only the ordinary write permission
+            gets a 403 if this field is present at all. A later request that
+            sets any of the three fields above recomputes the overall status
+            from them again, silently overwriting a manual override.
         suspensionProcessState:
           type: object
           additionalProperties: true
@@ -18725,6 +19305,15 @@ components:
               type: object
               additionalProperties: true
               nullable: true
+            onboardingStatus:
+              type: string
+              nullable: true
+              description: Present on Postgres data sources only.
+            onboardingOwner:
+              allOf:
+                - $ref: '#/components/schemas/PersonRef'
+              nullable: true
+              description: Present on Postgres data sources only.
 
     DeploymentCreatePayload:
       type: object

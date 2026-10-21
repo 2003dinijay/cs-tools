@@ -152,41 +152,53 @@ func TestSearchCasesIntegration_ProjectOnboardingStatusInMatchesLegacyJoinForm(t
 	scope := repository.SearchScope{Unrestricted: true, ViewerEmail: "count-only-test@wso2.com"}
 	ctx := repository.WithCallerIdentity(context.Background(), scope)
 
-	// The six statuses every real dashboard widget sends: "every project
-	// except the in-progress ones".
-	statuses := []string{"Cancelled", "Completed", "Expired", "Not-Applicable", "Not-Started", "OnHold"}
-	req := domain.SearchCasesRequest{
-		SortBy:     domain.CaseSort{Field: domain.CaseSortFieldCreatedOn, Order: domain.CaseSortOrderDesc},
-		Pagination: domain.Pagination{Limit: 1},
-		CountOnly:  true,
-		Parsed: domain.ParsedCaseFilters{
-			Types:                     []string{"case"},
-			States:                    []domain.CaseState{domain.CaseStateOpen},
-			ProjectOnboardingStatuses: statuses,
-		},
-	}
-	_, gotTotal, err := cases.SearchCases(ctx, req, scope)
-	if err != nil {
-		t.Fatalf("rewritten search: %v", err)
-	}
+	// The six statuses every real dashboard widget sends ("every project
+	// except the in-progress ones"), and a single status, which leaves a long
+	// exclusion list (the shape that was slow with <> ALL).
+	for _, tc := range []struct {
+		name     string
+		statuses []string
+		labels   []string
+	}{
+		{"six statuses",
+			[]string{"Cancelled", "Completed", "Expired", "Not-Applicable", "Not-Started", "OnHold"},
+			[]string{"CANCELLED", "COMPLETED", "EXPIRED", "NOT_APPLICABLE", "NOT_STARTED", "ON_HOLD"}},
+		{"one status", []string{"Completed"}, []string{"COMPLETED"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := domain.SearchCasesRequest{
+				SortBy:     domain.CaseSort{Field: domain.CaseSortFieldCreatedOn, Order: domain.CaseSortOrderDesc},
+				Pagination: domain.Pagination{Limit: 1},
+				CountOnly:  true,
+				Parsed: domain.ParsedCaseFilters{
+					Types:                     []string{"case"},
+					States:                    []domain.CaseState{domain.CaseStateOpen},
+					ProjectOnboardingStatuses: tc.statuses,
+				},
+			}
+			_, gotTotal, err := cases.SearchCases(ctx, req, scope)
+			if err != nil {
+				t.Fatalf("rewritten search: %v", err)
+			}
 
-	// The same predicate, evaluated the original way (an inclusion join
-	// against the already-joined project row), run directly against the
-	// live schema -- the independent oracle the rewrite is checked against.
-	const legacyQuery = `
-		SELECT COUNT(*) FROM work_item wi
-		LEFT JOIN "case" c ON c.id = wi.id
-		LEFT JOIN project p ON p.id = wi.project_id
-		WHERE wi.type = 'CASE' AND c.state = 'OPEN'
-		  AND p.onboarding_status = ANY($1::text[]::onboarding_status_enum[])`
-	var wantTotal int
-	if err := scoped.QueryRow(ctx, legacyQuery, []string{
-		"CANCELLED", "COMPLETED", "EXPIRED", "NOT_APPLICABLE", "NOT_STARTED", "ON_HOLD",
-	}).Scan(&wantTotal); err != nil {
-		t.Fatalf("legacy oracle query: %v", err)
-	}
+			// The same predicate, evaluated the original way (an inclusion
+			// join against the already-joined project row), run directly
+			// against the live schema -- the independent oracle the rewrite
+			// is checked against.
+			const legacyQuery = `
+				SELECT COUNT(*) FROM work_item wi
+				LEFT JOIN "case" c ON c.id = wi.id
+				LEFT JOIN project p ON p.id = wi.project_id
+				WHERE wi.type = 'CASE' AND c.state = 'OPEN'
+				  AND p.onboarding_status = ANY($1::text[]::onboarding_status_enum[])`
+			var wantTotal int
+			if err := scoped.QueryRow(ctx, legacyQuery, tc.labels).Scan(&wantTotal); err != nil {
+				t.Fatalf("legacy oracle query: %v", err)
+			}
 
-	if gotTotal != wantTotal {
-		t.Errorf("rewritten exclusion-list filter total %d, legacy inclusion-join oracle total %d", gotTotal, wantTotal)
+			if gotTotal != wantTotal {
+				t.Errorf("rewritten exclusion filter total %d, legacy inclusion-join oracle total %d", gotTotal, wantTotal)
+			}
+		})
 	}
 }

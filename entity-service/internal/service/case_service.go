@@ -1674,6 +1674,21 @@ func (s *caseService) SearchCaseComments(ctx context.Context, req domain.SearchC
 	}, nil
 }
 
+// stateChangeCommitted reports whether the UpdateCase call that just wrote
+// newState committed a real state change, which is the condition for
+// dispatching the mirror PATCH. committedPrev is the state the repository read
+// under the row lock immediately before its own write, so it is exact even when
+// a concurrent UpdateCase on the same case wrote first. The pre-write view
+// (before) is only a fallback for a repository that reported no previous state,
+// and an unknown previous state counts as a change (the pre-existing posture:
+// better a redundant mirror write than a lost one).
+func stateChangeCommitted(committedPrev *domain.CaseState, before *domain.CaseView, newState domain.CaseState) bool {
+	if committedPrev != nil {
+		return *committedPrev != newState
+	}
+	return before == nil || before.State == nil || *before.State != newState
+}
+
 // UpdateCase implements CaseService.
 func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest) (domain.UpdateCaseResponse, error) {
 	if err := validateUUIDs("id", []string{req.ID}); err != nil {
@@ -2085,7 +2100,7 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 	// same row lock as the write that triggers it -- see
 	// recomputeTimeCardsBillable's own doc comment for why. Nothing to call
 	// from here anymore.
-	c, oldSeverity, err := s.repo.UpdateCase(ctx, req, actorID)
+	c, oldSeverity, committedPrevState, err := s.repo.UpdateCase(ctx, req, actorID)
 	if err != nil {
 		return domain.UpdateCaseResponse{}, err
 	}
@@ -2208,7 +2223,7 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 			// and rejects identically on every attempt -- a steady stream
 			// of permanently unretried sn_writeback_failures rows for a
 			// state that never actually changed.
-			case req.State != nil && (before == nil || before.State == nil || *before.State != *req.State):
+			case req.State != nil && stateChangeCommitted(committedPrevState, before, *req.State):
 				state := *req.State
 				// Only mirror a genuine state change, matching the
 				// activity-log/publish guards just above (before != nil &&
@@ -2230,10 +2245,13 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 				// KNOWN GAP describes: two near-simultaneous customer
 				// replies can both read the case as Awaiting Info/Solution
 				// Proposed and both call UpdateCase with the same target
-				// state before either write commits -- the second mirror
-				// dispatch is now skipped as a no-op instead of retrying
-				// the identical, now-stale self-transition.
-				if before == nil || derefState(before.State) != state {
+				// state before either write commits. The pre-write
+				// `before` read above cannot close that race (both calls
+				// see the old state); stateChangeCommitted therefore
+				// prefers the previous state the repository read under the
+				// row lock, so only the call whose write actually changed
+				// the state dispatches the mirror.
+				{
 					// closed/solution_proposed must carry resolutionCode,
 					// cause and closeNotes to the mirror: the downstream
 					// data source rejects the transition without all
@@ -2702,6 +2720,15 @@ func (s *caseService) updateCaseMarkFixIssued(ctx context.Context, req domain.Up
 		return domain.UpdateCaseResponse{}, err
 	}
 
+	// resolveActorOrM2M so the integration that marks a fix released (an M2M
+	// caller with no end-user token) is still attributed, to its client id.
+	// Best-effort: an unresolvable caller just skips the entry.
+	if !alreadySet {
+		if actor, err := s.resolveActorOrM2M(ctx); err == nil {
+			s.recordFieldChangeActivity(ctx, req.ID, "fix_issued_on", "", fixIssued.UTC().Format(time.RFC3339), actor.Email)
+		}
+	}
+
 	if !alreadySet && s.snWriteback != nil {
 		if patcher, ok := s.snMirror.(snFieldPatcher); ok {
 			markFixIssued := true
@@ -2986,10 +3013,24 @@ func (s *caseService) updateCaseFields(ctx context.Context, req domain.UpdateCas
 		return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "workaroundProvided requires an authenticated end-user caller: a pure M2M caller has no user record to attribute it to"}
 	}
 
+	// The prior workaround stamp is read only for a workaround change: the
+	// recall entry needs it. A failed read is logged and never fails the
+	// update.
+	var prevWorkaround *time.Time
+	if req.WorkaroundProvided != nil {
+		if t, err := s.repo.GetCaseWorkaroundProvidedOn(ctx, req.ID); err != nil {
+			slog.ErrorContext(ctx, "update case: read prior workaround stamp for activity entry failed", "caseId", req.ID, "error", err)
+		} else {
+			prevWorkaround = t
+		}
+	}
+
 	updatedOn, err := s.repo.UpdateCaseFields(ctx, req, actor.ID, actor.Email)
 	if err != nil {
 		return domain.UpdateCaseResponse{}, err
 	}
+
+	s.recordCaseFieldsActivity(ctx, req, prevWorkaround, updatedOn, actor.Email)
 
 	// Deliberately independent of s.publisher (never touches Event Hub) --
 	// same reasoning every other SLAEngineService call site in this file
@@ -3083,6 +3124,25 @@ func (s *caseService) updateCaseFields(ctx context.Context, req domain.UpdateCas
 	resp.MostLikelyFixEta = req.MostLikelyFixEta
 	resp.WorstCaseFixEta = req.WorstCaseFixEta
 	return domain.UpdateCaseResponse{Message: "Case updated successfully", Case: resp}, nil
+}
+
+// recordCaseFieldsActivity logs the activity-feed entry for updateCaseFields'
+// workaround field: set stores the new timestamp, recall stores the prior one
+// as old (and nothing when it was not set), which the feed renders as a
+// date-time.
+func (s *caseService) recordCaseFieldsActivity(ctx context.Context, req domain.UpdateCaseRequest, prevOn *time.Time, updatedOn time.Time, actorEmail string) {
+	if req.WorkaroundProvided == nil {
+		return
+	}
+	var prev string
+	if prevOn != nil {
+		prev = prevOn.UTC().Format(time.RFC3339)
+	}
+	if *req.WorkaroundProvided {
+		s.recordFieldChangeActivity(ctx, req.ID, "workaround_provided_on", prev, updatedOn.UTC().Format(time.RFC3339), actorEmail)
+	} else if prev != "" {
+		s.recordFieldChangeActivity(ctx, req.ID, "workaround_provided_on", prev, "", actorEmail)
+	}
 }
 
 // validateCaseFieldValues rejects malformed ids and unknown enum spellings in the

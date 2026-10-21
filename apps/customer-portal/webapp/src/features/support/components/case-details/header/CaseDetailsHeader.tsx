@@ -34,6 +34,7 @@ import {
   mapSeverityToDisplay,
 } from "@features/support/utils/support";
 import { CaseDetailsHeaderSkeleton } from "@case-details/CaseDetailsSkeleton";
+import VerificationStatusChip from "@features/support/components/case-details/verifications-tab/VerificationStatusChip";
 
 /**
  * Case details header: case number, optional severity, optional status chip, and title.
@@ -56,6 +57,8 @@ export default function CaseDetailsHeader({
   variant = "default",
   isEscalated = false,
   escalationLevelLabel,
+  isPendingVerification = false,
+  isCaseVerified = false,
 }: CaseDetailsHeaderProps): JSX.Element {
   const theme = useTheme();
   const titleRef = useRef<HTMLDivElement | null>(null);
@@ -170,6 +173,10 @@ export default function CaseDetailsHeader({
             }}
           />
         )}
+        <VerificationStatusChip
+          isPendingVerification={isPendingVerification}
+          isVerified={isCaseVerified}
+        />
         {assignedEngineerLabel ? (
           <>
             <Divider orientation="vertical" flexItem />

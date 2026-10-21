@@ -18,11 +18,15 @@ import { describe, expect, it, vi } from "vitest";
 import { csvField, fetchAllPages, rowsToCsvText } from "@utils/csvExport";
 
 describe("csvField", () => {
-  it("leaves a plain value untouched", () => {
-    expect(csvField("hello")).toBe("hello");
+  it("quotes a plain value", () => {
+    expect(csvField("hello")).toBe('"hello"');
   });
 
-  it("quotes a value containing a comma", () => {
+  it("quotes an empty value", () => {
+    expect(csvField("")).toBe('""');
+  });
+
+  it("keeps a value containing a comma in one field", () => {
     expect(csvField("a, b")).toBe('"a, b"');
   });
 
@@ -30,15 +34,45 @@ describe("csvField", () => {
     expect(csvField('say "hi"')).toBe('"say ""hi"""');
   });
 
-  it("quotes a value with a bare carriage return", () => {
+  it("keeps embedded newlines and carriage returns inside the quotes", () => {
+    expect(csvField("line1\nline2")).toBe('"line1\nline2"');
     expect(csvField("a\rb")).toBe('"a\rb"');
+    expect(csvField("a\r\nb")).toBe('"a\r\nb"');
+  });
+
+  it.each([
+    ["=", "=SUM(A1:A9)"],
+    ["+", "+1+1"],
+    ["-", "-2+3"],
+    ["@", "@SUM(A1)"],
+    ["tab", "\t=1+1"],
+    ["carriage return", "\r=1+1"],
+  ])("neutralizes a value starting with %s by prefixing an apostrophe", (_, value) => {
+    expect(csvField(value)).toBe(`"'${value}"`);
+  });
+
+  it("escapes quotes in a neutralized value too", () => {
+    expect(csvField('=HYPERLINK("http://example.com")')).toBe(
+      `"'=HYPERLINK(""http://example.com"")"`,
+    );
+  });
+
+  it("only checks the first character", () => {
+    expect(csvField("a=b")).toBe('"a=b"');
+    expect(csvField("Jane-Doe @ example.com")).toBe('"Jane-Doe @ example.com"');
   });
 });
 
 describe("rowsToCsvText", () => {
-  it("joins header and rows with CRLF", () => {
+  it("joins header and rows with CRLF, quoting every field", () => {
     const text = rowsToCsvText(["A", "B"], [["1", "2"], ["3", "4"]]);
-    expect(text).toBe("A,B\r\n1,2\r\n3,4");
+    expect(text).toBe('"A","B"\r\n"1","2"\r\n"3","4"');
+  });
+
+  it("neutralizes formula-looking cells in data rows", () => {
+    expect(rowsToCsvText(["Subject"], [["=cmd|' /C calc'!A0"]])).toBe(
+      `"Subject"\r\n"'=cmd|' /C calc'!A0"`,
+    );
   });
 });
 

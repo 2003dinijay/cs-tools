@@ -17,11 +17,14 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
+	"strings"
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 )
@@ -40,11 +43,88 @@ type entityProjectClient interface {
 // entity service for data access.
 type ProjectHandler struct {
 	entity entityProjectClient
+	access *AccessGuard
 }
 
 // NewProjectHandler creates a ProjectHandler backed by the given entity client.
 func NewProjectHandler(entity entityProjectClient) *ProjectHandler {
 	return &ProjectHandler{entity: entity}
+}
+
+// WithAccessGuard attaches the access guard UpdateProject consults to decide
+// whether a caller may set closureState -- see projectUpdateTargetsClosureState's
+// own doc comment. Mirrors CaseHandler.WithAccessGuard's own shape.
+func (h *ProjectHandler) WithAccessGuard(g *AccessGuard) *ProjectHandler {
+	h.access = g
+	return h
+}
+
+// projectUpdateKeys returns the top-level keys of a PATCH /projects/{id}
+// body, verbatim. Reads them as a token stream, the same way
+// caseCreateTargetsAnnouncement (cases.go) does and for the identical reason:
+// entity-service's decoder (encoding/json) matches a JSON key to a Go struct
+// field without regard to case, so a check that only looked for one canonical
+// spelling could be walked around by a body that spells the key differently.
+// Callers must compare with hasProjectUpdateKey (strings.EqualFold), never
+// strings.ToLower: encoding/json folds with Unicode simple folding, so a key
+// like "closure\u017ftate" (long s) names closureState to the decoder but
+// does not lower-case to it.
+// A body this can't make sense of (not a JSON object) yields no keys;
+// entity-service's own request decoding rejects it regardless.
+func projectUpdateKeys(body []byte) []string {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return nil
+	}
+	var keys []string
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return keys
+		}
+		key, _ := keyTok.(string)
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			return keys
+		}
+		keys = append(keys, key)
+	}
+	return keys
+}
+
+// projectUpdateTargetsClosureState reports whether a PATCH /projects/{id}
+// body sets closureState -- entity-service's domain.ProjectUpdateRequest
+// field for directly overriding a project's overall closure status, rather
+// than letting it derive from the three closure sub-state fields. Key
+// matching is case-insensitive -- see projectUpdateKeys. Presence alone is
+// enough to require admin -- even an explicit "closureState": null is treated
+// as targeting it, since there is no legitimate reason a non-admin caller
+// sends this field at all.
+func projectUpdateTargetsClosureState(body []byte) bool {
+	return hasProjectUpdateKey(projectUpdateKeys(body), "closureState")
+}
+
+// hasProjectUpdateKey reports whether keys contains name, matching the way
+// encoding/json does (Unicode simple case folding).
+func hasProjectUpdateKey(keys []string, name string) bool {
+	return slices.ContainsFunc(keys, func(k string) bool { return strings.EqualFold(k, name) })
+}
+
+// projectUpdateTargets reports whether a PATCH /projects/{id} body sets the
+// onboarding fields (onboardingStatus / onboardingOwner) and whether it sets
+// any other field. Same presence-only, case-insensitive matching as
+// projectUpdateTargetsClosureState. An empty object targets neither, so it
+// falls through to the PermWrite check and entity-service's own "at least one
+// field" validation.
+func projectUpdateTargets(body []byte) (onboarding, other bool) {
+	for _, key := range projectUpdateKeys(body) {
+		if strings.EqualFold(key, "onboardingStatus") || strings.EqualFold(key, "onboardingOwner") {
+			onboarding = true
+		} else {
+			other = true
+		}
+	}
+	return onboarding, other
 }
 
 // GetProject handles GET /projects/{id}.
@@ -213,8 +293,14 @@ func (h *ProjectHandler) GetProjectContact(w http.ResponseWriter, r *http.Reques
 // entity service as-is (no fields are injected) and the response is returned verbatim.
 // The entity service is the source of truth for field-level validation (e.g. at
 // least one field must be provided); the backend has no role-based access control
-// layer yet, so any authenticated user may invoke this today, matching the
-// existing convention on other PATCH endpoints in this codebase.
+// layer for most of this route's fields, so any authenticated user may set them
+// today, matching the existing convention on other PATCH endpoints in this
+// codebase. closureState is the one exception: it directly overrides a
+// project's overall closure status (bypassing the usual derivation from its
+// three sub-state fields), so it is narrowed to PermAdmin in-handler --
+// mirroring CaseHandler.SearchCases' own caseSearchTargetsSecurityReports
+// pattern -- rather than re-gating this whole, otherwise cs_engineer-reachable
+// route.
 func (h *ProjectHandler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserInfoFromContext(r.Context())
 	if user == nil {
@@ -241,6 +327,27 @@ func (h *ProjectHandler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 
 	if !json.Valid(body) {
 		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+
+	if projectUpdateTargetsClosureState(body) && !(h.access != nil && h.access.Permits(PermAdmin, user.Roles)) {
+		slog.WarnContext(r.Context(), "access denied: non-admin attempted to set project closureState", "userID", user.UserID, "projectID", id)
+		writeError(w, http.StatusForbidden, ErrMsgForbidden)
+		return
+	}
+
+	onboarding, other := projectUpdateTargets(body)
+	if onboarding && !(h.access != nil && h.access.Permits(PermManageOnboarding, user.Roles)) {
+		slog.WarnContext(r.Context(), "access denied: caller lacks onboarding permission to set project onboarding fields", "userID", user.UserID, "projectID", id)
+		writeError(w, http.StatusForbidden, ErrMsgForbidden)
+		return
+	}
+	// A body with no recognised field also lands here (other == false and
+	// onboarding == false), so a caller needs PermWrite to reach
+	// entity-service's own "at least one field" rejection, as before.
+	if (other || !onboarding) && !(h.access != nil && h.access.Permits(PermWrite, user.Roles)) {
+		slog.WarnContext(r.Context(), "access denied: caller lacks write permission to update project fields", "userID", user.UserID, "projectID", id)
+		writeError(w, http.StatusForbidden, ErrMsgForbidden)
 		return
 	}
 

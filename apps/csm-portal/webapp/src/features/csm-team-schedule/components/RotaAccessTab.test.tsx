@@ -38,6 +38,8 @@ vi.mock("@api/useSearchUsersByName", () => ({
 }));
 // The search waits a moment for typing to stop; the tests do not.
 vi.mock("@hooks/useDebouncedValue", () => ({ useDebouncedValue: <T,>(v: T) => v }));
+// The reminder settings card has its own tests; here only whether it is shown.
+vi.mock("./RotaReminderSettings", () => ({ default: () => <div>reminder settings card</div> }));
 
 const ME = "11111111-1111-4111-8111-111111111111";
 const ANA = "22222222-2222-4222-8222-222222222222";
@@ -126,6 +128,23 @@ describe("RotaAccessTab", () => {
     expect(screen.queryByRole("tabpanel")).not.toBeInTheDocument();
     expect(screen.getByRole("rowheader", { name: "Apollo" })).toBeInTheDocument();
     expect(screen.queryByRole("rowheader", { name: "Lyra" })).not.toBeInTheDocument();
+  });
+
+  it("shows the CRE rota reminder settings to a CSM admin", () => {
+    render(<RotaAccessTab teams={TEAMS} />);
+    expect(screen.getByText("reminder settings card")).toBeInTheDocument();
+  });
+
+  it("shows the CRE rota reminder settings to the CRE rota admin", () => {
+    access.data = { ...access.data!, canManage: { rotaAdmins: false, markerFamilies: ["CRE"] } };
+    render(<RotaAccessTab teams={TEAMS} />);
+    expect(screen.getByText("reminder settings card")).toBeInTheDocument();
+  });
+
+  it("leaves the CRE rota reminder settings out for a rota admin of another group", () => {
+    access.data = { ...access.data!, canManage: { rotaAdmins: false, markerFamilies: ["SRE"] } };
+    render(<RotaAccessTab teams={TEAMS} />);
+    expect(screen.queryByText("reminder settings card")).not.toBeInTheDocument();
   });
 
   it("marks a grant that does nothing any more, so it can be removed", () => {

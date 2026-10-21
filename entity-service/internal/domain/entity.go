@@ -307,7 +307,11 @@ type UserDetail struct {
 	Active    bool      `json:"active"`
 	CreatedOn time.Time `json:"createdOn"`
 	UpdatedOn time.Time `json:"updatedOn"`
-	Roles     []string  `json:"roles"`
+	// Phone is "user".phone (migration 0141) -- the number the incident
+	// call-escalation ladder (integrations/csm-notification-service) dials.
+	// Omitted when unset, same convention as ProjectAccess below.
+	Phone *string  `json:"phone,omitempty"`
+	Roles []string `json:"roles"`
 	// Groups are the teams the user belongs to (team_member). Which of them are
 	// registry teams is the caller's determination.
 	Groups []UserGroupRef `json:"groups"`
@@ -378,6 +382,18 @@ type GetUserMeResponse struct {
 // ignores Phone (a phone-only request is a no-op there).
 type PatchUserMeRequest struct {
 	TimeZone string  `json:"timeZone"`
+	Phone    *string `json:"phone"`
+}
+
+// UpdateUserRequest is the request body for PATCH /users/{id} -- the
+// admin-targeted counterpart to PatchUserMeRequest, for a caller acting on
+// someone else's profile rather than their own (see UserService.UpdateUser's
+// own doc comment). Both fields are optional pointers (unlike
+// PatchUserMeRequest.TimeZone, which is a plain string since it can never be
+// cleared), but at least one must be present. Phone has the same
+// trim/length/clear rules as PatchUserMeRequest.Phone.
+type UpdateUserRequest struct {
+	TimeZone *string `json:"timeZone"`
 	Phone    *string `json:"phone"`
 }
 
@@ -1357,6 +1373,11 @@ type Project struct {
 	Account          *ProjectSearchAccountRef `json:"account"`
 	ActiveCasesCount int                      `json:"activeCasesCount"`
 	OnboardingStatus *string                  `json:"onboardingStatus"`
+	// VerificationEnabled gates the Pending Verification feature for this
+	// project. Nullable BOOLEAN column with no default (migration 000084),
+	// coalesced to false when NULL -- same convention as
+	// ProjectAccountRef.AgentEnabled/KbReferencesEnabled.
+	VerificationEnabled bool `json:"verificationEnabled"`
 	// OnboardingOwner is the person assigned to run this project's onboarding,
 	// nil when none is assigned.
 	OnboardingOwner *PersonRef `json:"onboardingOwner"`
@@ -1466,21 +1487,59 @@ type ProjectDetailsView struct {
 	// onboarding. Nil when no owner is assigned — most projects, since only
 	// onboarding-enabled projects have one. Populated by every data source.
 	OnboardingOwner *PersonRef `json:"onboardingOwner"`
+	// VerificationEnabled gates the Pending Verification feature for this
+	// project -- see domain.Project.VerificationEnabled's own doc comment.
+	VerificationEnabled bool `json:"verificationEnabled"`
 }
 
-// ProjectUpdateRequest is the input for PATCH /projects/{id} (ServiceNow data
-// source only — no Postgres equivalent). All fields are optional; at least
-// one must be provided. Note: ClosureState itself is not settable — it is
-// derived automatically from the three closure sub-state fields below by an
-// SN business rule, so setting one of those and re-fetching the project is
-// how a caller observes the resulting overall status.
+// ProjectUpdateRequest is the input for PATCH /projects/{id}. All fields are
+// optional; at least one must be provided. On every data source,
+// ClosureState is normally derived automatically from the three closure
+// sub-state fields below by a business rule (ServiceNow's own rule on that
+// data source, the identical rule re-applied in Postgres via
+// wso2ClosureStateRule) — setting one of those and re-fetching the project
+// is how a caller observes the resulting overall status.
+//
+// ClosureState itself is additionally a direct, Postgres-only override (no
+// ServiceNow equivalent — see hasSNMirrorableProjectFields): an admin may set
+// it straight to one of wso2_closure_state_enum's five values, bypassing the
+// derivation rule entirely. This is a deliberately simple mechanism with one
+// documented caveat, not hidden: a later PATCH that touches any of the three
+// sub-state fields recomputes the overall state from them again, silently
+// overwriting a manual override with no memory that one was ever set. Fine-
+// grained "admin only" enforcement for this field lives in the BFF
+// (apps/csm-portal/backend), not here — this service only authorizes the
+// caller against the project itself, the same as every other field on this
+// request.
+//
+// VerificationEnabled is likewise Postgres data source only — no ServiceNow
+// equivalent — and combines freely with every other field here (no
+// exclusivity rule), the same as ClosureState.
 type ProjectUpdateRequest struct {
 	HasAgent                        *bool           `json:"hasAgent,omitempty"`
 	HasKbReferences                 *bool           `json:"hasKbReferences,omitempty"`
+	VerificationEnabled             *bool           `json:"verificationEnabled,omitempty"`
 	EndDateClosureState             *string         `json:"endDateClosureState,omitempty"`
 	InvoiceDueDateClosureState      *string         `json:"invoiceDueDateClosureState,omitempty"`
 	ComplianceViolationClosureState *string         `json:"complianceViolationClosureState,omitempty"`
 	SuspensionProcessState          json.RawMessage `json:"suspensionProcessState,omitempty"`
+	// ClosureState directly overrides project.wso2_closure_state (Postgres
+	// data sources only — see this struct's own doc comment). One of
+	// "OPEN"/"READ_ONLY"/"CLOSED"/"RESTRICTED"/"SUSPENDED", case-insensitive
+	// and tolerant of spaces (normalized the same way the three sub-state
+	// fields above already are).
+	ClosureState *string `json:"closureState,omitempty"`
+	// OnboardingStatus sets the project's onboarding status (Postgres data
+	// sources only; rejected on the ServiceNow data source). Accepts the labels
+	// reads return ("Not-Started", "In-Progress", "On-Hold", "Completed",
+	// "Cancelled", "Expired", "Not-Applicable"), ignoring case, hyphens,
+	// underscores and spaces.
+	OnboardingStatus *string `json:"onboardingStatus,omitempty"`
+	// OnboardingOwner sets the project's onboarding owner to this user id
+	// (Postgres data sources only; rejected on the ServiceNow data source).
+	// Must be an active internal user. Clearing the owner is not supported:
+	// null and omitted both leave it unchanged.
+	OnboardingOwner *string `json:"onboardingOwner,omitempty"`
 }
 
 // ProjectUpdateResponse is the result of a project update operation
@@ -1501,6 +1560,35 @@ type ProjectUpdateResult struct {
 	InvoiceDueDateClosureState      *string         `json:"invoiceDueDateClosureState"`
 	ComplianceViolationClosureState *string         `json:"complianceViolationClosureState"`
 	SuspensionProcessState          json.RawMessage `json:"suspensionProcessState"`
+	VerificationEnabled             *bool           `json:"verificationEnabled,omitempty"`
+	// OnboardingStatus and OnboardingOwner are populated on Postgres data
+	// sources only.
+	OnboardingStatus *string    `json:"onboardingStatus,omitempty"`
+	OnboardingOwner  *PersonRef `json:"onboardingOwner,omitempty"`
+}
+
+// ProjectConsumptionStatus represents the product consumption state and keys for a project.
+type ProjectConsumptionStatus struct {
+	Status             int     `json:"status"`
+	ApplicationID      *string `json:"applicationId,omitempty"`
+	Name               *string `json:"name,omitempty"`
+	Description        *string `json:"description,omitempty"`
+	ConsumerKey        *string `json:"consumerKey,omitempty"`
+	ConsumerSecret     *string `json:"consumerSecret,omitempty"`
+	PrimarySecretKey   *string `json:"primarySecretKey,omitempty"`
+	SecondarySecretKey *string `json:"secondarySecretKey,omitempty"`
+	LicenseSecrets     *string `json:"licenseSecrets,omitempty"`
+}
+
+// ProjectConsumptionUpdateRequest holds the fields updated during the subscription/licensing lifecycle.
+type ProjectConsumptionUpdateRequest struct {
+	Status             int     `json:"status"`
+	ApplicationID      *string `json:"applicationId,omitempty"`
+	ConsumerKey        *string `json:"consumerKey,omitempty"`
+	ConsumerSecret     *string `json:"consumerSecret,omitempty"`
+	PrimarySecretKey   *string `json:"primarySecretKey,omitempty"`
+	SecondarySecretKey *string `json:"secondarySecretKey,omitempty"`
+	LicenseSecrets     *string `json:"licenseSecrets,omitempty"`
 }
 
 // SearchProjectsRequest is the input for a project search operation.
@@ -1636,6 +1724,13 @@ type ProjectView struct {
 	// populated on GetProjectByID; added here so an account-scoped search
 	// doesn't need one GetProjectByID call per project just to know this.
 	GoLiveDate *time.Time `json:"goLiveDate"`
+	// VerificationEnabled mirrors ProjectDetailsView's own field of the same
+	// name -- see domain.Project.VerificationEnabled's own doc comment.
+	// Previously selected by SearchProjects into the internal Project
+	// handoff type but dropped in this view's own mapping, so a search
+	// result could never tell a caller whether Pending Verification was on
+	// for a project without a separate GetProjectByID call.
+	VerificationEnabled bool `json:"verificationEnabled"`
 }
 
 // SearchProjectsResponse is the paginated result of a project search.
@@ -2134,6 +2229,9 @@ type SearchDeploymentsRequest struct {
 	ProjectIDs      []string         `json:"projectIds"`
 	DeploymentTypes []DeploymentType `json:"deploymentTypes"`
 	IDs             []string         `json:"ids"`
+	// Numbers matches deployments by their exact deployment number (e.g.
+	// "DEP000002442"), the identifier an offline usage report carries.
+	Numbers []string `json:"numbers,omitempty"`
 	// IncludeInactive additively widens the result to also include deployments
 	// with is_active = FALSE -- omitted/false reproduces today's exact
 	// behavior for every existing caller (the permanent is_active = TRUE
@@ -2263,6 +2361,31 @@ type DeployedProductView struct {
 	Updates   []ProductUpdateEntry `json:"updates"`
 	CreatedOn time.Time            `json:"createdOn"`
 	UpdatedOn time.Time            `json:"updatedOn"`
+	// DeploymentType is the type of the deployment this deployed product belongs
+	// to, nil when the deployment has none or the data source does not say. It
+	// is not a field of its own on the wire: MarshalJSON nests it in "deployment".
+	DeploymentType *DeploymentType `json:"-"`
+}
+
+// MarshalJSON writes the deployment as {id, name, type}: EntityRef alone has no
+// room for the deployment type, and widening that shared type would touch every
+// endpoint that uses it. type is null when DeploymentType is nil.
+func (v DeployedProductView) MarshalJSON() ([]byte, error) {
+	type plain DeployedProductView // no MarshalJSON, so this does not recurse
+	return json.Marshal(struct {
+		plain
+		// Deployment shadows plain.Deployment (same JSON name, shallower depth).
+		Deployment struct {
+			EntityRef
+			Type *DeploymentType `json:"type"`
+		} `json:"deployment"`
+	}{
+		plain: plain(v),
+		Deployment: struct {
+			EntityRef
+			Type *DeploymentType `json:"type"`
+		}{EntityRef: v.Deployment, Type: v.DeploymentType},
+	})
 }
 
 // ProductRef is a reference to a product, carrying the short key ServiceNow
@@ -5716,6 +5839,55 @@ type SearchTeamsResponse struct {
 	Total  int    `json:"total"`
 	Offset int    `json:"offset"`
 	Limit  int    `json:"limit"`
+}
+
+// TeamChatWebhook is one team's own Google Chat incoming-webhook URL
+// (team.chat_webhook_url, migration 0240) -- the replacement for a team's
+// entry in csm-notification-service's own GOOGLE_CHAT_SPACES config. Only
+// teams with a configured URL are ever included (see
+// GET /teams/chat-webhooks); a team with none has nowhere specific to route
+// a Chat alert, same as a team missing from that config today.
+type TeamChatWebhook struct {
+	Name           string `json:"name"`
+	ChatWebhookURL string `json:"chatWebhookUrl"`
+}
+
+// ListTeamChatWebhooksResponse is the response for GET /teams/chat-webhooks
+// -- internal-caller-only (see TeamService.ListChatWebhooks), since a
+// webhook URL is itself a bearer credential: anyone holding it can post into
+// that team's Chat space.
+type ListTeamChatWebhooksResponse struct {
+	Teams []TeamChatWebhook `json:"teams"`
+}
+
+// TeamDetail is the response for GET /teams/{id} -- the same id/name/type
+// POST /teams/search already returns for a row, plus ChatWebhookURL (nil
+// when unset), the one field PATCH /teams/{id} accepts today. A single
+// generic team resource (mirroring GET/PATCH /users/{id}) rather than a
+// dedicated /teams/{id}/chat-webhook pair, so a second settable team field
+// later is a new optional field on UpdateTeamRequest, not a new route.
+// Internal-caller-only -- a webhook URL is itself a bearer credential, so
+// this is never exposed through POST /teams/search.
+type TeamDetail struct {
+	ID             string  `json:"id"`
+	Name           string  `json:"name"`
+	Type           string  `json:"type"`
+	ChatWebhookURL *string `json:"chatWebhookUrl"`
+}
+
+// UpdateTeamRequest is the body of PATCH /teams/{id}. ChatWebhookURL is the
+// only settable field today: an empty value clears the team's own webhook, a
+// non-empty one must be a well-formed https://chat.googleapis.com/... URL,
+// and omitting it entirely leaves the stored value untouched -- "at least
+// one field must be present" the same contract PATCH /users/{id}'s own
+// UpdateUserRequest has.
+type UpdateTeamRequest struct {
+	ChatWebhookURL *string `json:"chatWebhookUrl"`
+}
+
+// AssignTeamLeadRequest is the body of POST /teams/{id}/lead.
+type AssignTeamLeadRequest struct {
+	UserID string `json:"userId"`
 }
 
 // ServiceOfferingServiceRef is the parent service reference within a service offering.
@@ -9238,6 +9410,173 @@ type LookupAlertIncidentMappingsRequest struct {
 // absence is a valid result for a lookup, not a 404.
 type LookupAlertIncidentMappingsResponse struct {
 	Mappings []AlertIncidentMappingView `json:"mappings"`
+}
+
+// PendingVerificationAddedReason is how a pending_verification entry entered
+// the list.
+type PendingVerificationAddedReason string
+
+const (
+	PendingVerificationAddedReasonAutoClosed PendingVerificationAddedReason = "AUTO_CLOSED"
+	PendingVerificationAddedReasonManual     PendingVerificationAddedReason = "MANUAL"
+)
+
+// PendingVerificationPreviousStatus is the work item's state immediately
+// before an auto-closed entry was added. Only ever set when AddedReason is
+// AUTO_CLOSED — a manually-added entry always has this nil, since manual
+// entries are only ever created from a work item that's already Closed (not
+// a state this enum covers) and there is no staged sequence to record a
+// "previous" state for.
+type PendingVerificationPreviousStatus string
+
+const (
+	PendingVerificationPreviousStatusSolutionProposed PendingVerificationPreviousStatus = "SOLUTION_PROPOSED"
+	PendingVerificationPreviousStatusAwaitingInfo     PendingVerificationPreviousStatus = "AWAITING_INFO"
+)
+
+// PendingVerification is a single entry in a project's Pending Verification
+// list — a work item (Case, Engagement, Security Report, Service Request,
+// Announcement, or Change Request) flagged as needing formal customer
+// sign-off before being considered done, either because the system
+// auto-closed it while it was Solution Proposed/Awaiting Info, or because
+// the customer manually flagged an already-Closed record.
+//
+// Like EventPublishFailure/SLAClock, this has no ServiceNow equivalent and
+// is always backed by Postgres regardless of DATA_SOURCE. WorkItemID is a
+// real foreign key into work_item(id) — every in-scope record type is a
+// work_item row (case-like types via the shared "case" extension table,
+// Change Request via its own work_item extension), so this one FK covers
+// all of them uniformly.
+//
+// RecordID/RecordNumber/RecordTitle/Severity/RecordType are never stored on
+// this table — they're joined from work_item (and "case" where the record
+// is case-like) at read time, so this list can never show a stale title or
+// severity if the underlying record is later edited.
+type PendingVerification struct {
+	ID             string                             `json:"id"`
+	WorkItemID     string                             `json:"workItemId"`
+	RecordNumber   string                             `json:"recordNumber"`
+	RecordTitle    string                             `json:"recordTitle"`
+	Severity       *string                            `json:"severity"`
+	RecordType     string                             `json:"recordType"`
+	AddedReason    PendingVerificationAddedReason     `json:"addedReason"`
+	PreviousStatus *PendingVerificationPreviousStatus `json:"previousStatus"`
+	AddedOn        time.Time                          `json:"addedOn"`
+	AddedBy        string                             `json:"addedBy"`
+	VerifiedOn     *time.Time                         `json:"verifiedOn"`
+	VerifiedBy     *string                            `json:"verifiedBy"`
+	Note           *string                            `json:"note"`
+}
+
+// CreatePendingVerificationRequest is the input for
+// POST /pending-verifications. AddedBy is never accepted from the caller —
+// the service resolves it from the caller's own authenticated
+// x-user-id-token, the same way CreateComment/CreateTimeCard already do,
+// since a client-supplied value would let one caller attribute an entry to
+// someone else.
+type CreatePendingVerificationRequest struct {
+	WorkItemID     string                             `json:"workItemId"`
+	AddedReason    PendingVerificationAddedReason     `json:"addedReason"`
+	PreviousStatus *PendingVerificationPreviousStatus `json:"previousStatus,omitempty"`
+	Note           *string                            `json:"note,omitempty"`
+	AddedBy        string                             `json:"-"`
+}
+
+// CreatePendingVerificationResponse is the response for
+// POST /pending-verifications.
+type CreatePendingVerificationResponse struct {
+	Message             string              `json:"message"`
+	PendingVerification PendingVerification `json:"pendingVerification"`
+}
+
+// VerifyPendingVerificationRequest is the input for
+// PATCH /pending-verifications/{id}. VerifiedBy is never accepted
+// from the caller, same reasoning as CreatePendingVerificationRequest.AddedBy.
+type VerifyPendingVerificationRequest struct {
+	ID         string `json:"-"`
+	VerifiedBy string `json:"-"`
+}
+
+// VerifyPendingVerificationResponse is the response for
+// PATCH /pending-verifications/{id}.
+type VerifyPendingVerificationResponse struct {
+	Message             string              `json:"message"`
+	PendingVerification PendingVerification `json:"pendingVerification"`
+}
+
+// PendingVerificationSearchFilters holds the optional filter criteria for
+// searching pending_verification entries. ProjectID is required — the
+// Pending Verification list is always project-scoped. WorkItemID narrows to
+// a single record's entries (used both by the Case Detail "is this pending
+// verification?" check and by the Verifications tab history, the latter via
+// IncludeVerified=true). WorkItemTypes narrows to one or more record types
+// (the list page's type filter); a caller restricted to a subset of types
+// (e.g. a Security-role user who may only ever see SRA records) enforces
+// that by only ever sending the types it's allowed to ask for — this
+// service has no identity/role layer of its own to enforce it independently.
+// Kept on the wire for backward compatibility with callers still sending it,
+// but the feature is now scoped to Case only (product decision, 2026-10-06):
+// every search unconditionally returns CASE rows regardless of this field's
+// value -- see buildSearchWhere's own hardcoded wi.type predicate. Remove
+// this field once every caller has stopped sending it.
+// VerifiedOnly, when true, overrides IncludeVerified entirely and narrows to
+// one row per work_item_id — that work item's LATEST verification cycle
+// (by added_on, not verified_on) — INCLUDED only when that latest cycle is
+// itself verified. This is deliberately not "any work item ever verified":
+// a case re-added for a second cycle after already being verified once
+// (re-add-after-verified) must disappear from this set the moment the new
+// cycle starts, even though its earlier, now-superseded cycle is still a
+// verified row in the table — it belongs in the Unverified set until the
+// new cycle is verified too, never in both at once. Added so the list
+// page's Verified tab can paginate independently of the Unverified tab and
+// show one entry per case rather than one per historical add-and-verify
+// round. Every count field (Total/AutoClosedCount/ManualCount/TypeCounts) is
+// computed against that same set. A work item's full multi-round history is
+// still available, undeduped, via IncludeVerified=true (what the
+// Verifications tab history panel uses).
+type PendingVerificationSearchFilters struct {
+	ProjectID     string   `json:"projectId"`
+	WorkItemID    *string  `json:"workItemId,omitempty"`
+	WorkItemTypes []string `json:"workItemTypes,omitempty"`
+	// AddedReason narrows to entries added for this one reason (AUTO_CLOSED
+	// or MANUAL) — backs the Support page's Auto-closed/Manual stat boxes,
+	// which link straight into a pre-filtered view of the list rather than
+	// landing on the unfiltered Unverified tab.
+	AddedReason     *PendingVerificationAddedReason `json:"addedReason,omitempty"`
+	SearchQuery     string                          `json:"searchQuery,omitempty"`
+	IncludeVerified bool                            `json:"includeVerified,omitempty"`
+	VerifiedOnly    bool                            `json:"verifiedOnly,omitempty"`
+}
+
+// SearchPendingVerificationsRequest is the input for
+// POST /pending-verifications/search.
+type SearchPendingVerificationsRequest struct {
+	Pagination Pagination                       `json:"pagination"`
+	Filters    PendingVerificationSearchFilters `json:"filters"`
+}
+
+// PendingVerificationTypeCount is one row of the per-type breakdown used to
+// show a count next to each record type in the list page's type filter
+// dropdown — computed against every filter except WorkItemTypes itself, so
+// selecting one type doesn't hide the counts the others would have yielded.
+type PendingVerificationTypeCount struct {
+	RecordType string `json:"recordType"`
+	Count      int    `json:"count"`
+}
+
+// SearchPendingVerificationsResponse is the paginated result of a
+// pending_verification search. AutoClosedCount/ManualCount back the "Auto
+// Marked"/"Manually Marked" summary tiles and, like Total, are computed
+// against the current filters (not global counts).
+type SearchPendingVerificationsResponse struct {
+	PendingVerifications []PendingVerification          `json:"pendingVerifications"`
+	Total                int                            `json:"total"`
+	AutoClosedCount      int                            `json:"autoClosedCount"`
+	ManualCount          int                            `json:"manualCount"`
+	TypeCounts           []PendingVerificationTypeCount `json:"typeCounts"`
+	Limit                int                            `json:"limit"`
+	Offset               int                            `json:"offset"`
+	HasMore              bool                           `json:"hasMore"`
 }
 
 // CreateServiceRequestFromIssueRequest is the body of
