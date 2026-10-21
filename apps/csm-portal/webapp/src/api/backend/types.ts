@@ -4547,6 +4547,20 @@ export type BeCaseFeedbackBucket =
   | "reasons_satisfied"
   | "reasons_very_satisfied";
 
+/** Only for shape "count" on resourceType "case": show the number of distinct
+ * values of `field` among the widget's matching records instead of the record
+ * total. Resolved by `useWidgetData` via one `POST /cases/aggregate` call whose
+ * returned group count is the displayed number. Mutually exclusive with
+ * `groupBy`/`slices` (backend-enforced at config-load time). */
+export interface BeDashboardDistinctByConfig {
+  /** What to count distinct values of (`account`, `state`, `severity` or
+   * `type`) — forwarded as the aggregate request's `groupBy`. */
+  field: string;
+  /** Forwarded as the aggregate request's `maxGroups`. Always present on a
+   * dashboard response (the backend fills in its default at load time). */
+  maxGroups: number;
+}
+
 /** Alternative to {@link BeDashboardPieSlice}[] for shapes "pie"/"bar":
  * one server-side `POST /{resourceType}/aggregate` call instead of one
  * `search` per hand-authored slice. Mutually exclusive with `slices` —
@@ -4754,6 +4768,10 @@ export interface BeDashboardWidget {
    * slice. Mutually exclusive with `slices` — the backend enforces
    * exactly one of the two for those shapes (never both, never neither). */
   groupBy?: BeDashboardGroupByConfig;
+  /** Only meaningful for shape "count" (resourceType "case"): the widget
+   * shows the number of distinct values of `distinctBy.field` instead of the
+   * record total. Absent when unset — see {@link BeDashboardDistinctByConfig}. */
+  distinctBy?: BeDashboardDistinctByConfig;
   /** Only meaningful for shapes "pie"/"bar": one search per slice, each
    * read via its own `total`. Mutually exclusive with `groupBy`. */
   slices?: BeDashboardPieSlice[];

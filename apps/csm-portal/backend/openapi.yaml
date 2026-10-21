@@ -12453,8 +12453,8 @@ paths:
       operationId: getTeamScheduleMyLeadTeams
       description: >
         Response is the entity service's payload, forwarded unchanged: `teamKeys` (teams the caller
-        leads, runs as rota admin, or marks as rota marker) and `markerOnlyTeamKeys` (the ones held
-        only as rota marker, which may be marked but not generated, and give no say over the tags).
+        leads, runs as rota admin, or marks as rota manager) and `markerOnlyTeamKeys` (the ones held
+        only as rota manager, which may be marked but not generated, and give no say over the tags).
         Whether the caller may edit a team's rota is decided by the entity service.
       responses:
         "200":
@@ -12497,11 +12497,11 @@ paths:
 
   /team-schedule/rota-access:
     get:
-      summary: Rota admins and rota markers, and what the caller may change.
+      summary: Rota admins and rota managers, and what the caller may change.
       operationId: getTeamScheduleRotaAccess
       description: >
         The Rota access tab. The entity service's payload, forwarded unchanged: `canManage`
-        (`rotaAdmins` for a CSM admin, `markerFamilies` for the families whose markers the caller
+        (`rotaAdmins` for a CSM admin, `markerFamilies` for the families whose rota managers the caller
         may change), `rotaAdmins[]` and `markers[]`. A caller who may change nothing gets empty
         lists, which is how the page decides not to show the tab.
       responses:
@@ -12638,11 +12638,11 @@ paths:
 
   /team-schedule/rota-access/markers/{teamKey}/{userId}:
     put:
-      summary: Make somebody a team's rota marker.
+      summary: Make somebody a team's rota manager.
       operationId: putTeamScheduleRotaMarker
       description: >
-        A rota marker may mark the team's rotations, leave and allocations, and nothing else. A CSM
-        admin may name any team's marker, the family's rota admin their own family's; the entity
+        A rota manager may mark the team's rotations, leave and allocations, and nothing else. A CSM
+        admin may name any team's rota manager, the family's rota admin their own family's; the entity
         service decides. The person must be active internal staff on the team.
       parameters:
         - name: teamKey
@@ -12690,7 +12690,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
     delete:
-      summary: Take a team's rota marker away.
+      summary: Take a team's rota manager away.
       operationId: deleteTeamScheduleRotaMarker
       description: >
         Same permission as granting; the entity service decides.
@@ -13571,6 +13571,7 @@ paths:
               properties:
                 ladder: { type: string, enum: [CRE, SRE] }
                 groupName: { type: string, maxLength: 255, description: "A CSM Portal team's name: a CRE team for CRE, an SRE or SME team for SRE. SRE also takes an assignment group no CSM Portal team has (WSO2 IaaS Team), but never a CRE team's name." }
+                groupId: { type: string, format: uuid, description: "Optional. An assignment group from routeOptions.assignmentGroups; forwarded only when sent." }
                 teamKey: { type: string }
                 rotaCode: { type: string }
                 enabled: { type: boolean }
@@ -13762,7 +13763,9 @@ paths:
       description: >
         The entity service's payload: `members[]` (one team membership each, with its role,
         responderRank, userId, canEditPhone and pagingPhone -- `{masked, phone?, setBy, setAt,
-        lastTestAt?, lastTestStatus?}` or null, the full `phone` only for a caller who canEditPhone)
+        lastTestAt?, lastTestStatus?}` or null, the full `phone` only for a caller who canEditPhone,
+        canTestCall, and testCall -- `{masked, source: profile|paging, lastTestAt?, lastTestStatus?}`,
+        only for a caller who canTestCall, absent when CSM holds no number to dial)
         and `canEdit` ({responderTeams[], teamLeadTeams[], americasTeamLead, heads}). The portal adds
         `hasProfilePhone` (boolean) to each member: whether their Asgardeo profile has a mobile number,
         from SCIM (cached 10 minutes). A member whose lookup failed has no `hasProfilePhone`; the
@@ -14008,12 +14011,14 @@ paths:
                 $ref: '#/components/schemas/ErrorPayload'
   /team-schedule/paging-contacts/{userId}/test:
     post:
-      summary: Place a test call to a person's paging-only number.
+      summary: Place a test call to the number Case Alerts dials for a person.
       operationId: testTeamSchedulePagingContact
       description: >
+        Rings the person's profile number when it can be called, else their paging-only number.
         Accepted while the call is placed; the result lands on the paging chain's member as
-        `pagingPhone.lastTestStatus`. 409 when the person has no paging number; 429 when it was tested
-        less than 2 minutes ago.
+        `testCall.lastTestStatus`. Only a portal admin or a rota admin of the person's family may ask
+        (403 otherwise). 409 when CSM holds no number for the person; 429 when they were tested less
+        than 2 minutes ago.
       parameters:
         - name: userId
           in: path
@@ -17269,6 +17274,33 @@ components:
                 Overrides the default "Others" label for the summed
                 remainder bucket. Meaningless when "bucket" is set, same as
                 "maxGroups".
+        distinctBy:
+          type: object
+          description: >
+            Only meaningful for shape "count" with resourceType "case"; mutually
+            exclusive with "groupBy"/"slices" (enforced at dashboard-load
+            time). Makes the widget show the number of DISTINCT values of
+            "field" among the matching records instead of the record total.
+            The caller issues one POST /cases/aggregate request (filters = this
+            widget's own query, groupBy = field, maxGroups = maxGroups) and
+            shows the number of returned groups. If the response's
+            othersCount is greater than zero the number would be an
+            under-count, so the caller must show an error state instead of a
+            number. Omitted keeps the record-total behaviour.
+          required: [field]
+          properties:
+            field:
+              type: string
+              enum: [account, state, severity, type]
+              description: What to count distinct values of.
+            maxGroups:
+              type: integer
+              minimum: 1
+              maximum: 10000
+              description: >
+                The maxGroups to send to the aggregate call. Defaults to 1000
+                when omitted (filled in at dashboard-load time, so a loaded
+                widget always carries it).
         listLimit:
           type: integer
           description: Only meaningful for shape list; how many records to show
@@ -18158,7 +18190,10 @@ components:
             service's own role data, which is no longer returned here.
         phoneNumber:
           type: string
-          description: Mobile phone number in E.164 format (sourced from SCIM)
+          description: >
+            The caller's phone number in E.164 format, read from the platform user record only
+            (never the identity provider). Omitted when the record has no phone, or when there
+            is no user record.
         team:
           nullable: true
           description: >
@@ -18194,7 +18229,9 @@ components:
       properties:
         phoneNumber:
           type: string
-          description: Mobile phone number in E.164 format
+          description: >
+            Phone number in E.164 format, written to the platform user record only (never the
+            identity provider). Surrounding whitespace is trimmed; an empty or blank string clears it.
         timeZone:
           type: string
           description: User's preferred time zone (e.g. "America/New_York")

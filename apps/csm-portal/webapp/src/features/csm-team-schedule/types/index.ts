@@ -298,6 +298,17 @@ export interface PagingPhone {
   lastTestStatus?: PagingTestStatus;
 }
 
+/** The number a test call rings for a person -- the one Case Alerts dials
+ *  from CSM -- and its last test. Sent only to a reader who may test it. */
+export interface PagingTestCall {
+  /** "+94•••••123" -- the only form the page shows. */
+  masked: string;
+  /** "profile": the number on their own profile; "paging": their paging-only number. */
+  source: "profile" | "paging";
+  lastTestAt?: string;
+  lastTestStatus?: PagingTestStatus;
+}
+
 /** One membership as the Case Paging tab shows it. */
 export interface PagingChainMember {
   membershipId: string;
@@ -312,11 +323,17 @@ export interface PagingChainMember {
   role: string;
   /** 1, 2 or 3 for the team's 1st, 2nd or 3rd responder (Tier 1); 0 for none. */
   responderRank: number;
-  /** Whether the reader may add, change, remove or test this person's paging number. */
+  /** Whether the reader may change or remove this person's paging number. */
   canEditPhone?: boolean;
   pagingPhone?: PagingPhone | null;
   /** Whether their profile has a mobile number; absent when it could not be checked. */
   hasProfilePhone?: boolean;
+  /** Whether the reader may place a test call to this person (a portal admin,
+   *  or a rota admin of the person's family). */
+  canTestCall?: boolean;
+  /** What a test call would ring; absent when the reader may not test, or
+   *  CSM holds no number for the person. */
+  testCall?: PagingTestCall | null;
 }
 
 /** What the reader may change; the server checks every edit again. */
@@ -460,6 +477,16 @@ export interface CaseAlertSettings {
   running?: CaseAlertRunning;
   /** The lists a group route is made from; absent for somebody who may see nothing. */
   routeOptions?: CaseAlertRouteOptions;
+  /** SRE viewers only: active assignment groups no enabled SRE redirect
+   *  covers and no Team Schedule team is named after. Their incident cards go
+   *  to the shared SRE room. Absent when there are none. */
+  unmappedGroups?: CaseAlertAssignmentGroup[];
+}
+
+/** A ServiceNow assignment group (a "group" row that is a service's support group). */
+export interface CaseAlertAssignmentGroup {
+  id: string;
+  name: string;
 }
 
 /** A team as a route option: CRE, SRE or SME. */
@@ -478,6 +505,9 @@ export interface CaseAlertRouteOptions {
   groups: CaseAlertTeamOption[];
   teams: CaseAlertTeamOption[];
   rotas: { code: string; label: string }[];
+  /** The active assignment groups a redirect can be picked for. Absent from
+   *  an older server. */
+  assignmentGroups?: CaseAlertAssignmentGroup[];
 }
 
 /** A chat room: a ladder's shared room (no teamKey) or an SRE or SME team's
@@ -512,6 +542,9 @@ export interface CaseAlertGroupRoute {
   id: string;
   ladder: CaseAlertLadder;
   groupName: string;
+  /** The assignment group the redirect was picked for; absent for one saved
+   *  by name. Its groupName is then the group's current name. */
+  groupId?: string;
   teamKey?: string;
   rotaCode?: string;
   enabled: boolean;
@@ -541,7 +574,8 @@ export interface CaseAlertRunningValue {
 }
 
 export interface CaseAlertRunning {
-  reportedAt: string;
+  /** When the alert service reported; absent when the server has no time. */
+  reportedAt?: string;
   mode: "off" | "shadow" | "db";
   /** Per ladder, each key's value in use. */
   ladders: Partial<
@@ -550,6 +584,41 @@ export interface CaseAlertRunning {
   /** Per ladder, the settings only the file can set. Absent from an alert
    *  service that doesn't report them yet. */
   fileOnly?: Partial<Record<CaseAlertRoomLadder, CaseAlertFileOnly>>;
+  /** Per ladder, whether it runs, its channel, and each team's channel as
+   *  the alert service runs it. Absent from an alert service that doesn't
+   *  report them yet. */
+  channels?: Partial<Record<CaseAlertRoomLadder, CaseAlertLadderChannels>>;
+  /** Per ladder, how the running config routes an incident's assignment
+   *  group with no redirect saved here. Absent from an alert service that
+   *  doesn't report it yet. */
+  groups?: Partial<Record<CaseAlertLadder, CaseAlertGroupRouting>>;
+}
+
+/** How a ladder's running config routes assignment groups. */
+export interface CaseAlertGroupRouting {
+  /** Group name, lower-cased, to the team key it is alerted as. */
+  aliases?: Record<string, string>;
+  /** SRE: the groups paged on the default rota. */
+  defaultGroups?: string[];
+  /** SRE: teams with a chat space but no rota of their own. */
+  teamlessRooms?: string[];
+}
+
+/** One team's channel as running: the ladder's narrowed by the team's own. */
+export interface CaseAlertTeamChannel {
+  team: string;
+  channel: string;
+  /** The team's own saved channel, when it has one. */
+  teamChannel?: string;
+  /** Whether the team has a chat room of its own. */
+  room: boolean;
+}
+
+export interface CaseAlertLadderChannels {
+  /** The ladder runs: its own switch and the file's master switch are on. */
+  enabled: boolean;
+  channel: string;
+  teams: CaseAlertTeamChannel[];
 }
 
 /** What decides whether a ladder pages and what it may cost: read here, set

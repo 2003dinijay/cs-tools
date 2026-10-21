@@ -38,6 +38,13 @@ type Pagination struct {
 
 // --- users/me ---
 
+// UserTypeInternal is the GetUserMeResponse.UserType value entity-service
+// reports for a WSO2-internal-classified user -- derived there from role
+// membership, not a plain settable column (see that service's own CLAUDE.md,
+// "recompute_user_type"). Every other value ("customer", "external",
+// "system") is a genuine non-internal user.
+const UserTypeInternal = "internal"
+
 // GetUserMeResponse is entity-service's response for GET /users/me.
 type GetUserMeResponse struct {
 	ID        string   `json:"id"`
@@ -45,7 +52,13 @@ type GetUserMeResponse struct {
 	FirstName *string  `json:"firstName,omitempty"`
 	LastName  string   `json:"lastName"`
 	TimeZone  *string  `json:"timeZone,omitempty"`
-	Roles     []string `json:"roles"`
+	// UserType is entity-service's own internal/customer/external/system
+	// classification (see UserTypeInternal). Used by
+	// middleware.CachedRoleResolver.IsInternalWriteBlocked and by
+	// UserHandler.GetMe to compute isReadOnly -- never shown to the frontend
+	// directly.
+	UserType string   `json:"userType,omitempty"`
+	Roles    []string `json:"roles"`
 }
 
 // SearchUsersFilters mirrors entity-service's own filter struct field-for-field,

@@ -589,6 +589,163 @@ func TestPermissionMatrixOtherModulesUnchanged(t *testing.T) {
 	}
 }
 
+// TestIsInternalWriteBlocked pins CachedRoleResolver.IsInternalWriteBlocked:
+// it only ever restricts an INTERNAL-type caller (entity-service's own
+// user_type) who holds none of the configured write roles on their own
+// token, and never touches a non-INTERNAL caller or an unconfigured
+// resolver.
+func TestIsInternalWriteBlocked(t *testing.T) {
+	newResolver := func(userType string, writeGroups []string) (*CachedRoleResolver, context.Context) {
+		client := &mockEntityUserClient{
+			getMeFn: func(context.Context) (entity.GetUserMeResponse, error) {
+				return entity.GetUserMeResponse{ID: "usr-1", UserType: userType}, nil
+			},
+		}
+		resolver := NewCachedRoleResolver(client, time.Minute)
+		if writeGroups != nil {
+			resolver = resolver.WithInternalWriteGroups(writeGroups)
+		}
+		return resolver, WithUserInfo(context.Background(), &UserInfo{UserID: "usr-1", Groups: []string{"cs_engineer"}})
+	}
+
+	t.Run("blocks an INTERNAL caller with none of the configured write groups", func(t *testing.T) {
+		resolver, ctx := newResolver(entity.UserTypeInternal, []string{"account_manager"})
+		blocked, err := resolver.IsInternalWriteBlocked(ctx)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !blocked {
+			t.Error("expected blocked=true")
+		}
+	})
+
+	t.Run("does not block an INTERNAL caller who belongs to a configured write group", func(t *testing.T) {
+		resolver, ctx := newResolver(entity.UserTypeInternal, []string{"cs_engineer"})
+		blocked, err := resolver.IsInternalWriteBlocked(ctx)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if blocked {
+			t.Error("expected blocked=false")
+		}
+	})
+
+	t.Run("never blocks a non-INTERNAL caller, whatever their token groups", func(t *testing.T) {
+		for _, userType := range []string{"customer", "external", "system", ""} {
+			resolver, ctx := newResolver(userType, []string{"account_manager"})
+			blocked, err := resolver.IsInternalWriteBlocked(ctx)
+			if err != nil {
+				t.Fatalf("userType=%q: unexpected error: %v", userType, err)
+			}
+			if blocked {
+				t.Errorf("userType=%q: expected blocked=false", userType)
+			}
+		}
+	})
+
+	t.Run("an unconfigured resolver never blocks (opt-in gate)", func(t *testing.T) {
+		resolver, ctx := newResolver(entity.UserTypeInternal, nil)
+		blocked, err := resolver.IsInternalWriteBlocked(ctx)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if blocked {
+			t.Error("expected blocked=false when no internalWriteGroups are configured")
+		}
+	})
+}
+
+// TestInternalWriteGateViaMiddleware proves the gate is actually enforced by
+// RequirePermission/RequirePermissionOneOf/RequireRoles for a caller backed
+// by a resolver implementing WriteAccessResolver, and that a plain
+// RoleResolver fake (every pre-existing test in this file) is unaffected.
+func TestInternalWriteGateViaMiddleware(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	newBlockedResolver := func() *CachedRoleResolver {
+		client := &mockEntityUserClient{
+			getMeFn: func(context.Context) (entity.GetUserMeResponse, error) {
+				return entity.GetUserMeResponse{ID: "usr-1", UserType: entity.UserTypeInternal, Roles: []string{"internal"}}, nil
+			},
+		}
+		return NewCachedRoleResolver(client, time.Minute).WithInternalWriteGroups([]string{"account_manager"})
+	}
+
+	t.Run("RequirePermission: a write action 403s for a blocked INTERNAL caller", func(t *testing.T) {
+		resolver := newBlockedResolver()
+		ts := RequirePermission(resolver, ModuleCases, ActionCreate)(handler)
+		req := httptest.NewRequest(http.MethodPost, "/cases", nil)
+		req = req.WithContext(WithUserInfo(req.Context(), &UserInfo{UserID: "usr-1", Groups: []string{"not-the-write-group"}}))
+		rr := httptest.NewRecorder()
+		ts.ServeHTTP(rr, req)
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403", rr.Code)
+		}
+	})
+
+	t.Run("RequirePermission: a read action is never blocked by the gate", func(t *testing.T) {
+		resolver := newBlockedResolver()
+		ts := RequirePermission(resolver, ModuleCases, ActionRead)(handler)
+		req := httptest.NewRequest(http.MethodGet, "/cases/1", nil)
+		req = req.WithContext(WithUserInfo(req.Context(), &UserInfo{UserID: "usr-1", Groups: []string{"not-the-write-group"}}))
+		rr := httptest.NewRecorder()
+		ts.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rr.Code)
+		}
+	})
+
+	t.Run("RequirePermission: a write action succeeds once the caller's token carries the write group", func(t *testing.T) {
+		resolver := newBlockedResolver()
+		ts := RequirePermission(resolver, ModuleCases, ActionCreate)(handler)
+		req := httptest.NewRequest(http.MethodPost, "/cases", nil)
+		req = req.WithContext(WithUserInfo(req.Context(), &UserInfo{UserID: "usr-1", Groups: []string{"account_manager"}}))
+		rr := httptest.NewRecorder()
+		ts.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rr.Code)
+		}
+	})
+
+	t.Run("RequirePermissionOneOf: blocked for every non-read action in the list", func(t *testing.T) {
+		resolver := newBlockedResolver()
+		ts := RequirePermissionOneOf(resolver, ModuleChangeRequests, ActionUpdate, ActionDecide)(handler)
+		req := httptest.NewRequest(http.MethodPatch, "/change-requests/1", nil)
+		req = req.WithContext(WithUserInfo(req.Context(), &UserInfo{UserID: "usr-1", Groups: []string{"not-the-write-group"}}))
+		rr := httptest.NewRecorder()
+		ts.ServeHTTP(rr, req)
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403", rr.Code)
+		}
+	})
+
+	t.Run("RequireRoles: blocked for a write-only route", func(t *testing.T) {
+		resolver := newBlockedResolver()
+		ts := RequireRoles(resolver, RoleAdmin, RoleInternal)(handler)
+		req := httptest.NewRequest(http.MethodPost, "/projects/1/contacts", nil)
+		req = req.WithContext(WithUserInfo(req.Context(), &UserInfo{UserID: "usr-1", Groups: []string{"not-the-write-group"}}))
+		rr := httptest.NewRecorder()
+		ts.ServeHTTP(rr, req)
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403", rr.Code)
+		}
+	})
+
+	t.Run("a plain RoleResolver fake (no WriteAccessResolver) is never blocked", func(t *testing.T) {
+		resolver := &mockRoleResolver{roles: []CanonicalRole{RoleCustomerUser}}
+		ts := RequirePermission(resolver, ModuleCases, ActionCreate)(handler)
+		req := httptest.NewRequest(http.MethodPost, "/cases", nil)
+		req = req.WithContext(WithUserInfo(req.Context(), &UserInfo{UserID: "usr-1"}))
+		rr := httptest.NewRecorder()
+		ts.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rr.Code)
+		}
+	})
+}
+
 func TestRequirePermissionOneOfMiddleware(t *testing.T) {
 	var gotAction Action
 	var gotOK bool

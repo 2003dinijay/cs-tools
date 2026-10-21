@@ -240,5 +240,60 @@ describe("useCustomerPermissions & Permission Matrix", () => {
       expect(result.current.canManageContacts).toBe(false);
     });
 
+
+    // isReadOnly is the backend's flag for an INTERNAL-type user (entity-service's
+    // own user_type) who holds none of the deployment's configured write groups.
+    // It must only ever narrow a write action, and must never narrow anything
+    // for a genuine customer/partner -- see rbac.go's identical gate on the
+    // backend.
+    describe("isReadOnly", () => {
+      it("hides every write action but leaves read untouched", () => {
+        vi.mocked(useGetUserDetails).mockReturnValue({
+          data: {
+            id: "usr-1",
+            email: "am@wso2.com",
+            firstName: "Account",
+            lastName: "Manager",
+            timeZone: "UTC",
+            roles: ["internal"],
+            isReadOnly: true,
+          },
+          isLoading: false,
+          isError: false,
+        } as ReturnType<typeof useGetUserDetails>);
+
+        const { result } = renderHook(() => useCustomerPermissions());
+
+        expect(result.current.isReadOnly).toBe(true);
+        expect(result.current.canCreateCase).toBe(false);
+        expect(result.current.canUpdateCase).toBe(false);
+        expect(result.current.canDeleteCase).toBe(false);
+        expect(result.current.canManageContacts).toBe(false);
+        // Read is unaffected -- "internal" already holds Read on every module.
+        expect(result.current.can("cases", "read")).toBe(true);
+        expect(result.current.canAccessTimeCards).toBe(true);
+        expect(result.current.canAccessChangeRequests).toBe(true);
+      });
+
+      it("defaults to false (full access) when the backend omits the field -- the normal case for a genuine customer/partner, who entity-service never classifies INTERNAL", () => {
+        vi.mocked(useGetUserDetails).mockReturnValue({
+          data: {
+            id: "usr-3",
+            email: "agent@wso2.com",
+            firstName: "Agent",
+            lastName: "Smith",
+            timeZone: "UTC",
+            roles: ["agent"],
+          },
+          isLoading: false,
+          isError: false,
+        } as ReturnType<typeof useGetUserDetails>);
+
+        const { result } = renderHook(() => useCustomerPermissions());
+
+        expect(result.current.isReadOnly).toBe(false);
+        expect(result.current.canCreateCase).toBe(true);
+      });
+    });
   });
 });

@@ -460,14 +460,14 @@ and `sme_rota_admin`. No schema change: the family of a team is read from
 | Role (in CRE, SRE or SME) | Reads | Writes, updates, deletes |
 |---|---|---|
 | Engineer | every family | nothing |
-| Rota marker | every family | their own team's rotations, leave and allocations |
+| Rota Manager | every family | their own team's rotations, leave and allocations |
 | Team lead | every family | their own team |
 | Rota admin | every family | their own family's teams |
 | CRE head, CS head | every family | every CRE team, as a CRE rota admin |
 
 - **The CRE head and the CS head** (team position `cre_head` / `cs_head` on
   any team, internal staff) count as CRE rota admins without holding the role:
-  every CRE team's rota, the CRE tags, CRE's rota markers on Rota access, and
+  every CRE team's rota, the CRE tags, CRE's rota managers on Rota access, and
   on Case Paging the responders and Team leads of every CRE team. Who holds a
   position -- the America lead, Americas Team leads, the CRE and CS heads --
   keeps its own rules (a CRE rota admin or the portal admin), so a head cannot
@@ -475,9 +475,9 @@ and `sme_rota_admin`. No schema change: the family of a team is read from
 - **Reads are not limited by family**, for anyone: the catalogue, turns, leave,
   on-duty, edit markers and every Case Paging chain.
 - **Writes** go through `requireRotaWriter`: a lead edits their own team, a rota
-  admin the teams of their family, a rota marker their own team.
-- **A rota marker is not a lead.** The tags, Generate month, Case Paging and
-  paging numbers keep their own rules, which do not include a marker.
+  admin the teams of their family, a rota manager their own team.
+- **A rota manager is not a lead.** The tags, Generate month, Case Paging and
+  paging numbers keep their own rules, which do not include a rota manager.
 - **Absence kinds** (`schedule_tag_family.go`): a kind a rota admin adds is
   stored for their family (`team_schedule_absence_kind.family`), and they may
   delete only their own family's custom kinds. A team lead who is no rota admin
@@ -486,17 +486,20 @@ and `sme_rota_admin`. No schema change: the family of a team is read from
 ## Rota access (0225)
 
 The Team Schedule's **Rota access** tab, next to Case Paging, is where rota
-admins and rota markers are granted and taken back.
+admins and rota managers are granted and taken back.
 
 - **Rota admin** (`cre_rota_admin`, `sre_rota_admin`, `sme_rota_admin`, stored
   in `user_role`): edits every team in one family. Granted and removed by a
   **CSM admin** only.
-- **Rota marker** (`team_schedule_rota_marker`, one row per person and team):
+- **Rota Manager** (`team_schedule_rota_marker`, one row per person and team):
   marks one team's rotations, leave and allocations, and nothing else. Granted
   and removed by a CSM admin for any team, or by a family's rota admin for that
   family's teams. Only a member of the team can be named, and the grant stops
   counting the moment they leave the team or stop being internal staff; the tab
-  then lists it as inactive so it can be removed.
+  then lists it as inactive so it can be removed. The grant was first called
+  "rota marker", and only the name people read changed: the table, the API
+  paths (`/team-schedule/rota-access/markers/...`) and the code still say
+  marker.
 - **A CSM admin is the CSM Portal admin**: a caller whose token's `roles` claim
   holds one of `AUTH_ADMIN_ROLES`, matched exactly. It is the same variable,
   with the same value, that csm-portal-backend reads; entity-service reads it
