@@ -84,13 +84,14 @@ import {
   mondayOf,
   shiftsByCode,
   toIsoDate,
+  todayClockOptions,
   zoneAbbreviation,
   zoneLabelOn,
   zoneColumnOf,
 } from "../utils/rota";
 import { isSettled, sitsAboveTeamLeads } from "../utils/myWeek";
 import { zoneColour } from "../utils/rotaHues";
-import { atTeamOrdinaryHours, atWorkOnTheDay, onItsStandingCard, standingDayRows } from "../utils/standingDay";
+import { creRowsAtWork } from "../utils/standingDay";
 import { SCHEDULE_THEME_VARS } from "../utils/useScheduleTheme";
 import ScheduleSkeleton, { TabStripSkeleton } from "../components/ScheduleSkeleton";
 import { rotaIsLoading } from "../utils/rotaLoading";
@@ -233,19 +234,18 @@ export default function CsmTeamSchedulePage(): JSX.Element {
   // not remembered, so two people comparing the rota over a call are on their
   // profile clocks unless one of them has just switched -- and the axis says
   // which clock it is.
+  //
+  // A profile zone on the same clock as IST or PDT when the page opens opens
+  // Today on that option (todayClockOptions); any other zone, or a Pacific one
+  // on winter time, keeps its own clock.
   const tz = resolveDisplayTimeZone(user?.timeZone);
+  const [openedAt] = useState(() => new Date());
+  const { options: clockOptions, initial: profileClock } = useMemo(
+    () => todayClockOptions(tz, openedAt),
+    [tz, openedAt],
+  );
   const [todayClock, setTodayClock] = useState<string | null>(null);
-  const dayTz = todayClock ?? tz;
-  const clockOptions = useMemo(() => {
-    const fixed = [
-      { value: "Asia/Colombo", label: "IST" },
-      // Americas regular hours are 08:00-18:00 on this clock, all year.
-      { value: "Etc/GMT+7", label: "PDT" },
-    ];
-    return fixed.some((o) => o.value === tz)
-      ? fixed
-      : [{ value: tz, label: `${zoneAbbreviation(tz)} (your profile)` }, ...fixed];
-  }, [tz]);
+  const dayTz = todayClock ?? profileClock;
   const catalogue = useScheduleCatalogue();
 
   /** The teams of the group on screen, in the order the catalogue gives them.
@@ -1189,46 +1189,44 @@ export default function CsmTeamSchedulePage(): JSX.Element {
     [absences.data?.absences, dayView, anchorIso],
   );
 
-  const lanes: LadderLane[] = useMemo(() => {
-    if (family === "CRE") {
-      // Everyone the month roster shows at work, not only those with a row:
-      // a blank weekday is the team's ordinary day, and the morning and
-      // evening crews work the ordinary day around their turn.
+  /** Who is at work on CRE's rota days, the same on Today and This week --
+   *  see creRowsAtWork. */
+  const creAtWork = useCallback(
+    (rotaDates: readonly string[]): ScheduleAssignment[] => {
       // The same teams as the rota read (teamKeys), worked out here because
       // teamKeys is a fresh array every render. None means the whole family.
-      const scoped = shownTeamKey ? [shownTeamKey] : rotaScoped && scopeRota ? teamsOf(family, scopeRota) : [];
-      const inScope = new Set(scoped.map((k) => k.toLowerCase()));
-      // Every CRE team, whatever is in view: which team a window is the
-      // ordinary day of does not depend on the team picked.
-      const allCreTeams = (catalogue.data?.teams ?? []).filter((t) => t.family === "CRE");
-      const creTeams = allCreTeams
-        .filter((t) => inScope.size === 0 || inScope.has(t.key.toLowerCase()))
-        .sort((a, b) => a.sortOrder - b.sortOrder);
-      const standing = standingDayRows({
-        rotaDates: [readFrom, anchorIso, readTo],
-        teams: creTeams,
+      const scoped = shownTeamKey ? [shownTeamKey] : rotaScoped && scopeRota ? teamsOf("CRE", scopeRota) : [];
+      return creRowsAtWork({
+        rotaDates,
+        teams: catalogue.data?.teams ?? [],
+        teamKeysInView: scoped,
         shifts,
         assignments: rows,
         absences: absences.data?.absences ?? [],
+        absenceKinds: catalogue.data?.absenceKinds ?? [],
       });
+    },
+    [shownTeamKey, rotaScoped, scopeRota, teamsOf, catalogue.data?.teams, catalogue.data?.absenceKinds, shifts, rows, absences.data?.absences],
+  );
+
+  /** This week's rows: on CRE, who is at work each day of the week, as Today
+   *  reads it; on SRE the stored rota as it is. */
+  const weekRows = useMemo(
+    () =>
+      view === "week" && family === "CRE"
+        ? creAtWork(Array.from({ length: 7 }, (_, i) => toIsoDate(addDays(weekStart, i))))
+        : rows,
+    [view, family, creAtWork, weekStart, rows],
+  );
+
+  const lanes: LadderLane[] = useMemo(() => {
+    if (family === "CRE") {
       return [
         {
           name: "Rotations",
           sub: "on-call, the night and regular hours",
           colour: "var(--muted)",
-          // Each standing window's card lists only the teams whose ordinary
-          // day it is: Americas cover the Americas team, regular hours the ABTs.
-          // Stored Americas cover days are drawn at the team's own hours, and
-          // a stored row of someone on leave or an allocation that day is left
-          // out: they are under Off rota, not at work.
-          assignments: [
-            ...atTeamOrdinaryHours(
-              atWorkOnTheDay(rows, absences.data?.absences ?? [], catalogue.data?.absenceKinds ?? []),
-              shifts,
-              allCreTeams,
-            ),
-            ...standing,
-          ].filter((a) => onItsStandingCard(a, shifts, allCreTeams)),
+          assignments: creAtWork([readFrom, anchorIso, readTo]),
           // The Sri Lankan day and the Americas day meet twice a day; where
           // they overlap each keeps a column of its own.
           regions: true,
@@ -1256,7 +1254,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
         layout: "zone" as const,
       };
     });
-  }, [anchor, family, rows, shifts, zonesOnDay, shownTeamKey, rotaScoped, scopeRota, teamsOf, catalogue.data?.teams, readFrom, anchorIso, readTo, absences.data?.absences, catalogue.data?.absenceKinds]);
+  }, [anchor, family, rows, shifts, zonesOnDay, creAtWork, readFrom, anchorIso, readTo]);
 
   /** The teams the edit bar says this reader can change, by name and in the
    *  catalogue's order. A rota admin can change every team of the group, and
@@ -1673,7 +1671,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
           ) : view === "week" ? (
             <WeekTable
               weekStart={weekStart}
-              assignments={rows}
+              assignments={weekRows}
               shifts={shifts}
               absences={absences.data?.absences ?? []}
               absenceKinds={catalogue.data?.absenceKinds ?? []}
