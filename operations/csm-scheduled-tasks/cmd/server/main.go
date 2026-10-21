@@ -293,6 +293,10 @@ func main() {
 		ClientSecret: oauthClientSecret,
 		Scopes:       splitComma(os.Getenv("EMAIL_SCOPES")),
 		FromAddress:  os.Getenv("EMAIL_FROM_ADDRESS"),
+		// Diverts EVERY email this component sends. Set it to try a
+		// report against production data without mailing the people it
+		// would normally reach.
+		DebugRecipients: splitComma(os.Getenv("DEBUG_MAIL_RECIPIENTS")),
 	})
 	if err != nil {
 		slog.Error("failed to construct email client", "err", err)
@@ -646,6 +650,31 @@ func main() {
 	defer stop()
 
 	start := time.Now()
+
+	// RUN_TASKS_NOW turns this invocation into a tryout: the named
+	// tasks run immediately, their schedules and the ledger ignored,
+	// and nothing else runs. A weekly report cannot otherwise be
+	// exercised without waiting a week or editing its cron -- and
+	// editing cron to test it is how a real one goes out by accident.
+	//
+	// It deliberately does NOT tick afterwards. Mixing a tryout with a
+	// normal run would make it unclear which mails came from which.
+	if names := splitComma(os.Getenv("RUN_TASKS_NOW")); len(names) > 0 {
+		if len(splitComma(os.Getenv("DEBUG_MAIL_RECIPIENTS"))) == 0 {
+			slog.Warn("RUN_TASKS_NOW without DEBUG_MAIL_RECIPIENTS: this will mail the real audience",
+				"tasks", strings.Join(names, ","))
+		}
+		slog.Info("on-demand run requested",
+			"tasks", strings.Join(names, ","),
+			"available", strings.Join(eng.TaskNames(), ","))
+		if err := eng.RunNow(ctx, names); err != nil {
+			slog.Error("on-demand run finished with errors", "err", err)
+			os.Exit(1)
+		}
+		slog.Info("on-demand run complete", "elapsed", time.Since(start).String())
+		return
+	}
+
 	eng.Tick(ctx, start)
 	slog.Info("tick complete", "elapsed", time.Since(start).String())
 }

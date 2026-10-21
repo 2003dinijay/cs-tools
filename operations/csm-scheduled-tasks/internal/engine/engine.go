@@ -24,6 +24,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -92,6 +93,56 @@ func (e *Engine) Tick(ctx context.Context, now time.Time) {
 	for _, task := range e.Tasks {
 		e.attempt(ctx, task, now)
 	}
+}
+
+// RunNow runs the named tasks immediately, ignoring their schedules and
+// the ledger entirely, and reports what happened.
+//
+// This is the "try it and see" path: a report whose schedule is weekly
+// cannot otherwise be exercised without waiting a week or editing cron,
+// and editing cron to test is how a real run goes out by accident.
+//
+// It bypasses the ledger deliberately. Claiming a period would mark the
+// real run as already done, so a tryout at 10am would silence the
+// genuine 4am report the following Monday. Nothing is recorded, no
+// failure alert is raised, and the error comes back to the caller
+// instead -- a tryout is a person watching, not an unattended run.
+//
+// Pair it with DEBUG_MAIL_RECIPIENTS. Without that, this mails the real
+// audience.
+func (e *Engine) RunNow(ctx context.Context, names []string) error {
+	byName := map[string]registry.Task{}
+	for _, t := range e.Tasks {
+		byName[t.Name] = t
+	}
+
+	var errs []error
+	for _, name := range names {
+		task, ok := byName[name]
+		if !ok {
+			errs = append(errs, fmt.Errorf("no such task %q", name))
+			continue
+		}
+		slog.WarnContext(ctx, "csm-scheduled-tasks: RUNNING ON DEMAND, schedule and ledger bypassed",
+			"task", task.Name)
+		if err := task.Handler(ctx); err != nil {
+			slog.ErrorContext(ctx, "csm-scheduled-tasks: on-demand run failed", "task", task.Name, "err", err)
+			errs = append(errs, fmt.Errorf("%s: %w", name, err))
+			continue
+		}
+		slog.InfoContext(ctx, "csm-scheduled-tasks: on-demand run succeeded", "task", task.Name)
+	}
+	return errors.Join(errs...)
+}
+
+// TaskNames lists every registered task, so an unknown name in
+// RUN_TASKS_NOW can say what the real ones are rather than just failing.
+func (e *Engine) TaskNames() []string {
+	out := make([]string, 0, len(e.Tasks))
+	for _, t := range e.Tasks {
+		out = append(out, t.Name)
+	}
+	return out
 }
 
 // staleClaimMargin is how many missed ticks a claim is allowed to go
