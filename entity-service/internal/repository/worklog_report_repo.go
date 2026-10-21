@@ -69,12 +69,16 @@ type WorklogTimeRow struct {
 //     time_off_evening, exclude or ops_night -> our LEAVE and EXCLUDED
 //     buckets.
 //   - a Confirmed u_customer_engagement_allocation_resource at 100%
-//     utilization -> our ALLOCATION bucket, kind ENG (customer
-//     engagement) only.
+//     utilization -> the ALLOCATION bucket's customer-engagement kinds,
+//     ENG and ALLO_EXT. Both are needed: ENG belongs to the SRE family,
+//     while the teams these reports cover are cre-abt and cre, whose
+//     customer allocations are recorded as ALLO_EXT. Matching ENG alone
+//     meant the exclusion never fired for a single team in scope.
 //
-// The other ALLOCATION kinds -- RnD, Migration, internal -- are NOT
-// excluded: they have no counterpart in either ServiceNow mechanism, and
-// blanking them would understate everyone who does that work. We hold no
+// The remaining ALLOCATION kinds -- RnD, Migration, ALLO_INT -- are NOT
+// excluded: they are internal work, not a customer engagement, so they
+// have no counterpart in either ServiceNow mechanism, and blanking them
+// would understate everyone who does that work. We hold no
 // utilization figure, so every ENG absence is treated as a full
 // allocation; ServiceNow would keep a member allocated at less than 100%.
 type WorklogLeaveRow struct {
@@ -188,14 +192,16 @@ SELECT DISTINCT ON (u.id)
   JOIN team t ON t.id = m.team_id
   JOIN "user" u ON u.id = m.user_id
  WHERE t.key IS NOT NULL
-   AND (cardinality($1::text[]) = 0 OR t.type = ANY($1))
+   AND (cardinality($1::text[]) = 0 OR LOWER(COALESCE(t.type, '')) = ANY($1))
    AND m.role NOT IN ('cre_head', 'cs_head', 'americas_team_lead')
+   AND COALESCE(u.is_active, TRUE)
  ORDER BY u.id, (m.role = 'lead') DESC, t.key`
 
 func (r *worklogReportRepo) Roster(ctx context.Context, teamTypes []string) ([]WorklogRosterRow, error) {
-	if teamTypes == nil {
-		teamTypes = []string{}
-	}
+	// Both queries compare the type case-insensitively, so the caller's
+	// values are normalised to match. lowerAll never returns nil, which
+	// matters: pgx will not bind a nil slice to text[].
+	teamTypes = lowerAll(teamTypes)
 	rows, err := r.db.Query(ctx, worklogRosterQuery, teamTypes)
 	if err != nil {
 		return nil, fmt.Errorf("query worklog roster: %w", err)
@@ -272,7 +278,7 @@ SELECT a.user_id::text,
   FROM team_schedule_absence a
   JOIN team_schedule_absence_kind k ON k.id = a.kind_id
  WHERE (k.bucket IN ('LEAVE', 'EXCLUDED')
-        OR (k.bucket = 'ALLOCATION' AND k.code = 'ENG'))
+        OR (k.bucket = 'ALLOCATION' AND k.code IN ('ENG', 'ALLO_EXT')))
    AND a.starts_on <= $2
    AND (a.ends_on IS NULL OR a.ends_on >= $1)
  ORDER BY a.user_id, a.starts_on`
@@ -293,16 +299,17 @@ SELECT t.key,
        )
   FROM team t
   LEFT JOIN team_member m ON m.team_id = t.id
-  LEFT JOIN "user" u ON u.id = m.user_id
+  LEFT JOIN "user" u ON u.id = m.user_id AND COALESCE(u.is_active, TRUE)
  WHERE t.key IS NOT NULL
    AND (cardinality($1::text[]) = 0 OR LOWER(COALESCE(t.type, '')) = ANY($1))
  GROUP BY t.key, t.name, t.type, t.group_email
  ORDER BY t.key`
 
 func (r *worklogReportRepo) TeamContacts(ctx context.Context, teamTypes []string) ([]WorklogTeamContacts, error) {
-	if teamTypes == nil {
-		teamTypes = []string{}
-	}
+	// Both queries compare the type case-insensitively, so the caller's
+	// values are normalised to match. lowerAll never returns nil, which
+	// matters: pgx will not bind a nil slice to text[].
+	teamTypes = lowerAll(teamTypes)
 	rows, err := r.db.Query(ctx, worklogTeamContactsQuery, teamTypes)
 	if err != nil {
 		return nil, fmt.Errorf("query worklog team contacts: %w", err)

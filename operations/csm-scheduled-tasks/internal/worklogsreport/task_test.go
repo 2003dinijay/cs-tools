@@ -155,7 +155,7 @@ func TestSendUsesTheAnchorNotTheClock(t *testing.T) {
 	email := &fakeEmail{}
 	handler := worklogsreport.SendDaily(reports, email,
 		func() time.Time { return firing },
-		[]string{"leads-list@example.com"}, []string{"all-list@example.com"}, true)
+		[]string{"leads-list@example.com"}, []string{"all-list@example.com"}, "", true)
 
 	if err := handler(context.Background()); err != nil {
 		t.Fatalf("handler: %v", err)
@@ -186,7 +186,7 @@ func TestSendWeeklyUsesTheAnchor(t *testing.T) {
 	reports := &fakeReports{}
 	handler := worklogsreport.SendWeekly(reports, &fakeEmail{},
 		func() time.Time { return firing },
-		[]string{"leads-list@example.com"}, nil, true)
+		[]string{"leads-list@example.com"}, nil, "", true)
 
 	if err := handler(context.Background()); err != nil {
 		t.Fatalf("handler: %v", err)
@@ -203,12 +203,36 @@ func TestSendWithNoRecipientsFetchesNothing(t *testing.T) {
 	reports := &fakeReports{}
 	email := &fakeEmail{}
 	handler := worklogsreport.SendDaily(reports, email,
-		func() time.Time { return time.Now() }, nil, nil, true)
+		func() time.Time { return time.Now() }, nil, nil, "", true)
 
 	if err := handler(context.Background()); err != nil {
 		t.Fatalf("handler: %v", err)
 	}
 	if email.sent != 0 || !reports.from.IsZero() {
 		t.Errorf("fetched or sent with no recipients: sent=%d from=%v", email.sent, reports.from)
+	}
+}
+
+// A configured list that is blank is not an audience. {"to": [""]} has
+// length one, so a raw length check let it through -- and with the
+// derived fallback that once existed, the report went to the
+// registry-derived recipients instead: exactly what configuring the
+// lists exists to prevent.
+func TestSendTreatsABlankRecipientListAsEmpty(t *testing.T) {
+	for _, blank := range [][]string{{""}, {"   "}, {"", " "}} {
+		reports := &fakeReports{}
+		email := &fakeEmail{}
+		handler := worklogsreport.SendDaily(reports, email,
+			func() time.Time { return time.Now() }, blank, nil, "", true)
+
+		if err := handler(context.Background()); err != nil {
+			t.Fatalf("handler: %v", err)
+		}
+		if email.sent != 0 {
+			t.Errorf("to=%q sent %d mails, want 0", blank, email.sent)
+		}
+		if !reports.from.IsZero() {
+			t.Errorf("to=%q fetched a report nobody would receive", blank)
+		}
 	}
 }

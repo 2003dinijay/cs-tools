@@ -136,11 +136,21 @@ type WorklogTeamReport struct {
 	PendingHours  float64 `json:"pendingHours"`
 	TotalHours    float64 `json:"totalHours"`
 	// MembersForAverage is the divisor the two averages below actually
-	// use. The WEEKLY report excludes team leads from it, and excludes
-	// their logged hours from the numerator too -- ServiceNow's
-	// nMembers_Cal and time_exclude_lead. The DAILY report divides by
-	// the full membership. They genuinely differ; see the package notes
-	// in worklog_report_service.go.
+	// use, and it is NOT a count of non-lead members.
+	//
+	// WEEKLY: a flat Members - 1, whatever the number of leads.
+	// ServiceNow hardcodes it -- `totMem_team_cal = team.nMembers - 1`
+	// with the comment "exclude the lead" -- while the numerator
+	// subtracts the hours of EVERY lead. The two therefore disagree
+	// whenever a team has other than exactly one: a team of ten with
+	// two leads divides eight people's hours by nine and understates,
+	// one with no lead on the roster divides everyone's by nine and
+	// overstates. That is a defect in the original, kept because exact
+	// parity with the delivered mail is the goal here -- it is what
+	// makes the single-member team divide by zero.
+	//
+	// DAILY: present members (1 each, 0.5 for a half day) less one per
+	// present lead, which is self-consistent.
 	MembersForAverage         float64            `json:"membersForAverage"`
 	AvgApprovedHoursPerPerson float64            `json:"avgApprovedHoursPerPerson"`
 	AvgTotalHoursPerPerson    float64            `json:"avgTotalHoursPerPerson"`

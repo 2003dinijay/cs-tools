@@ -63,13 +63,10 @@ func TestWorklogsReportE2ESend(t *testing.T) {
 	}
 
 	// Issue keys link into the CSM portal, as they linked into the agent
-	// workspace in ServiceNow.
-	notify.CaseLinkBase = "https://support.wso2.com"
-	if v, ok := os.LookupEnv("CSM_PORTAL_BASE_URL"); ok {
-		notify.CaseLinkBase = v
-	}
+	// workspace in ServiceNow. Empty renders them as plain text.
+	caseLinkBase := os.Getenv("CSM_PORTAL_BASE_URL")
 
-	body := notify.RenderWorklogsReport(report)
+	body := notify.RenderWorklogsReport(report, caseLinkBase)
 	subject := notify.WorklogsReportSubject(report)
 
 	// A template placeholder that survived rendering would reach the

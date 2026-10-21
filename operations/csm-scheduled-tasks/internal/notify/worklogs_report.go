@@ -19,6 +19,7 @@ package notify
 import (
 	_ "embed"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -41,21 +42,19 @@ const (
 // WorklogsReportSubject is the mail's subject line, in the same shape the
 // delivered reports use: "[2026-10-18] CS Worklogs Daily Report" and
 // "[2026-10-05 - 2026-10-11] CS Worklogs Weekly Report".
-// CaseLinkBase is where an issue key in the mail points. ServiceNow
-// linked each one into its agent workspace
-// (wso2.notification.agent.base.url + now/workspace/agent/record/...),
-// a URL that stops existing at cutover. This is the CSM portal
-// equivalent, configured per deployment; an empty value renders the keys
-// as plain text rather than as links to nowhere.
-var CaseLinkBase string
-
 // caseLink renders one issue key, linked when a base URL is configured.
-func caseLink(iss worklogreport.IssueRef) string {
+//
+// ServiceNow linked each key into its agent workspace, a URL that stops
+// existing at cutover. caseLinkBase is the CSM portal equivalent and
+// defaults to EMPTY, which renders plain text: an unset deployment
+// shows the key rather than a link to the wrong host.
+func caseLink(caseLinkBase string, iss worklogreport.IssueRef) string {
 	key := escapeHTML(iss.Key)
-	if CaseLinkBase == "" || iss.ID == "" {
+	if caseLinkBase == "" || iss.ID == "" {
 		return key
 	}
-	return `<a href="` + escapeHTML(strings.TrimRight(CaseLinkBase, "/")+"/cases/"+iss.ID) +
+	href := strings.TrimRight(caseLinkBase, "/") + "/cases/" + url.PathEscape(iss.ID)
+	return `<a href="` + escapeHTML(href) +
 		`" style="color:#ff7300; text-decoration:none;">` + key + `</a>`
 }
 
@@ -70,7 +69,7 @@ func WorklogsReportSubject(r worklogreport.Report) string {
 // template serves both cadences: the daily report shows a Leave column and
 // disapproved entries, the weekly one worked days and a per-day average,
 // and the shared columns are identical.
-func RenderWorklogsReport(r worklogreport.Report) string {
+func RenderWorklogsReport(r worklogreport.Report, caseLinkBase string) string {
 	daily := r.Cadence != worklogreport.CadenceWeekly
 
 	cadenceLabel := "Weekly"
@@ -86,7 +85,7 @@ func RenderWorklogsReport(r worklogreport.Report) string {
 		"<!-- [SUMMARY_ROWS] -->", renderWorklogSummary(r, daily),
 		"<!-- [TEAM_SUMMARY_ROWS] -->", renderWorklogTeamSummary(r),
 		"<!-- [TYPE_ROWS] -->", renderWorklogTypes(r),
-		"<!-- [TEAM_SECTIONS] -->", renderWorklogTeamSections(r, daily),
+		"<!-- [TEAM_SECTIONS] -->", renderWorklogTeamSections(r, daily, caseLinkBase),
 		"<!-- [YEAR] -->", strconv.Itoa(time.Now().Year()),
 	)
 	return replacer.Replace(worklogsReportTemplate)
@@ -167,7 +166,7 @@ func renderWorklogTypes(r worklogreport.Report) string {
 // renderWorklogTeamSections builds the per-team developer tables -- the
 // bulk of the mail. The weekly report carries worked days and an average
 // per day; the daily one carries leave and disapproved entries instead.
-func renderWorklogTeamSections(r worklogreport.Report, daily bool) string {
+func renderWorklogTeamSections(r worklogreport.Report, daily bool, caseLinkBase string) string {
 	var b strings.Builder
 	for _, t := range r.Teams {
 		b.WriteString(`<h3 style="margin:28px 0 4px; font-size:16px; color:#465868;">` +
@@ -219,7 +218,7 @@ func renderWorklogTeamSections(r worklogreport.Report, daily bool) string {
 			}
 			links := make([]string, 0, len(d.Issues))
 			for _, iss := range d.Issues {
-				links = append(links, caseLink(iss))
+				links = append(links, caseLink(caseLinkBase, iss))
 			}
 			b.WriteString(`<td ` + cellLeft + `>` + strings.Join(links, " ") + `</td>`)
 			b.WriteString(`</tr>`)

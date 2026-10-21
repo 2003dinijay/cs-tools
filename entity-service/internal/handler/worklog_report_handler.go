@@ -80,7 +80,10 @@ func (h *WorklogReportHandler) GetWorklogReport(w http.ResponseWriter, r *http.R
 		apierror.WriteJSON(w, http.StatusBadRequest, "to must not be before from")
 		return
 	}
-	if to.Sub(from) > worklogReportMaxSpanDays*24*time.Hour {
+	// Inclusive: from and to are both reported on, so 92 days is a gap
+	// of 91 between the endpoints. Comparing the gap against 92 let 93
+	// days through while the message and the spec both said 92.
+	if to.Sub(from) >= worklogReportMaxSpanDays*24*time.Hour {
 		apierror.WriteJSON(w, http.StatusBadRequest, "the range must not exceed 92 days")
 		return
 	}

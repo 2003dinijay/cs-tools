@@ -77,12 +77,12 @@ import (
 // the weekly per-team average excludes leads deliberately rather than
 // being off by one, and a half-day absence costs a whole worked day.
 //
-// ONE KNOWN DIFFERENCE REMAINS. The weekly mail's by-type issue counts
-// sum to 791 against its own stated total of 574, while the daily mail's
-// reconcile exactly. We count issues identically everywhere -- distinct
-// (person, work item) pairs -- so ours sum to the total by construction.
-// The 791 comes out of buildTimeReport in the parent class, which we have
-// not seen yet.
+// THE 791-AGAINST-574 GAP IS EXPLAINED, and reproduced. buildTimeReport
+// increments nCases once per case but caseTypes[type] once per matching
+// DATE, so a case worked on three days adds 1 to the issue total and 3
+// to its type bucket. The two counters measure cases and case-days
+// respectively and never reconciled by design. A daily report shows no
+// gap only because one day cannot hold a second day.
 
 // Only two states reach the report at all. addTimeReportDetails maps
 // 'Approved' to the approved bucket and 'Submitted' to the pending one,
@@ -244,11 +244,20 @@ func (s *worklogReportService) BuildReport(ctx context.Context, req domain.Workl
 	}
 
 	// Time, at the (person, work item, date, state) grain the repo returns.
+	// A type bucket counts CASE-DAYS, not cases, and that is not a
+	// mistake. ServiceNow increments nCases once per case but
+	// caseTypes[type] once per matching DATE inside the same loop, so a
+	// case worked on three days adds 1 to the issue total and 3 to its
+	// type. That is the whole of the 791-against-574 gap in the
+	// delivered weekly mail: the two counters measure different things
+	// and were never meant to reconcile. The repository already returns
+	// one row per (person, item, date, state), so each row is one
+	// increment.
 	type typeAgg struct {
-		approvedMin int
-		pendingMin  int
-		approved    map[string]bool
-		pending     map[string]bool
+		approvedMin  int
+		pendingMin   int
+		approvedDays int
+		pendingDays  int
 	}
 	byType := map[string]*typeAgg{}
 
@@ -272,23 +281,28 @@ func (s *worklogReportService) BuildReport(ctx context.Context, req domain.Workl
 
 		ta := byType[t.ItemType]
 		if ta == nil {
-			ta = &typeAgg{approved: map[string]bool{}, pending: map[string]bool{}}
+			ta = &typeAgg{}
 			byType[t.ItemType] = ta
 		}
-		// Issue identity is the (person, work item) pair, so the same item
-		// worked by two people counts once for each -- which is what makes
-		// the team totals in the delivered mail reconcile.
-		pairKey := t.UserID + "|" + t.ItemID
+		// Issue identity is the (person, work item) pair, so the same
+		// item worked by two people counts once for each -- which is
+		// what makes the team totals in the delivered mail reconcile.
+		//
+		// A person's approved and pending counts are kept apart and then
+		// ADDED, so an item they logged against in both states counts
+		// twice. ServiceNow does the same: its team total is
+		// approved.nCases + pending.nCases over two separate maps. It
+		// overstates, but it is the figure the mail prints.
 		if approved {
 			u.approvedMin += t.Minutes
 			u.approvedKeys[t.ItemID] = true
 			ta.approvedMin += t.Minutes
-			ta.approved[pairKey] = true
+			ta.approvedDays++
 		} else {
 			u.pendingMin += t.Minutes
 			u.pendingKeys[t.ItemID] = true
 			ta.pendingMin += t.Minutes
-			ta.pending[pairKey] = true
+			ta.pendingDays++
 		}
 		if !u.seenKey[t.ItemID] && t.IssueKey != "" {
 			u.seenKey[t.ItemID] = true
@@ -560,7 +574,7 @@ func (s *worklogReportService) BuildReport(ctx context.Context, req domain.Workl
 		bucket := domain.WorklogTypeBucket{
 			Type:          typ,
 			Label:         label,
-			Issues:        len(ta.approved) + len(ta.pending),
+			Issues:        ta.approvedDays + ta.pendingDays,
 			ApprovedHours: approvedHrs,
 			PendingHours:  pendingHrs,
 			TotalHours:    round2(approvedHrs + pendingHrs),

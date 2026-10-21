@@ -126,12 +126,20 @@ func TestResolvePrecedence(t *testing.T) {
 		t.Errorf("override did not replace the audience: %+v", got)
 	}
 
-	// With nothing configured, the derived audience is the fallback --
-	// better than mailing nobody, since SendEmail treats an empty
-	// recipient list as success.
+	// With nothing configured, nothing is sent. There is deliberately
+	// no fallback to the derived audience: a blank configured entry
+	// would otherwise mail the registry-derived recipients, which is
+	// what configuring the lists exists to prevent. Sending nothing is
+	// the safe failure.
 	got = worklogreport.Resolve(derived, worklogreport.Audience{}, nil)
-	if strings.Join(got.To, ",") != "lead@example.com" {
-		t.Errorf("want the derived fallback, got %v", got.To)
+	if len(got.To) != 0 || len(got.Cc) != 0 {
+		t.Errorf("want no audience when nothing is configured, got %+v", got)
+	}
+
+	// And a blank configured entry is not an audience either.
+	got = worklogreport.Resolve(derived, worklogreport.Audience{To: []string{" "}}, nil)
+	if len(got.To) != 0 {
+		t.Errorf("a blank configured to produced an audience: %v", got.To)
 	}
 }
 

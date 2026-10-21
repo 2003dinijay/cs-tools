@@ -280,9 +280,24 @@ func seedWorklogDailyFixture(ctx context.Context, t *testing.T, pool *pgxpool.Po
 		}
 	}
 
-	// A fixture owns the tables it asserts on, so it clears them first --
-	// otherwise a second run doubles every figure.
-	exec(`TRUNCATE time_card, team_schedule_assignment, team_member, work_item, team, "user" CASCADE`)
+	// Clear only the rows this fixture owns.
+	//
+	// TRUNCATE ... team ... CASCADE would reach further than it looks:
+	// migration 0202 gives team_schedule_absence_kind a
+	// moves_to_team_key referencing team(key), so the cascade empties
+	// the leave-kind CATALOGUE as well -- twenty rows of reference data
+	// the migrations seed once. Every test that looks up ANNUAL_LEAVE
+	// then fails on a freshly migrated database, which is to say the
+	// leave paths were never actually being verified, and any other
+	// suite sharing the database loses the catalogue too.
+	fixtureTeams := []string{"americas", "atlas", "castor", "draco", "vega", "cs-leadership"}
+	exec(`DELETE FROM time_card WHERE created_by = 'seed'`)
+	exec(`DELETE FROM team_schedule_assignment WHERE team_key = ANY($1)`, fixtureTeams)
+	exec(`DELETE FROM team_schedule_absence WHERE team_key = ANY($1)`, fixtureTeams)
+	exec(`DELETE FROM team_member WHERE team_id IN (SELECT id FROM team WHERE key = ANY($1))`, fixtureTeams)
+	exec(`DELETE FROM work_item WHERE created_by = 'seed'`)
+	exec(`DELETE FROM team WHERE key = ANY($1)`, fixtureTeams)
+	exec(`DELETE FROM "user" WHERE email LIKE '%@example.com'`)
 
 	// Management: its own team, type cre-leadership, contributing its
 	// whole membership rather than just a lead. It appears in no team
@@ -826,5 +841,83 @@ func TestWorklogDailyAppliesLeaveOnAWeekend(t *testing.T) {
 	if got.Totals.NonLeaveMembers != 4 {
 		t.Errorf("Non Leave Members = %v, want 4 (five present, one on full-day leave)",
 			got.Totals.NonLeaveMembers)
+	}
+}
+
+// *** THE 791-AGAINST-574 GAP, REPRODUCED. ***
+//
+// ServiceNow increments nCases once per case but caseTypes[type] once
+// per matching DATE, so a case worked on more than one day adds 1 to
+// the issue total and one per day to its type bucket. The delivered
+// weekly mail's type counts sum to 791 against its stated 574 for that
+// reason alone, and the daily mail shows no gap only because one day
+// cannot contain a second.
+//
+// The fixture elsewhere gives every case a single day, so the two
+// counters agree and the behaviour goes untested. This logs a second
+// day against a case that already has one.
+func TestWorklogTypeCountsAreCaseDaysNotCases(t *testing.T) {
+	dsn := os.Getenv("ENTITY_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("ENTITY_TEST_DATABASE_URL is not set; skipping the live-database tests")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer pool.Close()
+
+	seedWorklogDailyFixture(ctx, t, pool)
+	ctx = repository.WithSystemIdentity(ctx)
+
+	svc := service.NewWorklogReportService(
+		repository.NewWorklogReportRepository(repository.NewScoped(pool)), nil)
+	week := func() domain.WorklogReport {
+		r, err := svc.BuildReport(ctx, domain.WorklogReportRequest{
+			Cadence: domain.WorklogReportCadenceWeekly,
+			From:    time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC),
+			To:      time.Date(2026, 10, 18, 0, 0, 0, 0, time.UTC)})
+		if err != nil {
+			t.Fatalf("BuildReport: %v", err)
+		}
+		return r
+	}
+	sum := func(r domain.WorklogReport) int {
+		n := 0
+		for _, b := range r.ByType {
+			n += b.Issues
+		}
+		return n
+	}
+
+	before := week()
+	if sum(before) != before.Totals.Issues {
+		t.Fatalf("with one day per case the counters should agree: byType %d, issues %d",
+			sum(before), before.Totals.Issues)
+	}
+
+	// A SECOND day on a case asha@ already logged against on the 18th.
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO time_card (id, created_on, updated_on, created_by, updated_by,
+		   case_id, user_id, work_date, state, analyzing_minutes)
+		 SELECT gen_random_uuid(), NOW(), NOW(), 'seed', 'seed',
+		        wi.id, $1, DATE '2026-10-16', 'SUBMITTED', 60
+		   FROM work_item wi WHERE wi.wso2_id = 'ACME-515'`,
+		"00000000-0000-0000-0000-000000000001"); err != nil {
+		t.Fatalf("seed second day: %v", err)
+	}
+
+	after := week()
+	if after.Totals.Issues != before.Totals.Issues {
+		t.Errorf("issues = %d, want %d unchanged -- a second day is not a second issue",
+			after.Totals.Issues, before.Totals.Issues)
+	}
+	if sum(after) != sum(before)+1 {
+		t.Errorf("byType = %d, want %d -- the second day is a second case-day",
+			sum(after), sum(before)+1)
+	}
+	if sum(after) == after.Totals.Issues {
+		t.Error("byType still reconciles with the total; the case-day counter is not case-days")
 	}
 }

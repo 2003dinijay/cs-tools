@@ -25,6 +25,8 @@ package worklogsreport
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/notify"
@@ -78,14 +80,14 @@ func DailyDate(now time.Time, loc *time.Location) time.Time {
 // SendDaily returns the daily sub-cron handler. anchor supplies the
 // scheduled firing time this run belongs to -- see send.
 func SendDaily(reports ReportFetcher, email EmailSender, anchor func() time.Time,
-	to, cc []string, emailsEnabled bool) func(ctx context.Context) error {
-	return send(reports, email, worklogreport.CadenceDaily, anchor, to, cc, emailsEnabled)
+	to, cc []string, caseLinkBase string, emailsEnabled bool) func(ctx context.Context) error {
+	return send(reports, email, worklogreport.CadenceDaily, anchor, to, cc, caseLinkBase, emailsEnabled)
 }
 
 // SendWeekly returns the weekly sub-cron handler.
 func SendWeekly(reports ReportFetcher, email EmailSender, anchor func() time.Time,
-	to, cc []string, emailsEnabled bool) func(ctx context.Context) error {
-	return send(reports, email, worklogreport.CadenceWeekly, anchor, to, cc, emailsEnabled)
+	to, cc []string, caseLinkBase string, emailsEnabled bool) func(ctx context.Context) error {
+	return send(reports, email, worklogreport.CadenceWeekly, anchor, to, cc, caseLinkBase, emailsEnabled)
 }
 
 // send fetches, renders and sends one report for the period its anchor
@@ -111,10 +113,17 @@ func SendWeekly(reports ReportFetcher, email EmailSender, anchor func() time.Tim
 // and a day where the mail simply does not arrive is indistinguishable
 // from a day where the job broke.
 func send(reports ReportFetcher, email EmailSender, cadence worklogreport.Cadence,
-	anchor func() time.Time, to, cc []string, emailsEnabled bool) func(ctx context.Context) error {
+	anchor func() time.Time, to, cc []string, caseLinkBase string,
+	emailsEnabled bool) func(ctx context.Context) error {
+
+	// Gate on the CLEANED list, not the raw one. {"to": [""]} has
+	// length one and is no audience at all; checking len(to) let it
+	// through to a send with no recipients.
+	cleanTo := nonBlank(to)
+	cleanCc := nonBlank(cc)
 
 	return func(ctx context.Context) error {
-		if !emailsEnabled || len(to) == 0 {
+		if !emailsEnabled || len(cleanTo) == 0 {
 			return nil
 		}
 
@@ -147,9 +156,34 @@ func send(reports ReportFetcher, email EmailSender, cadence worklogreport.Cadenc
 		}
 
 		audience := worklogreport.Resolve(report.Recipients,
-			worklogreport.Audience{To: to, Cc: cc}, nil)
+			worklogreport.Audience{To: cleanTo, Cc: cleanCc}, nil)
+
+		// The drift check the configured lists are worth having: who
+		// the team registry says should receive this against who
+		// actually will. Neither direction is an error -- the lists are
+		// maintained by hand on purpose -- but a lead who joins and
+		// never appears, or one who left and still receives it, shows
+		// up here instead of in somebody's inbox.
+		if missing, extra := worklogreport.Drift(report.Recipients, audience); len(missing) > 0 || len(extra) > 0 {
+			slog.Info("worklog report audience drifts from the team registry",
+				"cadence", cadence,
+				"derivedButNotConfigured", strings.Join(missing, ","),
+				"configuredButNotDerived", strings.Join(extra, ","))
+		}
 
 		return email.SendEmail(ctx, audience.To, audience.Cc,
-			notify.WorklogsReportSubject(report), notify.RenderWorklogsReport(report))
+			notify.WorklogsReportSubject(report), notify.RenderWorklogsReport(report, caseLinkBase))
 	}
+}
+
+// nonBlank drops empty and whitespace-only entries, so a configured list
+// that is blank reads as absent rather than as an audience of one.
+func nonBlank(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }

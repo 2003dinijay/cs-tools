@@ -59,17 +59,17 @@ type Audience struct {
 //     cannot reach the real lists.
 //  2. configured -- the authoritative lists, reproducing the delivered
 //     mail exactly.
-//  3. derived -- only when nothing is configured, so a deployment that
-//     forgets the lists still reaches the team leads rather than
-//     silently mailing nobody.
-func Resolve(derived Recipients, configured Audience, override []string) Audience {
+//
+// There is NO fallback to the derived audience. An earlier version fell
+// through to it when nothing was configured, which turned a blank entry
+// -- {"to": [""]} -- into a mail to the registry-derived recipients:
+// precisely what configuring the lists exists to prevent. A deployment
+// that forgets the lists now sends nothing, which is the safe failure.
+func Resolve(_ Recipients, configured Audience, override []string) Audience {
 	if o := clean(override); len(o) > 0 {
 		return Audience{To: o}
 	}
-	if len(clean(configured.To)) > 0 {
-		return Audience{To: dedupe(configured.To), Cc: dedupe(configured.Cc)}
-	}
-	return Audience{To: dedupe(derived.To), Cc: dedupe(derived.Cc)}
+	return Audience{To: dedupe(configured.To), Cc: dedupe(configured.Cc)}
 }
 
 // Drift reports addresses the team registry says should receive this

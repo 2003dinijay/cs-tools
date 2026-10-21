@@ -44,6 +44,7 @@ import (
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/engine"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/entitycases"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/housekeeping"
+	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/httpsec"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/ledger"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/notify"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/opencases"
@@ -321,12 +322,17 @@ func main() {
 
 	const openCasesTaskName = "open_cases_report"
 	// Where an issue key in a CS Worklogs mail points. ServiceNow linked
-	// into its agent workspace, a URL that dies at cutover; leaving this
-	// unset renders the keys as plain text rather than as links to
-	// nowhere.
-	notify.CaseLinkBase = "https://support.wso2.com"
-	if v, ok := os.LookupEnv("CSM_PORTAL_BASE_URL"); ok {
-		notify.CaseLinkBase = v
+	// into its agent workspace, a URL that dies at cutover. Default is
+	// EMPTY, which renders the keys as plain text: better than linking
+	// every engineer at a host nobody configured. Validated like the
+	// other outbound URLs, so a typo stops startup rather than
+	// producing a mail full of dead links.
+	worklogCaseLinkBase := strings.TrimRight(os.Getenv("CSM_PORTAL_BASE_URL"), "/")
+	if worklogCaseLinkBase != "" {
+		if err := httpsec.RequireSecureURL(worklogCaseLinkBase); err != nil {
+			slog.Error("invalid CSM_PORTAL_BASE_URL", "err", err)
+			os.Exit(1)
+		}
 	}
 
 	const worklogsDailyTaskName = "cs_worklogs_daily_report"
@@ -426,14 +432,14 @@ func main() {
 			Schedule: worklogsDailySchedule,
 			Handler: worklogsreport.SendDaily(worklogReportClient, emailClient,
 				periodStart(worklogsDailySchedule),
-				worklogsDailyTo, worklogsDailyCc, alertsEnabled),
+				worklogsDailyTo, worklogsDailyCc, worklogCaseLinkBase, alertsEnabled),
 		},
 		{
 			Name:     worklogsWeeklyTaskName,
 			Schedule: worklogsWeeklySchedule,
 			Handler: worklogsreport.SendWeekly(worklogReportClient, emailClient,
 				periodStart(worklogsWeeklySchedule),
-				worklogsWeeklyTo, worklogsWeeklyCc, alertsEnabled),
+				worklogsWeeklyTo, worklogsWeeklyCc, worklogCaseLinkBase, alertsEnabled),
 		},
 		// The first sub-cron here that does real, per-row, multi-step,
 		// partial-failure-tolerant work rather than a bulk delete or a
