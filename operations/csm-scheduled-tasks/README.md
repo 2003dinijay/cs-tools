@@ -88,18 +88,20 @@ string alone. Task names are API contracts: renaming one orphans its history and
 Two settings exist for checking a report in a real deployment, production included, before its
 audience sees it:
 
-- `EMAIL_DEBUG_RECIPIENTS` redirects every email this component sends to the listed addresses. The
-  real To/Cc are never addressed; they are named in a notice at the top of the body, and the
-  subject gets a `[Test copy]` prefix. Everything else is exactly what the audience would get,
-  built from the deployment's real data.
+- A `debug` list on a report task's `SUB_CRON_RECIPIENTS` entry puts **that one report** in debug
+  mail mode: it goes to the listed addresses instead of its real audience, with the real To/Cc named
+  in a notice at the top of the body and `[Test copy]` prefixed to the subject. Everything else is
+  exactly what the audience would get, built from the deployment's real data. Other reports and
+  every failure alert are unaffected.
 - `TRYOUT_TASK=<task name>` runs that one task's handler once, right now, and exits. The schedule
   is ignored, the ledger is not touched (the run is neither recorded nor retried), and the engine
-  never ticks. It refuses to start without `EMAIL_DEBUG_RECIPIENTS`: a tryout is for checking, and
-  checking must never reach the real audience. The task names are the ones in the table above.
+  never ticks. It refuses to start unless that task has a `debug` list: a tryout is for checking,
+  and checking must never reach the real audience. The task names are the ones in the table above.
 
-The intended routine in Choreo: set both variables, run the scheduled task once by hand, confirm
-the mail in the debug inboxes, then unset both. Leaving `EMAIL_DEBUG_RECIPIENTS` set silently keeps
-every report away from its audience, which is why startup logs a warning while it is on.
+The intended routine in Choreo: add the task's `debug` list, set `TRYOUT_TASK`, run the scheduled
+task once by hand, confirm the mail in the debug inbox, then remove both. Leaving a `debug` list in
+place silently keeps that report away from its audience, which is why startup names every report
+on trial in a warning.
 
 ### Alerting
 
@@ -225,9 +227,8 @@ treated as unset, except where noted. All example values are placeholders.
 | `EMAIL_FROM_ADDRESS` | No | empty | Fixed From address on every email sent. | `noreply@example.com` |
 | `ALERTS_ENABLED` | No | `true` | Global kill switch for all emails (failure alerts and report emails). When false, failures are still recorded and retried, and report tasks skip their work. | `false` |
 | `ALERT_RECIPIENTS` | No | empty | Comma-separated standing audience emailed on every failed attempt of every task. | `oncall@example.com` |
-| `EMAIL_DEBUG_RECIPIENTS` | No | empty | Debug mail mode. When set, **every** email this component sends (reports and failure alerts) goes to these addresses instead of its real audience, with `[Test copy]` prefixed to the subject and a notice at the top naming who it would have gone to. See "Debug mail mode and tryouts". | `you@example.com,qa@example.com` |
-| `TRYOUT_TASK` | No | empty | Runs the named task once, immediately, outside its schedule and the ledger, then exits. Refuses to start unless `EMAIL_DEBUG_RECIPIENTS` is set. See "Debug mail mode and tryouts". | `migration_case_report` |
-| `SUB_CRON_RECIPIENTS` | No | empty | JSON object of per-task recipients keyed by task name: `{"<task>": {"to": [...], "cc": [...]}}`. Extra failure-alert audience for most tasks; the actual report audience for `stale_cases_report` and `open_cases_report`. | `{"stale_cases_report":{"to":["team@example.com"],"cc":[]}}` |
+| `TRYOUT_TASK` | No | empty | Runs the named task once, immediately, outside its schedule and the ledger, then exits. Refuses to start unless that task has a `debug` list in `SUB_CRON_RECIPIENTS`. See "Debug mail mode and tryouts". | `migration_case_report` |
+| `SUB_CRON_RECIPIENTS` | No | empty | JSON object of per-task recipients keyed by task name: `{"<task>": {"to": [...], "cc": [...], "debug": [...]}}`. Extra failure-alert audience for most tasks; the actual report audience for `stale_cases_report` and `open_cases_report`. `debug`, on a report task, puts that one report in debug mail mode (see "Debug mail mode and tryouts"). | `{"stale_cases_report":{"to":["team@example.com"],"cc":[],"debug":["you@example.com"]}}` |
 | `SUB_CRON_SCHEDULES` | No | empty | JSON object overriding task schedules by name: `{"<task>": "<cron>"}`. Unlisted tasks keep their built-in default. An invalid cron expression stops startup. | `{"housekeeping_cleanup":"0 4 * * *"}` |
 | `DRIVER_INTERVAL` | No | `1h` | Expected invocation cadence; must match the platform trigger. Go duration syntax, must be positive. Used as the default retry backoff and to size the orphaned-claim safety margin. | `15m` |
 | `HOUSEKEEPING_RETENTION_DAYS` | No | `30` | Days of resolved ledger history kept by `housekeeping_cleanup`. Plain positive integer, not a duration string. | `30` |

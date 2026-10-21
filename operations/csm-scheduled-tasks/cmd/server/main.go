@@ -32,6 +32,7 @@ import (
 	"math"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -260,16 +261,6 @@ func main() {
 	// check below covers this list too, once every task's own To is known.
 	alertRecipients := splitComma(os.Getenv("ALERT_RECIPIENTS"))
 	emailBaseURL := os.Getenv("EMAIL_BASE_URL")
-	// Debug mail mode -- see notify.Config.DebugRecipients. Every email
-	// this component sends, reports and failure alerts alike, goes to
-	// these addresses instead of its real audience. It is the way to run
-	// a report against production data for a few people before it goes to
-	// everyone, and the precondition for TRYOUT_TASK below.
-	emailDebugRecipients := splitComma(os.Getenv("EMAIL_DEBUG_RECIPIENTS"))
-	if len(emailDebugRecipients) > 0 {
-		slog.Warn("debug mail mode is on: every email goes to the debug recipients only, with [Test copy] in the subject",
-			"debugRecipients", len(emailDebugRecipients))
-	}
 
 	// Email itself is not required for every deployment — EMAIL_BASE_URL is
 	// read with os.Getenv, not mustEnv, matching
@@ -279,13 +270,12 @@ func main() {
 	// the same shared OAUTH2_* credentials as ledgerClient above, not its
 	// own — only BaseURL/Scopes/FromAddress are specific to this client.
 	emailClient, err := notify.NewClient(notify.Config{
-		BaseURL:         emailBaseURL,
-		TokenURL:        oauthTokenURL,
-		ClientID:        oauthClientID,
-		ClientSecret:    oauthClientSecret,
-		Scopes:          splitComma(os.Getenv("EMAIL_SCOPES")),
-		FromAddress:     os.Getenv("EMAIL_FROM_ADDRESS"),
-		DebugRecipients: emailDebugRecipients,
+		BaseURL:      emailBaseURL,
+		TokenURL:     oauthTokenURL,
+		ClientID:     oauthClientID,
+		ClientSecret: oauthClientSecret,
+		Scopes:       splitComma(os.Getenv("EMAIL_SCOPES")),
+		FromAddress:  os.Getenv("EMAIL_FROM_ADDRESS"),
 	})
 	if err != nil {
 		slog.Error("failed to construct email client", "err", err)
@@ -296,6 +286,15 @@ func main() {
 	// parseSubCronSchedules/parseSubCronRecipients's own doc comments.
 	scheduleOverrides := parseSubCronSchedules(os.Getenv("SUB_CRON_SCHEDULES"))
 	recipientOverrides := parseSubCronRecipients(os.Getenv("SUB_CRON_RECIPIENTS"))
+	// Debug mail mode is per report -- see notify.ForReport. A task whose
+	// SUB_CRON_RECIPIENTS entry carries a "debug" list sends its report to
+	// that list only, with [Test copy] in the subject, until the list is
+	// removed. Startup names every such task: left in place, a report on
+	// trial looks exactly like a quiet week to its real audience.
+	if onTrial := tasksWithDebugRecipients(recipientOverrides); len(onTrial) > 0 {
+		slog.Warn("debug mail mode is on for these reports: they go to their debug recipients only, with [Test copy] in the subject",
+			"tasks", onTrial)
+	}
 
 	const housekeepingTaskName = "housekeeping_cleanup"
 	housekeepingTo, housekeepingCc := recipientsFor(recipientOverrides, housekeepingTaskName)
@@ -305,6 +304,7 @@ func main() {
 
 	const staleCasesTaskName = "stale_cases_report"
 	staleCasesTo, staleCasesCc := recipientsFor(recipientOverrides, staleCasesTaskName)
+	staleCasesEmail := notify.ForReport(emailClient, debugFor(recipientOverrides, staleCasesTaskName))
 	// Fixed, not env-configurable — unlike HOUSEKEEPING_RETENTION_DAYS, there's
 	// no operational reason to tune this per deployment today. Revisit as an
 	// env var (mirroring envDays("HOUSEKEEPING_RETENTION_DAYS", 30)'s shape)
@@ -313,6 +313,7 @@ func main() {
 
 	const openCasesTaskName = "open_cases_report"
 	openCasesTo, openCasesCc := recipientsFor(recipientOverrides, openCasesTaskName)
+	openCasesEmail := notify.ForReport(emailClient, debugFor(recipientOverrides, openCasesTaskName))
 
 	const publishScheduledAnnouncementsTaskName = "publish_scheduled_announcements"
 	publishScheduledAnnouncementsTo, publishScheduledAnnouncementsCc := recipientsFor(recipientOverrides, publishScheduledAnnouncementsTaskName)
@@ -355,7 +356,7 @@ func main() {
 		{
 			Name:     staleCasesTaskName,
 			Schedule: scheduleFor(scheduleOverrides, staleCasesTaskName, "0 7 * * *"),
-			Handler: stalecases.SendReport(entityCasesClient, emailClient,
+			Handler: stalecases.SendReport(entityCasesClient, staleCasesEmail,
 				staleCaseThreshold, staleCasesTo, staleCasesCc, alertsEnabled),
 			To: staleCasesTo,
 			Cc: staleCasesCc,
@@ -369,7 +370,7 @@ func main() {
 		{
 			Name:     openCasesTaskName,
 			Schedule: scheduleFor(scheduleOverrides, openCasesTaskName, "0 8 * * *"),
-			Handler:  opencases.SendReport(entityCasesClient, emailClient, openCasesTo, openCasesCc, alertsEnabled),
+			Handler:  opencases.SendReport(entityCasesClient, openCasesEmail, openCasesTo, openCasesCc, alertsEnabled),
 			To:       openCasesTo,
 			Cc:       openCasesCc,
 		},
@@ -597,13 +598,14 @@ func main() {
 	// A tryout runs one named task's handler once, right now, outside its
 	// schedule and without touching the ledger, so the run is neither
 	// recorded as the period's success nor retried. It exists to see a
-	// report land -- which is why it refuses to run without debug mail
-	// mode: a tryout is for checking, and checking must not reach the real
-	// audience. The process exits once the handler returns; the engine
-	// never ticks. In Choreo: set the two variables, run the task once by
-	// hand, read the log, unset them.
+	// report land -- which is why it refuses to run unless that task has
+	// debug recipients: a tryout is for checking, and checking must not
+	// reach the real audience. The process exits once the handler returns;
+	// the engine never ticks. In Choreo: add the task's "debug" list to
+	// SUB_CRON_RECIPIENTS, set TRYOUT_TASK, run the task once by hand, read
+	// the log and the debug inbox, then remove both.
 	if tryout := strings.TrimSpace(os.Getenv("TRYOUT_TASK")); tryout != "" {
-		runTryout(tasks, tryout, emailDebugRecipients, alertsEnabled)
+		runTryout(tasks, tryout, debugFor(recipientOverrides, tryout), alertsEnabled)
 		return
 	}
 
@@ -690,6 +692,10 @@ func scheduleFor(overrides map[string]string, taskName, def string) string {
 type subCronRecipients struct {
 	To []string `json:"to"`
 	Cc []string `json:"cc"`
+	// Debug, when set on a report-style task, puts that report in debug
+	// mail mode -- see notify.ForReport. Ignored on a task that sends no
+	// report of its own. Also what TRYOUT_TASK requires.
+	Debug []string `json:"debug"`
 }
 
 // parseSubCronRecipients decodes SUB_CRON_RECIPIENTS, a JSON object mapping
@@ -721,16 +727,41 @@ func recipientsFor(overrides map[string]subCronRecipients, taskName string) (to,
 	return r.To, r.Cc
 }
 
+// debugFor returns a task's "debug" list from SUB_CRON_RECIPIENTS, trimmed
+// and blank-free; nil when the task has none.
+func debugFor(overrides map[string]subCronRecipients, taskName string) []string {
+	var out []string
+	for _, a := range overrides[taskName].Debug {
+		if a = strings.TrimSpace(a); a != "" {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// tasksWithDebugRecipients names every task whose SUB_CRON_RECIPIENTS entry
+// carries a debug list, sorted, for the startup warning.
+func tasksWithDebugRecipients(overrides map[string]subCronRecipients) []string {
+	var names []string
+	for name := range overrides {
+		if len(debugFor(overrides, name)) > 0 {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
 // runTryout runs the task named name once and exits the process: 0 when the
 // handler returned nil, 1 when it failed or when the tryout was refused.
-// It is refused without debug recipients, since the only thing a tryout
-// must never do is send a real report to real people on somebody's
-// say-so; and it warns, rather than refuses, when ALERTS_ENABLED is false,
-// because every report task then succeeds without sending anything, which
-// is a confusing way to learn nothing.
+// It is refused unless the task has debug recipients, since the only thing
+// a tryout must never do is send a real report to real people on
+// somebody's say-so; and it warns, rather than refuses, when
+// ALERTS_ENABLED is false, because every report task then succeeds without
+// sending anything, which is a confusing way to learn nothing.
 func runTryout(tasks []registry.Task, name string, debugRecipients []string, emailsEnabled bool) {
 	if len(debugRecipients) == 0 {
-		slog.Error("TRYOUT_TASK is set but EMAIL_DEBUG_RECIPIENTS is not; refusing: a tryout sends to the debug recipients only",
+		slog.Error("TRYOUT_TASK is set but the task has no \"debug\" list in SUB_CRON_RECIPIENTS; refusing: a tryout sends to the debug recipients only",
 			"task", name)
 		os.Exit(1)
 	}
