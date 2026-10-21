@@ -70,6 +70,10 @@ export function usePatchIncident(): UseMutationResult<
       void queryClient.invalidateQueries({
         queryKey: [ApiQueryKeys.CSM_INCIDENT_TASKS, variables.id],
       });
+      // The update writes a field-change entry to the activity feed.
+      void queryClient.invalidateQueries({
+        queryKey: [ApiQueryKeys.INCIDENT_ACTIVITIES, variables.id],
+      });
       if (variables.patch.state && STATES_WITH_FLOWS.has(variables.patch.state)) {
         setTimeout(() => {
           void queryClient.invalidateQueries({

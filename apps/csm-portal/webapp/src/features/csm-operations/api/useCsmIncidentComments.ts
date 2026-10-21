@@ -126,6 +126,9 @@ export function usePostCsmIncidentComment(): UseMutationResult<
       void queryClient.invalidateQueries({
         queryKey: [ApiQueryKeys.INCIDENT_COMMENTS, variables.incidentId],
       });
+      void queryClient.invalidateQueries({
+        queryKey: [ApiQueryKeys.INCIDENT_ACTIVITIES, variables.incidentId],
+      });
     },
   });
 }

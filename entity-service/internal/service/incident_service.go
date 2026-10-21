@@ -953,15 +953,15 @@ func (s *incidentService) UpdateIncident(ctx context.Context, req domain.UpdateI
 		return domain.UpdateIncidentResponse{}, err
 	}
 
-	// The incident before this change, so a claim or a move out of NEW can be told apart from a
-	// re-send of what it already had (publishIncidentStopSignals). Read only when one could follow.
+	// The incident before this change: the activity feed records what each field was, and a claim
+	// or a move out of NEW is told apart from a re-send of what it already had
+	// (publishIncidentStopSignals). Read whenever the request changes a field; notes alone need it not.
 	var before domain.IncidentView
-	if (s.eventPublisher != nil && (req.State != nil || req.AssignedEngineerID != nil)) ||
-		(s.workaroundProblems != nil && req.State != nil) {
+	if hasLifecycle || hasRecord {
 		if b, err := s.repo.GetIncidentByID(ctx, req.ID); err == nil {
 			before = b
 		} else {
-			slog.WarnContext(ctx, "update incident: could not read the incident before the change; no stop signal will be sent",
+			slog.WarnContext(ctx, "update incident: could not read the incident before the change; no stop signal or activity entry will be written",
 				"incidentId", req.ID, "error", err)
 		}
 	}
@@ -985,6 +985,7 @@ func (s *incidentService) UpdateIncident(ctx context.Context, req domain.UpdateI
 		return domain.UpdateIncidentResponse{}, err
 	}
 	publishIncidentStopSignals(ctx, s.eventPublisher, req, before, view)
+	s.recordIncidentFieldChanges(ctx, req, before, view, actor.Email)
 
 	// Dual-write: a resolve with a workaround creates its problem in both stores.
 	problemID := s.createWorkaroundProblem(ctx, req, before, view)

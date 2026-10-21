@@ -63,6 +63,9 @@ export function useHandOffIncident(): UseMutationResult<
         queryKey: [ApiQueryKeys.INCIDENT_DETAILS, variables.incidentId],
       });
       void queryClient.invalidateQueries({ queryKey: [ApiQueryKeys.INCIDENTS] });
+      void queryClient.invalidateQueries({
+        queryKey: [ApiQueryKeys.INCIDENT_ACTIVITIES, variables.incidentId],
+      });
     },
   });
 }
