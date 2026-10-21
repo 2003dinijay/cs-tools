@@ -591,6 +591,11 @@ the picker's own rules (`applyRangeTx` / `applyAbsenceTx`, the transaction-takin
 cores of `ApplyRange` / `ApplyAbsence`), all inside one transaction, so the file
 lands whole or not at all.
 
+In the CSM portal, the roster of an SRE rota offers **Import rota** (next to
+Generate month) to anyone who may edit one of its teams: choose the file, Preview
+(a dry run), then Import. The dialog checks the file is for the rota on screen and
+offers the template below as a download.
+
 The standard structure, schema version 1:
 
 ```json
