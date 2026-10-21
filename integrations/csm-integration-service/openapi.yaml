@@ -2205,13 +2205,35 @@ components:
           type: integer
           description: Number of deployed products in this deployment.
 
+    DeployedProductDeployment:
+      type: object
+      description: The deployment a deployed product belongs to.
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          nullable: true
+        type:
+          type: string
+          nullable: true
+          description: Type of the deployment; null when it has none.
+          enum:
+            - PRIMARY_PRODUCTION
+            - STAGING
+            - QA
+            - STRESS
+            - UAT
+            - DEVELOPMENT
+
     DeployedProductView:
       type: object
       properties:
         id:
           type: string
         deployment:
-          $ref: '#/components/schemas/EntityRef'
+          $ref: '#/components/schemas/DeployedProductDeployment'
         product:
           $ref: '#/components/schemas/ProductRef'
         version:
