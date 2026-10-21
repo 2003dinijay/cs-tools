@@ -147,3 +147,16 @@ func TestChangeRequestService_ListFiltersReachTheRepository(t *testing.T) {
 		t.Fatal("an unknown type must be refused, not ignored")
 	}
 }
+
+func TestChangeRequestService_SortsByThePlannedWindow(t *testing.T) {
+	for _, field := range []domain.ChangeRequestSortField{
+		domain.ChangeRequestSortFieldPlannedStartOn, domain.ChangeRequestSortFieldPlannedEndOn,
+	} {
+		repo := &tagRecordingCRRepo{}
+		svc := NewChangeRequestService(repo, stubUserRepo{})
+		req := domain.SearchChangeRequestsRequest{SortBy: domain.ChangeRequestSort{Field: field, Order: domain.ChangeRequestSortOrderAsc}}
+		if _, err := svc.SearchChangeRequests(context.Background(), req); err != nil {
+			t.Fatalf("%s: unexpected error: %v", field, err)
+		}
+	}
+}

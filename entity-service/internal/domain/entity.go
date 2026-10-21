@@ -4548,6 +4548,10 @@ type ChangeRequestSortField string
 const (
 	ChangeRequestSortFieldCreatedOn ChangeRequestSortField = "createdOn"
 	ChangeRequestSortFieldUpdatedOn ChangeRequestSortField = "updatedOn"
+	// PostgreSQL only: the planned window. A change request with no planned
+	// date sorts last in either direction.
+	ChangeRequestSortFieldPlannedStartOn ChangeRequestSortField = "plannedStartOn"
+	ChangeRequestSortFieldPlannedEndOn   ChangeRequestSortField = "plannedEndOn"
 )
 
 // ChangeRequestSortOrder controls the sort direction.

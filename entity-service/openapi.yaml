@@ -21543,7 +21543,7 @@ components:
           properties:
             field:
               type: string
-              enum: [createdOn, updatedOn]
+              enum: [createdOn, updatedOn, plannedStartOn, plannedEndOn]
             order:
               type: string
               enum: [asc, desc]

@@ -754,13 +754,21 @@ func (r *changeRequestRepo) SearchChangeRequests(ctx context.Context, req domain
 	where += visSQL
 
 	sortCol := "wi.created_on"
-	if req.SortBy.Field == domain.ChangeRequestSortFieldUpdatedOn {
+	switch req.SortBy.Field {
+	case domain.ChangeRequestSortFieldUpdatedOn:
 		sortCol = "wi.updated_on"
+	case domain.ChangeRequestSortFieldPlannedStartOn:
+		sortCol = "cr.start_on"
+	case domain.ChangeRequestSortFieldPlannedEndOn:
+		sortCol = "cr.end_on"
 	}
 	sortDir := "DESC"
 	if req.SortBy.Order == domain.ChangeRequestSortOrderAsc {
 		sortDir = "ASC"
 	}
+	// The planned dates are nullable: a change request with none sorts last
+	// either way (created_on / updated_on are never NULL).
+	sortDir += " NULLS LAST"
 
 	countQuery := "SELECT COUNT(*) " + changeRequestFromJoins + " " + where
 	dataQuery := fmt.Sprintf("SELECT %s %s %s ORDER BY %s %s, wi.id LIMIT $%d OFFSET $%d",

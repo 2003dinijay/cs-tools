@@ -164,7 +164,7 @@ func (s *changeRequestService) SearchChangeRequests(ctx context.Context, req dom
 	// Reuses validChangeRequestSortField/validChangeRequestSortOrder (defined
 	// in sn_change_request_service.go) so an invalid sortBy is a 400 on both
 	// data sources instead of silently falling back to created_on DESC here.
-	if req.SortBy.Field != "" && !validChangeRequestSortField[req.SortBy.Field] {
+	if req.SortBy.Field != "" && !validChangeRequestSortField[req.SortBy.Field] && !postgresOnlyChangeRequestSortField[req.SortBy.Field] {
 		return domain.SearchChangeRequestsResponse{}, &apierror.ValidationError{Msg: "sortBy.field contains invalid value: " + string(req.SortBy.Field)}
 	}
 	if req.SortBy.Order != "" && !validChangeRequestSortOrder[req.SortBy.Order] {
@@ -196,6 +196,13 @@ func (s *changeRequestService) SearchChangeRequests(ctx context.Context, req dom
 }
 
 const defaultChangeRequestMaxGroups = 10
+
+// postgresOnlyChangeRequestSortField: sort fields this data source accepts
+// beyond the ServiceNow-backed service's validChangeRequestSortField.
+var postgresOnlyChangeRequestSortField = map[domain.ChangeRequestSortField]bool{
+	domain.ChangeRequestSortFieldPlannedStartOn: true,
+	domain.ChangeRequestSortFieldPlannedEndOn:   true,
+}
 
 // applyChangeRequestTagFilter hands the parsed "tag" filter to the repository
 // (through the request's internal Tags / ExcludeTags). Tags are staff
