@@ -29,7 +29,6 @@ import (
 )
 
 const (
-	maxRunbookNameLength      = 1000
 	maxRunbookAlertNameLength = 1000
 	maxRunbookAlerts          = 500
 	maxRunbookURLLength       = 2000
@@ -54,7 +53,7 @@ func (s *runbookService) List(ctx context.Context) (domain.RunbookList, error) {
 }
 
 func (s *runbookService) Create(ctx context.Context, req domain.SaveRunbookRequest) (domain.Runbook, error) {
-	clean, err := normalizeRunbook(req, true)
+	clean, err := normalizeRunbook(req)
 	if err != nil {
 		return domain.Runbook{}, err
 	}
@@ -65,7 +64,7 @@ func (s *runbookService) Update(ctx context.Context, id string, req domain.SaveR
 	if err := validateRunbookID(id); err != nil {
 		return domain.Runbook{}, err
 	}
-	clean, err := normalizeRunbook(req, true)
+	clean, err := normalizeRunbook(req)
 	if err != nil {
 		return domain.Runbook{}, err
 	}
@@ -93,6 +92,39 @@ func (s *runbookService) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
+func (s *runbookService) Unmerge(ctx context.Context, id string, req domain.UnmergeRunbookAlertsRequest) (domain.RunbookList, error) {
+	if err := validateRunbookID(id); err != nil {
+		return domain.RunbookList{}, err
+	}
+	alerts := cleanRunbookAlerts(req.Alerts)
+	if len(alerts) == 0 {
+		return domain.RunbookList{}, &apierror.ValidationError{Msg: "alerts must have at least one alert name"}
+	}
+	rbs, err := s.repo.Unmerge(ctx, actorOf(ctx), id, alerts)
+	if err != nil {
+		return domain.RunbookList{}, err
+	}
+	if rbs == nil {
+		return domain.RunbookList{}, &apierror.NotFoundError{Msg: "runbook not found"}
+	}
+	return domain.RunbookList{Runbooks: rbs}, nil
+}
+
+// cleanRunbookAlerts trims the alert names and drops blank and repeated (ignoring case) ones.
+func cleanRunbookAlerts(names []string) []string {
+	out := []string{}
+	seen := map[string]bool{}
+	for _, n := range names {
+		n = strings.TrimSpace(n)
+		if n == "" || seen[strings.ToLower(n)] {
+			continue
+		}
+		seen[strings.ToLower(n)] = true
+		out = append(out, n)
+	}
+	return out
+}
+
 func (s *runbookService) Import(ctx context.Context, req domain.ImportRunbooksRequest) (domain.ImportRunbooksResponse, error) {
 	if len(req.Runbooks) == 0 {
 		return domain.ImportRunbooksResponse{}, &apierror.ValidationError{Msg: "runbooks must have at least one entry"}
@@ -103,19 +135,10 @@ func (s *runbookService) Import(ctx context.Context, req domain.ImportRunbooksRe
 	// Later entries win: an alert listed again leaves the earlier entry.
 	cleaned := make([]domain.SaveRunbookRequest, len(req.Runbooks))
 	alertOwner := map[string]int{}
-	nameOwner := map[string]int{}
 	for i, r := range req.Runbooks {
-		clean, err := normalizeRunbook(r, false)
+		clean, err := normalizeRunbook(r)
 		if err != nil {
 			return domain.ImportRunbooksResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("runbooks[%d]: %s", i, err.Error())}
-		}
-		// Names are unique, so two entries naming the same runbook name cannot both be applied.
-		if clean.Name != "" {
-			key := strings.ToLower(clean.Name)
-			if j, taken := nameOwner[key]; taken {
-				return domain.ImportRunbooksResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("runbooks[%d] repeats the name %q of runbooks[%d]", i, clean.Name, j)}
-			}
-			nameOwner[key] = i
 		}
 		cleaned[i] = clean
 		for _, a := range clean.Alerts {
@@ -143,17 +166,9 @@ func validateRunbookID(id string) error {
 	return validateUUIDs("id", []string{id})
 }
 
-// normalizeRunbook trims every field, turns a blank link into nil, drops blank and repeated alerts and checks what is left; the name
-// may be left empty only when requireName is false (an import entry).
-func normalizeRunbook(req domain.SaveRunbookRequest, requireName bool) (domain.SaveRunbookRequest, error) {
-	name := strings.TrimSpace(req.Name)
-	if name == "" && requireName {
-		return req, &apierror.ValidationError{Msg: "name is required"}
-	}
-	if utf8.RuneCountInString(name) > maxRunbookNameLength {
-		return req, &apierror.ValidationError{Msg: fmt.Sprintf("name must be at most %d characters", maxRunbookNameLength)}
-	}
-	out := domain.SaveRunbookRequest{Name: name, Alerts: []string{}}
+// normalizeRunbook trims every field, turns a blank link into nil, drops blank and repeated alerts and checks what is left.
+func normalizeRunbook(req domain.SaveRunbookRequest) (domain.SaveRunbookRequest, error) {
+	out := domain.SaveRunbookRequest{Alerts: []string{}}
 	seen := map[string]bool{}
 	for _, a := range req.Alerts {
 		alert := strings.TrimSpace(a)

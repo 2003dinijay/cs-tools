@@ -23,27 +23,27 @@ import (
 	"sort"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 )
 
-// RunbookRepository reads and writes the runbook catalog (migrations 0241-0244).
+// RunbookRepository reads and writes the runbook catalog (migrations 0241-0243).
 type RunbookRepository interface {
 	// List is every runbook with its alerts, newest number first.
 	List(ctx context.Context) ([]domain.Runbook, error)
-	// Create adds a runbook with the next number; a ConflictError when its name or one of its alerts is taken.
+	// Create adds a runbook with the next number; a ConflictError when one of its alerts is taken.
 	Create(ctx context.Context, actor string, req domain.SaveRunbookRequest) (domain.Runbook, error)
-	// Update replaces a runbook's name, link and alerts; nil when there is none with that id, a ConflictError when the name or an
-	// alert is taken.
+	// Update replaces a runbook's link and alerts; nil when there is none with that id, a ConflictError when an alert is taken.
 	Update(ctx context.Context, actor, id string, req domain.SaveRunbookRequest) (*domain.Runbook, error)
 	// Delete removes a runbook and its alerts; false when there was none.
 	Delete(ctx context.Context, id string) (bool, error)
 	// Import applies every entry in one transaction: an entry replaces the runbook that holds its first listed alert, or is
 	// created; its alerts leave any other runbook, and a runbook left without alerts is removed and listed in the response.
 	Import(ctx context.Context, actor string, reqs []domain.SaveRunbookRequest) (domain.ImportRunbooksResponse, error)
-
+	// Unmerge moves each alert out of the runbook into a new runbook of its own, with the same link, and returns
+	// the runbook followed by the new ones; nil when there is none with that id.
+	Unmerge(ctx context.Context, actor, id string, alerts []string) ([]domain.Runbook, error)
 }
 
 type runbookRepo struct {
@@ -55,14 +55,14 @@ func NewRunbookRepository(db *pgxpool.Pool) RunbookRepository {
 	return &runbookRepo{db: db}
 }
 
-const runbookSelect = `SELECT r.id::text, r.number, r.name, r.runbook_url,
+const runbookSelect = `SELECT r.id::text, r.number, r.runbook_url,
 	COALESCE((SELECT array_agg(a.alert_name ORDER BY lower(a.alert_name)) FROM runbook_alert a WHERE a.runbook_id = r.id), '{}'),
 	r.created_on, r.created_by, r.updated_on, r.updated_by
 	FROM runbook r`
 
 func scanRunbook(row pgx.Row) (domain.Runbook, error) {
 	var rb domain.Runbook
-	err := row.Scan(&rb.ID, &rb.Number, &rb.Name, &rb.RunbookURL, &rb.Alerts, &rb.CreatedOn, &rb.CreatedBy, &rb.UpdatedOn, &rb.UpdatedBy)
+	err := row.Scan(&rb.ID, &rb.Number, &rb.RunbookURL, &rb.Alerts, &rb.CreatedOn, &rb.CreatedBy, &rb.UpdatedOn, &rb.UpdatedBy)
 	return rb, err
 }
 
@@ -91,9 +91,9 @@ func (r *runbookRepo) Create(ctx context.Context, actor string, req domain.SaveR
 	err := r.inTx(ctx, "create runbook", func(tx pgx.Tx) error {
 		var id string
 		if err := tx.QueryRow(ctx,
-			`INSERT INTO runbook (name, runbook_url, created_by, updated_by) VALUES ($1, $2, $3, $3) RETURNING id::text`,
-			req.Name, req.RunbookURL, actor).Scan(&id); err != nil {
-			return runbookNameErr(err, req.Name)
+			`INSERT INTO runbook (runbook_url, created_by, updated_by) VALUES ($1, $2, $2) RETURNING id::text`,
+			req.RunbookURL, actor).Scan(&id); err != nil {
+			return err
 		}
 		if err := setRunbookAlertsTx(ctx, tx, id, req.Alerts); err != nil {
 			return err
@@ -109,10 +109,10 @@ func (r *runbookRepo) Update(ctx context.Context, actor, id string, req domain.S
 	var out *domain.Runbook
 	err := r.inTx(ctx, "update runbook", func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx,
-			`UPDATE runbook SET name = $2, runbook_url = $3, updated_by = $4, updated_on = NOW() WHERE id = $1::uuid`,
-			id, req.Name, req.RunbookURL, actor)
+			`UPDATE runbook SET runbook_url = $2, updated_by = $3, updated_on = NOW() WHERE id = $1::uuid`,
+			id, req.RunbookURL, actor)
 		if err != nil {
-			return runbookNameErr(err, req.Name)
+			return err
 		}
 		if tag.RowsAffected() == 0 {
 			return nil
@@ -142,7 +142,7 @@ func (r *runbookRepo) Import(ctx context.Context, actor string, reqs []domain.Sa
 		all = append(all, req.Alerts...)
 	}
 	err := r.inTx(ctx, "import runbooks", func(tx pgx.Tx) error {
-		// Lock every runbook that holds an imported alert, in id order, so an edit or another import waits instead of
+		// Lock every runbook that holds an imported alert, in id order, so an unmerge or another import waits instead of
 		// emptying one of them behind this import's back, and two imports cannot deadlock.
 		var owners []string
 		rows, err := tx.Query(ctx,
@@ -176,26 +176,19 @@ func (r *runbookRepo) Import(ctx context.Context, actor string, reqs []domain.Sa
 				lowerAll(req.Alerts)).Scan(&id)
 			switch {
 			case errors.Is(err, pgx.ErrNoRows):
-				// A new runbook with no name in the file is named after its first alert.
-				name := req.Name
-				if name == "" {
-					name = req.Alerts[0]
-				}
 				if err := tx.QueryRow(ctx,
-					`INSERT INTO runbook (name, runbook_url, created_by, updated_by) VALUES ($1, $2, $3, $3) RETURNING id::text`,
-					name, req.RunbookURL, actor).Scan(&id); err != nil {
-					return runbookNameErr(err, name)
+					`INSERT INTO runbook (runbook_url, created_by, updated_by) VALUES ($1, $2, $2) RETURNING id::text`,
+					req.RunbookURL, actor).Scan(&id); err != nil {
+					return err
 				}
 				out.Created++
 			case err != nil:
 				return err
 			default:
-				// An entry with no name keeps the matched runbook's name.
 				if _, err := tx.Exec(ctx,
-					`UPDATE runbook SET name = COALESCE(NULLIF($4, ''), name), runbook_url = $2, updated_by = $3, updated_on = NOW()
-					 WHERE id = $1::uuid`,
-					id, req.RunbookURL, actor, req.Name); err != nil {
-					return runbookNameErr(err, req.Name)
+					`UPDATE runbook SET runbook_url = $2, updated_by = $3, updated_on = NOW() WHERE id = $1::uuid`,
+					id, req.RunbookURL, actor); err != nil {
+					return err
 				}
 				out.Updated++
 			}
@@ -215,7 +208,7 @@ func (r *runbookRepo) Import(ctx context.Context, actor string, reqs []domain.Sa
 		removed, err := tx.Query(ctx,
 			`DELETE FROM runbook r WHERE r.id = ANY($1::uuid[])
 			   AND NOT EXISTS (SELECT 1 FROM runbook_alert a WHERE a.runbook_id = r.id)
-			 RETURNING r.number, r.name, r.runbook_url`,
+			 RETURNING r.number, r.runbook_url`,
 			owners)
 		if err != nil {
 			return err
@@ -223,7 +216,7 @@ func (r *runbookRepo) Import(ctx context.Context, actor string, reqs []domain.Sa
 		defer removed.Close()
 		for removed.Next() {
 			var rb domain.RemovedRunbook
-			if err := removed.Scan(&rb.Number, &rb.Name, &rb.RunbookURL); err != nil {
+			if err := removed.Scan(&rb.Number, &rb.RunbookURL); err != nil {
 				return err
 			}
 			out.Removed = append(out.Removed, rb)
@@ -263,13 +256,70 @@ func setRunbookAlertsTx(ctx context.Context, tx pgx.Tx, id string, alerts []stri
 	return nil
 }
 
-// runbookNameErr turns a refusal of the unique runbook name into a ConflictError naming it; any other error passes through.
-func runbookNameErr(err error, name string) error {
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "runbook_name_key" {
-		return &apierror.ConflictError{Msg: "a runbook named " + name + " already exists"}
-	}
-	return err
+func (r *runbookRepo) Unmerge(ctx context.Context, actor, id string, alerts []string) ([]domain.Runbook, error) {
+	var out []domain.Runbook
+	err := r.inTx(ctx, "unmerge runbook alerts", func(tx pgx.Tx) error {
+		var url *string
+		if err := tx.QueryRow(ctx, `SELECT runbook_url FROM runbook WHERE id = $1::uuid FOR UPDATE`, id).Scan(&url); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil
+			}
+			return err
+		}
+		var held, moving int
+		if err := tx.QueryRow(ctx,
+			`SELECT count(*), count(*) FILTER (WHERE lower(btrim(alert_name)) = ANY($2::text[]))
+			 FROM runbook_alert WHERE runbook_id = $1::uuid`, id, lowerAll(alerts)).Scan(&held, &moving); err != nil {
+			return err
+		}
+		if moving != len(alerts) {
+			return &apierror.ValidationError{Msg: "every alert to unmerge must belong to this runbook"}
+		}
+		if moving == held {
+			return &apierror.ValidationError{Msg: "a runbook must keep at least one alert: leave one alert in it"}
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE runbook SET updated_by = $2, updated_on = NOW() WHERE id = $1::uuid`, id, actor); err != nil {
+			return err
+		}
+		created := make([]string, 0, len(alerts))
+		for _, requested := range alerts {
+			// The alert moves as stored, not as the request spelled it.
+			var alert string
+			if err := tx.QueryRow(ctx,
+				`SELECT alert_name FROM runbook_alert WHERE runbook_id = $1::uuid AND lower(btrim(alert_name)) = lower(btrim($2))`,
+				id, requested).Scan(&alert); err != nil {
+				return err
+			}
+			var newID string
+			if err := tx.QueryRow(ctx,
+				`INSERT INTO runbook (runbook_url, created_by, updated_by) VALUES ($1, $2, $2) RETURNING id::text`,
+				url, actor).Scan(&newID); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx,
+				`UPDATE runbook_alert SET runbook_id = $2::uuid WHERE runbook_id = $1::uuid AND lower(btrim(alert_name)) = lower(btrim($3))`,
+				id, newID, alert); err != nil {
+				return err
+			}
+			created = append(created, newID)
+		}
+		rows, err := tx.Query(ctx, runbookSelect+` WHERE r.id = ANY($1::uuid[]) ORDER BY r.id = $2::uuid DESC, r.number`,
+			append([]string{id}, created...), id)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			rb, err := scanRunbook(rows)
+			if err != nil {
+				return err
+			}
+			out = append(out, rb)
+		}
+		return rows.Err()
+	})
+	return out, err
 }
 
 // inTx runs fn in a transaction; a ConflictError or ValidationError passes through unwrapped so the handler can map it.

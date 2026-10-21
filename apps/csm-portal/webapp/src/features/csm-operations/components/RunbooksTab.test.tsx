@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import RunbooksTab from "@features/csm-operations/components/RunbooksTab";
@@ -27,6 +27,7 @@ vi.hoisted(() => {
 const mocks = vi.hoisted(() => ({
   create: vi.fn(),
   update: vi.fn(),
+  unmerge: vi.fn(),
   importRunbooks: vi.fn(),
   saveBlob: vi.fn(),
   downloadCsv: vi.fn(),
@@ -37,7 +38,6 @@ const catalog = [
   {
     id: "1",
     number: "RB0000001",
-    name: "Gateway",
     runbookUrl: "https://docs.example.com/gw",
     alerts: ["gw-5xx", "Gateway Latency High"],
     createdOn: "2026-03-02T10:00:00Z",
@@ -45,7 +45,7 @@ const catalog = [
     updatedOn: "2026-09-15T12:00:00Z",
     updatedBy: "editor@example.com",
   },
-  { id: "2", number: "RB0000002", name: "JVM", runbookUrl: null, alerts: ["JVM Heap"], createdOn: "", createdBy: "", updatedOn: "", updatedBy: "" },
+  { id: "2", number: "RB0000002", runbookUrl: null, alerts: ["JVM Heap"], createdOn: "", createdBy: "", updatedOn: "", updatedBy: "" },
 ];
 
 const idleMutation = (mutate = vi.fn()) => ({ mutate, isPending: false, isError: false, error: null });
@@ -59,6 +59,7 @@ vi.mock("@features/csm-operations/api/useRunbooks", () => ({
   useUpdateRunbook: () => idleMutation(mocks.update),
   useDeleteRunbook: () => idleMutation(),
   useImportRunbooks: () => idleMutation(mocks.importRunbooks),
+  useUnmergeRunbookAlerts: () => idleMutation(mocks.unmerge),
 }));
 
 function type(el: HTMLElement, value: string): void {
@@ -74,38 +75,39 @@ describe("RunbooksTab", () => {
   beforeEach(() => {
     mocks.create.mockReset();
     mocks.update.mockReset();
+    mocks.unmerge.mockReset();
     mocks.importRunbooks.mockReset();
     mocks.saveBlob.mockReset();
     mocks.downloadCsv.mockReset();
     mocks.access.canWrite = true;
   });
 
-  it("lists each runbook's number and name with its alert count and link, not its alerts", () => {
+  it("lists each runbook's number and alerts as tags, with its link, and no expander", () => {
     render(<RunbooksTab />);
     const row = screen.getByText("RB0000001").closest("tr") as HTMLElement;
     expect(within(row).getByRole("link", { name: /Open runbook/ })).toHaveAttribute("href", "https://docs.example.com/gw");
-    expect(within(row).getByText("Gateway")).toBeInTheDocument();
-    expect(within(row).getByText("2 alerts")).toBeInTheDocument();
-    expect(within(row).queryByText("gw-5xx")).not.toBeInTheDocument();
-    expect(within(screen.getByText("RB0000002").closest("tr") as HTMLElement).getByText("1 alert")).toBeInTheDocument();
+    expect(within(row).getByText("RB0000001")).toBeInTheDocument();
+    const tags = within(row).getByRole("list", { name: "Alerts of RB0000001" });
+    expect(within(tags).getByText("gw-5xx")).toBeInTheDocument();
+    expect(within(tags).getByText("Gateway Latency High")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Show the alerts of/ })).not.toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "Number" })).toBeInTheDocument();
-    expect(screen.getByRole("columnheader", { name: "Name" })).toBeInTheDocument();
-    expect(screen.queryByRole("columnheader", { name: "Alerts" })).not.toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Alerts" })).toBeInTheDocument();
     expect(screen.getByText("2 runbooks covering 3 alerts, 1 without a link")).toBeInTheDocument();
   });
 
-  it("adds alerts as tags with Enter and saves them with the name", () => {
+  it("adds alerts as tags with Enter and saves them without asking for a name", () => {
     render(<RunbooksTab />);
     fireEvent.click(screen.getByRole("button", { name: "Add runbook" }));
     const dialog = screen.getByRole("dialog");
-    type(within(dialog).getByLabelText(/^Name/), "Disk");
+    expect(within(dialog).queryByLabelText(/^Name/)).not.toBeInTheDocument();
     const alerts = within(dialog).getByLabelText(/^Alerts/);
     addTag(alerts, "Disk Space Low");
     type(alerts, "disk-full");
     expect(within(dialog).getByText("Disk Space Low")).toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole("button", { name: "Add" }));
     expect(mocks.create).toHaveBeenCalledWith(
-      { name: "Disk", runbookUrl: null, alerts: ["Disk Space Low", "disk-full"] },
+      { runbookUrl: null, alerts: ["Disk Space Low", "disk-full"] },
       expect.anything(),
     );
   });
@@ -115,7 +117,7 @@ describe("RunbooksTab", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add runbook" }));
     const dialog = screen.getByRole("dialog");
     addTag(within(dialog).getByLabelText(/^Alerts/), "JVM HEAP");
-    expect(within(dialog).getByText(/Already used by another runbook: JVM HEAP \(in JVM\)/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/Already used by another runbook: JVM HEAP \(in RB0000002\)/)).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "Add" })).toBeDisabled();
   });
 
@@ -128,10 +130,27 @@ describe("RunbooksTab", () => {
     expect(mocks.update).toHaveBeenCalledWith(
       {
         id: "1",
-        input: { name: "Gateway", runbookUrl: "https://docs.example.com/gw", alerts: ["gw-5xx", "Gateway Latency High", "gw-timeout"] },
+        input: { runbookUrl: "https://docs.example.com/gw", alerts: ["gw-5xx", "Gateway Latency High", "gw-timeout"] },
       },
       expect.anything(),
     );
+  });
+
+  it("unmerges an alert only after the confirmation, which names it and links the runbook", () => {
+    render(<RunbooksTab />);
+    fireEvent.click(screen.getByLabelText("Unmerge gw-5xx"));
+    const dialog = screen.getByRole("dialog", { name: "Unmerge alert?" });
+    expect(within(dialog).getByText(/will leave the runbook it shares with/)).toBeInTheDocument();
+    expect(within(dialog).getByText("Gateway Latency High")).toBeInTheDocument();
+    expect(within(dialog).getByRole("link", { name: /docs\.example\.com\/gw/ })).toHaveAttribute("target", "_blank");
+    expect(mocks.unmerge).not.toHaveBeenCalled();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(mocks.unmerge).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByLabelText("Unmerge gw-5xx"));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Unmerge alert?" })).getByRole("button", { name: "Unmerge" }));
+    expect(mocks.unmerge).toHaveBeenCalledWith({ id: "1", alerts: ["gw-5xx"] }, expect.anything());
   });
 
   it("shows when each runbook was created and last updated, but not by whom", () => {
@@ -145,9 +164,34 @@ describe("RunbooksTab", () => {
     expect(within(row).queryByText("editor@example.com")).not.toBeInTheDocument();
   });
 
+  it("closes the unmerge confirmation once the unmerge succeeds, and names the new runbook", async () => {
+    mocks.unmerge.mockImplementation((_vars, opts) =>
+      opts.onSuccess({ runbooks: [{ ...catalog[0], alerts: ["Gateway Latency High"] }, { ...catalog[0], id: "3", number: "RB0000003", alerts: ["gw-5xx"] }] }),
+    );
+    render(<RunbooksTab />);
+    fireEvent.click(screen.getByLabelText("Unmerge gw-5xx"));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Unmerge alert?" })).getByRole("button", { name: "Unmerge" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Unmerge alert?" })).not.toBeInTheDocument());
+    expect(screen.getByText("Moved gw-5xx out of RB0000001 into RB0000003.")).toBeInTheDocument();
+  });
+
+  it("keeps the unmerge confirmation open with the reason when the unmerge is refused", () => {
+    mocks.unmerge.mockImplementation((_vars, opts) => opts.onError(new Error("every alert to unmerge must belong to this runbook")));
+    render(<RunbooksTab />);
+    fireEvent.click(screen.getByLabelText("Unmerge gw-5xx"));
+    const dialog = screen.getByRole("dialog", { name: "Unmerge alert?" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Unmerge" }));
+    expect(screen.getByRole("dialog", { name: "Unmerge alert?" })).toBeInTheDocument();
+    expect(within(dialog).getByText("every alert to unmerge must belong to this runbook")).toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByLabelText("Unmerge gw-5xx"));
+    expect(within(screen.getByRole("dialog", { name: "Unmerge alert?" })).queryByText(/must belong/)).not.toBeInTheDocument();
+  });
+
   it("names the runbooks an import removed, with their links", async () => {
     mocks.importRunbooks.mockImplementation((_entries, opts) =>
-      opts.onSuccess({ created: 0, updated: 1, removed: [{ number: "RB0000002", name: "JVM", runbookUrl: "https://docs.example.com/jvm" }] }),
+      opts.onSuccess({ created: 0, updated: 1, removed: [{ number: "RB0000002", runbookUrl: "https://docs.example.com/jvm" }] }),
     );
     render(<RunbooksTab />);
     // jsdom's File has no text(); the tab only reads the file through it.
@@ -155,10 +199,15 @@ describe("RunbooksTab", () => {
     fireEvent.change(screen.getByTestId("runbook-import-input"), { target: { files: [file] } });
     expect(
       await screen.findByText(
-        "Imported 0 new and updated 1 existing runbooks. Removed JVM (RB0000002, https://docs.example.com/jvm): all of their alerts moved to another runbook.",
+        "Imported 0 new and updated 1 existing runbooks. Removed RB0000002 (https://docs.example.com/jvm): all of their alerts moved to another runbook.",
       ),
     ).toBeInTheDocument();
-    expect(mocks.importRunbooks).toHaveBeenCalledWith([{ name: "", runbookUrl: "https://docs.example.com/gw", alerts: ["JVM Heap"] }], expect.anything());
+    expect(mocks.importRunbooks).toHaveBeenCalledWith([{ runbookUrl: "https://docs.example.com/gw", alerts: ["JVM Heap"] }], expect.anything());
+  });
+
+  it("offers no unmerge for a runbook's only alert", () => {
+    render(<RunbooksTab />);
+    expect(screen.queryByLabelText("Unmerge JVM Heap")).not.toBeInTheDocument();
   });
 
   it("offers no way to select or merge runbooks", () => {
@@ -178,10 +227,10 @@ describe("RunbooksTab", () => {
     render(<RunbooksTab />);
     const search = screen.getByLabelText("Search runbook with alert name");
     fireEvent.change(search, { target: { value: "gateway latency high" } });
-    expect(screen.getByText("Gateway (RB0000001), matched alert: Gateway Latency High")).toBeInTheDocument();
+    expect(screen.getByText("RB0000001, matched alert: Gateway Latency High")).toBeInTheDocument();
     fireEvent.change(search, { target: { value: "gateway latency" } });
     expect(screen.getByText("No alert matches this whole text. Alerts that contain it:")).toBeInTheDocument();
-    expect(screen.getByText(/Gateway \(RB0000001\): Gateway Latency High/)).toBeInTheDocument();
+    expect(screen.getByText(/RB0000001: Gateway Latency High/)).toBeInTheDocument();
     fireEvent.change(search, { target: { value: "unknown" } });
     expect(screen.getByText("No runbook covers this alert.")).toBeInTheDocument();
   });
@@ -198,19 +247,19 @@ describe("RunbooksTab", () => {
       reader.readAsText(blob);
     });
     expect(JSON.parse(text)).toEqual([
-      { number: "RB0000001", name: "Gateway", runbookUrl: "https://docs.example.com/gw", alerts: ["gw-5xx", "Gateway Latency High"] },
-      { number: "RB0000002", name: "JVM", runbookUrl: null, alerts: ["JVM Heap"] },
+      { number: "RB0000001", runbookUrl: "https://docs.example.com/gw", alerts: ["gw-5xx", "Gateway Latency High"] },
+      { number: "RB0000002", runbookUrl: null, alerts: ["JVM Heap"] },
     ]);
   });
 
   it("exports only the runbooks the search leaves, as CSV", () => {
     render(<RunbooksTab />);
-    fireEvent.change(screen.getByLabelText("Search runbooks by number, name, alert name or runbook link"), { target: { value: "jvm" } });
+    fireEvent.change(screen.getByLabelText("Search runbooks by number, alert name or runbook link"), { target: { value: "jvm" } });
     fireEvent.click(screen.getByRole("button", { name: "Export" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "CSV" }));
     expect(mocks.downloadCsv).toHaveBeenCalledWith(
-      ["Number", "Name", "Alerts", "Runbook link", "Last updated"],
-      [["RB0000002", "JVM", "JVM Heap", "", ""]],
+      ["Number", "Alerts", "Runbook link", "Last updated"],
+      [["RB0000002", "JVM Heap", "", ""]],
       expect.stringMatching(/^runbooks-\d{4}-\d{2}-\d{2}\.csv$/),
     );
   });

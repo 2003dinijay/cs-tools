@@ -56,25 +56,51 @@ func (f *fakeRunbookClient) ImportRunbooks(_ context.Context, body []byte) ([]by
 	return []byte(`{"created":1,"updated":0}`), f.err
 }
 
+func (f *fakeRunbookClient) UnmergeRunbookAlerts(_ context.Context, id string, body []byte) ([]byte, error) {
+	f.id, f.body = id, body
+	return []byte(`{"runbooks":[]}`), f.err
+}
+
 const testRunbookID = "11111111-1111-4111-8111-111111111111"
+
+func TestRunbookHandler_UnmergeForwardsTheAlertsAndRefusesBadInput(t *testing.T) {
+	fake := &fakeRunbookClient{}
+	r := withUser(httptest.NewRequest(http.MethodPost, "/runbooks/"+testRunbookID+"/unmerge", strings.NewReader(`{"alerts":["a"]}`)))
+	r.SetPathValue("id", testRunbookID)
+	w := httptest.NewRecorder()
+	NewRunbookHandler(fake).UnmergeRunbookAlerts(w, r)
+	if w.Code != http.StatusOK || fake.id != testRunbookID || string(fake.body) != `{"alerts":["a"]}` {
+		t.Fatalf("status = %d, id = %s, forwarded = %s", w.Code, fake.id, fake.body)
+	}
+	for id, body := range map[string]string{"nope": `{"alerts":["a"]}`, testRunbookID: `{"alerts":[" "]}`} {
+		fake := &fakeRunbookClient{}
+		r := withUser(httptest.NewRequest(http.MethodPost, "/runbooks/"+id+"/unmerge", strings.NewReader(body)))
+		r.SetPathValue("id", id)
+		w := httptest.NewRecorder()
+		NewRunbookHandler(fake).UnmergeRunbookAlerts(w, r)
+		if w.Code != http.StatusBadRequest || fake.body != nil {
+			t.Fatalf("%s %s: status = %d; want 400 and nothing forwarded", id, body, w.Code)
+		}
+	}
+}
 
 func TestRunbookHandler_CreateRebuildsTheBody(t *testing.T) {
 	fake := &fakeRunbookClient{}
 	h := NewRunbookHandler(fake)
 	r := withUser(httptest.NewRequest(http.MethodPost, "/runbooks",
-		strings.NewReader(`{"name":"A","runbookUrl":"https://x.example","alerts":["a"],"extra":"dropped"}`)))
+		strings.NewReader(`{"name":"dropped","runbookUrl":"https://x.example","alerts":["a"],"extra":"dropped"}`)))
 	w := httptest.NewRecorder()
 	h.CreateRunbook(w, r)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want 201; body %s", w.Code, w.Body.String())
 	}
-	if got := string(fake.body); got != `{"name":"A","runbookUrl":"https://x.example","alerts":["a"]}` {
+	if got := string(fake.body); got != `{"runbookUrl":"https://x.example","alerts":["a"]}` {
 		t.Fatalf("forwarded body = %s", got)
 	}
 }
 
-func TestRunbookHandler_RefusesAMissingNameOrAlert(t *testing.T) {
-	for _, body := range []string{`{"name":"A","alerts":["  "]}`, `{"name":"A","runbookUrl":"https://x.example"}`, `{"name":" ","alerts":["a"]}`, `{"runbookUrl":null,"alerts":["a"]}`} {
+func TestRunbookHandler_RefusesAMissingAlert(t *testing.T) {
+	for _, body := range []string{`{"alerts":["  "]}`, `{"runbookUrl":"https://x.example"}`, `{"alerts":[]}`} {
 		fake := &fakeRunbookClient{}
 		w := httptest.NewRecorder()
 		NewRunbookHandler(fake).CreateRunbook(w, withUser(httptest.NewRequest(http.MethodPost, "/runbooks", strings.NewReader(body))))
@@ -86,7 +112,7 @@ func TestRunbookHandler_RefusesAMissingNameOrAlert(t *testing.T) {
 
 func TestRunbookHandler_UpdateRefusesBadID(t *testing.T) {
 	fake := &fakeRunbookClient{}
-	r := withUser(httptest.NewRequest(http.MethodPut, "/runbooks/nope", strings.NewReader(`{"name":"A","alerts":["a"]}`)))
+	r := withUser(httptest.NewRequest(http.MethodPut, "/runbooks/nope", strings.NewReader(`{"alerts":["a"]}`)))
 	r.SetPathValue("id", "nope")
 	w := httptest.NewRecorder()
 	NewRunbookHandler(fake).UpdateRunbook(w, r)
@@ -99,7 +125,7 @@ func TestRunbookHandler_ConflictKeepsEntityMessage(t *testing.T) {
 	fake := &fakeRunbookClient{err: &apierror.Error{StatusCode: http.StatusConflict,
 		Body: `{"code":409,"message":"alert a already belongs to runbook A"}`}}
 	w := httptest.NewRecorder()
-	NewRunbookHandler(fake).CreateRunbook(w, withUser(httptest.NewRequest(http.MethodPost, "/runbooks", strings.NewReader(`{"name":"A","alerts":["a"]}`))))
+	NewRunbookHandler(fake).CreateRunbook(w, withUser(httptest.NewRequest(http.MethodPost, "/runbooks", strings.NewReader(`{"alerts":["a"]}`))))
 	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "already belongs") {
 		t.Fatalf("status = %d, body %s; want 409 with the entity message", w.Code, w.Body.String())
 	}

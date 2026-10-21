@@ -1871,6 +1871,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// Runbooks (Operations > Runbooks): internal callers only.
 		mux.HandleFunc("GET /runbooks", internalOnly(accessSvc, runbookHandler.ListRunbooks))
 		mux.HandleFunc("POST /runbooks", internalOnly(accessSvc, runbookHandler.CreateRunbook))
+		mux.HandleFunc("POST /runbooks/{id}/unmerge", internalOnly(accessSvc, runbookHandler.UnmergeRunbookAlerts))
 		mux.HandleFunc("POST /runbooks/import", internalOnly(accessSvc, runbookHandler.ImportRunbooks))
 		mux.HandleFunc("PUT /runbooks/{id}", internalOnly(accessSvc, runbookHandler.UpdateRunbook))
 		mux.HandleFunc("DELETE /runbooks/{id}", internalOnly(accessSvc, runbookHandler.DeleteRunbook))

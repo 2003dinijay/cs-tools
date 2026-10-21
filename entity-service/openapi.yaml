@@ -10154,7 +10154,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
     post:
       summary: Add a runbook.
-      description: The runbook gets the next number (RB0000001). 409 when its name, or one of the alert names, already belongs to another runbook (ignoring case and surrounding spaces).
+      description: The runbook gets the next number (RB0000001). 409 when one of the alert names already belongs to another runbook (ignoring case and surrounding spaces).
       operationId: createRunbook
       requestBody:
         required: true
@@ -10212,13 +10212,10 @@ paths:
         One transaction. An entry replaces the link and alerts of the runbook
         that holds its first listed alert (ignoring case and surrounding
         spaces), or is created with the next number when none of its alerts
-        is listed. An entry with no name keeps the matched runbook's name; a
-        new one is named after its first alert; a name already taken by
-        another runbook is a 409, and two entries with one name a 400. An
-        alert listed under another runbook moves to the entry's runbook, and
-        a runbook left without alerts is removed: `removed` lists each one's
-        number, name and the link it had. Every runbook that holds an
-        imported alert is locked first, so a concurrent edit or import
+        is listed. An alert listed under another runbook moves to the entry's
+        runbook, and a runbook left without alerts is removed: `removed` lists
+        each one's number and the link it had. Every runbook that holds an
+        imported alert is locked first, so a concurrent unmerge or import
         waits. Within the request, a later entry wins over an earlier one
         with the same alert; an entry left without alerts by later entries is
         a 400 and nothing is written. At most 5000 entries.
@@ -10266,10 +10263,68 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /runbooks/{id}/unmerge:
+    post:
+      summary: Move alerts out of a runbook into runbooks of their own.
+      description: >
+        One transaction. Each alert leaves the runbook and becomes a new
+        runbook with the next number and the same link. The runbook must keep
+        at least one alert.
+      operationId: unmergeRunbookAlerts
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UnmergeRunbookAlertsRequest'
+      responses:
+        "200":
+          description: The runbook, followed by the new runbooks.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunbookList'
+        "400":
+          description: No alert, an alert the runbook does not hold, or every alert of the runbook; nothing was written.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: The runbook does not exist, or runbooks are not available on this deployment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /runbooks/{id}:
     put:
       summary: Change a runbook, replacing its alerts.
-      description: The number never changes. 409 when the name, or one of the alert names, already belongs to another runbook.
+      description: The number never changes. 409 when one of the alert names already belongs to another runbook.
       operationId: updateRunbook
       parameters:
         - name: id
@@ -26663,7 +26718,7 @@ components:
           format: date-time
     Runbook:
       type: object
-      required: [id, number, name, runbookUrl, alerts, createdOn, createdBy, updatedOn, updatedBy]
+      required: [id, number, runbookUrl, alerts, createdOn, createdBy, updatedOn, updatedBy]
       properties:
         id:
           type: string
@@ -26671,9 +26726,6 @@ components:
         number:
           type: string
           description: The runbook's own number (RB0000001), given when it is created and never changed.
-        name:
-          type: string
-          description: Unique, ignoring case and surrounding spaces.
         runbookUrl:
           type: string
           nullable: true
@@ -26703,33 +26755,8 @@ components:
             $ref: '#/components/schemas/Runbook'
     SaveRunbookRequest:
       type: object
-      required: [name, alerts]
-      properties:
-        name:
-          type: string
-          minLength: 1
-          maxLength: 1000
-          description: Unique, ignoring case and surrounding spaces; blank is refused.
-        runbookUrl:
-          type: string
-          nullable: true
-          description: A full http(s) link; empty or null records that no runbook exists.
-        alerts:
-          type: array
-          minItems: 1
-          maxItems: 500
-          description: Blank and repeated (ignoring case) names are dropped; at least one must remain.
-          items:
-            type: string
-            maxLength: 1000
-    ImportRunbookEntry:
-      type: object
       required: [alerts]
       properties:
-        name:
-          type: string
-          maxLength: 1000
-          description: Optional; with none a matched runbook keeps its name and a new one is named after its first alert.
         runbookUrl:
           type: string
           nullable: true
@@ -26750,7 +26777,16 @@ components:
           type: array
           maxItems: 5000
           items:
-            $ref: '#/components/schemas/ImportRunbookEntry'
+            $ref: '#/components/schemas/SaveRunbookRequest'
+    UnmergeRunbookAlertsRequest:
+      type: object
+      required: [alerts]
+      properties:
+        alerts:
+          type: array
+          minItems: 1
+          items:
+            type: string
     ImportRunbooksResponse:
       type: object
       required: [created, updated, removed]
@@ -26764,11 +26800,9 @@ components:
           description: Runbooks left without alerts because the import moved all of them elsewhere, by number.
           items:
             type: object
-            required: [number, name, runbookUrl]
+            required: [number, runbookUrl]
             properties:
               number:
-                type: string
-              name:
                 type: string
               runbookUrl:
                 type: string
