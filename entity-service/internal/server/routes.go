@@ -236,7 +236,17 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	)
 	var scheduledTaskRunHandler *handler.ScheduledTaskRunHandler
 	var worklogReportHandler *handler.WorklogReportHandler
+	var queryHourHandler *handler.QueryHourHandler
 	if db != nil {
+		// Query-hour utilisation. No table of its own: the entitlement
+		// comes from the Salesforce mirror, the consumption from time
+		// cards, and the result is written back to columns that already
+		// exist -- sf_opportunity.query_hour_state and project's three
+		// duration fields.
+		queryHourHandler = handler.NewQueryHourHandler(
+			service.NewQueryHourService(
+				repository.NewQueryHourRepository(repository.NewScoped(db)),
+				cfg.QueryHourInternalEmailDomain))
 		scheduledTaskRunHandler = handler.NewScheduledTaskRunHandler(service.NewScheduledTaskRunService(repository.NewScheduledTaskRunRepository(db)))
 		// Which teams the CS Worklogs reports cover is deployment
 		// configuration, not a constant: the default is the CRE
@@ -1861,6 +1871,12 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// engineer, what they worked on and how long it took; a customer
 		// token must never reach it.
 		mux.HandleFunc("GET /reports/worklogs", internalOnly(accessSvc, worklogReportHandler.GetWorklogReport))
+	}
+	if queryHourHandler != nil {
+		// internalOnly: the report names accounts, their owners and
+		// what each has spent. A customer token must never reach it.
+		mux.HandleFunc("GET /reports/query-hours", internalOnly(accessSvc, queryHourHandler.GetWeeklyReport))
+		mux.HandleFunc("POST /query-hours/recompute", internalOnly(accessSvc, queryHourHandler.RecomputeQueryHours))
 	}
 	if scheduledTaskRunHandler != nil {
 		mux.HandleFunc("POST /scheduled-tasks/attempts", scheduledTaskRunHandler.AttemptScheduledTaskRun)

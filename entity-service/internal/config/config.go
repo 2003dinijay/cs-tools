@@ -166,6 +166,12 @@ type Config struct {
 	// nobody wants in the report; this takes them out without
 	// narrowing the type list to the point of brittleness.
 	WorklogReportExcludedTeamKeys []string
+	// QueryHourInternalEmailDomain restricts the query-hour report's
+	// derived audience to internal addresses. ServiceNow checks
+	// `includes("@wso2.com")` before adding an account owner, so a
+	// customer contact mistakenly recorded as an owner is not mailed an
+	// internal report.
+	QueryHourInternalEmailDomain string
 
 	DBUser     string
 	DBPassword string

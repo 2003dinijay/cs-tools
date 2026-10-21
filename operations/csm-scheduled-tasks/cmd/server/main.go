@@ -51,6 +51,8 @@ import (
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/migrationscan"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/notify"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/opencases"
+	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/queryhours"
+	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/queryhoursreport"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/registry"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/rotareminder"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/schedule"
@@ -126,6 +128,22 @@ func main() {
 	})
 	if err != nil {
 		slog.Error("failed to construct entity-service migration-scan client", "err", err)
+		os.Exit(1)
+	}
+
+	// The query-hour client. Same deployment and credentials; its own
+	// client because a recompute walks every opportunity in service and
+	// every project linked to each, so it needs minutes rather than the
+	// seconds a read allows.
+	queryHourClient, err := queryhours.NewClient(queryhours.Config{
+		BaseURL:      entityServiceBaseURL,
+		TokenURL:     oauthTokenURL,
+		ClientID:     oauthClientID,
+		ClientSecret: oauthClientSecret,
+		Scopes:       entityServiceScopes,
+	})
+	if err != nil {
+		slog.Error("failed to construct entity-service query-hour client", "err", err)
 		os.Exit(1)
 	}
 
@@ -397,7 +415,11 @@ func main() {
 
 	const migrationCaseReportTaskName = "migration_case_report"
 	migrationCaseTo, migrationCaseCc := recipientsFor(recipientOverrides, migrationCaseReportTaskName)
+	const queryHoursWeeklyTaskName = "query_hours_weekly_report"
+	const queryHoursNoticeTaskName = "query_hours_usage_notifications"
 	migrationCaseEmail := notify.ForReport(emailClient, debugFor(recipientOverrides, migrationCaseReportTaskName))
+	queryHoursWeeklyEmail := notify.ForReport(emailClient, debugFor(recipientOverrides, queryHoursWeeklyTaskName))
+	queryHoursNoticeEmail := notify.ForReport(emailClient, debugFor(recipientOverrides, queryHoursNoticeTaskName))
 	// The age a migration must reach before the weekly scan lists it. One
 	// value, read once: the source report hard-coded its window in three
 	// places and the CS team asked for six months in place of three.
@@ -421,6 +443,14 @@ func main() {
 			os.Exit(1)
 		}
 	}
+
+	// For the query-hour tasks these are ADDITIONS to the derived
+	// audience, not the audience itself -- see the package doc.
+	queryHoursWeeklyTo, queryHoursWeeklyCc := recipientsFor(recipientOverrides, queryHoursWeeklyTaskName)
+	_, queryHoursNoticeCc := recipientsFor(recipientOverrides, queryHoursNoticeTaskName)
+	// A single address that replaces every derived audience, for
+	// testing against real data without mailing real account owners.
+	queryHoursOverride := splitComma(os.Getenv("QUERY_HOURS_RECIPIENT_OVERRIDE"))
 
 	const publishScheduledAnnouncementsTaskName = "publish_scheduled_announcements"
 	publishScheduledAnnouncementsTo, publishScheduledAnnouncementsCc := recipientsFor(recipientOverrides, publishScheduledAnnouncementsTaskName)
@@ -540,6 +570,29 @@ func main() {
 				periodStart(worklogsWeeklySchedule),
 				worklogsWeeklyTo, worklogsWeeklyCc, worklogRecipientSource,
 				worklogCaseLinkBase, alertsEnabled),
+		},
+		// Query-hour utilisation, ported from ServiceNow's two flows.
+		//
+		// The weekly report's audience is DERIVED from the accounts it
+		// reports on, so To and Cc are left nil here: the failure
+		// alerts go to ALERT_RECIPIENTS, and the report goes to the
+		// owners of whichever accounts are breaching that week.
+		//
+		// The notification task also RECOMPUTES, which is what makes
+		// the crossings detectable at all -- it compares the state it
+		// derives against the one already stored. Scheduled hourly so
+		// a breach is noticed the same day rather than at the weekly.
+		{
+			Name:     queryHoursNoticeTaskName,
+			Schedule: scheduleFor(scheduleOverrides, queryHoursNoticeTaskName, "15 * * * *"),
+			Handler: queryhoursreport.SendUsageNotifications(queryHourClient, queryHoursNoticeEmail,
+				queryHoursNoticeCc, queryHoursOverride, alertsEnabled),
+		},
+		{
+			Name:     queryHoursWeeklyTaskName,
+			Schedule: scheduleFor(scheduleOverrides, queryHoursWeeklyTaskName, "0 4 * * 1"),
+			Handler: queryhoursreport.SendWeeklyReport(queryHourClient, queryHoursWeeklyEmail,
+				queryHoursWeeklyTo, queryHoursWeeklyCc, queryHoursOverride, alertsEnabled),
 		},
 		// The first sub-cron here that does real, per-row, multi-step,
 		// partial-failure-tolerant work rather than a bulk delete or a
