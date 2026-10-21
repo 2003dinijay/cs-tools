@@ -671,6 +671,9 @@ func (s *incidentService) SearchIncidents(ctx context.Context, req domain.Search
 	if err := parseIncidentListFiltersPostgres(&req.Filters, time.Now().UTC()); err != nil {
 		return domain.SearchIncidentsResponse{}, err
 	}
+	if err := parseIncidentAnyOfPostgres(&req.Filters); err != nil {
+		return domain.SearchIncidentsResponse{}, err
+	}
 
 	views, total, err := s.repo.SearchIncidents(ctx, req, priorities, states, serviceIDs, assignedUserIDs, madeSla, slaViolated, createdStart, createdEnd)
 	if err != nil {
@@ -696,6 +699,9 @@ func (s *incidentService) AggregateIncidents(ctx context.Context, req domain.Agg
 		return domain.AggregateResponse{}, err
 	}
 	if err := parseIncidentListFiltersPostgres(&req.Filters, time.Now().UTC()); err != nil {
+		return domain.AggregateResponse{}, err
+	}
+	if err := parseIncidentAnyOfPostgres(&req.Filters); err != nil {
 		return domain.AggregateResponse{}, err
 	}
 

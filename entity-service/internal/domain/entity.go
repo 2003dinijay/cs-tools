@@ -4627,6 +4627,37 @@ type SearchChangeRequestsFilters struct {
 	PlannedStartFrom, PlannedStartTo *time.Time          `json:"-"`
 	PlannedEndFrom, PlannedEndTo     *time.Time          `json:"-"`
 	Types                            []ChangeRequestType `json:"-"`
+
+	// AnyOf expresses cross-field OR, as on case search: each branch's Filters
+	// are ANDed, the branches are OR'd, and the result is ANDed with everything
+	// else. Branch fields (op in only): state, impact, projectId, type,
+	// assignmentGroupId, assignedUserId, tag (tag: internal callers only).
+	// PostgreSQL only.
+	AnyOf []ChangeRequestFilterBranch `json:"anyOf,omitempty"`
+	// OrGroups is AnyOf parsed by the PostgreSQL service. Never read from the wire.
+	OrGroups []ChangeRequestFilterGroup `json:"-"`
+}
+
+// ChangeRequestFilterBranch is one branch of SearchChangeRequestsFilters.AnyOf.
+type ChangeRequestFilterBranch struct {
+	Filters []ChangeRequestFieldFilter `json:"filters"`
+}
+
+// ChangeRequestFilterGroup is one parsed, ANDed branch of
+// SearchChangeRequestsFilters.AnyOf (enum values already in their column form).
+type ChangeRequestFilterGroup struct {
+	States, Impacts, ProjectIDs, ChangeModels, AssignmentGroupIDs, AssignedUserIDs, Tags []string
+}
+
+// IncidentFilterBranch is one branch of SearchIncidentsFilters.AnyOf.
+type IncidentFilterBranch struct {
+	Filters []IncidentFieldFilter `json:"filters"`
+}
+
+// IncidentFilterGroup is one parsed, ANDed branch of SearchIncidentsFilters.AnyOf
+// (enum values already in their column form).
+type IncidentFilterGroup struct {
+	States, Priorities, Categories, ServiceIDs, AssignmentGroupIDs, AssignedUserIDs []string
 }
 
 // SearchChangeRequestsRequest is the input for a change request search operation.
@@ -6422,6 +6453,15 @@ type SearchIncidentsFilters struct {
 	Categories         []string   `json:"-"`
 	UpdatedStart       *time.Time `json:"-"`
 	UpdatedEnd         *time.Time `json:"-"`
+
+	// AnyOf expresses cross-field OR, as on case search: each branch's Filters
+	// are ANDed, the branches are OR'd, and the result is ANDed with everything
+	// else. Branch fields (op in only): state, priority, category,
+	// businessServiceId, assignmentGroupId, assignedUserId. PostgreSQL only.
+	AnyOf []IncidentFilterBranch `json:"anyOf,omitempty"`
+	// OrGroups is AnyOf parsed by the PostgreSQL incident service. Never read
+	// from the wire.
+	OrGroups []IncidentFilterGroup `json:"-"`
 }
 
 // SearchIncidentsRequest is the input for POST /incidents/search.

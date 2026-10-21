@@ -455,6 +455,43 @@ func incidentWhereClause(f domain.SearchIncidentsFilters, priorities, states, se
 	if f.UpdatedEnd != nil {
 		add("wi.updated_on <= $%d", *f.UpdatedEnd)
 	}
+	// anyOf: each branch is the AND of its own conditions, the branches are
+	// OR'd, and the whole is ANDed with everything above (case search's shape).
+	if len(f.OrGroups) > 0 {
+		branches := make([]string, 0, len(f.OrGroups))
+		for _, g := range f.OrGroups {
+			var preds []string
+			bind := func(clause string, val any) {
+				preds = append(preds, fmt.Sprintf(clause, argIdx))
+				args = append(args, val)
+				argIdx++
+			}
+			if len(g.States) > 0 {
+				bind("inc.state::TEXT = ANY($%d::text[])", g.States)
+			}
+			if len(g.Priorities) > 0 {
+				bind("inc.priority::TEXT = ANY($%d::text[])", g.Priorities)
+			}
+			if len(g.Categories) > 0 {
+				bind("inc.category::TEXT = ANY($%d::text[])", g.Categories)
+			}
+			if len(g.ServiceIDs) > 0 {
+				bind("inc.service_id = ANY($%d::uuid[])", g.ServiceIDs)
+			}
+			if len(g.AssignmentGroupIDs) > 0 {
+				bind("wi.assignment_group_id = ANY($%d::uuid[])", g.AssignmentGroupIDs)
+			}
+			if len(g.AssignedUserIDs) > 0 {
+				bind("wi.assigned_to_id = ANY($%d::uuid[])", g.AssignedUserIDs)
+			}
+			if len(preds) == 0 {
+				branches = append(branches, "TRUE")
+				continue
+			}
+			branches = append(branches, "("+strings.Join(preds, " AND ")+")")
+		}
+		where += " AND (" + strings.Join(branches, " OR ") + ")"
+	}
 	// productName has no confirmed product-to-incident mapping -- deliberately
 	// not applied here. businessServiceId IS applied above, mapped to
 	// inc.service_id -- "business service" is ServiceNow's own name for

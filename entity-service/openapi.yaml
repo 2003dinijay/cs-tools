@@ -21529,6 +21529,21 @@ components:
                 A single change request number (e.g. "CHG0010001"); matches
                 exactly. Routed as a first-class filter rather than through
                 the free-text searchQuery scan.
+            anyOf:
+              type: array
+              description: >-
+                Cross-field OR, as on case search: each branch's filters are
+                ANDed, the branches are OR'd, and the result is ANDed with the
+                other filters. At most 10 branches of at most 10 filters each,
+                op "in" only. Branch fields: state, impact, projectId, type, assignmentGroupId, assignedUserId, tag (internal callers only). PostgreSQL only (400 otherwise).
+              items:
+                type: object
+                required: [filters]
+                properties:
+                  filters:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ChangeRequestFieldFilter'
             filters:
               type: array
               items:
@@ -26357,6 +26372,23 @@ components:
                 caller that set CreateIncidentRequest.correlationId find that
                 same incident again without a free-text searchQuery scan over
                 subject or workNotes.
+            anyOf:
+              type: array
+              description: >-
+                Cross-field OR, as on case search: each branch's filters are
+                ANDed, the branches are OR'd, and the result is ANDed with the
+                other filters. At most 10 branches of at most 10 filters each,
+                op "in" only. Branch fields: state, priority, category,
+                businessServiceId, assignmentGroupId, assignedUserId.
+                PostgreSQL only (400 otherwise).
+              items:
+                type: object
+                required: [filters]
+                properties:
+                  filters:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/IncidentFieldFilter'
             filters:
               type: array
               items:

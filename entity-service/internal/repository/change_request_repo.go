@@ -720,6 +720,46 @@ func changeRequestWhereClause(f domain.SearchChangeRequestsFilters, createdStart
 		}
 		add("cr.change_model::TEXT = ANY($%d::text[])", models)
 	}
+	// anyOf: each branch is the AND of its own conditions, the branches are
+	// OR'd, and the whole is ANDed with everything above (case search's shape).
+	if len(f.OrGroups) > 0 {
+		branches := make([]string, 0, len(f.OrGroups))
+		for _, g := range f.OrGroups {
+			var preds []string
+			bind := func(clause string, val any) {
+				preds = append(preds, fmt.Sprintf(clause, argIdx))
+				args = append(args, val)
+				argIdx++
+			}
+			if len(g.States) > 0 {
+				bind("cr.state::TEXT = ANY($%d::text[])", g.States)
+			}
+			if len(g.Impacts) > 0 {
+				bind("cr.impact::TEXT = ANY($%d::text[])", g.Impacts)
+			}
+			if len(g.ProjectIDs) > 0 {
+				bind("wi.project_id = ANY($%d::uuid[])", g.ProjectIDs)
+			}
+			if len(g.ChangeModels) > 0 {
+				bind("cr.change_model::TEXT = ANY($%d::text[])", g.ChangeModels)
+			}
+			if len(g.AssignmentGroupIDs) > 0 {
+				bind("wi.assignment_group_id = ANY($%d::uuid[])", g.AssignmentGroupIDs)
+			}
+			if len(g.AssignedUserIDs) > 0 {
+				bind("wi.assigned_to_id = ANY($%d::uuid[])", g.AssignedUserIDs)
+			}
+			if len(g.Tags) > 0 {
+				bind("EXISTS (SELECT 1 FROM work_item_tag wit JOIN tag t ON t.id = wit.tag_id WHERE wit.work_item_id = wi.id AND LOWER(t.name) = ANY($%d::text[]))", lowerAll(g.Tags))
+			}
+			if len(preds) == 0 {
+				branches = append(branches, "TRUE")
+				continue
+			}
+			branches = append(branches, "("+strings.Join(preds, " AND ")+")")
+		}
+		where += " AND (" + strings.Join(branches, " OR ") + ")"
+	}
 
 	return where, args
 }
@@ -729,6 +769,12 @@ func changeRequestWhereClause(f domain.SearchChangeRequestsFilters, createdStart
 func IsFilterableChangeRequestType(t domain.ChangeRequestType) bool {
 	_, ok := changeRequestTypeToChangeModel[t]
 	return ok
+}
+
+// ChangeModelForType returns a change type's change_model label.
+func ChangeModelForType(t domain.ChangeRequestType) (string, bool) {
+	m, ok := changeRequestTypeToChangeModel[t]
+	return m, ok
 }
 
 // changeRequestApprovalEnum maps ServiceNow's raw task.approval value

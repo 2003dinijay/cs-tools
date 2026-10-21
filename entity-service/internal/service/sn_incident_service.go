@@ -322,6 +322,9 @@ func (s *snIncidentService) SearchIncidents(ctx context.Context, req domain.Sear
 	if err := validateSearchQuery(req.Filters.SearchQuery); err != nil {
 		return domain.SearchIncidentsResponse{}, err
 	}
+	if len(req.Filters.AnyOf) > 0 {
+		return domain.SearchIncidentsResponse{}, &apierror.ValidationError{Msg: "filters.anyOf is not supported by this data source"}
+	}
 	if err := validateExactNumber("number", req.Filters.Number); err != nil {
 		return domain.SearchIncidentsResponse{}, err
 	}
@@ -487,6 +490,9 @@ func (s *snIncidentService) AggregateIncidents(ctx context.Context, req domain.A
 	}
 	if err := validateSearchQuery(req.Filters.SearchQuery); err != nil {
 		return domain.AggregateResponse{}, err
+	}
+	if len(req.Filters.AnyOf) > 0 {
+		return domain.AggregateResponse{}, &apierror.ValidationError{Msg: "filters.anyOf is not supported by this data source"}
 	}
 	if err := validateExactNumber("number", req.Filters.Number); err != nil {
 		return domain.AggregateResponse{}, err

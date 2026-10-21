@@ -229,6 +229,9 @@ func applyChangeRequestListFilters(ctx context.Context, f *domain.SearchChangeRe
 	if err := applyChangeRequestTagFilter(ctx, f, parsed); err != nil {
 		return err
 	}
+	if err := parseChangeRequestAnyOfPostgres(ctx, f); err != nil {
+		return err
+	}
 	for _, t := range parsed.Types {
 		if !repository.IsFilterableChangeRequestType(t) {
 			return &apierror.ValidationError{Msg: "filters: type contains a value with no equivalent on this data source: " + string(t)}
