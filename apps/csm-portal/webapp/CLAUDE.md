@@ -358,6 +358,42 @@ The previous system's own mechanism, which the schema already carries: a custome
 - **Not mirrored.** Proposals and WSO2's answers are PostgreSQL-only until the sync stops (the previous system's PATCH API has no field for them); Accept's mirror to the previous system is best effort (a failure is recorded in entity-service's table of failed write-backs) and while the sync runs it can rewrite `customer_updated_on`, the confirmation, `state`, `start_on` and `end_on`.
 - **Tests.** vitest: `ChangeRequestProposedTimeBanner.test.tsx`, `ChangeRequestAcceptProposedTimeDialog.test.tsx`, `ChangeRequestRescheduleDialog.test.tsx` (counter, stored-time and plain modes), `ChangeRequestActionBar.test.tsx` (the label), `CsmChangeRequestDetailPage.test.tsx` ("lifecycle: Re-schedule" holds the stateful fake of the contract: pending allowlist, Accept, counter, decline, the nobody-to-ask refusal, version checks, `lcCustomerProposes`). e2e, fake API (`utils/fakeChangeRequestApi.ts`; `customerProposes`, `seedProposal`, `setOnHold`, `addInternalRequestedRow`; the refusal texts are exported and the real-stack describe asserts the same strings): describes "change request approval flow — Re-schedule" and "— a customer's proposed time (mocked backend)". e2e, real stack ("a customer's proposed time (real stack)"): a native proposal accepted from the page, a counter and a decline, and the rows the sync writes (a migrated change in Customer Approval with a customer date and no answer -- a stored time nobody is recorded as having proposed: Accept refused, a plain Re-schedule that writes no answer --, one in Authorize with an unlabeled approval, a date equal to the plan, a standing answer, a date left far ahead). The customer proposes there the way the customer portal does (`proposeAsCustomer`, `utils/customerPortalDecision.ts`).
 
+## List bulk actions and export (Change requests, Incidents)
+
+Both lists have a checkbox column (for `canWrite` only), a selection bar (`BulkSelectionBar`: "N selected", **Edit (n)**,
+**Assign to me (n)**, Clear selection), a result banner (`BulkResultAlert`) and an **Export** menu (`FilteredExportMenu`).
+
+- **Selection** is `useRowSelection(getId, canSelect)` (`features/csm-operations/hooks`): kept by id across pages, a filter
+  change clears it, a closed / cancelled incident and a closed / canceled / rolled-back change request are never selectable
+  (`isIncidentTerminal`, `isChangeRequestTerminal`; the row shows a disabled box with a tooltip). The checkbox cell stops
+  the row's own click, so ticking never opens the record.
+- **There is no bulk endpoint.** `runBulkUpdate` (`utils/bulkUpdate.ts`) sends one PATCH per record, four at a time, and
+  never stops on a refusal: the banner lists each record that was not updated with the backend's own 4xx words
+  (`bulkFailureMessage`; a 5xx is a generic line) and each record skipped before sending. The backend stays the authority
+  for every rule; the dialogs only keep from offering what cannot work.
+- **Edit, incidents** (`BulkEditIncidentsDialog`): "No change" is the default of every field and only changed fields are
+  sent. State offers what every selected incident can move to (`bulkIncidentTargetStates`, the Edit dialog's table);
+  Resolved / Closed need a resolution code and notes, applied to all.
+- **Edit, change requests** (`BulkEditChangeRequestsDialog`): State offers the moves every selected change request can
+  make, read from each one's own `legalNextStates` (fetched with `changeRequestDetailQuery`, the detail page's own cache
+  entry) through the action bar's filter (`bulkChangeRequestTargets`: `isOfferedChangeRequestTarget`, never `authorize`,
+  never `scheduled`, never a Close out of Customer Review). Cancel change / Roll back need a reason, sent as `workNote`
+  **in the same PATCH as the state** (a refused move then records no reason; the detail page posts its reason first
+  because it handles one record). The per-record request is `bulkChangeRequestPlan` (`utils/bulkChangeRequestEdit.ts`):
+  an approved change request (Customer Approval and later) gets only the state and the work note, since its fields are
+  read-only (400 `change_request_approved_read_only`), and one left with nothing to send is skipped with the reason.
+- **Assign to me** sends `{assignedEngineerId: <me>}`; for change requests `assignChangeRequestToMePlan` skips an approved
+  one (its assignee is read-only) and one already assigned to the user.
+- **Export** (`FilteredExportMenu` + `useFilteredListExport`) pages the current filtered **and sorted** search to the end
+  or the safety cap (`fetchAllPages`, as the CSV button did) and builds CSV (`rowsToCsvText`, formula-guarded), Excel
+  (`utils/xlsxWriter.ts`: a stored zip with inline strings, bold frozen header; no dependency), JSON (one object per row
+  keyed by the column header) or PDF (`utils/tableExportPdf.ts`, jsPDF + autotable, loaded on demand). A capped export is
+  named `-partial`. `FilteredCsvExportButton` is still used by the other lists.
+- Tests: the two tabs' tests ("bulk selection", "Assign to me", "bulk edit", "export"), `BulkEditIncidentsDialog.test.tsx`,
+  `utils/__tests__/bulk*.test.ts`, `useRowSelection.test.ts`, `FilteredExportMenu.test.tsx`, `xlsxWriter.test.ts`,
+  `listExport.test.ts`, `tableExportPdf.test.ts`; e2e `tests/e2e/specs/operations/list-bulk-actions.spec.ts` (the list
+  searches and PATCHes faked in memory, sign-in and pickers real; every export format downloaded and read back).
+
 ## Change request Approval tab: Approve / Reject follow the backend, never the state
 
 `ChangeRequestApprovals` renders Approve / Reject on the signed-in user's own `REQUESTED` row, enabled

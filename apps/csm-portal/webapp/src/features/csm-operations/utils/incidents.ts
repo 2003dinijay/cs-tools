@@ -92,6 +92,24 @@ export function getLegalNextIncidentStates(current: BeIncidentState): BeIncident
   return [current, ...STATE_TRANSITIONS[current]];
 }
 
+/** Whether an incident in `state` is closed for good (no transition out, no bulk edit). */
+export function isIncidentTerminal(state?: string | null): boolean {
+  return state === "CLOSED" || state === "CANCELLED";
+}
+
+/**
+ * The states every one of `current` can move to (the same table as the Edit
+ * dialog's): what a bulk edit may set on all of them at once, Resolved and
+ * Closed included when legal for each. Empty when they share none, or when one
+ * is in a state the table does not know.
+ */
+export function bulkIncidentTargetStates(current: Array<string | null | undefined>): BeIncidentState[] {
+  if (current.length === 0) return [];
+  return INCIDENT_STATES.filter((target) =>
+    current.every((s) => !!s && (STATE_TRANSITIONS[s as BeIncidentState] ?? []).includes(target)),
+  );
+}
+
 function humanize(value: string): string {
   return value.replace(/_/g, " ");
 }

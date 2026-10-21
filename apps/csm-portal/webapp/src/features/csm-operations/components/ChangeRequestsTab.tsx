@@ -17,6 +17,7 @@
 import {
   Box,
   Button,
+  Checkbox,
   Chip,
   Skeleton,
   Table,
@@ -26,14 +27,18 @@ import {
   TableHead,
   TablePagination,
   TableRow,
+  Tooltip,
   Typography,
 } from "@wso2/oxygen-ui";
 import { Plus } from "@wso2/oxygen-ui-icons-react";
 import { useCallback, useMemo, useState, type ChangeEvent, type JSX } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useLocation, useSearchParams } from "react-router";
 import { useNavTransition } from "@hooks/useNavTransition";
 import QueryErrorState from "@components/QueryErrorState";
-import FilteredCsvExportButton from "@components/FilteredCsvExportButton";
+import FilteredExportMenu from "@components/FilteredExportMenu";
+import { ApiQueryKeys } from "@constants/apiConstants";
+import { usePortalAccess } from "@context/current-user/usePortalAccess";
 import ColumnCustomizerButton from "@components/column-customizer/ColumnCustomizerButton";
 import { useCurrentUser } from "@context/current-user/CurrentUserContext";
 import { getColumnPreferencesUserKey, useColumnPreferences } from "@hooks/useColumnPreferences";
@@ -50,8 +55,19 @@ import {
   changeRequestStateColor,
   changeRequestStateLabel,
   DEFAULT_CR_FILTERS,
+  isChangeRequestTerminal,
   type ChangeRequestFilters,
 } from "@features/csm-operations/utils/changeRequests";
+import {
+  assignChangeRequestToMePlan,
+  bulkChangeRequestPlan,
+  type BulkChangeRequestPlan,
+} from "@features/csm-operations/utils/bulkChangeRequestEdit";
+import { runBulkUpdate, type BulkFailure, type BulkResult } from "@features/csm-operations/utils/bulkUpdate";
+import { useRowSelection } from "@features/csm-operations/hooks/useRowSelection";
+import BulkSelectionBar from "@features/csm-operations/components/BulkSelectionBar";
+import BulkResultAlert from "@features/csm-operations/components/BulkResultAlert";
+import BulkEditChangeRequestsDialog from "@features/csm-operations/components/BulkEditChangeRequestsDialog";
 import {
   CR_FILTER_PARAM_KEYS,
   readChangeRequestFiltersFromUrl,
@@ -70,7 +86,13 @@ import type {
   BeChangeRequestSearchPayload,
   BeChangeRequestSearchResponse,
   BeChangeRequestSearchView,
+  BePatchChangeRequestPayload,
+  BePatchChangeRequestResponse,
 } from "@api/backend/types";
+
+const changeRequestId = (cr: BeChangeRequestSearchView): string | null | undefined => cr.id;
+// A closed, canceled or rolled-back change request is over: it takes no bulk edit.
+const changeRequestSelectable = (cr: BeChangeRequestSearchView): boolean => !isChangeRequestTerminal(cr.state);
 
 const CHANGE_REQUEST_OPTIONAL_COLUMN_IDS = Object.keys(
   CHANGE_REQUEST_OPTIONAL_COLUMNS,
@@ -197,11 +219,49 @@ export default function ChangeRequestsTab(): JSX.Element {
   const visibleOptionalColumns = columnPrefs.visibleColumns.map(
     (c) => c.id as ChangeRequestOptionalColumnId,
   );
-  const columnCount = 4 + visibleOptionalColumns.length; // Number, Subject, State, Updated + optional
+  // Bulk actions (Edit, Assign to me) on the selected rows, for those who may write.
+  const { canWrite } = usePortalAccess();
+  const queryClient = useQueryClient();
+  const selection = useRowSelection<BeChangeRequestSearchView>(changeRequestId, changeRequestSelectable);
+  const { clear: clearSelection } = selection;
+  const [bulkEditOpen, setBulkEditOpen] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkResult, setBulkResult] = useState<{ result: BulkResult; verb: string } | null>(null);
+  const runBulk = async (planFor: (cr: BeChangeRequestSearchView) => BulkChangeRequestPlan, verb: string): Promise<void> => {
+    setBulkBusy(true);
+    try {
+      const skipped: BulkFailure[] = [];
+      const toSend: Array<{ cr: BeChangeRequestSearchView; patch: BePatchChangeRequestPayload }> = [];
+      for (const cr of selection.selected) {
+        const plan = planFor(cr);
+        if ("skip" in plan) skipped.push({ id: cr.id, number: cr.number || cr.id, message: plan.skip });
+        else toSend.push({ cr, patch: plan.patch });
+      }
+      const outcome = await runBulkUpdate(
+        toSend.map(({ cr }) => ({ id: cr.id, number: cr.number })),
+        (t) =>
+          api.patch<BePatchChangeRequestPayload, BePatchChangeRequestResponse>(
+            `/change-requests/${encodeURIComponent(t.id)}`,
+            toSend.find(({ cr }) => cr.id === t.id)!.patch,
+          ),
+      );
+      setBulkResult({ result: { ...outcome, skipped }, verb });
+      clearSelection();
+      setBulkEditOpen(false);
+      void queryClient.invalidateQueries({ queryKey: [ApiQueryKeys.CHANGE_REQUESTS] });
+      void queryClient.invalidateQueries({ queryKey: [ApiQueryKeys.CHANGE_REQUEST_DETAILS] });
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const columnCount = (canWrite ? 5 : 4) + visibleOptionalColumns.length; // [select,] Number, Subject, State, Updated + optional
 
   const setFilters = useCallback(
     (next: ChangeRequestFilters) => {
       setPage(0);
+      // A selection is of the rows a filter showed: a new filter starts afresh.
+      clearSelection();
       // Preserve any non-filter params (e.g. the active operations tab) and
       // any other tab's own filter params (e.g. the incidents tab's), rather
       // than resetting the whole query string.
@@ -212,7 +272,7 @@ export default function ChangeRequestsTab(): JSX.Element {
       // history — same rationale as the shared cases list view.
       setSearchParams(merged, { replace: true });
     },
-    [searchParams, setSearchParams],
+    [searchParams, setSearchParams, clearSelection],
   );
 
   const handleFiltersChange = (next: ChangeRequestFilters): void => {
@@ -239,12 +299,14 @@ export default function ChangeRequestsTab(): JSX.Element {
         "/change-requests/search",
         {
           filters: payload.filters,
+          // The export follows the list's own order.
+          sortBy: payload.sortBy,
           pagination: { offset, limit },
         },
       );
       return { items: res.changeRequests ?? [], total: res.total ?? 0 };
     },
-    [api, payload.filters],
+    [api, payload.filters, payload.sortBy],
   );
 
   const changeRequestToCsvRow = useCallback(
@@ -269,8 +331,9 @@ export default function ChangeRequestsTab(): JSX.Element {
           updatedAt={dataUpdatedAt}
           label="Refresh change requests"
         />
-        <FilteredCsvExportButton<BeChangeRequestSearchView>
+        <FilteredExportMenu<BeChangeRequestSearchView>
           entityName="change-requests"
+          title="Change requests"
           header={["Number", "Subject", "Project", "State", "Impact", "Planned start", "Updated"]}
           toRow={changeRequestToCsvRow}
           fetchPage={fetchChangeRequestsPage}
@@ -295,6 +358,36 @@ export default function ChangeRequestsTab(): JSX.Element {
         onFiltersToggle={() => setIsFiltersOpen(!isFiltersOpen)}
       />
 
+      {bulkResult && (
+        <BulkResultAlert
+          result={bulkResult.result}
+          nounPlural="change requests"
+          verb={bulkResult.verb}
+          onClose={() => setBulkResult(null)}
+        />
+      )}
+      {canWrite && (
+        <BulkSelectionBar
+          count={selection.count}
+          noun="change request"
+          busy={bulkBusy}
+          onEdit={() => setBulkEditOpen(true)}
+          onAssignToMe={() => {
+            if (currentUserId) void runBulk((cr) => assignChangeRequestToMePlan(cr, currentUserId), "Assigned to you");
+          }}
+          assignToMeDisabledReason={currentUserId ? null : "Your user record is still loading."}
+          onClear={clearSelection}
+        />
+      )}
+      {bulkEditOpen && (
+        <BulkEditChangeRequestsDialog
+          changeRequests={selection.selected}
+          isApplying={bulkBusy}
+          onClose={() => setBulkEditOpen(false)}
+          onApply={(edit) => void runBulk((cr) => bulkChangeRequestPlan(cr, edit), "Updated")}
+        />
+      )}
+
       <Box sx={{ display: "flex", justifyContent: "flex-end" }}>
         <ColumnCustomizerButton
           allColumns={columnPrefs.allColumns}
@@ -312,6 +405,18 @@ export default function ChangeRequestsTab(): JSX.Element {
           <Table size="small" sx={{ "& .MuiTableCell-root": { borderColor: "divider" } }}>
             <TableHead>
               <TableRow sx={{ bgcolor: "action.hover" }}>
+                {canWrite && (
+                  <TableCell padding="checkbox">
+                    <Checkbox
+                      size="small"
+                      checked={selection.pageState(changeRequests).all}
+                      indeterminate={selection.pageState(changeRequests).some}
+                      disabled={!changeRequests.some(changeRequestSelectable)}
+                      onChange={() => selection.togglePage(changeRequests)}
+                      inputProps={{ "aria-label": "Select all change requests on this page" }}
+                    />
+                  </TableCell>
+                )}
                 <TableCell>Number</TableCell>
                 <TableCell>Subject</TableCell>
                 {visibleOptionalColumns.map((id) => (
@@ -335,6 +440,7 @@ export default function ChangeRequestsTab(): JSX.Element {
               {isLoading || isFetching ? (
                 Array.from({ length: rowsPerPage }).map((_, i) => (
                   <TableRow key={i}>
+                    {canWrite && <TableCell padding="checkbox" />}
                     <TableCell><Skeleton variant="rounded" width="80%" height={18} /></TableCell>
                     <TableCell><Skeleton variant="rounded" width="90%" height={18} /></TableCell>
                     {visibleOptionalColumns.map((id) => (
@@ -371,8 +477,33 @@ export default function ChangeRequestsTab(): JSX.Element {
                         state: { from: `${location.pathname}${location.search}` },
                       })
                     }
+                    selected={selection.isSelected(cr)}
                     sx={{ cursor: "pointer" }}
                   >
+                    {canWrite && (
+                      <TableCell padding="checkbox" onClick={(e) => e.stopPropagation()}>
+                        {changeRequestSelectable(cr) ? (
+                          <Checkbox
+                            size="small"
+                            checked={selection.isSelected(cr)}
+                            onChange={() => selection.toggle(cr)}
+                            inputProps={{ "aria-label": `Select ${cr.number ?? "change request"}` }}
+                          />
+                        ) : (
+                          <Tooltip title="A closed, canceled or rolled-back change request can't be edited.">
+                            <span>
+                              <Checkbox
+                                size="small"
+                                disabled
+                                inputProps={{
+                                  "aria-label": `${cr.number ?? "Change request"} is closed and can't be selected`,
+                                }}
+                              />
+                            </span>
+                          </Tooltip>
+                        )}
+                      </TableCell>
+                    )}
                     <TableCell>{cr.number || "—"}</TableCell>
                     <TableCell sx={{ maxWidth: 360 }}>
                       <Typography variant="body2" noWrap title={cr.subject ?? undefined}>

@@ -1202,6 +1202,119 @@ export function changeRequestTransitionLabel(
   return TRANSITION_LABEL[target] ?? sentenceCase(target);
 }
 
+/**
+ * States this bar never offers, no matter what `legalNextStates` contains.
+ *
+ * THE RULE: staff never record a customer's approval or review. While a change
+ * request is in Customer Approval or Customer Review it moves on only through
+ * the customer's own answer in the Customer Portal. A staff member answering
+ * for the customer would be a decision the customer never made, written into
+ * data that is audited, so there is no such action here: no button, no menu
+ * entry, not even a disabled one. The backend refuses the same PATCH from any
+ * caller; this filter is the second wall, so a backend that ever started
+ * offering it again could not silently reopen it. Staff keep Re-schedule (out
+ * of Customer Approval: the customer is asked again), Roll back (out of Review
+ * and Customer Review) and Cancel change. `scheduled` and `closed` below carry
+ * the rule; the rest are older exclusions, kept for their own reasons.
+ *
+ * "Accept proposed time" is not an exception to it and is not in this bar at all:
+ * it is the banner's own action, it applies the time the customer PROPOSED (the
+ * customer's own consent, kept in `customer_updated_on`), it is never a `state` in
+ * a PATCH, and nothing here records the customer's approval or review.
+ *
+ * `scheduled` is never offered. A CR is moved to Scheduled automatically the
+ * moment its approval is granted (CAB, Standard's Request Approval, or the
+ * customer's own approval at Customer Approval). There is no manual "Schedule"
+ * action anywhere, and none out of `customer_approval` either: that move is
+ * the customer's approval.
+ *
+ * `closed` is never offered out of `customer_review`: that move is the
+ * customer's review. (The plain Close out of Review, when no customer review
+ * is required, is an ordinary forward move and stays: see `isOfferedTarget`.)
+ *
+ * `customer_approval` is not human-enterable in the backing system: of its 38
+ * UI actions on the change-request table, none sets it. It is reached only by
+ * the approval process itself. Setting it by hand from here would leave a
+ * record sitting in an approval state with no approver record behind it,
+ * which is an audit hole rather than a shortcut.
+ *
+ * `authorize` is a different case: it IS reachable by a human action, just
+ * never this one. It's the automatic side effect of an approver approving in
+ * the Approvers section (`ChangeRequestApprovals.tsx` / the decide-approval
+ * endpoint), which already correctly cascades the change request's own state
+ * forward on approval — not "automation-only" the way the other two are, but
+ * gated by a real human decision made somewhere else in the UI, not here.
+ * Offering it as a directly-clickable button/menu item from here would let
+ * someone skip the actual approval process entirely and land the record in
+ * Authorize with no approval behind it — the same audit hole as above, by a
+ * different route. The one exception is keyed on the record's own state: from
+ * `customer_approval` it means "Re-schedule" (the planned time changed, so the
+ * customer is asked to approve the new time -- the change stays in Customer
+ * Approval and never goes back through CAB: the change itself has not changed),
+ * and the page collects the new planned window before sending it. The wire name
+ * stays `authorize` although nothing moves to Authorize any more: it is the
+ * contract of the CSM page, the BFF and the fakes, and renaming it breaks them for nothing.
+ *
+ * `rollback` is the failed-review off-ramp of the process diagram: a human
+ * action ("Roll back"), but only from the two review states, `review` and
+ * `customer_review` (the backend offers and accepts it from nowhere else).
+ * It is a destructive, menu-only item that requires a stated reason. It used
+ * to be excluded here as "automation-only"; the backend now owns the manual
+ * transition. The carve-out is still keyed on the record's own state.
+ *
+ * The exclusions are deliberately unconditional (the `authorize`, `rollback`
+ * and `closed` carve-outs are keyed on the record's own state, never on what
+ * `legalNextStates` claims) so a future backend change that starts returning
+ * any of these cannot silently reopen them.
+ */
+export const NEVER_OFFERED_TARGETS: readonly string[] = ["customer_approval", "scheduled"];
+
+/** States a change request can be manually rolled back from. */
+const ROLLBACK_FROM_STATES: readonly string[] = ["review", "customer_review"];
+
+/**
+ * `authorize` ("Re-schedule" / "Propose a different time") is a manual action only from `customer_approval`;
+ * `rollback` only from the two review states; `closed` anywhere but
+ * `customer_review` (see `NEVER_OFFERED_TARGETS` for the rule behind it).
+ * Everywhere else they are not offered.
+ */
+export function isOfferedChangeRequestTarget(target: string, currentState: string | null | undefined): boolean {
+  if (!target || target === currentState) return false;
+  if (target === "authorize") return currentState === "customer_approval";
+  if (target === "rollback") {
+    return !!currentState && ROLLBACK_FROM_STATES.includes(currentState);
+  }
+  // The customer's review is theirs to give: no Close out of Customer Review.
+  if (target === "closed" && currentState === "customer_review") return false;
+  return !NEVER_OFFERED_TARGETS.includes(target);
+}
+
+/** The final states: a change request in one takes no transition and no edit. */
+const CHANGE_REQUEST_TERMINAL_STATES: readonly string[] = ["closed", "canceled", "rollback"];
+
+/** Whether a change request in `state` is over (Closed, Canceled, Rolled back): no bulk edit. */
+export function isChangeRequestTerminal(state?: string | null): boolean {
+  return !!state && CHANGE_REQUEST_TERMINAL_STATES.includes(state);
+}
+
+/**
+ * The moves every one of `crs` can make, from each one's own `legalNextStates`
+ * and the same filter the action bar applies (`isOfferedChangeRequestTarget`):
+ * what a bulk edit may set on all of them at once, Close / Cancel / Roll back
+ * included when legal for each. `authorize` (Re-schedule) is left out: it needs a
+ * planned window of its own per change request. Empty when they share none, or
+ * when a change request's moves are not known.
+ */
+export function bulkChangeRequestTargets(
+  crs: Array<Pick<BeChangeRequestDetail, "state" | "legalNextStates">>,
+): string[] {
+  if (crs.length === 0) return [];
+  const offered = crs.map((cr) =>
+    (cr.legalNextStates ?? []).filter((t) => t !== "authorize" && isOfferedChangeRequestTarget(t, cr.state)),
+  );
+  return offered[0].filter((t) => offered.every((targets) => targets.includes(t)));
+}
+
 /** True when this transition is destructive: menu-only, error-coloured. */
 export function isDestructiveChangeRequestTransition(target: string): boolean {
   return DESTRUCTIVE_TRANSITIONS.includes(target);

@@ -17,6 +17,7 @@
 import {
   Box,
   Button,
+  Checkbox,
   Chip,
   Skeleton,
   Table,
@@ -26,10 +27,14 @@ import {
   TableHead,
   TablePagination,
   TableRow,
+  Tooltip,
   Typography,
 } from "@wso2/oxygen-ui";
 import { Plus } from "@wso2/oxygen-ui-icons-react";
 import { useCallback, useMemo, useState, type ChangeEvent, type JSX } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { ApiQueryKeys } from "@constants/apiConstants";
+import { usePortalAccess } from "@context/current-user/usePortalAccess";
 import { useLocation, useSearchParams } from "react-router";
 import { useCurrentUser } from "@context/current-user/CurrentUserContext";
 import { useNavTransition } from "@hooks/useNavTransition";
@@ -39,7 +44,7 @@ import {
   useColumnPreferences,
 } from "@hooks/useColumnPreferences";
 import QueryErrorState from "@components/QueryErrorState";
-import FilteredCsvExportButton from "@components/FilteredCsvExportButton";
+import FilteredExportMenu from "@components/FilteredExportMenu";
 import ColumnCustomizerButton from "@components/column-customizer/ColumnCustomizerButton";
 import { useDebouncedValue } from "@hooks/useDebouncedValue";
 import { useFilterBarCollapsed } from "@hooks/useFilterBarCollapsed";
@@ -53,8 +58,14 @@ import {
   incidentPriorityLabel,
   incidentStateColor,
   incidentStateLabel,
+  isIncidentTerminal,
   type IncidentFilters,
 } from "@features/csm-operations/utils/incidents";
+import { runBulkUpdate, type BulkResult } from "@features/csm-operations/utils/bulkUpdate";
+import { useRowSelection } from "@features/csm-operations/hooks/useRowSelection";
+import BulkSelectionBar from "@features/csm-operations/components/BulkSelectionBar";
+import BulkResultAlert from "@features/csm-operations/components/BulkResultAlert";
+import BulkEditIncidentsDialog from "@features/csm-operations/components/BulkEditIncidentsDialog";
 import {
   INCIDENT_FILTER_PARAM_KEYS,
   readIncidentFiltersFromUrl,
@@ -69,7 +80,17 @@ import IncidentsFilterBar from "@features/csm-operations/components/IncidentsFil
 import SortableHeaderCell from "@features/csm-operations/components/SortableHeaderCell";
 import type { ListSort } from "@features/csm-operations/utils/listSort";
 import RefreshButton from "@components/RefreshButton";
-import type { BeIncident, BeIncidentSearchPayload, BeIncidentSearchResponse } from "@api/backend/types";
+import type {
+  BeIncident,
+  BeIncidentSearchPayload,
+  BeIncidentSearchResponse,
+  BePatchIncidentResponse,
+  BeUpdateIncidentPayload,
+} from "@api/backend/types";
+
+const incidentId = (incident: BeIncident): string | null | undefined => incident.id;
+// A closed or cancelled incident is closed for good: it takes no bulk edit.
+const incidentSelectable = (incident: BeIncident): boolean => !isIncidentTerminal(incident.state);
 
 const DEFAULT_ROWS_PER_PAGE = 20;
 const ROWS_PER_PAGE_OPTIONS = [10, 20, 50];
@@ -175,11 +196,43 @@ export default function IncidentsTab(): JSX.Element {
   const visibleOptionalColumns = columnPrefs.visibleColumns.map(
     (c) => c.id as IncidentOptionalColumnId,
   );
-  const columnCount = 7 + visibleOptionalColumns.length; // Number, Subject, Caller, State, Priority, Opened, Updated + optional
+  // Bulk actions (Edit, Assign to me) on the selected rows, for those who may write.
+  const { canWrite } = usePortalAccess();
+  const queryClient = useQueryClient();
+  const selection = useRowSelection<BeIncident>(incidentId, incidentSelectable);
+  const { clear: clearSelection } = selection;
+  const [bulkEditOpen, setBulkEditOpen] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkResult, setBulkResult] = useState<{ result: BulkResult; verb: string } | null>(null);
+  const runBulk = async (patchFor: (incident: BeIncident) => BeUpdateIncidentPayload, verb: string): Promise<void> => {
+    setBulkBusy(true);
+    try {
+      const rows = selection.selected;
+      const outcome = await runBulkUpdate(
+        rows.map((r) => ({ id: r.id!, number: r.number })),
+        (t) =>
+          api.patch<BeUpdateIncidentPayload, BePatchIncidentResponse>(
+            `/incidents/${encodeURIComponent(t.id)}`,
+            patchFor(rows.find((r) => r.id === t.id)!),
+          ),
+      );
+      setBulkResult({ result: { ...outcome, skipped: [] }, verb });
+      clearSelection();
+      setBulkEditOpen(false);
+      void queryClient.invalidateQueries({ queryKey: [ApiQueryKeys.INCIDENTS] });
+      void queryClient.invalidateQueries({ queryKey: [ApiQueryKeys.INCIDENT_DETAILS] });
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const columnCount = (canWrite ? 8 : 7) + visibleOptionalColumns.length; // [select,] Number, Subject, Caller, State, Priority, Opened, Updated + optional
 
   const setFilters = useCallback(
     (next: IncidentFilters) => {
       setPage(0);
+      // A selection is of the rows a filter showed: a new filter starts afresh.
+      clearSelection();
       // Preserve any non-filter params (e.g. the active operations tab) and
       // any other tab's own filter params (e.g. the change-requests tab's),
       // rather than resetting the whole query string.
@@ -190,7 +243,7 @@ export default function IncidentsTab(): JSX.Element {
       // history — same rationale as the shared cases list view.
       setSearchParams(merged, { replace: true });
     },
-    [searchParams, setSearchParams],
+    [searchParams, setSearchParams, clearSelection],
   );
 
   const handleFiltersChange = (next: IncidentFilters): void => {
@@ -250,8 +303,9 @@ export default function IncidentsTab(): JSX.Element {
           updatedAt={dataUpdatedAt}
           label="Refresh incidents"
         />
-        <FilteredCsvExportButton<BeIncident>
+        <FilteredExportMenu<BeIncident>
           entityName="incidents"
+          title="Incidents"
           header={["Number", "Subject", "Caller", "State", "Priority", "Opened", "Updated"]}
           toRow={incidentToCsvRow}
           fetchPage={fetchIncidentsPage}
@@ -276,6 +330,36 @@ export default function IncidentsTab(): JSX.Element {
         onFiltersToggle={() => setIsFiltersOpen(!isFiltersOpen)}
       />
 
+      {bulkResult && (
+        <BulkResultAlert
+          result={bulkResult.result}
+          nounPlural="incidents"
+          verb={bulkResult.verb}
+          onClose={() => setBulkResult(null)}
+        />
+      )}
+      {canWrite && (
+        <BulkSelectionBar
+          count={selection.count}
+          noun="incident"
+          busy={bulkBusy}
+          onEdit={() => setBulkEditOpen(true)}
+          onAssignToMe={() => {
+            if (currentUserId) void runBulk(() => ({ assignedEngineerId: currentUserId }), "Assigned to you");
+          }}
+          assignToMeDisabledReason={currentUserId ? null : "Your user record is still loading."}
+          onClear={clearSelection}
+        />
+      )}
+      {bulkEditOpen && (
+        <BulkEditIncidentsDialog
+          incidents={selection.selected}
+          isApplying={bulkBusy}
+          onClose={() => setBulkEditOpen(false)}
+          onApply={(patch) => void runBulk(() => patch, "Updated")}
+        />
+      )}
+
       <Box sx={{ display: "flex", justifyContent: "flex-end" }}>
         <ColumnCustomizerButton
           allColumns={columnPrefs.allColumns}
@@ -293,6 +377,18 @@ export default function IncidentsTab(): JSX.Element {
           <Table size="small" sx={{ "& .MuiTableCell-root": { borderColor: "divider" } }}>
             <TableHead>
               <TableRow sx={{ bgcolor: "action.hover" }}>
+                {canWrite && (
+                  <TableCell padding="checkbox">
+                    <Checkbox
+                      size="small"
+                      checked={selection.pageState(incidents).all}
+                      indeterminate={selection.pageState(incidents).some}
+                      disabled={!incidents.some(incidentSelectable)}
+                      onChange={() => selection.togglePage(incidents)}
+                      inputProps={{ "aria-label": "Select all incidents on this page" }}
+                    />
+                  </TableCell>
+                )}
                 <TableCell>Number</TableCell>
                 <TableCell>Subject</TableCell>
                 <TableCell>Caller</TableCell>
@@ -319,6 +415,7 @@ export default function IncidentsTab(): JSX.Element {
               {isLoading || isFetching ? (
                 Array.from({ length: rowsPerPage }).map((_, i) => (
                   <TableRow key={i}>
+                    {canWrite && <TableCell padding="checkbox" />}
                     <TableCell><Skeleton variant="rounded" width="80%" height={18} /></TableCell>
                     <TableCell><Skeleton variant="rounded" width="90%" height={18} /></TableCell>
                     <TableCell><Skeleton variant="rounded" width="85%" height={18} /></TableCell>
@@ -362,8 +459,31 @@ export default function IncidentsTab(): JSX.Element {
                         state: { from: `${location.pathname}${location.search}` },
                       })
                     }
+                    selected={selection.isSelected(incident)}
                     sx={{ cursor: "pointer" }}
                   >
+                    {canWrite && (
+                      <TableCell padding="checkbox" onClick={(e) => e.stopPropagation()}>
+                        {incidentSelectable(incident) ? (
+                          <Checkbox
+                            size="small"
+                            checked={selection.isSelected(incident)}
+                            onChange={() => selection.toggle(incident)}
+                            inputProps={{ "aria-label": `Select ${incident.number ?? "incident"}` }}
+                          />
+                        ) : (
+                          <Tooltip title="A closed or cancelled incident can't be edited.">
+                            <span>
+                              <Checkbox
+                                size="small"
+                                disabled
+                                inputProps={{ "aria-label": `${incident.number ?? "Incident"} is closed and can't be selected` }}
+                              />
+                            </span>
+                          </Tooltip>
+                        )}
+                      </TableCell>
+                    )}
                     <TableCell>{incident.number || "—"}</TableCell>
                     <TableCell sx={{ maxWidth: 360 }}>
                       <Typography variant="body2" noWrap title={incident.subject ?? undefined}>
