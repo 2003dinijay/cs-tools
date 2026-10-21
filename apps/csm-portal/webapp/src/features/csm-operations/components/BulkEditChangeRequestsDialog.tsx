@@ -319,6 +319,8 @@ export default function BulkEditChangeRequestsDialog({
       next.projectId = scope.projectId;
       next.deploymentIds = scope.deploymentIds;
       if (scope.productsReady) next.deploymentProductIds = scope.deploymentProductIds;
+      // Past New the project is only the frame of the deployments: never moved to.
+      if (scopeMode === "deployments") next.projectFixed = true;
     }
     if (effectiveApproval) next.customerApprovalRequired = effectiveApproval === "yes";
     if (effectiveReview) next.customerReviewRequired = effectiveReview === "yes";
@@ -335,7 +337,7 @@ export default function BulkEditChangeRequestsDialog({
   }, [
     state, title, type, category, impact, priority, caseId, hold, holdReason, serviceId, serviceOfferingId,
     assignedTeamId, assignedEngineerId, requestedById, plannedStart, plannedEnd, rollbackDuration,
-    sendScope, scope.projectId, scope.deploymentIds, scope.deploymentProductIds, scope.productsReady,
+    sendScope, scopeMode, scope.projectId, scope.deploymentIds, scope.deploymentProductIds, scope.productsReady,
     effectiveApproval, effectiveReview, planVisible, plans, serviceOutage, communicationPlan, workNote, comment,
   ]);
 

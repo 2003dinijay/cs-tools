@@ -24,6 +24,7 @@ import {
   isChangeRequestTerminal,
   isEmergencyChangeRequestType,
 } from "@features/csm-operations/utils/changeRequests";
+import { parseBackendTimestamp } from "@utils/dateTime";
 import type { BeChangeRequestDetail, BePatchChangeRequestPayload } from "@api/backend/types";
 
 /**
@@ -76,7 +77,15 @@ export type BulkChangeRequestEdit = Pick<
   | "isPlanningVisibleToCustomers"
   | "workNote"
   | "comment"
->;
+> & {
+  /**
+   * Past New the dialog shows the Customer Project every selected change request
+   * shares, fixed, and sends it only to change the deployments within it: a
+   * record whose project is no longer that one is skipped, never moved to it.
+   * Never sent itself.
+   */
+  projectFixed?: boolean;
+};
 
 /** What is sent to one change request, or why nothing is. */
 export type BulkChangeRequestPlan = { patch: BePatchChangeRequestPayload } | { skip: string };
@@ -88,6 +97,9 @@ export type BulkChangeRequestPlan = { patch: BePatchChangeRequestPayload } | { s
  * allow-list: a field added later is read-only once approved until it is listed.
  */
 const APPROVED_ALLOWED_FIELDS: ReadonlySet<string> = new Set(["state", "onHold", "onHoldReason", "workNote", "comment"]);
+
+/** Keys of an edit that steer the plan and are never sent. */
+const PLAN_ONLY_FIELDS: ReadonlySet<string> = new Set(["projectFixed"]);
 
 /**
  * Whether `key` is set in `edit`: a blank text is not (a bulk edit never clears
@@ -102,7 +114,7 @@ function isSet(edit: BulkChangeRequestEdit, key: keyof BulkChangeRequestEdit): b
 /** Whether `edit` changes any of the change request's own fields (not just its state, hold or journals). */
 export function bulkEditTouchesContent(edit: BulkChangeRequestEdit): boolean {
   return (Object.keys(edit) as Array<keyof BulkChangeRequestEdit>).some(
-    (key) => !APPROVED_ALLOWED_FIELDS.has(key) && isSet(edit, key),
+    (key) => !APPROVED_ALLOWED_FIELDS.has(key) && !PLAN_ONLY_FIELDS.has(key) && isSet(edit, key),
   );
 }
 
@@ -111,7 +123,9 @@ export function bulkChangeRequestEditProblem(edit: BulkChangeRequestEdit): strin
   if (edit.state && changeRequestTransitionRequiresReason(edit.state) && !edit.workNote?.trim()) {
     return "A reason is required for this state change. It is added to every selected change request as an internal work note.";
   }
-  if (edit.plannedStartOn && edit.plannedEndOn && Date.parse(edit.plannedEndOn) <= Date.parse(edit.plannedStartOn)) {
+  const start = parseBackendTimestamp(edit.plannedStartOn);
+  const end = parseBackendTimestamp(edit.plannedEndOn);
+  if (start && end && end.getTime() <= start.getTime()) {
     return "Planned end must be after planned start.";
   }
   if (edit.onHoldReason && edit.onHold !== true) {
@@ -130,6 +144,10 @@ export const APPROVED_FIELDS_SKIPPED =
 /** The words for a change request that has left New and was asked for another type or Customer Project. */
 export const NEW_ONLY_FIELDS_SKIPPED =
   "Approval has been requested, so its type and Customer Project can no longer be changed.";
+
+/** The words for a change request whose project is no longer the one the dialog showed fixed. */
+export const PROJECT_CHANGED_SKIPPED =
+  "Its Customer Project has changed since it was picked, so it was not changed.";
 
 /** The words for a change request whose planned window the edit would turn inside out. */
 export const PLANNED_WINDOW_SKIPPED =
@@ -184,7 +202,7 @@ export function bulkChangeRequestPlan(cr: BulkChangeRequestRecord, edit: BulkCha
   const approved = !!changeRequestApprovedReadOnlyReason(cr.state);
   const patch: BePatchChangeRequestPayload = {};
   for (const key of Object.keys(edit) as Array<keyof BulkChangeRequestEdit>) {
-    if (!isSet(edit, key) || (approved && !APPROVED_ALLOWED_FIELDS.has(key))) continue;
+    if (PLAN_ONLY_FIELDS.has(key) || !isSet(edit, key) || (approved && !APPROVED_ALLOWED_FIELDS.has(key))) continue;
     const value = edit[key];
     (patch as Record<string, unknown>)[key] = typeof value === "string" ? value.trim() : value;
   }
@@ -194,12 +212,17 @@ export function bulkChangeRequestPlan(cr: BulkChangeRequestRecord, edit: BulkCha
     delete patch.type;
     if (patch.projectId && patch.projectId !== cr.project?.id) return { skip: NEW_ONLY_FIELDS_SKIPPED };
   }
+  if (!approved && edit.projectFixed && patch.projectId && patch.projectId !== cr.project?.id) {
+    // The project was shown fixed, to change the deployments within it: never a move to it (in New too).
+    return { skip: PROJECT_CHANGED_SKIPPED };
+  }
 
   if (!approved && (patch.plannedStartOn || patch.plannedEndOn)) {
-    // Nothing downstream orders the two bounds, so the window is judged here as it will stand.
-    const start = Date.parse(patch.plannedStartOn ?? cr.plannedStartOn ?? "");
-    const end = Date.parse(patch.plannedEndOn ?? cr.plannedEndOn ?? "");
-    if (!Number.isNaN(start) && !Number.isNaN(end) && end <= start) return { skip: PLANNED_WINDOW_SKIPPED };
+    // Nothing downstream orders the two bounds, so the window is judged here as it will stand. Both sides
+    // are read as backend UTC: the edit's zoneless "YYYY-MM-DD HH:mm:ss" and the detail's RFC 3339 alike.
+    const start = parseBackendTimestamp(patch.plannedStartOn ?? cr.plannedStartOn);
+    const end = parseBackendTimestamp(patch.plannedEndOn ?? cr.plannedEndOn);
+    if (start && end && end.getTime() <= start.getTime()) return { skip: PLANNED_WINDOW_SKIPPED };
   }
 
   if (!approved) {

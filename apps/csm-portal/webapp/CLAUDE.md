@@ -426,7 +426,8 @@ Both lists have a checkbox column (for `canWrite` only), a selection bar (`BulkS
     it was changed in the dialog (`scopeTouched`; past New only with deployments picked), so the project shown is never
     sent on its own (it would clear the deployments). Project, deployments and deployment products go together (the
     backend validates them as a unit), and Apply waits for the products. The plan skips one asked for another type or
-    project after New; resending its own is a no-op.
+    project after New; resending its own is a no-op. Past New the edit carries `projectFixed` (plan-only, never sent):
+    a record whose project is no longer the one shown, New included, is skipped rather than moved to it.
   - Customer approval / review offer "Required" and "Not required" only as far as every selected one can take them
     (`customerApprovalLockedReason` / `customerReviewLockedReason`: add-only after New, a Customer Project needed, never
     for an Emergency change). Choosing type Emergency disables both, and the plan turns a ticked one off in the same
@@ -438,7 +439,9 @@ Both lists have a checkbox column (for `canWrite` only), a selection bar (`BulkS
     it off hold (the backend's gate). The dialog says how many of the selection are on hold.
   - A blank text is never sent (a bulk edit clears nothing). The planned window is judged as it will stand: nothing
     in the backend orders the two bounds, so one date set alone is checked against each record's own other date and
-    a record it doesn't fit is skipped (`PLANNED_WINDOW_SKIPPED`). Rollback duration is capped at 255 characters
+    a record it doesn't fit is skipped (`PLANNED_WINDOW_SKIPPED`). Both sides go through `parseBackendTimestamp`: the
+    edit's zoneless UTC ("YYYY-MM-DD HH:mm:ss") would otherwise read as the browser's local time against the detail's
+    RFC 3339 `Z` (the plan test pins `process.env.TZ` to show it). Rollback duration is capped at 255 characters
     (`CHANGE_REQUEST_ROLLBACK_DURATION_MAX`, `VARCHAR(255)`; the single edit form too). While the details are
     loading, or if one can't be loaded, the fields that depend on them say which.
 - **Assign to me** sends `{assignedEngineerId: <me>}`; it skips a record already assigned to the user, and for change

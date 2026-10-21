@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   APPROVED_ASSIGNEE_SKIPPED,
   APPROVED_FIELDS_SKIPPED,
@@ -25,6 +25,7 @@ import {
   NEW_ONLY_FIELDS_SKIPPED,
   ON_HOLD_STATE_SKIPPED,
   PLANNED_WINDOW_SKIPPED,
+  PROJECT_CHANGED_SKIPPED,
   type BulkChangeRequestEdit,
 } from "@features/csm-operations/utils/bulkChangeRequestEdit";
 import {
@@ -146,6 +147,43 @@ describe("bulkChangeRequestPlan", () => {
       });
     },
   );
+
+  // The dialog sends zoneless UTC ("YYYY-MM-DD HH:mm:ss", zonedInputToBackendUtc); the detail reads RFC 3339 with "Z".
+  // Read naively, the zoneless side would be the browser's local time: pinned here (vi.stubEnv), as a user's browser would be.
+  it.each(["Asia/Colombo", "America/New_York", "UTC"])(
+    "compares the dialog's zoneless UTC date with the stored one on the same clock (browser in %s)",
+    (timeZone) => {
+      // Node reads TZ again whenever it is set, so Date follows the stub.
+      vi.stubEnv("TZ", timeZone);
+      try {
+        const stored = { state: "new", plannedStartOn: "2026-11-01T10:00:00Z", plannedEndOn: "2026-11-01T12:00:00Z" };
+        // 13:30 UTC is after the stored 12:00 end: skipped in every timezone.
+        expect(bulkChangeRequestPlan(stored, { plannedStartOn: "2026-11-01 13:30:00" })).toEqual({ skip: PLANNED_WINDOW_SKIPPED });
+        // 11:00 UTC is inside the stored window: sent in every timezone.
+        expect(bulkChangeRequestPlan(stored, { plannedEndOn: "2026-11-01 11:00:00" })).toEqual({
+          patch: { plannedEndOn: "2026-11-01 11:00:00" },
+        });
+        expect(bulkChangeRequestEditProblem({ plannedStartOn: "2026-11-01 13:30:00", plannedEndOn: "2026-11-01 13:00:00" })).toMatch(
+          /Planned end must be after/,
+        );
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    },
+  );
+
+  it("never moves a change request to the project shown fixed: one whose project changed meanwhile is skipped", () => {
+    const edit = { projectFixed: true, projectId: "proj-1", deploymentIds: ["d-1"], deploymentProductIds: ["dp-1"] };
+    // A New one moved to another project since it was picked.
+    expect(bulkChangeRequestPlan({ state: "new", project: { id: "proj-2", name: "Q" } }, edit)).toEqual({
+      skip: PROJECT_CHANGED_SKIPPED,
+    });
+    // Still on it: the deployments change, and the marker itself is never sent.
+    expect(bulkChangeRequestPlan({ state: "assess", project: { id: "proj-1", name: "P" } }, edit)).toEqual({
+      patch: { projectId: "proj-1", deploymentIds: ["d-1"], deploymentProductIds: ["dp-1"] },
+    });
+    expect(bulkEditTouchesContent({ projectFixed: true })).toBe(false);
+  });
 
   it.each(["assess", "authorize"])("changes the deployments of a change request in %s, within its own project", (state) => {
     const project = { id: "proj-1", name: "P" };

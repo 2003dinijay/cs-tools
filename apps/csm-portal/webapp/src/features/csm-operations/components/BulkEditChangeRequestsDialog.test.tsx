@@ -235,6 +235,8 @@ describe("BulkEditChangeRequestsDialog", () => {
       projectId: "proj-a",
       deploymentIds: ["dep-1"],
       deploymentProductIds: ["dp-1"],
+      // Only the frame of the deployments: a record no longer on it is skipped, never moved to it.
+      projectFixed: true,
     });
     cleanup();
 
