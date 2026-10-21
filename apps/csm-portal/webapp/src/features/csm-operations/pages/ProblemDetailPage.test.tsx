@@ -401,6 +401,16 @@ describe("ProblemDetailPage", () => {
       expect(lastDialogProps().saveError).toBeNull();
     });
 
+    it("disables Edit while a request is pending, so reset never hides it", () => {
+      mockQueryResult({ data: BASE_PROBLEM });
+      patchIsPending = true;
+      render(<ProblemDetailPage />);
+      const edit = screen.getByRole("button", { name: "Edit" });
+      expect(edit).toBeDisabled();
+      fireEvent.click(edit);
+      expect(patchResetMock).not.toHaveBeenCalled();
+    });
+
     it("still shows an error from a save made inside the dialog, and keeps it open", () => {
       mockQueryResult({ data: BASE_PROBLEM });
       patchMutateMock.mockImplementation((_input, opts) => {

@@ -380,10 +380,12 @@ export default function ProblemDetailPage(): JSX.Element {
               variant="outlined"
               size="small"
               startIcon={<Pencil size={14} />}
+              disabled={patchProblem.isPending}
               onClick={() => {
                 // The mutation is shared with the state transitions; drop
                 // any earlier transition failure so the dialog only shows
-                // an error from a save made inside it.
+                // an error from a save made inside it. Edit is disabled
+                // while a request is pending, since reset() would hide it.
                 patchProblem.reset();
                 setEditOpen(true);
               }}
