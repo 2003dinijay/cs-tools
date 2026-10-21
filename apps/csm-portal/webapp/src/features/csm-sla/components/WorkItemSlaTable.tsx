@@ -36,8 +36,8 @@ import { useState } from "react";
 import { formatAbsoluteForUser } from "@utils/dateTime";
 import { formatRelativeTime } from "@features/csm-dashboard/utils/abtDashboard";
 import { useRelativeTimeTick } from "@components/RelativeTime";
-import { useGetCsmCaseSlas } from "@features/csm-cases/api/useGetCsmCaseSlas";
-import type { CaseSla } from "@features/csm-cases/types/csmCases";
+import { useGetWorkItemSlas } from "@features/csm-sla/api/useGetWorkItemSlas";
+import type { WorkItemSla } from "@features/csm-sla/types/workItemSla";
 
 /** The known, closed set of SLA stages that map to a curated chip color. */
 type KnownSlaStage = "in_progress" | "paused" | "completed" | "cancelled" | "breached";
@@ -70,32 +70,36 @@ function formatSlaDateTime(iso: string | null): string {
 }
 
 /** Chip color for a row: a breached SLA is always shown in error styling. */
-function stageColor(sla: CaseSla): "info" | "warning" | "success" | "default" | "error" {
+function stageColor(sla: WorkItemSla): "info" | "warning" | "success" | "default" | "error" {
   return sla.hasBreached
     ? "error"
     : (SLA_STAGE_COLOR[sla.stage as KnownSlaStage] ?? "default");
 }
 
 /** Progress bar color for a row: redder as more of the SLA target is consumed. */
-function slaProgressColor(sla: CaseSla): "error" | "warning" | "success" {
+function slaProgressColor(sla: WorkItemSla): "error" | "warning" | "success" {
   if (sla.hasBreached || sla.businessElapsedPercent >= 100) return "error";
   if (sla.businessElapsedPercent >= 75) return "warning";
   return "success";
 }
 
-interface CaseSlaTableProps {
-  caseId: string;
+interface WorkItemSlaTableProps {
+  workItemId: string;
+  /** Noun used in the empty and error copy, e.g. "case" or "incident". */
+  workItemLabel: string;
 }
 
 /**
- * Table of the case's SLA records, shown on the SLA
- * tab of the case detail page. Only ever mounted while the SLA tab is
- * active (see the case detail page), so the fetch runs as soon as this
- * component renders.
+ * Table of a work item's SLA records (a case or an incident), shown on the SLA
+ * tab of its detail page. Only ever mounted while the SLA tab is active, so
+ * the fetch runs as soon as this component renders.
  */
-export function CaseSlaTable({ caseId }: CaseSlaTableProps): JSX.Element {
+export function WorkItemSlaTable({
+  workItemId,
+  workItemLabel,
+}: WorkItemSlaTableProps): JSX.Element {
   const { data, isLoading, isError, isFetching, dataUpdatedAt, refetch } =
-    useGetCsmCaseSlas(caseId);
+    useGetWorkItemSlas(workItemId);
   // Re-render exactly when "Last refreshed …" text would next change
   // (adaptive shared scheduler — see RelativeTime.tsx), without requiring
   // another fetch or unrelated state change. `now` is passed explicitly
@@ -173,7 +177,7 @@ export function CaseSlaTable({ caseId }: CaseSlaTableProps): JSX.Element {
           }}
         >
           <Typography variant="body2" color="error">
-            Could not load SLAs for this case.
+            {`Could not load SLAs for this ${workItemLabel}.`}
           </Typography>
           <Button
             size="small"
@@ -214,7 +218,7 @@ export function CaseSlaTable({ caseId }: CaseSlaTableProps): JSX.Element {
                     sx={{ py: 4 }}
                   >
                     <Typography variant="body2" color="text.secondary">
-                      No SLAs on this case.
+                      {`No SLAs on this ${workItemLabel}.`}
                     </Typography>
                   </TableCell>
                 </TableRow>
@@ -259,4 +263,4 @@ export function CaseSlaTable({ caseId }: CaseSlaTableProps): JSX.Element {
   );
 }
 
-export default CaseSlaTable;
+export default WorkItemSlaTable;

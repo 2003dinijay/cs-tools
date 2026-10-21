@@ -15,8 +15,8 @@
 // under the License.
 
 import { describe, expect, it } from "vitest";
-import { normalizeStage, toCaseSla } from "./caseSlaMapping";
-import type { TaskSlaView } from "@features/csm-cases/types/csmCases";
+import { normalizeStage, toWorkItemSla } from "./workItemSlaMapping";
+import type { TaskSlaView } from "@features/csm-sla/types/workItemSla";
 
 describe("normalizeStage", () => {
   it("lowercases and turns spaces into underscores", () => {
@@ -48,7 +48,7 @@ describe("normalizeStage", () => {
   });
 });
 
-describe("toCaseSla", () => {
+describe("toWorkItemSla", () => {
   const baseView: TaskSlaView = {
     id: "sla-1",
     slaDefinition: { name: "S1 - Response", target: "1 Business Hour" },
@@ -61,8 +61,8 @@ describe("toCaseSla", () => {
     endTime: null,
   };
 
-  it("maps a wire-shape record onto the CaseSla row model", () => {
-    expect(toCaseSla(baseView)).toEqual({
+  it("maps a wire-shape record onto the WorkItemSla row model", () => {
+    expect(toWorkItemSla(baseView)).toEqual({
       id: "sla-1",
       definition: "S1 - Response",
       target: "1 Business Hour",
@@ -78,18 +78,18 @@ describe("toCaseSla", () => {
   });
 
   it("derives hasBreached from the elapsed percentage reaching 100", () => {
-    const breached = toCaseSla({
+    const breached = toWorkItemSla({
       ...baseView,
       businessElapsedPercentage: 100,
     });
     expect(breached.hasBreached).toBe(true);
 
-    const over = toCaseSla({ ...baseView, businessElapsedPercentage: 142 });
+    const over = toWorkItemSla({ ...baseView, businessElapsedPercentage: 142 });
     expect(over.hasBreached).toBe(true);
   });
 
   it("defaults missing definition, target, and elapsed percentage safely", () => {
-    const sparse = toCaseSla({
+    const sparse = toWorkItemSla({
       id: "sla-2",
       slaDefinition: null,
       stage: null,
