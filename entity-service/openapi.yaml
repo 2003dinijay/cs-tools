@@ -18946,6 +18946,22 @@ components:
             state (event type + action results) written by an existing ServiceNow
             suspension flow. This is opaque JSON passed through as-is — its shape is
             not defined or validated by this layer.
+        onboardingStatus:
+          type: string
+          description: >
+            Sets the project's onboarding status (Postgres data sources only; a
+            400 on any other data source). Matched ignoring case, hyphens,
+            underscores and spaces, e.g. "In-Progress" or "IN_PROGRESS". An
+            unrecognized value is a 400. Canonical values: Not-Started,
+            In-Progress, On-Hold, Completed, Cancelled, Expired, Not-Applicable.
+        onboardingOwner:
+          type: string
+          format: uuid
+          description: >
+            Id of the user to set as the project's onboarding owner (Postgres
+            data sources only; a 400 on any other data source). Must be an
+            active internal user; an unknown, inactive or external user is a
+            400. Clearing the owner is not supported.
 
     ProjectUpdateResponse:
       type: object
@@ -18986,6 +19002,14 @@ components:
         verificationEnabled:
           type: boolean
           nullable: true
+        onboardingStatus:
+          type: string
+          description: Present on Postgres data sources only.
+        onboardingOwner:
+          allOf:
+            - $ref: '#/components/schemas/PersonRef'
+          nullable: true
+          description: Present on Postgres data sources only.
 
     SearchProjectContactsRequest:
       type: object
