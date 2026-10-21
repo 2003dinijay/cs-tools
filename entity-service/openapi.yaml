@@ -16672,13 +16672,35 @@ components:
         - id
         - name
 
+    DeployedProductDeployment:
+      type: object
+      description: The deployment a deployed product belongs to.
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          nullable: true
+        type:
+          type: string
+          nullable: true
+          description: Type of the deployment; null when it has none.
+          enum:
+            - primary_production
+            - staging
+            - qa
+            - stress
+            - uat
+            - development
+
     DeployedProductView:
       type: object
       properties:
         id:
           type: string
         deployment:
-          $ref: '#/components/schemas/EntityRef'
+          $ref: '#/components/schemas/DeployedProductDeployment'
         product:
           $ref: '#/components/schemas/ProductRef'
         version:
