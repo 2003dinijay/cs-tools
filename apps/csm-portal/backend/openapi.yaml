@@ -1456,8 +1456,12 @@ paths:
       description: >
         A caller whose token has no backing entity service user row at all gets 403, unless
         their token roles grant at least one portal role (see UserResponse.roles) -- in that
-        case the response is 200, sourced from the token alone (email, firstName, lastName,
-        roles), with id/timeZone/team null.
+        case the response is 200. A caller whose token grants cs_engineer gets a user row
+        created on the spot, sourced from the token itself (firstName/lastName/phoneNumber --
+        the given_name/family_name/phone_number claims; lastName has " Ⓦ" appended) -- the
+        response then carries that row's id. Any other caller holding a portal role but no
+        user row gets a 200 sourced from the token alone (email, firstName, lastName, roles),
+        with id/timeZone/team null.
       operationId: getUsersMe
       responses:
         "200":
@@ -2263,7 +2267,12 @@ paths:
         service derives user_type from role membership, so this is the only way
         to set it. Granting "internal" or "admin" for an email that is not
         @wso2.com is rejected with 400: an internal-type user must have a
-        wso2.com address.
+        wso2.com address. The Add User form only collects an email (plus the
+        type/portal-role selectors) — it sends no firstName/lastName at all.
+        When both are omitted/blank, this endpoint looks the email up in SCIM
+        and fills firstName/lastName/phone from that record instead; if SCIM
+        has no matching user, or the match has no name on file either, the
+        request is rejected with 400 rather than creating a nameless user.
       operationId: postUsers
       requestBody:
         required: true
@@ -2280,12 +2289,14 @@ paths:
                 $ref: '#/components/schemas/User'
         "400":
           description: >-
-            Bad request — missing/invalid email, neither firstName nor lastName
-            supplied, an unrecognized role, roles requests an
-            internal-resolving role (admin/internal) for a non-@wso2.com email,
-            or roles requests an external-resolving role
+            Bad request — missing/invalid email, an unrecognized role, roles
+            requests an internal-resolving role (admin/internal) for a
+            non-@wso2.com email, roles requests an external-resolving role
             (external/partner/customer/partner_admin/customer_admin) — creating
-            an external-type user is temporarily disabled regardless of email.
+            an external-type user is temporarily disabled regardless of email —
+            or, when neither firstName nor lastName was supplied, SCIM has no
+            matching user for the email (or the match itself has no name on
+            file) so the name could not be filled in.
           content:
             application/json:
               schema:
