@@ -23,7 +23,6 @@ import ChangeRequestsTab from "@features/csm-operations/components/ChangeRequest
 import IncidentsTab from "@features/csm-operations/components/IncidentsTab";
 import ProblemsTab from "@features/csm-operations/components/ProblemsTab";
 import OutagesTab from "@features/csm-operations/components/OutagesTab";
-import RunbooksTab from "@features/csm-operations/components/RunbooksTab";
 import { useNavTransition } from "@hooks/useNavTransition";
 import { usePathSectionTabs } from "@hooks/useSectionTabs";
 
@@ -69,7 +68,7 @@ export default function OperationsPage(): JSX.Element {
       <Box>
         <Typography variant="h5">Operations</Typography>
         <Typography variant="body2" color="text.secondary">
-          Service requests, change requests, incidents, problems, and runbooks across customers.
+          Service requests, change requests, incidents, and problems across customers.
         </Typography>
       </Box>
 
@@ -102,8 +101,6 @@ export default function OperationsPage(): JSX.Element {
       {activeTab === "problems" && <ProblemsTab />}
 
       {activeTab === "outages" && <OutagesTab />}
-
-      {activeTab === "runbooks" && <RunbooksTab />}
     </Box>
   );
 }

@@ -285,8 +285,6 @@ var validIncidentSortOrder = map[domain.IncidentSortOrder]bool{
 
 type snIncidentService struct {
 	client *integrationservice.Client
-	// runbooks is the runbook catalog a new incident's work note is looked up in; nil leaves it out. Set with WithRunbookCatalog.
-	runbooks runbookLister
 	// publisher is nil when Event Hub is not configured — every call site
 	// must check before using it. See publishIncidentCreated.
 	publisher EventPublisherService
@@ -881,7 +879,6 @@ func (s *snIncidentService) CreateIncident(ctx context.Context, req domain.Creat
 		}
 		req = withAssignmentGroup(req, decision)
 	}
-	req = withRunbookNote(ctx, req, s.runbooks)
 
 	payload := snCreateIncidentPayload{
 		CallerID:           uuidToSysid(req.CallerID),
