@@ -205,7 +205,10 @@ export default function AsyncEntitySelect<T>({
       slotProps={
         hideClearButton ? { clearIndicator: { sx: { display: "none" } } } : undefined
       }
-      onChange={(_event, next) => {
+      onChange={(_event, next, reason) => {
+        // Emptying the text box also reports "clear"; with hideClearButton the
+        // value is never emptied, so ignore it (the controlled value stays).
+        if (hideClearButton && reason === "clear") return;
         setPicked(next);
         const matched = next ? items.find((item) => getId(item) === next.id) : undefined;
         onChange(next ? next.id : "", matched);

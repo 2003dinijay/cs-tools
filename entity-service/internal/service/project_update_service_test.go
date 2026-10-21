@@ -443,6 +443,24 @@ func TestPgProjectUpdateService_AcceptsOnboardingFields(t *testing.T) {
 	}
 }
 
+// TestPgProjectUpdateService_RejectsMalformedOnboardingOwner pins that a
+// non-UUID owner is a 400 from the service, before the repository is called.
+func TestPgProjectUpdateService_RejectsMalformedOnboardingOwner(t *testing.T) {
+	owner := "not-a-uuid"
+	repo := &stubProjectUpdateRepo{}
+	svc := NewProjectUpdateService(repo, testProjectUserRepo(), alwaysUnrestrictedAccess{})
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	_, err := svc.UpdateProject(ctx, "11111111-1111-1111-1111-111111111111", domain.ProjectUpdateRequest{OnboardingOwner: &owner})
+	var ve *apierror.ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("UpdateProject() error = %v, want *apierror.ValidationError", err)
+	}
+	if repo.called {
+		t.Fatal("repository must not be called for a malformed onboardingOwner")
+	}
+}
+
 // TestSNProjectUpdateService_RejectsOnboardingFields pins that the ServiceNow
 // data source rejects the Postgres-only onboarding fields with a 400 before
 // any upstream call (the nil client would panic if one were attempted).

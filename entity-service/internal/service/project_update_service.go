@@ -110,6 +110,11 @@ func (s *pgProjectUpdateService) UpdateProject(ctx context.Context, id string, r
 	if !hasStoredProjectFields(req) {
 		return domain.ProjectUpdateResponse{}, &apierror.ValidationError{Msg: "at least one field must be provided"}
 	}
+	if req.OnboardingOwner != nil {
+		if err := validateUUIDs("onboardingOwner", []string{*req.OnboardingOwner}); err != nil {
+			return domain.ProjectUpdateResponse{}, err
+		}
+	}
 
 	updatedBy, err := s.resolveUpdatedBy(ctx)
 	if err != nil {

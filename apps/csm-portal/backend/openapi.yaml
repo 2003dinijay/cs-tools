@@ -19398,6 +19398,7 @@ components:
                 - Not-Started
                 - In-Progress
                 - OnHold
+                - On-Hold
                 - Completed
                 - Expired
                 - Cancelled
@@ -19532,6 +19533,15 @@ components:
               type: object
               additionalProperties: true
               nullable: true
+            onboardingStatus:
+              type: string
+              nullable: true
+              description: Present on Postgres data sources only.
+            onboardingOwner:
+              allOf:
+                - $ref: '#/components/schemas/PersonRef'
+              nullable: true
+              description: Present on Postgres data sources only.
 
     DeploymentCreatePayload:
       type: object

@@ -18885,8 +18885,8 @@ components:
             Sets the project's onboarding status (Postgres data sources only; a
             400 on any other data source). Matched ignoring case, hyphens,
             underscores and spaces, e.g. "In-Progress" or "IN_PROGRESS". An
-            unrecognized value is a 400.
-          enum: [Not-Started, In-Progress, On-Hold, Completed, Cancelled, Expired, Not-Applicable]
+            unrecognized value is a 400. Canonical values: Not-Started,
+            In-Progress, On-Hold, Completed, Cancelled, Expired, Not-Applicable.
         onboardingOwner:
           type: string
           format: uuid

@@ -309,13 +309,15 @@ two different mechanisms, because the feature isn't backed by its own exclusive 
   still fetch it directly by `GET /cases/{id}`. Closing either gap fully needs entity-service itself to
   resolve and enforce it (it has reliable type data on either data source), not this BFF layer.
 
-## PATCH /projects/{id}: closureState requires PermAdmin, every other field stays at PermWrite
+## PATCH /projects/{id}: closureState requires PermAdmin, the onboarding fields PermManageOnboarding, every other field PermWrite
 
 Same mechanism as `caseSearchTargetsSecurityReports` above, applied to a write instead of a search:
-`PATCH /projects/{id}` is registered at `PermWrite` (held by both `cs_engineer` and `admin`) and stays
-that way, since every other field on this endpoint (`hasAgent`, `hasKbReferences`, the three closure
-sub-state fields, `suspensionProcessState`) is ordinary `cs_engineer` territory — re-gating the whole
-route to `PermAdmin` would lock `cs_engineer` out of fields nobody asked to restrict. `closureState`
+`PATCH /projects/{id}` is registered at the `PermUpdateProject` route floor (`cs_engineer` ∪ `admin` ∪
+`onboarding_lead`, see the `PermManageOnboarding` entry above), and `ProjectHandler.UpdateProject` then
+checks each field group itself: every other field on this endpoint (`hasAgent`, `hasKbReferences`, the
+three closure sub-state fields, `suspensionProcessState`) needs `PermWrite`, which is ordinary
+`cs_engineer` territory — re-gating the whole route to `PermAdmin` would lock `cs_engineer` out of
+fields nobody asked to restrict. `closureState`
 (entity-service's direct, Postgres-only override of a project's overall closure status — see that
 repo's own `CLAUDE.md`, "PATCH /projects/{id}: closureState is a direct admin override") is the one
 field that needs the narrower bar: an admin can set a project to OPEN/READ_ONLY/CLOSED/RESTRICTED/
@@ -330,8 +332,9 @@ around by a body that spells the key differently) and, if `closureState` is pres
 explicit `null` — additionally requires `PermAdmin` via `ProjectHandler.access` (wired with
 `WithAccessGuard`, the same pattern `CaseHandler`/`UsersHandler` already use). A caller holding
 `PermWrite` but not `PermAdmin` (a plain `cs_engineer`) gets 403 and the entity service is never
-called; every other field on the same PATCH is unaffected and keeps reaching the entity service at the
-route's existing `PermWrite` floor. A nil `access` (no guard wired) fails closed, same as every other
+called; every other field on the same PATCH is unaffected and keeps reaching the entity service for a
+caller holding `PermWrite` (the onboarding fields are checked the same way against
+`PermManageOnboarding`). A nil `access` (no guard wired) fails closed, same as every other
 in-handler permission check in this codebase.
 
 ## Redacting raw base64 inline images (`internal/handler/inline_image_redact.go`)
