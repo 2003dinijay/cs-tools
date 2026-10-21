@@ -31,7 +31,8 @@ import {
   Typography,
 } from "@wso2/oxygen-ui";
 import { Plus } from "@wso2/oxygen-ui-icons-react";
-import { useCallback, useMemo, useState, type ChangeEvent, type JSX } from "react";
+import { useCallback, useMemo, useRef, useState, type ChangeEvent, type JSX } from "react";
+import { flushSync } from "react-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { ApiQueryKeys } from "@constants/apiConstants";
 import { usePortalAccess } from "@context/current-user/usePortalAccess";
@@ -61,7 +62,8 @@ import {
   isIncidentTerminal,
   type IncidentFilters,
 } from "@features/csm-operations/utils/incidents";
-import { runBulkUpdate, type BulkResult } from "@features/csm-operations/utils/bulkUpdate";
+import { runBulkUpdate, type BulkFailure, type BulkResult } from "@features/csm-operations/utils/bulkUpdate";
+import { refreshIncidentRecord } from "@features/csm-operations/api/usePatchIncident";
 import { useRowSelection } from "@features/csm-operations/hooks/useRowSelection";
 import BulkSelectionBar from "@features/csm-operations/components/BulkSelectionBar";
 import BulkResultAlert from "@features/csm-operations/components/BulkResultAlert";
@@ -170,7 +172,7 @@ export default function IncidentsTab(): JSX.Element {
   const { data, isLoading, isError, error, isFetching, refetch, dataUpdatedAt } =
     useSearchIncidents(payload);
 
-  const incidents = data?.incidents ?? [];
+  const incidents = useMemo(() => data?.incidents ?? [], [data]);
   const total = data?.total ?? 0;
 
   // "Customise columns" — see `caseListColumns.ts`'s equivalent doc comment;
@@ -199,31 +201,58 @@ export default function IncidentsTab(): JSX.Element {
   // Bulk actions (Edit, Assign to me) on the selected rows, for those who may write.
   const { canWrite } = usePortalAccess();
   const queryClient = useQueryClient();
-  const selection = useRowSelection<BeIncident>(incidentId, incidentSelectable);
-  const { clear: clearSelection } = selection;
+  const selection = useRowSelection<BeIncident>(incidentId, incidentSelectable, incidents);
+  const { clear: clearSelection, remove: removeFromSelection } = selection;
+  const selectAllRef = useRef<HTMLInputElement>(null);
   const [bulkEditOpen, setBulkEditOpen] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkResult, setBulkResult] = useState<{ result: BulkResult; verb: string } | null>(null);
-  const runBulk = async (patchFor: (incident: BeIncident) => BeUpdateIncidentPayload, verb: string): Promise<void> => {
+  /**
+   * One bulk action over the selection, from each incident as the list shows
+   * it now (a selected incident on the current page is its refetched row). One
+   * closed or cancelled since it was picked is skipped with the reason. After
+   * the run the dialog is closed first, then each incident is refreshed the way
+   * a single edit refreshes it (detail, tasks, the flows' follow-up).
+   */
+  const runBulk = async (
+    patchFor: (incident: BeIncident) => BeUpdateIncidentPayload | { skip: string },
+    verb: string,
+  ): Promise<void> => {
     setBulkBusy(true);
+    const rows = selection.selected;
     try {
-      const rows = selection.selected;
-      const outcome = await runBulkUpdate(
-        rows.map((r) => ({ id: r.id!, number: r.number })),
-        (t) =>
-          api.patch<BeUpdateIncidentPayload, BePatchIncidentResponse>(
-            `/incidents/${encodeURIComponent(t.id)}`,
-            patchFor(rows.find((r) => r.id === t.id)!),
-          ),
+      const skipped: BulkFailure[] = [];
+      const toSend: Array<{ id: string; number?: string; patch: BeUpdateIncidentPayload }> = [];
+      for (const row of rows) {
+        const number = row.number || row.id!;
+        const plan = isIncidentTerminal(row.state)
+          ? { skip: "Closed or cancelled: it can't be edited." }
+          : patchFor(row);
+        if ("skip" in plan) skipped.push({ id: row.id!, number, message: plan.skip });
+        else toSend.push({ id: row.id!, number: row.number ?? undefined, patch: plan });
+      }
+      const patches = new Map(toSend.map((t) => [t.id, t.patch]));
+      const outcome = await runBulkUpdate(toSend, (t) =>
+        api.patch<BeUpdateIncidentPayload, BePatchIncidentResponse>(
+          `/incidents/${encodeURIComponent(t.id)}`,
+          patches.get(t.id)!,
+        ),
       );
-      setBulkResult({ result: { ...outcome, skipped: [] }, verb });
-      clearSelection();
-      setBulkEditOpen(false);
+      flushSync(() => {
+        setBulkEditOpen(false);
+        setBulkResult({ result: { ...outcome, skipped }, verb });
+      });
+      removeFromSelection(rows.map((r) => r.id!));
       void queryClient.invalidateQueries({ queryKey: [ApiQueryKeys.INCIDENTS] });
-      void queryClient.invalidateQueries({ queryKey: [ApiQueryKeys.INCIDENT_DETAILS] });
+      for (const t of toSend) refreshIncidentRecord(queryClient, t.id, t.patch);
     } finally {
       setBulkBusy(false);
     }
+  };
+  const clearAndRefocus = (): void => {
+    clearSelection();
+    // The bar (and the button just pressed) goes away with the selection.
+    selectAllRef.current?.focus();
   };
 
   const columnCount = (canWrite ? 8 : 7) + visibleOptionalColumns.length; // [select,] Number, Subject, Caller, State, Priority, Opened, Updated + optional
@@ -345,10 +374,18 @@ export default function IncidentsTab(): JSX.Element {
           busy={bulkBusy}
           onEdit={() => setBulkEditOpen(true)}
           onAssignToMe={() => {
-            if (currentUserId) void runBulk(() => ({ assignedEngineerId: currentUserId }), "Assigned to you");
+            if (currentUserId) {
+              void runBulk(
+                (incident) =>
+                  incident.assignedTo?.id === currentUserId
+                    ? { skip: "Already assigned to you." }
+                    : { assignedEngineerId: currentUserId },
+                "Assigned to you",
+              );
+            }
           }}
           assignToMeDisabledReason={currentUserId ? null : "Your user record is still loading."}
-          onClear={clearSelection}
+          onClear={clearAndRefocus}
         />
       )}
       {bulkEditOpen && (
@@ -381,9 +418,11 @@ export default function IncidentsTab(): JSX.Element {
                   <TableCell padding="checkbox">
                     <Checkbox
                       size="small"
+                      inputRef={selectAllRef}
                       checked={selection.pageState(incidents).all}
                       indeterminate={selection.pageState(incidents).some}
-                      disabled={!incidents.some(incidentSelectable)}
+                      // While a page loads the rows still held are the previous page's.
+                      disabled={isFetching || bulkBusy || !incidents.some(incidentSelectable)}
                       onChange={() => selection.togglePage(incidents)}
                       inputProps={{ "aria-label": "Select all incidents on this page" }}
                     />
@@ -464,12 +503,18 @@ export default function IncidentsTab(): JSX.Element {
                   >
                     {canWrite && (
                       <TableCell padding="checkbox" onClick={(e) => e.stopPropagation()}>
-                        {incidentSelectable(incident) ? (
+                        {incidentSelectable(incident) || selection.isSelected(incident) ? (
                           <Checkbox
                             size="small"
                             checked={selection.isSelected(incident)}
+                            disabled={bulkBusy}
                             onChange={() => selection.toggle(incident)}
-                            inputProps={{ "aria-label": `Select ${incident.number ?? "incident"}` }}
+                            inputProps={{
+                              "aria-label": incidentSelectable(incident)
+                                ? `Select ${incident.number ?? "incident"}`
+                                : // Picked while open, since closed: it can still be taken out.
+                                  `Deselect ${incident.number ?? "incident"}, now ${incidentStateLabel(incident.state).toLowerCase()}`,
+                            }}
                           />
                         ) : (
                           <Tooltip title="A closed or cancelled incident can't be edited.">
@@ -477,7 +522,9 @@ export default function IncidentsTab(): JSX.Element {
                               <Checkbox
                                 size="small"
                                 disabled
-                                inputProps={{ "aria-label": `${incident.number ?? "Incident"} is closed and can't be selected` }}
+                                inputProps={{
+                                  "aria-label": `${incident.number ?? "Incident"} is ${incidentStateLabel(incident.state).toLowerCase()} and can't be selected`,
+                                }}
                               />
                             </span>
                           </Tooltip>

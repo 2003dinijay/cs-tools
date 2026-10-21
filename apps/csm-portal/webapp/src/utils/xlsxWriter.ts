@@ -64,6 +64,16 @@ function sheetName(name: string): string {
   return cleaned || "Sheet1";
 }
 
+/**
+ * Excel and LibreOffice read `_xHHHH_` in cell text as the character U+HHHH
+ * (OOXML's ST_Xstring escape), so `Account_x0041_Name` would open as
+ * `AccountAName`. Escaping the leading underscore (`_x005F_`) keeps the text as
+ * written, as XlsxWriter does.
+ */
+export function escapeXlsxCharRefs(text: string): string {
+  return text.replace(/_(x[0-9A-Fa-f]{4}_)/g, "_x005F_$1");
+}
+
 /** The most characters Excel holds in one cell. */
 export const XLSX_CELL_MAX = 32767;
 
@@ -80,7 +90,7 @@ function sheetXml(header: string[], rows: string[][]): string {
           const ref = `${xlsxColumnName(c)}${r + 1}`;
           const style = r === 0 ? ` s="1"` : "";
           // Excel refuses a cell longer than 32,767 characters (it reports the file as damaged).
-          const text = (row[c] ?? "").slice(0, XLSX_CELL_MAX);
+          const text = escapeXlsxCharRefs((row[c] ?? "").slice(0, XLSX_CELL_MAX));
           return `<c r="${ref}" t="inlineStr"${style}><is><t xml:space="preserve">${xmlText(text)}</t></is></c>`;
         })
         .join("");

@@ -118,8 +118,10 @@ const mockedUseSearch = vi.mocked(useSearchChangeRequests);
 // are fixed and never appear in it).
 const CR_OPTIONAL_COLUMN_COUNT = 10;
 
+let queryClient: QueryClient;
+
 function render(ui: ReactElement): ReturnType<typeof rtlRender> {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return rtlRender(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>{ui}</MemoryRouter>
@@ -328,13 +330,14 @@ describe("ChangeRequestsTab — bulk selection", () => {
     render(<ChangeRequestsTab />);
     fireEvent.click(screen.getByRole("checkbox", { name: "Select CHG-1001" }));
     // Still on the list: the row's own click (navigation) did not fire.
-    expect(screen.getByText("1 change request selected")).toBeInTheDocument();
+    expect(within(screen.getByRole("region", { name: "Selected rows" })).getByText("1 change request selected")).toBeInTheDocument();
   });
 });
 
 describe("ChangeRequestsTab — Assign to me", () => {
   it("assigns the open change request to the signed-in user and skips the approved one, saying why", async () => {
     access.canWrite = true;
+    apiMock.get.mockImplementation((path: string) => Promise.resolve(path.endsWith("cr-1") ? CR : CR_APPROVED));
     apiMock.patch.mockResolvedValue({ id: "cr-1" });
     showRows([CR, CR_APPROVED]);
     render(<ChangeRequestsTab />);
@@ -477,5 +480,176 @@ describe("ChangeRequestsTab — export", () => {
     showRows([CR]);
     render(<ChangeRequestsTab />);
     expect(screen.getByText("Export Change requests")).toBeInTheDocument();
+  });
+});
+
+describe("ChangeRequestsTab — bulk runs follow the change request as it is now", () => {
+  it("plans from the current record: one approved since it was picked is skipped by Assign to me", async () => {
+    access.canWrite = true;
+    const picked = { ...CR, id: "cr-5", number: "CHG-1005", state: "authorize" };
+    // CAB approved it after it was picked: its detail now reads Customer Approval.
+    apiMock.get.mockImplementation((path: string) =>
+      Promise.resolve(path.endsWith("cr-5") ? { ...picked, state: "customer_approval" } : CR),
+    );
+    apiMock.patch.mockResolvedValue({ id: "cr-1" });
+    showRows([CR, picked]);
+    render(<ChangeRequestsTab />);
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select all change requests on this page" }));
+    fireEvent.click(screen.getByRole("button", { name: "Assign to me (2)" }));
+
+    await waitFor(() => expect(screen.getByText("Assigned to you 1 of 2 change requests. 1 skipped.")).toBeInTheDocument());
+    expect(apiMock.patch).toHaveBeenCalledTimes(1);
+    expect(apiMock.patch).toHaveBeenCalledWith("/change-requests/cr-1", { assignedEngineerId: "user-1" });
+    expect(screen.getByText(/Approved, so its assignee can no longer be changed/)).toBeInTheDocument();
+  });
+
+  it("sends a change request approved since it was picked only its state and note, and counts it as approved", async () => {
+    access.canWrite = true;
+    const picked = { ...CR, id: "cr-5", number: "CHG-1005", state: "authorize" };
+    apiMock.get.mockImplementation((path: string) =>
+      Promise.resolve(
+        path.endsWith("cr-5")
+          ? { ...picked, state: "customer_approval", legalNextStates: ["authorize", "canceled"] }
+          : { ...CR, legalNextStates: ["assess", "canceled"] },
+      ),
+    );
+    apiMock.patch.mockResolvedValue({ id: "x" });
+    showRows([CR, picked]);
+    render(<ChangeRequestsTab />);
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select all change requests on this page" }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit (2)" }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit 2 change requests" });
+    expect(await within(dialog).findByText(/1 of the selected change requests has been approved/)).toBeInTheDocument();
+    fireEvent.mouseDown(within(dialog).getByRole("combobox", { name: "State" }));
+    fireEvent.click(screen.getByRole("option", { name: "Cancel change (Canceled)" }));
+    fireEvent.mouseDown(within(dialog).getByRole("combobox", { name: "Impact" }));
+    fireEvent.click(screen.getByRole("option", { name: "Low" }));
+    fireEvent.change(within(dialog).getByRole("textbox", { name: /Reason/ }), { target: { value: "Not needed." } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Apply to 2 change requests" }));
+
+    await waitFor(() => expect(screen.getByText("Updated 2 of 2 change requests.")).toBeInTheDocument());
+    expect(apiMock.patch).toHaveBeenCalledWith("/change-requests/cr-1", { state: "canceled", impact: "low", workNote: "Not needed." });
+    expect(apiMock.patch).toHaveBeenCalledWith("/change-requests/cr-5", { state: "canceled", workNote: "Not needed." });
+  });
+
+  it("lets a change request closed since it was picked be taken out, and leaves it out of the moves", async () => {
+    access.canWrite = true;
+    apiMock.get.mockImplementation((path: string) =>
+      Promise.resolve(
+        path.endsWith("cr-1")
+          ? { ...CR, legalNextStates: ["assess", "canceled"] }
+          : { ...CR_APPROVED, state: "canceled", legalNextStates: [] },
+      ),
+    );
+    showRows([CR, CR_APPROVED]);
+    const view = render(<ChangeRequestsTab />);
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select all change requests on this page" }));
+
+    // The list refetches: CHG-1002 has been canceled meanwhile.
+    showRows([CR, { ...CR_APPROVED, state: "canceled" }]);
+    view.rerender(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <ChangeRequestsTab />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit (2)" }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit 2 change requests" });
+    expect(await within(dialog).findByText(/1 of the selected change requests has been closed, canceled or rolled back/)).toBeInTheDocument();
+    // The canceled one no longer narrows the moves to nothing.
+    fireEvent.mouseDown(within(dialog).getByRole("combobox", { name: "State" }));
+    expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual([
+      "No change",
+      "Request Approval (Assess)",
+      "Cancel change (Canceled)",
+    ]);
+    fireEvent.keyDown(screen.getByRole("listbox"), { key: "Escape" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+    // Its box is still checked and can be unticked.
+    const box = screen.getByRole("checkbox", { name: "Deselect CHG-1002, now canceled" });
+    expect(box).toBeChecked();
+    fireEvent.click(box);
+    expect(within(screen.getByRole("region", { name: "Selected rows" })).getByText("1 change request selected")).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "CHG-1002 is canceled and can't be selected" })).toBeDisabled();
+  });
+
+  it("refreshes each change request the way a single edit does, after the dialog has closed", async () => {
+    access.canWrite = true;
+    apiMock.get.mockImplementation((path: string) =>
+      Promise.resolve(path.endsWith("cr-1") ? { ...CR, legalNextStates: ["canceled"] } : { ...CR, id: "cr-4", legalNextStates: ["canceled"] }),
+    );
+    apiMock.patch.mockResolvedValue({ id: "x" });
+    showRows([CR, { ...CR, id: "cr-4", number: "CHG-1004" }]);
+    render(<ChangeRequestsTab />);
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select all change requests on this page" }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit (2)" }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit 2 change requests" });
+    await within(dialog).findByText("Only the moves every selected change request can make.");
+    fireEvent.mouseDown(within(dialog).getByRole("combobox", { name: "State" }));
+    fireEvent.click(screen.getByRole("option", { name: "Cancel change (Canceled)" }));
+    fireEvent.change(within(dialog).getByRole("textbox", { name: /Reason/ }), { target: { value: "Duplicate." } });
+    const getsBefore = apiMock.get.mock.calls.length;
+    fireEvent.click(within(dialog).getByRole("button", { name: "Apply to 2 change requests" }));
+
+    await waitFor(() => expect(screen.getByText("Updated 2 of 2 change requests.")).toBeInTheDocument());
+    const keys = invalidate.mock.calls.map(([arg]) => JSON.stringify((arg as { queryKey: unknown }).queryKey));
+    for (const id of ["cr-1", "cr-4"]) {
+      expect(keys).toContain(JSON.stringify(["change-request-details", id]));
+      expect(keys).toContain(JSON.stringify(["change-request-approvals", id]));
+      expect(keys).toContain(JSON.stringify(["change-request-comments", id]));
+    }
+    expect(keys).toContain(JSON.stringify(["change-requests"]));
+    // The dialog was gone before the refresh, so its detail reads did not run again.
+    expect(apiMock.get.mock.calls.length).toBe(getsBefore);
+  });
+
+  it("moves focus to the outcome after a run, and to the page's select-all box after Clear selection", async () => {
+    access.canWrite = true;
+    apiMock.get.mockImplementation(() => Promise.resolve(CR));
+    apiMock.patch.mockResolvedValue({ id: "cr-1" });
+    showRows([CR]);
+    render(<ChangeRequestsTab />);
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select CHG-1001" }));
+    fireEvent.click(screen.getByRole("button", { name: "Clear selection" }));
+    expect(screen.getByRole("checkbox", { name: "Select all change requests on this page" })).toHaveFocus();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select CHG-1001" }));
+    fireEvent.click(screen.getByRole("button", { name: "Assign to me (1)" }));
+    await waitFor(() => expect(screen.getByText("Assigned to you 1 of 1 change requests.")).toBeInTheDocument());
+    expect(screen.getByText("Assigned to you 1 of 1 change requests.").closest("[role=status]")).toHaveFocus();
+  });
+
+  it("keeps the boxes still while a run is in flight, so nothing picked meanwhile is lost", async () => {
+    access.canWrite = true;
+    apiMock.get.mockImplementation(() => Promise.resolve(CR));
+    let release: () => void = () => {};
+    apiMock.patch.mockImplementation(() => new Promise((resolve) => (release = () => resolve({ id: "cr-1" }))));
+    const other = { ...CR, id: "cr-4", number: "CHG-1004" };
+    showRows([CR, other]);
+    render(<ChangeRequestsTab />);
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select CHG-1001" }));
+    fireEvent.click(screen.getByRole("button", { name: "Assign to me (1)" }));
+    await waitFor(() => expect(apiMock.patch).toHaveBeenCalled());
+    expect(screen.getByRole("checkbox", { name: "Select CHG-1004" })).toBeDisabled();
+    expect(screen.getByRole("checkbox", { name: "Select all change requests on this page" })).toBeDisabled();
+    release();
+    await waitFor(() => expect(screen.getByText("Assigned to you 1 of 1 change requests.")).toBeInTheDocument());
+    expect(screen.getByRole("checkbox", { name: "Select CHG-1004" })).toBeEnabled();
+  });
+
+  it("does not let the select-all box act while a page is loading", () => {
+    access.canWrite = true;
+    mockResult({ data: { changeRequests: [CR], total: 1, limit: 20, offset: 0 }, isFetching: true });
+    render(<ChangeRequestsTab />);
+    expect(screen.getByRole("checkbox", { name: "Select all change requests on this page" })).toBeDisabled();
   });
 });

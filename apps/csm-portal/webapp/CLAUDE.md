@@ -363,10 +363,13 @@ The previous system's own mechanism, which the schema already carries: a custome
 Both lists have a checkbox column (for `canWrite` only), a selection bar (`BulkSelectionBar`: "N selected", **Edit (n)**,
 **Assign to me (n)**, Clear selection), a result banner (`BulkResultAlert`) and an **Export** menu (`FilteredExportMenu`).
 
-- **Selection** is `useRowSelection(getId, canSelect)` (`features/csm-operations/hooks`): kept by id across pages, a filter
-  change clears it, a closed / cancelled incident and a closed / canceled / rolled-back change request are never selectable
-  (`isIncidentTerminal`, `isChangeRequestTerminal`; the row shows a disabled box with a tooltip). The checkbox cell stops
-  the row's own click, so ticking never opens the record.
+- **Selection** is `useRowSelection(getId, canSelect, currentRows)` (`features/csm-operations/hooks`): kept by id across
+  pages, a filter change clears it, a closed / cancelled incident and a closed / canceled / rolled-back change request are
+  never added (`isIncidentTerminal`, `isChangeRequestTerminal`; the row shows a disabled box with a tooltip naming its
+  state). `selected` gives a picked row as the current page shows it (`currentRows`), so a run plans from fresh data; a
+  row that has become final since it was picked keeps an enabled, checked box ("Deselect …, now canceled") and can always
+  be taken out. The checkbox cell stops the row's own click, so ticking never opens the record. The boxes are disabled
+  while a run is in flight, and the page box while a page loads (the rows held are still the previous page's).
 - **There is no bulk endpoint.** `runBulkUpdate` (`utils/bulkUpdate.ts`) sends one PATCH per record, four at a time, and
   never stops on a refusal: the banner lists each record that was not updated with the backend's own 4xx words
   (`bulkFailureMessage`; a 5xx is a generic line) and each record skipped before sending. The backend stays the authority
@@ -382,11 +385,25 @@ Both lists have a checkbox column (for `canWrite` only), a selection bar (`BulkS
   because it handles one record). The per-record request is `bulkChangeRequestPlan` (`utils/bulkChangeRequestEdit.ts`):
   an approved change request (Customer Approval and later) gets only the state and the work note, since its fields are
   read-only (400 `change_request_approved_read_only`), and one left with nothing to send is skipped with the reason.
-- **Assign to me** sends `{assignedEngineerId: <me>}`; for change requests `assignChangeRequestToMePlan` skips an approved
-  one (its assignee is read-only) and one already assigned to the user.
+- **Assign to me** sends `{assignedEngineerId: <me>}`; it skips a record already assigned to the user, and for change
+  requests `assignChangeRequestToMePlan` also skips an approved one (its assignee is read-only).
+- **Plan from the record as it is now.** A change request run reads each one's detail first (`queryClient.fetchQuery` of
+  `changeRequestDetailQuery`, which the dialog has just loaded, so it is a cache hit) and plans from it, so one approved
+  since it was picked gets only its state and note, as the dialog says, instead of a refused PATCH. An incident run plans
+  from the refreshed row and skips one closed since it was picked. The dialogs leave such a record out of the moves they
+  offer and say how many will be skipped.
+- **After a run** the dialog is closed with `flushSync` before anything is refreshed (its per-record detail queries would
+  otherwise all refetch), then each record is refreshed exactly as a single edit refreshes it:
+  `refreshChangeRequestRecord` (detail, approvals, comments when a work note was sent) and `refreshIncidentRecord` (detail,
+  tasks, and again after the In Progress / Resolved flows), both exported from the single-record PATCH hooks so the two
+  paths cannot drift. Only the run's own ids leave the selection (`remove`).
+- **Focus and announcements**: the result banner takes focus when it appears (the button that started the run has gone
+  with the bar, and focus makes a screen reader read the outcome); Clear selection puts focus on the page's select-all
+  box; `BulkSelectionBar` keeps one hidden `role="status"` region mounted even at 0, so the first count is announced.
 - **Export** (`FilteredExportMenu` + `useFilteredListExport`) pages the current filtered **and sorted** search to the end
   or the safety cap (`fetchAllPages`, as the CSV button did) and builds CSV (`rowsToCsvText`, formula-guarded), Excel
-  (`utils/xlsxWriter.ts`: a stored zip with inline strings, bold frozen header; no dependency), JSON (one object per row
+  (`utils/xlsxWriter.ts`: a stored zip with inline strings, bold frozen header; no dependency; `_xHHHH_` in text is
+  escaped, since Excel would read it as a character, and a cell is cut at Excel's 32,767 characters), JSON (one object per row
   keyed by the column header) or PDF (`utils/tableExportPdf.ts`, jsPDF + autotable, loaded on demand). A capped export is
   named `-partial`. `FilteredCsvExportButton` is still used by the other lists.
 - Tests: the two tabs' tests ("bulk selection", "Assign to me", "bulk edit", "export"), `BulkEditIncidentsDialog.test.tsx`,

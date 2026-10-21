@@ -31,10 +31,25 @@ interface BulkSelectionBarProps {
   assignToMeDisabledReason?: string | null;
 }
 
+/** Read by screen readers, not shown. Pixel strings on purpose: in `sx` a bare `1` means 100%. */
+const visuallyHidden = {
+  position: "absolute",
+  width: "1px",
+  height: "1px",
+  m: "-1px",
+  p: 0,
+  overflow: "hidden",
+  clip: "rect(0 0 0 0)",
+  whiteSpace: "nowrap",
+  border: 0,
+} as const;
+
 /**
  * The actions for the rows selected in a list: Edit (n), Assign to me (n) and
- * Clear selection. Shown only while something is selected; the count is a
- * live region so a screen reader hears it change.
+ * Clear selection, shown only while something is selected. The count is also
+ * written to a live region that stays mounted when nothing is selected, so a
+ * screen reader hears the first selection as well as every later change (a
+ * region inserted with its text already in it is not reliably announced).
  */
 export default function BulkSelectionBar({
   count,
@@ -44,8 +59,8 @@ export default function BulkSelectionBar({
   onClear,
   busy = false,
   assignToMeDisabledReason = null,
-}: BulkSelectionBarProps): JSX.Element | null {
-  if (count === 0) return null;
+}: BulkSelectionBarProps): JSX.Element {
+  const summary = `${count} ${noun}${count === 1 ? "" : "s"} selected`;
   const assign = (
     <Button
       size="small"
@@ -58,39 +73,45 @@ export default function BulkSelectionBar({
     </Button>
   );
   return (
-    <Box
-      role="region"
-      aria-label="Selected rows"
-      sx={{
-        display: "flex",
-        alignItems: "center",
-        gap: 1,
-        flexWrap: "wrap",
-        px: 1.5,
-        py: 1,
-        border: 1,
-        borderColor: "primary.main",
-        borderRadius: 1,
-        bgcolor: "action.selected",
-      }}
-    >
-      <Typography variant="body2" aria-live="polite" sx={{ mr: 1, fontWeight: 600 }}>
-        {count} {noun}
-        {count === 1 ? "" : "s"} selected
-      </Typography>
-      <Button size="small" variant="contained" startIcon={<Pencil size={14} />} onClick={onEdit} disabled={busy}>
-        Edit ({count})
-      </Button>
-      {assignToMeDisabledReason ? (
-        <Tooltip title={assignToMeDisabledReason}>
-          <span>{assign}</span>
-        </Tooltip>
-      ) : (
-        assign
+    <>
+      <Box component="span" role="status" aria-live="polite" sx={visuallyHidden}>
+        {count > 0 ? summary : ""}
+      </Box>
+      {count > 0 && (
+        <Box
+          role="region"
+          aria-label="Selected rows"
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            gap: 1,
+            flexWrap: "wrap",
+            px: 1.5,
+            py: 1,
+            border: 1,
+            borderColor: "primary.main",
+            borderRadius: 1,
+            bgcolor: "action.selected",
+          }}
+        >
+          <Typography variant="body2" sx={{ mr: 1, fontWeight: 600 }} aria-hidden>
+            {summary}
+          </Typography>
+          <Button size="small" variant="contained" startIcon={<Pencil size={14} />} onClick={onEdit} disabled={busy}>
+            Edit ({count})
+          </Button>
+          {assignToMeDisabledReason ? (
+            <Tooltip title={assignToMeDisabledReason}>
+              <span>{assign}</span>
+            </Tooltip>
+          ) : (
+            assign
+          )}
+          <Button size="small" variant="text" color="inherit" startIcon={<X size={14} />} onClick={onClear} disabled={busy}>
+            Clear selection
+          </Button>
+        </Box>
       )}
-      <Button size="small" variant="text" color="inherit" startIcon={<X size={14} />} onClick={onClear} disabled={busy}>
-        Clear selection
-      </Button>
-    </Box>
+    </>
   );
 }

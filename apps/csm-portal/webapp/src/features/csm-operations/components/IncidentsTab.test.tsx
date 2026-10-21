@@ -88,8 +88,10 @@ const mockedUseSearch = vi.mocked(useSearchIncidents);
 // Priority/Opened/Updated are fixed and never appear in it).
 const INCIDENT_OPTIONAL_COLUMN_COUNT = 7;
 
+let queryClient: QueryClient;
+
 function render(ui: ReactElement): ReturnType<typeof rtlRender> {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return rtlRender(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>{ui}</MemoryRouter>
@@ -334,5 +336,81 @@ describe("IncidentsTab — export", () => {
     showRows([INCIDENT]);
     render(<IncidentsTab />);
     expect(screen.getByText("Export Incidents")).toBeInTheDocument();
+  });
+});
+
+describe("IncidentsTab — bulk runs follow the incident as it is now", () => {
+  it("skips an incident already assigned to the user, and one closed since it was picked, saying why", async () => {
+    access.canWrite = true;
+    apiMock.patch.mockResolvedValue({ id: "x" });
+    const mine = { ...INCIDENT_NEW, id: "inc-4", number: "INC0000004", assignedTo: { id: "user-1", name: "Me" } };
+    showRows([INCIDENT, INCIDENT_NEW, mine]);
+    const view = render(<IncidentsTab />);
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select all incidents on this page" }));
+
+    // The list refetches: INC0000002 was closed meanwhile.
+    showRows([INCIDENT, { ...INCIDENT_NEW, state: "CLOSED" }, mine]);
+    view.rerender(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <IncidentsTab />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    expect(screen.getByRole("checkbox", { name: "Deselect INC0000002, now closed" })).toBeChecked();
+
+    fireEvent.click(screen.getByRole("button", { name: "Assign to me (3)" }));
+    await waitFor(() => expect(screen.getByText("Assigned to you 1 of 3 incidents. 2 skipped.")).toBeInTheDocument());
+    expect(apiMock.patch).toHaveBeenCalledTimes(1);
+    expect(apiMock.patch).toHaveBeenCalledWith("/incidents/inc-1", { assignedEngineerId: "user-1" });
+    const notUpdated = screen.getByRole("list", { name: "Not updated" });
+    expect(within(notUpdated).getByText(/Closed or cancelled: it can't be edited/)).toBeInTheDocument();
+    expect(within(notUpdated).getByText(/Already assigned to you/)).toBeInTheDocument();
+  });
+
+  it("leaves an incident closed since it was picked out of the states the dialog offers", () => {
+    access.canWrite = true;
+    showRows([INCIDENT, INCIDENT_NEW]);
+    const view = render(<IncidentsTab />);
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select all incidents on this page" }));
+    showRows([INCIDENT, { ...INCIDENT_NEW, state: "CANCELLED" }]);
+    view.rerender(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <IncidentsTab />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Edit (2)" }));
+    const dialog = screen.getByRole("dialog", { name: "Edit 2 incidents" });
+    expect(within(dialog).getByText(/1 of the selected incidents has been closed or cancelled/)).toBeInTheDocument();
+    fireEvent.mouseDown(within(dialog).getByRole("combobox", { name: "State" }));
+    expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual([
+      "No change",
+      "On Hold",
+      "Resolved",
+      "Cancelled",
+    ]);
+  });
+
+  it("refreshes each incident's detail and tasks the way a single edit does", async () => {
+    access.canWrite = true;
+    apiMock.patch.mockResolvedValue({ id: "x" });
+    showRows([INCIDENT, INCIDENT_NEW]);
+    render(<IncidentsTab />);
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select all incidents on this page" }));
+    fireEvent.click(screen.getByRole("button", { name: "Assign to me (2)" }));
+    await waitFor(() => expect(screen.getByText("Assigned to you 2 of 2 incidents.")).toBeInTheDocument());
+
+    const keys = invalidate.mock.calls.map(([arg]) => JSON.stringify((arg as { queryKey: unknown }).queryKey));
+    for (const id of ["inc-1", "inc-2"]) {
+      expect(keys).toContain(JSON.stringify(["incident-details", id]));
+      expect(keys).toContain(JSON.stringify(["csm-incident-tasks", id]));
+    }
+    expect(keys).toContain(JSON.stringify(["incidents"]));
+    // The outcome takes focus: the button that started the run has gone.
+    expect(screen.getByText("Assigned to you 2 of 2 incidents.").closest("[role=status]")).toHaveFocus();
   });
 });

@@ -74,3 +74,51 @@ describe("useRowSelection", () => {
     expect(result.current.count).toBe(0);
   });
 });
+
+describe("useRowSelection — rows that change after they were picked", () => {
+  it("reports a picked row as the current page shows it", () => {
+    let page: Row[] = [a, b];
+    const { result, rerender } = renderHook(() => useRowSelection(getId, canSelect, page));
+    act(() => result.current.togglePage(page));
+    page = [{ id: "a", state: "pending" }, b];
+    rerender();
+    expect(result.current.selected).toEqual([{ id: "a", state: "pending" }, b]);
+    // A row not on the current page keeps the version it was picked with.
+    page = [];
+    rerender();
+    expect(result.current.selected).toEqual([a, b]);
+  });
+
+  it("lets a row that has stopped being selectable be taken out, by itself or with its page", () => {
+    let page: Row[] = [a, b];
+    const { result, rerender } = renderHook(() => useRowSelection(getId, canSelect, page));
+    act(() => result.current.togglePage(page));
+    const aNowClosed = { id: "a", state: "closed" };
+    page = [aNowClosed, b];
+    rerender();
+    // It can't be added again, but it can be removed.
+    act(() => result.current.toggle(aNowClosed));
+    expect(result.current.isSelected(aNowClosed)).toBe(false);
+    act(() => result.current.toggle(aNowClosed));
+    expect(result.current.isSelected(aNowClosed)).toBe(false);
+
+    act(() => result.current.toggle(a));
+    expect(result.current.count).toBe(2);
+    page = [aNowClosed, b];
+    rerender();
+    // The page's only selectable row is selected, so the page box clears the page, the closed one included.
+    expect(result.current.pageState(page).all).toBe(true);
+    act(() => result.current.togglePage(page));
+    expect(result.current.count).toBe(0);
+  });
+
+  it("removes only the ids it is given", () => {
+    const { result } = renderHook(() => useRowSelection(getId, canSelect));
+    act(() => result.current.togglePage([a, b]));
+    act(() => result.current.remove(["a", "missing"]));
+    expect(result.current.selected).toEqual([b]);
+    const before = result.current.selected;
+    act(() => result.current.remove(["missing"]));
+    expect(result.current.selected).toBe(before);
+  });
+});

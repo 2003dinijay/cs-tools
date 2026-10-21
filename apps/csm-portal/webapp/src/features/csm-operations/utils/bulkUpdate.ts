@@ -54,6 +54,33 @@ export function bulkFailureMessage(err: unknown): string {
 }
 
 /**
+ * `fn` over every item, at most `concurrency` at a time, results in the items'
+ * order. A rejection is kept as `undefined` for that item (the caller decides
+ * what a missing result means); it never stops the others.
+ */
+export async function mapWithConcurrency<I, R>(
+  items: I[],
+  fn: (item: I) => Promise<R>,
+  concurrency = BULK_CONCURRENCY,
+): Promise<Array<R | undefined>> {
+  const results: Array<R | undefined> = new Array(items.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      try {
+        results[i] = await fn(items[i]);
+      } catch {
+        results[i] = undefined;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, items.length)) }, worker));
+  return results;
+}
+
+/**
  * Applies `update` to every target, at most {@link BULK_CONCURRENCY} at a time,
  * and reports each outcome: there is no bulk endpoint, so this is one request
  * per record, and one refusal never stops the others (the same model as the

@@ -48,6 +48,7 @@ import {
   changeRequestStateLabel,
   changeRequestTransitionLabel,
   changeRequestTransitionRequiresReason,
+  isChangeRequestTerminal,
 } from "@features/csm-operations/utils/changeRequests";
 import {
   bulkChangeRequestEditProblem,
@@ -106,13 +107,16 @@ export default function BulkEditChangeRequestsDialog({
   });
   const detailsLoading = details.some((q) => q.isPending);
   const detailsFailed = details.some((q) => q.isError);
-  const targets = useMemo(() => {
-    if (detailsLoading || detailsFailed) return [];
-    const loaded = details.map((q) => q.data).filter((d): d is BeChangeRequestDetail => !!d);
-    return loaded.length === changeRequests.length ? bulkChangeRequestTargets(loaded) : [];
-  }, [details, detailsLoading, detailsFailed, changeRequests.length]);
-
-  const approvedCount = changeRequests.filter((cr) => !!changeRequestApprovedReadOnlyReason(cr.state)).length;
+  // Each change request as it is now: its detail once loaded, else the row as it was picked.
+  const current = changeRequests.map((cr, i) => details[i]?.data ?? cr);
+  // One that has finished since it was picked is skipped by the run, so it neither narrows the moves nor counts.
+  const editable = current.filter((cr) => !isChangeRequestTerminal(cr.state));
+  const finishedCount = current.length - editable.length;
+  const targets =
+    detailsLoading || detailsFailed || editable.length === 0
+      ? []
+      : bulkChangeRequestTargets(editable as BeChangeRequestDetail[]);
+  const approvedCount = editable.filter((cr) => !!changeRequestApprovedReadOnlyReason(cr.state)).length;
   const needsReason = !!state && changeRequestTransitionRequiresReason(state);
 
   const edit = useMemo<BulkChangeRequestEdit>(() => {
@@ -174,9 +178,10 @@ export default function BulkEditChangeRequestsDialog({
     </FormControl>
   );
 
-  const fieldsHelper =
-    approvedCount === count ? "All the selected change requests have been approved, so their fields are read-only." : undefined;
-  const fieldsDisabled = approvedCount === count;
+  const fieldsDisabled = editable.length > 0 && approvedCount === editable.length;
+  const fieldsHelper = fieldsDisabled
+    ? "All the selected change requests have been approved, so their fields are read-only."
+    : undefined;
 
   return (
     <Dialog open onClose={isApplying ? undefined : onClose} maxWidth="sm" fullWidth>
@@ -187,7 +192,13 @@ export default function BulkEditChangeRequestsDialog({
         <Typography variant="body2" color="text.secondary">
           Only the fields you change are applied; the rest keep each change request's own value.
         </Typography>
-        {approvedCount > 0 && approvedCount < count && (
+        {finishedCount > 0 && (
+          <Alert severity="warning">
+            {finishedCount} of the selected change requests {finishedCount === 1 ? "has" : "have"} been closed,
+            canceled or rolled back since {finishedCount === 1 ? "it was" : "they were"} selected and will be skipped.
+          </Alert>
+        )}
+        {approvedCount > 0 && approvedCount < editable.length && (
           <Alert severity="info">
             {approvedCount} of the selected change requests {approvedCount === 1 ? "has" : "have"} been approved: only the
             state and the work note apply to {approvedCount === 1 ? "it" : "them"}, since an approved change request's

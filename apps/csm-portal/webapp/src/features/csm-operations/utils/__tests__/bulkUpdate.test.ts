@@ -27,7 +27,7 @@ vi.mock("@api/backend/client", () => ({
 }));
 
 import { BackendApiError } from "@api/backend/client";
-import { bulkFailureMessage, bulkResultSummary, runBulkUpdate } from "@features/csm-operations/utils/bulkUpdate";
+import { bulkFailureMessage, bulkResultSummary, mapWithConcurrency, runBulkUpdate } from "@features/csm-operations/utils/bulkUpdate";
 
 describe("bulkFailureMessage", () => {
   it("gives a refusal in the backend's own words, and anything else a generic line", () => {
@@ -92,5 +92,26 @@ describe("bulkResultSummary", () => {
         "Assigned to you",
       ),
     ).toBe("Assigned to you 1 of 3 change requests. 1 could not be updated. 1 skipped.");
+  });
+});
+
+describe("mapWithConcurrency", () => {
+  it("keeps the items' order, leaves a rejection as undefined, and bounds the requests in flight", async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const results = await mapWithConcurrency(
+      [1, 2, 3, 4, 5, 6],
+      async (n) => {
+        inFlight++;
+        peak = Math.max(peak, inFlight);
+        await new Promise((r) => setTimeout(r, 6 - n));
+        inFlight--;
+        if (n === 3) throw new Error("no");
+        return n * 10;
+      },
+      2,
+    );
+    expect(results).toEqual([10, 20, undefined, 40, 50, 60]);
+    expect(peak).toBe(2);
   });
 });

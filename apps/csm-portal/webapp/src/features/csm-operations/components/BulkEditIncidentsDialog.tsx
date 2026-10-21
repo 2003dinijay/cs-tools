@@ -42,7 +42,11 @@ import {
   itServiceLabel,
   userLabel,
 } from "@features/csm-operations/utils/incidentFormOptions";
-import { bulkIncidentTargetStates, incidentStateLabel } from "@features/csm-operations/utils/incidents";
+import {
+  bulkIncidentTargetStates,
+  incidentStateLabel,
+  isIncidentTerminal,
+} from "@features/csm-operations/utils/incidents";
 import { INCIDENT_RESOLUTION_CODES, INCIDENT_RESOLUTION_CODE_LABELS } from "@features/csm-operations/utils/incidentResolution";
 import type {
   BeGroup,
@@ -89,7 +93,10 @@ export default function BulkEditIncidentsDialog({ incidents, isApplying, onClose
   const [assignedEngineerId, setAssignedEngineerId] = useState("");
   const [workNotes, setWorkNotes] = useState("");
 
-  const targetStates = useMemo(() => bulkIncidentTargetStates(incidents.map((i) => i.state)), [incidents]);
+  // One closed or cancelled since it was picked is skipped by the run, so it does not narrow the states.
+  const editable = useMemo(() => incidents.filter((i) => !isIncidentTerminal(i.state)), [incidents]);
+  const finishedCount = incidents.length - editable.length;
+  const targetStates = useMemo(() => bulkIncidentTargetStates(editable.map((i) => i.state)), [editable]);
   const needsResolution = state === "RESOLVED" || state === "CLOSED";
   const resolutionMissing = needsResolution && (!resolutionCode || !resolutionNotes.trim());
 
@@ -154,6 +161,12 @@ export default function BulkEditIncidentsDialog({ incidents, isApplying, onClose
         <Typography variant="body2" color="text.secondary">
           Only the fields you change are applied; the rest keep each incident's own value.
         </Typography>
+        {finishedCount > 0 && (
+          <Alert severity="warning">
+            {finishedCount} of the selected incidents {finishedCount === 1 ? "has" : "have"} been closed or cancelled
+            since {finishedCount === 1 ? "it was" : "they were"} selected and will be skipped.
+          </Alert>
+        )}
         {select(
           "bulk-incident-state",
           "State",

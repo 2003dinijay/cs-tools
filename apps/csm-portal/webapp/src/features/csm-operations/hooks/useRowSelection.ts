@@ -17,25 +17,41 @@
 import { useCallback, useMemo, useState } from "react";
 
 export interface RowSelection<T> {
-  /** The selected rows, in the order they were picked. */
+  /**
+   * The selected rows, in the order they were picked. A row on the page in
+   * `currentRows` is its current version there; a row on another page is as it
+   * was when picked.
+   */
   selected: T[];
   count: number;
   isSelected: (row: T) => boolean;
+  /** Add the row, or remove it when it is selected (always possible, even once it is no longer selectable). */
   toggle: (row: T) => void;
-  /** Select every selectable row of `rows` (a page), or clear them all when every one is already selected. */
+  /**
+   * Select every selectable row of `rows` (a page), or, when every one is
+   * already selected, remove the page's rows from the selection (a row that
+   * has stopped being selectable since it was picked included).
+   */
   togglePage: (rows: T[]) => void;
   /** Whether every selectable row of `rows` is selected / some are. */
   pageState: (rows: T[]) => { all: boolean; some: boolean };
+  /** Remove these ids (e.g. the rows a bulk run has handled), keeping the rest. */
+  remove: (ids: string[]) => void;
   clear: () => void;
 }
 
 /**
- * Row selection for a paged list: kept by id across pages (the rows are
- * remembered as they were when picked, so the bulk actions know their state
- * without refetching), with rows `canSelect` refuses never selectable (e.g. a
- * closed incident). The same model as the cases list's selection.
+ * Row selection for a paged list: kept by id across pages, with rows
+ * `canSelect` refuses never added (e.g. a closed incident). A picked row is
+ * remembered as it was, and replaced by its current version whenever it is on
+ * the page passed as `currentRows`, so a bulk action plans from what the list
+ * shows now. The same model as the cases list's selection.
  */
-export function useRowSelection<T>(getId: (row: T) => string | null | undefined, canSelect: (row: T) => boolean): RowSelection<T> {
+export function useRowSelection<T>(
+  getId: (row: T) => string | null | undefined,
+  canSelect: (row: T) => boolean,
+  currentRows: T[] = [],
+): RowSelection<T> {
   const [byId, setById] = useState<Map<string, T>>(() => new Map());
 
   const selectable = useCallback((rows: T[]) => rows.filter((r) => !!getId(r) && canSelect(r)), [getId, canSelect]);
@@ -43,8 +59,9 @@ export function useRowSelection<T>(getId: (row: T) => string | null | undefined,
   const toggle = useCallback(
     (row: T) => {
       const id = getId(row);
-      if (!id || !canSelect(row)) return;
+      if (!id) return;
       setById((prev) => {
+        if (!prev.has(id) && !canSelect(row)) return prev;
         const next = new Map(prev);
         if (next.has(id)) next.delete(id);
         else next.set(id, row);
@@ -69,9 +86,13 @@ export function useRowSelection<T>(getId: (row: T) => string | null | undefined,
       setById((prev) => {
         const next = new Map(prev);
         const all = candidates.length > 0 && candidates.every((r) => next.has(getId(r)!));
-        for (const r of candidates) {
-          if (all) next.delete(getId(r)!);
-          else next.set(getId(r)!, r);
+        if (all) {
+          for (const r of rows) {
+            const id = getId(r);
+            if (id) next.delete(id);
+          }
+        } else {
+          for (const r of candidates) next.set(getId(r)!, r);
         }
         return next;
       });
@@ -79,8 +100,24 @@ export function useRowSelection<T>(getId: (row: T) => string | null | undefined,
     [getId, selectable],
   );
 
+  const remove = useCallback((ids: string[]) => {
+    setById((prev) => {
+      if (!ids.some((id) => prev.has(id))) return prev;
+      const next = new Map(prev);
+      for (const id of ids) next.delete(id);
+      return next;
+    });
+  }, []);
+
   const clear = useCallback(() => setById(new Map()), []);
-  const selected = useMemo(() => Array.from(byId.values()), [byId]);
+  const selected = useMemo(() => {
+    const current = new Map<string, T>();
+    for (const r of currentRows) {
+      const id = getId(r);
+      if (id) current.set(id, r);
+    }
+    return Array.from(byId, ([id, row]) => current.get(id) ?? row);
+  }, [byId, currentRows, getId]);
 
   return {
     selected,
@@ -92,6 +129,7 @@ export function useRowSelection<T>(getId: (row: T) => string | null | undefined,
     toggle,
     togglePage,
     pageState,
+    remove,
     clear,
   };
 }

@@ -15,7 +15,7 @@
 // under the License.
 
 import { describe, expect, it } from "vitest";
-import { buildXlsx, crc32, XLSX_CELL_MAX, xlsxColumnName, zipStored } from "./xlsxWriter";
+import { buildXlsx, crc32, escapeXlsxCharRefs, XLSX_CELL_MAX, xlsxColumnName, zipStored } from "./xlsxWriter";
 
 const decoder = new TextDecoder();
 
@@ -125,5 +125,19 @@ describe("buildXlsx", () => {
   it("fills a short row with empty cells so every row has every column", () => {
     const sheet = readZip(buildXlsx("x", ["A", "B", "C"], [["1"]])).get("xl/worksheets/sheet1.xml")!;
     expect(sheet).toContain(`<c r="C2" t="inlineStr"><is><t xml:space="preserve"></t></is></c>`);
+  });
+});
+
+describe("escapeXlsxCharRefs", () => {
+  it("keeps text that looks like Excel's _xHHHH_ escape as written", () => {
+    expect(escapeXlsxCharRefs("Rename Account_x0041_Name")).toBe("Rename Account_x005F_x0041_Name");
+    expect(escapeXlsxCharRefs("a_x000D_b_X00ff_c")).toBe("a_x005F_x000D_b_X00ff_c");
+    expect(escapeXlsxCharRefs("_x00Fe_")).toBe("_x005F_x00Fe_");
+    expect(escapeXlsxCharRefs("snake_case_x1 and _x12_")).toBe("snake_case_x1 and _x12_");
+  });
+
+  it("is applied to every cell of the sheet", () => {
+    const sheet = readZip(buildXlsx("x", ["Subject"], [["Account_x0041_Name"]])).get("xl/worksheets/sheet1.xml")!;
+    expect(sheet).toContain(">Account_x005F_x0041_Name</t>");
   });
 });

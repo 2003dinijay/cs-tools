@@ -15,7 +15,7 @@
 // under the License.
 
 import { Alert, Box, Typography } from "@wso2/oxygen-ui";
-import type { JSX } from "react";
+import { useEffect, useRef, type JSX } from "react";
 import { bulkResultSummary, type BulkResult } from "@features/csm-operations/utils/bulkUpdate";
 
 interface BulkResultAlertProps {
@@ -31,12 +31,27 @@ interface BulkResultAlertProps {
  * for each one that was not, its number and the reason in the backend's words
  * (a refused state move, a field an approved change request no longer takes),
  * so the engineer knows exactly which records still need attention.
+ *
+ * It takes focus when it appears: the button that started the run has gone
+ * with the selection bar, and moving focus here also has a screen reader read
+ * the outcome (a status region inserted with its text is not reliably announced).
  */
 export default function BulkResultAlert({ result, nounPlural, verb, onClose }: BulkResultAlertProps): JSX.Element {
   const problems = [...result.failed, ...result.skipped];
   const severity = result.succeeded.length === 0 ? "error" : problems.length > 0 ? "warning" : "success";
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    ref.current?.focus();
+  }, [result]);
   return (
-    <Alert severity={severity} onClose={onClose} role={problems.length > 0 ? "alert" : "status"}>
+    <Alert
+      ref={ref}
+      tabIndex={-1}
+      severity={severity}
+      onClose={onClose}
+      role={problems.length > 0 ? "alert" : "status"}
+      sx={{ "&:focus-visible": { outline: 2, outlineColor: "primary.main", outlineOffset: 2 } }}
+    >
       <Typography variant="body2" sx={{ fontWeight: 600 }}>
         {bulkResultSummary(result, nounPlural, verb)}
       </Typography>
