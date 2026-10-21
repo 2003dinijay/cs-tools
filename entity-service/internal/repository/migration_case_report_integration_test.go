@@ -241,7 +241,9 @@ func TestMigrationCaseReportIntegration(t *testing.T) {
 		t.Errorf("plain LastCustomerCommentOn = %v, want %v: only a surviving customer-visible comment by an external user counts", p.LastCustomerCommentOn, customerAt)
 	}
 
-	// The cut-off is inclusive: a migration created exactly then is listed.
+	// The cut-off instant itself is included: a migration created exactly
+	// then is listed. One created ten hours later on the same day is not;
+	// it has not been open for the whole of the period yet.
 	exec(`UPDATE work_item SET created_on = $1 WHERE id = $2`, cutoff, hold)
 	rows, err = repo.ListLongRunningMigrations(sysCtx, cutoff, "mcr_hold", "mcr_acc")
 	if err != nil {
@@ -249,6 +251,14 @@ func TestMigrationCaseReportIntegration(t *testing.T) {
 	}
 	if len(rows) != 4 {
 		t.Errorf("rows after moving one to the cut-off instant = %d, want 4 (inclusive)", len(rows))
+	}
+	exec(`UPDATE work_item SET created_on = $1 WHERE id = $2`, cutoff.Add(10*time.Hour), hold)
+	rows, err = repo.ListLongRunningMigrations(sysCtx, cutoff, "mcr_hold", "mcr_acc")
+	if err != nil {
+		t.Fatalf("ListLongRunningMigrations (later that day): %v", err)
+	}
+	if len(rows) != 3 {
+		t.Errorf("rows after moving one to later on the cut-off day = %d, want 3 (not yet old enough)", len(rows))
 	}
 
 	emails, err := repo.TeamGroupEmails(sysCtx, []string{"mcr-team-b", "mcr-team-a", "mcr-missing"})

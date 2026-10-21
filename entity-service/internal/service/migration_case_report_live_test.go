@@ -83,7 +83,7 @@ func TestMigrationCaseReportAgainstLiveDatabase(t *testing.T) {
 		t.Fatalf("BuildReport: %v", err)
 	}
 
-	t.Logf("older than %d days (created on or before %s): on hold %d, waiting on accounts %d, in progress %d; derived recipients %d",
+	t.Logf("older than %d days (created before %s): on hold %d, waiting on accounts %d, in progress %d; derived recipients %d",
 		report.OlderThanDays, report.CreatedBefore.Format("2006-01-02"),
 		len(report.OnHold), len(report.WaitingOnAccounts), len(report.InProgress), len(report.Recipients))
 	// Whether the tags exist under the configured names is the first

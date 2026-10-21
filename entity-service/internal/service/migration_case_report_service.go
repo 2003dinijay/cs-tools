@@ -116,8 +116,11 @@ func (s *migrationCaseReportService) BuildReport(ctx context.Context, req domain
 
 // MigrationCaseCutoff is the newest creation instant a migration may have
 // and still count as older than days: the start, in loc, of the day that
-// many days before now. A migration created at any time on that day is
-// listed; one created the next day is not.
+// many days before now. The query compares with <=, so a migration created
+// at or before 00:00 of that day is listed and one created later that day
+// is not -- it has not yet been open for the whole of those days. The
+// cut-off is on a day boundary, rather than exactly days*24h before now,
+// so a retried run later the same day lists the same migrations.
 func MigrationCaseCutoff(now time.Time, days int, loc *time.Location) time.Time {
 	d := now.In(loc).AddDate(0, 0, -days)
 	return time.Date(d.Year(), d.Month(), d.Day(), 0, 0, 0, 0, loc)

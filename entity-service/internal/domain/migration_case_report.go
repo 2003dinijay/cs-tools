@@ -23,8 +23,11 @@ import "time"
 type MigrationCaseReportRequest struct {
 	// OlderThanDays is the age a migration must have reached to be listed.
 	// The cut-off is the start of the day that many days before Now, in the
-	// report's own timezone, so a migration opened at any time on that day
-	// is included.
+	// report's own timezone, and a migration is listed only when it was
+	// created at or before that instant: it has then been open for the
+	// whole of those days. One created later on the cut-off day is not yet
+	// old enough and waits for the next run. This is the rule the scan has
+	// always applied.
 	OlderThanDays int
 	// Now is the instant the report is built for. The scheduled task passes
 	// its firing time, so a retried run lists the same cases the original

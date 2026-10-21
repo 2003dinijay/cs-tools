@@ -112,6 +112,21 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The migration scan's own client: the same deployment and credentials,
+	// a distinct endpoint (GET /reports/migration-cases) with its own
+	// timeout.
+	migrationReportClient, err := migrationreport.NewClient(migrationreport.Config{
+		BaseURL:      entityServiceBaseURL,
+		TokenURL:     oauthTokenURL,
+		ClientID:     oauthClientID,
+		ClientSecret: oauthClientSecret,
+		Scopes:       entityServiceScopes,
+	})
+	if err != nil {
+		slog.Error("failed to construct entity-service migration-scan client", "err", err)
+		os.Exit(1)
+	}
+
 	// The availability sweep's own client. Same deployment and credentials
 	// again, and a separate client for the same reason as the others: a
 	// distinct endpoint whose timeout differs materially. This one allows
@@ -125,18 +140,6 @@ func main() {
 	// period's natural key: with both running, matching periods can end up
 	// with two rows. Turning this on is a paired change with switching
 	// ServiceNow's job off -- the same shape as CLOUD_STATUS_ENABLED.
-	migrationReportClient, err := migrationreport.NewClient(migrationreport.Config{
-		BaseURL:      entityServiceBaseURL,
-		TokenURL:     oauthTokenURL,
-		ClientID:     oauthClientID,
-		ClientSecret: oauthClientSecret,
-		Scopes:       entityServiceScopes,
-	})
-	if err != nil {
-		slog.Error("failed to construct entity-service migration-scan client", "err", err)
-		os.Exit(1)
-	}
-
 	availabilityEnabled := envBool("AVAILABILITY_RECALC_ENABLED", false)
 	var availabilityClient *availability.Client
 	if availabilityEnabled {
@@ -337,6 +340,14 @@ func main() {
 	// value, read once: the source report hard-coded its window in three
 	// places and the CS team asked for six months in place of three.
 	migrationCaseOlderThanDays := int(envDays("MIGRATION_CASE_REPORT_OLDER_THAN_DAYS", 180).Hours() / 24)
+	// entity-service caps the age at ten years and answers 400 above it; a
+	// larger value would fail every run until corrected, visible only in
+	// the failure alerts. Refuse to start instead.
+	if migrationCaseOlderThanDays > migrationCaseMaxOlderThanDays {
+		slog.Error("MIGRATION_CASE_REPORT_OLDER_THAN_DAYS exceeds the maximum entity-service accepts; refusing to start",
+			"value", migrationCaseOlderThanDays, "max", migrationCaseMaxOlderThanDays)
+		os.Exit(1)
+	}
 	// The support portal's case page prefix for the links in the scan
 	// (<prefix>/<case number>), the link the scan has always carried.
 	// Unset renders the issue keys as plain text; a non-https value
@@ -804,6 +815,10 @@ func tasksWithDebugRecipients(overrides map[string]subCronRecipients) []string {
 	sort.Strings(names)
 	return names
 }
+
+// migrationCaseMaxOlderThanDays mirrors entity-service's own cap on the
+// scan's olderThanDays (ten years); see its MigrationCaseReportMaxOlderThanDays.
+const migrationCaseMaxOlderThanDays = 3650
 
 // runTryout runs the task named name once and exits the process: 0 when the
 // handler returned nil, 1 when it failed or when the tryout was refused.
