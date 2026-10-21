@@ -330,6 +330,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	var teamMemberHandler *handler.TeamMemberHandler
 	var pagingChainHandler *handler.PagingChainHandler
 	var caseAlertSettingsHandler *handler.CaseAlertSettingsHandler
+	var migrationCaseReportHandler *handler.MigrationCaseReportHandler
 
 	// Customer-health risk tracking (migration 0219) has no upstream
 	// equivalent either -- it replaces a standalone MySQL database
@@ -1442,6 +1443,17 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// paging ladders use, changed on the Alert Settings tab instead of a
 		// Choreo secret. csm-notification-service reads them only when it runs
 		// with PAGING_CONFIG_SOURCE set.
+		// Weekly migration case scan: the long-running migration engagements,
+		// bucketed by the tags the CS team keeps on them, for the scheduled
+		// task that mails the scan to the teams' mail groups.
+		migrationCaseReportHandler = handler.NewMigrationCaseReportHandler(
+			service.NewMigrationCaseReportService(
+				repository.NewMigrationCaseReportRepository(repository.NewScoped(db)),
+				service.MigrationCaseReportConfig{
+					HoldTag:           cfg.MigrationCaseReportHoldTag,
+					AccountsTag:       cfg.MigrationCaseReportAccountsTag,
+					RecipientTeamKeys: cfg.MigrationCaseReportTeamKeys,
+				}))
 		caseAlertSettingsHandler = handler.NewCaseAlertSettingsHandler(
 			service.NewCaseAlertSettingsService(repository.NewCaseAlertSettingsRepository(db), repository.NewPagingChainRepository(db), accessSvc,
 				service.CaseAlertSettingsConfig{
@@ -1860,6 +1872,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("DELETE /team-schedule/paging-contacts/{userId}", pagingChainHandler.DeletePagingPhone)
 		mux.HandleFunc("POST /team-schedule/paging-contacts/{userId}/test", pagingChainHandler.RequestTestCall)
 		mux.HandleFunc("PUT /team-schedule/paging-contacts/{userId}/test-result", pagingChainHandler.RecordTestResult)
+	}
+	if migrationCaseReportHandler != nil {
+		// internalOnly: the scan names accounts, their owners and who is
+		// assigned to each migration; a customer token must never reach it.
+		mux.HandleFunc("GET /reports/migration-cases", internalOnly(accessSvc, migrationCaseReportHandler.GetMigrationCaseReport))
 	}
 	if caseAlertSettingsHandler != nil {
 		// Case Alerts settings: chat rooms, group routes and the other ladder
