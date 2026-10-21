@@ -206,7 +206,7 @@ func pagedList(st LadderState) []string {
 		if c.Recipient.Name == "" {
 			continue
 		}
-		label := c.Level.Label() + " " + c.Recipient.Name
+		label := c.Level.LabelIn(st.Plan.Trigger.Routing.Ladder) + " " + c.Recipient.Name
 		if !seen[label] {
 			seen[label] = true
 			out = append(out, label)

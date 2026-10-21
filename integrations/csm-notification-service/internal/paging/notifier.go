@@ -291,7 +291,8 @@ func (n chatNotifier) Deliver(ctx context.Context, plan Plan, call PlannedCall) 
 
 	alert := notifications.EscalationAlert{
 		Audience:      room,
-		Rung:          call.Level.Label(),
+		Rung:          call.Level.LabelIn(t.Routing.Ladder),
+		FirstRung:     call.Level == Level0,
 		RungRole:      rungRole(call.Level, t.Routing),
 		Attempt:       call.Ordinal,
 		Priority:      t.Priority,
