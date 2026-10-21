@@ -35,13 +35,6 @@ export interface UsersMeResponse {
   timeZone?: string;
   roles?: string[];
   phoneNumber?: string;
-  /**
-   * The phone on the caller's platform user record: the number Case Alerts
-   * calls dial, which can differ from `phoneNumber`. `null` when that record
-   * has no phone; absent when it could not be read (or the backend predates
-   * the field), which means "unknown", not "no number".
-   */
-  platformPhone?: string | null;
   /** The caller's ABT team membership, when resolvable; omitted/null when
    * the caller has no resolvable team membership. Consumed by the
    * team-based dashboards to default both the dashboard selection and its

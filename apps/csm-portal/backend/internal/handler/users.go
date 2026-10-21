@@ -25,7 +25,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"regexp"
 	"strings"
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/apierror"
@@ -150,39 +149,17 @@ type userMeResponse struct {
 	// caller's token roles grant: several are possible. It is not the entity
 	// service's role data, which this response no longer carries. Always
 	// present, [] when they hold none.
-	Roles       []string `json:"roles"`
-	PhoneNumber *string  `json:"phoneNumber,omitempty"`
-	// PlatformPhone is the phone on the caller's entity service user row
-	// ("user".phone), which Case Alerts calls dial -- not PhoneNumber, which
-	// comes from the identity provider and is what the Profile dialog shows.
-	// The two can differ (the data sync writes "user".phone too), so the
-	// dialog compares them. Present only when the entity row was read: null
-	// when that row has no phone, omitted when it could not be read (no row,
-	// or a response this handler could not parse), so "unknown" is never
-	// mistaken for "no number".
-	PlatformPhone *nullableString   `json:"platformPhone,omitempty"`
-	Team          *userTeamResponse `json:"team"`
+	Roles []string `json:"roles"`
+	// PhoneNumber is the phone on the caller's platform user record. It is never
+	// read from the identity provider. Omitted when the record has none.
+	PhoneNumber *string           `json:"phoneNumber,omitempty"`
+	Team        *userTeamResponse `json:"team"`
 	// SftpgoAttachmentStorageEnabled mirrors the backend's
 	// SFTPGO_ATTACHMENT_STORAGE_ENABLED runtime flag. Always present (never
 	// omitted) so the frontend can distinguish "flag is off" from "field not
 	// yet known to this backend version" only by absence on an old backend —
 	// a new field an existing caller ignores, so this is backward compatible.
 	SftpgoAttachmentStorageEnabled bool `json:"sftpgoAttachmentStorageEnabled"`
-}
-
-// nullableString marshals as its string, or as JSON null when it holds none.
-// A nil *nullableString with omitempty drops the key, so a field of this type
-// can say "unknown" (absent), "none" (null) and "this value" apart.
-type nullableString struct {
-	value *string
-}
-
-// MarshalJSON writes the value, or null.
-func (n nullableString) MarshalJSON() ([]byte, error) {
-	if n.value == nil {
-		return []byte("null"), nil
-	}
-	return json.Marshal(*n.value)
 }
 
 // userTeamResponse is the caller's resolved ABT (Account-Based Team). Nil when
@@ -213,7 +190,8 @@ type entityUserMeResponse struct {
 	FirstName *string `json:"firstName"`
 	LastName  string  `json:"lastName"`
 	TimeZone  *string `json:"timeZone"`
-	// Phone is "user".phone; the entity service omits it when NULL.
+	// Phone is "user".phone; the entity service omits it when NULL. It is the
+	// source of GET /users/me phoneNumber.
 	Phone *string `json:"phone"`
 	// Groups is every group the caller belongs to, or absent when the upstream
 	// membership lookup failed. The team is derived from it here rather than
@@ -234,8 +212,9 @@ type userUpdateResponse struct {
 }
 
 // GetMe handles GET /users/me.
-// id, firstName, lastName, timeZone, and platformPhone are sourced from the entity
-// service; roles from the caller's token; phoneNumber from SCIM.
+// id, firstName, lastName, timeZone, and phoneNumber (the platform user record's
+// phone) are sourced from the entity service; roles from the caller's token. The
+// phone saved with the identity provider is never read.
 func (h *UsersHandler) GetMe(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserInfoFromContext(r.Context())
 	if user == nil {
@@ -281,7 +260,6 @@ func (h *UsersHandler) GetMe(w http.ResponseWriter, r *http.Request) {
 			if user.LastName != "" {
 				resp.LastName = &user.LastName
 			}
-			h.fillPhoneNumber(r.Context(), user, &resp)
 			writeJSONValue(w, http.StatusOK, resp)
 			return
 		}
@@ -298,80 +276,17 @@ func (h *UsersHandler) GetMe(w http.ResponseWriter, r *http.Request) {
 		resp.FirstName = entityResp.FirstName
 		resp.LastName = &entityResp.LastName
 		resp.TimeZone = entityResp.TimeZone
-		resp.PlatformPhone = &nullableString{value: entityResp.Phone}
+		resp.PhoneNumber = entityResp.Phone
 		resp.Team = h.teamForGroups(entityResp.Groups)
 	}
 
-	h.fillPhoneNumber(r.Context(), user, &resp)
-	h.syncPlatformPhone(r.Context(), user, &resp)
 	writeJSONValue(w, http.StatusOK, resp)
 }
 
-// dialablePhoneRe is the E.164 shape Case Alerts dial (csm-notification-service's
-// e164 and the Profile dialog's E164): a +, a country code that does not start
-// with 0, then 8 to 15 digits in all.
-var dialablePhoneRe = regexp.MustCompile(`^\+[1-9]\d{7,14}$`)
-
-// phoneFormatting is what a stored number may carry around its digits.
-var phoneFormatting = strings.NewReplacer(" ", "", "-", "", "(", "", ")", "", ".", "")
-
-// syncPlatformPhone saves the caller's profile number (the one the Profile
-// dialog shows, from SCIM) onto their entity service user row ("user".phone)
-// when the row holds a different one, so the number Case Alerts dial is the one
-// the person set. The data sync writes "user".phone too, and before this a
-// stale value there was only replaced when the person edited their number.
-//
-// Only ever copies SCIM onto the row, and only a dialable E.164 number: an empty
-// or malformed profile number never clears or overwrites the row. Runs only
-// when the row was read (PlatformPhone set). Best effort: a failed write is
-// logged without the number and the response keeps the stored value, so the
-// dialog still shows the mismatch. It writes at most once per mismatch: after
-// a successful write the two agree and the next request writes nothing.
-func (h *UsersHandler) syncPlatformPhone(ctx context.Context, user *middleware.UserInfo, resp *userMeResponse) {
-	if resp.PlatformPhone == nil || resp.PhoneNumber == nil {
-		return
-	}
-	profile := strings.TrimSpace(*resp.PhoneNumber)
-	if !dialablePhoneRe.MatchString(profile) {
-		return
-	}
-	stored := ""
-	if resp.PlatformPhone.value != nil {
-		stored = *resp.PlatformPhone.value
-	}
-	if phoneFormatting.Replace(strings.TrimSpace(stored)) == profile {
-		return
-	}
-	body, err := json.Marshal(map[string]string{"phone": profile})
-	if err != nil {
-		return
-	}
-	if _, err := h.entity.PatchUserMe(ctx, body); err != nil {
-		// Never log the body or either number.
-		slog.WarnContext(ctx, "users/me: saving the profile phone to the platform record failed",
-			"userID", user.UserID, "err", err)
-		return
-	}
-	slog.InfoContext(ctx, "users/me: saved the profile phone to the platform record",
-		"userID", user.UserID, "hadPlatformPhone", stored != "")
-	resp.PlatformPhone = &nullableString{value: &profile}
-}
-
-// fillPhoneNumber sets resp.PhoneNumber from SCIM, best-effort.
-func (h *UsersHandler) fillPhoneNumber(ctx context.Context, user *middleware.UserInfo, resp *userMeResponse) {
-	scimInfo, err := h.scim.SearchUser(ctx, user.Email)
-	if err != nil {
-		slog.ErrorContext(ctx, "scim SearchUser failed", "userID", user.UserID, "err", err)
-	} else if scimInfo == nil {
-		slog.WarnContext(ctx, "no SCIM user found", "userID", user.UserID)
-	} else {
-		resp.PhoneNumber = scimInfo.PhoneNumber
-	}
-}
-
 // PatchMe handles PATCH /users/me.
-// phoneNumber is updated via SCIM and then mirrored to the entity service; timeZone is updated
-// via the entity service. A request carrying both makes one entity call.
+// phoneNumber and timeZone are both written to the platform user record through the
+// entity service, in one call when a request carries both. The identity provider is
+// never written.
 func (h *UsersHandler) PatchMe(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserInfoFromContext(r.Context())
 	if user == nil {
@@ -407,7 +322,7 @@ func (h *UsersHandler) PatchMe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Entity treats an empty timeZone as absent, so reject it up front rather than
-	// report a value that was never stored. Must precede the identity provider call.
+	// report a value that was never stored.
 	if payload.TimeZone != nil && strings.TrimSpace(*payload.TimeZone) == "" {
 		writeError(w, http.StatusBadRequest, "timeZone must not be empty.")
 		return
@@ -415,27 +330,10 @@ func (h *UsersHandler) PatchMe(w http.ResponseWriter, r *http.Request) {
 
 	resp := userUpdateResponse{}
 
-	if payload.PhoneNumber != nil {
-		updatedPhone, err := h.scim.UpdateUserPhone(r.Context(), user.UserID, *payload.PhoneNumber)
-		if err != nil {
-			slog.ErrorContext(r.Context(), "scim UpdateUserPhone failed", "userID", user.UserID, "err", err)
-			mapUpstreamError(w, err, "Failed to update phone number.")
-			return
-		}
-		resp.PhoneNumber = updatedPhone
-	}
-
-	// Mirror into the platform database with one entity PATCH carrying only the
-	// fields this request changed. SCIM has already succeeded; it is idempotent,
-	// so a client retry after an entity failure is safe.
+	// One entity PATCH carrying only the fields this request changed.
 	entityFields := map[string]string{}
 	if payload.PhoneNumber != nil {
-		// Store what the identity provider actually kept, falling back to the request.
-		stored := *payload.PhoneNumber
-		if resp.PhoneNumber != nil {
-			stored = *resp.PhoneNumber
-		}
-		entityFields["phone"] = stored
+		entityFields["phone"] = *payload.PhoneNumber
 	}
 	if payload.TimeZone != nil {
 		entityFields["timeZone"] = *payload.TimeZone
@@ -459,6 +357,7 @@ func (h *UsersHandler) PatchMe(w http.ResponseWriter, r *http.Request) {
 			mapUpstreamError(w, entityErr, errMsg)
 			return
 		}
+		resp.PhoneNumber = payload.PhoneNumber
 		resp.TimeZone = payload.TimeZone
 	}
 

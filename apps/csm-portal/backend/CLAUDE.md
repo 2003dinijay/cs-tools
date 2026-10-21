@@ -39,21 +39,15 @@ Go HTTP server (`net/http`, Go 1.26+) that acts as a backend-for-frontend (BFF) 
 - **`PermViewAllDashboards` (CS engineer and admin) is the one permission with no route.** A `dashboard.Dashboard` may set `"restricted": true`; `DashboardHandler` calls the newly-exported `AccessGuard.Permits(perm, roles)` itself to filter it out of `GET /dashboards` and 403 a direct `GET /dashboards/{id}` for anyone else, while both routes stay `PermView` so the list route still runs for every viewer. `Permits` exists specifically for this — a handler that must gate one specific resource against a caller's roles from inside its own logic, not a whole route via `Require`.
 - Handler tests call handlers directly and bypass the guard; test the guard in `access_test.go`. `dashboards_test.go`'s `withRestrictedDashboard` temporarily swaps the package-level `dashboard.Active()` registry for one that adds a `Restricted` dashboard, restored via `t.Cleanup` — every other test in that file depends on the shared two-dashboard fixture's exact count, so never add a permanent third dashboard to it.
 
-## The phone Case Alerts dial (`GET /users/me` repairs it)
+## The user's phone (`/users/me`)
 
-The Profile dialog shows the caller's phone from SCIM (`phoneNumber`), but Case Alerts
-calls and test calls dial the entity service's `"user".phone`, which the data sync
-writes too, so the two drift apart. `GetMe` reports the row's copy as `platformPhone`
-(a `nullableString`: a value, `null` when the row has none, the key omitted when the row
-could not be read). `syncPlatformPhone` then saves `phoneNumber` onto the row (the same
-entity `PATCH /users/me` the profile Save mirrors through) when it is a dialable E.164
-number (`dialablePhoneRe`, the dialler's own rule) and the row holds a different one,
-formatting aside, or none. It only copies SCIM onto the row: an empty or malformed
-profile number never clears or overwrites it. It is best effort: a failed write is logged
-with the user id only, and the response keeps the stored value so the dialog still warns.
-It writes at most once per mismatch. A GET that writes is deliberate: every page load calls
-it, so a stale number is fixed without the user doing anything. Tests:
-`TestGetMeSavesProfilePhoneToPlatform`.
+`phoneNumber` is read from and written to the platform user record only (the entity
+service's `"user".phone`), never the identity provider. `GET /users/me` returns the
+record's `phone` as `phoneNumber` (omitted when the record has none), and `PATCH /users/me`
+with `phoneNumber` writes it to the record through the entity service, in the same call as a
+`timeZone` change when the request carries both. The identity provider is neither read nor
+written for the phone. A user whose record has no phone shows none until they set one.
+Tests: `TestGetMe`, `TestPatchMe`.
 
 ## Creating a user (POST /users)
 

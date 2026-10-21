@@ -17364,19 +17364,10 @@ components:
             service's own role data, which is no longer returned here.
         phoneNumber:
           type: string
-          description: Mobile phone number in E.164 format (sourced from SCIM)
-        platformPhone:
-          type: string
-          nullable: true
           description: >
-            The phone on the caller's entity service user row, which Case Alerts calls dial.
-            It can differ from phoneNumber (the data sync writes it too). Null when that row
-            has no phone; omitted when the row could not be read (no entity service user row,
-            or an unreadable response), so an absent key means "unknown", not "no number".
-            Saving phoneNumber through PATCH /users/me writes both. This request also repairs
-            a mismatch: when phoneNumber is a dialable E.164 number and the row holds a
-            different one (or none), it is saved onto the row and returned here; an empty or
-            malformed phoneNumber never changes the row, and a failed write leaves it as stored.
+            The caller's phone number in E.164 format, read from the platform user record only
+            (never the identity provider). Omitted when the record has no phone, or when there
+            is no user record.
         team:
           nullable: true
           description: >
@@ -17412,7 +17403,9 @@ components:
       properties:
         phoneNumber:
           type: string
-          description: Mobile phone number in E.164 format
+          description: >
+            Phone number in E.164 format, written to the platform user record only (never the
+            identity provider). An empty string clears it.
         timeZone:
           type: string
           description: User's preferred time zone (e.g. "America/New_York")
