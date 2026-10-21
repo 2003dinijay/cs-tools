@@ -549,7 +549,11 @@ func main() {
 		onboardingStepHandler := handler.NewOnboardingStepHandler(customerEntityClient)
 		route("GET /projects/{id}/onboarding-steps", handler.PermView, onboardingStepHandler.GetProjectOnboardingSteps)
 	}
-	route("PATCH /projects/{id}", handler.PermWrite, projectHandler.UpdateProject)
+	// PermUpdateProject, not PermWrite -- the route floor is deliberately
+	// broader (includes onboarding_lead); UpdateProject itself requires
+	// PermManageOnboarding for the onboarding fields and PermWrite for every
+	// other field.
+	route("PATCH /projects/{id}", handler.PermUpdateProject, projectHandler.UpdateProject)
 	route("POST /products/search", handler.PermView, productHandler.SearchProducts)
 	route("GET /products/github-repo", handler.PermView, productHandler.GetProductRepoMapping)
 	route("POST /products/{id}/versions/search", handler.PermView, productHandler.SearchProductVersions)
@@ -682,6 +686,7 @@ func main() {
 	route("GET /runbooks", handler.PermViewOperations, runbookHandler.ListRunbooks)
 	route("POST /runbooks", handler.PermWrite, runbookHandler.CreateRunbook)
 	route("POST /runbooks/import", handler.PermWrite, runbookHandler.ImportRunbooks)
+	route("POST /runbooks/{id}/unmerge", handler.PermWrite, runbookHandler.UnmergeRunbookAlerts)
 	route("PUT /runbooks/{id}", handler.PermWrite, runbookHandler.UpdateRunbook)
 	route("DELETE /runbooks/{id}", handler.PermWrite, runbookHandler.DeleteRunbook)
 	route("POST /configuration-items/search", handler.PermView, configurationItemHandler.SearchConfigurationItems)
@@ -1037,7 +1042,8 @@ func loadDirectory() *directory.Directory {
 //	AUTH_ATTACHMENT_DOWNLOADER_ROLES, AUTH_USAGE_METRICS_VIEWER_ROLES,
 //	AUTH_SUPPORT_ENGINEER_ROLES, AUTH_ADMIN_ROLES, AUTH_TIMECARD_APPROVER_ROLES,
 //	AUTH_DASHBOARD_DESIGNER_ROLES, AUTH_SALES_SOLUTIONS_ROLES,
-//	AUTH_WORKNOTE_CREATOR_ROLES, AUTH_COMMENT_UPDATER_ROLES, AUTH_SECURITY_TEAM_ROLES
+//	AUTH_WORKNOTE_CREATOR_ROLES, AUTH_COMMENT_UPDATER_ROLES, AUTH_ONBOARDING_LEAD_ROLES,
+//	AUTH_SECURITY_TEAM_ROLES
 //	    Each is a comma-separated list of role names; a caller whose token's
 //	    "roles" claim holds any one of them has that role.
 //
@@ -1047,8 +1053,9 @@ func loadDirectory() *directory.Directory {
 // nobody, and startup warns naming each one, since with none configured at all
 // nobody can use the portal.
 //
-// AUTH_SALES_SOLUTIONS_ROLES, AUTH_WORKNOTE_CREATOR_ROLES and
-// AUTH_COMMENT_UPDATER_ROLES are unlike the rest: leaving any of them unset
+// AUTH_SALES_SOLUTIONS_ROLES, AUTH_WORKNOTE_CREATOR_ROLES,
+// AUTH_COMMENT_UPDATER_ROLES and AUTH_ONBOARDING_LEAD_ROLES are unlike the rest:
+// leaving any of them unset
 // does not warn. sales_solutions is a normal, expected unconfigured state (CS
 // Portal alone still works fine) rather than a misconfiguration nobody can
 // use the portal at all without — see AccessConfig.SalesSolutions's own doc
@@ -1057,7 +1064,8 @@ func loadDirectory() *directory.Directory {
 // PermCreateWorkNote/PermUpdateDeleteComment regardless (see
 // AccessConfig.WorknoteCreator's/CommentUpdater's own doc comments), so
 // leaving either empty is purely "this extra role isn't provisioned yet,"
-// never a state that locks anyone out.
+// never a state that locks anyone out. onboarding_lead is the same: admin
+// already holds PermManageOnboarding regardless.
 func loadAccessConfig() handler.AccessConfig {
 	var unset []string
 	roles := func(name string) []string {
@@ -1090,13 +1098,14 @@ func loadAccessConfig() handler.AccessConfig {
 		// unset variable here a normal, no-op state.
 		SecurityTeam: roles("AUTH_SECURITY_TEAM_ROLES"),
 		// Unlike the roles above, an unset AUTH_SALES_SOLUTIONS_ROLES,
-		// AUTH_WORKNOTE_CREATOR_ROLES or AUTH_COMMENT_UPDATER_ROLES is a
-		// normal, supported state (see this function's own doc comment for
-		// why each is), so all three deliberately bypass the roles() helper
+		// AUTH_WORKNOTE_CREATOR_ROLES, AUTH_COMMENT_UPDATER_ROLES or
+		// AUTH_ONBOARDING_LEAD_ROLES is a normal, supported state (see this
+		// function's own doc comment for why each is), so all four deliberately bypass the roles() helper
 		// to avoid adding themselves to the unset-variable warning below.
 		SalesSolutions:  splitComma(os.Getenv("AUTH_SALES_SOLUTIONS_ROLES")),
 		WorknoteCreator: splitComma(os.Getenv("AUTH_WORKNOTE_CREATOR_ROLES")),
 		CommentUpdater:  splitComma(os.Getenv("AUTH_COMMENT_UPDATER_ROLES")),
+		OnboardingLead:  splitComma(os.Getenv("AUTH_ONBOARDING_LEAD_ROLES")),
 	}
 	if len(unset) > 0 {
 		slog.Warn("access-control role variables are unset, so no token role grants them", "variables", unset)

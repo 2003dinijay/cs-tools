@@ -1529,6 +1529,17 @@ type ProjectUpdateRequest struct {
 	// and tolerant of spaces (normalized the same way the three sub-state
 	// fields above already are).
 	ClosureState *string `json:"closureState,omitempty"`
+	// OnboardingStatus sets the project's onboarding status (Postgres data
+	// sources only; rejected on the ServiceNow data source). Accepts the labels
+	// reads return ("Not-Started", "In-Progress", "On-Hold", "Completed",
+	// "Cancelled", "Expired", "Not-Applicable"), ignoring case, hyphens,
+	// underscores and spaces.
+	OnboardingStatus *string `json:"onboardingStatus,omitempty"`
+	// OnboardingOwner sets the project's onboarding owner to this user id
+	// (Postgres data sources only; rejected on the ServiceNow data source).
+	// Must be an active internal user. Clearing the owner is not supported:
+	// null and omitted both leave it unchanged.
+	OnboardingOwner *string `json:"onboardingOwner,omitempty"`
 }
 
 // ProjectUpdateResponse is the result of a project update operation
@@ -1550,6 +1561,10 @@ type ProjectUpdateResult struct {
 	ComplianceViolationClosureState *string         `json:"complianceViolationClosureState"`
 	SuspensionProcessState          json.RawMessage `json:"suspensionProcessState"`
 	VerificationEnabled             *bool           `json:"verificationEnabled,omitempty"`
+	// OnboardingStatus and OnboardingOwner are populated on Postgres data
+	// sources only.
+	OnboardingStatus *string    `json:"onboardingStatus,omitempty"`
+	OnboardingOwner  *PersonRef `json:"onboardingOwner,omitempty"`
 }
 
 // ProjectConsumptionStatus represents the product consumption state and keys for a project.

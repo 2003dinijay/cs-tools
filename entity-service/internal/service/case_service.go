@@ -2720,6 +2720,15 @@ func (s *caseService) updateCaseMarkFixIssued(ctx context.Context, req domain.Up
 		return domain.UpdateCaseResponse{}, err
 	}
 
+	// resolveActorOrM2M so the integration that marks a fix released (an M2M
+	// caller with no end-user token) is still attributed, to its client id.
+	// Best-effort: an unresolvable caller just skips the entry.
+	if !alreadySet {
+		if actor, err := s.resolveActorOrM2M(ctx); err == nil {
+			s.recordFieldChangeActivity(ctx, req.ID, "fix_issued_on", "", fixIssued.UTC().Format(time.RFC3339), actor.Email)
+		}
+	}
+
 	if !alreadySet && s.snWriteback != nil {
 		if patcher, ok := s.snMirror.(snFieldPatcher); ok {
 			markFixIssued := true
@@ -3004,10 +3013,24 @@ func (s *caseService) updateCaseFields(ctx context.Context, req domain.UpdateCas
 		return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "workaroundProvided requires an authenticated end-user caller: a pure M2M caller has no user record to attribute it to"}
 	}
 
+	// The prior workaround stamp is read only for a workaround change: the
+	// recall entry needs it. A failed read is logged and never fails the
+	// update.
+	var prevWorkaround *time.Time
+	if req.WorkaroundProvided != nil {
+		if t, err := s.repo.GetCaseWorkaroundProvidedOn(ctx, req.ID); err != nil {
+			slog.ErrorContext(ctx, "update case: read prior workaround stamp for activity entry failed", "caseId", req.ID, "error", err)
+		} else {
+			prevWorkaround = t
+		}
+	}
+
 	updatedOn, err := s.repo.UpdateCaseFields(ctx, req, actor.ID, actor.Email)
 	if err != nil {
 		return domain.UpdateCaseResponse{}, err
 	}
+
+	s.recordCaseFieldsActivity(ctx, req, prevWorkaround, updatedOn, actor.Email)
 
 	// Deliberately independent of s.publisher (never touches Event Hub) --
 	// same reasoning every other SLAEngineService call site in this file
@@ -3101,6 +3124,25 @@ func (s *caseService) updateCaseFields(ctx context.Context, req domain.UpdateCas
 	resp.MostLikelyFixEta = req.MostLikelyFixEta
 	resp.WorstCaseFixEta = req.WorstCaseFixEta
 	return domain.UpdateCaseResponse{Message: "Case updated successfully", Case: resp}, nil
+}
+
+// recordCaseFieldsActivity logs the activity-feed entry for updateCaseFields'
+// workaround field: set stores the new timestamp, recall stores the prior one
+// as old (and nothing when it was not set), which the feed renders as a
+// date-time.
+func (s *caseService) recordCaseFieldsActivity(ctx context.Context, req domain.UpdateCaseRequest, prevOn *time.Time, updatedOn time.Time, actorEmail string) {
+	if req.WorkaroundProvided == nil {
+		return
+	}
+	var prev string
+	if prevOn != nil {
+		prev = prevOn.UTC().Format(time.RFC3339)
+	}
+	if *req.WorkaroundProvided {
+		s.recordFieldChangeActivity(ctx, req.ID, "workaround_provided_on", prev, updatedOn.UTC().Format(time.RFC3339), actorEmail)
+	} else if prev != "" {
+		s.recordFieldChangeActivity(ctx, req.ID, "workaround_provided_on", prev, "", actorEmail)
+	}
 }
 
 // validateCaseFieldValues rejects malformed ids and unknown enum spellings in the
