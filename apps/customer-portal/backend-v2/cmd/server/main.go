@@ -117,9 +117,10 @@ func main() {
 	// defaults to PRODUCT_CONSUMPTION_SUBSCRIPTION_URL when unset, for
 	// deployments where both happen to point at the same host.
 	//
-	// PRODUCT_CONSUMPTION_LICENSE_MODE selects the license flow: "legacy"
-	// (default when unset) drives provisioning from this backend; "service"
-	// makes one call to the subscription service, which owns provisioning.
+	// PRODUCT_CONSUMPTION_LICENSE_MODE selects the license flow: "service"
+	// (default when unset) makes one call to the subscription service, which
+	// owns provisioning; "legacy" drives provisioning from this backend and
+	// must be set explicitly.
 	licenseMode, err := productconsumption.ParseLicenseMode(os.Getenv(productconsumption.EnvLicenseMode))
 	if err != nil {
 		slog.Error("invalid product-consumption configuration", "err", err)

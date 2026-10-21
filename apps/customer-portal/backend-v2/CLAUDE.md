@@ -255,20 +255,19 @@ It backs two routes:
 - `POST /projects/{projectId}/deployments/{deploymentId}/license` — returns the deployment's
   license. `PRODUCT_CONSUMPTION_LICENSE_MODE` selects how `ProcessLicenseDownload`
   (`internal/productconsumption/subscription.go`, the single dispatch point) provisions it:
-  - `legacy` (**the default**; unset or empty means legacy): the backend itself drives the
-    subscription service's per-project state machine (`subscription_legacy.go`,
-    `types_legacy.go`, `jsonint.go`): consumption-status check, create application, patch
-    project, subscribe, generate-credentials, generate-secret-keys, then fetch the license, each
-    step only once and resuming from the project's current state. Up to 5 sequential upstream
-    requests.
-  - `service`: **one call** to the subscription service's
-    `POST /projects/{projectId}/deployments/{deploymentId}/license`; the provisioning state
-    machine lives in that service, not here.
+  - `service` (**the default**; unset or empty means service): **one call** to the subscription
+    service's `POST /projects/{projectId}/deployments/{deploymentId}/license`; the provisioning
+    state machine lives in that service, not here.
+  - `legacy` (must be set explicitly; an environment that must keep the old flow sets
+    `PRODUCT_CONSUMPTION_LICENSE_MODE=legacy`): the backend itself drives the subscription
+    service's per-project state machine (`subscription_legacy.go`, `types_legacy.go`,
+    `jsonint.go`): consumption-status check, create application, patch project, subscribe,
+    generate-credentials, generate-secret-keys, then fetch the license, each step only once and
+    resuming from the project's current state. Up to 5 sequential upstream requests.
   Any other value fails startup (`productconsumption.ParseLicenseMode`). **The two modes must
   never both drive the state machine for the same deployment**: in `legacy` the backend is the
   driver, in `service` the subscription service is, and two drivers can create a duplicate
-  application. Switch the mode for the whole environment, only once the subscription service is
-  ready to own provisioning. In both modes the client refuses a `success:false` answer, missing
+  application. Switch the mode for the whole environment at once. In both modes the client refuses a `success:false` answer, missing
   subscription data or a missing signature as a data error rather than handing back an unusable
   license. The handler
   first calls `entity.GetProject` purely as an access-control gate, discarding the result —

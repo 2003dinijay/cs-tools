@@ -60,7 +60,7 @@ type Config struct {
 	ClientSecret        string
 	Scopes              []string
 	// LicenseMode selects the license provisioning flow; empty means
-	// LicenseModeLegacy. See ParseLicenseMode.
+	// LicenseModeService. See ParseLicenseMode.
 	LicenseMode LicenseMode
 }
 
@@ -107,7 +107,7 @@ func NewClient(cfg Config) *Client {
 
 	licenseMode := cfg.LicenseMode
 	if licenseMode == "" {
-		licenseMode = LicenseModeLegacy
+		licenseMode = LicenseModeService
 	}
 
 	return &Client{

@@ -34,10 +34,10 @@ type LicenseDownloadRequest struct {
 // ProcessLicenseDownload returns the deployment license, using the flow chosen
 // by Config.LicenseMode. This is the only place the two modes are dispatched.
 func (c *Client) ProcessLicenseDownload(ctx context.Context, req LicenseDownloadRequest) (License, error) {
-	if c.licenseMode == LicenseModeService {
-		return c.processLicenseDownloadService(ctx, req)
+	if c.licenseMode == LicenseModeLegacy {
+		return c.processLicenseDownloadLegacy(ctx, req)
 	}
-	return c.processLicenseDownloadLegacy(ctx, req)
+	return c.processLicenseDownloadService(ctx, req)
 }
 
 // processLicenseDownloadService delegates deployment license provisioning to

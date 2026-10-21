@@ -31,7 +31,7 @@ func TestParseLicenseMode(t *testing.T) {
 		want    LicenseMode
 		wantErr bool
 	}{
-		{"", LicenseModeLegacy, false},
+		{"", LicenseModeService, false},
 		{"legacy", LicenseModeLegacy, false},
 		{"service", LicenseModeService, false},
 		{"Service", "", true},
@@ -91,23 +91,23 @@ func hasStatusCall(paths []string) bool {
 }
 
 // TestProcessLicenseDownload_Dispatch pins the mode selection: an unset mode
-// (the production default) runs the legacy state machine, which starts with
-// the consumption-status call; service mode makes only the single license call.
+// selects service (a single license call); legacy must be set explicitly and
+// starts with the consumption-status call.
 func TestProcessLicenseDownload_Dispatch(t *testing.T) {
 	unset, err := ParseLicenseMode("")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if paths := dispatchPaths(t, unset); !hasStatusCall(paths) || len(paths) != 2 {
-		t.Errorf("unset mode: want status call then license call, got %v", paths)
+	if paths := dispatchPaths(t, unset); hasStatusCall(paths) || len(paths) != 1 {
+		t.Errorf("unset mode: want exactly one license call, got %v", paths)
 	}
-	if paths := dispatchPaths(t, LicenseModeLegacy); !hasStatusCall(paths) {
-		t.Errorf("legacy mode: want status call, got %v", paths)
-	}
-	if paths := dispatchPaths(t, ""); !hasStatusCall(paths) {
-		t.Errorf("zero-value mode must behave as legacy, got %v", paths)
+	if paths := dispatchPaths(t, ""); hasStatusCall(paths) || len(paths) != 1 {
+		t.Errorf("zero-value mode must behave as service, got %v", paths)
 	}
 	if paths := dispatchPaths(t, LicenseModeService); hasStatusCall(paths) || len(paths) != 1 {
 		t.Errorf("service mode: want exactly one license call, got %v", paths)
+	}
+	if paths := dispatchPaths(t, LicenseModeLegacy); !hasStatusCall(paths) || len(paths) != 2 {
+		t.Errorf("explicit legacy mode: want status call then license call, got %v", paths)
 	}
 }
