@@ -34,29 +34,29 @@ describe("parseRunbookImport", () => {
     expect(
       parseRunbookImport('{"CPU > 90%, prod": "https://docs.example.com/a", " Alert B ": ""}'),
     ).toEqual([
-      { runbookUrl: "https://docs.example.com/a", alerts: ["CPU > 90%, prod"] },
-      { runbookUrl: null, alerts: ["Alert B"] },
+      { name: "", runbookUrl: "https://docs.example.com/a", alerts: ["CPU > 90%, prod"] },
+      { name: "", runbookUrl: null, alerts: ["Alert B"] },
     ]);
   });
 
-  it("reads a list of runbooks with a list of alerts, a text alerts value as one alert, ignoring a name", () => {
+  it("reads a list of runbooks with their names, a list of alerts, and a text alerts value as one alert", () => {
     expect(
       parseRunbookImport('[{"name": "Gateway", "runbookUrl": null, "alerts": ["a", "b"]}, {"alerts": "c, d"}]'),
     ).toEqual([
-      { runbookUrl: null, alerts: ["a", "b"] },
-      { runbookUrl: null, alerts: ["c, d"] },
+      { name: "Gateway", runbookUrl: null, alerts: ["a", "b"] },
+      { name: "", runbookUrl: null, alerts: ["c, d"] },
     ]);
   });
 
   it("still reads an older list entry with one alertName", () => {
     expect(parseRunbookImport('[{"alertName": "A", "runbookUrl": null}]')).toEqual([
-      { runbookUrl: null, alerts: ["A"] },
+      { name: "", runbookUrl: null, alerts: ["A"] },
     ]);
   });
 
   it("reads an older alertName with a comma as one alert, never splitting it", () => {
     expect(parseRunbookImport('[{"alertName": "CPU > 90%, prod", "runbookUrl": null}]')).toEqual([
-      { runbookUrl: null, alerts: ["CPU > 90%, prod"] },
+      { name: "", runbookUrl: null, alerts: ["CPU > 90%, prod"] },
     ]);
   });
 
@@ -129,6 +129,7 @@ describe("filterRunbooks", () => {
   const rb = (id: string, over: Partial<Runbook>): Runbook => ({
     id,
     number: `RB-${id}`,
+    name: `Name ${id}`,
     runbookUrl: null,
     alerts: ["a"],
     createdOn: "2026-01-01T00:00:00Z",
@@ -158,6 +159,7 @@ describe("filterRunbooks", () => {
 
   it("searches number, alert names and link together with the filters", () => {
     expect(ids({}, "rb-jvm")).toEqual(["jvm"]);
+    expect(ids({}, "NAME DISK")).toEqual(["disk"]);
     expect(ids({}, "LATENCY")).toEqual(["gw"]);
     expect(ids({}, "d/disk")).toEqual(["disk"]);
     expect(ids({ coverage: "missing" }, "gw")).toEqual([]);
@@ -174,6 +176,7 @@ describe("export", () => {
     {
       id: "1",
       number: "RB0000002",
+      name: "Gateway",
       alerts: ["gw-5xx", "CPU > 90%, prod"],
       runbookUrl: "https://docs.example.com/gw",
       createdOn: "",
@@ -181,21 +184,21 @@ describe("export", () => {
       updatedOn: "2026-10-01T00:00:00Z",
       updatedBy: "a@x",
     },
-    { id: "2", number: "RB0000001", alerts: ["__proto__"], runbookUrl: null, createdOn: "", createdBy: "", updatedOn: "2026-10-02T00:00:00Z", updatedBy: "b@x" },
+    { id: "2", number: "RB0000001", name: "Proto", alerts: ["__proto__"], runbookUrl: null, createdOn: "", createdBy: "", updatedOn: "2026-10-02T00:00:00Z", updatedBy: "b@x" },
   ];
 
   it("writes JSON the importer reads back, alert names with commas and __proto__ included", () => {
     expect(parseRunbookImport(runbooksToImportJson(catalog))).toEqual([
-      { runbookUrl: "https://docs.example.com/gw", alerts: ["gw-5xx", "CPU > 90%, prod"] },
-      { runbookUrl: null, alerts: ["__proto__"] },
+      { name: "Gateway", runbookUrl: "https://docs.example.com/gw", alerts: ["gw-5xx", "CPU > 90%, prod"] },
+      { name: "Proto", runbookUrl: null, alerts: ["__proto__"] },
     ]);
     expect(JSON.parse(runbooksToImportJson(catalog))[0].number).toBe("RB0000002");
   });
 
   it("writes one CSV row per runbook, its alerts one per line in one cell", () => {
     expect(runbooksToCsvRows(catalog)).toEqual([
-      ["RB0000002", "gw-5xx\nCPU > 90%, prod", "https://docs.example.com/gw", "2026-10-01T00:00:00Z"],
-      ["RB0000001", "__proto__", "", "2026-10-02T00:00:00Z"],
+      ["RB0000002", "Gateway", "gw-5xx\nCPU > 90%, prod", "https://docs.example.com/gw", "2026-10-01T00:00:00Z"],
+      ["RB0000001", "Proto", "__proto__", "", "2026-10-02T00:00:00Z"],
     ]);
   });
 });
