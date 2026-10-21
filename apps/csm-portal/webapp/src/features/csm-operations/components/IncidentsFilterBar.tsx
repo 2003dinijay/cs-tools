@@ -49,6 +49,7 @@ import {
 import IncidentProductMultiSelect from "@features/csm-operations/components/IncidentProductMultiSelect";
 import SavedViewsMenu from "@features/csm-operations/components/SavedViewsMenu";
 import MultiSelectField from "@components/MultiSelectField";
+import { useSearchGroups } from "@api/useSearchGroups";
 import AsyncEntityMultiSelect from "@components/AsyncEntityMultiSelect";
 import { useSearchItServices } from "@api/useSearchItServices";
 import AsyncAssignedUserIdMultiSelect from "@features/csm-cases/components/AsyncAssignedUserIdMultiSelect";
@@ -134,7 +135,10 @@ export default function IncidentsFilterBar({
     [],
   );
 
-  // SRE Team: incidents are SRE-owned, so this is scoped to the `sre-abt`
+  // Assignment group filter: any group, searched. The SRE teams' own groups
+  // (registry `sre-abt` family, below) only supply names for ids carried in
+  // from links built before. History of the old "SRE Team" control: incidents
+  // are SRE-owned, so it was scoped to the `sre-abt`
   // team family (unlike the cases list's own "SRE Team" filter, which is
   // deliberately scoped to `cre-abt` per an explicit, later-flagged-as-
   // likely-mistaken product instruction — see `CasesFilterBar.tsx`'s
@@ -150,6 +154,13 @@ export default function IncidentsFilterBar({
         )
         .map((t) => ({ value: t.sreGroupId, label: t.name })),
     [teams],
+  );
+  // Names for group ids that arrive from a saved view, a bookmark or a
+  // dashboard tile before the picker has searched (those links were built from
+  // the SRE teams' groups, so the registry knows their names).
+  const groupKnownLabels = useMemo(
+    () => Object.fromEntries(sreTeamOptions.map((o) => [o.value, o.label])),
+    [sreTeamOptions],
   );
 
   const stateOptions = useMemo(
@@ -330,12 +341,17 @@ export default function IncidentsFilterBar({
             </Grid>
 
             <Grid size={{ xs: 12, sm: 6, md: 4 }}>
-              <MultiSelectField
-                id="incident-filter-sre-team"
-                label="SRE Team"
+              <AsyncEntityMultiSelect
+                id="incident-filter-assignment-group"
+                label="Assignment group"
+                placeholder="Search groups…"
                 values={filters.sreTeamIds}
-                options={sreTeamOptions}
                 onChange={(next) => onChange({ ...filters, sreTeamIds: next })}
+                useSearch={useSearchGroups}
+                getId={(g) => g.id}
+                getLabel={(g) => g.name}
+                knownLabels={groupKnownLabels}
+                compactSelectedValues
               />
             </Grid>
 

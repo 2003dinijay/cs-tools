@@ -36,6 +36,19 @@ vi.mock("@config/apiConfig", () => ({
 // Mocked directly (same approach as `CasesFilterBar.test.tsx` mocking
 // `useSearchTags`) so tests don't have to drive the real SRE-team network
 // query — this bar's own control, unrelated to the project filter under test.
+vi.mock("@api/useSearchGroups", () => ({
+  useSearchGroups: () => ({ data: [], isFetching: false, isError: false }),
+}));
+vi.mock("@features/csm-cases/api/useUserSearch", () => ({
+  useInfiniteUserSearch: () => ({
+    users: [],
+    isFetching: false,
+    isError: false,
+    hasNextPage: false,
+    fetchNextPage: () => {},
+    isFetchingNextPage: false,
+  }),
+}));
 vi.mock("@features/csm-dashboard/api/useTeams", () => ({
   useTeams: vi.fn(),
 }));
@@ -121,7 +134,7 @@ describe("ChangeRequestsFilterBar — field order", () => {
       ) as ReactNode,
     );
     const html = container.innerHTML;
-    const sreTeamIdx = html.indexOf("SRE Team");
+    const sreTeamIdx = html.indexOf("Assignment group");
     const projectIdx = html.indexOf(">Project<");
     const closedFromIdx = html.indexOf("Closed from");
     const closedToIdx = html.indexOf("Closed to");

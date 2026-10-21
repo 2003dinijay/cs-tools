@@ -51,6 +51,8 @@ import {
 } from "@features/csm-operations/utils/changeRequestsFiltersUrl";
 import SavedViewsMenu from "@features/csm-operations/components/SavedViewsMenu";
 import MultiSelectField from "@components/MultiSelectField";
+import { useSearchGroups } from "@api/useSearchGroups";
+import AsyncEntityMultiSelect from "@components/AsyncEntityMultiSelect";
 import AsyncTagMultiSelect from "@features/csm-cases/components/AsyncTagMultiSelect";
 import AsyncAssignedUserIdMultiSelect from "@features/csm-cases/components/AsyncAssignedUserIdMultiSelect";
 import DateRangeFilterFields from "@features/csm-operations/components/DateRangeFilterFields";
@@ -130,7 +132,9 @@ export default function ChangeRequestsFilterBar({
     [],
   );
 
-  // Change requests are SRE-owned, so this control is scoped to the
+  // The Assignment group filter searches every group; the SRE teams' groups
+  // (registry `sre-abt` family) only supply names for ids carried in from
+  // links built before. The old "SRE Team" control was scoped to the
   // `sre-abt` team family — see `IncidentsFilterBar`'s equivalent note on
   // why this isn't `cre-abt` (the cases list's own "SRE Team" control's
   // family scoping).
@@ -144,6 +148,13 @@ export default function ChangeRequestsFilterBar({
         )
         .map((t) => ({ value: t.sreGroupId, label: t.name })),
     [teams],
+  );
+  // Names for group ids that arrive from a saved view, a bookmark or a
+  // dashboard tile before the picker has searched (those links were built from
+  // the SRE teams' groups, so the registry knows their names).
+  const groupKnownLabels = useMemo(
+    () => Object.fromEntries(sreTeamOptions.map((o) => [o.value, o.label])),
+    [sreTeamOptions],
   );
 
   /**
@@ -268,12 +279,17 @@ export default function ChangeRequestsFilterBar({
               />
             </Grid>
             <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-              <MultiSelectField
-                id="cr-filter-sre-team"
-                label="SRE Team"
+              <AsyncEntityMultiSelect
+                id="cr-filter-assignment-group"
+                label="Assignment group"
+                placeholder="Search groups…"
                 values={filters.sreTeamIds}
-                options={sreTeamOptions}
                 onChange={(next) => onChange({ ...filters, sreTeamIds: next })}
+                useSearch={useSearchGroups}
+                getId={(g) => g.id}
+                getLabel={(g) => g.name}
+                knownLabels={groupKnownLabels}
+                compactSelectedValues
               />
             </Grid>
             <Grid size={{ xs: 12, sm: 6, md: 3 }}>

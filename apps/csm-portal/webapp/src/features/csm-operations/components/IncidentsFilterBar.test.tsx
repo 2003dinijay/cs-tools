@@ -32,7 +32,7 @@ vi.mock("@features/csm-operations/api/useIncidentProductNameOptions", () => ({
   useIncidentProductNameOptions: () => useIncidentProductNameOptionsMock(),
 }));
 
-// The SRE Team control's options come from the shared team registry query —
+// The Assignment group control's known names come from the shared team registry query —
 // stub it out too, same rationale as the product options above.
 const useTeamsMock = vi.fn(() => ({
   data: [
@@ -54,6 +54,13 @@ vi.mock("@features/csm-cases/api/useUserSearch", () => ({
     hasNextPage: false,
     fetchNextPage: () => {},
     isFetchingNextPage: false,
+  }),
+}));
+vi.mock("@api/useSearchGroups", () => ({
+  useSearchGroups: () => ({
+    data: [{ id: "group-cab", name: "CAB Approval", active: true }],
+    isFetching: false,
+    isError: false,
   }),
 }));
 vi.mock("@features/csm-dashboard/api/useTeams", () => ({
@@ -158,19 +165,23 @@ describe("IncidentsFilterBar", () => {
     expect(screen.queryByRole("button", { name: /clear filters/i })).not.toBeInTheDocument();
   });
 
-  it("offers only sre-abt-family teams as SRE Team options, keyed by sreGroupId", () => {
+  it("filters by any assignment group, searched, and sends the group's id", () => {
     const { onChange } = renderFilterBar();
 
-    fireEvent.mouseDown(screen.getByRole("combobox", { name: "SRE Team" }));
-    expect(screen.getByRole("option", { name: "Apollo SRE Team" })).toBeInTheDocument();
-    expect(screen.queryByRole("option", { name: "Atlas CRE Team" })).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("option", { name: "Apollo SRE Team" }));
+    const input = screen.getByRole("combobox", { name: "Assignment group" });
+    fireEvent.mouseDown(input);
+    fireEvent.change(input, { target: { value: "cab" } });
+    fireEvent.click(screen.getByRole("option", { name: "CAB Approval" }));
 
     expect(onChange).toHaveBeenCalledWith({
       ...DEFAULT_INCIDENT_FILTERS,
-      sreTeamIds: ["team-apollo"],
+      sreTeamIds: ["group-cab"],
     });
+  });
+
+  it("names a group carried in from a saved view with the SRE team registry's name", () => {
+    renderFilterBar({ filters: { ...DEFAULT_INCIDENT_FILTERS, sreTeamIds: ["team-apollo"] } });
+    expect(screen.getByText("Apollo SRE Team")).toBeInTheDocument();
   });
 
   it("calls onReset when Clear filters is clicked", () => {

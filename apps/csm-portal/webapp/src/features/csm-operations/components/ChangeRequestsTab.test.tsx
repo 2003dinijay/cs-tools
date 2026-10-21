@@ -46,6 +46,9 @@ vi.mock("@features/csm-operations/api/useSearchChangeRequests", () => ({
 // The filter bar's SRE Team control goes through the shared team registry
 // query — stub it out so this test doesn't need a QueryClientProvider,
 // same rationale as the other mocks below.
+vi.mock("@api/useSearchGroups", () => ({
+  useSearchGroups: () => ({ data: [], isFetching: false, isError: false }),
+}));
 vi.mock("@features/csm-dashboard/api/useTeams", () => ({
   useTeams: () => ({ data: [], isLoading: false }),
 }));
