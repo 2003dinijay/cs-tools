@@ -1975,6 +1975,83 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /reports/worklogs:
+    get:
+      summary: >-
+        Build the CS Worklogs daily or weekly report for a date range.
+        Read-only, and the aggregation behind the two mails CS leads
+        receive. Dates are plain calendar dates in the report's own
+        timezone: time_card.work_date is a DATE, so the caller decides
+        which calendar day it means.
+      tags:
+        - Reports
+      parameters:
+        - name: cadence
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [daily, weekly]
+          description: >-
+            The two cadences differ in substance, not only in
+            presentation: the weekly per-team average divides by the
+            member count less one, the daily by present members less
+            leads, and only the daily carries leave and disapproved
+            entries.
+        - name: from
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+          description: First day of the range, inclusive.
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+          description: >-
+            Last day of the range, inclusive. Defaults to `from`, which
+            is what the daily report wants. The range may not exceed 92
+            days.
+      responses:
+        "200":
+          description: The report.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorklogReport'
+        "400":
+          description: Missing or malformed cadence or dates, or a range over 92 days.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthenticated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Forbidden. The report is internal-only.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "503":
+          description: The access check could not be completed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /scheduled-tasks/attempts:
     post:
       summary: >-
@@ -2536,7 +2613,7 @@ paths:
         `roles` also decides `userType`, since `recompute_user_type`'s trigger
         derives it from role membership rather than a plain settable column —
         granting `admin`/`internal` resolves to INTERNAL and is rejected with
-        400 unless `email` is a `@wso2.com` address.
+        400 unless `email` is a `@example.com` address.
       operationId: createUser
       tags: [Users]
       requestBody:
@@ -2556,7 +2633,7 @@ paths:
           description: >
             Bad request — missing/invalid email, neither firstName nor
             lastName supplied, roles requests an internal-resolving role
-            (admin/internal) for a non-@wso2.com email, or roles requests an
+            (admin/internal) for a non-@example.com email, or roles requests an
             external-resolving role (external/partner/customer/partner_admin/
             customer_admin) — creating an external-type user is temporarily
             disabled regardless of email.
@@ -17752,7 +17829,7 @@ components:
         At least one of firstName/lastName is required. userType is never
         accepted here -- it is derived by the database from role membership.
         Granting a role that resolves to userType INTERNAL (admin/internal)
-        for a non-@wso2.com email is rejected with 400. Granting a role that
+        for a non-@example.com email is rejected with 400. Granting a role that
         resolves to userType EXTERNAL (external/partner/customer/partner_admin/
         customer_admin) is rejected with 400 regardless of email -- creating
         an external-type user via this endpoint is temporarily disabled.
@@ -22921,7 +22998,7 @@ components:
           type: string
           nullable: true
           description: >-
-            WSO2 internal case id (e.g. "SCTPSUB-88") for caseId. Null if the
+            WSO2 internal case id (e.g. "KITE-88") for caseId. Null if the
             case record could not be resolved or has no internal id assigned.
         rating:
           type: integer
@@ -26718,6 +26795,110 @@ components:
                 type: string
                 nullable: true
                 description: The link the removed runbook had.
+    WorklogReport:
+      type: object
+      description: >-
+        One CS Worklogs report. Hours are rounded to two decimals;
+        member counts can be fractional, because a half-day absence
+        counts as half a present person.
+      properties:
+        cadence:
+          type: string
+          enum: [daily, weekly]
+        from:
+          type: string
+          format: date
+        to:
+          type: string
+          format: date
+        totals:
+          type: object
+          properties:
+            members: { type: integer }
+            issues: { type: integer }
+            totalHours: { type: number, format: double }
+            approvedHours: { type: number, format: double }
+            pendingHours: { type: number, format: double }
+            avgHoursPerPerson: { type: number, format: double }
+            avgApprovedHoursPerPerson: { type: number, format: double }
+            avgPendingHoursPerPerson: { type: number, format: double }
+            averagePeoplePerDay: { type: number, format: double }
+            onLeaveMembers: { type: integer }
+            nonLeaveMembers: { type: number, format: double }
+            queryIssues: { type: integer }
+            incidentIssues: { type: integer }
+        byType:
+          type: array
+          items:
+            type: object
+            properties:
+              type: { type: string }
+              label:
+                type: string
+                description: What the report calls the type. "Query" where the schema says CASE.
+              issues: { type: integer }
+              totalHours: { type: number, format: double }
+              approvedHours: { type: number, format: double }
+              pendingHours: { type: number, format: double }
+        recipients:
+          type: object
+          description: >-
+            The audience derived from the team registry. Carried for
+            comparison only -- the delivered mails are configured, not
+            derived.
+          properties:
+            to:
+              type: array
+              items: { type: string }
+            cc:
+              type: array
+              items: { type: string }
+        teams:
+          type: array
+          items:
+            type: object
+            properties:
+              teamKey: { type: string }
+              teamName: { type: string }
+              teamType: { type: string }
+              members: { type: integer }
+              membersForAverage:
+                type: number
+                format: double
+                description: >-
+                  The divisor behind the averages, which is not the
+                  member count: the weekly report uses members less one,
+                  the daily present members less leads.
+              issues: { type: integer }
+              approvedHours: { type: number, format: double }
+              pendingHours: { type: number, format: double }
+              totalHours: { type: number, format: double }
+              avgApprovedHoursPerPerson: { type: number, format: double }
+              avgTotalHoursPerPerson: { type: number, format: double }
+              developers:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    userId: { type: string }
+                    email: { type: string }
+                    name: { type: string }
+                    workedDays: { type: number, format: double }
+                    leave: { type: string }
+                    approvedIssues: { type: integer }
+                    approvedHours: { type: number, format: double }
+                    pendingIssues: { type: integer }
+                    pendingHours: { type: number, format: double }
+                    disapprovedEntries: { type: integer }
+                    avgTimePerDay: { type: number, format: double }
+                    totalHours: { type: number, format: double }
+                    issues:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          id: { type: string }
+                          key: { type: string }
     ErrorResponse:
       type: object
       description: >-
