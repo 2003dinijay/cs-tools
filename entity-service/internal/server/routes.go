@@ -321,6 +321,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	var pagingChainHandler *handler.PagingChainHandler
 	var caseAlertSettingsHandler *handler.CaseAlertSettingsHandler
 	var runbookHandler *handler.RunbookHandler
+	var migrationCaseReportHandler *handler.MigrationCaseReportHandler
 	// runbookRepo stays a nil interface without a pool, so no incident service gets a catalog.
 	var runbookRepo repository.RunbookRepository
 
@@ -1438,6 +1439,17 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// Runbooks: the alert-name to runbook catalog, matched against every new incident's subject.
 		runbookRepo = repository.NewRunbookRepository(db)
 		runbookHandler = handler.NewRunbookHandler(service.NewRunbookService(runbookRepo))
+		// Weekly migration case scan: the long-running migration engagements,
+		// bucketed by the tags the CS team keeps on them, for the scheduled
+		// task that mails the scan to the teams' mail groups.
+		migrationCaseReportHandler = handler.NewMigrationCaseReportHandler(
+			service.NewMigrationCaseReportService(
+				repository.NewMigrationCaseReportRepository(repository.NewScoped(db)),
+				service.MigrationCaseReportConfig{
+					HoldTag:           cfg.MigrationCaseReportHoldTag,
+					AccountsTag:       cfg.MigrationCaseReportAccountsTag,
+					RecipientTeamKeys: cfg.MigrationCaseReportTeamKeys,
+				}))
 		caseAlertSettingsHandler = handler.NewCaseAlertSettingsHandler(
 			service.NewCaseAlertSettingsService(repository.NewCaseAlertSettingsRepository(db), repository.NewPagingChainRepository(db), accessSvc,
 				service.CaseAlertSettingsConfig{
@@ -1850,6 +1862,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("DELETE /team-schedule/paging-contacts/{userId}", pagingChainHandler.DeletePagingPhone)
 		mux.HandleFunc("POST /team-schedule/paging-contacts/{userId}/test", pagingChainHandler.RequestTestCall)
 		mux.HandleFunc("PUT /team-schedule/paging-contacts/{userId}/test-result", pagingChainHandler.RecordTestResult)
+	}
+	if migrationCaseReportHandler != nil {
+		// internalOnly: the scan names accounts, their owners and who is
+		// assigned to each migration; a customer token must never reach it.
+		mux.HandleFunc("GET /reports/migration-cases", internalOnly(accessSvc, migrationCaseReportHandler.GetMigrationCaseReport))
 	}
 	if runbookHandler != nil {
 		// Runbooks (Operations > Runbooks): internal callers only.

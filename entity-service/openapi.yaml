@@ -10036,6 +10036,70 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /reports/migration-cases:
+    get:
+      summary: >-
+        Build the weekly migration case scan: the migration engagements
+        still open after a given age, in three tables by the tags the CS
+        team keeps on them. Read-only. Internal callers only.
+      description: >-
+        A migration is an engagement of type MIGRATION that is neither
+        closed nor awaiting the customer's sign-off, created on or before
+        the start of the day `olderThanDays` days ago in the report's
+        timezone (Asia/Colombo). One tagged as on hold is listed under
+        `onHold`, one tagged as waiting on the accounts team under
+        `waitingOnAccounts`, one carrying both tags under both, and one
+        carrying neither under `inProgress`. Each table is oldest first.
+        `recipients` are the mail groups of the teams configured to
+        receive the scan.
+      operationId: getMigrationCaseReport
+      parameters:
+        - name: olderThanDays
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 3650
+            default: 180
+          description: The age a migration must have reached to be listed.
+      responses:
+        "200":
+          description: The scan.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MigrationCaseReport'
+        "400":
+          description: olderThanDays is not a whole number of days in range.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "503":
+          description: The scan's tags are not configured on this deployment, or the caller's identity could not be checked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /runbooks:
     get:
       summary: List the runbook catalog.
@@ -26553,6 +26617,77 @@ components:
           type: string
           format: date-time
         updatedBy:
+          type: string
+    MigrationCaseReport:
+      type: object
+      description: The weekly migration case scan.
+      required: [generatedAt, olderThanDays, createdBefore, onHold, waitingOnAccounts, inProgress, recipients]
+      properties:
+        generatedAt:
+          type: string
+          format: date-time
+        olderThanDays:
+          type: integer
+          description: The age every listed migration has reached.
+        createdBefore:
+          type: string
+          format: date-time
+          description: Every listed migration was created on or before this instant.
+        onHold:
+          type: array
+          description: Migrations the customer asked to pause.
+          items:
+            $ref: '#/components/schemas/MigrationCaseReportRow'
+        waitingOnAccounts:
+          type: array
+          description: Migrations blocked on the accounts team.
+          items:
+            $ref: '#/components/schemas/MigrationCaseReportRow'
+        inProgress:
+          type: array
+          description: The remaining long-running migrations, carrying neither tag.
+          items:
+            $ref: '#/components/schemas/MigrationCaseReportRow'
+        recipients:
+          type: array
+          description: Mail groups of the teams configured to receive the scan.
+          items:
+            type: string
+    MigrationCaseReportRow:
+      type: object
+      description: One migration engagement in the scan with the account facts shown beside it.
+      required: [id, number, issueKey, createdOn, assignedTo, product, account, csTeam, salesRegion, accountManager, technicalOwner]
+      properties:
+        id:
+          type: string
+        number:
+          type: string
+        issueKey:
+          type: string
+          description: The engagement's customer-facing identifier.
+        createdOn:
+          type: string
+          format: date-time
+        lastCustomerCommentOn:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the customer last commented on the engagement; null when they never have.
+        assignedTo:
+          type: string
+          description: Display name of the assignee, or empty.
+        product:
+          type: string
+        account:
+          type: string
+        csTeam:
+          type: string
+          description: Name of the CS team that owns the account.
+        salesRegion:
+          type: string
+        accountManager:
+          type: string
+        technicalOwner:
           type: string
     RunbookList:
       type: object
