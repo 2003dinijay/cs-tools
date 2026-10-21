@@ -3538,6 +3538,8 @@ export interface BeChangeRequestSearchPayload {
      * populates this today.
      */
     filters?: BeChangeRequestFieldFilter[];
+    /** OR groups (PostgreSQL only): each branch's filters ANDed, branches OR'd. */
+    anyOf?: Array<{ filters: Array<{ field: string; op: "in"; values: string[] }> }>;
   };
   sortBy?: {
     /** `plannedStartOn` / `plannedEndOn`: PostgreSQL only. */
@@ -3884,6 +3886,8 @@ export interface BeIncidentSearchPayload {
      * above remain flat — only those four.
      */
     filters?: BeIncidentFieldFilter[];
+    /** OR groups (PostgreSQL only): each branch's filters ANDed, branches OR'd. */
+    anyOf?: Array<{ filters: Array<{ field: string; op: "in"; values: string[] }> }>;
   };
   sortBy?: {
     field?: "createdOn" | "updatedOn" | "openedOn";

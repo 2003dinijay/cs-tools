@@ -26,6 +26,7 @@ import type {
 } from "@api/backend/types";
 import { formatBackendTimestampForDisplay, parseBackendTimestamp } from "@utils/dateTime";
 import { isBlankHtml, sanitizeRichTextHtml } from "@utils/sanitizeHtml";
+import { anyOfPayload, completeAnyOfGroups, type AnyOfGroup } from "@features/csm-operations/utils/operationsAnyOf";
 
 type ChipColor = "default" | "info" | "warning" | "success" | "error";
 
@@ -1265,7 +1266,20 @@ export interface ChangeRequestFilters {
   plannedStartTo: string;
   plannedEndFrom: string;
   plannedEndTo: string;
+  /** Advanced OR groups, sent as `filters.anyOf`. */
+  anyOf: AnyOfGroup[];
 }
+
+/** The search fields a change request OR group condition can use. */
+export const CHANGE_REQUEST_ANY_OF_FIELDS = [
+  "state",
+  "impact",
+  "projectId",
+  "type",
+  "tag",
+  "assignmentGroupId",
+  "assignedUserId",
+] as const;
 
 /** Change types a list can be filtered by: the three a change is created with,
  * then the ones migrated changes still carry. */
@@ -1299,6 +1313,7 @@ export const DEFAULT_CR_FILTERS: ChangeRequestFilters = {
   plannedStartTo: "",
   plannedEndFrom: "",
   plannedEndTo: "",
+  anyOf: [],
 };
 
 /** Count non-search active filters (used for the badge on the Filters button). */
@@ -1322,7 +1337,8 @@ export function countActiveCRFilters(filters: ChangeRequestFilters): number {
       filters.plannedStartTo,
       filters.plannedEndFrom,
       filters.plannedEndTo,
-    ].filter(Boolean).length
+    ].filter(Boolean).length +
+    completeAnyOfGroups(filters.anyOf).length
   );
 }
 
@@ -1376,6 +1392,7 @@ export function buildChangeRequestSearchFilters(
     ...dateBound("plannedEndOn", "gte", filters.plannedEndFrom),
     ...dateBound("plannedEndOn", "lte", filters.plannedEndTo),
   ];
+  const anyOf = anyOfPayload(filters.anyOf);
   return {
     ...(debouncedSearch.length > 0 && { searchQuery: debouncedSearch }),
     ...(filters.states.length > 0 && { states: filters.states }),
@@ -1388,6 +1405,7 @@ export function buildChangeRequestSearchFilters(
     }),
     ...(fieldFilters.length > 0 && { filters: fieldFilters }),
     ...(filters.projectIds.length > 0 && { projectIds: filters.projectIds }),
+    ...(anyOf && { anyOf }),
   };
 }
 

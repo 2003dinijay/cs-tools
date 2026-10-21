@@ -14,7 +14,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+import { parseAnyOfParam, writeAnyOfParam } from "@features/csm-operations/utils/operationsAnyOf";
 import {
+  CHANGE_REQUEST_ANY_OF_FIELDS,
   CHANGE_REQUEST_FILTER_TYPE_OPTIONS,
   CHANGE_REQUEST_IMPACTS,
   CHANGE_REQUEST_STATES,
@@ -44,6 +46,7 @@ export const CR_FILTER_PARAM_KEYS = [
   "crPlannedStartTo",
   "crPlannedEndFrom",
   "crPlannedEndTo",
+  "crAnyOf",
 ] as const;
 
 const DATE_ONLY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -143,6 +146,7 @@ export function readChangeRequestFiltersFromUrl(
     ...parseRange(params, "crUpdatedFrom", "crUpdatedTo", "updatedStartDate", "updatedEndDate"),
     ...parseRange(params, "crPlannedStartFrom", "crPlannedStartTo", "plannedStartFrom", "plannedStartTo"),
     ...parseRange(params, "crPlannedEndFrom", "crPlannedEndTo", "plannedEndFrom", "plannedEndTo"),
+    anyOf: parseAnyOfParam(params.get("crAnyOf"), CHANGE_REQUEST_ANY_OF_FIELDS),
   };
 }
 
@@ -175,5 +179,7 @@ export function writeChangeRequestFiltersToUrl(
     ["crPlannedEndTo", f.plannedEndTo],
   ];
   for (const [key, value] of dates) if (value) out.set(key, value);
+  const anyOf = writeAnyOfParam(f.anyOf);
+  if (anyOf) out.set("crAnyOf", anyOf);
   return out;
 }

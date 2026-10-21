@@ -54,8 +54,11 @@ import {
   countAdvancedRows,
   dateAdvancedField,
   multiAdvancedField,
+  yesAdvancedField,
   type OperationsAdvancedField,
 } from "@features/csm-operations/utils/operationsAdvancedFields";
+import OperationsAnyOfGroups, { type AnyOfFieldDef } from "@features/csm-operations/components/OperationsAnyOfGroups";
+import { completeAnyOfGroups } from "@features/csm-operations/utils/operationsAnyOf";
 import { useSearchGroups } from "@api/useSearchGroups";
 import AsyncEntityMultiSelect from "@components/AsyncEntityMultiSelect";
 import { useSearchItServices } from "@api/useSearchItServices";
@@ -186,36 +189,105 @@ export default function IncidentsFilterBar({
     [],
   );
 
-  // Less-used filters live under Advanced (Field / Operator / Value rows, as on
-  // the service request list), so the quick grid stays short.
+  // Value pickers shared by the Advanced rows and the OR-group conditions, so
+  // a field is chosen the same way wherever it appears.
+  const pickers = useMemo(() => {
+    type P = { id: string; values: string[]; onChange: (values: string[]) => void };
+    return {
+      state: ({ id, values, onChange: set }: P) => (
+        <MultiSelectField id={id} label="Value(s)" values={values} options={stateOptions} onChange={set} />
+      ),
+      priority: ({ id, values, onChange: set }: P) => (
+        <MultiSelectField id={id} label="Value(s)" values={values} options={priorityOptions} onChange={set} />
+      ),
+      category: ({ id, values, onChange: set }: P) => (
+        <MultiSelectField id={id} label="Value(s)" values={values} options={categoryOptions} onChange={set} />
+      ),
+      service: ({ id, values, onChange: set }: P) => (
+        <AsyncEntityMultiSelect
+          id={id}
+          label="Value(s)"
+          placeholder="Search services…"
+          values={values}
+          onChange={set}
+          useSearch={useSearchItServices}
+          getId={(svc) => svc.id}
+          getLabel={(svc) => svc.name ?? svc.id}
+          compactSelectedValues
+        />
+      ),
+      group: ({ id, values, onChange: set }: P) => (
+        <AsyncEntityMultiSelect
+          id={id}
+          label="Value(s)"
+          placeholder="Search groups…"
+          values={values}
+          onChange={set}
+          useSearch={useSearchGroups}
+          getId={(g) => g.id}
+          getLabel={(g) => g.name}
+          knownLabels={groupKnownLabels}
+          compactSelectedValues
+        />
+      ),
+      assignee: ({ id, values, onChange: set }: P) => (
+        <AsyncAssignedUserIdMultiSelect id={id} values={values} onChange={set} />
+      ),
+    };
+  }, [stateOptions, priorityOptions, categoryOptions, groupKnownLabels]);
+
+  // Advanced offers every filter as a Field / Operator / Value row, as on the
+  // service request list; each row reads and writes the same state the quick
+  // grid does, so a filter set either way shows in both.
   const advancedFields = useMemo<OperationsAdvancedField<IncidentFilters>[]>(
     () => [
+      multiAdvancedField<IncidentFilters>({ key: "state", label: "State", prop: "states", render: pickers.state }),
+      multiAdvancedField<IncidentFilters>({ key: "priority", label: "Priority", prop: "priorities", render: pickers.priority }),
+      multiAdvancedField<IncidentFilters>({ key: "category", label: "Category", prop: "categories", render: pickers.category }),
+      multiAdvancedField<IncidentFilters>({ key: "service", label: "Service", prop: "serviceIds", render: pickers.service }),
+      multiAdvancedField<IncidentFilters>({ key: "group", label: "Assignment group", prop: "sreTeamIds", render: pickers.group }),
+      multiAdvancedField<IncidentFilters>({ key: "assignee", label: "Assignee", prop: "assigneeIds", render: pickers.assignee }),
       multiAdvancedField<IncidentFilters>({
-        key: "category",
-        label: "Category",
-        prop: "categories",
+        key: "product",
+        label: "Product",
+        prop: "products",
         render: ({ id, values, onChange: set }) => (
-          <MultiSelectField id={id} label="Value(s)" values={values} options={categoryOptions} onChange={set} />
+          <IncidentProductMultiSelect id={id} label="Value(s)" values={values} onChange={set} />
         ),
       }),
-      multiAdvancedField<IncidentFilters>({
-        key: "assignee",
-        label: "Assignee",
-        prop: "assigneeIds",
+      yesAdvancedField<IncidentFilters>({
+        key: "slaViolated",
+        label: "SLA violated",
+        prop: "slaViolated",
         render: ({ id, values, onChange: set }) => (
-          <AsyncAssignedUserIdMultiSelect id={id} values={values} onChange={set} />
+          <MultiSelectField
+            id={id}
+            label="Value"
+            values={values}
+            options={[{ value: "true", label: "Yes" }]}
+            onChange={(next) => set(next.slice(-1))}
+          />
         ),
       }),
-      dateAdvancedField<IncidentFilters>({
-        key: "updated",
-        label: "Updated",
-        from: "updatedStartDate",
-        to: "updatedEndDate",
-      }),
+      dateAdvancedField<IncidentFilters>({ key: "created", label: "Created", from: "createdStartDate", to: "createdEndDate" }),
+      dateAdvancedField<IncidentFilters>({ key: "updated", label: "Updated", from: "updatedStartDate", to: "updatedEndDate" }),
     ],
-    [categoryOptions],
+    [pickers],
   );
-  const advancedCount = countAdvancedRows(advancedFields, filters);
+  // OR-group conditions: the fields the search accepts inside a group.
+  const anyOfFields = useMemo<AnyOfFieldDef[]>(
+    () => [
+      { field: "state", label: "State", render: pickers.state },
+      { field: "priority", label: "Priority", render: pickers.priority },
+      { field: "category", label: "Category", render: pickers.category },
+      { field: "businessServiceId", label: "Service", render: pickers.service },
+      { field: "assignmentGroupId", label: "Assignment group", render: pickers.group },
+      { field: "assignedUserId", label: "Assignee", render: pickers.assignee },
+    ],
+    [pickers],
+  );
+  const advancedCount =
+    countAdvancedRows(advancedFields, filters) + completeAnyOfGroups(filters.anyOf).length;
   const [mode, setMode] = useState<"quick" | "advanced">("quick");
 
   const handlePriorityChange = (next: BeIncidentPriority[]): void => {
@@ -341,12 +413,21 @@ export default function IncidentsFilterBar({
             </Button>
           </Box>
           {mode === "advanced" ? (
-            <OperationsAdvancedFilters
-              idPrefix="incident"
-              fields={advancedFields}
-              filters={filters}
-              onChange={onChange}
-            />
+            <>
+              <OperationsAdvancedFilters
+                idPrefix="incident"
+                fields={advancedFields}
+                filters={filters}
+                onChange={onChange}
+              />
+              <Divider />
+              <OperationsAnyOfGroups
+                idPrefix="incident"
+                fields={anyOfFields}
+                groups={filters.anyOf}
+                onChange={(anyOf) => onChange({ ...filters, anyOf })}
+              />
+            </>
           ) : (
           <Grid container spacing={2}>
             <Grid size={{ xs: 12, sm: 6, md: 4 }}>

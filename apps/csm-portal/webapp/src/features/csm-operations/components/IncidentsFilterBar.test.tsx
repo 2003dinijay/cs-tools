@@ -192,7 +192,7 @@ describe("IncidentsFilterBar", () => {
     expect(onReset).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps State, Assignment group and Service quick, and moves Category, Assignee and Updated to Advanced", () => {
+  it("keeps State, Assignment group and Service quick, with Category, Assignee and Updated only under Advanced", () => {
     const onChange = vi.fn();
     render(
       <IncidentsFilterBar
@@ -212,8 +212,9 @@ describe("IncidentsFilterBar", () => {
     fireEvent.click(screen.getByRole("button", { name: "Advanced" }));
     expect(screen.getByText("Advanced filters")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Add filter" }));
-    // A new row starts on the first Advanced field, Category ("is one of").
-    expect(screen.getByRole("combobox", { name: "Field" })).toHaveTextContent("Category");
+    // A new row starts on the first Advanced field, State ("is one of"); every
+    // filter is offered there, the quick ones included.
+    expect(screen.getByRole("combobox", { name: "Field" })).toHaveTextContent("State");
     expect(screen.getByRole("combobox", { name: "Operator" })).toHaveTextContent("is one of");
   });
 
@@ -234,5 +235,46 @@ describe("IncidentsFilterBar", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Remove filter row" }));
     expect(onChange).toHaveBeenCalledWith({ ...DEFAULT_INCIDENT_FILTERS, updatedStartDate: "" });
+  });
+
+  it("adds an OR group under Advanced and keeps it in the filters", () => {
+    const onChange = vi.fn();
+    render(
+      <IncidentsFilterBar
+        filters={DEFAULT_INCIDENT_FILTERS}
+        onChange={onChange}
+        onReset={vi.fn()}
+        isFiltersOpen
+        onFiltersToggle={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Advanced" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add group" }));
+    expect(onChange).toHaveBeenCalledWith({
+      ...DEFAULT_INCIDENT_FILTERS,
+      anyOf: [{ conditions: [{ field: "state", values: [] }] }],
+    });
+  });
+
+  it("shows OR groups already set, and counts complete ones on the toggle", () => {
+    render(
+      <IncidentsFilterBar
+        filters={{
+          ...DEFAULT_INCIDENT_FILTERS,
+          anyOf: [
+            { conditions: [{ field: "state", values: ["NEW"] }] },
+            { conditions: [{ field: "priority", values: ["CRITICAL"] }] },
+          ],
+        }}
+        onChange={vi.fn()}
+        onReset={vi.fn()}
+        isFiltersOpen
+        onFiltersToggle={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Advanced (2)" }));
+    expect(screen.getByRole("group", { name: "OR group 1" })).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "OR group 2" })).toBeInTheDocument();
+    expect(screen.getByText("OR")).toBeInTheDocument();
   });
 });

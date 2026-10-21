@@ -48,6 +48,7 @@ describe("readIncidentFiltersFromUrl", () => {
       assigneeIds: [],
       updatedStartDate: "",
       updatedEndDate: "",
+      anyOf: [],
     });
   });
 
@@ -148,6 +149,10 @@ describe("writeIncidentFiltersToUrl", () => {
       assigneeIds: ["user-1"],
       updatedStartDate: "2026-02-01",
       updatedEndDate: "2026-02-10",
+      anyOf: [
+        { conditions: [{ field: "state", values: ["NEW"] }, { field: "priority", values: ["CRITICAL"] }] },
+        { conditions: [{ field: "assignmentGroupId", values: ["g-1"] }] },
+      ],
     };
     const round = readIncidentFiltersFromUrl(writeIncidentFiltersToUrl(filters));
     expect(round).toEqual(filters);

@@ -58,6 +58,8 @@ import {
   multiAdvancedField,
   type OperationsAdvancedField,
 } from "@features/csm-operations/utils/operationsAdvancedFields";
+import OperationsAnyOfGroups, { type AnyOfFieldDef } from "@features/csm-operations/components/OperationsAnyOfGroups";
+import { completeAnyOfGroups } from "@features/csm-operations/utils/operationsAnyOf";
 import { useSearchGroups } from "@api/useSearchGroups";
 import AsyncEntityMultiSelect from "@components/AsyncEntityMultiSelect";
 import AsyncTagMultiSelect from "@features/csm-cases/components/AsyncTagMultiSelect";
@@ -138,37 +140,6 @@ export default function ChangeRequestsFilterBar({
     [],
   );
 
-  // Less-used filters live under Advanced (Field / Operator / Value rows, as on
-  // the service request list), so the quick grid stays short.
-  const advancedFields = useMemo<OperationsAdvancedField<ChangeRequestFilters>[]>(
-    () => [
-      multiAdvancedField<ChangeRequestFilters>({
-        key: "assignee",
-        label: "Assigned engineer",
-        prop: "assigneeIds",
-        render: ({ id, values, onChange: set }) => (
-          <AsyncAssignedUserIdMultiSelect id={id} values={values} onChange={set} />
-        ),
-      }),
-      dateAdvancedField<ChangeRequestFilters>({
-        key: "created", label: "Created", from: "createdStartDate", to: "createdEndDate",
-      }),
-      dateAdvancedField<ChangeRequestFilters>({
-        key: "updated", label: "Updated", from: "updatedStartDate", to: "updatedEndDate",
-      }),
-      dateAdvancedField<ChangeRequestFilters>({
-        key: "plannedStart", label: "Planned start", from: "plannedStartFrom", to: "plannedStartTo",
-        capAtToday: false,
-      }),
-      dateAdvancedField<ChangeRequestFilters>({
-        key: "plannedEnd", label: "Planned end", from: "plannedEndFrom", to: "plannedEndTo",
-        capAtToday: false,
-      }),
-    ],
-    [],
-  );
-  const advancedCount = countAdvancedRows(advancedFields, filters);
-  const [mode, setMode] = useState<"quick" | "advanced">("quick");
 
   // The Assignment group filter searches every group; the SRE teams' groups
   // (registry `sre-abt` family) only supply names for ids carried in from
@@ -194,6 +165,93 @@ export default function ChangeRequestsFilterBar({
     () => Object.fromEntries(sreTeamOptions.map((o) => [o.value, o.label])),
     [sreTeamOptions],
   );
+
+  // Value pickers shared by the Advanced rows and the OR-group conditions, so
+  // a field is chosen the same way wherever it appears.
+  const pickers = useMemo(() => {
+    type P = { id: string; values: string[]; onChange: (values: string[]) => void };
+    return {
+      state: ({ id, values, onChange: set }: P) => (
+        <MultiSelectField id={id} label="Value(s)" values={values} options={stateOptions} onChange={set} />
+      ),
+      impact: ({ id, values, onChange: set }: P) => (
+        <MultiSelectField id={id} label="Value(s)" values={values} options={impactOptions} onChange={set} />
+      ),
+      type: ({ id, values, onChange: set }: P) => (
+        <MultiSelectField
+          id={id}
+          label="Value(s)"
+          values={values}
+          options={CHANGE_REQUEST_FILTER_TYPE_OPTIONS}
+          onChange={set}
+        />
+      ),
+      project: ({ id, values, onChange: set }: P) => (
+        <AsyncProjectMultiSelect id={id} label="Value(s)" values={values} onChange={set} />
+      ),
+      tag: ({ id, values, onChange: set }: P) => (
+        <AsyncTagMultiSelect id={id} label="Value(s)" values={values} onChange={set} />
+      ),
+      group: ({ id, values, onChange: set }: P) => (
+        <AsyncEntityMultiSelect
+          id={id}
+          label="Value(s)"
+          placeholder="Search groups…"
+          values={values}
+          onChange={set}
+          useSearch={useSearchGroups}
+          getId={(g) => g.id}
+          getLabel={(g) => g.name}
+          knownLabels={groupKnownLabels}
+          compactSelectedValues
+        />
+      ),
+      assignee: ({ id, values, onChange: set }: P) => (
+        <AsyncAssignedUserIdMultiSelect id={id} values={values} onChange={set} />
+      ),
+    };
+  }, [stateOptions, impactOptions, groupKnownLabels]);
+
+  // Advanced offers every filter as a Field / Operator / Value row, as on the
+  // service request list; each row reads and writes the same state the quick
+  // grid does, so a filter set either way shows in both.
+  const advancedFields = useMemo<OperationsAdvancedField<ChangeRequestFilters>[]>(
+    () => [
+      multiAdvancedField<ChangeRequestFilters>({ key: "state", label: "State", prop: "states", render: pickers.state }),
+      multiAdvancedField<ChangeRequestFilters>({ key: "impact", label: "Impact", prop: "impacts", render: pickers.impact }),
+      multiAdvancedField<ChangeRequestFilters>({ key: "project", label: "Project", prop: "projectIds", render: pickers.project }),
+      multiAdvancedField<ChangeRequestFilters>({ key: "type", label: "Type", prop: "types", render: pickers.type }),
+      multiAdvancedField<ChangeRequestFilters>({ key: "tag", label: "Tags", prop: "tags", render: pickers.tag }),
+      multiAdvancedField<ChangeRequestFilters>({ key: "group", label: "Assignment group", prop: "sreTeamIds", render: pickers.group }),
+      multiAdvancedField<ChangeRequestFilters>({ key: "assignee", label: "Assigned engineer", prop: "assigneeIds", render: pickers.assignee }),
+      dateAdvancedField<ChangeRequestFilters>({ key: "created", label: "Created", from: "createdStartDate", to: "createdEndDate" }),
+      dateAdvancedField<ChangeRequestFilters>({ key: "updated", label: "Updated", from: "updatedStartDate", to: "updatedEndDate" }),
+      dateAdvancedField<ChangeRequestFilters>({ key: "closed", label: "Closed", from: "closedStartDate", to: "closedEndDate" }),
+      dateAdvancedField<ChangeRequestFilters>({
+        key: "plannedStart", label: "Planned start", from: "plannedStartFrom", to: "plannedStartTo", capAtToday: false,
+      }),
+      dateAdvancedField<ChangeRequestFilters>({
+        key: "plannedEnd", label: "Planned end", from: "plannedEndFrom", to: "plannedEndTo", capAtToday: false,
+      }),
+    ],
+    [pickers],
+  );
+  // OR-group conditions: the fields the search accepts inside a group.
+  const anyOfFields = useMemo<AnyOfFieldDef[]>(
+    () => [
+      { field: "state", label: "State", render: pickers.state },
+      { field: "impact", label: "Impact", render: pickers.impact },
+      { field: "projectId", label: "Project", render: pickers.project },
+      { field: "type", label: "Type", render: pickers.type },
+      { field: "tag", label: "Tags", render: pickers.tag },
+      { field: "assignmentGroupId", label: "Assignment group", render: pickers.group },
+      { field: "assignedUserId", label: "Assigned engineer", render: pickers.assignee },
+    ],
+    [pickers],
+  );
+  const advancedCount =
+    countAdvancedRows(advancedFields, filters) + completeAnyOfGroups(filters.anyOf).length;
+  const [mode, setMode] = useState<"quick" | "advanced">("quick");
 
   /**
    * `minDate`/`maxDate` only constrain the calendar popup — MUI's DatePicker
@@ -320,12 +378,21 @@ export default function ChangeRequestsFilterBar({
             </Button>
           </Box>
           {mode === "advanced" ? (
-            <OperationsAdvancedFilters
-              idPrefix="cr"
-              fields={advancedFields}
-              filters={filters}
-              onChange={onChange}
-            />
+            <>
+              <OperationsAdvancedFilters
+                idPrefix="cr"
+                fields={advancedFields}
+                filters={filters}
+                onChange={onChange}
+              />
+              <Divider />
+              <OperationsAnyOfGroups
+                idPrefix="cr"
+                fields={anyOfFields}
+                groups={filters.anyOf}
+                onChange={(anyOf) => onChange({ ...filters, anyOf })}
+              />
+            </>
           ) : (
           <Grid container spacing={2}>
             <Grid size={{ xs: 12, sm: 6, md: 3 }}>

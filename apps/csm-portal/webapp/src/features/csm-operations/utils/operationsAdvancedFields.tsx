@@ -117,3 +117,22 @@ export function multiAdvancedField<F>(opts: {
     renderValue: ({ id, values, onChange }) => render({ id, values, onChange }),
   };
 }
+
+/** An Advanced field for a Yes-only flag (e.g. "SLA violated"): the filter is
+ * either on or absent, so the only value offered is Yes. */
+export function yesAdvancedField<F>(opts: {
+  key: string;
+  label: string;
+  prop: keyof F & string;
+  render: (props: { id: string; values: string[]; onChange: (values: string[]) => void }) => ReactNode;
+}): OperationsAdvancedField<F> {
+  const { key, label, prop, render } = opts;
+  return {
+    key,
+    label,
+    ops: [{ op: "eq", label: "is" }],
+    read: (f) => [{ op: "eq", values: f[prop] ? ["true"] : [] }],
+    write: (f, _op, values) => ({ ...f, [prop]: values[0] === "true" }) as F,
+    renderValue: ({ id, values, onChange }) => render({ id, values, onChange }),
+  };
+}

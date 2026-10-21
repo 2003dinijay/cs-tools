@@ -14,7 +14,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+import { parseAnyOfParam, writeAnyOfParam } from "@features/csm-operations/utils/operationsAnyOf";
 import {
+  INCIDENT_ANY_OF_FIELDS,
   INCIDENT_FILTER_CATEGORIES,
   INCIDENT_PRIORITIES,
   INCIDENT_STATES,
@@ -38,6 +40,7 @@ export const INCIDENT_FILTER_PARAM_KEYS = [
   "incAssignees",
   "incUpdatedFrom",
   "incUpdatedTo",
+  "incAnyOf",
 ] as const;
 
 const DATE_ONLY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -153,6 +156,7 @@ export function readIncidentFiltersFromUrl(
     serviceIds: parseTeamIdsCsv(params.get("incServices")),
     assigneeIds: parseTeamIdsCsv(params.get("incAssignees")),
     ...parseUpdatedRange(params.get("incUpdatedFrom"), params.get("incUpdatedTo")),
+    anyOf: parseAnyOfParam(params.get("incAnyOf"), INCIDENT_ANY_OF_FIELDS),
   };
 }
 
@@ -175,5 +179,7 @@ export function writeIncidentFiltersToUrl(f: IncidentFilters): URLSearchParams {
   if (f.assigneeIds.length) out.set("incAssignees", f.assigneeIds.join(","));
   if (f.updatedStartDate) out.set("incUpdatedFrom", f.updatedStartDate);
   if (f.updatedEndDate) out.set("incUpdatedTo", f.updatedEndDate);
+  const anyOf = writeAnyOfParam(f.anyOf);
+  if (anyOf) out.set("incAnyOf", anyOf);
   return out;
 }

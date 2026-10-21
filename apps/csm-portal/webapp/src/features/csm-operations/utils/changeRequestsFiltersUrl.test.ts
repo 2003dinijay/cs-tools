@@ -51,6 +51,7 @@ describe("readChangeRequestFiltersFromUrl", () => {
       plannedStartTo: "",
       plannedEndFrom: "",
       plannedEndTo: "",
+      anyOf: [],
     });
   });
 
@@ -121,6 +122,10 @@ describe("writeChangeRequestFiltersToUrl", () => {
       plannedStartTo: "2026-02-28",
       plannedEndFrom: "",
       plannedEndTo: "2026-03-31",
+      anyOf: [
+        { conditions: [{ field: "state", values: ["new"] }] },
+        { conditions: [{ field: "impact", values: ["high"] }, { field: "tag", values: ["hotfix"] }] },
+      ],
     };
     const round = readChangeRequestFiltersFromUrl(
       writeChangeRequestFiltersToUrl(filters),

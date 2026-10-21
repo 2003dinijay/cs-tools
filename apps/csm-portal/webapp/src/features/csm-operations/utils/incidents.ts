@@ -19,6 +19,7 @@ import type {
   BeIncidentSearchPayload,
   BeIncidentState,
 } from "@api/backend/types";
+import { anyOfPayload, completeAnyOfGroups, type AnyOfGroup } from "@features/csm-operations/utils/operationsAnyOf";
 
 type ChipColor = "default" | "info" | "warning" | "success" | "error";
 
@@ -184,7 +185,19 @@ export interface IncidentFilters {
   /** `YYYY-MM-DD` UTC dates bounding the last update, or empty. */
   updatedStartDate: string;
   updatedEndDate: string;
+  /** Advanced OR groups, sent as `filters.anyOf`. */
+  anyOf: AnyOfGroup[];
 }
+
+/** The search fields an incident OR group condition can use. */
+export const INCIDENT_ANY_OF_FIELDS = [
+  "state",
+  "priority",
+  "category",
+  "businessServiceId",
+  "assignmentGroupId",
+  "assignedUserId",
+] as const;
 
 /** Every incident category the data holds (ServiceNow's choices, synced),
  * not only the three the create form offers — a filter must reach the
@@ -210,6 +223,7 @@ export const DEFAULT_INCIDENT_FILTERS: IncidentFilters = {
   assigneeIds: [],
   updatedStartDate: "",
   updatedEndDate: "",
+  anyOf: [],
 };
 
 /** Count non-search active filters (used for the badge on the Filters button). */
@@ -226,7 +240,8 @@ export function countActiveIncidentFilters(filters: IncidentFilters): number {
     (filters.serviceIds.length > 0 ? 1 : 0) +
     (filters.assigneeIds.length > 0 ? 1 : 0) +
     (filters.updatedStartDate ? 1 : 0) +
-    (filters.updatedEndDate ? 1 : 0)
+    (filters.updatedEndDate ? 1 : 0) +
+    completeAnyOfGroups(filters.anyOf).length
   );
 }
 
@@ -323,10 +338,12 @@ export function buildIncidentSearchFilters(
       : []),
   ];
 
+  const anyOf = anyOfPayload(filters.anyOf);
   return {
     ...(debouncedSearch.length > 0 && { searchQuery: debouncedSearch }),
     ...(filters.priorities.length > 0 && { priorities: filters.priorities }),
     ...(fieldFilters.length > 0 && { filters: fieldFilters }),
+    ...(anyOf && { anyOf }),
   };
 }
 

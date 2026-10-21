@@ -144,6 +144,7 @@ describe("buildIncidentSearchFilters", () => {
       assigneeIds: [],
       updatedStartDate: "",
       updatedEndDate: "",
+      anyOf: [],
     };
     expect(buildIncidentSearchFilters(filters, "timeout")).toEqual({
       searchQuery: "timeout",
