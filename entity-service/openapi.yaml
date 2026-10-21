@@ -21430,6 +21430,27 @@ components:
         message:
           type: string
 
+    ChangeRequestBranchFilter:
+      type: object
+      required: [field, op, values]
+      description: >-
+        One condition of a change request search's `anyOf` branch: "field is
+        one of values". Its own schema because a branch takes fields the generic
+        filter array does not (state, impact, projectId) and only the "in"
+        operator. `tag` is internal callers only. PostgreSQL only.
+      properties:
+        field:
+          type: string
+          enum: [state, impact, projectId, type, assignmentGroupId, assignedUserId, tag]
+        op:
+          type: string
+          enum: [in]
+        values:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: string
     ChangeRequestFieldFilter:
       type: object
       required: [field, op]
@@ -21543,7 +21564,7 @@ components:
                   filters:
                     type: array
                     items:
-                      $ref: '#/components/schemas/ChangeRequestFieldFilter'
+                      $ref: '#/components/schemas/ChangeRequestBranchFilter'
             filters:
               type: array
               items:
@@ -26272,6 +26293,27 @@ components:
         updatedOn:
           type: string
 
+    IncidentBranchFilter:
+      type: object
+      required: [field, op, values]
+      description: >-
+        One condition of an incident search's `anyOf` branch: "field is one of
+        values". Its own schema because a branch takes `priority`, which the
+        generic filter array does not, and only the "in" operator. PostgreSQL
+        only.
+      properties:
+        field:
+          type: string
+          enum: [state, priority, category, businessServiceId, assignmentGroupId, assignedUserId]
+        op:
+          type: string
+          enum: [in]
+        values:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: string
     IncidentFieldFilter:
       type: object
       required: [field, op]
@@ -26329,7 +26371,7 @@ components:
           narrows rather than guarantees full coverage.
         - **assignedUserId** (in): assignee UUIDs to filter the incident's
           assigned user by.
-        - **category** (in): incident category labels (e.g. SOFTWARE),
+        - **category** (in): incident category labels (e.g. INQUIRY),
           case-insensitive. PostgreSQL only.
         - **updatedOn** (gte/lte): same syntax as createdOn, on the incident's
           last update. PostgreSQL only.
@@ -26402,7 +26444,7 @@ components:
                   filters:
                     type: array
                     items:
-                      $ref: '#/components/schemas/IncidentFieldFilter'
+                      $ref: '#/components/schemas/IncidentBranchFilter'
             filters:
               type: array
               items:

@@ -125,6 +125,9 @@ import { isHttpUrl } from "@utils/isHttpUrl";
 
 const OPERATIONS_CR_PATH = "/operations/change-requests";
 
+/** Why the lifecycle actions are unavailable while the edit form is open. */
+const EDIT_IN_PROGRESS_REASON = "Save or cancel the edit first.";
+
 /**
  * The backend surfaces real rejection reasons on 4xx (e.g. a state
  * transition rejected by the backing data source); prefer that message over
@@ -890,6 +893,9 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
               cr={cr}
               isPending={transitionPending}
               pendingCustomerReview={customerReviewPending}
+              // A move such as Request Approval would lock fields the open form
+              // still holds unsaved changes to: finish or cancel the edit first.
+              lockedReason={editOpen ? EDIT_IN_PROGRESS_REASON : null}
               onAction={onTransition}
             />
             <Button
@@ -1303,8 +1309,10 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
         </Box>
       )}
 
-      {!editOpen && activeTab === "comments" && (
-        <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2 }}>
+      {/* Hidden, not unmounted, while the edit form is open: a reply being written
+          keeps its text and comes back as it was when the edit is done. */}
+      {activeTab === "comments" && (
+        <Card sx={{ p: 2.5, display: editOpen ? "none" : "flex", flexDirection: "column", gap: 2 }}>
           {composerOpen ? (
             <Box className="csm-print-hide" sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
               <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>

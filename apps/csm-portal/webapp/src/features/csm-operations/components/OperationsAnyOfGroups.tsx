@@ -16,8 +16,11 @@
 
 import { Box, Button, Chip, FormControl, IconButton, InputLabel, MenuItem, Select, Typography } from "@wso2/oxygen-ui";
 import { Plus, Trash2 } from "@wso2/oxygen-ui-icons-react";
-import { Fragment, type JSX, type ReactNode } from "react";
-import type { AnyOfGroup } from "@features/csm-operations/utils/operationsAnyOf";
+import { Fragment, useState, type JSX, type ReactNode } from "react";
+import { completeAnyOfGroups, type AnyOfGroup } from "@features/csm-operations/utils/operationsAnyOf";
+
+/** The groups as the search (and the URL) sees them: complete conditions only. */
+const completeKey = (groups: AnyOfGroup[]): string => JSON.stringify(completeAnyOfGroups(groups));
 
 /** A field an OR group condition can use ("is one of"). */
 export interface AnyOfFieldDef {
@@ -38,6 +41,14 @@ interface OperationsAnyOfGroupsProps {
  * The OR groups under the Advanced filters, as on the service request list
  * (`AnyOfGroupsBuilder`): the conditions in a group must all match, any one
  * group may match, and the result is ANDed with every other filter.
+ *
+ * The groups being edited live here, not only in `groups`: the list keeps its
+ * filters in the URL, which holds complete conditions only, so a group just
+ * added (no values yet), a condition just added or one whose field was just
+ * changed would vanish on the round trip. Every edit is still forwarded to
+ * `onChange`; the local copy is replaced from `groups` only when the complete
+ * form coming in differs from the one held here (Clear filters, a saved view,
+ * Back) -- the same idea as the Advanced rows' drafts.
  */
 export default function OperationsAnyOfGroups({
   idPrefix,
@@ -45,13 +56,22 @@ export default function OperationsAnyOfGroups({
   groups,
   onChange,
 }: OperationsAnyOfGroupsProps): JSX.Element {
+  const [local, setLocal] = useState<AnyOfGroup[]>(groups);
+  const [seen, setSeen] = useState(() => completeKey(groups));
+  const incoming = completeKey(groups);
+  if (incoming !== seen) {
+    setSeen(incoming);
+    if (incoming !== completeKey(local)) setLocal(groups);
+  }
+  const update = (next: AnyOfGroup[]): void => {
+    setLocal(next);
+    onChange(next);
+  };
   const byField = new Map(fields.map((f) => [f.field, f]));
   const blankCondition = () => ({ field: fields[0].field, values: [] as string[] });
 
   const setGroup = (gi: number, next: AnyOfGroup | null): void =>
-    onChange(
-      next === null ? groups.filter((_, i) => i !== gi) : groups.map((g, i) => (i === gi ? next : g)),
-    );
+    update(next === null ? local.filter((_, i) => i !== gi) : local.map((g, i) => (i === gi ? next : g)));
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
@@ -61,7 +81,7 @@ export default function OperationsAnyOfGroups({
       <Typography variant="caption" color="text.secondary">
         Matches if any one group matches. Every condition inside a group must match.
       </Typography>
-      {groups.map((group, gi) => (
+      {local.map((group, gi) => (
         <Fragment key={gi}>
           {gi > 0 && (
             <Box>
@@ -146,7 +166,7 @@ export default function OperationsAnyOfGroups({
           size="small"
           variant="outlined"
           startIcon={<Plus size={16} />}
-          onClick={() => onChange([...groups, { conditions: [blankCondition()] }])}
+          onClick={() => update([...local, { conditions: [blankCondition()] }])}
         >
           Add group
         </Button>

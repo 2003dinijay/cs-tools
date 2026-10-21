@@ -20,6 +20,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
@@ -170,5 +171,63 @@ func TestChangeRequestApprovedLockIntegration_EditableUntilApproved(t *testing.T
 				t.Fatalf("description %q, plan %q: the edit was not written", d, p)
 			}
 		})
+	}
+}
+
+// The planned-date sort and filters read the window as every row shows it: a
+// non-finite stored value ('infinity', '-infinity') is no date, so it sorts with
+// the NULLs (last, either way) and no range matches it.
+func TestChangeRequestPlannedDateSortIntegration_NonFiniteDatesAreNoDate(t *testing.T) {
+	f := newCRFlow(t)
+	f.seedAssignedGroup()
+	finite := f.create(domain.ChangeRequestTypeNormal, crFlowGroupID)
+	none := f.create(domain.ChangeRequestTypeNormal, crFlowGroupID)
+	inf := f.create(domain.ChangeRequestTypeNormal, crFlowGroupID)
+	negInf := f.create(domain.ChangeRequestTypeNormal, crFlowGroupID)
+	f.execSQL(`UPDATE change_request SET start_on = '2030-01-01T09:00:00Z', end_on = '2030-01-01T11:00:00Z' WHERE id = $1`, finite)
+	f.execSQL(`UPDATE change_request SET start_on = NULL, end_on = NULL WHERE id = $1`, none)
+	f.execSQL(`UPDATE change_request SET start_on = 'infinity', end_on = 'infinity' WHERE id = $1`, inf)
+	f.execSQL(`UPDATE change_request SET start_on = '-infinity', end_on = '-infinity' WHERE id = $1`, negInf)
+
+	search := func(order domain.ChangeRequestSortOrder, field domain.ChangeRequestSortField, mod func(*domain.SearchChangeRequestsFilters)) []string {
+		t.Helper()
+		filters := domain.SearchChangeRequestsFilters{SearchQuery: crFlowSubject}
+		if mod != nil {
+			mod(&filters)
+		}
+		rows, _, err := f.repo.SearchChangeRequests(f.sys, domain.SearchChangeRequestsRequest{
+			Filters:    filters,
+			SortBy:     domain.ChangeRequestSort{Field: field, Order: order},
+			Pagination: domain.Pagination{Limit: 50},
+		}, nil, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("SearchChangeRequests: %v", err)
+		}
+		ids := make([]string, 0, len(rows))
+		for _, cr := range rows {
+			ids = append(ids, cr.ID)
+		}
+		return ids
+	}
+	for _, field := range []domain.ChangeRequestSortField{domain.ChangeRequestSortFieldPlannedStartOn, domain.ChangeRequestSortFieldPlannedEndOn} {
+		for _, order := range []domain.ChangeRequestSortOrder{domain.ChangeRequestSortOrderAsc, domain.ChangeRequestSortOrderDesc} {
+			got := search(order, field, nil)
+			if len(got) != 4 || got[0] != finite {
+				t.Fatalf("%s %s: order = %v, want the change with a real date (%s) first and the three without one after it", field, order, got, finite)
+			}
+		}
+	}
+
+	from := time.Date(1990, 1, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)
+	for name, mod := range map[string]func(*domain.SearchChangeRequestsFilters){
+		"planned start from": func(fl *domain.SearchChangeRequestsFilters) { fl.PlannedStartFrom = &from },
+		"planned start to":   func(fl *domain.SearchChangeRequestsFilters) { fl.PlannedStartTo = &to },
+		"planned end from":   func(fl *domain.SearchChangeRequestsFilters) { fl.PlannedEndFrom = &from },
+		"planned end to":     func(fl *domain.SearchChangeRequestsFilters) { fl.PlannedEndTo = &to },
+	} {
+		if got := search(domain.ChangeRequestSortOrderDesc, domain.ChangeRequestSortFieldPlannedStartOn, mod); len(got) != 1 || got[0] != finite {
+			t.Fatalf("%s: matched %v, want only %s (a non-finite date is no date)", name, got, finite)
+		}
 	}
 }

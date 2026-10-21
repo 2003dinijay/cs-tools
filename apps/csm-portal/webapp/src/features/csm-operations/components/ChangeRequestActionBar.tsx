@@ -277,6 +277,13 @@ interface ChangeRequestActionBarProps {
    */
   pendingCustomerReview?: PendingCustomerReview | null;
   /**
+   * Why no action can be taken right now (e.g. the page's edit form is open:
+   * a move such as Request Approval would lock fields the form still holds
+   * unsaved changes to). Every action then renders disabled with this reason,
+   * the same way a blocked target does; null/absent leaves them as they are.
+   */
+  lockedReason?: string | null;
+  /**
    * Fired with the target state the engineer picked. The caller decides how
    * to apply it — a direct patch for most targets, or (for the ones flagged by
    * `changeRequestTransitionRequiresReason`: the destructive off-ramps) opening
@@ -310,6 +317,7 @@ export default function ChangeRequestActionBar({
   cr,
   isPending,
   pendingCustomerReview = null,
+  lockedReason = null,
   onAction,
 }: ChangeRequestActionBarProps): JSX.Element | null {
   const [stateMenuAnchor, setStateMenuAnchor] = useState<HTMLElement | null>(null);
@@ -353,7 +361,7 @@ export default function ChangeRequestActionBar({
   const proposalPending = !!pendingCustomerProposal(cr);
 
   const blockedReason = (target: string): string | null =>
-    TARGET_BLOCKED_REASON[target]?.(cr, { pendingCustomerReview }) ?? null;
+    lockedReason ?? TARGET_BLOCKED_REASON[target]?.(cr, { pendingCustomerReview }) ?? null;
 
   const renderPrimary = (target: string): JSX.Element => {
     const { color, icon } = configFor(target);
@@ -405,19 +413,29 @@ export default function ChangeRequestActionBar({
       {primaryTarget && renderPrimary(primaryTarget)}
       {secondaryTargets.map((target) => {
         const { color, icon } = configFor(target);
-        return (
+        const label = changeRequestTransitionLabel(target, cr.state, proposalPending);
+        const button = (
           <Button
             key={target}
             size="small"
             variant="outlined"
             color={color}
             startIcon={icon}
-            disabled={isPending}
+            disabled={isPending || !!lockedReason}
             onClick={() => dispatch(target)}
             sx={{ flexShrink: 0 }}
           >
-            {changeRequestTransitionLabel(target, cr.state, proposalPending)}
+            {label}
           </Button>
+        );
+        return lockedReason ? (
+          <Tooltip key={target} title={lockedReason}>
+            <Box component="span" tabIndex={0} aria-label={`${label}: ${lockedReason}`} sx={{ flexShrink: 0 }}>
+              {button}
+            </Box>
+          </Tooltip>
+        ) : (
+          button
         );
       })}
       {menuTargets.length > 0 && (

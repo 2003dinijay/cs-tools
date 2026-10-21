@@ -1414,9 +1414,11 @@ export function crDateOnlyToISOStart(date: string): string {
   return `${date}T00:00:00Z`;
 }
 
-/** Convert a YYYY-MM-DD date picker value to an ISO 8601 string at end-of-day UTC. */
+/** Convert a YYYY-MM-DD date picker value to an ISO 8601 string at end-of-day UTC: the last
+ * microsecond of the day (the precision Postgres stores), so a record stamped at `23:59:59.500Z`
+ * is still inside an inclusive range. */
 export function crDateOnlyToISOEnd(date: string): string {
-  return `${date}T23:59:59Z`;
+  return `${date}T23:59:59.999999Z`;
 }
 
 /** One `gte`/`lte` entry of the generic filters array for a `YYYY-MM-DD` UTC

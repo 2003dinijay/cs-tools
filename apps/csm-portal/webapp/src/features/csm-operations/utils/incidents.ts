@@ -252,12 +252,14 @@ export function incidentDateOnlyToUTCStart(dateOnly: string): string {
 }
 
 /** `YYYY-MM-DD` (interpreted as a UTC calendar date) to the inclusive
- * end-of-day UTC instant the backend expects. Deliberately `T23:59:59Z`, not
- * `T00:00:00Z` of the next day — the backend truncates a date-time bound to
- * date-only without erroring, so an off-by-one here silently drops the last
- * day of the range instead of failing loudly. */
+ * end-of-day UTC instant the backend expects. Deliberately the last
+ * microsecond of the day (the precision Postgres stores), so a record updated at
+ * `23:59:59.500Z` is still inside the range, and not `T00:00:00Z` of the next
+ * day — the backend truncates a date-time bound to date-only without erroring,
+ * so an off-by-one there silently drops the last day of the range instead of
+ * failing loudly. */
 export function incidentDateOnlyToUTCEnd(dateOnly: string): string {
-  return `${dateOnly}T23:59:59Z`;
+  return `${dateOnly}T23:59:59.999999Z`;
 }
 
 /**

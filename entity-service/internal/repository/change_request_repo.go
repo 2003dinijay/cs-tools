@@ -309,6 +309,14 @@ const changeRequestFromJoins = `
 // not a missing-data one, so no create/patch write-path changes are needed
 // alongside this join.
 //
+// finitePlannedStart / finitePlannedEnd are the planned window as every read
+// shows it: a non-finite stored value is no date (NULL). The list's sort and
+// its planned-date filters use them, so they agree with what the rows display.
+const (
+	finitePlannedStart = "CASE WHEN isfinite(cr.start_on) THEN cr.start_on END"
+	finitePlannedEnd   = "CASE WHEN isfinite(cr.end_on) THEN cr.end_on END"
+)
+
 // start_on / end_on are read through isfinite(): a row holding Postgres'
 // 'infinity' / '-infinity' (nothing the API writes any more, see
 // change_request_window.go, but a row can get there by other doors) reads as no
@@ -706,8 +714,10 @@ func changeRequestWhereClause(f domain.SearchChangeRequestsFilters, createdStart
 		op  string
 	}{
 		{"wi.updated_on", f.UpdatedStart, ">="}, {"wi.updated_on", f.UpdatedEnd, "<="},
-		{"cr.start_on", f.PlannedStartFrom, ">="}, {"cr.start_on", f.PlannedStartTo, "<="},
-		{"cr.end_on", f.PlannedEndFrom, ">="}, {"cr.end_on", f.PlannedEndTo, "<="},
+		// The planned dates are compared as they read (changeRequestSelectColumns):
+		// a non-finite one is no date, so no range matches it.
+		{finitePlannedStart, f.PlannedStartFrom, ">="}, {finitePlannedStart, f.PlannedStartTo, "<="},
+		{finitePlannedEnd, f.PlannedEndFrom, ">="}, {finitePlannedEnd, f.PlannedEndTo, "<="},
 	} {
 		if b.at != nil {
 			add(b.col+" "+b.op+" $%d", *b.at)
@@ -804,16 +814,18 @@ func (r *changeRequestRepo) SearchChangeRequests(ctx context.Context, req domain
 	case domain.ChangeRequestSortFieldUpdatedOn:
 		sortCol = "wi.updated_on"
 	case domain.ChangeRequestSortFieldPlannedStartOn:
-		sortCol = "cr.start_on"
+		sortCol = finitePlannedStart
 	case domain.ChangeRequestSortFieldPlannedEndOn:
-		sortCol = "cr.end_on"
+		sortCol = finitePlannedEnd
 	}
 	sortDir := "DESC"
 	if req.SortBy.Order == domain.ChangeRequestSortOrderAsc {
 		sortDir = "ASC"
 	}
 	// The planned dates are nullable: a change request with none sorts last
-	// either way (created_on / updated_on are never NULL).
+	// either way (created_on / updated_on are never NULL). They are sorted as
+	// they read, so a non-finite one (no date on screen) is NULL here too:
+	// 'infinity' would otherwise sort first descending, '-infinity' first ascending.
 	sortDir += " NULLS LAST"
 
 	countQuery := "SELECT COUNT(*) " + changeRequestFromJoins + " " + where

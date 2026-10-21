@@ -69,7 +69,7 @@ describe("buildIncidentSearchFilters", () => {
   it("produces exact inclusive UTC bounds for a whole-day range as gte/lte createdOn entries", () => {
     // Verified against the real data source (see the API description on
     // BeIncidentSearchPayload): an inclusive May 2026 range is
-    // 2026-05-01T00:00:00Z .. 2026-05-31T23:59:59Z, not the next midnight —
+    // 2026-05-01T00:00:00Z .. 2026-05-31T23:59:59.999999Z, not the next midnight —
     // the upstream date API silently truncates a bound to date-only, so
     // T00:00:00Z of 2026-06-01 would drop all of May 31st without erroring.
     const filters: IncidentFilters = {
@@ -80,7 +80,7 @@ describe("buildIncidentSearchFilters", () => {
     expect(buildIncidentSearchFilters(filters, "")).toEqual({
       filters: [
         { field: "createdOn", op: "gte", values: ["2026-05-01T00:00:00Z"] },
-        { field: "createdOn", op: "lte", values: ["2026-05-31T23:59:59Z"] },
+        { field: "createdOn", op: "lte", values: ["2026-05-31T23:59:59.999999Z"] },
       ],
     });
   });
@@ -125,7 +125,7 @@ describe("buildIncidentSearchFilters", () => {
       { field: "businessServiceId", op: "in", values: ["svc-1"] },
       { field: "assignedUserId", op: "in", values: ["user-1"] },
       { field: "updatedOn", op: "gte", values: ["2026-01-01T00:00:00Z"] },
-      { field: "updatedOn", op: "lte", values: ["2026-01-31T23:59:59Z"] },
+      { field: "updatedOn", op: "lte", values: ["2026-01-31T23:59:59.999999Z"] },
     ]);
   });
 
@@ -152,7 +152,7 @@ describe("buildIncidentSearchFilters", () => {
       filters: [
         { field: "slaViolated", op: "eq", values: ["true"] },
         { field: "createdOn", op: "gte", values: ["2026-05-01T00:00:00Z"] },
-        { field: "createdOn", op: "lte", values: ["2026-05-31T23:59:59Z"] },
+        { field: "createdOn", op: "lte", values: ["2026-05-31T23:59:59.999999Z"] },
         { field: "productName", op: "in", values: ["Choreo"] },
       ],
     });
