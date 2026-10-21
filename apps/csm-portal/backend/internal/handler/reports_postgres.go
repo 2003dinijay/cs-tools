@@ -19,10 +19,14 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
+	"strings"
 
-	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/servicenow"
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/apierror"
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/viewer"
 )
 
 // entityReportsClient is the subset of internal/entity.CustomerEntityClient
@@ -32,6 +36,8 @@ type entityReportsClient interface {
 	GetProject(ctx context.Context, id string) ([]byte, error)
 	SearchCases(ctx context.Context, body []byte) ([]byte, error)
 	SearchTimeCards(ctx context.Context, body []byte) ([]byte, error)
+	SearchDeployments(ctx context.Context, body []byte) ([]byte, error)
+	SearchDeployedProducts(ctx context.Context, body []byte) ([]byte, error)
 }
 
 type entityTimeCardRef struct {
@@ -46,6 +52,7 @@ type entityTimeCardView struct {
 	HasBillable bool               `json:"hasBillable"`
 	State       *string            `json:"state"`
 	User        *entityTimeCardRef `json:"user"`
+	Case        *entityTimeCardRef `json:"case"`
 }
 
 type entitySearchTimeCardsRequest struct {
@@ -54,7 +61,8 @@ type entitySearchTimeCardsRequest struct {
 }
 
 type entitySearchTimeCardsFilter struct {
-	CaseID string `json:"caseId,omitempty"`
+	CaseID     string   `json:"caseId,omitempty"`
+	ProjectIDs []string `json:"projectIds,omitempty"`
 }
 
 type entitySearchTimeCardsResponse struct {
@@ -62,47 +70,45 @@ type entitySearchTimeCardsResponse struct {
 	Total     int                  `json:"total"`
 }
 
-// postgresReportsClient implements reportsClient for
-// GetTimeLogBreakdown only, by calling entity-service (Postgres). GetSLAReport
-// and GetProjectReportDetails are NOT migrated: both are backed by bespoke
-// ServiceNow scoped-app endpoints (/api/wso2/case_sla/report,
-// /api/wso2/cs_report/project-insights) computing statistics (SLA percentile
-// breakdowns, monthly case counts, subscription/SLA summaries) that don't
-// exist in any form on the Postgres side -- building them would mean
-// inventing the underlying business rules (which percentile, what counts as
-// "response" vs "workaround" vs "resolution" time) from the ServiceNow
-// response shape alone, not wiring up already-defined data. Both stay on the
-// wrapped ServiceNow client.
+// postgresReportsClient implements reportsClient by calling entity-service
+// (Postgres). The CS report is built from the project, its cases, and its
+// deployments. SLA percentile clocks are not stored in Postgres, so that
+// report stays retired.
 type postgresReportsClient struct {
 	entity entityReportsClient
-	sn     reportsClient
 }
 
 // NewPostgresReportsClient builds a postgresReportsClient. entity is
 // typically the same *entity.CustomerEntityClient every other CS Portal
-// handler already uses; sn is the existing ServiceNow client, kept for the
-// two reports above.
-func NewPostgresReportsClient(entity entityReportsClient, sn reportsClient) *postgresReportsClient {
-	return &postgresReportsClient{entity: entity, sn: sn}
+// handler already uses.
+func NewPostgresReportsClient(entity entityReportsClient) *postgresReportsClient {
+	return &postgresReportsClient{entity: entity}
 }
 
-// GetSLAReport implements reportsClient by delegating to the wrapped
-// ServiceNow client — see this type's own doc comment for why.
-func (c *postgresReportsClient) GetSLAReport(ctx context.Context, projectSysID, from, to string) (servicenow.SLAReportDetails, error) {
-	return c.sn.GetSLAReport(ctx, projectSysID, from, to)
+// displayTimeCardState turns entity-service's lowercase time-card state
+// into the label the report shows ("Approved", and the rest).
+func displayTimeCardState(state string) string {
+	switch strings.ToLower(state) {
+	case "approved":
+		return "Approved"
+	case "pending":
+		return "Pending"
+	case "submitted":
+		return "Submitted"
+	case "rejected":
+		return "Rejected"
+	case "processed":
+		return "Processed"
+	case "recalled":
+		return "Recalled"
+	default:
+		return state
+	}
 }
 
-// GetProjectReportDetails implements reportsClient by delegating to the
-// wrapped ServiceNow client — see this type's own doc comment for why.
-func (c *postgresReportsClient) GetProjectReportDetails(ctx context.Context, projectSysID, from, to string) (servicenow.CSReportDetails, error) {
-	return c.sn.GetProjectReportDetails(ctx, projectSysID, from, to)
-}
-
-// formatHoursMinutes converts a fractional-hours value to ServiceNow's own
-// "1h 2m"/"2m" display format (mirrors internal/servicenow/reports.go's
-// formatTime, duplicated here rather than exported since it's a small,
-// self-contained formatter and this file has no other dependency on that
-// package's internals).
+// formatHoursMinutes converts a fractional-hours value to the report's
+// "1h 2m"/"2m" display format, the same one the original SupportPortalLite
+// report used.
 func formatHoursMinutes(hours float64) string {
 	totalMinutes := int(hours*60 + 0.5) // round to nearest minute
 	h := totalMinutes / 60
@@ -113,11 +119,45 @@ func formatHoursMinutes(hours float64) string {
 	return strconv.Itoa(h) + "h " + strconv.Itoa(m) + "m"
 }
 
-// resolveProjectByNumber resolves SPL's projectId (ServiceNow's project
-// "number", which Postgres has no distinct equivalent of -- see
-// postgresSplProjectClient's own doc comment on why Number==Key here) to
-// entity-service's internal project detail. Search-then-exact-match, the
-// same pattern used throughout this migration for every number-keyed lookup.
+// resolveProject resolves the report's projectId query parameter to
+// entity-service's project detail. The project detail page links to this
+// report with entity-service's own project id (a UUID), while the original
+// callers passed the project key, so both are accepted: a UUID is looked up
+// directly, anything else goes through resolveProjectByNumber. An unknown id
+// of either shape is viewer.ErrProjectNotFound so the route 404s.
+func (c *postgresReportsClient) resolveProject(ctx context.Context, projectID string) (entityProjectDetailsView, error) {
+	if !uuidRe.MatchString(projectID) {
+		return c.resolveProjectByNumber(ctx, projectID)
+	}
+	detail, err := c.projectDetail(ctx, projectID)
+	if err != nil {
+		var apiErr *apierror.Error
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+			return entityProjectDetailsView{}, viewer.ErrProjectNotFound
+		}
+		return entityProjectDetailsView{}, err
+	}
+	return detail, nil
+}
+
+// projectDetail fetches and decodes GET /projects/{id}.
+func (c *postgresReportsClient) projectDetail(ctx context.Context, projectID string) (entityProjectDetailsView, error) {
+	detailRaw, err := c.entity.GetProject(ctx, projectID)
+	if err != nil {
+		return entityProjectDetailsView{}, err
+	}
+	var detail entityProjectDetailsView
+	if err := json.Unmarshal(detailRaw, &detail); err != nil {
+		return entityProjectDetailsView{}, fmt.Errorf("unmarshal entity-service project detail response: %w", err)
+	}
+	return detail, nil
+}
+
+// resolveProjectByNumber resolves a project key (the "number" the original
+// report callers passed -- see postgresSplProjectClient's own doc comment on
+// why Number==Key here) to entity-service's internal project detail.
+// Search-then-exact-match, the same pattern used throughout this migration
+// for every number-keyed lookup.
 func (c *postgresReportsClient) resolveProjectByNumber(ctx context.Context, projectNumber string) (entityProjectDetailsView, error) {
 	// Limit is entity-service's own maxLimit (see its SearchProjects
 	// validation) -- SearchQuery is a substring match against name/key/
@@ -148,18 +188,9 @@ func (c *postgresReportsClient) resolveProjectByNumber(ctx context.Context, proj
 		}
 	}
 	if projectID == "" {
-		return entityProjectDetailsView{}, servicenow.ErrProjectNotFound
+		return entityProjectDetailsView{}, viewer.ErrProjectNotFound
 	}
-
-	detailRaw, err := c.entity.GetProject(ctx, projectID)
-	if err != nil {
-		return entityProjectDetailsView{}, err
-	}
-	var detail entityProjectDetailsView
-	if err := json.Unmarshal(detailRaw, &detail); err != nil {
-		return entityProjectDetailsView{}, fmt.Errorf("unmarshal entity-service project detail response: %w", err)
-	}
-	return detail, nil
+	return c.projectDetail(ctx, projectID)
 }
 
 // entitySearchPageLimit is entity-service's own hard cap on Pagination.Limit
@@ -197,15 +228,15 @@ func (c *postgresReportsClient) searchAllCases(ctx context.Context, filters enti
 	}
 }
 
-// searchAllTimeCards pages through entity-service's SearchTimeCards for a
-// single case, returning every time card rather than just the first
-// entitySearchPageLimit.
-func (c *postgresReportsClient) searchAllTimeCards(ctx context.Context, caseID string) ([]entityTimeCardView, error) {
+// searchAllProjectTimeCards pages through every time card on the project.
+// One project search replaces a search per case, which made this report
+// take minutes and outlive the request timeout.
+func (c *postgresReportsClient) searchAllProjectTimeCards(ctx context.Context, projectID string) ([]entityTimeCardView, error) {
 	var all []entityTimeCardView
 	for offset := 0; ; offset += entitySearchPageLimit {
 		body, err := json.Marshal(entitySearchTimeCardsRequest{
 			Pagination: entityPagination{Limit: entitySearchPageLimit, Offset: offset},
-			Filters:    entitySearchTimeCardsFilter{CaseID: caseID},
+			Filters:    entitySearchTimeCardsFilter{ProjectIDs: []string{projectID}},
 		})
 		if err != nil {
 			return nil, fmt.Errorf("marshal entity-service time-cards request: %w", err)
@@ -225,31 +256,44 @@ func (c *postgresReportsClient) searchAllTimeCards(ctx context.Context, caseID s
 	}
 }
 
-// GetTimeLogBreakdown implements reportsClient, paging through every
-// case in the project and every time card per case (see
-// searchAllCases/searchAllTimeCards) rather than reading a single
-// entitySearchPageLimit-sized page and truncating the rest, which ServiceNow's
-// own version of this report never did either.
-func (c *postgresReportsClient) GetTimeLogBreakdown(ctx context.Context, projectID string) (servicenow.TimeLogBreakdownDetails, error) {
-	project, err := c.resolveProjectByNumber(ctx, projectID)
+// GetTimeLogBreakdown implements reportsClient. Cases are paged through
+// searchAllCases. Time cards are one project search, then attached to the
+// case they belong to.
+func (c *postgresReportsClient) GetTimeLogBreakdown(ctx context.Context, projectID string) (viewer.TimeLogBreakdownDetails, error) {
+	project, err := c.resolveProject(ctx, projectID)
 	if err != nil {
-		return servicenow.TimeLogBreakdownDetails{}, err
+		return viewer.TimeLogBreakdownDetails{}, err
 	}
 
 	cases, err := c.searchAllCases(ctx,
 		entitySearchCasesFilters{Filters: []entityCaseFieldFilter{{Field: "projectId", Op: "in", Values: []string{project.ID}}}},
 		entityCaseSort{Field: "createdOn", Order: "desc"})
 	if err != nil {
-		return servicenow.TimeLogBreakdownDetails{}, err
+		return viewer.TimeLogBreakdownDetails{}, err
 	}
 
-	result := servicenow.TimeLogBreakdownDetails{
+	cardsByCase := map[string][]entityTimeCardView{}
+	if len(cases) > 0 {
+		allCards, err := c.searchAllProjectTimeCards(ctx, project.ID)
+		if err != nil {
+			return viewer.TimeLogBreakdownDetails{}, err
+		}
+		for _, tc := range allCards {
+			// The report groups cards under cases. A card with no case has nowhere to go.
+			if tc.Case == nil || tc.Case.ID == "" {
+				continue
+			}
+			cardsByCase[tc.Case.ID] = append(cardsByCase[tc.Case.ID], tc)
+		}
+	}
+
+	result := viewer.TimeLogBreakdownDetails{
 		ProjectName:         project.Name,
 		ProjectKey:          project.Key,
 		ProjectType:         project.SubscriptionType,
 		RemainingQueryHours: hoursOrEmpty(project.RemainingQueryHours),
 		TotalQueryHours:     hoursOrEmpty(project.TotalQueryHours),
-		Cases:               make([]servicenow.TimeLogBreakdownCase, 0, len(cases)),
+		Cases:               make([]viewer.TimeLogBreakdownCase, 0, len(cases)),
 	}
 
 	for _, cv := range cases {
@@ -259,35 +303,39 @@ func (c *postgresReportsClient) GetTimeLogBreakdown(ctx context.Context, project
 			displayState = state
 		}
 
-		timeCards, err := c.searchAllTimeCards(ctx, cv.ID)
-		if err != nil {
-			return servicenow.TimeLogBreakdownDetails{}, err
-		}
-
-		caseResult := servicenow.TimeLogBreakdownCase{
+		timeCards := cardsByCase[cv.ID]
+		_, caseType := reportCaseKind(cv)
+		caseResult := viewer.TimeLogBreakdownCase{
+			CaseSysID:        cv.ID,
 			CaseNumber:       cv.Number,
 			CaseID:           cv.InternalID,
+			CaseType:         caseType,
 			ShortDescription: derefStr(cv.Subject),
 			State:            displayState,
-			TimeCards:        make([]servicenow.TimeCardDetails, 0, len(timeCards)),
+			TimeCards:        make([]viewer.TimeCardDetails, 0, len(timeCards)),
 		}
 
 		var totalHours, consumedHours float64
 		for _, tc := range timeCards {
 			totalHours += tc.TotalTime
 			tcState := derefStr(tc.State)
-			if tc.HasBillable && tcState == "approved" {
+			if tc.HasBillable && strings.EqualFold(tcState, "approved") {
 				consumedHours += tc.TotalTime
 			}
 			isBillable := "false"
 			if tc.HasBillable {
 				isBillable = "true"
 			}
-			caseResult.TimeCards = append(caseResult.TimeCards, servicenow.TimeCardDetails{
+			loggedBy := ""
+			if tc.User != nil {
+				loggedBy = tc.User.Name
+			}
+			caseResult.TimeCards = append(caseResult.TimeCards, viewer.TimeCardDetails{
 				Total:      formatHoursMinutes(tc.TotalTime),
 				CreatedOn:  tc.WorkDate,
+				CreatedBy:  loggedBy,
 				IsBillable: isBillable,
-				State:      tcState,
+				State:      displayTimeCardState(tcState),
 			})
 		}
 		caseResult.TotalHours = formatHoursMinutes(totalHours)

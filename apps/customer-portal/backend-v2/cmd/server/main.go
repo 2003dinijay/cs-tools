@@ -209,6 +209,7 @@ func main() {
 	webSocketHandler := handler.NewWebSocketHandler(aiChatAgentWsClient, entityClient, tokenValidator, nil)
 	productConsumptionHandler := handler.NewProductConsumptionHandler(productConsumptionClient, entityClient)
 	globalHandler := handler.NewGlobalHandler(entityClient)
+	pendingVerificationHandler := handler.NewPendingVerificationHandler(entityClient)
 	instanceHandler := handler.NewInstanceHandler(entityClient)
 	registryHandler := handler.NewRegistryHandler(entityClient, registryClient, adminRole)
 	contactHandler := handler.NewContactHandler(entityClient, userManagementClient, entityClient, csmMigrationPortalContacts)
@@ -333,6 +334,10 @@ func main() {
 
 	mux.HandleFunc("GET /metadata", globalHandler.GetMetadata)
 	mux.HandleFunc("POST /search", globalHandler.GlobalSearch)
+
+	mux.Handle("POST /pending-verifications", middleware.RequirePermission(roleResolver, middleware.ModuleCases, middleware.ActionCreate)(http.HandlerFunc(pendingVerificationHandler.CreatePendingVerification)))
+	mux.Handle("POST /pending-verifications/search", middleware.RequirePermission(roleResolver, middleware.ModuleCases, middleware.ActionRead)(http.HandlerFunc(pendingVerificationHandler.SearchPendingVerifications)))
+	mux.Handle("PATCH /pending-verifications/{id}", middleware.RequirePermission(roleResolver, middleware.ModuleCases, middleware.ActionUpdate)(http.HandlerFunc(pendingVerificationHandler.VerifyPendingVerification)))
 
 	mux.HandleFunc("POST /deployments/products/{deployedProductId}/catalogs/search", catalogHandler.SearchCatalogs)
 	mux.HandleFunc("GET /catalogs/{catalogId}/items/{itemId}", catalogHandler.GetCatalogItemVariables)

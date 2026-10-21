@@ -65,13 +65,18 @@ type EscalationRepository interface {
 	// set, the people the escalation reached.
 	// This ports ServiceNow's EscalationNotificationUtils.
 	// resolveNotificationUsers (scoped app x_wso2_customer_0), step for step,
-	// in its order, deduped by user id:
+	// in its order, deduped by user id, with ONE deliberate CSM-side
+	// extension at EL1 (the renewal account manager and secondary technical
+	// owner, below) that is not ported from SN's rule:
 	//
 	//   - EL1: the account's CRE team lead(s), then every
 	//     notifyCfg.EL1AmericasTLEmails user (SN: "Append Americas TL users
 	//     -- ALWAYS", no region gate), then account.account_manager_id (SN
 	//     u_owner, Salesforce owner.email) and account.technical_owner_id
-	//     (SN u_technical_owner). SN's team leads are the u_team_member_role
+	//     (SN u_technical_owner), then, as the CSM-side extension,
+	//     account.renewal_account_manager_id and
+	//     account.secondary_technical_owner_id (SN's rule has neither; a
+	//     null one contributes nobody). SN's team leads are the u_team_member_role
 	//     rows on the account's u_integration_cs_team; here they are the
 	//     team_member rows with role 'lead' on the team whose id is
 	//     account.cre_team_id (team.id is the synced sys_user_group id, the
@@ -499,7 +504,11 @@ type escalationCaseContext struct {
 	wso2ID           *string
 	accountManagerID *string
 	technicalOwnerID *string
-	csmID            *string
+	// renewalAccountManagerID and secondaryTechnicalOwnerID are CSM-side
+	// additions to the EL1 set, beyond the ported rule.
+	renewalAccountManagerID   *string
+	secondaryTechnicalOwnerID *string
+	csmID                     *string
 	// teamLeadIDs are the CRE team's 'lead' members, oldest membership first.
 	teamLeadIDs     []string
 	productCategory *string
@@ -593,6 +602,9 @@ func (r *escalationRepo) resolveEscalationRecipients(ctx context.Context, q rows
 		}
 		add(cc.accountManagerID)
 		add(cc.technicalOwnerID)
+		// CSM-side extension, not in the ported rule.
+		add(cc.renewalAccountManagerID)
+		add(cc.secondaryTechnicalOwnerID)
 	}
 	if newLevel >= 2 {
 		if err := addEmails(r.notifyCfg.EL2AmericasTUEmails...); err != nil {
@@ -640,6 +652,7 @@ func (r *escalationRepo) createEscalationTx(ctx context.Context, tx pgx.Tx, case
 		SELECT c.current_escalation_level::TEXT,
 		       wi.number, wi.subject, wi.wso2_id,
 		       a.account_manager_id, a.technical_owner_id, a.customer_success_manager_id,
+		       a.renewal_account_manager_id, a.secondary_technical_owner_id,
 		       ARRAY(SELECT tm.user_id::TEXT FROM team_member tm
 		             WHERE tm.team_id = a.cre_team_id AND tm.role = 'lead'
 		             ORDER BY tm.created_on, tm.user_id),
@@ -653,7 +666,8 @@ func (r *escalationRepo) createEscalationTx(ctx context.Context, tx pgx.Tx, case
 		FOR UPDATE OF c`, caseID,
 	).Scan(
 		&currentLevel, &cc.number, &cc.subject, &cc.wso2ID,
-		&cc.accountManagerID, &cc.technicalOwnerID, &cc.csmID, &cc.teamLeadIDs,
+		&cc.accountManagerID, &cc.technicalOwnerID, &cc.csmID,
+		&cc.renewalAccountManagerID, &cc.secondaryTechnicalOwnerID, &cc.teamLeadIDs,
 		&cc.productCategory, &cc.productCode, &cc.productName,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {

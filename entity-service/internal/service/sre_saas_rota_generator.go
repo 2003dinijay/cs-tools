@@ -123,6 +123,10 @@ type saasRotaInput struct {
 	// Pinned is user id -> ISO date -> zone ("TZ1" or "TZ2"), for a day someone
 	// else set the person's regular hours on: they work that zone or nothing.
 	Pinned map[string]map[string]string
+	// NightTeam is user id -> ISO date -> the team of this rota a span has
+	// moved them to that day (the SaaS Night cover). Their TZ3 turns that day
+	// are filed under it, as the roster shows them there.
+	NightTeam map[string]map[string]string
 	// Windows is shift code -> [start, end) minute of the day, from the catalogue.
 	Windows map[string][2]int
 }
@@ -447,8 +451,10 @@ func (g *saasGenerator) regularHours(wi int, iso string, zoneOf map[string]strin
 			tz2[p] = true
 		}
 		for _, p := range g.teamPeople[team] {
-			if g.isOff(p, iso) || g.in.Pinned[p][iso] != "" {
-				continue // away, or their regular hours were set by someone else
+			if g.isOff(p, iso) || g.in.Pinned[p][iso] != "" || g.in.NightTeam[p][iso] != "" {
+				// Away, their regular hours set by someone else, or on the
+				// Night cover, where they work TZ3 turns only.
+				continue
 			}
 			code := saasShiftTZ1Regular
 			switch {
@@ -1005,7 +1011,8 @@ func (g *saasGenerator) anyNightIn(from, to time.Time) bool {
 }
 
 // turn records a turn, or warns that the slot is empty. A turn for a night
-// person carries their own team.
+// person carries the team they are on that night: the one a span moved them
+// to (the SaaS Night cover), or their own.
 func (g *saasGenerator) turn(user, team, shift, tier, iso, slot string) {
 	if user == "" {
 		if slot != "" {
@@ -1015,6 +1022,9 @@ func (g *saasGenerator) turn(user, team, shift, tier, iso, slot string) {
 	}
 	if team == "" {
 		team = g.byID[user].TeamKey
+		if moved := g.in.NightTeam[user][iso]; moved != "" {
+			team = moved
+		}
 	}
 	t := saasPlannedTurn{UserID: user, TeamKey: team, ShiftCode: shift, Tier: tier, RotaDate: iso}
 	g.plan.Turns = append(g.plan.Turns, t)

@@ -14,47 +14,27 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Ported from the source app's components/CSBarChart.tsx. The source draws
-// this with chart.js + react-chartjs-2; one-wso2 already standardizes on
-// recharts (chart.js isn't a dependency here), so this is a recharts
-// reimplementation of the same three chart shapes (by product/by priority/
-// created-vs-resolved by day), preserving the same colors, axis titles, and
-// "no data" fallback — see docs/ported-apps/spl.md §5 on this substitution.
-import { Dayjs } from "dayjs";
-import {
-  Bar,
-  BarChart as RechartsBarChart,
-  CartesianGrid,
-  Legend,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
-import { useTheme } from "@mui/material/styles";
-import { COLOURS } from "../constants";
+import { Box, Typography, useTheme } from "@wso2/oxygen-ui";
+import { BarChart, XAxis, YAxis } from "@wso2/oxygen-ui-charts-react";
+import { priorityChartColor, useReportChartColors } from "./useReportChartColors";
+
+const MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function monthStart(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), 1);
+}
 
 /* eslint-disable @typescript-eslint/no-explicit-any -- mirrors the source's own loosely-typed chart data props */
 interface ChartProps {
   data: any;
   distinctProductNames?: string[];
   distinctPriorities?: string[];
-  from: Dayjs;
-  to: Dayjs;
+  from: Date;
+  to: Date;
   chartType: "product" | "priority" | "state";
 }
 
-const GREY = "#25AAE1";
-const PRODUCT_COLORS: Record<string, string> = {
-  "WSO2 API Manager": "#25AAE1",
-  "WSO2 API Manager Analytics": "#3EB5E5",
-  "WSO2 API Platform for Kubernetes": "#57C0E9",
-  Ballerina: "#2299CC",
-  "WSO2 Enterprise Integrator": "#1F84A6",
-  "WSO2 Identity Server": "#1A6D8B",
-  "WSO2 Micro Integrator": "#70CBED",
-  Unknown: GREY,
-};
+const CHART_HEIGHT = 300;
 
 export default function CSBarChart({
   data,
@@ -64,27 +44,31 @@ export default function CSBarChart({
   to,
   chartType,
 }: ChartProps) {
+  const theme = useTheme();
+  const colors = useReportChartColors();
+  const unknown = theme.palette.grey[500];
+
   const monthLabels: string[] = [];
-  let currentMonth = from.startOf("month");
-  while (currentMonth.isBefore(to) || currentMonth.isSame(to, "month")) {
-    monthLabels.push(currentMonth.format("MMM"));
-    currentMonth = currentMonth.add(1, "month");
+  let currentMonth = monthStart(from);
+  const lastMonth = monthStart(to);
+  while (currentMonth.getTime() <= lastMonth.getTime()) {
+    monthLabels.push(MONTHS_SHORT[currentMonth.getMonth()]);
+    currentMonth = new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1, 1);
   }
 
   let series: { key: string; color: string }[] = [];
   let rows: Record<string, string | number>[] = [];
   let xKey = "month";
-  let xTitle = "Months";
   let title = "";
 
   if (chartType === "product") {
-    title = "Cases Created by Product";
+    title = "Cases created by product";
     series = distinctProductNames.map((name, i) => ({
       key: name,
-      color: PRODUCT_COLORS[name] || COLOURS[i % COLOURS.length],
+      color: name === "Unknown" ? unknown : colors[i % colors.length],
     }));
     rows = monthLabels.map((label, i) => {
-      const monthKey = from.add(i, "month").month();
+      const monthKey = (from.getMonth() + i) % 12;
       const row: Record<string, string | number> = { month: label };
       distinctProductNames.forEach((name) => {
         row[name] = data[monthKey]?.[name] || 0;
@@ -92,13 +76,13 @@ export default function CSBarChart({
       return row;
     });
   } else if (chartType === "priority") {
-    title = "Cases Created by Priority";
+    title = "Cases created by priority";
     series = distinctPriorities.map((priority, i) => ({
       key: priority,
-      color: priority === "Unknown" ? GREY : COLOURS[i % COLOURS.length],
+      color: priorityChartColor(priority, i, colors, unknown),
     }));
     rows = monthLabels.map((label, i) => {
-      const monthKey = from.add(i, "month").month();
+      const monthKey = (from.getMonth() + i) % 12;
       const row: Record<string, string | number> = { month: label };
       distinctPriorities.forEach((priority) => {
         row[priority] = data[monthKey]?.[priority] || 0;
@@ -106,61 +90,78 @@ export default function CSBarChart({
       return row;
     });
   } else {
-    title = "Created vs Resolved Cases";
+    title = "Created vs resolved";
     xKey = "day";
-    xTitle = "Days";
-    const hasUnknown = (data as any[]).some((entry) => entry.state === "Unknown");
     series = [
-      { key: "Opened", color: "#25AAE1" },
-      { key: "Resolved", color: hasUnknown ? GREY : "#1A6D8B" },
+      { key: "Opened", color: theme.palette.info.main },
+      { key: "Resolved", color: theme.palette.success.main },
     ];
     rows = (data as any[]).map((entry) => ({ day: entry.day, Opened: entry.opened, Resolved: entry.closed }));
   }
 
   const hasData = rows.some((row) => series.some((s) => Number(row[s.key]) > 0));
-  const theme = useTheme();
-  // Data-series colors (PRODUCT_COLORS/COLOURS/GREY above) stay as-is in
-  // both modes — only the chrome around them (gridlines, axis/label text,
-  // tooltip surface) needs to follow the live theme.
-  const axisTickStyle = { fill: theme.palette.text.secondary };
-  const axisLabelStyle = { fill: theme.palette.text.secondary };
+  const crowded = chartType === "state" && rows.length > 8;
+  const axis = theme.palette.text.secondary;
 
   return (
-    <div style={{ width: "100%", height: 400 }}>
-      <p style={{ fontWeight: 600, marginBottom: 4, color: theme.palette.text.primary }}>{title}</p>
+    <Box className="report-chart" sx={{ width: "100%", minWidth: 0 }}>
+      <Typography component="p" variant="subtitle2" sx={{ fontWeight: 600, mb: 1 }}>
+        {title}
+      </Typography>
       {hasData ? (
-        <ResponsiveContainer width="100%" height="90%">
-          <RechartsBarChart data={rows}>
-            <CartesianGrid strokeDasharray="3 3" stroke={theme.palette.divider} />
-            <XAxis
-              dataKey={xKey}
-              tick={axisTickStyle}
-              label={{ value: xTitle, position: "insideBottom", offset: -5, style: axisLabelStyle }}
-            />
+        <Box sx={{ width: "100%", height: CHART_HEIGHT }}>
+          <BarChart
+            data={rows}
+            xAxisDataKey={xKey}
+            height={CHART_HEIGHT}
+            width="100%"
+            colors={series.map((s) => s.color)}
+            bars={series.map((s) => ({
+              dataKey: s.key,
+              fill: s.color,
+              radius: [4, 4, 0, 0],
+              isAnimationActive: false,
+            }))}
+            isAnimationActive={false}
+            maxBarSize={28}
+            legend={{ show: true, align: "center", verticalAlign: "top" }}
+            grid={{ show: true, strokeDasharray: "3 3" }}
+            tooltip={{ show: true }}
+            xAxis={{ show: !crowded }}
+            yAxis={{ show: false }}
+            margin={{ top: 4, right: 8, bottom: crowded ? 28 : 8, left: 8 }}
+          >
             <YAxis
               allowDecimals={false}
-              tick={axisTickStyle}
-              label={{ value: "Number of Cases", angle: -90, position: "insideLeft", style: axisLabelStyle }}
+              width={36}
+              stroke={axis}
+              tick={{ fill: axis, fontSize: 12 }}
+              tickMargin={8}
+              axisLine={{ stroke: axis }}
+              tickLine={{ stroke: axis }}
             />
-            <Tooltip
-              contentStyle={{
-                background: theme.palette.background.paper,
-                border: `1px solid ${theme.palette.divider}`,
-                color: theme.palette.text.primary,
-              }}
-              labelStyle={{ color: theme.palette.text.primary }}
-            />
-            <Legend verticalAlign="top" />
-            {series.map((s) => (
-              <Bar key={s.key} dataKey={s.key} fill={s.color} />
-            ))}
-          </RechartsBarChart>
-        </ResponsiveContainer>
+            {crowded ? (
+              <XAxis
+                dataKey={xKey}
+                interval={Math.ceil(rows.length / 6) - 1}
+                angle={-35}
+                textAnchor="end"
+                height={56}
+                tickFormatter={(value) => (typeof value === "string" && value.length >= 10 ? value.slice(5) : String(value))}
+                stroke={axis}
+                tick={{ fill: axis, fontSize: 12 }}
+                tickMargin={8}
+                axisLine={{ stroke: axis }}
+                tickLine={{ stroke: axis }}
+              />
+            ) : null}
+          </BarChart>
+        </Box>
       ) : (
-        <p style={{ textAlign: "center", color: theme.palette.text.secondary }}>
+        <Typography variant="body2" color="text.secondary" sx={{ textAlign: "center", py: 4 }}>
           No data available for the selected criteria.
-        </p>
+        </Typography>
       )}
-    </div>
+    </Box>
   );
 }

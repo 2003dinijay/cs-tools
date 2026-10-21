@@ -21,12 +21,20 @@ import type { JSX, ReactElement } from "react";
 import { useLocation, MemoryRouter, Route, Routes } from "react-router";
 import "@testing-library/jest-dom/vitest";
 
-// The real client reads runtime config at module load, which isn't present
-// under vitest (same approach as CaseActivitiesFeed.test.tsx). CasesList
-// renders a CasePreviewDrawer alongside every row (closed by default here,
-// since no test opens it), which calls useGetCsmCaseComments — the mock just
-// keeps that hook's useBackendApi() call from throwing on missing runtime
-// config; its query stays disabled (no caseId) so it's never actually invoked.
+// CasesList's import tree reads this at module load (apiConfig throws
+// without it). The real value comes from public/config.js, which vitest
+// does not load. hoisted so it runs before that import.
+vi.hoisted(() => {
+  window.config = {
+    ...window.config,
+    CSM_PORTAL_BACKEND_BASE_URL: "http://localhost:9090",
+  };
+});
+
+// CasesList renders a CasePreviewDrawer alongside every row (closed by
+// default here, since no test opens it), which calls useGetCsmCaseComments.
+// The mock keeps that hook's useBackendApi() call from throwing; its query
+// stays disabled (no caseId) so it's never actually invoked.
 vi.mock("@api/backend/client", () => ({
   useBackendApi: () => ({ post: vi.fn().mockResolvedValue({ comments: [] }) }),
 }));
@@ -458,6 +466,157 @@ describe("CasesList optional columns", () => {
   });
 });
 
+// Regression/coverage for the "Export selected" feature:
+// a leading checkbox column, off by default, that a caller opts into via
+// `selectable` + the three selection props.
+describe("CasesList row selection", () => {
+  it("renders no checkbox column at all when selectable is omitted (default, unchanged behavior)", () => {
+    renderWithProviders(
+      <Routes>
+        <Route path="/cases" element={<CasesList cases={[CASE]} isLoading={false} />} />
+      </Routes>,
+      ["/cases"],
+    );
+
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+  });
+
+  it("calls onToggleRow with the row when its checkbox is clicked, without navigating", () => {
+    const onToggleRow = vi.fn();
+    renderWithProviders(
+      <Routes>
+        <Route
+          path="/cases"
+          element={
+            <CasesList
+              cases={[CASE]}
+              isLoading={false}
+              selectable
+              selectedIds={new Set()}
+              onToggleRow={onToggleRow}
+              onToggleAllOnPage={vi.fn()}
+            />
+          }
+        />
+        <Route path="/cases/:id" element={<DetailStub />} />
+      </Routes>,
+      ["/cases"],
+    );
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select CS-1007" }));
+
+    expect(onToggleRow).toHaveBeenCalledWith(CASE);
+    expect(screen.queryByTestId("from-state")).not.toBeInTheDocument();
+  });
+
+  it("reflects a selected row's checkbox as checked", () => {
+    renderWithProviders(
+      <Routes>
+        <Route
+          path="/cases"
+          element={
+            <CasesList
+              cases={[CASE]}
+              isLoading={false}
+              selectable
+              selectedIds={new Set([CASE.id])}
+              onToggleRow={vi.fn()}
+              onToggleAllOnPage={vi.fn()}
+            />
+          }
+        />
+      </Routes>,
+      ["/cases"],
+    );
+
+    expect(screen.getByRole("checkbox", { name: "Select CS-1007" })).toBeChecked();
+  });
+
+  it("header 'select all' checkbox calls onToggleAllOnPage(true, rows) when none are selected yet", () => {
+    const otherCase: CsmCaseRow = { ...CASE, id: "case-2", caseNumber: "CS-1008" };
+    const onToggleAllOnPage = vi.fn();
+    renderWithProviders(
+      <Routes>
+        <Route
+          path="/cases"
+          element={
+            <CasesList
+              cases={[CASE, otherCase]}
+              isLoading={false}
+              selectable
+              selectedIds={new Set()}
+              onToggleRow={vi.fn()}
+              onToggleAllOnPage={onToggleAllOnPage}
+            />
+          }
+        />
+      </Routes>,
+      ["/cases"],
+    );
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select all rows on this page" }));
+
+    expect(onToggleAllOnPage).toHaveBeenCalledWith(true, [CASE, otherCase]);
+  });
+
+  it("header checkbox is checked when every row on the page is selected, and unchecking it calls onToggleAllOnPage(false, rows)", () => {
+    const otherCase: CsmCaseRow = { ...CASE, id: "case-2", caseNumber: "CS-1008" };
+    const onToggleAllOnPage = vi.fn();
+    renderWithProviders(
+      <Routes>
+        <Route
+          path="/cases"
+          element={
+            <CasesList
+              cases={[CASE, otherCase]}
+              isLoading={false}
+              selectable
+              selectedIds={new Set([CASE.id, otherCase.id])}
+              onToggleRow={vi.fn()}
+              onToggleAllOnPage={onToggleAllOnPage}
+            />
+          }
+        />
+      </Routes>,
+      ["/cases"],
+    );
+
+    const headerCheckbox = screen.getByRole("checkbox", { name: "Select all rows on this page" });
+    expect(headerCheckbox).toBeChecked();
+
+    fireEvent.click(headerCheckbox);
+    expect(onToggleAllOnPage).toHaveBeenCalledWith(false, [CASE, otherCase]);
+  });
+
+  it("header checkbox is indeterminate when only some rows on the page are selected", () => {
+    const otherCase: CsmCaseRow = { ...CASE, id: "case-2", caseNumber: "CS-1008" };
+    renderWithProviders(
+      <Routes>
+        <Route
+          path="/cases"
+          element={
+            <CasesList
+              cases={[CASE, otherCase]}
+              isLoading={false}
+              selectable
+              selectedIds={new Set([CASE.id])}
+              onToggleRow={vi.fn()}
+              onToggleAllOnPage={vi.fn()}
+            />
+          }
+        />
+      </Routes>,
+      ["/cases"],
+    );
+
+    const headerCheckbox = screen.getByRole("checkbox", {
+      name: "Select all rows on this page",
+    }) as HTMLInputElement;
+    expect(headerCheckbox).not.toBeChecked();
+    expect(headerCheckbox).toHaveAttribute("data-indeterminate", "true");
+  });
+});
+
 describe("CasesList sortable headers", () => {
   function renderSortable(
     initialField: "createdOn" | "updatedOn" | "severity" | "state" | "assignee",
@@ -553,5 +712,17 @@ describe("CasesList sortable headers", () => {
     ["Created", "Severity", "State", "Updated"].forEach((label) => {
       expect(screen.getByText(label).closest(".MuiTableSortLabel-root")).not.toBeInTheDocument();
     });
+  });
+});
+
+describe("CasesList background fetch", () => {
+  it("keeps the current rows and shows a progress bar while a new result is loading", () => {
+    renderWithProviders(
+      <CasesList cases={[CASE]} isLoading={false} isFetching />,
+      ["/cases"],
+    );
+
+    expect(screen.getByText("Cluster fails to start")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "Updating the list" })).toBeInTheDocument();
   });
 });

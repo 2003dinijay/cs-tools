@@ -17,12 +17,15 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
 
 // SpecialistHandoffConfig is where a specialist handoff ("Escalate to
@@ -35,7 +38,10 @@ import (
 //	   "github":{"owner":"wso2-enterprise","repo":"choreo","credential":"wso2-enterprise"},
 //	   "teams":[{"key":"choreo-runtime-team","label":"Choreo Runtime Team","groupId":"80dade5d-...",
 //	             "smeTeam":"choreo-runtime"}, ...]},
-//	  {"name":"Asgardeo", ...}]}
+//	  {"name":"U2","serviceIds":["02939644-..."],"teams":[{"key":"u2"}]}]}
+//
+// A team with no groupId is a Team Schedule team: its key is the team's key,
+// and its assignment group is the team itself (ResolveTeamGroups).
 //
 // ServiceNow hard-codes the same routing in the "Escalate to Special Ops" UI
 // action and IncidentHandoffUtils; here a new product or team is a config
@@ -62,6 +68,83 @@ type SpecialistHandoffGithub struct {
 	Owner      string `json:"owner"`
 	Repo       string `json:"repo"`
 	Credential string `json:"credential,omitempty"`
+	// Labels the issue gets, optional: the repositories name their labels
+	// differently, so each product maps its own.
+	Labels *SpecialistHandoffGithubLabels `json:"labels,omitempty"`
+}
+
+// SpecialistHandoffGithubLabels maps what the incident is to the labels its
+// issue gets:
+//
+//	"labels":{"byPriority":{"CRITICAL":["Priority/Highest (P1)","Severity/Critical"],"HIGH":[...]},
+//	          "byEnvironment":{"prod":["Env/Production"],"production":["Env/Production"]}}
+//
+// ByPriority is keyed by the incident priority (CRITICAL, HIGH, MODERATE,
+// LOW, PLANNING); ByEnvironment by the incident's environment, compared
+// without case. An incident matching no key gets no label from that map.
+type SpecialistHandoffGithubLabels struct {
+	ByPriority    map[string][]string `json:"byPriority,omitempty"`
+	ByEnvironment map[string][]string `json:"byEnvironment,omitempty"`
+}
+
+// githubLabelMaxLen is GitHub's limit on a label's name.
+const githubLabelMaxLen = 50
+
+// validIncidentPriorities are the keys byPriority accepts.
+var validIncidentPriorities = map[string]bool{
+	string(domain.IncidentPriorityCritical): true, string(domain.IncidentPriorityHigh): true,
+	string(domain.IncidentPriorityModerate): true, string(domain.IncidentPriorityLow): true,
+	string(domain.IncidentPriorityPlanning): true,
+}
+
+// normalizeLabels trims and checks one map's label lists in place, keying it
+// by key(k); where names the map in errors.
+func normalizeLabels(m map[string][]string, where string, key func(string) (string, error)) (map[string][]string, error) {
+	out := make(map[string][]string, len(m))
+	for k, labels := range m {
+		nk, err := key(k)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", where, err)
+		}
+		if _, dup := out[nk]; dup {
+			return nil, fmt.Errorf("%s: key %q appears twice", where, k)
+		}
+		clean := make([]string, 0, len(labels))
+		for _, l := range labels {
+			l = strings.TrimSpace(l)
+			if l == "" || len([]rune(l)) > githubLabelMaxLen {
+				return nil, fmt.Errorf("%s[%q]: label %q must be 1 to %d characters", where, k, l, githubLabelMaxLen)
+			}
+			clean = append(clean, l)
+		}
+		out[nk] = clean
+	}
+	return out, nil
+}
+
+// labelsFor is the labels an incident's issue gets: its priority's, then its
+// environment's, each once, in configured order.
+func (l *SpecialistHandoffGithubLabels) labelsFor(priority, environment *string) []string {
+	if l == nil {
+		return nil
+	}
+	var out []string
+	seen := map[string]bool{}
+	add := func(labels []string) {
+		for _, x := range labels {
+			if !seen[x] {
+				seen[x] = true
+				out = append(out, x)
+			}
+		}
+	}
+	if priority != nil {
+		add(l.ByPriority[strings.ToUpper(strings.TrimSpace(*priority))])
+	}
+	if environment != nil {
+		add(l.ByEnvironment[strings.ToLower(strings.TrimSpace(*environment))])
+	}
+	return out
 }
 
 // credential is the name of the token that files this repository's issues.
@@ -79,11 +162,18 @@ func (g *SpecialistHandoffGithub) credential() string {
 // handoff to it ("asgardeo", "choreo-runtime"): Case Paging pages whoever
 // that rota has on duty. Empty means no SME team is named yet; the handoff
 // still goes through, and the paging readiness check reports the gap.
+//
+// A team configured without a groupId is the Team Schedule team keyed Key:
+// SMETeam defaults to Key, and ResolveTeamGroups fills GroupID with the
+// team's id (and an empty Label with its name) at startup. Until it does --
+// no team has the key -- the team takes no handoff.
 type SpecialistHandoffConfigTeam struct {
 	Key     string `json:"key"`
-	Label   string `json:"label"`
-	GroupID string `json:"groupId"`
+	Label   string `json:"label,omitempty"`
+	GroupID string `json:"groupId,omitempty"`
 	SMETeam string `json:"smeTeam,omitempty"`
+	// fromTeam marks a team configured without a groupId.
+	fromTeam bool
 }
 
 // teamKeyPattern is the shape of a Team Schedule team key as the SME rota
@@ -102,7 +192,7 @@ func (c *SpecialistHandoffConfig) teamsForGroup(groupID string) (*SpecialistHand
 	for i := range c.Products {
 		var teams []*SpecialistHandoffConfigTeam
 		for j := range c.Products[i].Teams {
-			if strings.EqualFold(c.Products[i].Teams[j].GroupID, groupID) {
+			if g := c.Products[i].Teams[j].GroupID; g != "" && strings.EqualFold(g, groupID) {
 				teams = append(teams, &c.Products[i].Teams[j])
 			}
 		}
@@ -154,6 +244,27 @@ func ParseSpecialistHandoffConfig(raw string) (*SpecialistHandoffConfig, error) 
 			if g.Owner == "" || g.Repo == "" {
 				return nil, fmt.Errorf("%s: github needs both owner and repo", where)
 			}
+			if l := g.Labels; l != nil {
+				var err error
+				if l.ByPriority, err = normalizeLabels(l.ByPriority, where+": github.labels.byPriority", func(k string) (string, error) {
+					k = strings.ToUpper(strings.TrimSpace(k))
+					if !validIncidentPriorities[k] {
+						return "", fmt.Errorf("%q is not an incident priority (CRITICAL, HIGH, MODERATE, LOW, PLANNING)", k)
+					}
+					return k, nil
+				}); err != nil {
+					return nil, err
+				}
+				if l.ByEnvironment, err = normalizeLabels(l.ByEnvironment, where+": github.labels.byEnvironment", func(k string) (string, error) {
+					k = strings.ToLower(strings.TrimSpace(k))
+					if k == "" {
+						return "", fmt.Errorf("an empty environment key")
+					}
+					return k, nil
+				}); err != nil {
+					return nil, err
+				}
+			}
 		}
 		if len(p.Teams) == 0 {
 			return nil, fmt.Errorf("%s: at least one team is required", where)
@@ -162,17 +273,28 @@ func ParseSpecialistHandoffConfig(raw string) (*SpecialistHandoffConfig, error) 
 		for j := range p.Teams {
 			t := &p.Teams[j]
 			t.Key, t.Label, t.GroupID = strings.TrimSpace(t.Key), strings.TrimSpace(t.Label), strings.ToLower(strings.TrimSpace(t.GroupID))
-			if t.Key == "" || len(t.Key) > maxEscalationTeamLen || t.Label == "" {
+			t.SMETeam = strings.TrimSpace(t.SMETeam)
+			t.fromTeam = t.GroupID == ""
+			if t.Key == "" || len(t.Key) > maxEscalationTeamLen || (t.Label == "" && !t.fromTeam) {
 				return nil, fmt.Errorf("%s: teams[%d] needs a key (at most %d characters) and a label", where, j, maxEscalationTeamLen)
 			}
 			if seenKey[t.Key] {
 				return nil, fmt.Errorf("%s: team key %q appears twice", where, t.Key)
 			}
 			seenKey[t.Key] = true
-			if !isCanonicalUUID(t.GroupID) {
+			if t.fromTeam {
+				// The team is the Team Schedule team keyed Key, which is
+				// then also the SME team it pages.
+				if !teamKeyPattern.MatchString(t.Key) {
+					return nil, fmt.Errorf("%s: team %q has no groupId, so its key must be a Team Schedule team key (lower-case letters, digits, '-' and '_', at most 64)", where, t.Key)
+				}
+				if t.SMETeam != "" && t.SMETeam != t.Key {
+					return nil, fmt.Errorf("%s: team %q has no groupId, so it is the Team Schedule team %q and its smeTeam cannot be %q", where, t.Key, t.Key, t.SMETeam)
+				}
+				t.SMETeam = t.Key
+			} else if !isCanonicalUUID(t.GroupID) {
 				return nil, fmt.Errorf("%s: team %q groupId %q is not a UUID", where, t.Key, t.GroupID)
 			}
-			t.SMETeam = strings.TrimSpace(t.SMETeam)
 			if t.SMETeam != "" && !teamKeyPattern.MatchString(t.SMETeam) {
 				return nil, fmt.Errorf("%s: team %q smeTeam %q is not a team key (lower-case letters, digits, '-' and '_', at most 64)", where, t.Key, t.SMETeam)
 			}
@@ -214,7 +336,7 @@ func (p *SpecialistHandoffProduct) holdsGroup(groupID *string) bool {
 		return false
 	}
 	for _, t := range p.Teams {
-		if strings.EqualFold(t.GroupID, *groupID) {
+		if t.GroupID != "" && strings.EqualFold(t.GroupID, *groupID) {
 			return true
 		}
 	}
@@ -241,6 +363,91 @@ func (c *SpecialistHandoffConfig) knowsTeam(key string) bool {
 		}
 	}
 	return false
+}
+
+// ResolveTeamGroups gives every team configured without a groupId its
+// assignment group: the Team Schedule team keyed by its key, whose id becomes
+// GroupID and whose name an empty Label. repo also makes sure "group" has
+// that row, which an incident's assignment group must reference. Teams
+// already resolved are skipped, so a second call only retries the ones no
+// team held. It returns the keys still without a group; those teams take no
+// handoff.
+//
+// Called once at startup, before the configuration is shared: it writes the
+// teams in place.
+func (c *SpecialistHandoffConfig) ResolveTeamGroups(ctx context.Context, repo repository.SpecialistHandoffGroupRepository) ([]string, error) {
+	if c == nil {
+		return nil, nil
+	}
+	var keys []string
+	for i := range c.Products {
+		for _, t := range c.Products[i].Teams {
+			if t.fromTeam && t.GroupID == "" {
+				keys = append(keys, t.Key)
+			}
+		}
+	}
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	groups, err := repo.EnsureTeamGroups(ctx, keys)
+	if err != nil {
+		return keys, err
+	}
+	var missing []string
+	for i := range c.Products {
+		for j := range c.Products[i].Teams {
+			t := &c.Products[i].Teams[j]
+			if !t.fromTeam || t.GroupID != "" {
+				continue
+			}
+			g, ok := groups[strings.ToLower(t.Key)]
+			if !ok {
+				missing = append(missing, t.Key)
+				if t.Label == "" {
+					t.Label = t.Key
+				}
+				continue
+			}
+			t.GroupID = strings.ToLower(g.ID)
+			if t.Label == "" {
+				t.Label = g.Name
+			}
+		}
+	}
+	return missing, nil
+}
+
+// hasUnresolvedTeams reports whether a team configured without a groupId
+// still has no group.
+func (c *SpecialistHandoffConfig) hasUnresolvedTeams() bool {
+	if c == nil {
+		return false
+	}
+	for i := range c.Products {
+		for _, t := range c.Products[i].Teams {
+			if t.fromTeam && t.GroupID == "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// ResolveSpecialistHandoffTeamGroups runs cfg.ResolveTeamGroups for a
+// service starting up, logging what it could not resolve instead of failing:
+// the other teams' handoffs, and every other route, still work.
+func ResolveSpecialistHandoffTeamGroups(ctx context.Context, repo repository.SpecialistHandoffGroupRepository, cfg *SpecialistHandoffConfig) {
+	missing, err := cfg.ResolveTeamGroups(ctx, repo)
+	if err != nil {
+		slog.ErrorContext(ctx, "specialist handoff: could not read the Team Schedule teams configured without a groupId; they take no handoff until a restart",
+			"teams", missing, "error", err)
+		return
+	}
+	if len(missing) > 0 {
+		slog.WarnContext(ctx, "specialist handoff: no Team Schedule team has these keys; they take no handoff until the team exists and the service restarts",
+			"teams", missing)
+	}
 }
 
 // Credentials lists the token names the configured products file issues

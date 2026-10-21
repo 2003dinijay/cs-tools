@@ -33,21 +33,20 @@
 .front-page {
     display: flex;
     flex-direction: column;
-    height: 147.9mm;
-    padding: 20px;
+    justify-content: center;
+    padding: 48px;
     background-color: #212a32;
     margin: 0;
     box-sizing: border-box;
-    page-break-after: always;
     font-family:  sans-serif;
   }
 
 .front-page-logo {
-    max-width: 10%;
+    max-width: 160px;
     height: auto;
-    margin-top: 100px;
-    margin-bottom: 30px;
-    margin-left: 50px;
+    margin-top: 0;
+    margin-bottom: 28px;
+    margin-left: 0;
   }
 
 .front-page .header-title {
@@ -55,7 +54,7 @@
     font-weight: bold;
     margin-bottom: 5px;
     color: white;
-    margin-left: 50px;
+    margin-left: 0;
   }
 
 .front-page .end-date {
@@ -69,19 +68,20 @@
     font-size: 24px;
     font-weight: bold;
     color: #ffc808;
-    margin-bottom: 90px;
-    margin-left: 50px;
+    margin-bottom: 28px;
+    margin-left: 0;
   }
 
 .front-page .section-divider {
-    border-top: 2px solid #ff7300;
+    border-top: 2px solid var(--report-accent, #fa7b3f);
     margin-bottom: 3px;
   }  
 
 .front-page .current-date {
     font-size: 14px;
     color: white;
-    margin-left: 50px;
+    margin-left: 0;
+    margin-bottom: 0;
   }
 
 .agenda-page {
@@ -96,15 +96,15 @@
 .agenda-page h1 {
     font-size: 28px;
     font-weight: 600;
-    margin-top: 40px;
-    margin-bottom: 60px;
-    margin-left: 50px;
+    margin-top: 8px;
+    margin-bottom: 28px;
+    margin-left: 0;
   }
 
 .agenda-page p {
     font-size: 18px;
-    margin-bottom: 20px;
-    margin-left: 50px;
+    margin-bottom: 16px;
+    margin-left: 0;
   }
 
 .agenda-page .agenda-item {
@@ -115,7 +115,7 @@
 .agenda-page .agenda-item::before {
     content: "• "; 
     font-size: 14pt;
-    color: orange;
+    color: var(--report-accent, #fa7b3f);
     position: absolute;
     left: 0;
     top: 0;
@@ -124,81 +124,64 @@
 .sub-topic-page {
     display: flex;
     flex-direction: column;
-    height: 147.9mm;
-    padding: 20px;
+    justify-content: center;
+    padding: 48px;
     background-color: #38434d;
     margin: 0;
     box-sizing: border-box;
-    page-break-after: always;
     font-family:  sans-serif;
-    margin-top: -65px;
   }  
 
 .records-page{
     display: flex;
     flex-direction: column;
-    height: 147.9mm;
-    padding: 20px;
+    justify-content: center;
+    padding: 48px;
     background-color: #38434d;
     margin: 0;
     box-sizing: border-box;
-    page-break-after: always;
     font-family:  sans-serif;
-    margin-top: -65px;
   }
 
 .sub-topic-page h1 {
     font-size: 30px;
     font-weight: 600;
-    margin-top: 270px;
+    margin-top: 0;
     margin-bottom: 20px;
     color: white;
-    margin-left: 50px;
+    margin-left: 0;
   }
 
 .records-page h1 {
     font-size: 30px;
     font-weight: 600;
-    margin-top: 270px;
+    margin-top: 0;
     margin-bottom: 20px;
     color: white;
-    margin-left: 50px;
+    margin-left: 0;
   }
 
 .sub-topic-page .section-divider {
-    border-top: 2px solid #ff7300;
+    border-top: 2px solid var(--report-accent, #fa7b3f);
   }  
   
 .records-page .section-divider {
-    border-top: 2px solid #ff7300;
+    border-top: 2px solid var(--report-accent, #fa7b3f);
   }
 
-.charts-container {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    column-gap: 10px;  
-    row-gap: 5px;
-    height: 30vh;   
-    margin-top: 40px;
-  }
-
-.charts-container img {
-    width: 90mm; 
-    height: auto;
-    display: block;
-    margin: 0 auto;
-  }
-
+.charts-container,
 .trend-chart-container {
-    margin-top: 40px;
+    display: grid;
+    width: 100%;
+    min-width: 0;
+    margin: 0;
   }
 
-.trend-chart-container img {
-    width: 190mm; 
-    height: auto;
+.charts-container svg,
+.trend-chart-container svg {
+    width: 100%;
+    max-width: 100%;
     display: block;
-    margin: 0 auto;
-    text-align: center;
   }
 
 .deployment-image-section img {
@@ -218,11 +201,10 @@
 .thank-page  {
     display: flex;
     flex-direction: column;
-    height: 147.9mm;
-    padding: 20px;
+    justify-content: center;
+    padding: 48px;
     background-color: #212a32;
     margin: 0;
-    margin-top: -65px;
     box-sizing: border-box;
     font-family:  sans-serif;
   }
@@ -230,15 +212,70 @@
 .thank-page h1 {
     font-size: 44px;
     font-weight: bold;
-    margin-top: 230px;
-    margin-bottom: 50px;
+    margin-top: 0;
+    margin-bottom: 24px;
     color: white;
     text-align: center;
   }
 
 .thank-page .section-divider {
-    border-top: 2px solid #ff7300;
+    border-top: 2px solid var(--report-accent, #fa7b3f);
   }  
+
+.eol-pdf .widget-title {
+    font-size: 22px;
+    margin-top: 0;
+    margin-bottom: 8px;
+  }
+
+.eol-pdf .eol-env {
+    font-size: 14px;
+    font-weight: 600;
+    color: #455a66;
+    margin-top: 18px;
+    margin-bottom: 8px;
+  }
+
+.eol-pdf .eol-card {
+    border: 1px solid #d5dde3;
+    border-radius: 8px;
+    padding: 12px 14px;
+    margin-bottom: 8px;
+  }
+
+.eol-pdf .eol-card-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+
+.eol-pdf .eol-name {
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+.eol-pdf .eol-status {
+    font-size: 11px;
+    border: 1px solid #9aa7b0;
+    border-radius: 12px;
+    padding: 2px 8px;
+  }
+
+.eol-pdf .eol-dates {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+
+.eol-pdf .eol-label {
+    display: block;
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #607d8b;
+    margin-bottom: 2px;
+  }
 
 .engagements-content {
     margin-right: 20px;
@@ -299,8 +336,41 @@
 .sla-title {
     font-size: 22px; 
     font-weight: bold;
-    color: #ff7300;
+    color: var(--report-accent, #fa7b3f);
     text-align: left; 
     margin-bottom: 10px;
-    margin-left: 20px; 
+    margin-left: 0; 
+  }
+
+.pdf-sheet table {
+    width: 100%;
+    max-width: 100%;
+    table-layout: fixed;
+    font-size: 12px;
+  }
+
+.pdf-sheet th,
+.pdf-sheet td {
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+
+.pdf-sheet .update-levels-table thead th {
+    font-weight: 700;
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    text-align: left;
+    color: #5c6570;
+  }
+
+.pdf-sheet .update-level-env {
+    font-weight: 700;
+    font-size: 14px;
+    background: #f3f4f6;
+  }
+
+.pdf-sheet .update-levels-table td:nth-child(2),
+.pdf-sheet .update-levels-table th:nth-child(2) {
+    width: 32%;
   }

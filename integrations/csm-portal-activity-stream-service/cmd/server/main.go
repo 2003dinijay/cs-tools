@@ -29,7 +29,6 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -63,12 +62,12 @@ func main() {
 	customerEntityClient := entity.NewCustomerEntityClient(customerEntityCfg)
 
 	// Event Hub — optional. If unset, the service starts but only serves
-	// the health check; the SSE endpoint returns 503 (no broadcast hub,
+	// the health check; the SSE endpoints return 503 (no broadcast hub,
 	// no consumer). When set, the service:
 	//   - creates a BroadcastHub for in-process pub-sub
 	//   - starts a Consumer in its own per-replica consumer group (LatestOffset)
-	//   - runs the caseevents.Handler to fan case.comment_added / status_changed
-	//     to the BroadcastHub
+	//   - runs the caseevents.Handler to fan comment/status/assignee/severity/
+	//     acknowledge events to the BroadcastHub
 	var caseEventsConsumer *eventbus.Consumer
 	var activityHub *stream.BroadcastHub
 
@@ -108,14 +107,6 @@ func main() {
 	// SSE handler — depends on entity client + optional hub.
 	streamHandler := handler.NewStreamHandler(customerEntityClient, activityHub)
 
-	// Health check listener (:8080) — simple REST endpoint for Choreo liveness probe.
-	healthMux := http.NewServeMux()
-	healthMux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
-	})
-
 	authCfg := middleware.Config{
 		JWKSEndpoint:          mustEnv("AUTH_JWKS_ENDPOINT"),
 		Issuer:                mustEnv("AUTH_ISSUER"),
@@ -129,90 +120,56 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Health check server
-	healthAddr := ":" + mustPort("HEALTH_PORT", "8080")
-	healthLn, err := (&net.ListenConfig{}).Listen(ctx, "tcp", healthAddr)
+	// Stream server (:9092) — always started: it also serves GET /health for
+	// Choreo's liveness probe, so it must be up even when Event Hub is not
+	// configured (then the stream routes answer 503 and no consumer runs).
+	// The SSE connection must stay open indefinitely, so WriteTimeout/IdleTimeout
+	// are disabled (harmless for the tiny /health handler); mirror of
+	// csm-portal-backend's original stream listener.
+	streamMux := handler.NewStreamMux(streamHandler)
+
+	streamAddr := ":" + mustPort("STREAM_PORT", "9092")
+	streamLn, err := (&net.ListenConfig{}).Listen(ctx, "tcp", streamAddr)
 	if err != nil {
-		slog.Error("failed to bind health listener", "addr", healthAddr, "err", err)
+		slog.Error("failed to bind stream listener", "addr", streamAddr, "err", err)
 		os.Exit(1)
 	}
 
-	healthSrv := &http.Server{
+	streamSrv := &http.Server{
+		// SecurityHeaders must stay outermost so its headers are present
+		// on every response, including a CORS preflight — CORS runs
+		// next, still ahead of Auth: a browser preflight carries no
+		// x-jwt-assertion header, so Auth must never see it first. See
+		// middleware.CORS's doc comment.
+		// STREAM_CORS_ALLOWED_ORIGINS is a comma-separated allow-list;
+		// unset denies all cross-origin requests (fail-closed — see
+		// middleware.CORS's doc comment for why).
 		Handler: middleware.SecurityHeaders(
-			middleware.CORS(splitComma(os.Getenv("CORS_ALLOWED_ORIGINS")))(
+			middleware.CORS(splitComma(os.Getenv("STREAM_CORS_ALLOWED_ORIGINS")))(
 				middleware.CorrelationID(
 					authMiddleware(
-						middleware.Logger(healthMux),
+						middleware.Logger(streamMux),
 					),
 				),
 			),
 		),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       60 * time.Second,
+		WriteTimeout:      0,
+		IdleTimeout:       0,
 	}
 
 	go func() {
-		if err := healthSrv.Serve(healthLn); err != nil && err != http.ErrServerClosed {
-			slog.Error("health server exited", "err", err)
+		if err := streamSrv.Serve(streamLn); err != nil && err != http.ErrServerClosed {
+			slog.Error("stream server exited", "err", err)
 			os.Exit(1)
 		}
 	}()
-	slog.Info("health server started", "addr", healthLn.Addr().String())
+	slog.Info("case-activity stream server started", "addr", streamLn.Addr().String())
 
-	// Stream server (:9092) — only if Event Hub is configured (activityHub != nil).
-	// The SSE connection must stay open indefinitely, so WriteTimeout/IdleTimeout
-	// are disabled; mirror of csm-portal-backend's original stream listener.
-	var streamSrv *http.Server
-	var streamLn net.Listener
-	if activityHub != nil {
-		streamMux := http.NewServeMux()
-		streamMux.HandleFunc("GET /cases/{id}/activities/stream", streamHandler.StreamCaseActivities)
-
-		streamAddr := ":" + mustPort("STREAM_PORT", "9092")
-		streamLn, err = (&net.ListenConfig{}).Listen(ctx, "tcp", streamAddr)
-		if err != nil {
-			slog.Error("failed to bind stream listener", "addr", streamAddr, "err", err)
-			os.Exit(1)
-		}
-
-		streamSrv = &http.Server{
-			// SecurityHeaders must stay outermost so its headers are present
-			// on every response, including a CORS preflight — CORS runs
-			// next, still ahead of Auth: a browser preflight carries no
-			// x-jwt-assertion header, so Auth must never see it first. See
-			// middleware.CORS's doc comment.
-			// STREAM_CORS_ALLOWED_ORIGINS is a comma-separated allow-list;
-			// unset denies all cross-origin requests (fail-closed — see
-			// middleware.CORS's doc comment for why).
-			Handler: middleware.SecurityHeaders(
-				middleware.CORS(splitComma(os.Getenv("STREAM_CORS_ALLOWED_ORIGINS")))(
-					middleware.CorrelationID(
-						authMiddleware(
-							middleware.Logger(streamMux),
-						),
-					),
-				),
-			),
-			ReadHeaderTimeout: 10 * time.Second,
-			ReadTimeout:       30 * time.Second,
-			WriteTimeout:      0,
-			IdleTimeout:       0,
-		}
-
-		go func() {
-			if err := streamSrv.Serve(streamLn); err != nil && err != http.ErrServerClosed {
-				slog.Error("stream server exited", "err", err)
-				os.Exit(1)
-			}
-		}()
-		slog.Info("case-activity stream server started", "addr", streamLn.Addr().String())
-
-		if caseEventsConsumer != nil {
-			go caseEventsConsumer.Run(ctx, caseevents.NewHandler(activityHub).Handle)
-			slog.Info("case-events consumer started")
-		}
+	if caseEventsConsumer != nil {
+		go caseEventsConsumer.Run(ctx, caseevents.NewHandler(activityHub).Handle)
+		slog.Info("case-events consumer started")
 	}
 
 	<-ctx.Done()
@@ -221,23 +178,8 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	// Both listeners get the shutdown goroutine's own use of shutdownCtx,
-	// running concurrently rather than one after the other.
-	var wg sync.WaitGroup
-	if streamSrv != nil {
-		wg.Go(func() {
-			if err := streamSrv.Shutdown(shutdownCtx); err != nil {
-				slog.Error("stream server graceful shutdown failed", "err", err)
-			}
-		})
-	}
-	var healthSrvErr error
-	wg.Go(func() {
-		healthSrvErr = healthSrv.Shutdown(shutdownCtx)
-	})
-	wg.Wait()
-	if healthSrvErr != nil {
-		slog.Error("graceful shutdown failed", "err", healthSrvErr)
+	if err := streamSrv.Shutdown(shutdownCtx); err != nil {
+		slog.Error("stream server graceful shutdown failed", "err", err)
 		os.Exit(1)
 	}
 

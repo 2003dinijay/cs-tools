@@ -172,7 +172,7 @@ func TestEngine_NamesTheSREChain(t *testing.T) {
 			if err := e.Tick(ctx, testClock); err != nil {
 				t.Fatal(err)
 			}
-			if len(chat.posted) != 1 || chat.posted[0].RungRole != c.chain+" L1 support" || chat.posted[0].RecipientName != c.l1 {
+			if len(chat.posted) != 1 || chat.posted[0].RungRole != c.chain+" L1 Support" || chat.posted[0].RecipientName != c.l1 {
 				t.Fatalf("cards = %+v; want one %s L1 card for %s", chat.posted, c.chain, c.l1)
 			}
 			if !strings.Contains(st.Plan.Trigger.VoiceMessagePlain(), c.chain) {
@@ -191,7 +191,7 @@ func TestEngine_NamesTheSREChain(t *testing.T) {
 // Without rotas nothing changes in what people read.
 func TestEngine_UnknownRotaKeepsTheOldWording(t *testing.T) {
 	tr := Trigger{Routing: RoutingContext{Ladder: LadderSRE}}
-	if got := rungRole(Level0, tr.Routing); got != "L1 support" {
+	if got := rungRole(Level0, tr.Routing); got != "L1 Support" {
 		t.Errorf("rung role = %q", got)
 	}
 	if strings.Contains(tr.VoiceMessagePlain(), "chain") {

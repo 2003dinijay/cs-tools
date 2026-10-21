@@ -62,6 +62,13 @@ type NewServiceRequestFromIssue struct {
 	// (migration 0206).
 	Owner      string
 	Repository string
+	// ServiceNowID, ServiceNowNumber and ServiceNowWSO2ID are the record
+	// ServiceNow created first, under dual-write (its sys_id as a UUID, its CS
+	// number, its WSO2 Case ID). Set, the Postgres row takes them as they are,
+	// as a portal-created record does; empty, the GitHub series numbers it.
+	ServiceNowID     string
+	ServiceNowNumber string
+	ServiceNowWSO2ID string
 }
 
 type NewChangeRequestFromIssue struct {
@@ -85,6 +92,12 @@ type NewChangeRequestFromIssue struct {
 	Catalog string
 	SRType  string
 	Fields  map[string]string
+	// ServiceNowDescription is the description as ServiceNow holds it, for a
+	// record ServiceNow numbered (created ServiceNow-first). Such a record
+	// keeps ServiceNow's text on an edit, as on create; a record of the GitHub
+	// series (SR-GH-/CHG-GH-) keeps the issue's Markdown, which the portal
+	// renders by that prefix. Empty always writes Description.
+	ServiceNowDescription string
 }
 
 // ErrChangeRequestExists means the issue already has one.
@@ -211,11 +224,12 @@ func (r *githubMutationRepository) UpdateFromIssue(ctx context.Context, id strin
 		const updateWorkItem = `
 			UPDATE work_item
 			SET subject     = $2,
-			    description = COALESCE($3, description),
+			    description = COALESCE(CASE WHEN number LIKE 'SR-GH-%' OR number LIKE 'CHG-GH-%' THEN $3
+			                                ELSE COALESCE($5, $3) END, description),
 			    updated_on  = NOW(),
 			    updated_by  = $4
 			WHERE id = $1::uuid`
-		if _, err := tx.Exec(ctx, updateWorkItem, id, in.Subject, nullable(in.Description), in.CreatedBy); err != nil {
+		if _, err := tx.Exec(ctx, updateWorkItem, id, in.Subject, nullable(in.Description), in.CreatedBy, nullable(in.ServiceNowDescription)); err != nil {
 			return fmt.Errorf("github: update work item: %w", err)
 		}
 
@@ -500,10 +514,13 @@ func (r *githubMutationRepository) CreateServiceRequestFromIssue(ctx context.Con
 			                       number, wso2_id, subject, type, description,
 			                       account_id, github_issue_number,
 			                       project_id, github_owner, github_repository)
-			VALUES (gen_random_uuid(), NOW(), NOW(), $1, $1,
-			        next_github_service_request_number(),
+			VALUES (COALESCE(NULLIF($9, '')::uuid, gen_random_uuid()), NOW(), NOW(), $1, $1,
+			        -- ServiceNow's numbers when it created the record first. COALESCE
+			        -- stops at the first non-null argument, so the GitHub series is not
+			        -- advanced for a record that does not use it.
+			        COALESCE(NULLIF($10, ''), next_github_service_request_number()),
 			        -- Required for SERVICE_REQUEST by work_item_wso2_id_required_by_type.
-			        next_github_service_request_wso2_id(),
+			        COALESCE(NULLIF($11, ''), next_github_service_request_wso2_id()),
 			        $2, 'SERVICE_REQUEST', $3,
 			        NULLIF($4, '')::uuid, $5,
 			        NULLIF($6, '')::uuid, NULLIF($7, ''), NULLIF($8, ''))
@@ -512,6 +529,7 @@ func (r *githubMutationRepository) CreateServiceRequestFromIssue(ctx context.Con
 		if err := tx.QueryRow(ctx, insertWorkItem,
 			in.CreatedBy, in.Subject, nullable(in.Description), in.AccountID, in.IssueNumber,
 			in.ProjectID, in.Owner, in.Repository,
+			in.ServiceNowID, in.ServiceNowNumber, in.ServiceNowWSO2ID,
 		).Scan(&id, &number); err != nil {
 			// A concurrent delivery for the same issue got here first. GitHub sends
 			// an issue as several events (opened, then labeled), so this is the

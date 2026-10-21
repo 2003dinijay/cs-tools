@@ -33,4 +33,49 @@ describe("CallRequestCard", () => {
     fireEvent.click(screen.getByRole("button", { name: /approve/i }));
     expect(onApproveClick).toHaveBeenCalledTimes(1);
   });
+
+  it("shows preferred times and the scheduled time once an agent has accepted", () => {
+    render(
+      <ThemeProvider theme={createTheme()}>
+        <CallRequestCard
+          call={
+            {
+              id: "1",
+              state: { label: "Scheduled" },
+              preferredTimes: ["2026-12-31T09:00:00Z"],
+              scheduleTime: "2026-12-31T10:30:00Z",
+              durationMin: 30,
+            } as never
+          }
+          userTimeZone="UTC"
+        />
+      </ThemeProvider>,
+    );
+
+    expect(screen.getByText("Preferred Times")).toBeInTheDocument();
+    expect(screen.getByText("Scheduled Time")).toBeInTheDocument();
+    expect(screen.getByText(/9:00/)).toBeInTheDocument();
+    expect(screen.getByText(/10:30/)).toBeInTheDocument();
+  });
+
+  it("hides scheduled time until an agent has set one", () => {
+    render(
+      <ThemeProvider theme={createTheme()}>
+        <CallRequestCard
+          call={
+            {
+              id: "1",
+              state: { label: "Pending on WSO2" },
+              preferredTimes: ["2026-12-31T09:00:00Z"],
+              scheduleTime: null,
+            } as never
+          }
+          userTimeZone="UTC"
+        />
+      </ThemeProvider>,
+    );
+
+    expect(screen.getByText("Preferred Times")).toBeInTheDocument();
+    expect(screen.queryByText("Scheduled Time")).not.toBeInTheDocument();
+  });
 });

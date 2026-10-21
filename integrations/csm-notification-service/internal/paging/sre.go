@@ -182,19 +182,19 @@ func (l Level) RoleIn(ladder Ladder) string {
 	}
 	switch l {
 	case Level0:
-		return "L1 support"
+		return "L1 Support"
 	case Level1:
-		return "L2 support"
+		return "L2 Support"
 	case Level2:
-		return "L3 support"
+		return "L3 Support"
 	case Level3:
-		return "L4 support"
+		return "L4 Support"
 	}
 	return "Unknown rung"
 }
 
 // rungRole is RoleIn with the SRE chain's name in front when it is known
-// ("SaaS SRE L1 support"), so a card in a room that sees both chains says
+// ("SaaS SRE L1 Support"), so a card in a room that sees both chains says
 // which one is climbing.
 func rungRole(level Level, rc RoutingContext) string {
 	role := level.RoleIn(rc.Ladder)

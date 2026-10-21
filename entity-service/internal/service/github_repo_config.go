@@ -61,15 +61,22 @@ type githubFileReader interface {
 type repoCaseConfig struct {
 	AccountID string
 	ProjectID string
+	// Category and AnnouncementType are optional; ServiceNow's GitHub case
+	// API takes them on create, as servicenow_create_case.yml sent them.
+	Category         string
+	AnnouncementType string
 }
 
 // parseRepoCaseConfig reads case.account and case.project. Both are
-// required, as servicenow_create_case.yml requires them.
+// required, as servicenow_create_case.yml requires them. case.category and
+// case.announcement_type are read when present.
 func parseRepoCaseConfig(raw []byte) (repoCaseConfig, error) {
 	var doc struct {
 		Case struct {
-			Account string `yaml:"account"`
-			Project string `yaml:"project"`
+			Account          string `yaml:"account"`
+			Project          string `yaml:"project"`
+			Category         string `yaml:"category"`
+			AnnouncementType string `yaml:"announcement_type"`
 		} `yaml:"case"`
 	}
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
@@ -83,7 +90,11 @@ func parseRepoCaseConfig(raw []byte) (repoCaseConfig, error) {
 	if err != nil {
 		return repoCaseConfig{}, err
 	}
-	return repoCaseConfig{AccountID: account, ProjectID: project}, nil
+	return repoCaseConfig{
+		AccountID: account, ProjectID: project,
+		Category:         strings.TrimSpace(doc.Case.Category),
+		AnnouncementType: strings.TrimSpace(doc.Case.AnnouncementType),
+	}, nil
 }
 
 // recordIDFromConfig accepts a ServiceNow sys_id (32 hex) or a UUID and
@@ -201,6 +212,7 @@ func (s *githubSyncService) resolveMapping(ctx context.Context, owner, repo stri
 			return &repository.RepoMapping{
 				AccountID: e.cfg.AccountID, AccountName: name, ProjectID: e.cfg.ProjectID,
 				Owner: owner, Repository: repo,
+				Category: e.cfg.Category, AnnouncementType: e.cfg.AnnouncementType,
 			}, "", nil
 		}
 	}

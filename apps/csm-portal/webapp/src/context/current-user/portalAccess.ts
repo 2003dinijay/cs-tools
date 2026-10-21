@@ -45,6 +45,16 @@ export const PORTAL_ROLE = {
   // -- reaching PATCH/DELETE /comments/{id} for a comment the holder did NOT
   // author. See canUpdateDeleteAnyComment below.
   commentUpdater: "comment_updater",
+  // Grants PermViewOperations and PermViewSecurityCenter on the backend
+  // (internal/handler/access.go) -- read-only access to the Operations area
+  // and Security Center (security reports + vulnerabilities), and nothing
+  // else: never PermWrite, so both sections render read-only for a holder
+  // with no other role. See canUseOperations/canUseSecurityCenter below.
+  securityTeam: "security_team",
+  // Grants PermManageOnboarding on the backend (internal/handler/access.go) --
+  // setting a project's onboarding status and owner via PATCH /projects/{id},
+  // and nothing else. It grants no read access. See canEditProjectOnboarding.
+  onboardingLead: "onboarding_lead",
 } as const;
 
 // Roles that, held alone, let someone use the portal at all. announcement_creator
@@ -52,12 +62,16 @@ export const PORTAL_ROLE = {
 // write may send an announcement (see canCreateAnnouncement), so on its own it
 // grants nothing, and counting it would let a caller holding nothing else in
 // past the "no access" screen into a portal where every call is a 403.
+// onboarding_lead is excluded too: the backend gives it no read permission,
+// only the one onboarding PATCH.
 // comment_updater is excluded for the identical reason: on its own it grants
 // only editing/deleting someone else's comment (canUpdateDeleteAnyComment),
 // and reaching a comment at all first requires being able to view the case
 // it's on -- a comment_updater-only caller has no view access of any kind.
 const ROLES_THAT_GRANT_ACCESS: readonly string[] = Object.values(PORTAL_ROLE).filter(
-  (role) => role !== PORTAL_ROLE.announcementCreator && role !== PORTAL_ROLE.commentUpdater,
+  (role) => role !== PORTAL_ROLE.announcementCreator &&
+    role !== PORTAL_ROLE.commentUpdater &&
+    role !== PORTAL_ROLE.onboardingLead,
 );
 
 export interface PortalAccess {
@@ -74,7 +88,10 @@ export interface PortalAccess {
   /**
    * The Operations section (incidents, change requests, problems, outages,
    * service requests). Support-portal-lite had no such area, so its
-   * view-oriented roles never saw one: only full-access roles do here.
+   * view-oriented roles never saw one: only full-access roles do here, plus
+   * the dedicated `security_team` role (read-only -- that role never holds
+   * {@link canWrite}, so this section renders read-only for a holder with no
+   * other role). Mirrors the backend's `PermViewOperations`.
    */
   canUseOperations: boolean;
   /**
@@ -108,9 +125,30 @@ export interface PortalAccess {
    */
   canCreateUser: boolean;
   /**
+   * Directly overriding a project's overall closure state (OPEN/READ_ONLY/
+   * CLOSED/RESTRICTED/SUSPENDED) via `PATCH /projects/{id}`'s `closureState`
+   * field. `admin` only, same reasoning as {@link canCreateUser} — mirrors
+   * the backend's in-handler `PermAdmin` narrowing on that one field (see
+   * `apps/csm-portal/backend`'s own CLAUDE.md,
+   * "PATCH /projects/{id}: closureState requires PermAdmin").
+   */
+  canUpdateProjectClosureState: boolean;
+  /**
+   * Setting a project's onboarding status and onboarding owner via
+   * `PATCH /projects/{id}`'s `onboardingStatus`/`onboardingOwner` fields.
+   * `onboarding_lead` or `admin` -- `cs_engineer` alone does not hold it.
+   * Mirrors the backend's in-handler `PermManageOnboarding` check on those
+   * two fields (see `apps/csm-portal/backend`'s own CLAUDE.md,
+   * "PermManageOnboarding is checked in-handler on PATCH /projects/{id}").
+   * The backend's 403 is the real gate; this only decides whether the
+   * controls are offered.
+   */
+  canEditProjectOnboarding: boolean;
+  /**
    * The Security Center section (Security reports + Vulnerabilities tabs)
-   * and the API calls behind it. `admin` and `cs_engineer` only — mirrors
-   * the backend's `PermViewSecurityCenter`, which (unlike `PermView`) plain
+   * and the API calls behind it. `admin`, `cs_engineer`, and the dedicated
+   * `security_team` role (read-only) — mirrors the backend's
+   * `PermViewSecurityCenter`, which (unlike `PermView`) plain
    * viewer/escalator/attachment_downloader/usage_metrics_viewer/
    * timecard_approver/dashboard_designer do not hold.
    */
@@ -160,22 +198,44 @@ export interface PortalAccess {
   canUpdateDeleteAnyComment: boolean;
   /**
    * The small set of sections that used to live in the separate, now-removed
-   * "Support Portal Lite" app (Customer Health, User scan, SLA/Time/CS
-   * project reports, and the extra Account detail tabs they added): `viewer`
-   * only, regardless of what other roles the caller also holds — mirrors the
-   * backend's `PermViewerAccess` (`access.go`), which is built only from the
-   * viewer role, not folded into the usual "full access" `cs_engineer`/`admin`
+   * "Support Portal Lite" app (User scan, the Time project report, and the
+   * extra Account detail tabs they added): `viewer` only, regardless of what
+   * other roles the caller also holds — mirrors the backend's
+   * `PermViewerAccess` (`access.go`), which is built only from the viewer
+   * role, not folded into the usual "full access" `cs_engineer`/`admin`
    * bundle the way every other flag above is. A `cs_engineer` who does not
    * also separately hold `viewer` does not get these sections; one who holds
    * both does, same as before this app was merged into the main portal.
+   * Customer Health used to be in this set and now has its own, wider flag
+   * ({@link canViewCustomerHealth}).
    */
   isSplAudience: boolean;
+  /**
+   * The Customer Health dashboard (list, account detail, risk and action
+   * items): `viewer`, the audience it was built for, plus `cs_engineer` and
+   * `admin` (full access), who work the same accounts. Unlike
+   * {@link isSplAudience} it does not require `viewer` — a `cs_engineer` or
+   * `admin` who does not also hold it still sees the dashboard. Mirrors the
+   * backend's `PermViewCustomerHealth` (`access.go`).
+   */
+  canViewCustomerHealth: boolean;
+  /**
+   * Where the sidebar offers Customer Health, not whether it is offered: true
+   * for a `viewer` who holds neither `cs_engineer` nor `admin`. For them the
+   * Customers entry opens as a dropdown (Accounts, Projects, Customer Health)
+   * and the separate top-level Customer Health entry is dropped; everyone else
+   * who can see the dashboard ({@link canViewCustomerHealth}) keeps the
+   * top-level entry. A `cs_engineer` or `admin` who also holds `viewer` counts
+   * as a CS engineer here. The page, its route and the backend permission are
+   * the same either way.
+   */
+  showCustomerHealthUnderCustomers: boolean;
   /**
    * Usage metrics requires `cs_engineer`/`admin` (full access) or the
    * dedicated `usage_metrics_viewer` role. Unlike {@link isSplAudience},
    * holding plain `viewer` does NOT grant this on its own — reported live:
    * a viewer-only account must not see this section at all, even though it
-   * (like Customer Health/User Scan) is an ex-Support-Portal-Lite feature.
+   * (like User Scan) is an ex-Support-Portal-Lite feature.
    */
   canViewUsageMetrics: boolean;
   /**
@@ -223,6 +283,20 @@ export interface PortalAccess {
    * see this under the old exactly-`{viewer}` check.
    */
   canViewWorkItemsStaffView: boolean;
+  /**
+   * Holds the `admin` role specifically — the one capability gate in this
+   * type keyed on the role itself rather than a derived permission, needed by
+   * the feature-preview toggle (see `featurePreview.ts`) which is
+   * deliberately admin-only regardless of any other capability a caller
+   * might hold.
+   */
+  isAdmin: boolean;
+  /**
+   * The SLAs tab on a case's detail page. `admin`, `cs_engineer`, or the
+   * dedicated `security_team` role — every other role, `viewer` included,
+   * does not see this tab at all.
+   */
+  canViewSlaTab: boolean;
 }
 
 /**
@@ -258,17 +332,25 @@ export function getPortalAccess(roles: string[] | undefined): PortalAccess {
       canWrite: true,
       canAddWorkNotes: true,
       canCreateUser: true,
+      canUpdateProjectClosureState: true,
+      canEditProjectOnboarding: true,
       canUseSecurityCenter: true,
       canUsePlg: true,
       canManagePlaybooks: true,
       canCreateAnnouncement: true,
       canUpdateDeleteAnyComment: true,
       isSplAudience: true,
+      canViewCustomerHealth: true,
+      // Placement, not a capability: the bypass grants full access, and full
+      // access keeps the top-level entry.
+      showCustomerHealthUnderCustomers: false,
       canViewUsageMetrics: true,
       canViewStaffSections: true,
       canViewTeamSchedule: true,
       canViewSettings: true,
       canViewWorkItemsStaffView: true,
+      isAdmin: true,
+      canViewSlaTab: true,
     };
   }
   const held = new Set((roles ?? []).map((r) => r.toLowerCase()));
@@ -281,21 +363,27 @@ export function getPortalAccess(roles: string[] | undefined): PortalAccess {
     // further limited to the case's ABT team leads (CsmCaseDetailPage).
     canEscalate: full || has(PORTAL_ROLE.escalator),
     canDownloadAttachment: full || has(PORTAL_ROLE.attachmentDownloader),
-    canUseOperations: full,
+    canUseOperations: full || has(PORTAL_ROLE.securityTeam),
     canUseTimeCardsAndUpdates: full || has(PORTAL_ROLE.timecardApprover),
     canWrite: full,
     canAddWorkNotes: full || has(PORTAL_ROLE.worknoteCreator),
     canCreateUser: isAdmin,
-    canUseSecurityCenter: full,
+    canUpdateProjectClosureState: isAdmin,
+    canEditProjectOnboarding: isAdmin || has(PORTAL_ROLE.onboardingLead),
+    canUseSecurityCenter: full || has(PORTAL_ROLE.securityTeam),
     canUsePlg: full,
     canManagePlaybooks: isAdmin,
     canCreateAnnouncement: full && (isAdmin || has(PORTAL_ROLE.announcementCreator)),
     canUpdateDeleteAnyComment: isAdmin || has(PORTAL_ROLE.commentUpdater),
     isSplAudience: has(PORTAL_ROLE.viewer),
+    canViewCustomerHealth: full || has(PORTAL_ROLE.viewer),
+    showCustomerHealthUnderCustomers: has(PORTAL_ROLE.viewer) && !full,
     canViewUsageMetrics: full || has(PORTAL_ROLE.usageMetricsViewer),
     canViewStaffSections: !(held.size === 1 && has(PORTAL_ROLE.viewer)),
     canViewTeamSchedule: full || has(PORTAL_ROLE.commentUpdater),
     canViewSettings: full,
     canViewWorkItemsStaffView: full || has(PORTAL_ROLE.timecardApprover),
+    isAdmin,
+    canViewSlaTab: full || has(PORTAL_ROLE.securityTeam),
   };
 }

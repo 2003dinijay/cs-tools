@@ -19,6 +19,7 @@
 import { useState, type JSX } from "react";
 import type { PagingReadinessChain, PagingReadinessGap } from "../types";
 import { ADD_TO_PROFILE_HINT } from "../utils/pagingPhone";
+import { InlineSkeleton } from "./ScheduleSkeleton";
 
 /** An inline action on a phone gap, where the reader may act on that person. */
 export interface PhoneGapAction {
@@ -78,14 +79,16 @@ export default function PagingReadinessStrip({
 
   if (isLoading) {
     return (
-      <section className="cp-ready" aria-label={`${name} paging readiness`}>
-        <p className="cp-ready-head">Checking the {name} alert chain…</p>
+      <section className="cp-ready" aria-label={`${name} alert readiness`}>
+        <p className="cp-ready-head">
+          <InlineSkeleton label={`Checking the ${name} alert chain…`} w="16em" />
+        </p>
       </section>
     );
   }
   if (isError || !chain) {
     return (
-      <section className="cp-ready" aria-label={`${name} paging readiness`}>
+      <section className="cp-ready" aria-label={`${name} alert readiness`}>
         <p className="cp-ready-head">
           {isError
             ? `Could not check whether the ${name} alert chain is ready.`
@@ -143,7 +146,7 @@ export default function PagingReadinessStrip({
   };
 
   return (
-    <section className={`cp-ready ${chain.ready ? "ok" : "gap"}`} aria-label={`${name} paging readiness`}>
+    <section className={`cp-ready ${chain.ready ? "ok" : "gap"}`} aria-label={`${name} alert readiness`}>
       <p className="cp-ready-head">
         <b>{name}</b> — {head}
       </p>

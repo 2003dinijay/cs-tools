@@ -14,38 +14,53 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Ported from the source app's components/CSPieChart.tsx — recharts instead
-// of chart.js/react-chartjs-2 (see CSBarChart.tsx's header comment for why).
-import { Cell, Legend, Pie, PieChart as RechartsPieChart, ResponsiveContainer, Tooltip } from "recharts";
-import { COLOURS } from "../constants";
+import { Box, Typography } from "@wso2/oxygen-ui";
+import { PieChart } from "@wso2/oxygen-ui-charts-react";
+import { useReportChartColors } from "./useReportChartColors";
 
 interface ChartProps {
   deploymentNames: string[];
   data: { [key: string]: number };
 }
 
-export default function CSPieChart({ deploymentNames, data }: ChartProps) {
-  if (deploymentNames.length === 0 || Object.keys(data).length === 0) {
-    return <p style={{ textAlign: "center" }}>No data available for deployment cases.</p>;
-  }
+const CHART_HEIGHT = 300;
 
-  const colours = COLOURS.slice(0, deploymentNames.length);
-  const rows = deploymentNames.map((name) => ({ name, value: data[name] || 0 }));
+export default function CSPieChart({ deploymentNames, data }: ChartProps) {
+  const colors = useReportChartColors();
+  const rows = deploymentNames
+    .map((name) => ({ name: `${name} (${data[name] || 0})`, value: data[name] || 0 }))
+    .filter((row) => row.value > 0);
 
   return (
-    <div style={{ width: "100%", height: 250 }}>
-      <p style={{ fontWeight: 600, marginBottom: 4 }}>Cases by Deployment</p>
-      <ResponsiveContainer width="100%" height="85%">
-        <RechartsPieChart>
-          <Pie data={rows} dataKey="value" nameKey="name" label={(entry) => `${entry.name} (${entry.value})`}>
-            {rows.map((row, i) => (
-              <Cell key={row.name} fill={colours[i % colours.length]} />
-            ))}
-          </Pie>
-          <Tooltip formatter={(value, name) => [`${value} cases`, name]} />
-          <Legend verticalAlign="bottom" />
-        </RechartsPieChart>
-      </ResponsiveContainer>
-    </div>
+    <Box className="report-chart" sx={{ width: "100%", minWidth: 0 }}>
+      <Typography component="p" variant="subtitle2" sx={{ fontWeight: 600, mb: 1 }}>
+        Cases by deployment
+      </Typography>
+      {rows.length === 0 ? (
+        <Typography variant="body2" color="text.secondary" sx={{ textAlign: "center", py: 4 }}>
+          No data available for deployment cases.
+        </Typography>
+      ) : (
+        <Box sx={{ width: "100%", height: CHART_HEIGHT }}>
+          <PieChart
+            height={CHART_HEIGHT}
+            width="100%"
+            data={rows}
+            colors={colors}
+            nameKey="name"
+            innerRadius={58}
+            outerRadius={86}
+            paddingAngle={2}
+            startAngle={90}
+            endAngle={-270}
+            isAnimationActive={false}
+            pies={[{ dataKey: "value", nameKey: "name" }]}
+            margin={{ top: 4, right: 4, bottom: 0, left: 4 }}
+            legend={{ show: true, align: "center", verticalAlign: "bottom" }}
+            tooltip={{ show: true }}
+          />
+        </Box>
+      )}
+    </Box>
   );
 }

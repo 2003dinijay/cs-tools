@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/apps/today-i-learned/backend/internal/entity"
+	"github.com/wso2-open-operations/cs-tools/apps/today-i-learned/backend/internal/entry"
 	"github.com/wso2-open-operations/cs-tools/apps/today-i-learned/backend/internal/middleware"
 	"github.com/wso2-open-operations/cs-tools/apps/today-i-learned/backend/internal/novera"
 	"github.com/wso2-open-operations/cs-tools/apps/today-i-learned/backend/internal/store"
@@ -47,6 +48,10 @@ type Config struct {
 	WebappClientID string
 	WebappBaseURL  string
 
+	// WhatMaxLength is ENTRY_TEXT_MAX_LENGTH: the most characters of plain
+	// text a learning may have.
+	WhatMaxLength int
+
 	// Entity is nil when customer suggestions are off.
 	Entity *entity.Config
 	// Novera is nil when new entries aren't announced.
@@ -58,7 +63,7 @@ type Config struct {
 func Load(getenv func(string) string) (Config, []string, error) {
 	r := reader{getenv: getenv}
 	cfg := Config{
-		Port:         r.port("PORT", "8077"),
+		Port:         r.port("PORT", "9090"),
 		ReadTimeout:  r.duration("REST_READ_TIMEOUT", 15*time.Second),
 		WriteTimeout: r.duration("REST_WRITE_TIMEOUT", 45*time.Second),
 		CORSOrigins:  r.list("CORS_ALLOWED_ORIGINS"),
@@ -68,6 +73,7 @@ func Load(getenv func(string) string) (Config, []string, error) {
 			User:     r.required("DB_USER"),
 			Password: r.required("DB_PASSWORD"),
 			Name:     r.required("DB_NAME"),
+			TLS:      r.dbTLS("DB_TLS"),
 		},
 		JWKSEndpoint: r.url("AUTH_JWKS_ENDPOINT", true),
 		Auth: middleware.AuthConfig{
@@ -78,6 +84,7 @@ func Load(getenv func(string) string) (Config, []string, error) {
 		},
 		WebappClientID: r.optional("ONE_WSO2_WEBAPP_CLIENT_ID"),
 		WebappBaseURL:  strings.TrimRight(r.url("ONE_WSO2_BASE_URL", false), "/"),
+		WhatMaxLength:  r.intInRange("ENTRY_TEXT_MAX_LENGTH", entry.DefaultWhatMaxLength, 1, entry.MaxWhatMaxLength),
 	}
 
 	if r.anySet("ENTITY_SERVICE_BASE_URL", "ENTITY_SERVICE_TOKEN_URL", "ENTITY_SERVICE_CLIENT_ID", "ENTITY_SERVICE_CLIENT_SECRET") {
@@ -100,6 +107,9 @@ func Load(getenv func(string) string) (Config, []string, error) {
 	}
 
 	var warnings []string
+	if cfg.DB.TLS == store.TLSSkipVerify {
+		warnings = append(warnings, "DB_TLS is skip-verify: the database connection is encrypted, but its certificate is not checked")
+	}
 	if cfg.WebappClientID == "" {
 		warnings = append(warnings, "ONE_WSO2_WEBAPP_CLIENT_ID is not set: no one can share or edit entries")
 	}
@@ -172,6 +182,20 @@ func (r *reader) url(key string, required bool) string {
 	return v
 }
 
+// dbTLS reads false (or unset), true or skip-verify, and nothing else.
+func (r *reader) dbTLS(key string) store.TLSMode {
+	switch r.optional(key) {
+	case "", "false":
+		return store.TLSOff
+	case "true":
+		return store.TLSVerify
+	case "skip-verify":
+		return store.TLSSkipVerify
+	}
+	r.problems = append(r.problems, key+" must be true, false or skip-verify")
+	return store.TLSOff
+}
+
 func (r *reader) port(key, fallback string) string {
 	v := r.optional(key)
 	if v == "" {
@@ -181,6 +205,19 @@ func (r *reader) port(key, fallback string) string {
 		r.problems = append(r.problems, key+" must be a port number")
 	}
 	return v
+}
+
+func (r *reader) intInRange(key string, fallback, lo, hi int) int {
+	v := r.optional(key)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < lo || n > hi {
+		r.problems = append(r.problems, fmt.Sprintf("%s must be a whole number from %d to %d", key, lo, hi))
+		return fallback
+	}
+	return n
 }
 
 func (r *reader) duration(key string, fallback time.Duration) time.Duration {

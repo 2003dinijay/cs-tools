@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -35,10 +36,12 @@ const (
 	orgExternal = "external"
 
 	domainDefault    = "DEFAULT"
+	attrID           = "id"
 	attrPhoneNumbers = "phoneNumbers"
 	attrUserName     = "userName"
 	attrSchema       = "urn:scim:wso2:schema"
 	attrRoles        = "roles"
+	attrName         = "name.givenName,name.familyName"
 
 	mobilePhoneType = "mobile"
 
@@ -46,10 +49,15 @@ const (
 )
 
 // SearchUser fetches SCIM data for the given email and returns the extracted
-// phone number, last password update time, and role assignment, mirroring
-// searchUsers + processPhoneNumber + processLastPasswordUpdateTime in the
-// Ballerina SCIM module (roles has no Ballerina-side precedent -- it backs the
-// profile page's own role display, added later than that mirrored logic).
+// phone number, last password update time, role assignment, and the user's
+// own Asgardeo ID (for a subsequent GetUserByID call), mirroring searchUsers
+// + processPhoneNumber + processLastPasswordUpdateTime in the Ballerina SCIM
+// module (roles and id have no Ballerina-side precedent -- id backs
+// GetUserByID, added later than that mirrored logic). A search response only
+// returns whichever attributes are explicitly requested -- id is not
+// returned for free, the same convention the SCIM operations service's own
+// getUserByUserName follows -- so it must be requested here even though
+// nothing SearchUser itself computes needs it.
 // Returns nil if no matching user is found in the SCIM service.
 func (c *Client) SearchUser(ctx context.Context, email string) (*UserInfo, error) {
 	startIndex := 1
@@ -58,7 +66,7 @@ func (c *Client) SearchUser(ctx context.Context, email string) (*UserInfo, error
 	for {
 		reqBody, err := json.Marshal(scimSearchRequest{
 			Domain:     domainDefault,
-			Attributes: []string{attrPhoneNumbers, attrUserName, attrSchema, attrRoles},
+			Attributes: []string{attrID, attrPhoneNumbers, attrUserName, attrSchema, attrRoles, attrName},
 			Filter:     fmt.Sprintf("userName eq %s", email),
 			StartIndex: startIndex,
 		})
@@ -93,11 +101,17 @@ func (c *Client) SearchUser(ctx context.Context, email string) (*UserInfo, error
 		return nil, nil
 	}
 
-	return &UserInfo{
+	info := &UserInfo{
+		ID:                     found.ID,
 		PhoneNumber:            extractMobilePhone(*found),
 		LastPasswordUpdateTime: extractLastPasswordUpdateTime(*found),
 		Roles:                  []string(found.Roles),
-	}, nil
+	}
+	if found.Name != nil {
+		info.FirstName = found.Name.GivenName
+		info.LastName = found.Name.FamilyName
+	}
+	return info, nil
 }
 
 // SearchExternalUser checks whether the given email exists in the SCIM
@@ -180,6 +194,41 @@ func (c *Client) UpdateUserPhone(ctx context.Context, userID, mobile string) (*s
 	return extractMobilePhone(updatedUser), nil
 }
 
+// GetUserByID fetches the full SCIM user record for the given Asgardeo user
+// ID (see UserInfo.ID, from a prior SearchUser call -- there is no lookup by
+// email alone) and returns both the role assignments and the group
+// memberships from it, each carrying both the resource's own Asgardeo ID and
+// its display name.
+//
+// This is the canonical resource read, used instead of trusting the "roles"
+// field already present on a /Users/.search result (scimUser.Roles /
+// SearchUser's own UserInfo.Roles): a search response only carries whichever
+// attributes the caller requested, while a direct GET of /Users/{id} always
+// returns the complete representation. The practical reason to prefer it
+// here specifically: matching a held role against ASGARDEO_ROLE_IDS needs
+// each role's ID, not just its display name (two distinct roles can share a
+// name), and getting a reliable ID for every entry is worth the extra round
+// trip. Group membership (for ASGARDEO_ROLE_GROUP_NAMES, see
+// handler.AccessGuard.WithGroupNames) rides along on this same response at
+// no further cost -- there is no separate "get a user's groups" call.
+func (c *Client) GetUserByID(ctx context.Context, userID string) (UserAssignments, error) {
+	path := "/organizations/" + org + "/users/" + url.PathEscape(userID)
+	raw, err := c.do(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return UserAssignments{}, err
+	}
+
+	var user scimUserByID
+	if err := json.Unmarshal(raw, &user); err != nil {
+		return UserAssignments{}, fmt.Errorf("scim: decode user response: %w", err)
+	}
+	roles := make([]RoleAssignment, 0, len(user.Roles))
+	roles = append(roles, user.Roles...)
+	groups := make([]GroupAssignment, 0, len(user.Groups))
+	groups = append(groups, user.Groups...)
+	return UserAssignments{Roles: roles, Groups: groups}, nil
+}
+
 // GetRole fetches the role with the given Asgardeo role ID and returns its
 // member users. roleID is deployment configuration set once, out of band
 // (e.g. TIMECARD_APPROVER_ASGARDEO_ROLE_ID) -- not looked up by name on every
@@ -241,14 +290,36 @@ func (c *Client) AddRoleMembers(ctx context.Context, roleID string, emails []str
 }
 
 // emailFromDisplay strips a SCIM role member's "<domain>/" prefix (e.g.
-// "DEFAULT/jane@wso2.com" -> "jane@wso2.com"). Falls back to the raw value
-// when it carries no "/", rather than returning an empty string.
+// "DEFAULT/<email>" -> "<email>").
 func emailFromDisplay(display string) string {
-	if idx := strings.Index(display, "/"); idx >= 0 && idx+1 < len(display) {
-		return display[idx+1:]
+	return stripSCIMDomainPrefix(display)
+}
+
+// stripSCIMDomainPrefix strips a SCIM display value's leading "<domain>/"
+// prefix. Shared by emailFromDisplay (role members) and scimGroupAssignments
+// (group names, in types.go): confirmed live that a group's own SCIM
+// "display" comes back the identical "<domain>/<name>" shape role members'
+// emails do (e.g. "DEFAULT/<group name>", not the bare group name
+// ASGARDEO_ROLE_GROUP_NAMES is configured with) -- without stripping it,
+// every group-name match silently failed.
+//
+// The prefix is stripped only when it is verified as a domain token: a user
+// store domain is an upper-case identifier ("DEFAULT", "PRIMARY", "AD_CORP"),
+// matched by scimDomainPrefix. A name that merely contains "/" but does not
+// start with such a token (e.g. "team/ops") is returned unchanged, as is a
+// value with nothing after the "/". Residual ambiguity: an unprefixed name
+// whose first segment is itself upper-case ("OPS/admins") is indistinguishable
+// from a prefixed one by shape alone.
+func stripSCIMDomainPrefix(display string) string {
+	if m := scimDomainPrefix.FindStringSubmatch(display); m != nil && len(m[0]) < len(display) {
+		return display[len(m[0]):]
 	}
 	return display
 }
+
+// scimDomainPrefix matches a leading "<DOMAIN>/" where DOMAIN is an upper-case
+// identifier (letter first, then letters, digits, "_", "-" or ".").
+var scimDomainPrefix = regexp.MustCompile(`^[A-Z][A-Z0-9_.-]*/`)
 
 // extractMobilePhone returns the first phone number of type "mobile", or nil.
 // Mirrors processPhoneNumber in the Ballerina SCIM utils.

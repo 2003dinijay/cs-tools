@@ -117,6 +117,14 @@ type caseService struct {
 	// not apply here, and this is wanted under plain DATA_SOURCE=postgres too,
 	// where snMirror is never set at all.
 	slaSearchDelegate CaseService
+	// volumeTrendCache backs CaseVolumeTrend's per-day caching (see that
+	// method's own doc comment) -- wired via WithCaseVolumeTrendCache,
+	// which routes.go always calls with either a Redis-backed or an
+	// in-memory cache (see CaseVolumeTrendCache's own doc comment), so this
+	// is nil only for a *caseService built directly by a test. Checked for
+	// nil before use anyway, same posture as every other optional
+	// dependency on this struct.
+	volumeTrendCache CaseVolumeTrendCache
 }
 
 // srNotifier is what caseService needs from SRNoticeService; an interface so
@@ -193,6 +201,19 @@ func WithCSEngineerRole(svc CaseService, csEngineerRole string) CaseService {
 	return svc
 }
 
+// WithCaseVolumeTrendCache attaches the optional Redis-backed per-day cache
+// CaseVolumeTrend reads through to an already-constructed CaseService. Same
+// post-construction wiring shape as WithProductCategoryEnforcement/
+// WithCSEngineerRole, for the same reason -- optional, nil-safe to omit, and
+// every existing NewCaseService/NewCaseServiceWithSNWriteback call site keeps
+// working unchanged. A no-op if svc is not a *caseService or cache is nil.
+func WithCaseVolumeTrendCache(svc CaseService, cache CaseVolumeTrendCache) CaseService {
+	if cs, ok := svc.(*caseService); ok && cache != nil {
+		cs.volumeTrendCache = cache
+	}
+	return svc
+}
+
 // caseResolutionFields carries the resolution data that accompanies a
 // closed/solution_proposed transition to the ServiceNow mirror.
 type caseResolutionFields struct {
@@ -207,8 +228,24 @@ type caseResolutionFields struct {
 // plain, Postgres-backed caseService itself) would then have to satisfy —
 // named exactly for what UpdateCase's mirror needs: a bare PATCH with none of
 // snCaseService.UpdateCase's own read-before-write behavior.
+//
+// asSystemUser, when true, tells patchCaseFields to issue the mirror PATCH
+// without forwarding the triggering request's x-user-id-token -- the same
+// "no user token" shape SNGithubCases already uses so the ServiceNow
+// integration service authenticates as its own M2M ServiceNow user instead
+// of impersonating any particular caller (see SNGithubCases's own doc
+// comment). UpdateCase sets this when it has just defaulted
+// resolutionCode/cause/closeNotes for an EXTERNAL caller closing a case:
+// ServiceNow's scripted API has been observed to reject those three fields
+// outright when they arrive under a customer's own identity ("resolutionCode,
+// cause, and closeNotes cannot be provided by this user"), even though the
+// values themselves are the system-generated defaults, not anything the
+// customer supplied. Forwarding the customer's identity was never load-bearing
+// here -- the values aren't the customer's own input -- so the fix is to stop
+// asserting that identity for this specific mirror write, not to stop sending
+// the fields (which ServiceNow's own close workflow still requires).
 type snFieldPatcher interface {
-	patchCaseFields(ctx context.Context, caseID string, state *domain.CaseState, severity *domain.CaseSeverity, workState *domain.CaseWorkState, markFixIssued *bool, resolution *caseResolutionFields) (domain.UpdatedCase, error)
+	patchCaseFields(ctx context.Context, caseID string, state *domain.CaseState, severity *domain.CaseSeverity, workState *domain.CaseWorkState, markFixIssued *bool, resolution *caseResolutionFields, asSystemUser bool) (domain.UpdatedCase, error)
 }
 
 // snCommentMirror is implemented by *snCaseService (see
@@ -1637,12 +1674,20 @@ func (s *caseService) SearchCaseComments(ctx context.Context, req domain.SearchC
 	}, nil
 }
 
-// externalCloseDefaultNotes is the closeNotes value an external caller's
-// case close is defaulted to when they didn't (and, per the Customer
-// Portal's own close dialog, never would) supply one -- see UpdateCase's own
-// doc comment on why a default is used instead of exempting the field
-// outright.
-const externalCloseDefaultNotes = "Closed by the customer."
+// stateChangeCommitted reports whether the UpdateCase call that just wrote
+// newState committed a real state change, which is the condition for
+// dispatching the mirror PATCH. committedPrev is the state the repository read
+// under the row lock immediately before its own write, so it is exact even when
+// a concurrent UpdateCase on the same case wrote first. The pre-write view
+// (before) is only a fallback for a repository that reported no previous state,
+// and an unknown previous state counts as a change (the pre-existing posture:
+// better a redundant mirror write than a lost one).
+func stateChangeCommitted(committedPrev *domain.CaseState, before *domain.CaseView, newState domain.CaseState) bool {
+	if committedPrev != nil {
+		return *committedPrev != newState
+	}
+	return before == nil || before.State == nil || *before.State != newState
+}
 
 // UpdateCase implements CaseService.
 func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest) (domain.UpdateCaseResponse, error) {
@@ -1945,26 +1990,83 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 	// real, valid values on both sides, not nulls -- sparing the customer
 	// an internal-classification question they can't answer while still
 	// keeping both stores in sync.
+	//
+	// REVERSED 2026-10-13: the three lines above were the whole rationale
+	// for defaulting instead of leaving the fields nil, and that rationale
+	// is being deliberately overridden, not found wrong. Product decision:
+	// CSM must stop fabricating resolutionCode/cause/closeNotes values on a
+	// customer's own close -- "solved by customer"/"unknown"/a canned note
+	// are not things the customer said, and per a human operator's direct
+	// recollection of the prior Ballerina-entity + Ballerina-customer-portal-
+	// backend era, ServiceNow apparently never required these fields from a
+	// customer-initiated close at all, so this restores that looser
+	// behaviour rather than inventing new product behaviour. An external
+	// close with none of the three fields supplied now proceeds with all
+	// three nil, both in Postgres and in whatever reaches the async
+	// ServiceNow mirror (see the dispatch below, which already omits
+	// resolutionCode/cause/closeNotes from the mirror payload entirely
+	// whenever all three are nil -- this was already a valid prior state,
+	// e.g. an internal caller patching workState with no state change).
+	//
+	// This explicitly REVERSES the CodeRabbit-caught gap recorded just
+	// above, including the identity-based fix that followed it in
+	// production (case CS0378899: ServiceNow's scripted API rejected these
+	// exact default values outright under the external caller's own
+	// identity, "resolutionCode, cause, and closeNotes cannot be provided
+	// by this user" -- fixed by mirroring as the integration's own M2M
+	// identity whenever this block had just defaulted the fields,
+	// snFieldPatcher's asSystemUser).
+	//
+	// CodeRabbit-caught gap in THIS revision, fixed before merge: removing
+	// the defaulting did not, by itself, stop an external caller from
+	// supplying resolutionCode/cause/closeNotes EXPLICITLY -- and combined
+	// with asSystemUser, an explicitly-supplied value would now be written
+	// to Postgres and mirrored to ServiceNow under the integration's own
+	// system identity, successfully bypassing the very "this is WSO2's
+	// internal classification, not a customer's to set" rule
+	// CS0378899's own error message enforces. Before this fix, the
+	// pre-existing code path had the opposite, accidental protection: an
+	// external caller's own explicit value was previously mirrored under
+	// THEIR OWN identity (asSystemUser didn't exist yet) and ServiceNow
+	// itself would refuse it -- a protection that would have silently
+	// disappeared the moment asSystemUser started covering this case too.
+	// External callers are therefore refused outright, below, the moment
+	// they supply any of the three fields for a close/solution_proposed --
+	// never silently dropped, never defaulted, never accepted and
+	// mirrored under a system identity. This refusal runs BEFORE
+	// s.repo.UpdateCase, so a rejected request writes nothing to Postgres
+	// either -- values ServiceNow would never have accepted must not get a
+	// chance to exist in Postgres first and be "mirror pending" for ever.
+	//
+	// Whether ServiceNow's scripted API genuinely still requires these
+	// three fields at all for a customer-identity close has NOT been
+	// independently re-verified against a live ServiceNow tenant as part of
+	// this change -- that verification is a known, explicit follow-up being
+	// done separately. If SN does still hard-require them, the async mirror
+	// write for an external close with no resolution fields will fail (same
+	// failure mode the original comment warned about), surfacing as a
+	// growing sn_writeback_failures backlog rather than a loud error here,
+	// since this path is best-effort/async by design (see the "Best-effort
+	// ServiceNow mirror write" comment on the dispatch block below).
 	if s.snWriteback != nil && req.State != nil && (*req.State == domain.CaseStateClosed || *req.State == domain.CaseStateSolutionProposed) {
 		if before == nil || before.Type == nil || *before.Type == "case" {
 			if isInternalCaller {
 				if req.ResolutionCode == nil || req.Cause == nil || req.CloseNotes == nil || strings.TrimSpace(*req.CloseNotes) == "" {
 					return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "resolutionCode, cause, and closeNotes are required when state is closed or solution_proposed"}
 				}
-			} else {
-				if req.ResolutionCode == nil {
-					code := domain.CaseResolutionCodeSolvedByCustomer
-					req.ResolutionCode = &code
-				}
-				if req.Cause == nil {
-					cause := domain.CaseCauseUnknown
-					req.Cause = &cause
-				}
-				if req.CloseNotes == nil || strings.TrimSpace(*req.CloseNotes) == "" {
-					notes := externalCloseDefaultNotes
-					req.CloseNotes = &notes
-				}
+			} else if req.ResolutionCode != nil || req.Cause != nil || req.CloseNotes != nil {
+				// External (customer) caller supplying any of the three
+				// explicitly: refused, not accepted. See this block's own
+				// doc comment above for why -- this is WSO2's internal
+				// resolution taxonomy, never the customer's to set,
+				// regardless of what identity a mirror write would later
+				// run as.
+				return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "resolutionCode, cause, and closeNotes are not allowed for external callers"}
 			}
+			// External (customer) caller supplying none of the three: no
+			// requirement and no defaulting. See this block's own doc
+			// comment above (2026-10-13) for why the prior auto-defaulting
+			// was removed.
 		}
 	}
 
@@ -1998,7 +2100,7 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 	// same row lock as the write that triggers it -- see
 	// recomputeTimeCardsBillable's own doc comment for why. Nothing to call
 	// from here anymore.
-	c, oldSeverity, err := s.repo.UpdateCase(ctx, req, actorID)
+	c, oldSeverity, committedPrevState, err := s.repo.UpdateCase(ctx, req, actorID)
 	if err != nil {
 		return domain.UpdateCaseResponse{}, err
 	}
@@ -2111,31 +2213,90 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 	if s.snWriteback != nil {
 		if patcher, ok := s.snMirror.(snFieldPatcher); ok {
 			switch {
-			case req.State != nil:
+			// Same no-op exemption as the state-transition guard above: a
+			// caller resending the state the case is already in (a
+			// documented read-then-write race, or a retry/double-click)
+			// isn't a transition, so there is nothing for the mirror to
+			// apply either. Without this guard the mirror PATCHed the
+			// downstream data source with the unchanged state every time,
+			// which its own workflow has no "transition to self" entry for
+			// and rejects identically on every attempt -- a steady stream
+			// of permanently unretried sn_writeback_failures rows for a
+			// state that never actually changed.
+			case req.State != nil && stateChangeCommitted(committedPrevState, before, *req.State):
 				state := *req.State
-				// closed/solution_proposed must carry resolutionCode, cause
-				// and closeNotes to the mirror: the downstream data source
-				// rejects the transition without all three. Postgres has
-				// already stored them above.
-				var resolution *caseResolutionFields
-				payload := map[string]any{"id": req.ID, "state": state}
-				if req.ResolutionCode != nil || req.Cause != nil || req.CloseNotes != nil {
-					resolution = &caseResolutionFields{Code: req.ResolutionCode, Cause: req.Cause, CloseNotes: req.CloseNotes}
-					payload["resolutionCode"], payload["cause"], payload["closeNotes"] = req.ResolutionCode, req.Cause, req.CloseNotes
+				// Only mirror a genuine state change, matching the
+				// activity-log/publish guards just above (before != nil &&
+				// derefState(before.State) != *req.State) -- before is
+				// guaranteed non-nil here whenever req.State != nil (the
+				// state-transition guard earlier in this function already
+				// returns before this point otherwise). Without this, a
+				// no-op re-PATCH (the case already in the requested state)
+				// still dispatched a PATCH that asked the downstream data
+				// source to move the case to the state it's already in --
+				// a self-transition most of that system's own workflows
+				// don't list as a legal move from that state (observed
+				// live: "Invalid transition from 'Waiting On WSO2' to
+				// stateKey 1003. Allowed transitions: Closed.", stateKey
+				// 1003 being Waiting On WSO2 itself), recorded as a
+				// dual-write failure for a change that was never a real
+				// transition in the first place. This also closes the
+				// specific race applyCustomerReplyStateTransition's own
+				// KNOWN GAP describes: two near-simultaneous customer
+				// replies can both read the case as Awaiting Info/Solution
+				// Proposed and both call UpdateCase with the same target
+				// state before either write commits. The pre-write
+				// `before` read above cannot close that race (both calls
+				// see the old state); stateChangeCommitted therefore
+				// prefers the previous state the repository read under the
+				// row lock, so only the call whose write actually changed
+				// the state dispatches the mirror.
+				{
+					// closed/solution_proposed must carry resolutionCode,
+					// cause and closeNotes to the mirror: the downstream
+					// data source rejects the transition without all
+					// three. Postgres has already stored them above.
+					var resolution *caseResolutionFields
+					payload := map[string]any{"id": req.ID, "state": state}
+					if req.ResolutionCode != nil || req.Cause != nil || req.CloseNotes != nil {
+						resolution = &caseResolutionFields{Code: req.ResolutionCode, Cause: req.Cause, CloseNotes: req.CloseNotes}
+						payload["resolutionCode"], payload["cause"], payload["closeNotes"] = req.ResolutionCode, req.Cause, req.CloseNotes
+					}
+					// asSystemUser's condition is kept exactly as it was when
+					// introduced (case CS0378899) -- !isInternalCaller &&
+					// resolution != nil -- but the validation block above now
+					// refuses any external caller who supplies a non-nil
+					// resolutionCode/cause/closeNotes outright, before this
+					// code ever runs. So in practice, by the time control
+					// reaches here, an external caller's resolution is always
+					// nil (nothing to mirror, asSystemUser evaluates false) and
+					// an internal caller's is handled by the isInternalCaller
+					// branch (asSystemUser also false: they mirror under their
+					// own identity, as always). This condition is deliberately
+					// NOT simplified to `false` or removed: it is the one
+					// remaining guard against resolution ever reaching this
+					// dispatch as non-nil for a non-internal caller through
+					// some future code path that bypasses the validation
+					// block above -- keeping it is cheap insurance against
+					// silently reintroducing the exact bypass CodeRabbit
+					// caught (mirroring a customer-supplied resolution value
+					// under a system identity that lets it slip past
+					// ServiceNow's own rejection of it).
+					asSystemUser := !isInternalCaller && resolution != nil
+					s.snWriteback.Dispatch(ctx, "case", req.ID, "update",
+						payload,
+						func(writeCtx context.Context) error {
+							_, err := patcher.patchCaseFields(writeCtx, req.ID, &state, nil, nil, nil, resolution, asSystemUser)
+							return err
+						},
+					)
 				}
-				s.snWriteback.Dispatch(ctx, "case", req.ID, "update",
-					payload,
-					func(writeCtx context.Context) error {
-						_, err := patcher.patchCaseFields(writeCtx, req.ID, &state, nil, nil, nil, resolution)
-						return err
-					},
-				)
 			case req.Severity != nil:
 				severity := *req.Severity
 				s.snWriteback.Dispatch(ctx, "case", req.ID, "update",
 					map[string]any{"id": req.ID, "severity": severity},
 					func(writeCtx context.Context) error {
-						_, err := patcher.patchCaseFields(writeCtx, req.ID, nil, &severity, nil, nil, nil)
+						_, err := patcher.patchCaseFields(writeCtx, req.ID, nil, &severity, nil, nil, nil, false)
 						return err
 					},
 				)
@@ -2144,7 +2305,7 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 				s.snWriteback.Dispatch(ctx, "case", req.ID, "update",
 					map[string]any{"id": req.ID, "workState": workState},
 					func(writeCtx context.Context) error {
-						_, err := patcher.patchCaseFields(writeCtx, req.ID, nil, nil, &workState, nil, nil)
+						_, err := patcher.patchCaseFields(writeCtx, req.ID, nil, nil, &workState, nil, nil, false)
 						return err
 					},
 				)
@@ -2171,6 +2332,8 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 // to a project). Unlike an assignee, which is normally an internal engineer
 // with no project_contact row at all, a watcher can be either kind; this check
 // deliberately covers updateCaseWatchList only, not updateCaseAssignee.
+// updateCaseWatchList calls it only with the NEWLY ADDED watchers (see
+// newlyAddedWatcherIDs): ids already persisted on the case are not re-checked.
 //
 // The project-contact lookup runs first because it is the common case for
 // customer watchers; the user lookup (for the INTERNAL check) only runs for
@@ -2308,6 +2471,32 @@ func (s *caseService) isActiveProjectWatcher(ctx context.Context, projectID, use
 	return user.UserType == domain.UserTypeInternal, nil
 }
 
+// newlyAddedWatcherIDs returns the entries of submitted that are not already
+// persisted watchers on the case (current is the case's present watch list),
+// comparing ids case-insensitively and preserving submitted's order. Locked
+// entries count as existing too: they are the account's stakeholders,
+// synthesized onto every read, and the portal echoes them back in the full
+// list it submits on every Follow/Unfollow/Add. They are not something the
+// caller is adding, and a stakeholder who is staff but not typed INTERNAL
+// would otherwise block every edit.
+func newlyAddedWatcherIDs(current []domain.WatchListUser, submitted []string) []string {
+	existing := make(map[string]struct{}, len(current))
+	for _, w := range current {
+		if w.ID == "" {
+			continue
+		}
+		existing[strings.ToLower(w.ID)] = struct{}{}
+	}
+	added := make([]string, 0, len(submitted))
+	for _, id := range submitted {
+		if _, ok := existing[strings.ToLower(id)]; ok {
+			continue
+		}
+		added = append(added, id)
+	}
+	return added
+}
+
 // updateCaseWatchList implements UpdateCase's WatchList branch: replacing
 // the case's watch list wholesale with req's user ids via
 // CaseRepository.SetCaseWatchList. The account's four named stakeholders are
@@ -2328,7 +2517,11 @@ func (s *caseService) updateCaseWatchList(ctx context.Context, req domain.Update
 		return domain.UpdateCaseResponse{}, err
 	}
 
-	if err := s.validateWatchListProjectMembership(ctx, cv, userIDs); err != nil {
+	// The submitted list is the full desired watch list (existing + new), so
+	// only a newly added watcher is checked: someone already persisted on the
+	// case stays valid to re-submit even if they have since stopped being a
+	// registered contact. Removing them is the caller's explicit choice.
+	if err := s.validateWatchListProjectMembership(ctx, cv, newlyAddedWatcherIDs(cv.WatchList, userIDs)); err != nil {
 		return domain.UpdateCaseResponse{}, err
 	}
 
@@ -2527,13 +2720,22 @@ func (s *caseService) updateCaseMarkFixIssued(ctx context.Context, req domain.Up
 		return domain.UpdateCaseResponse{}, err
 	}
 
+	// resolveActorOrM2M so the integration that marks a fix released (an M2M
+	// caller with no end-user token) is still attributed, to its client id.
+	// Best-effort: an unresolvable caller just skips the entry.
+	if !alreadySet {
+		if actor, err := s.resolveActorOrM2M(ctx); err == nil {
+			s.recordFieldChangeActivity(ctx, req.ID, "fix_issued_on", "", fixIssued.UTC().Format(time.RFC3339), actor.Email)
+		}
+	}
+
 	if !alreadySet && s.snWriteback != nil {
 		if patcher, ok := s.snMirror.(snFieldPatcher); ok {
 			markFixIssued := true
 			s.snWriteback.Dispatch(ctx, "case", req.ID, "update",
 				map[string]any{"id": req.ID, "markFixIssued": true},
 				func(writeCtx context.Context) error {
-					_, err := patcher.patchCaseFields(writeCtx, req.ID, nil, nil, nil, &markFixIssued, nil)
+					_, err := patcher.patchCaseFields(writeCtx, req.ID, nil, nil, nil, &markFixIssued, nil, false)
 					return err
 				},
 			)
@@ -2690,6 +2892,7 @@ func (s *caseService) publishCaseAcknowledged(ctx context.Context, caseID, ackno
 		Product:          caseProductName(cv),
 		Team:             caseTeamName(cv),
 		AcknowledgerName: acknowledgerName,
+		CaseType:         strings.ToUpper(derefString(cv.Type)),
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "update case: encode case.acknowledged payload failed", "caseId", caseID, "error", err)
@@ -2810,10 +3013,24 @@ func (s *caseService) updateCaseFields(ctx context.Context, req domain.UpdateCas
 		return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "workaroundProvided requires an authenticated end-user caller: a pure M2M caller has no user record to attribute it to"}
 	}
 
+	// The prior workaround stamp is read only for a workaround change: the
+	// recall entry needs it. A failed read is logged and never fails the
+	// update.
+	var prevWorkaround *time.Time
+	if req.WorkaroundProvided != nil {
+		if t, err := s.repo.GetCaseWorkaroundProvidedOn(ctx, req.ID); err != nil {
+			slog.ErrorContext(ctx, "update case: read prior workaround stamp for activity entry failed", "caseId", req.ID, "error", err)
+		} else {
+			prevWorkaround = t
+		}
+	}
+
 	updatedOn, err := s.repo.UpdateCaseFields(ctx, req, actor.ID, actor.Email)
 	if err != nil {
 		return domain.UpdateCaseResponse{}, err
 	}
+
+	s.recordCaseFieldsActivity(ctx, req, prevWorkaround, updatedOn, actor.Email)
 
 	// Deliberately independent of s.publisher (never touches Event Hub) --
 	// same reasoning every other SLAEngineService call site in this file
@@ -2907,6 +3124,25 @@ func (s *caseService) updateCaseFields(ctx context.Context, req domain.UpdateCas
 	resp.MostLikelyFixEta = req.MostLikelyFixEta
 	resp.WorstCaseFixEta = req.WorstCaseFixEta
 	return domain.UpdateCaseResponse{Message: "Case updated successfully", Case: resp}, nil
+}
+
+// recordCaseFieldsActivity logs the activity-feed entry for updateCaseFields'
+// workaround field: set stores the new timestamp, recall stores the prior one
+// as old (and nothing when it was not set), which the feed renders as a
+// date-time.
+func (s *caseService) recordCaseFieldsActivity(ctx context.Context, req domain.UpdateCaseRequest, prevOn *time.Time, updatedOn time.Time, actorEmail string) {
+	if req.WorkaroundProvided == nil {
+		return
+	}
+	var prev string
+	if prevOn != nil {
+		prev = prevOn.UTC().Format(time.RFC3339)
+	}
+	if *req.WorkaroundProvided {
+		s.recordFieldChangeActivity(ctx, req.ID, "workaround_provided_on", prev, updatedOn.UTC().Format(time.RFC3339), actorEmail)
+	} else if prev != "" {
+		s.recordFieldChangeActivity(ctx, req.ID, "workaround_provided_on", prev, "", actorEmail)
+	}
 }
 
 // validateCaseFieldValues rejects malformed ids and unknown enum spellings in the
@@ -3119,6 +3355,19 @@ func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesReq
 		return domain.SearchCasesResponse{}, err
 	}
 
+	// BestCaseFixEta/MostLikelyFixEta/WorstCaseFixEta are internal-only --
+	// never shared with the customer (see SearchCaseView's own doc comment
+	// on each). GetCaseByID has the same exposure for a non-internal scope
+	// today; that is an existing gap, not a reason to add a second copy of
+	// it to this newly-populated search response.
+	if !scope.Unrestricted && !scope.HasInternalAccess {
+		for i := range cases {
+			cases[i].BestCaseFixEta = nil
+			cases[i].MostLikelyFixEta = nil
+			cases[i].WorstCaseFixEta = nil
+		}
+	}
+
 	return domain.SearchCasesResponse{
 		Cases:  cases,
 		Total:  total,
@@ -3207,6 +3456,162 @@ func (s *caseService) AggregateCases(ctx context.Context, req domain.AggregateCa
 		others += b.Count
 	}
 	return domain.AggregateResponse{Groups: buckets[:maxGroups], OthersCount: others, TotalRecords: total}, nil
+}
+
+// defaultCaseVolumeTrendDays/maxCaseVolumeTrendDays bound
+// CaseVolumeTrendRequest.Days.
+const (
+	defaultCaseVolumeTrendDays = 30
+	maxCaseVolumeTrendDays     = 90
+)
+
+// caseVolumeTrendStableTTL is CaseVolumeTrend's cache lifetime for a day
+// that has fully elapsed (UTC) and can never change again -- comfortably
+// longer than the widest window this endpoint allows (maxCaseVolumeTrendDays)
+// rather than needing an explicit invalidation path, since it simply never
+// needs recomputing again while it stays within any request's window.
+// "Today" has no fixed constant of its own -- see ttlUntilNextUTCMidnight.
+const caseVolumeTrendStableTTL = 120 * 24 * time.Hour
+
+// ttlUntilNextUTCMidnight returns how much of the current UTC calendar day
+// is left, as of now. This -- not a flat duration -- is "today"'s own TTL,
+// applied identically to both the Redis and in-memory layers (by explicit
+// product decision: the count only needs to be correct as of whenever it
+// was last computed that day, not refreshed on any shorter cycle, so there
+// is no reason for the two layers to differ here any more). Capping to the
+// day boundary is still essential even though the value is otherwise long:
+// a flat duration written a few minutes before midnight would otherwise
+// still be "valid" well into the next calendar day, serving a snapshot of a
+// day that has already ended instead of forcing the one-time recompute that
+// actually finalizes it (after which it's cached under
+// caseVolumeTrendStableTTL, correctly, since by then `day != todayKey`).
+// Capping here means that recompute always happens on the very first
+// request after midnight, on any pod, regardless of how recently "today"
+// had been refreshed before the day ended.
+func ttlUntilNextUTCMidnight(now time.Time) time.Duration {
+	nextMidnight := now.Truncate(24 * time.Hour).Add(24 * time.Hour)
+	return nextMidnight.Sub(now)
+}
+
+// CaseVolumeTrend implements CaseService. It returns exactly two series --
+// "Opened" (by created date) and "Closed" (by closed date) -- one point per
+// UTC calendar day over the trailing window, oldest first; see
+// domain.CaseVolumeTrendResponse's own doc comment for why this is fixed
+// rather than an open-ended series config.
+//
+// Caching (volumeTrendCache -- see that field's own doc comment; routes.go
+// always wires a per-pod in-memory cache, so this is never nil): a day that
+// has fully elapsed can never change again, so once computed it is cached
+// for caseVolumeTrendStableTTL; "today" is cached only until UTC midnight
+// (ttlUntilNextUTCMidnight), never longer, so the day it represents is
+// never served stale into the next calendar day. On a cold cache this still
+// costs at most ONE additional Postgres query regardless of how many days
+// are missing -- CaseRepository.CaseVolumeTrend bulk-computes every missing
+// day in a single statement, never one query per day -- which is what keeps
+// a dashboard load cheap even right after a cache flush. Deliberately NOT
+// keyed by caller scope: every real caller of this endpoint sees the same,
+// portal-wide count (see service.CaseVolumeTrendCache's own doc comment for
+// why that's safe here) -- only the request's own filters distinguish one
+// cache entry from another.
+func (s *caseService) CaseVolumeTrend(ctx context.Context, req domain.CaseVolumeTrendRequest) (domain.CaseVolumeTrendResponse, error) {
+	// This endpoint's own cache (below) is deliberately NOT keyed by caller
+	// scope -- see CLAUDE.md, "Deliberately NOT keyed by caller identity" --
+	// which is only safe because every caller is Unrestricted. That used to
+	// be an assumption about who calls this ("reached solely through the CSM
+	// portal's own internal-staff dashboard"), not an enforced one: a
+	// restricted-scope caller would have its own scope applied by the
+	// repository on a cache miss, then have that scope-filtered result cached
+	// under a scope-independent key and served back to the next caller with
+	// the same filters, whatever THEIR scope is -- a cross-tenant leak in
+	// either direction. Gating here, the same way GetCaseFeedback's own
+	// requireInternalCaller already does in this file, makes the assumption
+	// the cache design depends on an actual invariant.
+	if err := RequireInternalCaller(ctx, s.access, "case volume trend is only available to internal users"); err != nil {
+		return domain.CaseVolumeTrendResponse{}, err
+	}
+	days := req.Days
+	if days == 0 {
+		days = defaultCaseVolumeTrendDays
+	}
+	if days < 1 || days > maxCaseVolumeTrendDays {
+		return domain.CaseVolumeTrendResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("days must be between 1 and %d", maxCaseVolumeTrendDays)}
+	}
+	search, err := s.prepareCaseSearch(ctx, domain.SearchCasesRequest{Filters: req.Filters})
+	if err != nil {
+		return domain.CaseVolumeTrendResponse{}, err
+	}
+	scope, err := s.access.ResolveScope(ctx)
+	if err != nil {
+		return domain.CaseVolumeTrendResponse{}, err
+	}
+
+	today := time.Now().UTC()
+	allDays := make([]string, days)
+	for i := 0; i < days; i++ {
+		allDays[i] = today.AddDate(0, 0, -(days - 1 - i)).Format("2006-01-02")
+	}
+	todayKey := today.Format("2006-01-02")
+
+	cacheEnabled := s.volumeTrendCache != nil
+	var filtersKey string
+	counts := make(map[string]domain.CaseVolumeDayCount, days)
+	if cacheEnabled {
+		filtersKey = caseVolumeFiltersKey(req.Filters)
+		for day, dc := range s.volumeTrendCache.GetMany(ctx, filtersKey, allDays) {
+			counts[day] = dc
+		}
+	}
+
+	missing := make([]string, 0, days)
+	for _, d := range allDays {
+		if _, ok := counts[d]; !ok {
+			missing = append(missing, d)
+		}
+	}
+	if len(missing) > 0 {
+		fresh, err := s.repo.CaseVolumeTrend(ctx, search, missing, scope)
+		if err != nil {
+			return domain.CaseVolumeTrendResponse{}, err
+		}
+		for day, dc := range fresh {
+			counts[day] = dc
+			if cacheEnabled {
+				ttl := caseVolumeTrendStableTTL
+				if day == todayKey {
+					ttl = ttlUntilNextUTCMidnight(today)
+				}
+				s.volumeTrendCache.Set(ctx, filtersKey, day, dc, ttl)
+			}
+		}
+	}
+
+	opened := make([]domain.CaseVolumeTrendPoint, days)
+	closed := make([]domain.CaseVolumeTrendPoint, days)
+	for i, d := range allDays {
+		dc := counts[d]
+		opened[i] = domain.CaseVolumeTrendPoint{Date: d, Count: dc.Opened}
+		closed[i] = domain.CaseVolumeTrendPoint{Date: d, Count: dc.Closed}
+	}
+	return domain.CaseVolumeTrendResponse{
+		Days: days,
+		Series: []domain.CaseVolumeTrendSeries{
+			{Label: "Opened", Points: opened},
+			{Label: "Closed", Points: closed},
+		},
+	}, nil
+}
+
+// caseVolumeFiltersKey encodes req.Filters into a stable string for
+// CaseVolumeTrendCache's key -- two requests with byte-identical filters
+// (the common case: a dashboard widget's own JSON config never changes
+// between loads) share a cache entry; anything else is simply a cache miss,
+// never a correctness problem.
+func caseVolumeFiltersKey(filters domain.SearchCasesFilters) string {
+	raw, err := json.Marshal(filters)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
 }
 
 // resolveActor authenticates the caller from the x-user-id-token header
@@ -3646,7 +4051,10 @@ func (s *caseService) addCaseTagAs(ctx context.Context, caseID, label, actorEmai
 	// no ServiceNow mapping yet, the same "not yet mirrorable" state
 	// RemoveCaseTag's mirror already tolerates (see that method's own doc
 	// comment).
-	if s.snWriteback != nil {
+	//
+	// Gated on the work item's type (tagMirrorApplies): this endpoint takes
+	// any work item id, and a change request's tags are Postgres-only.
+	if s.snWriteback != nil && s.tagMirrorApplies(ctx, caseID) {
 		mirrorCaseID, mirrorTagID, mirrorLabel, mirrorActorEmail := caseID, tag.ID, label, actorEmail
 		s.snWriteback.Dispatch(ctx, "case_tag", caseID, "add",
 			map[string]any{"caseId": mirrorCaseID, "label": mirrorLabel},
@@ -3708,9 +4116,15 @@ func (s *caseService) RemoveCaseTag(ctx context.Context, caseID, tagID string) e
 		return err
 	}
 
+	// Whether this attachment is mirrored at all: dual-write mode, and a
+	// case-like work item (a change request's tags are Postgres-only -- see
+	// tagMirrorApplies). Decided before the delete, since the sys_id lookup it
+	// gates has to read the row while it still exists.
+	mirrored := s.snWriteback != nil && s.tagMirrorApplies(ctx, caseID)
+
 	var snSysID *string
 	var snLookupErr error
-	if s.snWriteback != nil {
+	if mirrored {
 		snSysID, snLookupErr = s.repo.GetCaseTagSNSysID(ctx, caseID, tagID)
 	}
 
@@ -3727,7 +4141,7 @@ func (s *caseService) RemoveCaseTag(ctx context.Context, caseID, tagID string) e
 	// means we could not tell whether a ServiceNow mirror needs removing, so
 	// it lands in sn_writeback_failures for manual backfill instead of
 	// vanishing.
-	if s.snWriteback != nil && snLookupErr != nil {
+	if mirrored && snLookupErr != nil {
 		lookupErr := snLookupErr
 		s.snWriteback.Dispatch(ctx, "case_tag", caseID, "remove",
 			map[string]any{"caseId": caseID, "tagId": tagID},
@@ -3735,7 +4149,7 @@ func (s *caseService) RemoveCaseTag(ctx context.Context, caseID, tagID string) e
 				return lookupErr
 			},
 		)
-	} else if s.snWriteback != nil && snSysID != nil && *snSysID != "" {
+	} else if mirrored && snSysID != nil && *snSysID != "" {
 		mirrorCaseID, mirrorTagID := caseID, sysidToUUID(*snSysID)
 		s.snWriteback.Dispatch(ctx, "case_tag", caseID, "remove",
 			map[string]any{"caseId": mirrorCaseID, "tagId": tagID},
@@ -3746,6 +4160,26 @@ func (s *caseService) RemoveCaseTag(ctx context.Context, caseID, tagID string) e
 	}
 
 	return nil
+}
+
+// tagMirrorApplies reports whether a tag change on the work item workItemID
+// is mirrored to the previous system (DATA_SOURCE=postgres-servicenow-dual-write
+// only; the caller has already checked snWriteback). POST /cases/{id}/tags
+// and DELETE /cases/{id}/tags/{tagId} take any work item id -- a change
+// request's too (the CSM portal tags change requests through them) -- but the
+// mirror POSTs to the previous system's case tag endpoint, which only a
+// case-like work item (CaseRepository.IsCaseLikeWorkItem) has a record
+// behind. A change request's tags are therefore Postgres-only: nothing is
+// dispatched, nothing lands in sn_writeback_failures. Fails closed: when the
+// type cannot be read, nothing is mirrored (logged at WARN) rather than a
+// mirror against a record that may not be a case.
+func (s *caseService) tagMirrorApplies(ctx context.Context, workItemID string) bool {
+	caseLike, err := s.repo.IsCaseLikeWorkItem(ctx, workItemID)
+	if err != nil {
+		slog.WarnContext(ctx, "case tag: work item type lookup failed; not mirroring the tag change to the previous system", "caseId", workItemID, "error", err)
+		return false
+	}
+	return caseLike
 }
 
 // SearchTags implements CaseService.

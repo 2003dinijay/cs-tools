@@ -25,6 +25,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/apierror"
@@ -40,6 +41,11 @@ type scimClient interface {
 	SearchExternalUser(ctx context.Context, email string) (*scim.ExternalUserInfo, error)
 	UpdateUserPhone(ctx context.Context, userID, mobile string) (*string, error)
 	GetRole(ctx context.Context, roleID string) ([]scim.RoleMember, error)
+	// GetUserByID is used by withPortalRoles to resolve a target user's held
+	// roles AND group memberships by their own Asgardeo ID (see that method's
+	// own doc comment for why -- two distinct roles, or two distinct groups,
+	// can share a display name).
+	GetUserByID(ctx context.Context, userID string) (scim.UserAssignments, error)
 	// AddRoleMembers grants a role to one or more users by email -- used by
 	// CreateUser to grant each of the caller's requested grantRoles once the
 	// new platform user exists.
@@ -58,6 +64,7 @@ type entityUserClient interface {
 	SaveSavedFilterView(ctx context.Context, body []byte) ([]byte, error)
 	DeleteSavedFilterView(ctx context.Context, listKey, name string) ([]byte, error)
 	ReorderSavedFilterView(ctx context.Context, body []byte) ([]byte, error)
+	UpdateUser(ctx context.Context, id string, body []byte) ([]byte, error)
 }
 
 // UsersHandler handles HTTP requests for user-related operations.
@@ -133,18 +140,20 @@ func NewUsersHandler(scim scimClient, entity entityUserClient, dir *directory.Di
 
 // userMeResponse is the GET /users/me response shape.
 type userMeResponse struct {
-	ID        *string `json:"id,omitempty"`
+	// ID, TimeZone and Team come from the entity service; they are null (not
+	// omitted) when the caller holds portal roles but has no user row there.
+	ID        *string `json:"id"`
 	Email     string  `json:"email"`
 	FirstName *string `json:"firstName,omitempty"`
 	LastName  *string `json:"lastName,omitempty"`
-	TimeZone  *string `json:"timeZone,omitempty"`
+	TimeZone  *string `json:"timeZone"`
 	// Roles is which portal roles (viewer, cs_engineer, admin, ...) the
 	// caller's token roles grant: several are possible. It is not the entity
 	// service's role data, which this response no longer carries. Always
 	// present, [] when they hold none.
 	Roles       []string          `json:"roles"`
 	PhoneNumber *string           `json:"phoneNumber,omitempty"`
-	Team        *userTeamResponse `json:"team,omitempty"`
+	Team        *userTeamResponse `json:"team"`
 	// SftpgoAttachmentStorageEnabled mirrors the backend's
 	// SFTPGO_ATTACHMENT_STORAGE_ENABLED runtime flag. Always present (never
 	// omitted) so the frontend can distinguish "flag is off" from "field not
@@ -234,13 +243,32 @@ func (h *UsersHandler) GetMe(w http.ResponseWriter, r *http.Request) {
 		var apiErr *apierror.Error
 		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
 			slog.ErrorContext(r.Context(), "entity GetUserMe: user not found", "userID", user.UserID)
-			writeError(w, http.StatusForbidden, ErrMsgForbidden)
+			if len(resp.Roles) == 0 {
+				writeError(w, http.StatusForbidden, ErrMsgForbidden)
+				return
+			}
+			// A cs_engineer caller with no user row yet gets one created here,
+			// on the spot, from SCIM -- see provisionCsEngineerUser's own doc
+			// comment. Best-effort: a failure falls through to the existing
+			// token-only answer below, same as every other caller.
+			if slices.Contains(resp.Roles, "cs_engineer") && h.provisionCsEngineerUser(r.Context(), user, &resp) {
+				writeJSONValue(w, http.StatusOK, resp)
+				return
+			}
+			// The caller holds portal roles via the token but has no user row:
+			// answer from the token. Entity-sourced fields (id, timeZone,
+			// team) stay null.
+			if user.FirstName != "" {
+				resp.FirstName = &user.FirstName
+			}
+			if user.LastName != "" {
+				resp.LastName = &user.LastName
+			}
+			h.fillPhoneNumber(r.Context(), user, &resp)
+			writeJSONValue(w, http.StatusOK, resp)
 			return
 		}
 		slog.ErrorContext(r.Context(), "entity GetUserMe failed", "userID", user.UserID, "err", err)
-		// A caller cannot distinguish "no roles/team" from "upstream identity
-		// resolution failed" if this falls through to a 200 with zeroed
-		// fields, so the failure must surface as an error response.
 		mapUpstreamErrorGeneric(w, err, "Failed to fetch the current user.")
 		return
 	}
@@ -256,16 +284,108 @@ func (h *UsersHandler) GetMe(w http.ResponseWriter, r *http.Request) {
 		resp.Team = h.teamForGroups(entityResp.Groups)
 	}
 
-	scimInfo, err := h.scim.SearchUser(r.Context(), user.Email)
+	h.fillPhoneNumber(r.Context(), user, &resp)
+	writeJSONValue(w, http.StatusOK, resp)
+}
+
+// fillPhoneNumber sets resp.PhoneNumber from SCIM, best-effort.
+func (h *UsersHandler) fillPhoneNumber(ctx context.Context, user *middleware.UserInfo, resp *userMeResponse) {
+	scimInfo, err := h.scim.SearchUser(ctx, user.Email)
 	if err != nil {
-		slog.ErrorContext(r.Context(), "scim SearchUser failed", "userID", user.UserID, "err", err)
+		slog.ErrorContext(ctx, "scim SearchUser failed", "userID", user.UserID, "err", err)
 	} else if scimInfo == nil {
-		slog.WarnContext(r.Context(), "no SCIM user found", "userID", user.UserID)
+		slog.WarnContext(ctx, "no SCIM user found", "userID", user.UserID)
 	} else {
 		resp.PhoneNumber = scimInfo.PhoneNumber
 	}
+}
 
-	writeJSONValue(w, http.StatusOK, resp)
+// csEngineerLastNameMarker is appended to the token-sourced last name when
+// auto-provisioning a cs_engineer caller's "user" row via
+// provisionCsEngineerUser, flagging a row created this way rather than
+// through the admin Add User flow or a human-entered profile.
+const csEngineerLastNameMarker = "Ⓦ"
+
+// withCsEngineerLastNameMarker appends csEngineerLastNameMarker to lastName,
+// space-separated -- or returns the bare marker if lastName is empty (the
+// token carried no family_name claim).
+func withCsEngineerLastNameMarker(lastName string) string {
+	lastName = strings.TrimSpace(lastName)
+	if lastName == "" {
+		return csEngineerLastNameMarker
+	}
+	return lastName + " " + csEngineerLastNameMarker
+}
+
+// provisionCsEngineerUser creates a "user" row, on the spot, for a caller who
+// holds the cs_engineer role via their token (GetMe's 404 branch already
+// confirmed this) but has no entity-service user row yet. Sources
+// firstName/lastName/phone straight off the caller's own validated token
+// (middleware.UserInfo -- given_name/family_name/phone_number claims), the
+// same token-only posture ensureUserProvisioned (cases.go) already takes, and
+// marks the created name by appending csEngineerLastNameMarker to the last
+// name, so a row created this way is identifiable later. No SCIM call is
+// made here at all -- unlike the admin Add User flow (CreateUser below),
+// which has no token for the person it's creating and so has to look them up
+// in SCIM by email instead, this caller IS the person being provisioned, so
+// their own token already has everything needed.
+//
+// Best-effort end to end: any failure is logged and reported as not
+// provisioned (false), so GetMe falls back to its existing token-only
+// answer rather than failing the request outright.
+func (h *UsersHandler) provisionCsEngineerUser(ctx context.Context, user *middleware.UserInfo, resp *userMeResponse) bool {
+	firstName := strings.TrimSpace(user.FirstName)
+	lastName := withCsEngineerLastNameMarker(user.LastName)
+
+	body, err := json.Marshal(struct {
+		FirstName string   `json:"firstName"`
+		LastName  string   `json:"lastName"`
+		Email     string   `json:"email"`
+		Roles     []string `json:"roles"`
+	}{
+		FirstName: firstName,
+		LastName:  lastName,
+		Email:     user.Email,
+		Roles:     []string{"internal"},
+	})
+	if err != nil {
+		slog.ErrorContext(ctx, "provisionCsEngineerUser: marshal create-user request failed", "userID", user.UserID, "err", err)
+		return false
+	}
+
+	raw, err := h.entity.CreateUser(ctx, body)
+	if err != nil {
+		slog.ErrorContext(ctx, "provisionCsEngineerUser: entity CreateUser failed", "userID", user.UserID, "err", err)
+		return false
+	}
+
+	var created entityUserMeResponse
+	if err := json.Unmarshal(raw, &created); err != nil {
+		slog.ErrorContext(ctx, "provisionCsEngineerUser: parse create-user response failed", "userID", user.UserID, "err", err)
+		return false
+	}
+
+	// entity-service's own POST /users has no phone field (see "Creating a
+	// user" in this backend's CLAUDE.md) -- phone can only be set afterward,
+	// via PATCH /users/{id}. Best-effort: the user already exists by this
+	// point, so a failed phone patch must not undo the create.
+	phone := strings.TrimSpace(user.PhoneNumber)
+	if phone != "" && created.ID != "" {
+		patchBody, err := json.Marshal(map[string]string{"phone": phone})
+		if err != nil {
+			slog.ErrorContext(ctx, "provisionCsEngineerUser: marshal phone patch failed", "userID", user.UserID, "err", err)
+		} else if _, err := h.entity.UpdateUser(ctx, created.ID, patchBody); err != nil {
+			slog.ErrorContext(ctx, "provisionCsEngineerUser: entity UpdateUser (phone) failed", "userID", user.UserID, "err", err)
+		}
+	}
+
+	resp.ID = &created.ID
+	resp.FirstName = &firstName
+	resp.LastName = &lastName
+	if phone != "" {
+		resp.PhoneNumber = &phone
+	}
+	return true
 }
 
 // PatchMe handles PATCH /users/me.
@@ -362,6 +482,73 @@ func (h *UsersHandler) PatchMe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSONValue(w, http.StatusOK, resp)
+}
+
+// updateUserRequest is the body of PATCH /users/{id}. Both fields are
+// optional, but at least one must be present.
+type updateUserRequest struct {
+	TimeZone *string `json:"timeZone"`
+	Phone    *string `json:"phone"`
+}
+
+// UpdateUser handles PATCH /users/{id} -- restricted to cs_engineer or admin
+// via the route's PermWrite permission (cmd/server/main.go, held by exactly
+// those two roles), same posture as CreateUser: this handler does not
+// re-check the caller's role itself. Unlike PatchMe, which only ever
+// resolves the caller's OWN id from their token, this lets one of those
+// roles update someone else's profile -- needed once an admin can reassign a
+// team's lead (POST /teams/{id}/lead): the incident call-escalation ladder
+// dials the lead's own "user".phone, so a newly assigned lead with no number
+// on file is a silent paging gap until this is set here.
+func (h *UsersHandler) UpdateUser(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserInfoFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
+		return
+	}
+
+	id := r.PathValue("id")
+	if id == "" || !uuidRe.MatchString(id) {
+		writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
+		return
+	}
+
+	body, ok := readJSONBody(w, r)
+	if !ok {
+		return
+	}
+
+	var payload updateUserRequest
+	if err := json.Unmarshal(body, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+	if payload.TimeZone == nil && payload.Phone == nil {
+		writeError(w, http.StatusBadRequest, "At least one field must be provided for update.")
+		return
+	}
+
+	entityFields := map[string]string{}
+	if payload.TimeZone != nil {
+		entityFields["timeZone"] = *payload.TimeZone
+	}
+	if payload.Phone != nil {
+		entityFields["phone"] = *payload.Phone
+	}
+	entityBody, err := json.Marshal(entityFields)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, ErrMsgInternal)
+		return
+	}
+
+	raw, err := h.entity.UpdateUser(r.Context(), id, entityBody)
+	if err != nil {
+		// Never log the body: it may carry the phone number.
+		slog.ErrorContext(r.Context(), "entity UpdateUser failed", "userID", user.UserID, "targetID", id, "err", err)
+		mapUpstreamError(w, err, "Failed to update user.")
+		return
+	}
+	writeJSON(w, http.StatusOK, raw)
 }
 
 // SearchUsers handles POST /users/search.
@@ -590,6 +777,33 @@ func (h *UsersHandler) CreateUser(w http.ResponseWriter, r *http.Request) {
 		roleIDsToGrant = append(roleIDsToGrant, id)
 	}
 
+	// The Add User form only collects an email -- when the caller sent no
+	// name at all, fill firstName/lastName/phone from a SCIM search by that
+	// email instead of asking for them, the same mechanism
+	// provisionCsEngineerUser already uses for the cs_engineer auto-create
+	// path. A caller that DOES send a name (any other API consumer) is left
+	// exactly as before -- this only fires for the email-only case.
+	var scimPhone *string
+	if strings.TrimSpace(req.FirstName) == "" && strings.TrimSpace(req.LastName) == "" {
+		scimInfo, err := h.scim.SearchUser(r.Context(), req.Email)
+		if err != nil {
+			slog.ErrorContext(r.Context(), "CreateUser: scim SearchUser failed", "userID", user.UserID, "err", err)
+			writeError(w, http.StatusBadRequest, "Could not look up this email in the identity provider. Please try again or provide a name.")
+			return
+		}
+		if scimInfo == nil {
+			writeError(w, http.StatusBadRequest, "No matching user was found in the identity provider for this email. Please verify the email address.")
+			return
+		}
+		req.FirstName = strings.TrimSpace(scimInfo.FirstName)
+		req.LastName = strings.TrimSpace(scimInfo.LastName)
+		if req.FirstName == "" && req.LastName == "" {
+			writeError(w, http.StatusBadRequest, "The identity provider has no name on file for this email. Please provide a first or last name.")
+			return
+		}
+		scimPhone = scimInfo.PhoneNumber
+	}
+
 	entityBody, err := buildEntityCreateUserBody(req)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "failed to build entity CreateUser body", "userID", user.UserID, "err", err)
@@ -602,6 +816,24 @@ func (h *UsersHandler) CreateUser(w http.ResponseWriter, r *http.Request) {
 		slog.ErrorContext(r.Context(), "entity CreateUser failed", "userID", user.UserID, "err", err)
 		mapUpstreamErrorGeneric(w, err, "Failed to create the user.")
 		return
+	}
+
+	// entity-service's own POST /users has no phone field (see "Creating a
+	// user" in this backend's CLAUDE.md), so a SCIM-sourced phone number is
+	// set with a second, best-effort call -- the user already exists by this
+	// point, so a failed phone patch must not undo the create.
+	if scimPhone != nil {
+		var created entityUserMeResponse
+		if err := json.Unmarshal(result, &created); err != nil {
+			slog.ErrorContext(r.Context(), "CreateUser: parse create-user response failed", "userID", user.UserID, "err", err)
+		} else if created.ID != "" {
+			patchBody, err := json.Marshal(map[string]string{"phone": *scimPhone})
+			if err != nil {
+				slog.ErrorContext(r.Context(), "CreateUser: marshal phone patch failed", "userID", user.UserID, "err", err)
+			} else if _, err := h.entity.UpdateUser(r.Context(), created.ID, patchBody); err != nil {
+				slog.ErrorContext(r.Context(), "CreateUser: entity UpdateUser (phone) failed", "userID", user.UserID, "err", err)
+			}
+		}
 	}
 
 	// Best-effort: the platform user already exists by this point, so a SCIM

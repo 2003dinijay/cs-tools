@@ -112,7 +112,7 @@ func clock(start time.Time) func() time.Time {
 
 func content(t *testing.T, title, where string, detail *string, what string) entry.Content {
 	t.Helper()
-	c, err := entry.Prepare(entry.Draft{Title: title, Where: where, WhereDetail: detail, What: what})
+	c, err := entry.Prepare(entry.Draft{Title: title, Where: where, WhereDetail: detail, What: what}, entry.MaxWhatMaxLength)
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
@@ -255,7 +255,81 @@ func TestListFiltersByAuthor(t *testing.T) {
 	}
 }
 
-func TestListFiltersByDateRangeInclusive(t *testing.T) {
+func TestListFiltersByAuthorName(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	for _, a := range []Author{
+		{Name: "Alex Sample", Email: "alex@example.com"},
+		{Name: "Sam Alexander", Email: "sam@example.com"},
+		{Name: "Dana Lee", Email: "dana@example.com"},
+		{Name: "100% Bob_Smith", Email: "bob@example.com"},
+	} {
+		// Every learning mentions Alex, so only a match on the name itself
+		// tells the entries apart.
+		if _, err := s.Create(ctx, a, content(t, a.Name, "Internal", nil, "<p>Alex said so</p>")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for author, want := range map[string]string{
+		"alex":    "Sam Alexander,Alex Sample", // the start of any word, any case
+		"ale sam": "Sam Alexander,Alex Sample",
+		"sample":  "Alex Sample",
+		"lex":     "", // not the start of a word
+		"dana":    "Dana Lee",
+		"100%":    "100% Bob_Smith", // LIKE wildcards are themselves
+		"bob_":    "100% Bob_Smith",
+		"b%b":     "",
+	} {
+		p, err := s.List(ctx, Query{Author: author, Limit: 10})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Join(titles(p), ","); got != want || p.Total != len(p.Items) {
+			t.Errorf("author %q = %q (total %d), want %q", author, got, p.Total, want)
+		}
+	}
+}
+
+func TestListFiltersBySourceWithTheOtherFilters(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	for _, e := range []struct {
+		title, source string
+		detail        *string
+		author        Author
+	}{
+		{"customer retries", "Customer", ptr("Acme Corp"), jane},
+		{"partner retries", "Partner", ptr("Acme Reseller"), jane},
+		{"internal retries", "Internal", nil, Author{Name: "Sam", Email: "sam@example.com"}},
+		{"customer pooling", "Customer", ptr("Globex"), Author{Name: "Sam", Email: "sam@example.com"}},
+	} {
+		if _, err := s.Create(ctx, e.author, content(t, e.title, e.source, e.detail, "<p>x</p>")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		q    Query
+		want string
+	}{
+		{Query{Source: "Customer"}, "customer pooling,customer retries"},
+		{Query{Source: "Internal"}, "internal retries"},
+		{Query{Source: "Other"}, ""},
+		{Query{Source: "Customer", Search: "retries"}, "customer retries"},
+		{Query{Source: "Customer", Author: "sam"}, "customer pooling"},
+		{Query{Source: "Partner", AuthorEmail: jane.Email}, "partner retries"},
+	} {
+		tc.q.Limit = 10
+		p, err := s.List(ctx, tc.q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Join(titles(p), ","); got != tc.want || p.Total != len(p.Items) {
+			t.Errorf("%+v = %q (total %d), want %q", tc.q, got, p.Total, tc.want)
+		}
+	}
+}
+
+func TestListFiltersByCreationTime(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 	for _, tc := range []struct {
@@ -273,9 +347,10 @@ func TestListFiltersByDateRangeInclusive(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// From is inclusive and Before exclusive.
 	from := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
-	to := time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC)
-	p, err := s.List(ctx, Query{From: &from, To: &to, Limit: 10})
+	before := time.Date(2026, 10, 6, 0, 0, 0, 0, time.UTC)
+	p, err := s.List(ctx, Query{From: &from, Before: &before, Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}

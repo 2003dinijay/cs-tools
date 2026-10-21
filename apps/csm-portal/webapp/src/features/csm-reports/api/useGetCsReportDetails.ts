@@ -25,7 +25,7 @@ export interface CsReportDetailsParams {
   enabled: boolean;
 }
 
-/** `GET /report-details` — see internal/servicenow/reports.go. */
+/** `GET /report-details` — built from entity-service. */
 export function useGetCsReportDetails(
   params: CsReportDetailsParams,
 ): UseQueryResult<CSReportDetailsResponse, Error> {

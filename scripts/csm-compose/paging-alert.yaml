@@ -192,7 +192,8 @@ cre:
   #            SCIM operations service. Needs SCIM_BASE_URL. The default.
   #   none     only numbers named in this file (heads below).
   #
-  # A number named in this file always wins over the profile.
+  # A valid CSM profile number wins over a number named in this file; a number
+  # here is a fallback. Only INCIDENT_ESCALATION_TEST_CALL_TO is never replaced.
   phones:
     source: profile
 
@@ -202,6 +203,28 @@ cre:
   heads:
     cre: {name: "", email: "", phone: ""}
     cs:  {name: "", email: "", phone: ""}
+
+  # One email per rung of a customer case's chain, sent when the rung opens and
+  # stopped by the same acknowledgement as the calls. LEVEL_0 gets no email.
+  #   L1    To the case's ABT team lead, Cc that ABT team's list
+  #   L2    To every ABT team lead, Cc every ABT team list
+  #   L3    To the CRE head, Cc creTeamList
+  #   L4    To the CS head,  Cc csTeamList
+  # At night (21:00-06:00 IST) L1 and L2 also go to the Americas: L1 also To
+  # the Americas team leads, L2 also To the America Team lead, both also Cc
+  # the Americas team list.
+  # Follows EMAIL_SENDING_ENABLED / EMAIL_DEBUG_MODE, not CALL_SENDING_ENABLED.
+  # This file is committed: keep real addresses in the deployed copy, not here.
+  email:
+    enabled: false
+    # Team key (teams.abts, teams.americas) -> the team's mailing list, and the
+    # CRE and CS team lists. Left out here (absent, not empty) so this file and
+    # paging-alert.minimal.yaml load alike; a deployment sets them, e.g.
+    #   teamLists:
+    #     atlas: <atlas team list>
+    #     americas: <americas team list>
+    #   creTeamList: <cre team list>
+    #   csTeamList: <cs team list>
 
   # How the nominated rungs are read.
   alertDuty:
@@ -241,6 +264,13 @@ cre:
     # point -- a dispatcher moving a status while triaging has not picked the
     # incident up. Set false to accept either gesture on its own.
     requireBoth: true
+
+  # When the ladder stops -- acknowledged, the case closed, or its severity
+  # changed -- reply in its thread, where the rung cards went: who
+  # acknowledged it, who was paged and how many calls were cancelled. Only
+  # once a rung has gone out. On when absent (not on the Alert Settings tab
+  # yet); uncomment to turn it off:
+  # ackChat: false
 
   # Someone who holds a rung but is on leave that day: skip (the default)
   # leaves them out, so the rung goes to whoever else holds it or the ladder
@@ -369,6 +399,11 @@ sre:
   # (teamChats, else chat): who escalated it, that SRE paging stopped, and
   # that the SMEs are being paged. Off here for the same reason as above.
   smeHandoffChat: false
+
+  # When the ladder stops (assigned, the case closed, its severity changed),
+  # reply in its thread, where the rung cards went. Covers the SME ladders
+  # too. On when absent; uncomment to turn it off:
+  # ackChat: false
 
   teams:
     # The other ABT, as team.type spells it: sre-abt holds two teams.

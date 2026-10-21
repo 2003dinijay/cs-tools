@@ -221,6 +221,37 @@ describe("DayLadder: cards that share their hours", () => {
 });
 
 describe("DayLadder: who is not on the rota", () => {
+  it("keeps somebody on half-day leave in the Leave card, flagged with their half", () => {
+    const HD_AM = {
+      ...ANNUAL_LEAVE, id: "k-hdam", code: "HALF_DAY_LEAVE_MORNING", shortCode: "HD-AM",
+      label: "Half day leave — morning", colourToken: "HDM", sortOrder: 11,
+    };
+    const { container } = render(
+      <DayLadder
+        day={WEDNESDAY}
+        tz={TZ}
+        zoneLabel="IST"
+        lanes={[lane([nineToFive("Asela", REGULAR.code)])]}
+        shifts={SHIFTS}
+        zones={ZONES}
+        absences={[
+          absence({ name: "Nuwan", startsOn: ISO, endsOn: ISO }),
+          absence({ name: "Hiru", startsOn: ISO, endsOn: ISO, kindCode: HD_AM.code }),
+        ]}
+        absenceKinds={[ANNUAL_LEAVE, HD_AM]}
+        {...scopeControls()}
+      />,
+    );
+    const cards = [...container.querySelectorAll(".offcard")];
+    expect(cards).toHaveLength(1);
+    expect(cards[0].querySelector(".offh b")).toHaveTextContent("2");
+    const person = (name: string) =>
+      [...cards[0].querySelectorAll(".lnm")].find((n) => n.querySelector(".who")?.textContent === name);
+    expect(person("Hiru")?.querySelector(".hdflag")).toHaveTextContent("HD-AM");
+    // Whole-day leave still does not name its kind.
+    expect(person("Nuwan")?.querySelector(".hdflag")).toBeNull();
+  });
+
   it("lists leave ahead of the allocations", () => {
     renderLadder(
       [nineToFive("Asela", REGULAR.code)],

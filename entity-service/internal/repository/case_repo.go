@@ -437,6 +437,13 @@ type CaseRepository interface {
 	// account), largest bucket first. Rows with no value for the field are
 	// not counted. The caller applies any top-N cap.
 	AggregateCases(ctx context.Context, req domain.SearchCasesRequest, groupBy string, scope SearchScope) ([]domain.AggregateBucket, error)
+	// CaseVolumeTrend computes the opened and closed counts for each of the
+	// given UTC calendar days (YYYY-MM-DD), over cases matching req's
+	// filters. A day with no matching cases is present in the result with
+	// both counts 0 -- computed, not merely absent -- so the caller (which
+	// may be filling in cache misses for only some days of a window) can
+	// always distinguish "zero" from "not asked for".
+	CaseVolumeTrend(ctx context.Context, req domain.SearchCasesRequest, days []string, scope SearchScope) (map[string]domain.CaseVolumeDayCount, error)
 	// CreateCaseComment inserts a new comment row for the given case.
 	// createdOn is nil for an ordinary comment (created_on = NOW()); pass a
 	// non-nil value to preserve a known past timestamp instead -- see the
@@ -467,6 +474,12 @@ type CaseRepository interface {
 	// detectBillableStatusChange, the sole caller that needs this value, and
 	// the CodeRabbit finding on PR #1683 this fixes.
 	//
+	// previousState is the case's state immediately before this update, read under
+	// the same row lock as the write, and is set only when req.State is set (nil
+	// otherwise, or if the stored state was NULL). Unlike a state read taken before
+	// the call, it is accurate under concurrent updates to the same case: it is
+	// what a caller compares to req.State to learn whether THIS update committed a
+	// real transition.
 	// Returns a NotFoundError if no matching row exists.
 	//
 	// actorID is the resolved caller's own "user" id (from the caller's
@@ -477,7 +490,7 @@ type CaseRepository interface {
 	// recordFieldChangeActivity's own actorEmail already uses). A state
 	// transition AWAY from closed clears closed_by_user_id back to NULL,
 	// mirroring closed_on's own existing clear-on-reopen behaviour.
-	UpdateCase(ctx context.Context, req domain.UpdateCaseRequest, actorID *string) (c domain.Case, previousSeverity *domain.CaseSeverity, err error)
+	UpdateCase(ctx context.Context, req domain.UpdateCaseRequest, actorID *string) (c domain.Case, previousSeverity *domain.CaseSeverity, previousState *domain.CaseState, err error)
 	// CreateCaseAttachment inserts a new attachment metadata row for the case
 	// identified by req.ReferenceID. req.StorageKey must be non-nil: this data
 	// source stores file bytes externally in SFTPGo, never inline in Postgres.
@@ -554,6 +567,15 @@ type CaseRepository interface {
 	// not exist (the tag might exist but not be on this case, or not exist
 	// at all -- both are "not found" from the caller's perspective).
 	RemoveCaseTag(ctx context.Context, caseID, tagID, callerEmail string) error
+	// IsCaseLikeWorkItem reports whether workItemID names one of the five
+	// case-like work item types (caseLikeWorkItemTypes). AddCaseTag /
+	// RemoveCaseTag take any work item id -- a change request's included --
+	// and the service gates its ServiceNow tag mirror on this: only a
+	// case-like work item has a case record in the previous system to mirror
+	// a tag onto; a change request's tags stay Postgres-only. false, not an
+	// error, for an id that names no work item at all (or one row-level
+	// security hides).
+	IsCaseLikeWorkItem(ctx context.Context, workItemID string) (bool, error)
 	// SetCaseTagSNSysID best-effort persists ServiceNow's own label_entry
 	// sys_id for the (caseID, tagID) attachment on work_item_tag (migration
 	// 000088) -- called from AddCaseTag's async ServiceNow mirror success
@@ -645,6 +667,12 @@ type CaseRepository interface {
 	// directly through pgFallback instead, rather than paying for a full
 	// CaseRepository.GetCaseByID just for one column.
 	GetCaseEtaSharedOn(ctx context.Context, caseID string) (*time.Time, error)
+	// GetCaseWorkaroundProvidedOn returns work_item.workaround_provided_on
+	// for caseID -- nil (not an error) when no workaround is marked
+	// provided, or the case id doesn't exist. GetCaseByID does not populate
+	// CaseView.WorkaroundProvidedOn on this data source, so the activity
+	// entries for a workaround set/recall read the prior stamp here.
+	GetCaseWorkaroundProvidedOn(ctx context.Context, caseID string) (*time.Time, error)
 	// ProjectContactEmailsByRole returns the distinct project_contact.email
 	// addresses for projectID whose contact currently holds role (a
 	// project_role_enum label, e.g. "SECURITY_CONTACT" or "PORTAL_USER") via
@@ -1682,6 +1710,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 		accountID, accountName, accountTier      *string
 		severity, issueType, workState, caseType *string
 		announcementType, engagementType         *string
+		engagementPaymentType                    *string
 		state, cause, closeNotes, resolutionCode *string
 		escalationLevel                          *string
 		isEscalated                              *bool
@@ -1711,7 +1740,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 	scopeArgs := []any{id}
 
 	err := r.db.QueryRow(ctx,
-		`SELECT wi.id, wi.number, wi.wso2_id, wi.type::TEXT, ann.announcement_type::TEXT, eng.type::TEXT,
+		`SELECT wi.id, wi.number, wi.wso2_id, wi.type::TEXT, ann.announcement_type::TEXT, eng.type::TEXT, eng.payment_type::TEXT,
 		        wi.description, c.severity::TEXT, c.issue_type::TEXT, `+caseLikeWorkStateColumn+`,
 		        `+caseLikeStateColumn+`, `+caseLikeCauseColumn+`, `+caseLikeCloseNotesColumn+`,
 		        `+caseLikeResolutionCodeColumn+`, c.current_escalation_level::TEXT, c.is_escalated,
@@ -1754,7 +1783,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 		 WHERE wi.id = $1 AND wi.type = ANY(`+caseLikeWorkItemTypes+`)
 		   AND `+announcementVisibilityLeakGuard+``, scopeArgs...,
 	).Scan(
-		&cv.ID, &cv.Number, &internalID, &caseType, &announcementType, &engagementType,
+		&cv.ID, &cv.Number, &internalID, &caseType, &announcementType, &engagementType, &engagementPaymentType,
 		&description, &severity, &issueType, &workState,
 		&state, &cause, &closeNotes,
 		&resolutionCode, &escalationLevel, &isEscalated,
@@ -1890,6 +1919,14 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 	if engagementType != nil {
 		lower := strings.ToLower(*engagementType)
 		cv.EngagementType = &lower
+	}
+	// engagement_payment_type_enum ("PAID"/"FOC") lowercased to the domain
+	// EngagementPaymentType value, same as EngagementType above -- the
+	// ServiceNow path returns the choice's display label here instead, and the
+	// CSM portal's FOC check accepts either. nil for every non-engagement type.
+	if engagementPaymentType != nil {
+		lower := strings.ToLower(*engagementPaymentType)
+		cv.EngagementPaymentType = &lower
 	}
 	// project_id/deployment_id/deployed_product_id (and deployed_product.
 	// product_id) are all nullable on work_item (migration 0021) -- a case
@@ -2270,6 +2307,11 @@ func (r *caseRepo) SearchCaseComments(ctx context.Context, req domain.SearchCase
 		typeFilter = fmt.Sprintf(" AND cc.type = $%d::comment_type_enum", len(args))
 	}
 
+	// A customer-portal caller never sees a soft-deleted comment, in the rows
+	// or in the total (see hidesDeletedComments). An internal caller's result
+	// is unchanged.
+	typeFilter += deletedCommentFilter(ctx, "cc.")
+
 	countQuery := `SELECT COUNT(*) FROM comment cc WHERE cc.work_item_id = $1` + typeFilter
 	// Joined to "user" by email match (single user per comment, see
 	// userByEmailJoin): comment.created_by is a free-text VARCHAR (see
@@ -2630,8 +2672,51 @@ func scanUpdatedCase(row pgx.Row) (domain.Case, error) {
 	return c, nil
 }
 
+// updateLockingPreviousState runs exec (the single UPDATE of one UpdateCase
+// call) and, when req.State is set, also reports the state the row held
+// immediately before that UPDATE. The state is read in the same transaction,
+// after taking the row lock the UPDATE would take anyway, so a concurrent
+// UpdateCase on the same case is serialized behind this one and sees the state
+// this one committed. Without the lock, two callers could both read the old
+// state, both write the same new state, and both be told it changed.
+//
+// A request that does not set req.State has nothing to compare and runs exec
+// directly, with no transaction and a nil previous state. A row whose state is
+// NULL also yields nil.
+func (r *caseRepo) updateLockingPreviousState(ctx context.Context, req domain.UpdateCaseRequest, exec func(q rowQuerier) (domain.Case, error)) (domain.Case, *domain.CaseState, error) {
+	if req.State == nil {
+		c, err := exec(r.db)
+		return c, nil, err
+	}
+	var c domain.Case
+	var prev *domain.CaseState
+	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
+		var raw *string
+		if err := tx.QueryRow(ctx, `
+			SELECT `+caseLikeStateColumn+`
+			FROM work_item wi
+			LEFT JOIN "case" c ON c.id = wi.id
+			`+caseLikeJoins+`
+			WHERE wi.id = $1
+			FOR NO KEY UPDATE OF wi`, req.ID).Scan(&raw); err != nil {
+			return err
+		}
+		if raw != nil {
+			st := domain.CaseState(strings.ToLower(*raw))
+			prev = &st
+		}
+		var execErr error
+		c, execErr = exec(tx)
+		return execErr
+	})
+	if err != nil {
+		return domain.Case{}, nil, err
+	}
+	return c, prev, nil
+}
+
 // UpdateCase implements CaseRepository.
-func (r *caseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest, actorID *string) (domain.Case, *domain.CaseSeverity, error) {
+func (r *caseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest, actorID *string) (domain.Case, *domain.CaseSeverity, *domain.CaseState, error) {
 	state := ""
 	if req.State != nil {
 		state = strings.ToUpper(string(*req.State))
@@ -2648,7 +2733,7 @@ func (r *caseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest,
 	if req.ResolutionCode != nil {
 		enumVal, ok := caseResolutionCodeToEnum[*req.ResolutionCode]
 		if !ok {
-			return domain.Case{}, nil, &apierror.ValidationError{Msg: "resolutionCode contains invalid value: " + string(*req.ResolutionCode)}
+			return domain.Case{}, nil, nil, &apierror.ValidationError{Msg: "resolutionCode contains invalid value: " + string(*req.ResolutionCode)}
 		}
 		resolutionCode = enumVal
 	}
@@ -2662,14 +2747,14 @@ func (r *caseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest,
 	// read the state from -- see caseLikeRowTypeColumn.
 	workItemType, err := readCaseLikeType(ctx, r.db, "update case", req.ID, false)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return domain.Case{}, nil, &apierror.NotFoundError{Msg: "case not found"}
+		return domain.Case{}, nil, nil, &apierror.NotFoundError{Msg: "case not found"}
 	}
 	if err != nil {
-		return domain.Case{}, nil, fmt.Errorf("update case: read type: %w", err)
+		return domain.Case{}, nil, nil, fmt.Errorf("update case: read type: %w", err)
 	}
 
 	if err := validateUpdateCaseFieldsForType(workItemType, req, state); err != nil {
-		return domain.Case{}, nil, err
+		return domain.Case{}, nil, nil, err
 	}
 
 	// state=closed: a case cannot close while any child case (work_item.parent_id
@@ -2688,10 +2773,10 @@ func (r *caseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest,
 			  AND COALESCE(`+caseLikeStateColumn+`, '') <> 'CLOSED'
 			LIMIT 1`, req.ID).Scan(&openChild)
 		if err == nil {
-			return domain.Case{}, nil, &apierror.ConflictError{Msg: "Cannot close this case while child case " + openChild + " is still open"}
+			return domain.Case{}, nil, nil, &apierror.ConflictError{Msg: "Cannot close this case while child case " + openChild + " is still open"}
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
-			return domain.Case{}, nil, fmt.Errorf("update case: check open child cases: %w", err)
+			return domain.Case{}, nil, nil, fmt.Errorf("update case: check open child cases: %w", err)
 		}
 	}
 
@@ -2702,20 +2787,23 @@ func (r *caseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest,
 		// here would only ever surface later as a failed mirror write. Checked in
 		// a transaction serialized per assignee.
 		if req.WorkState != nil && workState == "ONGOING" {
-			return r.updateCaseEnforcingOneOngoing(ctx, req, workItemType, state, severity, workState, resolutionCode, cause, actorID)
+			c, prevSev, err := r.updateCaseEnforcingOneOngoing(ctx, req, workItemType, state, severity, workState, resolutionCode, cause, actorID)
+			return c, prevSev, nil, err
 		}
 
 		// req.Severity == nil: severity can't change, so there's nothing to
 		// race on — skip the transaction/lock overhead entirely.
 		if req.Severity == nil {
-			c, err := scanUpdatedCase(r.db.QueryRow(ctx, updateCaseQuery, req.ID, state, severity, workState, resolutionCode, cause, req.CloseNotes, actorID))
+			c, prevState, err := r.updateLockingPreviousState(ctx, req, func(q rowQuerier) (domain.Case, error) {
+				return scanUpdatedCase(q.QueryRow(ctx, updateCaseQuery, req.ID, state, severity, workState, resolutionCode, cause, req.CloseNotes, actorID))
+			})
 			if errors.Is(err, pgx.ErrNoRows) {
-				return domain.Case{}, nil, &apierror.NotFoundError{Msg: "case not found"}
+				return domain.Case{}, nil, nil, &apierror.NotFoundError{Msg: "case not found"}
 			}
 			if err != nil {
-				return domain.Case{}, nil, fmt.Errorf("update case: %w", err)
+				return domain.Case{}, nil, nil, fmt.Errorf("update case: %w", err)
 			}
-			return c, c.Severity, nil
+			return c, c.Severity, prevState, nil
 		}
 
 		// req.Severity != nil: lock the row first so the previous severity this
@@ -2750,36 +2838,39 @@ func (r *caseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest,
 			return nil
 		})
 		if errors.Is(err, pgx.ErrNoRows) {
-			return domain.Case{}, nil, &apierror.NotFoundError{Msg: "case not found"}
+			return domain.Case{}, nil, nil, &apierror.NotFoundError{Msg: "case not found"}
 		}
 		if err != nil {
-			return domain.Case{}, nil, fmt.Errorf("update case: %w", err)
+			return domain.Case{}, nil, nil, fmt.Errorf("update case: %w", err)
 		}
 		var previousSeverity *domain.CaseSeverity
 		if previousSeverityRaw != nil {
 			s := caseSeverityFromEnum[*previousSeverityRaw]
 			previousSeverity = &s
 		}
-		return c, previousSeverity, nil
+		return c, previousSeverity, nil, nil
 
 	default:
 		query, args, label, ok := caseLikeExtensionUpdate(workItemType, req, state, workState, resolutionCode, cause, actorID)
 		if !ok {
-			return domain.Case{}, nil, &apierror.ValidationError{Msg: fmt.Sprintf("unsupported work item type: %s", workItemType)}
+			return domain.Case{}, nil, nil, &apierror.ValidationError{Msg: fmt.Sprintf("unsupported work item type: %s", workItemType)}
 		}
 		// Same one-Ongoing-per-engineer rule as "case": ServiceNow keeps the
 		// work state of every case-like type in one field on one table.
 		if req.WorkState != nil && workState == "ONGOING" {
-			return r.updateCaseEnforcingOneOngoing(ctx, req, workItemType, state, severity, workState, resolutionCode, cause, actorID)
+			c, prevSev, err := r.updateCaseEnforcingOneOngoing(ctx, req, workItemType, state, severity, workState, resolutionCode, cause, actorID)
+			return c, prevSev, nil, err
 		}
-		c, err := scanUpdatedCase(r.db.QueryRow(ctx, query, args...))
+		c, prevState, err := r.updateLockingPreviousState(ctx, req, func(q rowQuerier) (domain.Case, error) {
+			return scanUpdatedCase(q.QueryRow(ctx, query, args...))
+		})
 		if errors.Is(err, pgx.ErrNoRows) {
-			return domain.Case{}, nil, &apierror.NotFoundError{Msg: "case not found"}
+			return domain.Case{}, nil, nil, &apierror.NotFoundError{Msg: "case not found"}
 		}
 		if err != nil {
-			return domain.Case{}, nil, fmt.Errorf("update case: %s: %w", label, err)
+			return domain.Case{}, nil, nil, fmt.Errorf("update case: %s: %w", label, err)
 		}
-		return c, nil, nil
+		return c, nil, prevState, nil
 	}
 }
 
@@ -3522,7 +3613,14 @@ func buildCaseSearchWhere(req domain.SearchCasesRequest, scope SearchScope) (str
 	// check and, with no remaining WHERE-clause reference to the p alias at
 	// all, lets the planner drop the dead LEFT JOIN from a COUNT(*) query
 	// entirely -- measured as a 12% database-CPU reduction for this filter
-	// alone. The `notIn` branch below is left as the simple join check: it
+	// alone. The exclusion is a NOT EXISTS probe on project's primary key,
+	// not `wi.project_id <> ALL(ARRAY(...))`: `<> ALL(array)` compares every
+	// case row with every excluded id (no index, no hash), so when only one or
+	// two statuses are selected and the exclusion list is long (1,955 projects)
+	// it cost 242 ms against 16 ms for the probe, measured on production-size
+	// data; with the usual six statuses the two are equal (16-18 ms). See the
+	// state filter's anti-join for the same problem (digiops-cs #3459).
+	// The `notIn` branch below is left as the simple join check: it
 	// already satisfies both the no-project and null-status cases via the OR,
 	// and nothing here claims it is a bottleneck on real traffic the way
 	// `in` is -- rewriting it the same way would need its own extra `OR
@@ -3534,7 +3632,7 @@ func buildCaseSearchWhere(req domain.SearchCasesRequest, scope SearchScope) (str
 			return "", nil, argIdx, err
 		}
 		where += fmt.Sprintf(
-			" AND wi.project_id IS NOT NULL AND wi.project_id <> ALL(ARRAY(SELECT id FROM project WHERE onboarding_status IS NULL OR onboarding_status <> ALL($%d::text[]::onboarding_status_enum[])))",
+			" AND wi.project_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM project excluded WHERE excluded.id = wi.project_id AND (excluded.onboarding_status IS NULL OR excluded.onboarding_status <> ALL($%d::text[]::onboarding_status_enum[])))",
 			argIdx,
 		)
 		filterArgs = append(filterArgs, labels)
@@ -3718,6 +3816,7 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		        wi.type::TEXT, wi.subject, wi.description, c.severity::TEXT, c.issue_type::TEXT, `+caseLikeStateColumn+`,
 		        eng.type::TEXT, `+caseLikeWorkStateColumn+`, c.current_escalation_level::TEXT, wi.created_on, wi.updated_on,
 		        wi.created_by,
+		        wi.best_case_eta, wi.most_likely_eta, wi.worst_case_eta,
 		        p.id, p.name,
 		        d.id, d.name,
 		        dp.id, prod.name || COALESCE(' ' || pv.version, ''),
@@ -3758,11 +3857,13 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 			var depID, depName *string
 			var dpID, dpName *string
 			var creatorEmail string
+			var bestCaseEta, mostLikelyEta, worstCaseEta *time.Time
 			if err := rows.Scan(
 				&cv.ID, &cv.Number, &internalID,
 				&caseType, &subject, &description, &severity, &issueType, &state,
 				&engagementType, &workState, &escalationLevel, &createdAt, &updatedAt,
 				&creatorEmail,
+				&bestCaseEta, &mostLikelyEta, &worstCaseEta,
 				&projID, &projName,
 				&depID, &depName,
 				&dpID, &dpName,
@@ -3817,6 +3918,21 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 			}
 			cv.CreatedOn = createdAt.UTC().Format(time.RFC3339)
 			cv.UpdatedOn = updatedAt.UTC().Format(time.RFC3339)
+			// best_case_eta/most_likely_eta/worst_case_eta are DATE columns --
+			// formatted the same way GetCaseByID already does, so a caller
+			// reading either endpoint sees the identical "YYYY-MM-DD" shape.
+			if bestCaseEta != nil {
+				s := bestCaseEta.Format("2006-01-02")
+				cv.BestCaseFixEta = &s
+			}
+			if mostLikelyEta != nil {
+				s := mostLikelyEta.Format("2006-01-02")
+				cv.MostLikelyFixEta = &s
+			}
+			if worstCaseEta != nil {
+				s := worstCaseEta.Format("2006-01-02")
+				cv.WorstCaseFixEta = &s
+			}
 			if prodID != nil {
 				cv.Product = &domain.EntityRef{ID: *prodID, Name: stringOrEmpty(prodName)}
 			}
@@ -4115,6 +4231,19 @@ func (r *caseRepo) GetCaseEtaSharedOn(ctx context.Context, caseID string) (*time
 		return nil, fmt.Errorf("get case eta shared on: %w", err)
 	}
 	return etaSharedOn, nil
+}
+
+// GetCaseWorkaroundProvidedOn implements CaseRepository.
+func (r *caseRepo) GetCaseWorkaroundProvidedOn(ctx context.Context, caseID string) (*time.Time, error) {
+	var providedOn *time.Time
+	err := r.db.QueryRow(ctx, `SELECT workaround_provided_on FROM work_item WHERE id = $1`, caseID).Scan(&providedOn)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get case workaround provided on: %w", err)
+	}
+	return providedOn, nil
 }
 
 // ProjectContactEmailsByRole implements CaseRepository.
@@ -4656,6 +4785,20 @@ func (r *caseRepo) RemoveCaseTag(ctx context.Context, caseID, tagID, _ string) e
 	return nil
 }
 
+// IsCaseLikeWorkItem implements CaseRepository: the same type read a case
+// write dispatches on (readCaseLikeType), which answers pgx.ErrNoRows for a
+// work item that is not case-like -- a change request, an incident -- or
+// that does not exist.
+func (r *caseRepo) IsCaseLikeWorkItem(ctx context.Context, workItemID string) (bool, error) {
+	if _, err := readCaseLikeType(ctx, r.db, "is case-like work item", workItemID, false); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("is case-like work item: %w", err)
+	}
+	return true, nil
+}
+
 // SetCaseTagSNSysID implements CaseRepository. Returns *apierror.NotFoundError
 // if the (caseID, tagID) attachment no longer exists -- e.g. RemoveCaseTag
 // deleted it concurrently, in the gap between AddCaseTag's mirror creating
@@ -4739,6 +4882,8 @@ var caseActivityFieldChangeLabelOverrides = map[string]string{
 	"assigned_to_id":          "Assigned to",
 	"acknowledged_by_user_id": "Acknowledged by",
 	"parent_id":               "Parent case",
+	"workaround_provided_on":  "Workaround Provided",
+	"fix_issued_on":           "Update Released",
 }
 
 func caseActivityFieldChangeLabel(fieldName string) string {
@@ -4864,6 +5009,11 @@ func (r *caseRepo) SearchCaseActivities(ctx context.Context, req domain.SearchCa
 	// backing data source's own attachment identity, which is also the id the
 	// sync gives its work_item_attachment row, so the two tables describe one
 	// file and it must show once. Shared by both queries so total and rows agree.
+	// A customer-portal caller never sees a soft-deleted comment in the feed or
+	// in its total (see hidesDeletedComments); internal callers are unchanged.
+	commentWorkNoteFilter += deletedCommentFilter(ctx, "")
+	commentWorkNoteDataFilter += deletedCommentFilter(ctx, "cm.")
+
 	const syncedAttachmentFilter = `
 			  AND wa.state IS DISTINCT FROM 'PENDING'
 			  AND NOT EXISTS (SELECT 1 FROM case_attachment ca WHERE ca.id = wa.id)`
@@ -5156,4 +5306,122 @@ func aggregateBucketKey(groupBy, raw string) string {
 		}
 	}
 	return strings.ToLower(raw)
+}
+
+// CaseVolumeTrend implements CaseRepository. It shares buildCaseSearchWhere/
+// caseSearchJoins with SearchCases/AggregateCases, so a day's opened/closed
+// counts always agree with what the equivalent search would show. "Opened"
+// buckets by wi.created_on; "closed" buckets by caseLikeOwnClosedOnColumn
+// (the closure time from the extension table of the row's own declared
+// type -- see that constant's own doc comment for why, not the broader
+// caseLikeClosedOnColumn). Both read the same days array, so this always
+// runs as a single statement (two UNION ALL branches) rather than two round
+// trips -- the caller (caseService's cache-miss fill) may ask for anywhere
+// from one day up to a full window at once.
+//
+// Every bucket comparison is a sargable range (">= start AND < end") ANDed
+// with the exact day-membership check, not a bare "to_char(...) = ANY(days)"
+// alone -- confirmed against a real staging database (505k work_item rows)
+// that the bare form forces a full sequential scan of work_item regardless
+// of any index, since wrapping the timestamp column in to_char() before
+// comparing makes it non-sargable (Postgres cannot push an index scan
+// through a function call on the indexed column). The range half lets the
+// planner use idx_work_item_type_created_on (migration 0226) to narrow to
+// the requested window before the exact-day computation ever runs; the
+// to_char() membership check on top is what keeps the result exactly
+// "these requested days," including a caller asking for a
+// non-contiguous/sparse subset (a partially-warm cache). Measured
+// improvement on staging: a single day's two-branch query dropped from
+// ~380ms (full table scan) to single-digit milliseconds.
+//
+// "Closed" has no equivalent index support yet: caseLikeOwnClosedOnColumn is
+// a CASE expression spanning five joined tables selected by wi.type, which
+// -- like caseLikeStateColumn's identical structural limitation, see
+// migration 0195's own doc comment -- no per-table index on closed_on can
+// be pushed through. Migration 0226 adds those five indexes anyway, ready
+// for whenever that rewrite (a UNION of five per-table range-filtered
+// branches, the same fix 0195 describes and defers for state) is done
+// properly; until then this branch still benefits from the sargable range
+// doing less redundant to_char() evaluation, even without an index scan.
+func (r *caseRepo) CaseVolumeTrend(ctx context.Context, req domain.SearchCasesRequest, days []string, scope SearchScope) (map[string]domain.CaseVolumeDayCount, error) {
+	out := make(map[string]domain.CaseVolumeDayCount, len(days))
+	for _, d := range days {
+		out[d] = domain.CaseVolumeDayCount{}
+	}
+	if len(days) == 0 {
+		return out, nil
+	}
+	rangeStart, rangeEnd, err := caseVolumeTrendDateRange(days)
+	if err != nil {
+		return nil, err
+	}
+	ctx = WithCallerIdentity(ctx, scope)
+	where, args, argIdx, err := buildCaseSearchWhere(req, scope)
+	if err != nil {
+		return nil, err
+	}
+	filterArgs := append(append([]any{}, args...), rangeStart, rangeEnd, days)
+	rangeStartPlaceholder := argIdx
+	rangeEndPlaceholder := argIdx + 1
+	datesPlaceholder := argIdx + 2
+	query := fmt.Sprintf(`
+		SELECT 'opened' AS kind, to_char(wi.created_on AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS bucket_date, COUNT(*) AS bucket_count
+		FROM work_item wi %[1]s %[2]s
+			AND wi.created_on >= $%[3]d AND wi.created_on < $%[4]d
+			AND to_char(wi.created_on AT TIME ZONE 'UTC', 'YYYY-MM-DD') = ANY($%[5]d::text[])
+		GROUP BY bucket_date
+		UNION ALL
+		SELECT 'closed' AS kind, to_char(%[6]s AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS bucket_date, COUNT(*) AS bucket_count
+		FROM work_item wi %[1]s %[2]s
+			AND %[6]s >= $%[3]d AND %[6]s < $%[4]d
+			AND to_char(%[6]s AT TIME ZONE 'UTC', 'YYYY-MM-DD') = ANY($%[5]d::text[])
+		GROUP BY bucket_date`,
+		caseSearchJoins, where, rangeStartPlaceholder, rangeEndPlaceholder, datesPlaceholder, caseLikeOwnClosedOnColumn)
+	rows, err := r.db.Query(ctx, query, filterArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("case volume trend: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var kind, bucketDate string
+		var count int
+		if err := rows.Scan(&kind, &bucketDate, &count); err != nil {
+			return nil, fmt.Errorf("scan case volume trend bucket: %w", err)
+		}
+		dc := out[bucketDate]
+		switch kind {
+		case "opened":
+			dc.Opened = count
+		case "closed":
+			dc.Closed = count
+		}
+		out[bucketDate] = dc
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate case volume trend buckets: %w", err)
+	}
+	return out, nil
+}
+
+// caseVolumeTrendDateRange returns the [start, end) UTC instant range
+// spanning every entry in days (which need not be sorted or contiguous) --
+// the sargable pre-filter CaseVolumeTrend's query ANDs with its exact
+// day-membership check. end is exclusive (the instant after the latest
+// requested day ends).
+func caseVolumeTrendDateRange(days []string) (time.Time, time.Time, error) {
+	var min, max time.Time
+	for i, d := range days {
+		t, err := time.Parse("2006-01-02", d)
+		if err != nil {
+			return time.Time{}, time.Time{}, fmt.Errorf("case volume trend: invalid day %q: %w", d, err)
+		}
+		if i == 0 || t.Before(min) {
+			min = t
+		}
+		if i == 0 || t.After(max) {
+			max = t
+		}
+	}
+	return min.UTC(), max.AddDate(0, 0, 1).UTC(), nil
 }

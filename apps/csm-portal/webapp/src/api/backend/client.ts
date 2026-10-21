@@ -160,6 +160,10 @@ export function useBackendApi(): BackendApi {
           signal: options?.signal,
         });
         if (!response.ok) throw await readError(response, correlationId);
+        // A POST that only records a fact (e.g. assigning a team lead)
+        // answers 204 with no body, which response.json() would throw on --
+        // same fix as put's own 204 handling just below.
+        if (response.status === 204) return null as TResponse;
         return (await response.json()) as TResponse;
       },
       async patch<TRequest, TResponse>(

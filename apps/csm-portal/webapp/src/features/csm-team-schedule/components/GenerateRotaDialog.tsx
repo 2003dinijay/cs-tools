@@ -18,7 +18,6 @@
 
 import {
   Alert,
-  Autocomplete,
   Box,
   Button,
   Dialog,
@@ -30,44 +29,27 @@ import {
   Typography,
 } from "@wso2/oxygen-ui";
 import { useMemo, useState, type JSX } from "react";
-import { useGenerateRota, useRotaNightCrew, type GenerateRotaResult } from "../api/useGenerateRota";
+import { useGenerateRota, type GenerateRotaResult } from "../api/useGenerateRota";
 import GeneratedRotaPreview from "./GeneratedRotaPreview";
 import { monthKey, monthLabel } from "../utils/rotaMonth";
 
 /** How many of the generator's notes are listed before the rest are counted. */
 const SHOWN_WARNINGS = 8;
 
-/** Where a lead's last TZ3 choice is kept, so next month starts from it. */
-const CREW_STORAGE_KEY = "csm.teamSchedule.generate.tz3Crew";
-
-/** One team of the generated rota, with the people who can be put on its TZ3. */
+/** One team of the generated rota, for naming it in the preview. */
 export interface GenerateRotaTeam {
   key: string;
   name: string;
-  members: readonly { userId: string; name: string; email: string }[];
 }
 
-function loadCrew(): Record<string, string[]> {
-  try {
-    const raw = window.localStorage.getItem(CREW_STORAGE_KEY);
-    const parsed: unknown = raw ? JSON.parse(raw) : {};
-    if (!parsed || typeof parsed !== "object") return {};
-    const out: Record<string, string[]> = {};
-    for (const [team, ids] of Object.entries(parsed)) {
-      if (Array.isArray(ids)) out[team] = ids.filter((id): id is string => typeof id === "string");
-    }
-    return out;
-  } catch {
-    return {};
-  }
-}
-
-function saveCrew(crew: Record<string, string[]>): void {
-  try {
-    window.localStorage.setItem(CREW_STORAGE_KEY, JSON.stringify(crew));
-  } catch {
-    // Private window or storage blocked: the choice just isn't remembered.
-  }
+/** One move onto the SaaS Night cover: who, from which team, for which days.
+ *  An open-ended move has no end. */
+export interface NightCoverSpan {
+  userId: string;
+  name: string;
+  homeTeam: string;
+  startsOn: string;
+  endsOn?: string;
 }
 
 export interface GenerateRotaDialogProps {
@@ -75,8 +57,11 @@ export interface GenerateRotaDialogProps {
   onClose: () => void;
   /** Today, for the month choices. Injected so a test can fix it. */
   today?: Date;
-  /** The rota's teams, for choosing who works each team's TZ3. */
+  /** The rota's teams, for naming them in the preview. */
   teams?: readonly GenerateRotaTeam[];
+  /** Everybody moved onto the SaaS Night cover over the months on offer: the
+   *  month's TZ3 crew is whoever of them it covers. */
+  nightCover?: readonly NightCoverSpan[];
 }
 
 /**
@@ -90,48 +75,32 @@ export default function GenerateRotaDialog({
   onClose,
   today = new Date(),
   teams = [],
+  nightCover = [],
 }: GenerateRotaDialogProps): JSX.Element {
   const months = useMemo(() => [0, 1, 2].map((n) => monthKey(today, n)), [today]);
   const [month, setMonth] = useState(months[1]);
   const [preview, setPreview] = useState<GenerateRotaResult | null>(null);
   const [written, setWritten] = useState<GenerateRotaResult | null>(null);
   const generate = useGenerateRota();
-  /** The lead's last choice, kept in this browser: where a month the server
-   *  has no crew for starts. */
-  const [lastChoice] = useState<Record<string, string[]>>(loadCrew);
-  /** What the lead has chosen in this dialog, month by month. */
-  const [edited, setEdited] = useState<Record<string, Record<string, string[]>>>({});
-  const saved = useRotaNightCrew(month, month, open);
-  /** The month's TZ3 people as its last generation recorded them, by team. */
-  const savedCrew = useMemo(() => {
-    const crewOf = saved.data?.months.find((m) => m.month === month)?.crew ?? [];
-    if (crewOf.length === 0) return undefined;
-    const out: Record<string, string[]> = {};
-    for (const c of crewOf) out[c.teamKey] = [...(out[c.teamKey] ?? []), c.userId];
-    return out;
-  }, [saved.data, month]);
-  // The month's own record first: the people it was generated with are who
-  // works its nights now, whoever was chosen in this browser last.
-  const crew = edited[month] ?? savedCrew ?? lastChoice;
-  const setCrew = (next: Record<string, string[]>): void => setEdited((e) => ({ ...e, [month]: next }));
+  /** The month's TZ3 crew: everybody a move puts on the SaaS Night cover on
+   *  any day of it, once each, in name order. Who is on it is changed on the
+   *  roster (Move to SaaS Night cover), not here. */
+  const crew = useMemo(() => {
+    const first = `${month}-01`;
+    const [y, m] = month.split("-").map(Number);
+    const last = `${month}-${String(new Date(y, m, 0).getDate()).padStart(2, "0")}`;
+    const seen = new Map<string, NightCoverSpan>();
+    for (const span of nightCover) {
+      if (span.startsOn > last || (span.endsOn !== undefined && span.endsOn < first)) continue;
+      if (!seen.has(span.userId)) seen.set(span.userId, span);
+    }
+    return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name));
+  }, [nightCover, month]);
   const [showRota, setShowRota] = useState(false);
   /** A real write is in flight. The request cannot be called back, so the
    *  dialog stays open until it lands: closing now would only hide a month
    *  that is still being written. A preview writes nothing and may be left. */
   const writing = generate.isPending && generate.variables?.dryRun !== true;
-
-  /** The chosen TZ3 people still on their team, by team; teams with nobody
-   *  chosen are left out, so they keep the usual nights. */
-  const nightCrew = useMemo(() => {
-    const out: Record<string, string[]> = {};
-    for (const t of teams) {
-      const ids = (crew[t.key] ?? []).filter((id) => t.members.some((m) => m.userId === id));
-      if (ids.length > 0) out[t.key] = ids;
-    }
-    return Object.keys(out).length > 0 ? out : undefined;
-  }, [teams, crew]);
-  /** Everyone chosen, every team's together: the size of the one TZ3 crew. */
-  const crewSize = nightCrew ? Object.values(nightCrew).reduce((n, ids) => n + ids.length, 0) : 0;
 
   const reset = (): void => {
     setPreview(null);
@@ -147,12 +116,12 @@ export default function GenerateRotaDialog({
 
   const runPreview = (): void => {
     setWritten(null);
-    generate.mutate({ month, dryRun: true, nightCrew }, { onSuccess: (res) => setPreview(res) });
+    generate.mutate({ month, dryRun: true }, { onSuccess: (res) => setPreview(res) });
   };
   const runGenerate = (): void => {
     if (!preview) return;
     generate.mutate(
-      { month, regenerate: preview.alreadyGenerated, nightCrew },
+      { month, regenerate: preview.alreadyGenerated },
       { onSuccess: (res) => setWritten(res) },
     );
   };
@@ -177,8 +146,8 @@ export default function GenerateRotaDialog({
           weekends included; everyone&rsquo;s regular hours (SUP) on weekdays; and lieu leave after a
           weekend on-call. Every
           engineer is on the rota, nights included, unless marked away on the roster (leave, RnD, ENG or
-          any other tag); TZ3 regular hours, if marked, decide who is on nights. One person works one
-          zone a day: each team&rsquo;s lead is L3 on TZ1, and a teammate on TZ2. Turns set by hand
+          any other tag). Nights go to the people on the SaaS Night cover that month. One person works
+          one zone a day: each team&rsquo;s lead is L3 on TZ1, and a teammate on TZ2. Turns set by hand
           are kept.
         </Typography>
 
@@ -201,54 +170,36 @@ export default function GenerateRotaDialog({
           ))}
         </TextField>
 
-        {teams.length > 0 ? (
-          <Box sx={{ mt: 2 }}>
-            <Typography variant="subtitle2">TZ3 people (optional)</Typography>
-            <Typography variant="caption" color="text.secondary" component="p" sx={{ mt: 0.25, mb: 1.5 }}>
-              Choose who works TZ3 this month. TZ3 is one night crew for every team: L1, L2 and L3 go round
-              everyone chosen below, night by night, and they work no other zone. Nobody else is put on TZ3,
-              so a night they cannot cover is left empty and listed in the preview. Generating saves them with
-              the month: the roster lists them under Night cover instead of their team, until the month is
-              generated again without them. Leave every team empty to use the TZ3 hours marked on the roster.
-            </Typography>
-            {teams.map((t) => {
-              const chosen = (crew[t.key] ?? [])
-                .map((id) => t.members.find((m) => m.userId === id))
-                .filter((m): m is GenerateRotaTeam["members"][number] => m !== undefined);
-              return (
-                <Autocomplete
-                  key={t.key}
-                  multiple
-                  size="small"
-                  options={[...t.members]}
-                  value={chosen}
-                  getOptionLabel={(m) => m.name || m.email}
-                  isOptionEqualToValue={(a, b) => a.userId === b.userId}
-                  onChange={(_, people) => {
-                    const next = { ...crew, [t.key]: people.map((m) => m.userId) };
-                    setCrew(next);
-                    saveCrew(next);
-                    reset();
-                  }}
-                  disabled={generate.isPending || written !== null}
-                  renderInput={(params) => (
-                    <TextField
-                      {...params}
-                      label={`${t.name} TZ3`}
-                      placeholder={chosen.length === 0 ? "As marked on the roster" : undefined}
-                    />
-                  )}
-                  sx={{ mb: 1.5 }}
-                />
-              );
-            })}
-            {crewSize > 0 && crewSize < 3 ? (
-              <Typography variant="caption" color="warning.main" component="p">
-                Only {crewSize} chosen: TZ3 {crewSize === 1 ? "L2 and L3 are" : "L3 is"} left empty every night.
+        <Box sx={{ mt: 2 }}>
+          <Typography variant="subtitle2">TZ3 night crew</Typography>
+          {crew.length > 0 ? (
+            <>
+              <Typography variant="caption" color="text.secondary" component="p" sx={{ mt: 0.25, mb: 1 }}>
+                The people on the SaaS Night cover in {monthLabel(month)}. L1, L2 and L3 go round them night by
+                night, weekends included, and they work no other zone while they are on it. To change who is
+                on it, move people on or off the SaaS Night cover on the roster.
               </Typography>
-            ) : null}
-          </Box>
-        ) : null}
+              <Box component="ul" sx={{ m: 0, pl: 2.5 }}>
+                {crew.map((p) => (
+                  <Typography key={p.userId} component="li" variant="body2">
+                    {p.name} <Typography component="span" variant="caption" color="text.secondary">({p.homeTeam})</Typography>
+                  </Typography>
+                ))}
+              </Box>
+              {crew.length < 3 ? (
+                <Typography variant="caption" color="warning.main" component="p" sx={{ mt: 1 }}>
+                  Only {crew.length} on the Night cover: TZ3 {crew.length === 1 ? "L2 and L3 are" : "L3 is"} left empty every night.
+                </Typography>
+              ) : null}
+            </>
+          ) : (
+            <Typography variant="caption" color="text.secondary" component="p" sx={{ mt: 0.25 }}>
+              Nobody is on the SaaS Night cover in {monthLabel(month)}. Nights go to the people with TZ3 regular
+              hours marked on the roster, or the engineers take turns. To put people on nights for the coming
+              months, use Move to SaaS Night cover on the roster.
+            </Typography>
+          )}
+        </Box>
 
         {generate.isError ? (
           <Alert severity="error" sx={{ mt: 2 }}>

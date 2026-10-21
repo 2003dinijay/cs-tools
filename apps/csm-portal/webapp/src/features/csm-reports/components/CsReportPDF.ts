@@ -27,8 +27,8 @@
 // export), which is exactly what html2pdf.js does under the hood.
 import html2canvas from "html2canvas";
 import jsPDF from "jspdf";
-import type { Dayjs } from "dayjs";
-import dayjs from "dayjs";
+import { formatDateOnly } from "@utils/dateTime";
+import { addElementPages } from "./reportPdfCapture";
 import logo from "../assets/wso2-logo-orange.png";
 import "../styles/CSReportPDF.css";
 
@@ -44,6 +44,119 @@ function escapeHtml(text: string): string {
   const div = document.createElement("div");
   div.textContent = text;
   return div.innerHTML;
+}
+
+// A5 landscape is 210mm by 148mm. Each sheet is that shape, so a section
+// lands on a page instead of being sliced out of one long screenshot.
+const PAGE_W = 1120;
+const PAGE_H = 790;
+
+function asPage(el: HTMLElement, fixed = false) {
+  el.classList.add("pdf-sheet");
+  el.style.width = `${PAGE_W}px`;
+  el.style.maxWidth = `${PAGE_W}px`;
+  el.style.boxSizing = "border-box";
+  el.style.margin = "0";
+  if (fixed) {
+    el.style.height = `${PAGE_H}px`;
+    el.style.overflow = "hidden";
+  } else {
+    el.style.minHeight = `${PAGE_H}px`;
+    el.style.height = "auto";
+  }
+}
+
+function hexToRgb(color: string): [number, number, number] {
+  const match = color.trim().match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+  if (!match) return [96, 125, 139];
+  const hex = match[1].length === 3 ? match[1].split("").map((c) => c + c).join("") : match[1];
+  return [parseInt(hex.slice(0, 2), 16), parseInt(hex.slice(2, 4), 16), parseInt(hex.slice(4, 6), 16)];
+}
+
+// One graph per page, as a screenshot of the chart already on screen. The
+// vector conversion dropped legends and warped the recharts drawing.
+async function addChartPage(
+  pdf: jsPDF,
+  chart: HTMLElement | null,
+  title: string,
+  started: boolean,
+  accent: string,
+  frameDoc: Document,
+): Promise<boolean> {
+  if (started) pdf.addPage();
+  const pageW = pdf.internal.pageSize.getWidth();
+  const pageH = pdf.internal.pageSize.getHeight();
+  const [accentR, accentG, accentB] = hexToRgb(accent);
+  pdf.setFont("helvetica", "bold");
+  pdf.setFontSize(16);
+  pdf.setTextColor(accentR, accentG, accentB);
+  pdf.text(title, 14, 16);
+
+  if (!chart) {
+    pdf.setFont("helvetica", "normal");
+    pdf.setFontSize(12);
+    pdf.setTextColor(80, 80, 80);
+    pdf.text("No data to show", 14, 28);
+    return true;
+  }
+
+  const clone = chart.cloneNode(true) as HTMLElement;
+  clone.querySelector("p")?.remove();
+  const width = Math.max(chart.getBoundingClientRect().width, 640);
+  clone.style.width = `${width}px`;
+  clone.style.maxWidth = `${width}px`;
+  clone.style.background = "#ffffff";
+  clone.style.margin = "0";
+  frameDoc.body.replaceChildren(clone);
+  const shot = await html2canvas(clone, {
+    scale: 2,
+    backgroundColor: "#ffffff",
+    logging: false,
+    imageTimeout: 2000,
+  });
+  const boxW = pageW - 28;
+  const boxH = pageH - 28;
+  const imgRatio = shot.width / Math.max(shot.height, 1);
+  let drawW = boxW;
+  let drawH = drawW / imgRatio;
+  if (drawH > boxH) {
+    drawH = boxH;
+    drawW = drawH * imgRatio;
+  }
+  pdf.addImage(shot.toDataURL("image/jpeg", 0.92), "JPEG", 14 + (boxW - drawW) / 2, 22, drawW, drawH);
+  return true;
+}
+
+// The on-screen EOL block is an accordion. Copying that markup into the PDF
+// keeps the expand icon and can hide the dates, so the sheet is rebuilt from
+// the data attributes on each product.
+function eolPdfHtml(element: Element): string {
+  const title = element.querySelector(".widget-title")?.textContent?.trim() || "Product versions and EOL";
+  const products = Array.from(element.querySelectorAll<HTMLElement>("[data-eol-product]"));
+  if (products.length === 0) {
+    return `<h2 class="widget-title">${escapeHtml(title)}</h2><p>No data to show</p>`;
+  }
+  let html = `<h2 class="widget-title">${escapeHtml(title)}</h2>`;
+  let lastEnv = "";
+  for (const node of products) {
+    const env = node.dataset.eolEnvironment ?? "";
+    if (env !== lastEnv) {
+      lastEnv = env;
+      html += `<h3 class="eol-env">${escapeHtml(env ? `${env} environment` : "Environment")}</h3>`;
+    }
+    const name = node.dataset.eolProduct ?? "";
+    const version = node.dataset.eolVersion ?? "";
+    const status = node.dataset.eolStatus ?? "";
+    const earliest = node.dataset.eolEarliest || "—";
+    const eol = node.dataset.eolDate || "—";
+    const heading = version ? `${name} v${version}` : name;
+    html += `<div class="eol-card"><div class="eol-card-head"><span class="eol-name">${escapeHtml(heading)}</span>${
+      status ? `<span class="eol-status">${escapeHtml(status)}</span>` : ""
+    }</div><div class="eol-dates"><div><span class="eol-label">Earliest support EOL</span><span>${escapeHtml(
+      earliest,
+    )}</span></div><div><span class="eol-label">Support EOL</span><span>${escapeHtml(eol)}</span></div></div></div>`;
+  }
+  return html;
 }
 
 function generateAgendaPage(widgets: { selector: string; subTopic?: string }[], pdfContent: HTMLElement) {
@@ -64,6 +177,7 @@ function generateAgendaPage(widgets: { selector: string; subTopic?: string }[], 
   });
 
   if (agendaPage.children.length > 1) {
+    asPage(agendaPage, true);
     pdfContent.appendChild(agendaPage);
   }
 }
@@ -93,6 +207,7 @@ function buildPdfContent(
     <hr class="section-divider"/>
     <p class="current-date">Generated on: ${formattedDate}</p>
   `;
+  asPage(frontPage, true);
   pdfContent.appendChild(frontPage);
 
   const widgets = [
@@ -137,6 +252,7 @@ function buildPdfContent(
               <h1 class="header-title">${subTopic}</h1>
               <hr class="section-divider"/>
           `;
+        asPage(widgetTitlePage, true);
         pdfContent.appendChild(widgetTitlePage);
       }
     }
@@ -145,53 +261,57 @@ function buildPdfContent(
     widgetContainer.classList.add("page-break");
 
     if (selector === ".cases-charts-widget" || selector === ".cases-volume-widget") {
-      const heading = selector === ".cases-charts-widget" ? "Cases" : "Case Volume by Quarters";
-      widgetContainer.innerHTML = `<h2 class="widget-title">${heading}</h2>`;
-      // recharts renders SVG, not <canvas> (chart.js's rasterizable surface
-      // the source relied on) — capture the chart containers themselves
-      // instead of hunting for a <canvas>, so html2canvas rasterizes the SVG
-      // in place when the whole pdfContent tree is captured below.
-      const chartsContainer = document.createElement("div");
-      chartsContainer.classList.add(selector === ".cases-charts-widget" ? "charts-container" : "trend-chart-container");
-      const charts = element.querySelectorAll("svg");
-      if (charts.length > 0) {
-        charts.forEach((svg) => chartsContainer.appendChild(svg.cloneNode(true)));
-      } else {
-        chartsContainer.innerHTML = "<p>No data to show</p>";
-      }
-      widgetContainer.appendChild(chartsContainer);
+      // Drawn later as one screenshot per graph.
+      widgetContainer.classList.add("pdf-chart-slot");
+      widgetContainer.dataset.source = selector;
+      widgetContainer.dataset.title = selector === ".cases-charts-widget" ? "Cases" : "Case volume by month";
       pdfContent.appendChild(widgetContainer);
     } else if (selector === ".subscription-widget") {
       const dataContent = element.innerHTML.trim();
       widgetContainer.classList.remove("page-break");
       widgetContainer.innerHTML = `<div class="subscription-content"><div>${dataContent || "<p>No data to show</p>"}</div></div>`;
+      asPage(widgetContainer);
       pdfContent.appendChild(widgetContainer);
     } else if (selector === ".current-products-widget") {
       const dataContent = element.innerHTML.trim();
       widgetContainer.innerHTML = `<div>${dataContent || "<p>No data to show</p>"}</div>`;
+      asPage(widgetContainer);
       pdfContent.appendChild(widgetContainer);
     } else if (selector === ".product-versions-widget") {
-      const dataContent = element.innerHTML.trim();
-      widgetContainer.innerHTML = `<div class="product-versions-content"><div>${dataContent || "<p>No data to show</p>"}</div></div>`;
+      widgetContainer.innerHTML = `<div class="product-versions-content eol-pdf">${eolPdfHtml(element)}</div>`;
+      asPage(widgetContainer);
       pdfContent.appendChild(widgetContainer);
     } else if (selector === ".incident-sla-compliance-widget") {
       const dataContent = element.innerHTML.trim();
       widgetContainer.innerHTML = `<div class="incident-sla-compliance-widget"><div>${dataContent || "<p>No data to show</p>"}</div></div>`;
+      asPage(widgetContainer);
       pdfContent.appendChild(widgetContainer);
     } else if (selector === ".product-updates-widget") {
       const dataContent = element.innerHTML.trim();
       widgetContainer.innerHTML = `<div>${dataContent || "<p>No data to show</p>"}</div>`;
+      asPage(widgetContainer);
       pdfContent.appendChild(widgetContainer);
     } else if (selector === ".engagements-widget") {
-      const dataContent = element.innerHTML.trim();
+      const clone = element.cloneNode(true) as HTMLElement;
+      clone.querySelectorAll<HTMLElement>(".engagement-description").forEach((node) => {
+        node.style.display = "block";
+        node.style.setProperty("-webkit-line-clamp", "unset");
+        node.style.setProperty("-webkit-box-orient", "unset");
+        node.style.overflow = "visible";
+        node.style.maxHeight = "none";
+      });
+      clone.querySelectorAll(".engagement-show-more").forEach((node) => node.remove());
+      const dataContent = clone.innerHTML.trim();
       widgetContainer.classList.remove("page-break");
       widgetContainer.innerHTML = `<div class="engagements-content"><div>${dataContent || "<p>No data to show</p>"}</div></div>`;
+      asPage(widgetContainer);
       pdfContent.appendChild(widgetContainer);
     } else if (selector === ".business-overview-section" && businessOverviewText) {
       const title = element.querySelector(".widget-title")?.textContent || "Business Overview";
       const textarea = element.querySelector("textarea") as HTMLTextAreaElement | null;
       const formattedText = textarea ? escapeHtml(textarea.value).replace(/\n/g, "<br>") : "No data to show";
       widgetContainer.innerHTML = `<h2 class="widget-title">${title}</h2><p>${formattedText}</p>`;
+      asPage(widgetContainer);
       pdfContent.appendChild(widgetContainer);
     } else if (selector === ".deployment-image-section") {
       const title = element.querySelector(".widget-title")?.textContent || "Deployment";
@@ -205,11 +325,16 @@ function buildPdfContent(
         imageWrapperDiv.style.display = "flex";
         imageWrapperDiv.style.justifyContent = "center";
         imageWrapperDiv.style.alignItems = "center";
-        imageWrapperDiv.style.height = "80mm";
-        imageWrapperDiv.style.paddingTop = "50mm";
-        imageWrapperDiv.appendChild(imageElement.cloneNode(true));
+        imageWrapperDiv.style.width = "100%";
+        imageWrapperDiv.style.maxHeight = "620px";
+        const deploymentPicture = imageElement.cloneNode(true) as HTMLImageElement;
+        deploymentPicture.style.maxWidth = "100%";
+        deploymentPicture.style.maxHeight = "620px";
+        deploymentPicture.style.objectFit = "contain";
+        imageWrapperDiv.appendChild(deploymentPicture);
 
         deploymentElement.appendChild(imageWrapperDiv);
+        asPage(deploymentElement, true);
         pdfContent.appendChild(deploymentElement);
       }
     } else if (selector === ".extra-notes-section") {
@@ -221,6 +346,7 @@ function buildPdfContent(
       const textElement = document.createElement("div");
       textElement.classList.add("styled-text");
       textElement.innerHTML = `<h2 class="widget-title">${title}</h2><p>${formattedText}</p>`;
+      asPage(textElement);
       pdfContent.appendChild(textElement);
 
       if (image) {
@@ -232,13 +358,17 @@ function buildPdfContent(
         imageWrapperDiv.style.display = "flex";
         imageWrapperDiv.style.justifyContent = "center";
         imageWrapperDiv.style.alignItems = "center";
-        imageWrapperDiv.style.height = "60mm";
-        imageWrapperDiv.style.paddingTop = "67mm";
+        imageWrapperDiv.style.width = "100%";
+        imageWrapperDiv.style.maxHeight = "620px";
 
         const clonedImage = new Image();
         clonedImage.src = image.src;
+        clonedImage.style.maxWidth = "100%";
+        clonedImage.style.maxHeight = "620px";
+        clonedImage.style.objectFit = "contain";
         imageWrapperDiv.appendChild(clonedImage);
         imageElement.appendChild(imageWrapperDiv);
+        asPage(imageElement, true);
         pdfContent.appendChild(imageElement);
       }
     }
@@ -251,6 +381,7 @@ function buildPdfContent(
   const recordsPage = document.createElement("div");
   recordsPage.classList.add("records-page");
   recordsPage.innerHTML = `<h1> SLA & Other Information </h1><hr class="section-divider"/>`;
+  asPage(recordsPage, true);
   pdfContent.appendChild(recordsPage);
 
   const slaTablePage = document.createElement("div");
@@ -282,6 +413,7 @@ function buildPdfContent(
     `;
   }
   slaTablePage.appendChild(slaTable);
+  asPage(slaTablePage);
   pdfContent.appendChild(slaTablePage);
 
   const pageBreak1 = document.createElement("div");
@@ -291,9 +423,31 @@ function buildPdfContent(
   const thankPage = document.createElement("div");
   thankPage.classList.add("thank-page");
   thankPage.innerHTML = `<h1>Thanks!</h1><hr class="section-divider"/>`;
+  asPage(thankPage, true);
   pdfContent.appendChild(thankPage);
 
   return pdfContent;
+}
+
+// Preview images are blob: URLs. html2canvas reloads those with
+// crossOrigin and the resulting canvas is tainted, so toDataURL throws.
+// Read them into data URLs first — that is what the earlier uploader stored.
+async function inlineBlobImages(root: ParentNode): Promise<void> {
+  const images = Array.from(root.querySelectorAll("img"));
+  await Promise.all(
+    images.map(async (img) => {
+      if (!img.src.startsWith("blob:")) return;
+      const response = await fetch(img.src);
+      const blob = await response.blob();
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(blob);
+      });
+      img.src = dataUrl;
+    }),
+  );
 }
 
 export async function csReportPDF(
@@ -301,12 +455,13 @@ export async function csReportPDF(
   account: string,
   key: string,
   records: any[],
-  from: Dayjs | null,
-  to: Dayjs | null,
+  from: Date | null,
+  to: Date | null,
   notesText: string,
   notesImage: string,
   deploymentImage: string,
   businessOverviewText: string,
+  accent = "#fa7b3f",
 ): Promise<void> {
   const contentElement = document.getElementById(contentId);
   if (!contentElement) {
@@ -324,38 +479,77 @@ export async function csReportPDF(
     businessOverviewText,
   );
 
-  // Off-screen but laid out (html2canvas needs real layout, not display:none).
-  pdfContent.style.position = "fixed";
-  pdfContent.style.top = "0";
-  pdfContent.style.left = "-99999px";
-  pdfContent.style.width = "1000px";
-  document.body.appendChild(pdfContent);
+  await inlineBlobImages(pdfContent);
+  const safeAccent = /^#[0-9a-f]{3,8}$/i.test(accent) ? accent : "#fa7b3f";
+  pdfContent.querySelectorAll<HTMLElement>(".section-divider").forEach((el) => {
+    el.style.borderTopColor = safeAccent;
+  });
+  pdfContent.querySelectorAll<HTMLElement>(".sla-title").forEach((el) => {
+    el.style.color = safeAccent;
+  });
+  const agenda = pdfContent.querySelector(".agenda-page");
+  if (agenda) {
+    const bullet = document.createElement("style");
+    bullet.textContent = `.agenda-item::before { color: ${safeAccent} !important; }`;
+    agenda.prepend(bullet);
+  }
+
+  const pdf = new jsPDF("l", "mm", "a4");
+  // html2canvas clones the element's whole document. Capturing from the app
+  // page re-fetches every icon and chart SVG, once per page. This frame holds
+  // one sheet and the styles it needs, so each capture stays that small.
+  const frame = document.createElement("iframe");
+  frame.setAttribute("data-html2canvas-ignore", "true");
+  frame.style.cssText = `position:fixed;left:-99999px;top:0;width:${PAGE_W}px;height:${PAGE_H}px;border:0;`;
+  document.body.appendChild(frame);
+  const frameDoc = frame.contentDocument;
+  if (!frameDoc) {
+    document.body.removeChild(frame);
+    throw new Error("Could not prepare the PDF.");
+  }
+  frameDoc.open();
+  frameDoc.write('<!DOCTYPE html><html><head></head><body style="margin:0"></body></html>');
+  frameDoc.close();
+  const base = frameDoc.createElement("base");
+  base.href = document.baseURI;
+  frameDoc.head.appendChild(base);
+  document.querySelectorAll('style, link[rel="stylesheet"]').forEach((node) => {
+    frameDoc.head.appendChild(node.cloneNode(true));
+  });
+  frameDoc.documentElement.style.setProperty("--report-accent", safeAccent);
 
   try {
-    const canvas = await html2canvas(pdfContent, { scale: 3, backgroundColor: "#ffffff", useCORS: true });
-    // A5 landscape, same as the source's html2pdf jsPDF option.
-    const pdf = new jsPDF("l", "mm", "a5");
-    const pdfWidth = pdf.internal.pageSize.getWidth();
-    const pdfHeight = pdf.internal.pageSize.getHeight();
-    const imgData = canvas.toDataURL("image/jpeg", 0.98);
-    const imgProps = pdf.getImageProperties(imgData);
-    const imgHeight = (imgProps.height * pdfWidth) / imgProps.width;
-
-    let heightLeft = imgHeight;
-    let position = 0;
-    pdf.addImage(imgData, "JPEG", 0, position, pdfWidth, imgHeight);
-    heightLeft -= pdfHeight;
-    while (heightLeft > 0) {
-      position -= pdfHeight;
-      pdf.addPage();
-      pdf.addImage(imgData, "JPEG", 0, position, pdfWidth, imgHeight);
-      heightLeft -= pdfHeight;
+    let started = false;
+    for (const child of Array.from(pdfContent.children)) {
+      if (!(child instanceof HTMLElement)) continue;
+      if (child.classList.contains("pdf-chart-slot")) {
+        const source = contentElement.querySelector(child.dataset.source ?? "");
+        const charts = source ? Array.from(source.querySelectorAll<HTMLElement>(".report-chart")) : [];
+        const sectionTitle = child.dataset.title || "Chart";
+        if (charts.length === 0) {
+          started = await addChartPage(pdf, null, sectionTitle, started, safeAccent, frameDoc);
+        } else {
+          for (const chart of charts) {
+            const title = chart.querySelector("p")?.textContent?.trim() || sectionTitle;
+            started = await addChartPage(pdf, chart, title, started, safeAccent, frameDoc);
+          }
+        }
+        continue;
+      }
+      if (!child.classList.contains("pdf-sheet")) continue;
+      const sheet = child;
+      frameDoc.body.replaceChildren(sheet);
+      started = await addElementPages(pdf, sheet, started, {
+        width: PAGE_W,
+        windowWidth: PAGE_W,
+        pageCssHeight: PAGE_H,
+      });
     }
 
-    const formattedFrom = from ? dayjs(from).format("YYYY-MM-DD") : "UnknownStart";
-    const formattedTo = to ? dayjs(to).format("YYYY-MM-DD") : "UnknownEnd";
+    const formattedFrom = from ? formatDateOnly(from) : "UnknownStart";
+    const formattedTo = to ? formatDateOnly(to) : "UnknownEnd";
     pdf.save(`CS_Report_${key}_${formattedFrom}_to_${formattedTo}.pdf`);
   } finally {
-    document.body.removeChild(pdfContent);
+    document.body.removeChild(frame);
   }
 }

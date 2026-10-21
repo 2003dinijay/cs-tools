@@ -16,8 +16,10 @@
 
 import {
   Box,
+  Checkbox,
   Chip,
   IconButton,
+  LinearProgress,
   Skeleton,
   TableSortLabel,
   Tooltip,
@@ -55,6 +57,9 @@ import {
 interface CasesListProps {
   cases: CsmCaseRow[];
   isLoading: boolean;
+  /** A later page or a new filter is in flight. Rows already on screen stay;
+   * this draws a thin progress bar so those rows are not read as the new result. */
+  isFetching?: boolean;
   /** Number of skeleton rows to show while loading. Defaults to 6. */
   skeletonCount?: number;
   /** Base path for detail links. Omit to have each row route to its own
@@ -96,6 +101,23 @@ interface CasesListProps {
    * actually controls, rather than the control living in a page header far
    * away from the table it affects. Omit to render no toolbar row at all. */
   columnCustomizer?: ReactNode;
+  /** Adds a leading checkbox column for bulk row selection (backs the
+   * caller's own "Export selected" action — see `CsmIssuesView`). Omit (the
+   * default) to render with no selection column at all, as before this
+   * existed. Only meaningful together with `selectedIds`/`onToggleRow`/
+   * `onToggleAllOnPage`, all four of which a selectable caller must pass. */
+  selectable?: boolean;
+  /** Which row ids (`CsmCaseRow.id`) are currently selected. Selection is the
+   * caller's state, not this component's — it may span pages the caller has
+   * already paged away from, which this component has no way to know about
+   * on its own. */
+  selectedIds?: ReadonlySet<string>;
+  /** A single row's checkbox was toggled. */
+  onToggleRow?: (row: CsmCaseRow) => void;
+  /** The header "select all on this page" checkbox was toggled — reports the
+   * next checked state and every row currently rendered (the caller decides
+   * whether to add or remove each from its own selection). */
+  onToggleAllOnPage?: (checked: boolean, rows: CsmCaseRow[]) => void;
 }
 
 /** Maps the optional columns that double as sort headers to the field they
@@ -194,6 +216,7 @@ function renderOptionalCell(id: CaseOptionalColumnId, c: CsmCaseRow): JSX.Elemen
 // `auto` track (unlabeled in the header) holds the per-row quick-preview
 // action — kept at the left edge so it's reachable without hunting across
 // the row, with the preview drawer itself opening on the right.
+const CHECKBOX_TRACK = "auto";
 const CASE_ID_TRACK = "minmax(120px, 160px)";
 const SUBJECT_TRACK = "minmax(280px, 320px)";
 const STATE_TRACK = "minmax(110px, 150px)";
@@ -205,6 +228,7 @@ const UPDATED_TRACK = "minmax(90px, 1fr)";
 export default function CasesList({
   cases,
   isLoading,
+  isFetching = false,
   skeletonCount = 6,
   detailBasePath,
   hideSeverityColumn = false,
@@ -214,6 +238,10 @@ export default function CasesList({
   sortOrder,
   onSortOrderChange,
   columnCustomizer,
+  selectable = false,
+  selectedIds,
+  onToggleRow,
+  onToggleAllOnPage,
 }: CasesListProps): JSX.Element {
   const theme = useTheme();
   const location = useLocation();
@@ -287,6 +315,7 @@ export default function CasesList({
     { label: "State", sortableField: "state" as CasesSortField },
   ];
   const gridTemplateColumns = [
+    ...(selectable ? [CHECKBOX_TRACK] : []),
     "auto",
     CASE_ID_TRACK,
     SUBJECT_TRACK,
@@ -295,8 +324,21 @@ export default function CasesList({
     UPDATED_TRACK,
   ].join(" ");
 
+  // "Select all on this page" header checkbox: checked only when every
+  // currently-rendered row is selected, indeterminate when some (but not
+  // all) are — the standard tri-state convention for a page-scoped select-all
+  // next to a selection that can span pages the caller isn't currently on.
+  const selectedOnPageCount = selectable
+    ? cases.filter((c) => selectedIds?.has(c.id)).length
+    : 0;
+  const allOnPageSelected = selectable && cases.length > 0 && selectedOnPageCount === cases.length;
+  const someOnPageSelected = selectable && selectedOnPageCount > 0 && !allOnPageSelected;
+
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
+      {isFetching && !isLoading && (
+        <LinearProgress aria-label="Updating the list" sx={{ height: 2 }} />
+      )}
       {columnCustomizer && (
         <Box sx={{ display: "flex", justifyContent: "flex-end" }}>{columnCustomizer}</Box>
       )}
@@ -340,6 +382,17 @@ export default function CasesList({
                 borderColor: "divider",
               }}
             >
+              {selectable && (
+                <Checkbox
+                  size="small"
+                  checked={allOnPageSelected}
+                  indeterminate={someOnPageSelected}
+                  disabled={cases.length === 0}
+                  onChange={(e) => onToggleAllOnPage?.(e.target.checked, cases)}
+                  inputProps={{ "aria-label": "Select all rows on this page" }}
+                  sx={{ justifySelf: "center", p: 0 }}
+                />
+              )}
               <Typography
                 variant="caption"
                 color="text.secondary"
@@ -417,6 +470,19 @@ export default function CasesList({
                       "&:last-of-type": { borderBottom: 0 },
                     }}
                   >
+                    {/* Row selection checkbox, ahead of quick preview — `stopPropagation`
+                        (via the surrounding onClick below, same as quick preview) keeps a
+                        click from also bubbling into the row's own navigation handler. */}
+                    {selectable && (
+                      <Checkbox
+                        size="small"
+                        checked={selectedIds?.has(c.id) ?? false}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={() => onToggleRow?.(c)}
+                        inputProps={{ "aria-label": `Select ${rowLabel}` }}
+                        sx={{ justifySelf: "center", p: 0 }}
+                      />
+                    )}
                     {/* Quick preview, at the row's left edge so it's the first
                         thing reachable without hunting across the row; the drawer
                         itself opens on the right. `stopPropagation` keeps the click

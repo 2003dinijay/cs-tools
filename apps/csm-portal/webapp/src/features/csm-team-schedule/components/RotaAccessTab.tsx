@@ -20,6 +20,8 @@ import { useSearchInternalUsersByName } from "@api/useSearchUsersByName";
 import { useDebouncedValue } from "@hooks/useDebouncedValue";
 import { useChangeRotaAccess, useRotaAccess, type RotaAccessChange } from "../api/useRotaAccess";
 import type { RotaAdminGrant, RotaFamily, RotaMarkerGrant, ScheduleTeam } from "../types";
+import RotaReminderSettings from "./RotaReminderSettings";
+import ScheduleSkeleton from "./ScheduleSkeleton";
 
 const FAMILIES: RotaFamily[] = ["CRE", "SRE", "SME"];
 
@@ -58,18 +60,18 @@ export default function RotaAccessTab({ teams }: Props): JSX.Element {
     change.mutate(c, { onError: (e) => setError(e.message || "That change did not save.") });
   };
 
-  if (access.isLoading) return <div className="offnone">Loading rota access…</div>;
-  if (access.isError || !access.data) return <div className="offnone">Rota access could not be loaded.</div>;
+  if (access.isLoading) return <ScheduleSkeleton variant="list" label="Loading rota access…" rows={5} />;
+  if (access.isError || !access.data) return <div className="offnone">Rota Access could not be loaded.</div>;
 
   return (
     <div className="ra">
       <div className="card-head">
-        <h2>Rota access</h2>
+        <h2>Rota Access</h2>
       </div>
       <p className="ra-intro">
         A team&apos;s lead always marks their own team. Here you can let others do it too. A{" "}
         <b>Rota admin</b> marks every team in one group. A <b>Rota marker</b> marks one team&apos;s rotations,
-        leave and allocations, but can&apos;t generate the month, change the tags or the paging chain.
+        leave and allocations, but can&apos;t generate the month, change the tags or the alert chain.
       </p>
       {error ? (
         <div className="ra-err" role="alert">
@@ -133,6 +135,8 @@ export default function RotaAccessTab({ teams }: Props): JSX.Element {
           </div>
         </section>
       ) : null}
+
+      {markerFamilies.includes("CRE") ? <RotaReminderSettings /> : null}
     </div>
   );
 }

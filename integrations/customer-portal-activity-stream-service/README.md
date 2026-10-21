@@ -1,6 +1,6 @@
 # Customer Portal Activity Stream Service
 
-Go HTTP server (`net/http`, Go 1.26+) that serves the case-activity SSE endpoint (`GET /cases/{id}/activities/stream`). It consumes the `case-events` Azure Event Hub topic in its own consumer group and fans `case.comment_added` / `case.status_changed` events to any connected SSE clients via an in-process BroadcastHub.
+Go HTTP server (`net/http`, Go 1.26+) that serves the case-activity SSE endpoint (`GET /cases/{id}/activities/stream`). It consumes the `case-events` Azure Event Hub topic in its own consumer group and fans `case.comment_added` (customer-visible comments only) / `case.status_changed` events to any connected SSE clients via an in-process BroadcastHub.
 
 Cloned from `integrations/csm-portal-activity-stream-service`, adapted for `apps/customer-portal`. See that repo's `CLAUDE.md` for the original design rationale, and this repo's own `CLAUDE.md` for customer-portal-specific notes.
 
@@ -8,7 +8,7 @@ Cloned from `integrations/csm-portal-activity-stream-service`, adapted for `apps
 
 - The REST API's :8080 listener has `WriteTimeout`/`IdleTimeout` that would kill long-lived SSE connections. The stream needs its own listener with both timeouts disabled.
 - Horizontal scale: each replica must see 100% of events (per-replica consumer group + `LatestOffset`), and the BroadcastHub only knows its own process's subscribers. Separating the stream lets it scale independently of the BFF.
-- Choreo deployment: the stream has its own endpoint declaration (`.choreo/component.yaml`) and OpenAPI spec (`openapi-stream.yaml`), distinct from `apps/customer-portal/backend-v2`'s REST API.
+- Choreo deployment: the stream has its own endpoint declaration (`.choreo/component.yaml`) and OpenAPI spec (`openapi.yaml`), distinct from `apps/customer-portal/backend-v2`'s REST API.
 
 ## Event flow
 
@@ -19,7 +19,7 @@ apps/customer-portal/backend-v2 ──┤──▶ entity-service ──▶ Even
 
 Both portals' backends call the same entity-service endpoints; the publish is a side effect of entity-service's own `CreateCaseComment`/`UpdateCase`, unconditional on which portal called it. This service, `csm-portal-activity-stream-service`, and `csm-notification-service` each consume the same topic independently, in their own consumer groups.
 
-Only `case.comment_added` and `case.status_changed` are broadcast. The payload is minimal: `{caseId, type, timestamp}` — no comment text or field values.
+Only `case.comment_added` (skipped when the comment is an internal note) and `case.status_changed` are broadcast; other types (e.g. `case.created`, `case.assigned`, `case.severity_changed`, `case.acknowledged`, `incident.created`) are not. The payload is minimal: `{caseId, type, timestamp}` — no comment text, field values, names or emails.
 
 ## Auth
 
@@ -49,7 +49,6 @@ The incoming `x-user-id-token` is forwarded to the entity-service `GetCase` call
 | `EVENT_HUB_CONSUMER_GROUP` | No (default `customer-portal-activity-stream-service`) | Base consumer group name (suffixed per-replica with `-replica-<hostname>`) |
 | `STREAM_PORT` | No (default 9092) | Port the SSE listener binds to |
 | `STREAM_CORS_ALLOWED_ORIGINS` | No | Comma-separated browser Origins for the SSE endpoint; fail-closed |
-| `CORS_ALLOWED_ORIGINS` | No | Comma-separated browser Origins for the health listener (:8080); fail-closed |
 | `AUTH_JWKS_ENDPOINT` | Yes | JWKS URL for JWT validation — verify against customer-portal's own Asgardeo tenant, see `CLAUDE.md`'s "Auth" section |
 | `AUTH_ISSUER` | Yes | Expected `iss` claim |
 | `AUTH_AUDIENCE` | Yes | Comma-separated accepted `aud` values |
@@ -78,4 +77,4 @@ go test -race ./...
 
 ## Deployment (Choreo)
 
-See `.choreo/component.yaml` (two endpoints: health on :8080, SSE on :9092 with `openapi-stream.yaml`). The stream endpoint is Public network visibility. See `CLAUDE.md`'s "Deployment (Choreo)" section for known gateway config gotchas to apply up front.
+See `.choreo/component.yaml` (one endpoint on :9092, serving the SSE stream and an unauthenticated `GET /health` used for Choreo's liveness probe; spec in `openapi.yaml`). The stream endpoint is Public network visibility. See `CLAUDE.md`'s "Deployment (Choreo)" section for known gateway config gotchas to apply up front.

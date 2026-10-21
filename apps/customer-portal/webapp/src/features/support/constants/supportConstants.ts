@@ -37,6 +37,7 @@ import {
   XCircle,
   FileCheck,
   AlertCircle,
+  ShieldCheck,
 } from "@wso2/oxygen-ui-icons-react";
 import type { ProjectCasesStats } from "@features/support/types/cases";
 import type {
@@ -146,6 +147,26 @@ export const CALL_REQUEST_STATE_PENDING_ON_WSO2 = 2;
 /** API stateKey value for cancelling a call request (PATCH). */
 export const CALL_REQUEST_STATE_CANCELLED = 6;
 
+/**
+ * Every call-request stateKey (PATCH / search filter), by entity-service's own
+ * string enum id (GET /projects/{id}/filters' callRequestStates[].id) -- the
+ * fixed ServiceNow-era numeric scheme, mirroring backend-v2's own
+ * callRequestStateKeyToEnum (internal/dto/call_request_enum_mapping.go) in
+ * reverse. The string id is never itself numeric (Number(id) is always NaN),
+ * so any code deriving a stateKey from callRequestStates must go through this
+ * map (or the single-purpose constants above), never Number(id) directly.
+ */
+export const CALL_REQUEST_STATE_KEY_BY_ID: Readonly<Record<string, number>> = {
+  pending_on_customer: 1,
+  pending_on_wso2: CALL_REQUEST_STATE_PENDING_ON_WSO2,
+  scheduled: 3,
+  customer_rejected: CALL_REQUEST_STATE_CUSTOMER_REJECTED,
+  wso2_rejected: 5,
+  canceled: CALL_REQUEST_STATE_CANCELLED,
+  notes_pending: 7,
+  concluded: 8,
+};
+
 // Case severity types matching API labels.
 export const CaseSeverity = {
   CATASTROPHIC: "Catastrophic (P0)",
@@ -168,6 +189,32 @@ export const CaseSeverityLevel = {
 
 export type CaseSeverityLevel =
   (typeof CaseSeverityLevel)[keyof typeof CaseSeverityLevel];
+
+/**
+ * ServiceNow's own CallRequestUtils._PRIORITY_TIME_OFFSETS, mirrored here:
+ * the minimum lead time (minutes) a call request's preferred time must sit
+ * ahead of now, by case priority. Keyed by the same numeric priority id
+ * GET /projects/{id}/filters' severity choice list uses (confirmed against
+ * entity-service's own severityEnumToChoice: S0=14, S1=10, S2=11, S3=12,
+ * S4=13 -- the numbering is P0(14) -> P1(10) -> P2(11) -> P3(12) -> P4(13),
+ * not a simple sequence), not a severity label string.
+ *
+ * entity-service's own severityBasedAllocationTime (the field this was
+ * meant to come from) is currently always an empty map -- no per-severity
+ * SLA-allocation-time table exists in Postgres yet -- so this is the one
+ * place this matrix is defined today. If severityBasedAllocationTime is
+ * ever populated, prefer it over this table (see CallsPanel.tsx's own
+ * severityAllocationMinutes, which checks the API value first).
+ */
+export const CALL_REQUEST_LEAD_MINUTES_BY_PRIORITY_ID: Readonly<
+  Record<string, number>
+> = {
+  "14": 15, // Catastrophic (P0)
+  "10": 30, // Critical (P1)
+  "11": 60, // High (P2)
+  "12": 90, // Medium (P3)
+  "13": 120, // Low (P4)
+};
 
 // Case type values for case creation and stats filters.
 export const CaseType = {
@@ -348,6 +395,7 @@ export const CASE_DETAILS_TABS: CaseDetailsTabConfig[] = [
   { label: "Knowledge Base (0)", Icon: BookOpen },
   { label: "Related Change Requests", Icon: GitBranch },
   { label: "Escalation", Icon: TriangleAlert },
+  { label: "Verifications", Icon: ShieldCheck },
 ];
 
 export const ESCALATION_MAX_LEVEL_ID = "5";
@@ -559,6 +607,29 @@ export const ANNOUNCEMENT_STAT_CONFIGS: SupportStatConfig<AnnouncementStatKey>[]
       key: "total",
       label: "Total",
     },
+  ];
+
+/**
+ * Valid keys for pending-verification list statistics. Limited to what the
+ * search response actually aggregates over the full filtered set
+ * (totalRecords/autoClosedCount/manualCount) — no full-set "verified" count
+ * is exposed by the backend, so that stat is deliberately not included here
+ * rather than showing a misleading current-page-only number.
+ */
+export type PendingVerificationStatKey = "total" | "autoClosed" | "manual" | "verified";
+
+/**
+ * Configuration for the pending-verification list's statistics cards.
+ * "verified" reads the same deduped, per-case total the Verified tab badge
+ * uses (see 15-dedupe-verified-tab.md) — already fetched regardless of
+ * which tab is active, so this tile costs no extra request.
+ */
+export const PENDING_VERIFICATION_STAT_CONFIGS: SupportStatConfig<PendingVerificationStatKey>[] =
+  [
+    { icon: ShieldCheck, iconColor: "info", key: "total", label: "Total Pending Verification" },
+    { icon: RotateCcw, iconColor: "warning", key: "autoClosed", label: "Auto-closed Pending Verification" },
+    { icon: FileText, iconColor: "secondary", key: "manual", label: "Manual Pending Verification" },
+    { icon: CircleCheck, iconColor: "success", key: "verified", label: "Verified" },
   ];
 
 /**

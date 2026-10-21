@@ -61,34 +61,6 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// when it matters.
 		logCRVisibility(cfg)
 	}
-	userRepo := repository.NewUserRepository(db)
-	userSvc := service.NewUserService(userRepo)
-
-	// The user cache in front of GET /users/{id} and GET /users/me, on when
-	// REDIS_URL or REDIS_ADDR is set (see internal/cache). Postgres-only:
-	// those routes are served by the ServiceNow handlers in servicenow mode.
-	// userCacheInvalidator stays a nil interface without it -- never a nil
-	// *cache.UserCache inside a non-nil one -- so the writers below can test
-	// it against nil.
-	var userCacheInvalidator service.UserCacheInvalidator
-	closeUserCache := func() {}
-	if db != nil && cfg.HasRedis() {
-		rdb, err := cache.NewRedisClient(cfg)
-		if err != nil {
-			panic("user cache: " + err.Error())
-		}
-		userCache := cache.NewUserCache(rdb, cfg.UserCacheTTL)
-		userSvc = service.NewCachedUserService(userSvc, userCache)
-		userCacheInvalidator = userCache
-		closeUserCache = func() {
-			if err := rdb.Close(); err != nil {
-				log.Printf("user cache: close redis client: %v", err)
-			}
-		}
-		log.Printf("user cache enabled (ttl %s)", cfg.UserCacheTTL)
-	}
-	userHandler := handler.NewUserHandler(userSvc)
-
 	// accessSvc resolves the caller's AccessScope from the validated identity
 	// auth.Middleware attaches to every request (see AccessService's own doc
 	// comment for the full decision table). Constructed once and shared by
@@ -97,12 +69,54 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// reads go to ServiceNow itself with the forwarded x-user-id-token, so
 	// scoping there is ServiceNow's own (snProjectService/snCaseService hold a
 	// pgFallback but do not route GetProjectByID/GetCaseByID through it).
+	//
+	// Constructed before userSvc (moved up from its original spot further
+	// down) specifically so NewUserService can take it directly, gating
+	// UpdateUser to internal callers -- see that method's own doc comment.
 	accessSvc := service.NewAccessService(repository.NewAccessRepository(db), service.AccessClientConfig{
 		M2MClientIDs:                  cfg.M2MClientIDs,
 		CSMPortalBackendClientID:      cfg.CSMPortalBackendClientID,
 		CSMPortalUserDomain:           cfg.CSMPortalUserDomain,
 		CustomerPortalBackendClientID: cfg.CustomerPortalBackendClientID,
 	})
+
+	userRepo := repository.NewUserRepository(db)
+	userSvc := service.NewUserService(userRepo, accessSvc)
+
+	// The case-volume-trend cache behind POST /cases/volume-trend is a
+	// plain per-pod in-memory map -- deliberately not Redis-backed, even
+	// though Redis may be configured for the user cache right below. This
+	// endpoint's own cache entry is cheap to recompute (one bulk Postgres
+	// query for however many days are missing) and read-only/identical for
+	// every caller (see service.CaseVolumeTrendCache's own doc comment), so
+	// each pod simply computing and caching independently costs nothing
+	// worth a shared store's added complexity.
+	var volumeTrendCache service.CaseVolumeTrendCache = cache.NewInMemoryCaseVolumeTrendCache()
+
+	// The user cache in front of GET /users/{id} and GET /users/me, on when
+	// REDIS_URL or REDIS_ADDR is set (see internal/cache). Postgres-only:
+	// those routes are served by the ServiceNow handlers in servicenow mode.
+	// userCacheInvalidator stays a nil interface without it -- never a nil
+	// *cache.UserCache inside a non-nil one -- so the writers below can test
+	// it against nil.
+	var userCacheInvalidator service.UserCacheInvalidator
+	closeRedis := func() {}
+	if db != nil && cfg.HasRedis() {
+		rdb, err := cache.NewRedisClient(cfg)
+		if err != nil {
+			panic("redis client: " + err.Error())
+		}
+		userCache := cache.NewUserCache(rdb, cfg.UserCacheTTL)
+		userSvc = service.NewCachedUserService(userSvc, userCache)
+		userCacheInvalidator = userCache
+		closeRedis = func() {
+			if err := rdb.Close(); err != nil {
+				log.Printf("redis: close client: %v", err)
+			}
+		}
+		log.Printf("user cache enabled (ttl %s)", cfg.UserCacheTTL)
+	}
+	userHandler := handler.NewUserHandler(userSvc)
 
 	var savedFilterViewHandler *handler.SavedFilterViewHandler
 	if db != nil {
@@ -220,8 +234,18 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		githubSync service.GithubSyncService
 	)
 	var scheduledTaskRunHandler *handler.ScheduledTaskRunHandler
+	var worklogReportHandler *handler.WorklogReportHandler
 	if db != nil {
 		scheduledTaskRunHandler = handler.NewScheduledTaskRunHandler(service.NewScheduledTaskRunService(repository.NewScheduledTaskRunRepository(db)))
+		// Which teams the CS Worklogs reports cover is deployment
+		// configuration, not a constant: the default is the CRE
+		// delivery teams, which is what the delivered mails show, but
+		// type 'cre' also catches approval and review teams nobody
+		// wants in a report, and teams come and go.
+		worklogReportHandler = handler.NewWorklogReportHandler(
+			service.NewWorklogReportService(
+				repository.NewWorklogReportRepository(repository.NewScoped(db)),
+				cfg.WorklogReportTeamTypes, cfg.WorklogReportExcludedTeamKeys))
 		if cfg.HasGithubIntegration() {
 			githubLabels, labelErr := service.NewGithubLabels(service.GithubLabelOverrides{
 				TypeIncident:       cfg.GithubLabelTypeIncident,
@@ -274,6 +298,17 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		alertIncidentMappingHandler = handler.NewAlertIncidentMappingHandler(service.NewAlertIncidentMappingService(alertIncidentMappingRepo))
 	}
 
+	// pending_verification has no ServiceNow equivalent either — same
+	// reasoning as sla_clocks/scheduled_task_run/event_publish_failures/
+	// alert_incident_mapping above, gated the same way: nil db means nil
+	// handler means the routes below are never registered, rather than
+	// panicking on a nil pool.
+	var pendingVerificationHandler *handler.PendingVerificationHandler
+	if db != nil {
+		pendingVerificationRepo := repository.NewPendingVerificationRepository(repository.NewScoped(db))
+		pendingVerificationHandler = handler.NewPendingVerificationHandler(service.NewPendingVerificationService(pendingVerificationRepo, accessSvc))
+	}
+
 	// announcement_requests has no ServiceNow equivalent either — same
 	// reasoning as sla_clocks/scheduled_task_run/alert_incident_mapping
 	// above, gated the same way: nil db means nil handler means the routes
@@ -289,8 +324,15 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// rest of the Team Schedule.
 	var rotaGenerateHandler *handler.RotaGenerateHandler
 	var rotaAccessHandler *handler.RotaAccessHandler
+	var scheduleReminderHandler *handler.ScheduleReminderHandler
+	var rotaReminderSettingsHandler *handler.RotaReminderSettingsHandler
+	var rotaReminderRequestHandler *handler.RotaReminderRequestHandler
 	var teamMemberHandler *handler.TeamMemberHandler
 	var pagingChainHandler *handler.PagingChainHandler
+	var caseAlertSettingsHandler *handler.CaseAlertSettingsHandler
+	var runbookHandler *handler.RunbookHandler
+	// runbookRepo stays a nil interface without a pool, so no incident service gets a catalog.
+	var runbookRepo repository.RunbookRepository
 
 	// Customer-health risk tracking (migration 0219) has no upstream
 	// equivalent either -- it replaces a standalone MySQL database
@@ -310,7 +352,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	var teamHandler *handler.TeamHandler
 	if db != nil {
 		teamRepo := repository.NewTeamRepository(db)
-		teamHandler = handler.NewTeamHandler(service.NewTeamService(teamRepo))
+		teamHandler = handler.NewTeamHandler(service.NewTeamService(teamRepo, accessSvc))
 	}
 
 	// groupDetailHandler (GET /groups/{id}: one group and its members, opened
@@ -571,6 +613,18 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		}, cfg.UpstreamClientTimeout)
 	}
 
+	// Under dual-write, a new SR raised from a GitHub issue is created in
+	// ServiceNow first, through the integration service's /github-cases, and
+	// takes ServiceNow's CS number and WSO2 Case ID, as a portal-created one does.
+	if githubSync != nil && serviceNowIntegrationServiceClient != nil {
+		if cfg.GithubServiceNowFirst() {
+			service.WithServiceNowGithubCases(githubSync, service.NewSNGithubCases(serviceNowIntegrationServiceClient))
+			slog.Info("github: service requests from issues are created in ServiceNow first (dual-write)")
+		} else if cfg.DataSource == config.DataSourcePostgresServiceNowDualWrite {
+			slog.Info("github: service requests from issues are written to Postgres only and numbered SR-GH-<n> (GITHUB_SR_SERVICENOW_FIRST is off)")
+		}
+	}
+
 	var snAccountHandler *handler.SNAccountHandler
 	if cfg.DataSource == config.DataSourceServiceNow {
 		snAccountHandler = handler.NewSNAccountHandler(service.NewServiceNowAccountService(serviceNowIntegrationServiceClient))
@@ -623,6 +677,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		activeProjectSvc = pgProjectSvc
 	}
 	projectHandler := handler.NewProjectHandler(activeProjectSvc)
+	projectConsumptionHandler := handler.NewProjectConsumptionHandler(activeProjectSvc)
 
 	projectContactRepo := repository.NewProjectContactRepository(db)
 	var activeProjectContactSvc service.ProjectContactService
@@ -636,13 +691,15 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// activeProjectUpdateSvc backs PATCH /projects/{id} on every data source
 	// -- see pgProjectUpdateService's own doc comment for exactly which
 	// fields the Postgres data sources accept (a subset of the ServiceNow
-	// contract). DATA_SOURCE=postgres-servicenow-dual-write also
-	// mirrors a successful write to ServiceNow, asynchronously, via
-	// snWritebackDispatcher -- plain DATA_SOURCE=postgres never touches
-	// ServiceNow at all (snWritebackDispatcher is nil in that mode, so the
-	// nil-check inside NewProjectUpdateServiceWithSNWriteback's caller here
-	// never fires for it). projectRepo/pgProjectSvc were already constructed
-	// above for GetProject/SearchProjects.
+	// contract, now including VerificationEnabled; unsupported fields are
+	// rejected with a ValidationError, not silently dropped).
+	// DATA_SOURCE=postgres-servicenow-dual-write also mirrors a successful
+	// write to ServiceNow, asynchronously, via snWritebackDispatcher --
+	// plain DATA_SOURCE=postgres never touches ServiceNow at all
+	// (snWritebackDispatcher is nil in that mode, so the nil-check inside
+	// NewProjectUpdateServiceWithSNWriteback's caller here never fires for
+	// it). projectRepo/pgProjectSvc were already constructed above for
+	// GetProject/SearchProjects.
 	var activeProjectUpdateSvc service.ProjectUpdateService
 	switch cfg.DataSource {
 	case config.DataSourceServiceNow:
@@ -936,6 +993,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// below), not for DataSourceServiceNow: that mode's CreateCase never
 		// reaches this service's Postgres data at all.
 		activeCaseSvc = service.WithProductCategoryEnforcement(activeCaseSvc, referenceDataRepo, deployedProductRepo)
+		// POST /cases/volume-trend's per-day cache -- Redis-backed or
+		// in-memory, see volumeTrendCache's own construction above.
+		activeCaseSvc = service.WithCaseVolumeTrendCache(activeCaseSvc, volumeTrendCache)
 		if snSLASearchDelegate != nil {
 			activeCaseSvc = service.WithSLASearchDelegate(activeCaseSvc, snSLASearchDelegate)
 		}
@@ -979,6 +1039,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// See the matching comment in the DataSourcePostgresServiceNowDualWrite
 		// case above.
 		activeCaseSvc = service.WithProductCategoryEnforcement(activeCaseSvc, referenceDataRepo, deployedProductRepo)
+		activeCaseSvc = service.WithCaseVolumeTrendCache(activeCaseSvc, volumeTrendCache)
 		if snSLASearchDelegate != nil {
 			activeCaseSvc = service.WithSLASearchDelegate(activeCaseSvc, snSLASearchDelegate)
 		}
@@ -1045,6 +1106,22 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// Portal admin: a token role from AUTH_ADMIN_ROLES, as in the portal.
 		rotaAccessHandler = handler.NewRotaAccessHandler(
 			service.NewRotaAccessService(repository.NewRotaAccessRepository(db), repository.NewScheduleRepository(db), accessSvc, cfg.AuthAdminRoles),
+		)
+		// The rota reminders' bookkeeping, for csm-scheduled-tasks' service
+		// credential only: what a reminder last sent, and the rota admins to
+		// ask when a rota is not complete.
+		scheduleReminderHandler = handler.NewScheduleReminderHandler(
+			service.NewScheduleReminderService(repository.NewScheduleReminderRepository(db), repository.NewRotaAccessRepository(db), accessSvc),
+		)
+		// The rota reminders' settings: read by csm-scheduled-tasks and the Rota
+		// Access tab, changed there by a CSM admin or the family's rota admin.
+		rotaReminderSettingsHandler = handler.NewRotaReminderSettingsHandler(
+			service.NewRotaReminderSettingsService(repository.NewRotaReminderSettingsRepository(db), repository.NewScheduleRepository(db), accessSvc, cfg.AuthAdminRoles),
+		)
+		// "Send now" on the same card: asked for by a CSM admin or the family's
+		// rota admin, claimed and reported by csm-scheduled-tasks.
+		rotaReminderRequestHandler = handler.NewRotaReminderRequestHandler(
+			service.NewRotaReminderRequestService(repository.NewRotaReminderRequestRepository(db), repository.NewScheduleRepository(db), accessSvc, cfg.AuthAdminRoles),
 		)
 		// Postgres-only, and internal-staff-only like every other read in this
 		// module: it returns staff names, addresses and rank.
@@ -1270,12 +1347,25 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 	feedbackHandler := handler.NewFeedbackHandler(activeFeedbackSvc)
 
-	productVulnerabilityRepo := repository.NewProductVulnerabilityRepository(db)
+	// Product vulnerabilities: read queries (SearchProductVulnerabilities,
+	// GetProductVulnerability, GetVulnerabilityMeta) are served from Postgres
+	// whenever the database connection pool is available (db != nil), avoiding
+	// downstream ServiceNow integration dependency and user-level ACL issues
+	// on static metadata. SyncProductVulnerabilities delegates to the ServiceNow
+	// data source when configured. When no database pool is available (db == nil),
+	// falls back to the ServiceNow service.
 	var activeProductVulnerabilitySvc service.ProductVulnerabilityService
-	if cfg.DataSource == config.DataSourceServiceNow {
+	if db != nil {
+		productVulnerabilityRepo := repository.NewProductVulnerabilityRepository(db)
+		var snSvc service.ProductVulnerabilityService
+		if serviceNowIntegrationServiceClient != nil {
+			snSvc = service.NewServiceNowProductVulnerabilityService(serviceNowIntegrationServiceClient)
+		}
+		activeProductVulnerabilitySvc = service.NewProductVulnerabilityServiceWithSNSync(productVulnerabilityRepo, snSvc)
+	} else if serviceNowIntegrationServiceClient != nil {
 		activeProductVulnerabilitySvc = service.NewServiceNowProductVulnerabilityService(serviceNowIntegrationServiceClient)
 	} else {
-		activeProductVulnerabilitySvc = service.NewProductVulnerabilityService(productVulnerabilityRepo)
+		activeProductVulnerabilitySvc = service.NewProductVulnerabilityService(repository.NewProductVulnerabilityRepository(nil))
 	}
 	productVulnerabilityHandler := handler.NewProductVulnerabilityHandler(activeProductVulnerabilitySvc)
 
@@ -1328,7 +1418,16 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	if handoffErr != nil {
 		log.Fatalf("invalid specialist handoff configuration: %v", handoffErr)
 	}
+	if db != nil {
+		// A team configured without a groupId hands off to its Team Schedule
+		// team's group; read those teams before the configuration is shared.
+		resolveCtx, cancelResolve := context.WithTimeout(context.Background(), 15*time.Second)
+		service.ResolveSpecialistHandoffTeamGroups(resolveCtx, repository.NewSpecialistHandoffGroupRepository(db), handoffConfig)
+		cancelResolve()
+	}
 	activeIncidentSvc = service.WithSpecialistHandoffConfig(activeIncidentSvc, handoffConfig)
+	// The handoff's GitHub issue links back to the incident in the CSM portal.
+	activeIncidentSvc = service.WithHandoffPortalBaseURL(activeIncidentSvc, cfg.CSMPortalBaseURL)
 	if db != nil {
 		// Case Paging: who is on each tier of a team's paging chain, picked on
 		// the Team Schedule's Case Paging tab, and whether each chain would
@@ -1341,6 +1440,23 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 			// the incident one: a test call belongs to no incident.
 			service.NewPagingChainService(repository.NewPagingChainRepository(db), repository.NewPagingContactRepository(db),
 				accessSvc, handoffConfig, eventPublisher),
+		)
+		// Case Alerts settings: the chat rooms and ServiceNow group routes the
+		// paging ladders use, changed on the Alert Settings tab instead of a
+		// Choreo secret. csm-notification-service reads them only when it runs
+		// with PAGING_CONFIG_SOURCE set.
+		// Runbooks: the alert-name to runbook catalog, matched against every new incident's subject.
+		runbookRepo = repository.NewRunbookRepository(db)
+		runbookHandler = handler.NewRunbookHandler(service.NewRunbookService(runbookRepo))
+		caseAlertSettingsHandler = handler.NewCaseAlertSettingsHandler(
+			service.NewCaseAlertSettingsService(repository.NewCaseAlertSettingsRepository(db), repository.NewPagingChainRepository(db), accessSvc,
+				service.CaseAlertSettingsConfig{
+					AdminRoles:       cfg.AuthAdminRoles,
+					SecretKey:        cfg.CaseAlertsSecretKey,
+					SecretKeyID:      cfg.CaseAlertsSecretKeyID,
+					RuntimeClientIDs: cfg.CaseAlertsRuntimeClientIDs,
+					Environment:      cfg.CaseAlertsEnvironment,
+				}),
 		)
 	}
 	// One GitHub client per credential the products name, independent of the
@@ -1544,18 +1660,28 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	switch cfg.DataSource {
 	case config.DataSourceServiceNow:
 		activeInstanceSvc = service.NewServiceNowInstanceService(serviceNowIntegrationServiceClient)
-	case config.DataSourcePostgresServiceNowDualWrite:
-		// Read-only fallback to ServiceNow, same reasoning as
-		// deploymentService/deployedProductService under this data source
-		// (see instanceService.snMirror's own doc comment): Postgres's
-		// instance/usage-tracking tables were never backfilled with
-		// ServiceNow's existing history.
-		snInstanceMirrorSvc := service.NewServiceNowInstanceService(serviceNowIntegrationServiceClient)
-		activeInstanceSvc = service.NewInstanceServiceWithSNFallback(instanceRepo, snInstanceMirrorSvc)
 	default:
+		// Deliberately always Postgres here, regardless of DATA_SOURCE --
+		// by explicit product decision, instance/usage-tracking data must
+		// be served from Postgres directly, not mirrored from elsewhere the
+		// way deploymentService/deployedProductService's write paths still
+		// are. This used to fall back to a different read path under
+		// config.DataSourcePostgresServiceNowDualWrite (see
+		// service.NewInstanceServiceWithSNFallback's own doc comment for
+		// the backfill gap it existed to paper over); that fallback is no
+		// longer wired up here on purpose. DataSourceServiceNow is the one
+		// true exception, since that mode may run with no Postgres pool at
+		// all.
 		activeInstanceSvc = service.NewInstanceService(instanceRepo)
 	}
 	instanceHandler := handler.NewInstanceHandler(activeInstanceSvc)
+
+	var instanceIngestionHandler *handler.InstanceIngestionHandler
+	if db != nil {
+		instanceIngestionRepo := repository.NewInstanceIngestionRepository(repository.NewScoped(db))
+		instanceIngestionSvc := service.NewInstanceIngestionService(instanceIngestionRepo)
+		instanceIngestionHandler = handler.NewInstanceIngestionHandler(instanceIngestionSvc)
+	}
 
 	itServiceRepo := repository.NewITServiceRepository(db)
 	var activeITServiceSvc service.ITServiceService
@@ -1685,6 +1811,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("GET /sla-status", slaStatusHandler.SearchActiveSLAStatuses)
 		mux.HandleFunc("GET /sla-status/clock-state", slaStatusHandler.GetClockState)
 	}
+	if pendingVerificationHandler != nil {
+		mux.HandleFunc("POST /pending-verifications", pendingVerificationHandler.CreatePendingVerification)
+		mux.HandleFunc("POST /pending-verifications/search", pendingVerificationHandler.SearchPendingVerifications)
+		mux.HandleFunc("PATCH /pending-verifications/{id}", pendingVerificationHandler.VerifyPendingVerification)
+	}
 	if slaDurationPolicyHandler != nil {
 		mux.HandleFunc("GET /sla-duration-policy", slaDurationPolicyHandler.ListSLADurationPolicy)
 	}
@@ -1693,6 +1824,12 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("POST /github/service-requests", githubServiceRequestHandler.Create)
 	}
 
+	if worklogReportHandler != nil {
+		// internalOnly, not merely authenticated. The report names every
+		// engineer, what they worked on and how long it took; a customer
+		// token must never reach it.
+		mux.HandleFunc("GET /reports/worklogs", internalOnly(accessSvc, worklogReportHandler.GetWorklogReport))
+	}
 	if scheduledTaskRunHandler != nil {
 		mux.HandleFunc("POST /scheduled-tasks/attempts", scheduledTaskRunHandler.AttemptScheduledTaskRun)
 		mux.HandleFunc("PATCH /scheduled-tasks/attempts/{id}", scheduledTaskRunHandler.UpdateScheduledTaskRunAttempt)
@@ -1730,6 +1867,31 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("POST /team-schedule/paging-contacts/{userId}/test", pagingChainHandler.RequestTestCall)
 		mux.HandleFunc("PUT /team-schedule/paging-contacts/{userId}/test-result", pagingChainHandler.RecordTestResult)
 	}
+	if runbookHandler != nil {
+		// Runbooks (Operations > Runbooks): internal callers only.
+		mux.HandleFunc("GET /runbooks", internalOnly(accessSvc, runbookHandler.ListRunbooks))
+		mux.HandleFunc("POST /runbooks", internalOnly(accessSvc, runbookHandler.CreateRunbook))
+		mux.HandleFunc("POST /runbooks/import", internalOnly(accessSvc, runbookHandler.ImportRunbooks))
+		mux.HandleFunc("PUT /runbooks/{id}", internalOnly(accessSvc, runbookHandler.UpdateRunbook))
+		mux.HandleFunc("DELETE /runbooks/{id}", internalOnly(accessSvc, runbookHandler.DeleteRunbook))
+	}
+	if caseAlertSettingsHandler != nil {
+		// Case Alerts settings: chat rooms, group routes and the other ladder
+		// values. A room's webhook URL is write-only; the runtime read, with
+		// the URLs opened, and the applied report are for
+		// csm-notification-service's client only.
+		mux.HandleFunc("GET /team-schedule/case-alerts/settings", caseAlertSettingsHandler.GetSettings)
+		mux.HandleFunc("PUT /team-schedule/case-alerts/settings/rooms", caseAlertSettingsHandler.SaveRoom)
+		mux.HandleFunc("PUT /team-schedule/case-alerts/settings/rooms/{roomId}/webhook", caseAlertSettingsHandler.SetWebhook)
+		mux.HandleFunc("DELETE /team-schedule/case-alerts/settings/rooms/{roomId}", caseAlertSettingsHandler.DeleteRoom)
+		mux.HandleFunc("POST /team-schedule/case-alerts/settings/rooms/{roomId}/test", caseAlertSettingsHandler.SendTestCard)
+		mux.HandleFunc("PUT /team-schedule/case-alerts/settings/routes", caseAlertSettingsHandler.SaveRoute)
+		mux.HandleFunc("DELETE /team-schedule/case-alerts/settings/routes/{routeId}", caseAlertSettingsHandler.DeleteRoute)
+		mux.HandleFunc("PUT /team-schedule/case-alerts/settings/values", caseAlertSettingsHandler.SaveValues)
+		mux.HandleFunc("DELETE /team-schedule/case-alerts/settings/values/{valueId}", caseAlertSettingsHandler.DeleteValue)
+		mux.HandleFunc("GET /team-schedule/case-alerts/settings/runtime", caseAlertSettingsHandler.GetRuntime)
+		mux.HandleFunc("PUT /team-schedule/case-alerts/settings/applied", caseAlertSettingsHandler.RecordApplied)
+	}
 	if scheduleHandler != nil {
 
 		// Lead edit. Own team only -- the service reads the team from the row
@@ -1756,6 +1918,21 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("DELETE /team-schedule/rota-access/admins/{family}/{userId}", rotaAccessHandler.RevokeRotaAdmin)
 		mux.HandleFunc("PUT /team-schedule/rota-access/markers/{teamKey}/{userId}", rotaAccessHandler.GrantRotaMarker)
 		mux.HandleFunc("DELETE /team-schedule/rota-access/markers/{teamKey}/{userId}", rotaAccessHandler.RevokeRotaMarker)
+	}
+	if scheduleReminderHandler != nil {
+		mux.HandleFunc("GET /team-schedule/reminders/{family}/{kind}/{periodStart}", scheduleReminderHandler.GetReminder)
+		mux.HandleFunc("PUT /team-schedule/reminders/{family}/{kind}/{periodStart}", scheduleReminderHandler.RecordReminder)
+		mux.HandleFunc("GET /team-schedule/rota-admins/{family}", scheduleReminderHandler.GetRotaAdmins)
+	}
+	if rotaReminderSettingsHandler != nil {
+		mux.HandleFunc("GET /team-schedule/reminder-settings/{family}", rotaReminderSettingsHandler.Get)
+		mux.HandleFunc("PUT /team-schedule/reminder-settings/{family}", rotaReminderSettingsHandler.Save)
+	}
+	if rotaReminderRequestHandler != nil {
+		mux.HandleFunc("POST /team-schedule/reminder-requests/{family}", rotaReminderRequestHandler.Create)
+		mux.HandleFunc("GET /team-schedule/reminder-requests/{family}", rotaReminderRequestHandler.List)
+		mux.HandleFunc("POST /team-schedule/reminder-requests/{family}/claim", rotaReminderRequestHandler.Claim)
+		mux.HandleFunc("PUT /team-schedule/reminder-requests/{family}/{id}/result", rotaReminderRequestHandler.Report)
 	}
 	if rotaGenerateHandler != nil {
 		// A lead of the rota (or its admin) works out a month from the
@@ -1830,18 +2007,25 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("POST /users/search", userHandler.SearchUsers)
 		mux.HandleFunc("POST /users/by-ids", userHandler.GetUsersByIDs)
 		mux.HandleFunc("POST /users", userHandler.CreateUser)
+		mux.HandleFunc("PATCH /users/{id}", userHandler.UpdateUser)
 	}
 	if snAccountHandler != nil {
 		mux.HandleFunc("GET /accounts/{id}", internalOnly(accessSvc, snAccountHandler.GetAccount))
 		mux.HandleFunc("POST /accounts/search", internalOnly(accessSvc, snAccountHandler.SearchAccounts))
+		mux.HandleFunc("GET /accounts/{id}/health-detail", internalOnly(accessSvc, snAccountHandler.GetAccountHealthDetail))
 	} else {
 		mux.HandleFunc("GET /accounts/{id}", internalOnly(accessSvc, accountHandler.GetAccount))
 		mux.HandleFunc("POST /accounts/search", internalOnly(accessSvc, accountHandler.SearchAccounts))
 		mux.HandleFunc("PATCH /accounts/{id}", internalOnly(accessSvc, accountHandler.PatchAccountTeams))
+		mux.HandleFunc("GET /accounts/{id}/health-detail", internalOnly(accessSvc, accountHandler.GetAccountHealthDetail))
 	}
 	if teamHandler != nil {
 		mux.HandleFunc("GET /teams/{id}/members", teamHandler.GetTeamMembers)
 		mux.HandleFunc("POST /teams/search", teamHandler.SearchTeams)
+		mux.HandleFunc("GET /teams/chat-webhooks", teamHandler.ListChatWebhooks)
+		mux.HandleFunc("GET /teams/{id}", teamHandler.GetTeam)
+		mux.HandleFunc("PATCH /teams/{id}", teamHandler.UpdateTeam)
+		mux.HandleFunc("POST /teams/{id}/lead", teamHandler.AssignLead)
 	}
 	mux.HandleFunc("POST /accounts/{id}/contacts/search", internalOnly(accessSvc, accountContactHandler.SearchAccountContacts))
 	if opportunityHandler != nil {
@@ -1857,6 +2041,14 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 	mux.HandleFunc("GET /projects/{id}", projectHandler.GetProject)
 	mux.HandleFunc("POST /projects/search", projectHandler.SearchProjects)
+	// Product-consumption provisioning state, internal callers only: the status
+	// carries the project's client secret and HMAC secret keys, and the update
+	// replaces them. The caller is the subscription service (its client id in
+	// M2M_CLIENT_IDS); customers reach provisioning only through it.
+	mux.HandleFunc("GET /projects/{id}/consumption/status", internalOnly(accessSvc, projectConsumptionHandler.GetProjectConsumptionStatus))
+	mux.HandleFunc("POST /projects/{id}/consumption/status", internalOnly(accessSvc, projectConsumptionHandler.GetProjectConsumptionStatus))
+	mux.HandleFunc("PATCH /projects/{id}/consumption", internalOnly(accessSvc, projectConsumptionHandler.UpdateProjectConsumption))
+	mux.HandleFunc("POST /projects/{id}/consumption", internalOnly(accessSvc, projectConsumptionHandler.UpdateProjectConsumption))
 	mux.HandleFunc("POST /projects/{id}/contacts/search", projectMemberOnly(accessSvc, projectContactHandler.SearchProjectContacts))
 	mux.HandleFunc("GET /projects/{id}/contacts/{contactId}", projectMemberOnly(accessSvc, projectContactHandler.GetProjectContact))
 	if projectMembershipHandler != nil {
@@ -1924,6 +2116,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("POST /announcements/registry/rows", internalOnly(accessSvc, announcementRegistryHandler.SearchRegistryRows))
 	}
 	mux.HandleFunc("POST /cases/aggregate", caseHandler.AggregateCases)
+	mux.HandleFunc("POST /cases/volume-trend", caseHandler.CaseVolumeTrend)
 	mux.HandleFunc("POST /cases/feedback/search", feedbackHandler.SearchFeedback)
 	mux.HandleFunc("POST /cases/feedback/aggregate", feedbackHandler.AggregateFeedback)
 	mux.HandleFunc("POST /cases/{id}/comments", caseHandler.CreateCaseComment)
@@ -2194,6 +2387,18 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	mux.HandleFunc("POST /instances/usages/search", instanceHandler.SearchInstanceUsage)
 	mux.HandleFunc("POST /instances/metrics/stats/search", instanceHandler.SearchInstanceMetricsStats)
 	mux.HandleFunc("POST /instances/usages/stats/search", instanceHandler.SearchInstanceUsageStats)
+	// Telemetry ingestion for product-consumption-tracking, internal callers
+	// only: the writes run as the caller with no project scoping of their own,
+	// and the secret key is the credential telemetry signatures are verified
+	// with. product-consumption-tracking's client id must be in M2M_CLIENT_IDS.
+	if instanceIngestionHandler != nil {
+		mux.HandleFunc("POST /instances/meta", internalOnly(accessSvc, instanceIngestionHandler.UpsertInstanceMeta))
+		mux.HandleFunc("POST /instances/info", internalOnly(accessSvc, instanceIngestionHandler.InsertInstanceInfo))
+		mux.HandleFunc("POST /instances/usage-stats", internalOnly(accessSvc, instanceIngestionHandler.InsertUsageStats))
+		mux.HandleFunc("POST /instances/daily-usages/batch", internalOnly(accessSvc, instanceIngestionHandler.ImportDailyUsagesBatch))
+		mux.HandleFunc("GET /projects/{key}/secret-key", internalOnly(accessSvc, instanceIngestionHandler.GetProjectSecretKey))
+		mux.HandleFunc("GET /deployments/by-number/{number}/consumption-secret", internalOnly(accessSvc, instanceIngestionHandler.GetDeploymentConsumptionSecret))
+	}
 
 	// Token validation always runs -- there is no config flag to disable it.
 	// The JWKS must load right here at startup: a wrong URL panics now instead
@@ -2232,7 +2437,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		}
 		// Last: the retry worker above can still be invalidating users
 		// until it has stopped.
-		closeUserCache()
+		closeRedis()
 	}
 
 	// PLG Customer Success Portal. Every repository, service, handler and route

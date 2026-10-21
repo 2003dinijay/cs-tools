@@ -21,6 +21,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wso2-open-operations/cs-tools/apps/today-i-learned/backend/internal/store"
 )
 
 func env(values map[string]string) func(string) string {
@@ -43,11 +45,14 @@ func TestLoadDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Port != "8077" || cfg.DB.Port != "3306" || cfg.ReadTimeout != 15*time.Second || cfg.WriteTimeout != 45*time.Second {
+	if cfg.Port != "9090" || cfg.DB.Port != "3306" || cfg.DB.TLS != store.TLSOff || cfg.ReadTimeout != 15*time.Second || cfg.WriteTimeout != 45*time.Second {
 		t.Fatalf("defaults = %+v", cfg)
 	}
 	if cfg.Entity != nil || cfg.Novera != nil || len(cfg.CORSOrigins) != 0 {
 		t.Fatalf("optional features should be off: %+v", cfg)
+	}
+	if cfg.WhatMaxLength != 500 {
+		t.Fatalf("WhatMaxLength = %d, want the default 500", cfg.WhatMaxLength)
 	}
 	if len(warnings) != 4 {
 		t.Fatalf("warnings = %q", warnings)
@@ -58,6 +63,7 @@ func TestLoadReadsEverything(t *testing.T) {
 	v := minimal()
 	for k, val := range map[string]string{
 		"PORT":                         "9000",
+		"DB_TLS":                       "true",
 		"REST_READ_TIMEOUT":            "5s",
 		"REST_WRITE_TIMEOUT":           "1m",
 		"CORS_ALLOWED_ORIGINS":         "https://one.example, https://two.example ,",
@@ -65,6 +71,7 @@ func TestLoadReadsEverything(t *testing.T) {
 		"AUTH_MODERATOR_GROUPS":        "til-moderators,admins",
 		"ONE_WSO2_WEBAPP_CLIENT_ID":    "webapp",
 		"ONE_WSO2_BASE_URL":            "https://one.example/",
+		"ENTRY_TEXT_MAX_LENGTH":        "800",
 		"ENTITY_SERVICE_BASE_URL":      "https://entity.example",
 		"ENTITY_SERVICE_TOKEN_URL":     "https://idp.example.com/oauth2/token",
 		"ENTITY_SERVICE_CLIENT_ID":     "til",
@@ -84,12 +91,12 @@ func TestLoadReadsEverything(t *testing.T) {
 	if len(warnings) != 0 {
 		t.Fatalf("warnings = %q", warnings)
 	}
-	if cfg.Port != "9000" || cfg.ReadTimeout != 5*time.Second || cfg.WriteTimeout != time.Minute {
+	if cfg.Port != "9000" || cfg.DB.TLS != store.TLSVerify || cfg.ReadTimeout != 5*time.Second || cfg.WriteTimeout != time.Minute {
 		t.Fatalf("server = %+v", cfg)
 	}
 	if !slices.Equal(cfg.CORSOrigins, []string{"https://one.example", "https://two.example"}) ||
 		!slices.Equal(cfg.Auth.ModeratorGroups, []string{"til-moderators", "admins"}) ||
-		cfg.WebappBaseURL != "https://one.example" {
+		cfg.WebappBaseURL != "https://one.example" || cfg.WhatMaxLength != 800 {
 		t.Fatalf("lists = %+v", cfg)
 	}
 	if cfg.Entity == nil || cfg.Entity.Scopes[0] != "accounts:read" || cfg.Novera == nil || cfg.Novera.NotifyURL != v["NOVERA_NOTIFY_URL"] ||
@@ -98,12 +105,32 @@ func TestLoadReadsEverything(t *testing.T) {
 	}
 }
 
+func TestLoadDBTLS(t *testing.T) {
+	for value, want := range map[string]store.TLSMode{"false": store.TLSOff, "true": store.TLSVerify, "skip-verify": store.TLSSkipVerify} {
+		v := minimal()
+		v["DB_TLS"] = value
+		cfg, warnings, err := Load(env(v))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.DB.TLS != want {
+			t.Errorf("DB_TLS=%s: TLS = %v, want %v", value, cfg.DB.TLS, want)
+		}
+		warned := slices.ContainsFunc(warnings, func(w string) bool { return strings.HasPrefix(w, "DB_TLS is skip-verify") })
+		if warned != (want == store.TLSSkipVerify) {
+			t.Errorf("DB_TLS=%s: warnings = %q", value, warnings)
+		}
+	}
+}
+
 func TestLoadReportsEveryProblem(t *testing.T) {
 	_, _, err := Load(env(map[string]string{
 		"PORT":                    "http",
 		"REST_READ_TIMEOUT":       "soon",
+		"DB_TLS":                  "1",
 		"AUTH_JWKS_ENDPOINT":      "idp.example.com/jwks",
 		"ONE_WSO2_BASE_URL":       "one.example",
+		"ENTRY_TEXT_MAX_LENGTH":   "5001",
 		"ENTITY_SERVICE_BASE_URL": "https://entity.example", // the rest of its settings missing
 		"NOVERA_NOTIFY_URL":       "https://gateway.example/notify",
 	}))
@@ -114,9 +141,11 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 		"PORT must be a port number",
 		"REST_READ_TIMEOUT must be a positive duration",
 		"DB_HOST is required", "DB_USER is required", "DB_PASSWORD is required", "DB_NAME is required",
+		"DB_TLS must be true, false or skip-verify",
 		"AUTH_JWKS_ENDPOINT must be an absolute http(s) URL",
 		"AUTH_ISSUER is required",
 		"ONE_WSO2_BASE_URL must be an absolute http(s) URL",
+		"ENTRY_TEXT_MAX_LENGTH must be a whole number from 1 to 5000",
 		"ENTITY_SERVICE_TOKEN_URL is required", "ENTITY_SERVICE_CLIENT_SECRET is required",
 		"NOVERA_TOKEN_URL is required", "NOVERA_CLIENT_ID is required",
 	} {

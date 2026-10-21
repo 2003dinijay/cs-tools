@@ -31,7 +31,8 @@ import (
 type PhoneBook struct {
 	// ByEmail maps a lower-cased e-mail to an E.164 number.
 	ByEmail map[string]string
-	// TestCallTo overrides ByEmail entirely when non-empty.
+	// TestCallTo, when non-empty, replaces every number: ByEmail, a number in
+	// paging-alert.yaml and the CSM profile number alike (PhoneFixed).
 	TestCallTo string
 }
 

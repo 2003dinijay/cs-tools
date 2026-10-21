@@ -37,11 +37,12 @@ FROM (VALUES
     ('cloud-core',     'WSO2 Cloud · Core',           'sme-cloud-core'),
     ('moesif',         'Moesif',                      'sme-moesif')
 ) AS v(key, display, type)
-ON CONFLICT (id) DO NOTHING;
+-- No conflict target: migration 0235 now creates these same teams under
+-- random ids, so a clash comes on the key (team_key_unique), not the id.
+ON CONFLICT DO NOTHING;
 
--- 0200 seeds IaaS's windows inactive for the deploy window (see its header);
--- a local stack runs the rota-aware webapp, so they are switched on here.
-UPDATE team_schedule_shift SET is_active = TRUE, updated_on = NOW()
- WHERE code IN ('SRE_IAAS_DAY', 'SRE_IAAS_NIGHT') AND NOT is_active;
+-- IaaS's windows, seeded inactive by 0200, are switched on by migration 0231,
+-- as on every other deployment. They used to be switched on here, which is
+-- why a local stack never showed the empty Rota side IaaS leads got.
 
 COMMIT;

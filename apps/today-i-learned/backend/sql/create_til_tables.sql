@@ -40,6 +40,9 @@ CREATE TABLE IF NOT EXISTS til_entry (
     -- UTC. updated_on stays NULL until the entry is first edited.
     created_on    DATETIME(6)  NOT NULL,
     updated_on    DATETIME(6)  NULL,
+    -- UTC. When Novera accepted the entry's Google Chat announcement; NULL
+    -- while it hasn't, so a moderator can send it again.
+    notified_at   DATETIME(6)  NULL,
     INDEX idx_til_entry_created (created_on DESC, id DESC),
     INDEX idx_til_entry_author_email (author_email),
     FULLTEXT INDEX idx_til_entry_search (title, content_text, author_name, source_detail)

@@ -216,6 +216,8 @@ export interface SearchScheduleAssignmentsPayload {
   /** Widen the window to catch a block that began before `from` and is still
    *  running into it -- the night crew a day view shows at the top. */
   includeOvernight?: boolean;
+  /** Leave out anybody on leave that day: who a reminder would reach. */
+  excludeAbsent?: boolean;
 }
 
 export interface SearchScheduleAbsencesPayload {
@@ -280,7 +282,8 @@ export interface ScheduleEditMarkersResponse {
  * acknowledges. Every person on a tier is an existing team membership. */
 
 /** How a paging number's last test call went. */
-export type PagingTestStatus = "pending" | "completed" | "no-answer" | "busy" | "failed";
+export type PagingTestStatus =
+  "pending" | "completed" | "no-answer" | "busy" | "failed";
 
 /** A person's paging-only phone number: kept by entity-service, used only
  *  when their profile has none, never written to their profile. */
@@ -332,7 +335,8 @@ export interface PagingChainResponse {
 }
 
 /** The roles a paging change may give a membership. */
-export type PagingRole = "lead" | "engineer" | "americas_team_lead" | "cre_head" | "cs_head";
+export type PagingRole =
+  "lead" | "engineer" | "americas_team_lead" | "cre_head" | "cs_head";
 
 /** Exactly one change to one membership. */
 export type PagingMemberChange =
@@ -343,7 +347,8 @@ export type PagingMemberChange =
 export type PagingChainCode = "CRE" | "SRE_SAAS" | "SRE_IAAS" | "SME";
 
 /** What it takes to close a readiness gap, which decides the action offered. */
-export type PagingGapFix = "responders" | "rota" | "profile" | "config" | "data";
+export type PagingGapFix =
+  "responders" | "rota" | "profile" | "config" | "data";
 
 /** One thing standing between a chain and being ready. */
 export interface PagingReadinessGap {
@@ -412,3 +417,208 @@ export interface RotaMarkerGrant extends RotaGrant {
   teamKey: string;
   family: RotaFamily;
 }
+
+/**
+ * The settings section of the Alert Settings tab: the chat rooms, ServiceNow
+ * group routes and ladder values the paging ladders use. Changed here instead
+ * of a Choreo secret and csm-notification-service's file mount; the alert
+ * service uses them only once it runs with PAGING_CONFIG_SOURCE set, and only
+ * after a restart.
+ * canManage.view is false for anybody who may not see them, and the section is
+ * not shown.
+ */
+export type CaseAlertLadder = "CRE" | "SRE";
+
+/** A ladder with chat rooms: CRE's and SRE's, and SME's, which has only its
+ *  teams' rooms here (no shared room, routes or ladder values). */
+export type CaseAlertRoomLadder = CaseAlertLadder | "SME";
+
+export interface CaseAlertSettings {
+  canManage: {
+    view: boolean;
+    roomLadders: CaseAlertRoomLadder[];
+    routeLadders: CaseAlertLadder[];
+  };
+  /** e.g. "staging" or "production"; "" when the server has no label. */
+  environment: string;
+  /** False only from a server older than 0237 with no encryption key. */
+  webhooksEnabled: boolean;
+  revision: {
+    saved: number;
+    changedAt?: string;
+    /** What the alert service last reported it loaded. */
+    applied?: number;
+    appliedAt?: string;
+    appliedMode?: "off" | "shadow" | "db";
+  };
+  rooms: CaseAlertChatRoom[];
+  routes: CaseAlertGroupRoute[];
+  /** The ladder values saved here: the rest of the paging file's keys. */
+  values: CaseAlertLadderValue[];
+  /** What the alert service last reported it runs with. Absent until it has
+   *  started in shadow or db mode; off never reports. */
+  running?: CaseAlertRunning;
+  /** The lists a group route is made from; absent for somebody who may see nothing. */
+  routeOptions?: CaseAlertRouteOptions;
+}
+
+/** A team as a route option: CRE, SRE or SME. */
+export interface CaseAlertTeamOption {
+  key: string;
+  name: string;
+  family: "CRE" | "SRE" | "SME";
+}
+
+/**
+ * What a group route is made of: the CSM Portal teams a case or incident can
+ * be assigned to (matched by name), the Team Schedule teams a route can send
+ * it to, and the active SRE rotas.
+ */
+export interface CaseAlertRouteOptions {
+  groups: CaseAlertTeamOption[];
+  teams: CaseAlertTeamOption[];
+  rotas: { code: string; label: string }[];
+}
+
+/** A chat room: a ladder's shared room (no teamKey) or an SRE or SME team's
+ *  own. The webhook URL itself never reaches the page, only a hint. */
+export interface CaseAlertChatRoom {
+  id: string;
+  ladder: CaseAlertRoomLadder;
+  teamKey?: string;
+  label: string;
+  enabled: boolean;
+  /** Also gets the cards of an incident with no SRE team. */
+  teamless: boolean;
+  /** A team room's own channel. Absent: the same as the ladder's. The shared
+   *  room never has one. */
+  channel?: CaseAlertChannel;
+  hasWebhook: boolean;
+  webhookHint?: string;
+  webhookSetAt?: string;
+  webhookSetBy?: string;
+  lastTestAt?: string;
+  lastTestStatus?: "delivered" | "failed";
+  updatedBy: string;
+  updatedOn: string;
+}
+
+/** How a ladder, or one team on it, is alerted. A team can do less than its
+ *  ladder, never more: under chat, only chat or log. */
+export type CaseAlertChannel = "log" | "chat" | "call" | "both";
+
+/** A ServiceNow group's alerts go to a team, or (SRE) to a default rota. */
+export interface CaseAlertGroupRoute {
+  id: string;
+  ladder: CaseAlertLadder;
+  groupName: string;
+  teamKey?: string;
+  rotaCode?: string;
+  enabled: boolean;
+  updatedBy: string;
+  updatedOn: string;
+}
+
+/** One key of the paging file's cre: or sre: section, saved here. A saved
+ *  value replaces that key of the file; removing it goes back to the file. The
+ *  value is the file's own shape for the key: a list, a number, a head's name
+ *  and email, and so on. */
+export interface CaseAlertLadderValue {
+  id: string;
+  ladder: CaseAlertRoomLadder;
+  key: string;
+  value: unknown;
+  updatedBy: string;
+  updatedOn: string;
+}
+
+/** Where a running value came from: the file, or a value saved here. */
+export type CaseAlertValueSource = "file" | "saved";
+
+export interface CaseAlertRunningValue {
+  value: unknown;
+  source: CaseAlertValueSource;
+}
+
+export interface CaseAlertRunning {
+  reportedAt: string;
+  mode: "off" | "shadow" | "db";
+  /** Per ladder, each key's value in use. */
+  ladders: Partial<
+    Record<CaseAlertRoomLadder, Record<string, CaseAlertRunningValue>>
+  >;
+  /** Per ladder, the settings only the file can set. Absent from an alert
+   *  service that doesn't report them yet. */
+  fileOnly?: Partial<Record<CaseAlertRoomLadder, CaseAlertFileOnly>>;
+}
+
+/** What decides whether a ladder pages and what it may cost: read here, set
+ *  only in the alert service's file. */
+export interface CaseAlertFileOnly {
+  enabled?: boolean;
+  channel?: string;
+  "safety.maxCallsPerLadder"?: number;
+  /** Absent when there is no cap. */
+  "safety.maxLevel"?: number;
+  /** How many numbers are allowed; the numbers themselves are never sent. */
+  "safety.allowedNumbers"?: number;
+  "safety.callWithoutVerifiedLeads"?: boolean;
+  "safety.callHeadsWithoutLowerTiers"?: boolean;
+  "phones.source"?: string;
+}
+
+/** A rotation's reminder window: "HH:MM" on the 24-hour clock of an IANA zone. */
+export type ReminderWindow = { start: string; end: string; timeZone: string };
+
+/**
+ * What a group's rota reminder emails may be changed to: whether the weekday
+ * and weekend reminders and the calendar invitations go out, how many people a
+ * weekend rotation needs each day before the weekend is announced, the hours of
+ * the rotations kept on a fixed clock, and who is copied on every reminder.
+ * Keyed by rotation code; a code this form does not show is kept as saved.
+ */
+export type SaveRotaReminderSettings = {
+  weekdayEnabled: boolean;
+  weekendEnabled: boolean;
+  invitesEnabled: boolean;
+  weekendRequired: Record<string, number>;
+  windows: Record<string, ReminderWindow>;
+  copyTo: string[];
+};
+
+/** The saved settings of one group, with who last changed them. */
+export type RotaReminderSettings = SaveRotaReminderSettings & {
+  family: RotaFamily;
+  updatedBy: string;
+  updatedOn: string;
+};
+
+/** Which reminder is asked for: the next working day's, or the weekend's. */
+export type RotaReminderKind = "weekday" | "weekend";
+
+/** Where a request is: waiting for the scheduled task, being sent, or done. */
+export type RotaReminderStatus = "QUEUED" | "SENDING" | "SENT" | "FAILED";
+
+/**
+ * One ask to send a group's rota reminders now, picked up by the scheduled task.
+ * `test` is true for a test copy, which goes only to the person who asked.
+ */
+export type RotaReminderRequest = {
+  id: string;
+  family: RotaFamily;
+  kind: RotaReminderKind;
+  test: boolean;
+  status: RotaReminderStatus;
+  requestedBy: string;
+  requestedOn: string;
+  claimedOn?: string;
+  handledOn?: string;
+  result?: string;
+};
+
+/**
+ * What is posted to ask for a reminder now. With `test` the reminder goes only
+ * to the person asking (marked "[Test copy]"), never to the rota, and is not
+ * recorded as a real reminder.
+ */
+export type SendRotaReminder = { kind: RotaReminderKind; test: boolean };

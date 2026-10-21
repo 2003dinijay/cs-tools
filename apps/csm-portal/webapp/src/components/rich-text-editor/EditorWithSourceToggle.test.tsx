@@ -142,6 +142,36 @@ describe("EditorWithSourceToggle (keepStyledHtmlAsSource) — ordinary content i
   });
 });
 
+describe("EditorWithSourceToggle (keepStyledHtmlAsSource) — preview", () => {
+  it("shows a preview of the styled HTML under the source box, without changing it", async () => {
+    const onChange = vi.fn();
+    render(<EditorWithSourceToggle keepStyledHtmlAsSource value={BULLETIN_HTML} onChange={onChange} />);
+
+    const preview = screen.getByTestId("html-source-preview");
+    expect([...preview.querySelectorAll("div")].some((d) => /border-radius/.test(d.getAttribute("style") ?? ""))).toBe(true);
+    expect(sourceBox()?.value).toBe(BULLETIN_HTML);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("previews ordinary HTML typed in source mode too", () => {
+    render(<EditorWithSourceToggle keepStyledHtmlAsSource value={SIMPLE_HTML} onChange={vi.fn()} />);
+    fireEvent.click(screen.getByRole("switch"));
+    expect(screen.getByTestId("html-source-preview")).toHaveTextContent("Hello world");
+  });
+
+  it("has no preview while the rich editor is showing", () => {
+    render(<EditorWithSourceToggle keepStyledHtmlAsSource value={SIMPLE_HTML} onChange={vi.fn()} />);
+    expect(screen.queryByTestId("html-source-preview")).not.toBeInTheDocument();
+  });
+
+  it("tells the user, in the switch-back warning, where to see how it will look", async () => {
+    render(<EditorWithSourceToggle keepStyledHtmlAsSource value={BULLETIN_HTML} onChange={vi.fn()} />);
+    fireEvent.click(screen.getByRole("switch"));
+    expect(await screen.findByText(/preview below the source box shows how it will look/i)).toBeInTheDocument();
+  });
+});
+
 // Every other caller (the case comment editor, for one) does not pass the prop and
 // must behave exactly as it always did, whatever HTML it is given.
 describe("EditorWithSourceToggle without keepStyledHtmlAsSource — behaviour is unchanged", () => {
@@ -157,6 +187,8 @@ describe("EditorWithSourceToggle without keepStyledHtmlAsSource — behaviour is
 
     fireEvent.click(screen.getByRole("switch"));
     expect(sourceBox()).not.toBeNull();
+    // Without the opt-in there is no preview either: nothing about this caller changes.
+    expect(screen.queryByTestId("html-source-preview")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("switch"));
     expect(screen.queryByText(/switch to the rich editor\?/i)).not.toBeInTheDocument();

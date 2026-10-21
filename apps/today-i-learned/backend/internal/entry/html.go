@@ -19,6 +19,7 @@ package entry
 import (
 	"io"
 	"strings"
+	"unicode"
 
 	"github.com/microcosm-cc/bluemonday"
 	xhtml "golang.org/x/net/html"
@@ -58,6 +59,13 @@ func BulletedText(sanitized string) string {
 	return plainText(sanitized, true)
 }
 
+// isTrimmed is what plain text loses at either end: whitespace, and the
+// zero-width no-break space (U+FEFF) a browser's trim() also removes, so the
+// backend never counts more than the webapp's character counter does.
+func isTrimmed(r rune) bool {
+	return unicode.IsSpace(r) || r == '\uFEFF'
+}
+
 func plainText(sanitized string, bullets bool) string {
 	var b strings.Builder
 	z := xhtml.NewTokenizer(strings.NewReader(sanitized))
@@ -67,7 +75,7 @@ func plainText(sanitized string, bullets bool) string {
 			if z.Err() != io.EOF {
 				return ""
 			}
-			return strings.TrimSpace(strings.ReplaceAll(b.String(), " ", " "))
+			return strings.TrimFunc(strings.ReplaceAll(b.String(), "\u00a0", " "), isTrimmed)
 		case xhtml.TextToken:
 			b.Write(z.Text())
 		case xhtml.EndTagToken:

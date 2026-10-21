@@ -55,6 +55,15 @@ type scimUser struct {
 	PhoneNumbers []scimPhone `json:"phoneNumbers,omitempty"`
 	SchemaScope  *scimSchema `json:"urn:scim:wso2:schema,omitempty"`
 	Roles        scimRoles   `json:"roles,omitempty"`
+	Name         *scimName   `json:"name,omitempty"`
+}
+
+// scimName mirrors the SCIM core schema's "name" complex attribute. Like
+// every other attribute here, a search response only returns it when
+// explicitly requested (see SearchUser's own Attributes list).
+type scimName struct {
+	GivenName  string `json:"givenName,omitempty"`
+	FamilyName string `json:"familyName,omitempty"`
 }
 
 // scimRoleEntry is one element of the SCIM "roles" attribute in its full
@@ -72,6 +81,7 @@ type scimUser struct {
 // the caller (AccessGuard.RolesFor's own AUTH_<ROLE>_ROLES configuration) to
 // recognize.
 type scimRoleEntry struct {
+	Value   string `json:"value"`
 	Display string `json:"display"`
 }
 
@@ -119,6 +129,128 @@ func (r *scimRoles) UnmarshalJSON(b []byte) error {
 	values := make([]string, len(entries))
 	for i, e := range entries {
 		values[i] = e.Display
+	}
+	*r = values
+	return nil
+}
+
+// scimUserByID mirrors the SCIM User record returned by GET
+// /organizations/internal/users/{id} -- the canonical resource, which always
+// carries the complete "roles" and "groups" arrays, unlike a /Users/.search
+// response (scimUser above), which only carries whichever attributes the
+// caller asked for. Only the fields this client actually needs from it are
+// modeled.
+type scimUserByID struct {
+	Roles  scimRoleAssignments  `json:"roles,omitempty"`
+	Groups scimGroupAssignments `json:"groups,omitempty"`
+}
+
+// scimRoleAssignments decodes the SCIM "roles" attribute the same shape
+// scimRoles does (every observed variant: bare string, array of strings,
+// bare {value,display} object, array of {value,display} objects -- see
+// scimRoles' own doc comment for why all four are accepted), but keeps each
+// entry's Value (the role's own unique Asgardeo ID) alongside its Display,
+// instead of collapsing to Display alone: a caller matching a held role
+// against ASGARDEO_ROLE_IDS needs the ID, since two distinct roles can share
+// a display name. A shape with no id available (a bare string, or an object
+// with no "value") decodes with an empty ID -- RoleAssignment.ID is not
+// guaranteed non-empty.
+type scimRoleAssignments []RoleAssignment
+
+func (r *scimRoleAssignments) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err == nil {
+		if s == "" {
+			*r = nil
+		} else {
+			*r = []RoleAssignment{{Name: s}}
+		}
+		return nil
+	}
+
+	var oneEntry scimRoleEntry
+	if err := json.Unmarshal(b, &oneEntry); err == nil {
+		*r = []RoleAssignment{{ID: oneEntry.Value, Name: oneEntry.Display}}
+		return nil
+	}
+
+	var strs []string
+	if err := json.Unmarshal(b, &strs); err == nil {
+		values := make([]RoleAssignment, len(strs))
+		for i, s := range strs {
+			values[i] = RoleAssignment{Name: s}
+		}
+		*r = values
+		return nil
+	}
+
+	var entries []scimRoleEntry
+	if err := json.Unmarshal(b, &entries); err != nil {
+		return fmt.Errorf("roles must be a string, an object, or an array of either: %w", err)
+	}
+	values := make([]RoleAssignment, len(entries))
+	for i, e := range entries {
+		values[i] = RoleAssignment{ID: e.Value, Name: e.Display}
+	}
+	*r = values
+	return nil
+}
+
+// scimGroupAssignments decodes the SCIM "groups" attribute -- the core SCIM
+// schema's own multi-valued complex attribute, observed (and accepted here)
+// in the same shapes scimRoleAssignments already handles for "roles" (see
+// that type's own doc comment for why every variant is accepted rather than
+// assuming a single one): a bare string, an array of strings, a bare
+// {value,display} object, or an array of {value,display} objects. Value
+// (the group's own unique Asgardeo ID) is still kept on GroupAssignment for
+// completeness, but nothing in this backend currently matches against it.
+//
+// Name is stripped of its leading "<domain>/" prefix via
+// stripSCIMDomainPrefix (scim.go) -- confirmed live against a real
+// deployment that a group's own SCIM display comes back "DEFAULT/<group
+// name>", not the bare group name ASGARDEO_ROLE_GROUP_NAMES is configured
+// with, the identical shape emailFromDisplay already strips for role
+// members' emails. Applied in
+// every decoded shape below (including a bare string/array of strings,
+// since groups can arrive that way too) so GroupAssignment.Name is always
+// already the clean, directly-comparable name -- callers never need to know
+// this prefix exists at all.
+type scimGroupAssignments []GroupAssignment
+
+func (r *scimGroupAssignments) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err == nil {
+		if s == "" {
+			*r = nil
+		} else {
+			*r = []GroupAssignment{{Name: stripSCIMDomainPrefix(s)}}
+		}
+		return nil
+	}
+
+	var oneEntry scimRoleEntry
+	if err := json.Unmarshal(b, &oneEntry); err == nil {
+		*r = []GroupAssignment{{ID: oneEntry.Value, Name: stripSCIMDomainPrefix(oneEntry.Display)}}
+		return nil
+	}
+
+	var strs []string
+	if err := json.Unmarshal(b, &strs); err == nil {
+		values := make([]GroupAssignment, len(strs))
+		for i, s := range strs {
+			values[i] = GroupAssignment{Name: stripSCIMDomainPrefix(s)}
+		}
+		*r = values
+		return nil
+	}
+
+	var entries []scimRoleEntry
+	if err := json.Unmarshal(b, &entries); err != nil {
+		return fmt.Errorf("groups must be a string, an object, or an array of either: %w", err)
+	}
+	values := make([]GroupAssignment, len(entries))
+	for i, e := range entries {
+		values[i] = GroupAssignment{ID: e.Value, Name: stripSCIMDomainPrefix(e.Display)}
 	}
 	*r = values
 	return nil
@@ -187,8 +319,19 @@ type scimAddRoleMembersResponse struct {
 
 // UserInfo holds the SCIM-derived fields for a user, extracted from the raw SCIM response.
 type UserInfo struct {
+	// ID is the user's own Asgardeo UUID -- needed to then call
+	// GetUserByID, since /Users/.search's own "roles" attribute does not
+	// reliably carry each role's ID (see GetUserByID's own doc comment).
+	// Empty if the search response carried none (not observed in practice).
+	ID                     string
 	PhoneNumber            *string
 	LastPasswordUpdateTime *string
+	// FirstName and LastName are only populated when the caller requested the
+	// SCIM "name" attribute (see SearchUser's own Attributes list) -- empty
+	// otherwise, the same "only what was asked for" rule every other field on
+	// this struct already follows.
+	FirstName string
+	LastName  string
 	// Roles is the user's full Asgardeo role assignment, spanning every
 	// application they hold a role in -- not just the CSM portal, and
 	// deliberately left unfiltered: a caller wanting just this portal's roles
@@ -215,6 +358,37 @@ type RoleMember struct {
 	// prefix stripped. Falls back to the raw display value if it carries no
 	// "/" (defensive -- not observed in practice).
 	Email string
+}
+
+// RoleAssignment is one role a user holds, as returned by GetUserByID. ID is
+// the role's own Asgardeo UUID -- the thing to match against
+// ASGARDEO_ROLE_IDS, since Name (the role's display name) can be shared by
+// more than one distinct role.
+type RoleAssignment struct {
+	ID   string
+	Name string
+}
+
+// GroupAssignment is one Asgardeo group a user belongs to, as returned by
+// GetUserByID. Name is the group's display name -- what
+// ASGARDEO_ROLE_GROUP_NAMES configures per portal role (a deployment choice:
+// a group is named directly, the same way a real role is named for
+// AUTH_<ROLE>_ROLES, rather than requiring its opaque id to be looked up).
+// ID is kept alongside it, mirroring RoleAssignment's own ID/Name split, but
+// is not currently matched against anything.
+type GroupAssignment struct {
+	ID   string
+	Name string
+}
+
+// UserAssignments is GetUserByID's full result: both the role assignments it
+// always returned, and the group memberships a deployment can also grant a
+// portal role from (see handler.AccessGuard.WithGroupIDs). Both come off the
+// same canonical GET /Users/{id} response, so reading group membership costs
+// no extra round trip beyond the one GetUserByID already makes.
+type UserAssignments struct {
+	Roles  []RoleAssignment
+	Groups []GroupAssignment
 }
 
 // ExternalUserInfo holds the SCIM "external" org existence/lock status for a

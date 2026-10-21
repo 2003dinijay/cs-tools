@@ -74,7 +74,7 @@ func run() error {
 		return err
 	}
 
-	hc := handler.Config{Store: db, WebappClientID: cfg.WebappClientID, WebappBaseURL: cfg.WebappBaseURL}
+	hc := handler.Config{Store: db, WebappClientID: cfg.WebappClientID, WebappBaseURL: cfg.WebappBaseURL, WhatMaxLength: cfg.WhatMaxLength}
 	if cfg.Entity != nil {
 		hc.Customers = entity.New(*cfg.Entity)
 	}
@@ -86,10 +86,9 @@ func run() error {
 		Handler: middleware.SecurityHeaders(
 			middleware.CORS(cfg.CORSOrigins)(
 				middleware.CorrelationID(
-					middleware.Logger(
-						middleware.BodyLimit(maxBodyBytes)(
-							middleware.Auth(cfg.Auth, keyFunc)(
-								routes(handler.New(hc)))))))),
+					middleware.BodyLimit(maxBodyBytes)(
+						middleware.Auth(cfg.Auth, keyFunc)(
+							routes(handler.New(hc))))))),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       cfg.ReadTimeout,
 		WriteTimeout:      cfg.WriteTimeout,
@@ -126,11 +125,13 @@ func routes(h *handler.Handler) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", h.Health)
 	mux.HandleFunc("GET /user-info", h.UserInfo)
+	mux.HandleFunc("GET /settings", h.Settings)
 	mux.HandleFunc("GET /customers/search", h.SearchCustomers)
 	mux.HandleFunc("GET /submissions", h.ListEntries)
 	mux.HandleFunc("POST /submissions", h.CreateEntry)
 	mux.HandleFunc("GET /submissions/{id}", h.GetEntry)
 	mux.HandleFunc("PUT /submissions/{id}", h.UpdateEntry)
 	mux.HandleFunc("DELETE /submissions/{id}", h.DeleteEntry)
+	mux.HandleFunc("POST /submissions/{id}/notify", h.NotifyEntry)
 	return mux
 }

@@ -73,6 +73,20 @@ func searchConditions(search string) ([]string, []any) {
 	return conds, args
 }
 
+// authorConditions matches the author's name alone. Each space-separated
+// term has to start the name or a word in it. Not the full-text index, which
+// covers the name only together with the other searched columns.
+func authorConditions(author string) ([]string, []any) {
+	var conds []string
+	var args []any
+	for _, term := range strings.Fields(author) {
+		escaped := escapeLike(term)
+		conds = append(conds, "(author_name LIKE ? OR author_name LIKE ?)")
+		args = append(args, escaped+"%", "% "+escaped+"%")
+	}
+	return conds, args
+}
+
 func allIndexable(words []string) bool {
 	for _, w := range words {
 		n := utf8.RuneCountInString(w)

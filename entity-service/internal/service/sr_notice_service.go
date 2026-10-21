@@ -78,6 +78,24 @@ func NewSRNoticeService(repo repository.SRNoticeRepository, publisher EventPubli
 // OnCreated runs the flow for a service request that was just created.
 // Called only for a case of type service_request.
 func (s *SRNoticeService) OnCreated(ctx context.Context, caseID string) {
+	s.onCreated(ctx, caseID, nil)
+}
+
+// srAckMirror sends the acknowledgement the flow just wrote to the record's
+// ServiceNow copy.
+type srAckMirror func(ctx context.Context, comment string)
+
+// OnCreatedMirrored is OnCreated for a service request that also lives in
+// ServiceNow (created there first, under dual-write). The flow is ours, not
+// ServiceNow's -- its "SR New Request - Acknowledge & Chat Alert" flow is not
+// relied on -- so once the acknowledgement is written here, mirror sends the
+// same comment to ServiceNow. The assignment stays Postgres-only, as for a
+// portal SR: ServiceNow's case update API has no assignment group.
+func (s *SRNoticeService) OnCreatedMirrored(ctx context.Context, caseID string, mirror srAckMirror) {
+	s.onCreated(ctx, caseID, mirror)
+}
+
+func (s *SRNoticeService) onCreated(ctx context.Context, caseID string, mirror srAckMirror) {
 	// The flow runs as the system, not as whoever raised the SR (often a
 	// customer, who could not assign it).
 	ctx = repository.WithSystemIdentity(ctx)
@@ -118,6 +136,9 @@ func (s *SRNoticeService) OnCreated(ctx context.Context, caseID string) {
 		return
 	}
 	slog.InfoContext(ctx, "sr notices: service request assigned and acknowledged", "caseId", caseID, "number", sr.Number)
+	if mirror != nil {
+		mirror(ctx, srAcknowledgement)
+	}
 	s.publish(ctx, events.TypeSRAcknowledged, caseID, events.SRAcknowledgedPayload{
 		SRRef:     srRef(sr),
 		CommentID: commentID,

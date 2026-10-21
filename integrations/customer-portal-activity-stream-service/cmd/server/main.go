@@ -29,7 +29,6 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -67,8 +66,8 @@ func main() {
 	// no consumer). When set, the service:
 	//   - creates a BroadcastHub for in-process pub-sub
 	//   - starts a Consumer in its own per-replica consumer group (LatestOffset)
-	//   - runs the caseevents.Handler to fan case.comment_added / status_changed
-	//     to the BroadcastHub
+	//   - runs the caseevents.Handler to fan case.comment_added / status_changed to
+	//     the BroadcastHub
 	var caseEventsConsumer *eventbus.Consumer
 	var activityHub *stream.BroadcastHub
 
@@ -108,14 +107,6 @@ func main() {
 	// SSE handler — depends on entity client + optional hub.
 	streamHandler := handler.NewStreamHandler(customerEntityClient, activityHub)
 
-	// Health check listener (:8080) — simple REST endpoint for Choreo liveness probe.
-	healthMux := http.NewServeMux()
-	healthMux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
-	})
-
 	authCfg := middleware.Config{
 		JWKSEndpoint:          mustEnv("AUTH_JWKS_ENDPOINT"),
 		Issuer:                mustEnv("AUTH_ISSUER"),
@@ -129,38 +120,6 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Health check server
-	healthAddr := ":" + mustPort("HEALTH_PORT", "8080")
-	healthLn, err := (&net.ListenConfig{}).Listen(ctx, "tcp", healthAddr)
-	if err != nil {
-		slog.Error("failed to bind health listener", "addr", healthAddr, "err", err)
-		os.Exit(1)
-	}
-
-	healthSrv := &http.Server{
-		Handler: middleware.SecurityHeaders(
-			middleware.CORS(splitComma(os.Getenv("CORS_ALLOWED_ORIGINS")))(
-				middleware.CorrelationID(
-					authMiddleware(
-						middleware.Logger(healthMux),
-					),
-				),
-			),
-		),
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       60 * time.Second,
-	}
-
-	go func() {
-		if err := healthSrv.Serve(healthLn); err != nil && err != http.ErrServerClosed {
-			slog.Error("health server exited", "err", err)
-			os.Exit(1)
-		}
-	}()
-	slog.Info("health server started", "addr", healthLn.Addr().String())
-
 	// Stream listener (:9092) always binds and serves the route, regardless
 	// of whether Event Hub is configured — StreamCaseActivities itself
 	// returns 503 when activityHub is nil, which is the documented
@@ -170,12 +129,12 @@ func main() {
 	// machinery above is conditional. The SSE connection must stay open
 	// indefinitely, so WriteTimeout/IdleTimeout are disabled; mirror of the
 	// sibling csm-portal-activity-stream-service's own stream listener.
-	streamMux := http.NewServeMux()
-	streamMux.HandleFunc("GET /cases/{id}/activities/stream", streamHandler.StreamCaseActivities)
+	// This is the service's only listener, so it also serves GET /health
+	// (see newStreamMux) for Choreo's liveness probe.
+	streamMux := newStreamMux(streamHandler.StreamCaseActivities)
 
 	streamAddr := ":" + mustPort("STREAM_PORT", "9092")
-	var streamLn net.Listener
-	streamLn, err = (&net.ListenConfig{}).Listen(ctx, "tcp", streamAddr)
+	streamLn, err := (&net.ListenConfig{}).Listen(ctx, "tcp", streamAddr)
 	if err != nil {
 		slog.Error("failed to bind stream listener", "addr", streamAddr, "err", err)
 		os.Exit(1)
@@ -224,22 +183,8 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	// Both listeners get the shutdown goroutine's own use of shutdownCtx,
-	// running concurrently rather than one after the other.
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		if err := streamSrv.Shutdown(shutdownCtx); err != nil {
-			slog.Error("stream server graceful shutdown failed", "err", err)
-		}
-	})
-	var healthSrvErr error
-	wg.Go(func() {
-		healthSrvErr = healthSrv.Shutdown(shutdownCtx)
-	})
-	wg.Wait()
-	if healthSrvErr != nil {
-		slog.Error("graceful shutdown failed", "err", healthSrvErr)
-		os.Exit(1)
+	if err := streamSrv.Shutdown(shutdownCtx); err != nil {
+		slog.Error("stream server graceful shutdown failed", "err", err)
 	}
 
 	if caseEventsConsumer != nil {
@@ -247,6 +192,20 @@ func main() {
 	}
 
 	slog.Info("Customer Portal Activity Stream Service stopped")
+}
+
+// newStreamMux builds the service's only route table: the SSE stream route plus
+// an unauthenticated GET /health for Choreo's liveness probe (the auth
+// middleware lets GET /health through; every other path still needs a token).
+func newStreamMux(stream http.HandlerFunc) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /cases/{id}/activities/stream", stream)
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+	return mux
 }
 
 func mustEnv(key string) string {

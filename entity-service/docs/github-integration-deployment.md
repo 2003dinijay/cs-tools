@@ -46,6 +46,7 @@ an error, which is the single most confusing failure mode here.
 | `GITHUB_WEBHOOK_SECRET` | yes | `openssl rand -hex 32`. This *is* the endpoint's authentication. The same value goes in every repository's webhook settings. |
 | `GITHUB_TOKEN` | yes* | Needs **`repo` scope** — outbound calls `POST /repos/{owner}/{repo}/dispatches`, and inbound reads each repository's mapping file (fine-grained: **Contents: read**). |
 | `GITHUB_REPO_TOKENS` | yes* | Secret. JSON `{"owner/repository":"<PAT>"}` (or `"owner"` for all of an owner's repositories): each repository's own token, as ServiceNow kept a credential per repository. A fine-grained PAT reaches one owner's repositories only. Unlisted repositories use `GITHUB_TOKEN`. *One of the two is required. A repository with no token fails loudly; before this, a repository the single token could not see answered 404, read as "no config file", and its issues were skipped as unmapped. Malformed refuses to start. |
+| `GITHUB_SR_SERVICENOW_FIRST` | dual-write | `true`: a new SR is created in ServiceNow first through the ServiceNow integration service's `POST /github-cases` (ServiceNow's GitHub case API, as the integration service's M2M user; no credential here) and takes ServiceNow's **CS number and WSO2 Case ID** (`<KEY>-<n>`), as a portal SR does. Issue edits (`PATCH /github-cases`) and comments (`POST /comments`) reach ServiceNow; our SR automation runs and its acknowledgement reaches the case too. Needs the integration service with `/github-cases` deployed first, and `snBasicAuthConfig` set there. Default off: Postgres only, `SR-GH-`/`WSO2-GH-`. A repository mapped without a project keeps the GitHub series. |
 | `GITHUB_REPO_CONFIG_PATH` | no | The mapping file in each repository, default **`.github/servicenow-config.yml`** (§6). |
 | `GITHUB_INTEGRATION_LOGIN` | yes | The login this service raises issues under, from a case. **Not** `github-actions[bot]` — see §3. |
 | `CSM_PORTAL_BASE_URL` | yes | **Must be the Postgres-backed portal.** Every outbound comment embeds a link built from this; a host backed by another database cannot resolve the record id. |
@@ -256,6 +257,11 @@ Against a real repository and database, with GitHub delivering over a webhook:
 
 Keep this list current — it is how the next deploy knows what changed.
 
+- **2026-10-12** — ServiceNow-first SRs under dual-write
+  (`GITHUB_SR_SERVICENOW_FIRST`): an issue's SR is created through the integration
+  service's `/github-cases` (ServiceNow's GitHub case API, M2M) and takes its CS number
+  and WSO2 Case ID; edits and issue comments are mirrored. The payload is
+  servicenow_create_case.yml's, byte for byte on real issues.
 - **2026-10-10** — Per-repository tokens: `GITHUB_REPO_TOKENS` maps each
   repository (or owner) to its own PAT; `GITHUB_TOKEN` is the fallback.
   A repository no token covers now errors instead of being skipped.

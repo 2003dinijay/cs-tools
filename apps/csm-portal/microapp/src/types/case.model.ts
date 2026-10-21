@@ -94,6 +94,7 @@ export interface CaseDetail {
   workState: CaseWorkState;
   type: CaseType | null;
   engagementType: string | null;
+  engagementPaymentType: string | null;
   createdOn: Date;
   updatedOn: Date;
   closedOn: Date | null;
@@ -169,6 +170,7 @@ export function toCaseDetail(dto: CaseViewDto): CaseDetail {
     workState: dto.workState,
     type: dto.type as CaseType | null,
     engagementType: dto.engagementType,
+    engagementPaymentType: dto.engagementPaymentType ?? null,
     // The search/detail views don't always populate updatedOn (e.g. a case that hasn't been
     // touched since creation); fall back to createdOn rather than showing an invalid time.
     createdOn: parseBackendTimestamp(dto.createdOn ?? ""),

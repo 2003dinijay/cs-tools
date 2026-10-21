@@ -53,7 +53,40 @@ func TestServerRBACRouteGating(t *testing.T) {
 		roles        []string
 		wantHTTPCode int
 	}{
-		// Cases
+		// Cases. Pending Verification's three routes
+		// (POST /pending-verifications, POST /pending-verifications/search,
+		// PATCH /pending-verifications/{id}) are gated on cases:create/read/
+		// update respectively -- the same module every other case-scoped
+		// route uses, including customer-facing ones (a customer both
+		// manually flags and verifies their own entries).
+		{
+			name:         "CustomerUser can create a pending-verification entry",
+			module:       middleware.ModuleCases,
+			action:       middleware.ActionCreate,
+			roles:        []string{"sn_customerservice.customer"},
+			wantHTTPCode: http.StatusOK,
+		},
+		{
+			name:         "CustomerUser can search pending-verification entries",
+			module:       middleware.ModuleCases,
+			action:       middleware.ActionRead,
+			roles:        []string{"sn_customerservice.customer"},
+			wantHTTPCode: http.StatusOK,
+		},
+		{
+			name:         "CustomerUser can mark a pending-verification entry verified",
+			module:       middleware.ModuleCases,
+			action:       middleware.ActionUpdate,
+			roles:        []string{"sn_customerservice.customer"},
+			wantHTTPCode: http.StatusOK,
+		},
+		{
+			name:         "a caller with no recognized role cannot create a pending-verification entry",
+			module:       middleware.ModuleCases,
+			action:       middleware.ActionCreate,
+			roles:        []string{},
+			wantHTTPCode: http.StatusForbidden,
+		},
 		// Projects. PATCH /projects/{id} is gated on projects:update, which
 		// the specification restricts to the WSO2-side roles; every external
 		// role is read-only on Projects.
@@ -187,7 +220,10 @@ func TestChangeRequestRouteGating(t *testing.T) {
 	}
 	approve := request{"PATCH approve", http.MethodPatch, "/change-requests/" + crID, `{"isCustomerApproved":true}`}
 	review := request{"PATCH review", http.MethodPatch, "/change-requests/" + crID, `{"isCustomerReviewed":false}`}
-	propose := request{"PATCH propose a new time", http.MethodPatch, "/change-requests/" + crID, `{"plannedStartOn":"2026-10-10 10:00:00"}`}
+	// The handler refuses a proposed time that has passed (by the real clock), so
+	// the proposal is always a month from now rather than a fixed date.
+	proposedStart := time.Now().UTC().AddDate(0, 1, 0).Format("2006-01-02 15:04:05")
+	propose := request{"PATCH propose a new time", http.MethodPatch, "/change-requests/" + crID, `{"plannedStartOn":"` + proposedStart + `"}`}
 	editTitle := request{"PATCH title", http.MethodPatch, "/change-requests/" + crID, `{"title":"x"}`}
 	approveAndMove := request{"PATCH approve plus state", http.MethodPatch, "/change-requests/" + crID, `{"isCustomerApproved":true,"state":"scheduled"}`}
 	decide := request{"POST decision", http.MethodPost, "/change-requests/" + crID + "/approvals/decision", `{"decision":"approved"}`}

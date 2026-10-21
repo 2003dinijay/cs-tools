@@ -22,6 +22,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -94,9 +95,10 @@ type link struct {
 }
 
 // Notify announces e. entryURL, when not empty, is the link the card opens.
-// Best effort: the entry is already saved, so a failure here is logged and
-// never reaches the person who shared it.
-func (c *Client) Notify(ctx context.Context, e entry.Entry, entryURL string) {
+// It returns an error, already logged, when Novera didn't accept the
+// announcement, e.g. because Novera or Google Chat can't be reached; the
+// entry then stays unannounced for a moderator to send again.
+func (c *Client) Notify(ctx context.Context, e entry.Entry, entryURL string) error {
 	n := notification{
 		Source:   "til",
 		Title:    e.Title,
@@ -114,21 +116,23 @@ func (c *Client) Notify(ctx context.Context, e entry.Entry, entryURL string) {
 	body, err := json.Marshal(n)
 	if err != nil {
 		slog.ErrorContext(ctx, "novera: encode notification", "err", err)
-		return
+		return fmt.Errorf("novera: encode notification: %w", err)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(body))
 	if err != nil {
 		slog.ErrorContext(ctx, "novera: build notification", "err", err)
-		return
+		return fmt.Errorf("novera: build notification: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
 		slog.ErrorContext(ctx, "novera: send notification", "entryID", e.ID, "err", err)
-		return
+		return fmt.Errorf("novera: send notification: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		slog.ErrorContext(ctx, "novera: notification rejected", "entryID", e.ID, "status", resp.StatusCode)
+		return fmt.Errorf("novera: notification rejected with status %d", resp.StatusCode)
 	}
+	return nil
 }

@@ -15,8 +15,9 @@
 // under the License.
 
 // Package middleware holds the HTTP layers every request passes through:
-// security headers, CORS, a correlation id, request logging, a body size
-// limit and token verification.
+// security headers, CORS, a correlation id, a body size limit and token
+// verification. Requests aren't logged one by one: the API gateway's own
+// logs record each call under the same correlation id.
 package middleware
 
 import (
@@ -27,7 +28,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"time"
 )
 
 func writeError(w http.ResponseWriter, status int, message string) {
@@ -140,32 +140,6 @@ func (h contextHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 
 func (h contextHandler) WithGroup(name string) slog.Handler {
 	return contextHandler{inner: h.inner.WithGroup(name)}
-}
-
-type statusRecorder struct {
-	http.ResponseWriter
-	status int
-}
-
-func (r *statusRecorder) WriteHeader(code int) {
-	r.status = code
-	r.ResponseWriter.WriteHeader(code)
-}
-
-// Logger logs each completed request: method, path, status and duration.
-// Never the body, the query string or the token.
-func Logger(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-		next.ServeHTTP(rec, r)
-		slog.InfoContext(r.Context(), "request completed",
-			"method", r.Method,
-			"path", r.URL.Path,
-			"status", rec.status,
-			"elapsed", time.Since(start).String(),
-		)
-	})
 }
 
 // BodyLimit rejects a request body larger than max bytes with a 413: up

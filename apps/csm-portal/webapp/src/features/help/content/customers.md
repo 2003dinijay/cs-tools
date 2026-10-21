@@ -3,6 +3,10 @@
 Customers is where you look up an account or a project directly, rather than arriving at one
 through a case or dashboard widget. It has two tabs: **Accounts** and **Projects**.
 
+If you hold the viewer role and aren't a CS engineer or admin, **Customers** in the sidebar opens a
+dropdown with **Accounts**, **Projects** and **Customer Health**, the account health dashboard.
+Everyone else finds Customer Health as its own entry near the bottom of the sidebar.
+
 ## Accounts
 
 The Accounts tab lists every customer account, searchable by account name or Salesforce ID.
@@ -31,12 +35,14 @@ Opening a project takes you to its detail page, with four tabs:
   account, Salesforce ID, and the created/updated/start/end dates. An **Onboarding Owner**
   field appears here too, but only for onboarding-enabled projects — it names the onboarding
   consultant assigned to the project. It's absent for projects with no onboarding engagement.
+  Only users with the onboarding lead role (and admins) can edit the onboarding status and
+  owner, using the pencil next to the status; the owner must be an internal user.
 - **Deployments**: see below.
 - **Project contacts**: see below.
 - **Work items**: cases, service requests, and other work items filed against this project.
 
 From a project's detail page, the **Create** menu lets you file a new case, service request
-(managed-cloud projects only), engagement, or security report already scoped to this project,
+(managed-cloud and Cloud Support projects), engagement, or security report already scoped to this project,
 so it can't end up filed against the wrong one.
 
 ### Deployments

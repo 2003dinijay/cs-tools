@@ -437,7 +437,7 @@ func TestCaseTypeTransferIntegration_AMigrationTicketWorksAsOneAfterwards(t *tes
 			// It moves through its states, as an engagement does.
 			for _, next := range []domain.CaseState{domain.CaseStateWorkInProgress, domain.CaseStateAwaitingInfo, domain.CaseStateWorkInProgress} {
 				next := next
-				if _, _, err := cases.UpdateCase(f.ctx, domain.UpdateCaseRequest{ID: tc.id, State: &next}, nil); err != nil {
+				if _, _, _, err := cases.UpdateCase(f.ctx, domain.UpdateCaseRequest{ID: tc.id, State: &next}, nil); err != nil {
 					t.Fatalf("move to %s: %v", next, err)
 				}
 				got, err := cases.GetCaseByID(f.ctx, tc.id, scope)
@@ -452,7 +452,7 @@ func TestCaseTypeTransferIntegration_AMigrationTicketWorksAsOneAfterwards(t *tes
 			}
 			// And it closes, which stamps when.
 			closed := domain.CaseStateClosed
-			if _, _, err := cases.UpdateCase(f.ctx, domain.UpdateCaseRequest{ID: tc.id, State: &closed}, nil); err != nil {
+			if _, _, _, err := cases.UpdateCase(f.ctx, domain.UpdateCaseRequest{ID: tc.id, State: &closed}, nil); err != nil {
 				t.Fatalf("close: %v", err)
 			}
 			final, err := cases.GetCaseByID(f.ctx, tc.id, scope)

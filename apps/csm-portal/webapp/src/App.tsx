@@ -35,7 +35,8 @@ import {
   featureStateForPath,
   firstEnabledDestination,
 } from "@config/featureFlags";
-import { usePortalAccess } from "@context/current-user/usePortalAccess";
+import { useFeaturePreviewOverrides } from "@config/featurePreview";
+import { usePortalAccess, useSafeCurrentUserId } from "@context/current-user/usePortalAccess";
 import {
   POST_LOGIN_REDIRECT_KEY,
   PostLoginRedirectConsumer,
@@ -115,18 +116,19 @@ import CsmKBArticleEditorPage from "@features/csm-kb-articles/pages/CsmKBArticle
 import CsmKBArticleHistoryDetailPage from "@features/csm-kb-articles/pages/CsmKBArticleHistoryDetailPage";
 import CsmKBReviewQueuePage from "@features/csm-kb-articles/pages/CsmKBReviewQueuePage";
 import CsmKBAdminPage from "@features/csm-kb-articles/pages/CsmKBAdminPage";
-// The four pages below (SLA/CS/Time project reports, User Scan, Usage
-// Metrics, Customer Health) have no modern/entity-service-backed equivalent.
+// The four pages below (Time project report, User Scan, Usage Metrics,
+// Customer Health) have no modern/entity-service-backed equivalent.
 // Relocated out of the former "sales-sa"/"Support Portal Lite" tree (now
 // deleted); routing/audience-gating for each is isSplAudience, except Usage
-// Metrics, which is canViewUsageMetrics — see both flags' own doc comments.
-import SlaReportPage from "@features/csm-reports/pages/SlaReportPage";
-import CsReportPage from "@features/csm-reports/pages/CsReportPage";
+// Metrics (canViewUsageMetrics) and Customer Health (canViewCustomerHealth) —
+// see each flag's own doc comment.
+import SlaReportUpcomingPage from "@features/csm-reports/pages/SlaReportUpcomingPage";
 import TimelogsReportPage from "@features/csm-reports/pages/TimelogsReportPage";
 import UserScanPage from "@features/csm-user-scan/pages/UserScanPage";
 import UsageMetricsPage from "@features/csm-usage-metrics/pages/UsageMetricsPage";
 import CustomerHealthDashboardPage from "@features/csm-customer-health/pages/CustomerHealthDashboardPage";
 import CustomerHealthDetailPage from "@features/csm-customer-health/pages/CustomerHealthDetailPage";
+import CsReportPage from "@features/csm-reports/pages/CsReportPage";
 
 /**
  * Landing for `/`. Defers to AuthGuard's post-login deep-link restore when a
@@ -184,12 +186,17 @@ function FeatureRouteGuard(): JSX.Element {
   const { pathname } = useLocation();
   const access = usePortalAccess();
   const node = navNodeForPath(pathname);
+  // An admin's own Feature Preview toggles (browser-local, see
+  // featurePreview.ts) can promote a hidden/WIP page to enabled for them
+  // alone -- never for any other caller, and never touching the deployment
+  // config itself.
+  const { overrides } = useFeaturePreviewOverrides(useSafeCurrentUserId());
   // Per-user: a page the user's roles don't unlock (e.g. Operations for a
   // view-only role) is hidden the same way a deployment-hidden page is.
-  const state = featureStateForPath(pathname, access);
+  const state = featureStateForPath(pathname, access, overrides);
 
   if (state === "hidden") {
-    const fallback = firstEnabledDestination(access);
+    const fallback = firstEnabledDestination(access, overrides);
     const samePath = fallback !== undefined && fallback.split(/[?#]/)[0] === pathname;
     return <Navigate to={!fallback || samePath ? "/404" : fallback} replace />;
   }
@@ -656,10 +663,13 @@ export default function App(): JSX.Element {
                       directly. */}
                   <Route path="user-scan" element={<UserScanPage />} />
 
-                  {/* Usage Metrics is the one exception: NOT limited to
-                      isSplAudience — cs_engineer/admin and the dedicated
-                      usage_metrics_viewer role see it too, see
-                      canViewUsageMetrics's own doc comment. */}
+                  {/* Usage Metrics and Customer Health are the exceptions: NOT
+                      limited to isSplAudience. Usage Metrics also goes to
+                      cs_engineer/admin and the dedicated usage_metrics_viewer
+                      role (canViewUsageMetrics); Customer Health to
+                      cs_engineer/admin as well as viewer
+                      (canViewCustomerHealth) — see each flag's own doc
+                      comment. */}
                   <Route path="usage-metrics" element={<UsageMetricsPage />} />
 
                   <Route
@@ -671,19 +681,20 @@ export default function App(): JSX.Element {
                     element={<CustomerHealthDetailPage />}
                   />
 
-                  {/* SLA/CS/Time project reports, launched from a project's
-                      own detail page — same isSplAudience audience as above. */}
+                  {/* Project reports, launched from a project's own detail page.
+                      The SLA button on that page stays disabled; this route is
+                      the page a direct visit lands on. */}
                   <Route
                     path="customers/projects/:projectId/sla-report/:sysId"
-                    element={<SlaReportPage />}
-                  />
-                  <Route
-                    path="customers/projects/:projectId/cs-report/:sysId"
-                    element={<CsReportPage />}
+                    element={<SlaReportUpcomingPage />}
                   />
                   <Route
                     path="customers/projects/:projectId/timelogs-report"
                     element={<TimelogsReportPage />}
+                  />
+                  <Route
+                    path="customers/projects/:projectId/cs-report/:sysId"
+                    element={<CsReportPage />}
                   />
                 </Route>
               </Route>

@@ -110,20 +110,60 @@ type LadderConfig struct {
 	// [apollo, artemis] notifies both SaaS teams. Empty, such an incident
 	// posts to chat above, as before. Its closing message follows. SRE only.
 	TeamlessChats []string `yaml:"teamlessChats"`
+	// TeamChannels is how each SRE team's alerts go out (chat, call, both,
+	// log), by team key, set on the Team Schedule's Alert Settings tab (Team
+	// routing) and never from this file. A team's channel can only narrow the
+	// ladder's channel above (narrowChannel); a team not listed uses it as it
+	// is. SRE only.
+	TeamChannels map[string]Channel `yaml:"-"`
 	// UnansweredChat posts a closing message when the ladder has called every
 	// rung and nobody acknowledged the incident, to the team's own space
 	// (teamChats), else chat. It is posted whatever channel says, so a
 	// call-only ladder still tells the room the calls have ended. SRE only.
+	// An incident with an INCIDENT_CHAT_SPACES space gets it there whether this is on or not.
 	UnansweredChat bool `yaml:"unansweredChat"`
 	// SMEHandoffChat posts one message to the incident's SRE team space
 	// (teamChats, else chat) when it is escalated to an SME team: who
 	// escalated it, that SRE paging stopped, and that the SMEs are being
 	// paged. Posted whatever channel says. SRE only.
+	// An incident with an INCIDENT_CHAT_SPACES space gets it there whether this is on or not.
 	SMEHandoffChat bool `yaml:"smeHandoffChat"`
+	// AckChat posts one reply in a ladder's thread when the ladder stops for
+	// any reason but a hand-off to the SMEs (which posts its own): who
+	// acknowledged it, or that the case closed or its severity changed, and
+	// how many calls were cancelled. It goes where the rung cards went, and
+	// only once a rung has gone out, so a room is never told about a chain it
+	// never saw. The SRE ladder's setting covers its SME ladders too. Defaults
+	// to on; a pointer so a deployment can turn it off.
+	AckChat *bool `yaml:"ackChat"`
 
 	// Phones is where a recipient's phone number comes from when the rung's
 	// resolver does not supply one (the Team Schedule never does).
 	Phones Phones `yaml:"phones"`
+
+	// Email sends one email per rung, L1 to L4, alongside the calls and
+	// cards. CRE only; absent is off.
+	Email RungEmail `yaml:"email"`
+}
+
+// RungEmail is the Case Paging rung email (rung_email.go). LEVEL_0 gets none.
+//
+//	L1    To the case's ABT team lead, Cc the case's ABT team list
+//	L2    To every ABT team lead, Cc every ABT team list
+//	L3    To the CRE head, Cc creTeamList
+//	L4    To the CS head,  Cc csTeamList
+//
+// At night (21:00-06:00 IST) L1 and L2 also go To the Americas team leads
+// (L1) and the America Team lead (L2), and also Cc the Americas team list.
+type RungEmail struct {
+	Enabled bool `yaml:"enabled"`
+	// TeamLists maps a team key to its mailing list: the ABT teams
+	// (teams.abts) and the Americas team (teams.americas). A key that is
+	// neither is refused.
+	TeamLists map[string]string `yaml:"teamLists"`
+	// CRETeamList and CSTeamList are Cc'd on L3 and L4.
+	CRETeamList string `yaml:"creTeamList"`
+	CSTeamList  string `yaml:"csTeamList"`
 }
 
 // Phones selects the source of recipients' phone numbers.
@@ -486,6 +526,11 @@ func (l LadderConfig) RequireBothGestures() bool {
 	return *l.Acknowledgement.RequireBoth
 }
 
+// AckChatOn reports whether a stopped ladder replies in its thread (AckChat).
+func (l LadderConfig) AckChatOn() bool {
+	return l.AckChat == nil || *l.AckChat
+}
+
 // Safety caps what a single ladder can spend before anybody is dialled.
 type Safety struct {
 	// MaxCallsPerLadder is the most calls one ladder may place across all of
@@ -562,7 +607,7 @@ func DefaultConfig() Config {
 // somebody has just edited it, believes they have changed the behaviour, and
 // would otherwise get the old behaviour with no indication.
 func LoadConfig(path string) (Config, error) {
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path) // #nosec G304 -- path is always the operator-set INCIDENT_ESCALATION_CONFIG deployment env var, read once at startup, never request/user input
 	if err != nil {
 		return DefaultConfig(), fmt.Errorf("escalation: read config %s: %w", path, err)
 	}
@@ -664,6 +709,9 @@ func (l *LadderConfig) validate(name string) error {
 		if len(l.Rules) > 0 {
 			return fmt.Errorf("sre: rules is a CRE setting; the SRE ladder routes by on-call tier")
 		}
+		if l.Email.Enabled || len(l.Email.TeamLists) > 0 || l.Email.CRETeamList != "" || l.Email.CSTeamList != "" {
+			return fmt.Errorf("sre: email is a CRE setting; the SRE ladder sends no rung email")
+		}
 		if l.Timing.Interval < 0 || l.Timing.InitialWait < 0 {
 			return fmt.Errorf("sre: timing durations must not be negative")
 		}
@@ -722,6 +770,40 @@ func (l *LadderConfig) validate(name string) error {
 		}
 		if len(l.TeamChats) > 0 || l.UnansweredChat || l.SMEHandoffChat || len(l.TeamlessChats) > 0 {
 			return fmt.Errorf("%s: teamChats, teamlessChats, unansweredChat and smeHandoffChat are SRE settings", name)
+		}
+		if err := l.Email.validate(name, l.Teams); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// oneAddress reports whether s is a single email address.
+func oneAddress(s string) bool {
+	a := strings.TrimSpace(s)
+	return a != "" && !strings.ContainsAny(a, " ,;") && strings.Count(a, "@") == 1
+}
+
+// validate checks the rung email's lists. Never echoes an address.
+func (m RungEmail) validate(name string, teams TeamKeys) error {
+	for key, v := range map[string]string{"creTeamList": m.CRETeamList, "csTeamList": m.CSTeamList} {
+		if strings.TrimSpace(v) != "" && !oneAddress(v) {
+			return fmt.Errorf("%s: email.%s is not a single email address", name, key)
+		}
+	}
+	for k, addr := range m.TeamLists {
+		key := teamKeyFor(k)
+		if key == "" {
+			return fmt.Errorf("%s: email.teamLists has an entry with no team key", name)
+		}
+		if !oneAddress(addr) {
+			return fmt.Errorf("%s: email.teamLists.%s is not a single email address", name, k)
+		}
+		// A key naming no team would read as a Cc and send nothing. Only
+		// checked against a list that was written down: with teams.abts empty
+		// the ABTs come from their type, and any key may be one of them.
+		if len(teams.ABTs) > 0 && !contains(teams.ABTs, key) && key != teamKeyFor(teams.Americas) {
+			return fmt.Errorf("%s: email.teamLists names team %q, which is neither in teams.abts nor teams.americas", name, k)
 		}
 	}
 	return nil

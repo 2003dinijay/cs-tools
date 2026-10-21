@@ -616,3 +616,64 @@ func TestGenerateMonth_ItsOwnEarlierLieuIsNotAvailability(t *testing.T) {
 		t.Fatalf("the generator's own earlier lieu changed the month: %v vs %v", plan(own), plan())
 	}
 }
+
+// The SaaS Night cover: people a lead moved onto it are the month's TZ3 crew
+// when nobody is chosen, work nothing but TZ3 while the move lasts, and have
+// their nights filed under it; a day of the month the move does not cover is
+// left for a lead, not given a day zone around the crew.
+func TestGenerateMonth_TheNightCoverIsTheMonthsTZ3Crew(t *testing.T) {
+	repo := &fakeScheduleRepo{ledTeams: []string{"apollo"}}
+	writer := &fakeRotaWriter{}
+	svc := newTestRotaService(repo, writer, saasTestNow)
+	rota := RotaSRESaaS
+	night := "saas-night-cover"
+	repo.catalogue.Teams = append(repo.catalogue.Teams, domain.ScheduleTeam{Key: night, Name: "SaaS Night cover", Family: "SRE", RotaCode: &rota})
+	repo.catalogue.AbsenceKinds = append(repo.catalogue.AbsenceKinds, domain.ScheduleAbsenceKind{
+		Code: "SRE_NIGHT_COVER", MovesToTeamKey: &night, WorksRotaThere: true,
+	})
+	move := func(id, home, from, to string) domain.ScheduleAbsence {
+		h := home
+		return domain.ScheduleAbsence{
+			ID: "move-" + id, Engineer: domain.ScheduleEngineer{UserID: id}, TeamKey: night, HomeTeamKey: &h,
+			KindCode: "SRE_NIGHT_COVER", StartsOn: from, EndsOn: &to,
+		}
+	}
+	repo.absences = []domain.ScheduleAbsence{
+		move("apollo-03", "apollo", "2026-11-01", "2026-11-30"),
+		move("artemis-04", "artemis", "2026-11-01", "2027-01-31"),
+		move("apollo-05", "apollo", "2026-11-16", "2027-02-28"),
+	}
+
+	if _, err := svc.GenerateMonth(leadCtx("apollo.lead@example.com"), generateReq("2026-11")); err != nil {
+		t.Fatal(err)
+	}
+	crew := map[string]bool{"apollo-03": true, "artemis-04": true, "apollo-05": true}
+	tz3 := 0
+	for _, turn := range writer.got.Turns {
+		if turn.ShiftCode == saasShiftTZ3 {
+			tz3++
+			if !crew[turn.UserID] {
+				t.Fatalf("TZ3 went outside the Night cover: %+v", turn)
+			}
+			if turn.TeamKey != night {
+				t.Fatalf("a Night cover night is filed under %s, want %s: %+v", turn.TeamKey, night, turn)
+			}
+			if turn.UserID == "apollo-05" && turn.RotaDate < "2026-11-16" {
+				t.Fatalf("apollo-05 is on the Night cover from 16 Nov, got a night before it: %+v", turn)
+			}
+			continue
+		}
+		if crew[turn.UserID] {
+			t.Fatalf("somebody on the Night cover got a day turn or day hours: %+v", turn)
+		}
+	}
+	if tz3 == 0 {
+		t.Fatal("no TZ3 turns at all; the Night cover should have worked the nights")
+	}
+	want := []repository.RotaNightCrewRow{
+		{UserID: "apollo-03", TeamKey: "apollo"}, {UserID: "apollo-05", TeamKey: "apollo"}, {UserID: "artemis-04", TeamKey: "artemis"},
+	}
+	if fmt.Sprint(writer.got.NightCrew) != fmt.Sprint(want) {
+		t.Fatalf("night crew recorded: got %+v, want %+v", writer.got.NightCrew, want)
+	}
+}

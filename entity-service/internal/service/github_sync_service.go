@@ -201,6 +201,24 @@ type githubSyncService struct {
 	// repoConfigs reads each repository's own mapping file. Nil (the
 	// default) leaves account_github_repo the only source, as before.
 	repoConfigs *githubRepoConfigs
+	// snCases creates a service request in ServiceNow first, under
+	// dual-write, so it takes ServiceNow's CS number and WSO2 Case ID as a
+	// portal-created one does (github_sn_case.go). Nil writes Postgres only
+	// and numbers the record SR-GH-<n>. Set with WithServiceNowGithubCases.
+	snCases snGithubCaseAPI
+}
+
+// WithServiceNowGithubCases makes the sync create each new service request in
+// ServiceNow first, through the ServiceNow integration service's
+// /github-cases (ServiceNow's GitHub case API, as its M2M user), and keep
+// ServiceNow in step with the issue's edits and comments. For DATA_SOURCE=
+// postgres-servicenow-dual-write only. A no-op if svc is not a
+// *githubSyncService or api is nil.
+func WithServiceNowGithubCases(svc GithubSyncService, api snGithubCaseAPI) GithubSyncService {
+	if s, ok := svc.(*githubSyncService); ok && api != nil {
+		s.snCases = api
+	}
+	return svc
 }
 
 // githubIssueClient is the slice of *github.Client this service needs.
@@ -378,24 +396,39 @@ func (s *githubSyncService) handleIssue(ctx context.Context, p IssuePayload, map
 	if s.mutate == nil {
 		return Outcome{Action: "creation_prepared"}, nil
 	}
+	issue := snGithubIssueOf(p)
 	if existing != "" {
 		// The issue already produced a record. Its text is the source of
 		// truth, so an edit overwrites -- servicenow_update_case.yml re-sends
 		// the whole body rather than a diff for the same reason.
-		if err := s.mutate.UpdateFromIssue(ctx, existing, repository.NewChangeRequestFromIssue{
+		update := repository.NewChangeRequestFromIssue{
 			Subject:      p.Issue.Title,
 			Description:  p.Issue.Body,
 			GitReference: p.Issue.HTMLURL,
 			Catalog:      catalog,
 			SRType:       srType,
 			Fields:       ExtractTemplateFields(p.Issue.Body),
-		}); err != nil {
+		}
+		if s.snCases != nil {
+			update.ServiceNowDescription = snGithubCaseDescription(extractSNIssueFields(p.Issue.Body), issue)
+		}
+		if err := s.mutate.UpdateFromIssue(ctx, existing, update); err != nil {
 			return Outcome{}, err
+		}
+		// An edit reaches ServiceNow as servicenow_update_case.yml sent it --
+		// only an edit, not every label the workflows apply. After the Postgres
+		// write and best effort, as any dual-write update: a failure leaves
+		// ServiceNow's copy stale, never this one.
+		if s.snCases != nil && p.Action == "edited" {
+			if err := s.snCases.UpdateCase(ctx, snGithubCaseUpdate(issue)); err != nil {
+				logSNGithubCaseError(ctx, "github: ServiceNow did not take the issue edit", err,
+					"serviceRequestId", existing, "issue", p.Issue.Number)
+			}
 		}
 		return Outcome{Action: "updated", ChangeRequestID: existing}, nil
 	}
 
-	id, number, err := s.mutate.CreateServiceRequestFromIssue(ctx, repository.NewServiceRequestFromIssue{
+	in := repository.NewServiceRequestFromIssue{
 		Subject:      p.Issue.Title,
 		Description:  p.Issue.Body,
 		GitReference: p.Issue.HTMLURL,
@@ -408,7 +441,42 @@ func (s *githubSyncService) handleIssue(ctx context.Context, p IssuePayload, map
 		SRType:       srType,
 		Fields:       ExtractTemplateFields(p.Issue.Body),
 		CreatedBy:    p.Issue.User.Login,
-	})
+	}
+	// ServiceNow first, as a portal-created record under dual-write: the
+	// record takes ServiceNow's sys_id, CS number and WSO2 Case ID. A
+	// repository mapped without a project (account_github_repo) cannot be, as
+	// ServiceNow's API requires one; it keeps the GitHub series.
+	snFirst := s.snCases != nil && mapping.ProjectID != ""
+	var snSysID string
+	if snFirst {
+		res, err := s.snCases.CreateCase(ctx, snGithubCaseCreate(issue, mapping.AccountID, mapping.ProjectID,
+			mapping.Category, mapping.AnnouncementType, catalog, githubCatalogPrefix(p, catalog)))
+		if err != nil {
+			// Nothing is written here: ServiceNow has no case, and a Postgres
+			// row without one would never get its numbers. The delivery is
+			// released and can be redelivered.
+			return Outcome{}, fmt.Errorf("github: create the service request in ServiceNow: %w", err)
+		}
+		if res.WSO2CaseID == "" {
+			slog.WarnContext(ctx, "github: ServiceNow returned no WSO2 Case ID; the record takes the GitHub series id",
+				"snNumber", res.Number, "issue", p.Issue.Number)
+		}
+		snSysID = res.SysID
+		in.ServiceNowID = sysidToUUID(res.SysID)
+		in.ServiceNowNumber = res.Number
+		in.ServiceNowWSO2ID = res.WSO2CaseID
+		// The same text ServiceNow holds, so both stores read alike and the
+		// portal renders it as it renders every ServiceNow-numbered record.
+		in.Description = snGithubCaseDescription(extractSNIssueFields(p.Issue.Body), issue)
+	}
+
+	id, number, err := s.mutate.CreateServiceRequestFromIssue(ctx, in)
+	if err != nil && snFirst && !errors.Is(err, repository.ErrAlreadyExists()) {
+		// ServiceNow has the case; Postgres does not. A redelivery recovers it:
+		// ServiceNow answers "Case already exists" with the same ids.
+		slog.ErrorContext(ctx, "github: ServiceNow case created but the Postgres insert failed",
+			"snId", in.ServiceNowID, "snNumber", in.ServiceNowNumber, "issue", p.Issue.Number, "error", err)
+	}
 	if err != nil {
 		// A concurrent delivery for the same issue won the insert. Nothing to
 		// do, and not a failure -- the record the caller wanted exists.
@@ -423,8 +491,24 @@ func (s *githubSyncService) handleIssue(ctx context.Context, p IssuePayload, map
 		"serviceRequestId", id, "number", number, "issue", p.Issue.Number, "catalog", catalog)
 	// Only for a new record: an issue that already had one ("exists" above)
 	// was announced when that record was created.
+	//
+	// Ours in every case; ServiceNow's "SR New Request - Acknowledge & Chat
+	// Alert" flow is not relied on. For a record created in ServiceNow first,
+	// the acknowledgement comment is written to ServiceNow's case as well.
 	if s.srNotices != nil {
-		s.srNotices.OnCreated(ctx, id)
+		mirrored, canMirror := s.srNotices.(interface {
+			OnCreatedMirrored(ctx context.Context, caseID string, mirror srAckMirror)
+		})
+		if snFirst && canMirror {
+			mirrored.OnCreatedMirrored(ctx, id, func(ctx context.Context, comment string) {
+				if err := s.snCases.AddComment(ctx, snSysID, comment); err != nil {
+					logSNGithubCaseError(ctx, "github: ServiceNow did not take the SR acknowledgement", err,
+						"serviceRequestId", id, "issue", p.Issue.Number)
+				}
+			})
+		} else {
+			s.srNotices.OnCreated(ctx, id)
+		}
 	}
 	return Outcome{Action: "created", ChangeRequestID: id, Number: number}, nil
 }
@@ -514,6 +598,15 @@ func (s *githubSyncService) handleComment(ctx context.Context, p IssuePayload, m
 
 	if err := s.mutate.AddComment(ctx, caseID, text, author); err != nil {
 		return Outcome{}, err
+	}
+	// The case's ServiceNow journal gets it too, as github_comment_to_sn.yml
+	// wrote it. After the Postgres write and best effort; a record ServiceNow
+	// never had (the GitHub series) answers not found, logged at info.
+	if s.snCases != nil {
+		if err := s.snCases.AddComment(ctx, uuidToSysid(caseID), snGithubCommentText(author, p.Comment.HTMLURL, body)); err != nil {
+			logSNGithubCaseError(ctx, "github: ServiceNow did not take the issue comment", err,
+				"serviceRequestId", caseID, "issue", p.Issue.Number)
+		}
 	}
 	return Outcome{Action: "comment_relayed", ChangeRequestID: caseID}, nil
 }
@@ -630,4 +723,45 @@ func (s *githubSyncService) CreateServiceRequestFromIssue(ctx context.Context, r
 		Message: "service request created", ID: out.ChangeRequestID,
 		Number: out.Number, Created: true,
 	}, nil
+}
+
+// snGithubIssueOf is the issue as the ServiceNow payloads describe it.
+func snGithubIssueOf(p IssuePayload) snGithubIssue {
+	return snGithubIssue{
+		Number:   p.Issue.Number,
+		Title:    p.Issue.Title,
+		Body:     p.Issue.Body,
+		URL:      p.Issue.HTMLURL,
+		User:     p.Issue.User.Login,
+		Labels:   p.LabelNames(),
+		RepoFull: p.Repository.Owner.Login + "/" + p.Repository.Name,
+	}
+}
+
+// githubCatalogPrefix is the catalog_prefix issue_servicenow.yml hands
+// servicenow_create_case.yml: the issue's CatalogueItem/ label when it has
+// one (an emergency change), Type/ServiceRequest for a general service
+// request, nothing for a change request.
+func githubCatalogPrefix(p IssuePayload, catalog string) string {
+	for _, l := range p.LabelNames() {
+		if strings.HasPrefix(l, "CatalogueItem/") {
+			return l
+		}
+	}
+	if catalog == CatalogGeneralRequests {
+		return "Type/ServiceRequest"
+	}
+	return ""
+}
+
+// logSNGithubCaseError logs a best-effort ServiceNow write that failed: at
+// info when ServiceNow has no such case (a record of the GitHub series), as an
+// error otherwise.
+func logSNGithubCaseError(ctx context.Context, msg string, err error, args ...any) {
+	args = append(args, "error", err)
+	if errors.Is(err, errSNGithubCaseNotFound) {
+		slog.InfoContext(ctx, msg+" (no such case in ServiceNow)", args...)
+		return
+	}
+	slog.ErrorContext(ctx, msg, args...)
 }

@@ -310,6 +310,10 @@ func (s *scheduleService) requireRotaWriterOver(ctx context.Context, teamKey, us
 // lead (or a rota admin for it) may roster them while it lasts, and, when
 // homeLeadMayManage is set, so may their own team's lead, who still owns the
 // span itself -- ending it early, moving it, marking leave inside it.
+//
+// A move between two teams of one rota is different: the SaaS Night cover
+// has no lead of its own, and the people on it are still on the SaaS rota, so
+// their own team's lead keeps rostering them there as well.
 func (s *scheduleService) requireRotaWriterOverSpan(ctx context.Context, teamKey, userID, from, to string, homeLeadMayManage bool) (string, error) {
 	if err := s.requireInternalCaller(ctx); err != nil {
 		return "", err
@@ -338,8 +342,17 @@ func (s *scheduleService) requireRotaWriterOverSpan(ctx context.Context, teamKey
 	if writerErr == nil {
 		return home, nil
 	}
-	if homeLeadMayManage && home != "" && s.requireRotaWriter(ctx, home) == nil {
-		return home, nil
+	if home != "" && s.requireRotaWriter(ctx, home) == nil {
+		if homeLeadMayManage {
+			return home, nil
+		}
+		sameRota, err := s.repo.TeamsShareRota(ctx, home, teamKey)
+		if err != nil {
+			return "", err
+		}
+		if sameRota {
+			return home, nil
+		}
 	}
 	return "", writerErr
 }
@@ -638,7 +651,14 @@ func (s *scheduleService) DeleteAbsence(ctx context.Context, id string, note *st
 		return err
 	}
 	if err := s.requireRotaWriterOver(ctx, existing.TeamKey, existing.Engineer.UserID); err != nil {
-		return err
+		// A span filed under the team it moved somebody to (the Brazil
+		// rotation, the SaaS Night cover), or leave marked inside one, is
+		// still their own team's lead's to remove: they are no member of the
+		// team it is filed under, so the check above refuses even them.
+		home := existing.HomeTeamKey
+		if home == nil || *home == "" || s.requireRotaWriterOver(ctx, *home, existing.Engineer.UserID) != nil {
+			return err
+		}
 	}
 	return s.repo.DeleteAbsence(ctx, existing.ID, auth.IdentityFromContext(ctx).UserEmail, note)
 }

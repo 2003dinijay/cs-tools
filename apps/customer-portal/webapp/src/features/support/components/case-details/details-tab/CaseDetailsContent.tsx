@@ -25,10 +25,12 @@ import { consumePendingCaseDetailsTab } from "@features/settings/utils/settingsS
 import { useGetCaseAttachments } from "@features/support/api/useGetCaseAttachments";
 import { useGetCallRequests } from "@features/support/api/useGetCallRequests";
 import useGetProjectFilters from "@api/useGetProjectFilters";
+import useGetProjectDetails from "@api/useGetProjectDetails";
 import useGetAIChatHistory from "@features/support/api/useGetAIChatHistory";
 import { useConversationRecommendationsSearch } from "@features/support/api/useConversationRecommendationsSearch";
 import { buildRecommendationRequestFromCase } from "@features/support/utils/recommendations";
 import { usePostCaseEscalationsSearch } from "@features/support/api/usePostCaseEscalationsSearch";
+import { usePendingVerificationsSearch } from "@features/support/api/usePendingVerificationsSearch";
 import useGetProjectContacts from "@features/settings/api/useGetProjectContacts";
 import useGetUserDetails from "@features/settings/api/useGetUserDetails";
 import { hasCustomerAdminRole } from "@features/settings/utils/settings";
@@ -230,6 +232,34 @@ export default function CaseDetailsContent({
     (ESCALATION_DEESCALATE_CREATOR_ELIGIBLE_LEVELS.has(escalationLevelId) &&
       hasCreatedEscalation);
 
+  // Pending verification: fetched once here for the badge/action-row/tab-count,
+  // and independently re-fetched by CaseVerificationsPanel (same query key, so
+  // React Query dedupes both to one network call) for the tab's own timeline.
+  const isCaseClosed = !!data?.closedOn || statusLabel === "Closed";
+  const { data: projectDetails } = useGetProjectDetails(resolvedProjectId);
+  // Pending Verification is scoped to Case only (product decision,
+  // 2026-10-06) -- Engagement/Service Request/Security Report Analysis all
+  // render through this same shared component, so the record-type check has
+  // to live here rather than being removed at a per-route call site.
+  const isCaseRecord = !isEngagementRoute && !isServiceRequest && !isSecurityReportAnalysis;
+  const verificationEnabled = !!projectDetails?.verificationEnabled && isCaseRecord;
+  const { data: verificationData } = usePendingVerificationsSearch(
+    resolvedProjectId,
+    caseId,
+    !!resolvedProjectId && !!caseId && verificationEnabled,
+  );
+  const verificationRecords = verificationData?.pendingVerifications ?? [];
+  const verificationsCount = verificationData ? verificationRecords.length : undefined;
+  const unverifiedRecord = verificationRecords.find((r) => !r.verifiedAt);
+  const hasVerifiedRecord = verificationRecords.some((r) => !!r.verifiedAt);
+  const isPendingVerification = verificationEnabled && !!unverifiedRecord;
+  const isCaseVerified = !isPendingVerification && verificationEnabled && hasVerifiedRecord;
+  // Allows re-adding after a prior cycle was verified — gated on "nothing
+  // currently pending", not "never had an entry", so a record can go
+  // through Add -> Verify -> Add -> Verify any number of times.
+  const canAddToVerification =
+    verificationEnabled && isCaseClosed && !isPendingVerification;
+
   const visibleTabs = useMemo(
     () => [
       0,
@@ -239,8 +269,15 @@ export default function CaseDetailsContent({
       ...(hideKnowledgeBaseTab ? [] : [4]),
       ...(hideRelatedChangeRequestsTab ? [] : [5]),
       ...(hideEscalationTab ? [] : [6]),
+      ...(verificationEnabled ? [7] : []),
     ],
-    [hideCallsTab, hideKnowledgeBaseTab, hideRelatedChangeRequestsTab, hideEscalationTab],
+    [
+      hideCallsTab,
+      hideKnowledgeBaseTab,
+      hideRelatedChangeRequestsTab,
+      hideEscalationTab,
+      verificationEnabled,
+    ],
   );
   const clampedActiveTab = Math.min(
     activeTab,
@@ -382,6 +419,8 @@ export default function CaseDetailsContent({
                         ? (data?.escalationLevel?.label ?? null)
                         : null
                     }
+                    isPendingVerification={isPendingVerification}
+                    isCaseVerified={isCaseVerified}
                   />
                 </Box>
 
@@ -402,6 +441,11 @@ export default function CaseDetailsContent({
                     isEscalated={!hideEscalationTab && isEscalated}
                     canDeescalate={!hideEscalationTab && canDeescalate}
                     onDeescalateSuccess={() => void refetchEscalations()}
+                    isCaseClosed={isCaseClosed}
+                    canAddToVerification={canAddToVerification}
+                    isPendingVerification={isPendingVerification}
+                    isCaseVerified={isCaseVerified}
+                    pendingVerificationId={unverifiedRecord?.id ?? null}
                   />
                 )}
               </Box>
@@ -424,6 +468,8 @@ export default function CaseDetailsContent({
           hideEscalationTab={hideEscalationTab}
           escalationCount={escalationCount}
           isEscalated={isEscalated}
+          hideVerificationsTab={!verificationEnabled}
+          verificationsCount={verificationsCount}
         />
       </Paper>
 

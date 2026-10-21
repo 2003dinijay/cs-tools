@@ -185,6 +185,9 @@ type ProjectDetailsView struct {
 	OnboardingExpiryDate     *time.Time `json:"onboardingExpiryDate"`
 	OnboardingStatus         *string    `json:"onboardingStatus"`
 	ProjectClosureFields
+	// VerificationEnabled gates the Pending Verification feature for this
+	// project.
+	VerificationEnabled bool `json:"verificationEnabled"`
 }
 
 // --- project metadata/stats ---
@@ -243,12 +246,23 @@ type ProjectFeatures struct {
 // Both fields are pointers and omitempty: entity-service accepts exactly ONE
 // per request, so a bool would make "false" indistinguishable from "absent"
 // and every request would look like it set both.
+//
+// Never add closureState here. entity-service's PATCH /projects/{id} also
+// accepts a closureState field -- a direct, admin-only override of a
+// project's overall closure status (see entity-service's own CLAUDE.md) --
+// and this route's RBAC entry (middleware.ModuleProjects/ActionUpdate) grants
+// RoleCustomerAdmin, an external role, specifically because this struct is
+// narrowly scoped to these two fields. Adding closureState here would hand
+// that override to a customer admin.
 type UpdateProjectRequest struct {
 	// HasAgent turns the AI assistant on or off for the project.
 	HasAgent *bool `json:"hasAgent,omitempty"`
 	// HasKbReferences controls whether the assistant cites knowledge-base
 	// articles in its answers.
 	HasKbReferences *bool `json:"hasKbReferences,omitempty"`
+	// VerificationEnabled turns the Pending Verification feature on or off
+	// for the project.
+	VerificationEnabled *bool `json:"verificationEnabled,omitempty"`
 }
 
 // FieldCount reports how many settings the request actually sets. The upstream
@@ -260,6 +274,9 @@ func (r UpdateProjectRequest) FieldCount() int {
 		n++
 	}
 	if r.HasKbReferences != nil {
+		n++
+	}
+	if r.VerificationEnabled != nil {
 		n++
 	}
 	return n
@@ -274,10 +291,11 @@ type UpdateProjectResponse struct {
 // UpdatedProjectRef is the project as it stands after the patch. Only the
 // fields the caller needs to confirm the change; entity-service returns more.
 type UpdatedProjectRef struct {
-	ID              string `json:"id"`
-	Name            string `json:"name"`
-	HasAgent        *bool  `json:"hasAgent,omitempty"`
-	HasKbReferences *bool  `json:"hasKbReferences,omitempty"`
+	ID                  string `json:"id"`
+	Name                string `json:"name"`
+	HasAgent            *bool  `json:"hasAgent,omitempty"`
+	HasKbReferences     *bool  `json:"hasKbReferences,omitempty"`
+	VerificationEnabled *bool  `json:"verificationEnabled,omitempty"`
 }
 
 // ProjectMetadataResponse is entity-service's response for GET /projects/{id}/metadata.
@@ -904,6 +922,11 @@ type SearchDeploymentsRequest struct {
 	// with no project context at all. Postgres data source only (see
 	// entity-service's own SearchDeploymentsRequest.IDs doc comment).
 	IDs []string `json:"ids,omitempty"`
+	// Numbers filters by exact deployment number (e.g. "DEP000002442"), the
+	// identifier an offline usage report carries.
+	Numbers []string `json:"numbers,omitempty"`
+	// IncludeInactive also returns deployments that have been deactivated.
+	IncludeInactive bool `json:"includeInactive,omitempty"`
 }
 
 // DeploymentView is a single search result item from POST /deployments/search.
@@ -2002,6 +2025,18 @@ type ChangeRequest struct {
 	// Passed through unchanged -- see dto.ChangeRequestDetails.
 	CustomerCanAnswer *bool `json:"customerCanAnswer,omitempty"`
 
+	// CustomerApprovalRequired / CustomerReviewRequired are the change request's
+	// two requirement boxes: whether it needs the customer's approval before it is
+	// scheduled, and the customer's review before it is closed. entity-service
+	// computes them on the PostgreSQL data source (the stored flags, which the
+	// migration keeps in step with the previous system's own boxes); on the
+	// previous system's data source it does not compute them and sends them as
+	// false, which is why they are pointers here (absent stays nil) and why the
+	// DTO passes them on only with a read entity-service made for a customer on
+	// PostgreSQL -- see dto.MapChangeRequestDetails.
+	CustomerApprovalRequired *bool `json:"customerApprovalRequired,omitempty"`
+	CustomerReviewRequired   *bool `json:"customerReviewRequired,omitempty"`
+
 	// CustomerProposal is entity-service's view of a time a customer proposed for the change
 	// request (kept as the proposed start and its confirmation, customer_updated_on /
 	// customer_updated_date_confirmation): the proposed start, whether WSO2 has answered, and -- for
@@ -2905,4 +2940,86 @@ type InstanceUsageStatsResponse struct {
 	Total     int                       `json:"total"`
 	StartDate string                    `json:"startDate"`
 	EndDate   string                    `json:"endDate"`
+}
+
+// --- pending verifications ---
+
+// PendingVerification mirrors entity-service's domain.PendingVerification —
+// see that type's own doc comment for what it's for.
+type PendingVerification struct {
+	ID             string     `json:"id"`
+	WorkItemID     string     `json:"workItemId"`
+	RecordNumber   string     `json:"recordNumber"`
+	RecordTitle    string     `json:"recordTitle"`
+	Severity       *string    `json:"severity"`
+	RecordType     string     `json:"recordType"`
+	AddedReason    string     `json:"addedReason"`
+	PreviousStatus *string    `json:"previousStatus"`
+	AddedOn        time.Time  `json:"addedOn"`
+	AddedBy        string     `json:"addedBy"`
+	VerifiedOn     *time.Time `json:"verifiedOn"`
+	VerifiedBy     *string    `json:"verifiedBy"`
+	Note           *string    `json:"note"`
+}
+
+// CreatePendingVerificationRequest mirrors entity-service's
+// domain.CreatePendingVerificationRequest for POST /pending-verifications.
+type CreatePendingVerificationRequest struct {
+	WorkItemID     string  `json:"workItemId"`
+	AddedReason    string  `json:"addedReason"`
+	PreviousStatus *string `json:"previousStatus,omitempty"`
+	Note           *string `json:"note,omitempty"`
+}
+
+// CreatePendingVerificationResponse mirrors entity-service's
+// domain.CreatePendingVerificationResponse.
+type CreatePendingVerificationResponse struct {
+	Message             string              `json:"message"`
+	PendingVerification PendingVerification `json:"pendingVerification"`
+}
+
+// PendingVerificationSearchFilters mirrors entity-service's
+// domain.PendingVerificationSearchFilters.
+type PendingVerificationSearchFilters struct {
+	ProjectID       string   `json:"projectId"`
+	WorkItemID      *string  `json:"workItemId,omitempty"`
+	WorkItemTypes   []string `json:"workItemTypes,omitempty"`
+	AddedReason     *string  `json:"addedReason,omitempty"`
+	SearchQuery     string   `json:"searchQuery,omitempty"`
+	IncludeVerified bool     `json:"includeVerified,omitempty"`
+	VerifiedOnly    bool     `json:"verifiedOnly,omitempty"`
+}
+
+// SearchPendingVerificationsRequest mirrors entity-service's
+// domain.SearchPendingVerificationsRequest for POST /pending-verifications/search.
+type SearchPendingVerificationsRequest struct {
+	Pagination Pagination                       `json:"pagination"`
+	Filters    PendingVerificationSearchFilters `json:"filters"`
+}
+
+// PendingVerificationTypeCount mirrors entity-service's
+// domain.PendingVerificationTypeCount.
+type PendingVerificationTypeCount struct {
+	RecordType string `json:"recordType"`
+	Count      int    `json:"count"`
+}
+
+// SearchPendingVerificationsResponse mirrors entity-service's
+// domain.SearchPendingVerificationsResponse.
+type SearchPendingVerificationsResponse struct {
+	PendingVerifications []PendingVerification          `json:"pendingVerifications"`
+	Total                int                            `json:"total"`
+	AutoClosedCount      int                            `json:"autoClosedCount"`
+	ManualCount          int                            `json:"manualCount"`
+	TypeCounts           []PendingVerificationTypeCount `json:"typeCounts"`
+	Limit                int                            `json:"limit"`
+	Offset               int                            `json:"offset"`
+	HasMore              bool                           `json:"hasMore"`
+}
+
+// VerifyPendingVerificationResponse mirrors entity-service's
+// domain.VerifyPendingVerificationResponse for PATCH /pending-verifications/{id}.
+type VerifyPendingVerificationResponse struct {
+	Message             string              `json:"message"`
+	PendingVerification PendingVerification `json:"pendingVerification"`
 }

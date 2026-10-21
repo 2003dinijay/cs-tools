@@ -54,7 +54,10 @@ export interface SnInstance {
   environmentType?: string;
   createdOn: string;
   updatedOn: string;
-  metadata: SnInstanceMetadata;
+  // Nullable on the wire: the backend returns null whenever an instance has
+  // no matched metadata record yet -- the common case today, not an edge
+  // case, so every reader must handle it rather than assume an object.
+  metadata: SnInstanceMetadata | null;
 }
 
 export interface SnInstancesResponse {

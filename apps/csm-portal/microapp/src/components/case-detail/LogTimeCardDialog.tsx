@@ -44,6 +44,7 @@ import type {
   ActivityBreakdown,
   ActivityKey,
   CaseSeverity,
+  CaseType,
   CreateTimeCardInput,
   IssueComplexity,
   TimeCardApprover,
@@ -61,6 +62,7 @@ import {
   NON_BILLABLE_SEVERITIES,
   WORK_LOG_MAX,
   emptyBreakdown,
+  isFocPaymentType,
   timeCardDraftErrors,
   totalMinutes,
 } from "@utils/timecard";
@@ -149,6 +151,11 @@ interface LogTimeCardDialogProps {
    * missing severity (e.g. a case type that doesn't carry one) is treated the same as a
    * non-billable severity, since only "low" (S4) is ever left editable. */
   caseSeverity: CaseSeverity | null;
+  /** Engagements carry no severity, so they're exempt from the rule above: their time defaults to
+   * non-billable but stays editable, unless `engagementPaymentType` marks them FOC (locked). */
+  caseType: CaseType | null;
+  /** The engagement's payment type display label — see isFocPaymentType. */
+  engagementPaymentType: string | null;
   projectId: string;
   projectName: string;
   /** True while the create mutation is in flight. */
@@ -169,6 +176,8 @@ export function LogTimeCardDialog({
   caseId,
   caseNumber,
   caseSeverity,
+  caseType,
+  engagementPaymentType,
   projectId,
   projectName,
   isSubmitting,
@@ -178,11 +187,15 @@ export function LogTimeCardDialog({
 }: LogTimeCardDialogProps) {
   const me = useUserStore((s) => s.user);
 
-  const isAlwaysNonBillable = !caseSeverity || NON_BILLABLE_SEVERITIES.includes(caseSeverity);
+  const isEngagement = caseType === "engagement";
+  const isFocEngagement = isEngagement && isFocPaymentType(engagementPaymentType);
+  const isAlwaysNonBillable = isEngagement
+    ? isFocEngagement
+    : !caseSeverity || NON_BILLABLE_SEVERITIES.includes(caseSeverity);
 
   const [date, setDate] = useState(todayIso());
   const [issueComplexity, setIssueComplexity] = useState<IssueComplexity>(DEFAULT_ISSUE_COMPLEXITY);
-  const [billable, setBillable] = useState<boolean>(isAlwaysNonBillable ? false : DEFAULT_BILLABLE);
+  const [billable, setBillable] = useState<boolean>(isAlwaysNonBillable || isEngagement ? false : DEFAULT_BILLABLE);
   const [breakdown, setBreakdown] = useState<ActivityBreakdown>(emptyBreakdown());
   const [workLogComment, setWorkLogComment] = useState("");
   const [approver, setApprover] = useState<TimeCardApprover | null>(null);
@@ -369,7 +382,9 @@ export function LogTimeCardDialog({
               />
               {isAlwaysNonBillable && (
                 <Typography variant="caption" color="text.secondary" sx={{ textAlign: "right" }}>
-                  Always non-billable{caseSeverity ? ` for ${SEVERITY_LABELS[caseSeverity]} cases` : ""}.
+                  {isFocEngagement
+                    ? "Always non-billable for FOC engagements."
+                    : `Always non-billable${caseSeverity ? ` for ${SEVERITY_LABELS[caseSeverity]} cases` : ""}.`}
                 </Typography>
               )}
             </Stack>

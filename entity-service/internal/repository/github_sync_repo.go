@@ -34,6 +34,11 @@ import (
 type RepoMapping struct {
 	AccountID   string
 	AccountName string
+	// Category and AnnouncementType are the repository file's case.category
+	// and case.announcement_type, which ServiceNow's GitHub case API takes on
+	// create. Empty for a repository mapped only in account_github_repo.
+	Category         string
+	AnnouncementType string
 	// CredentialRef names this account's token in the platform secret store.
 	// A reference, never the secret itself.
 	CredentialRef string

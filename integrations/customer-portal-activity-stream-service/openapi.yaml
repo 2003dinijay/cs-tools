@@ -3,10 +3,10 @@ info:
   title: Customer Portal Case Activity Stream
   description: >
     Server-Sent Events endpoint and health check for
-    customer-portal-activity-stream-service. The stream runs on its own
-    dedicated :9092 listener (see cmd/server/main.go) behind the same JWT
-    auth as every other endpoint; /health runs on a separate :8080
-    listener and requires no auth.
+    customer-portal-activity-stream-service. Both are served by the single
+    dedicated :9092 listener (see cmd/server/main.go). The stream sits
+    behind the same JWT auth as every other endpoint; /health requires no
+    auth.
   version: 1.0.0
 security:
   - jwtAssertion: []
@@ -26,7 +26,8 @@ paths:
         Opens a long-lived Server-Sent Events connection. Emits a
         `case_updated` event (data: a compact JSON object, at minimum
         `{caseId, type, timestamp}` — never comment text or field values)
-        whenever the case gets a new comment or its status changes; a
+        whenever the case gets a new customer-visible comment or its status
+        changes; a
         comment-only `: ping` heartbeat every 15s otherwise. Returns 503
         when Event Hub isn't configured on the service, since there would
         be nothing to broadcast.
@@ -82,12 +83,12 @@ paths:
   /health:
     servers:
       - url: "{server}:{port}/"
-        description: Health check listener
+        description: Health check (same listener as the stream)
         variables:
           server:
             default: http://localhost
           port:
-            default: "8080"
+            default: "9092"
     get:
       security: []
       summary: Health check.

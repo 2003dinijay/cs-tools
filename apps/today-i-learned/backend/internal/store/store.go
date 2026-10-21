@@ -43,7 +43,24 @@ type Config struct {
 	User     string
 	Password string
 	Name     string
+	TLS      TLSMode
 }
+
+// TLSMode is how the connection to the database is secured, for a server
+// that requires secure transport.
+type TLSMode int
+
+const (
+	// TLSOff connects in plain text.
+	TLSOff TLSMode = iota
+	// TLSVerify encrypts the connection and checks the server's
+	// certificate: it must come from a CA the system trusts and name Host.
+	TLSVerify
+	// TLSSkipVerify encrypts the connection without checking the server's
+	// certificate, for a server whose certificate the system can't verify.
+	// It doesn't guard against an impostor posing as the server.
+	TLSSkipVerify
+)
 
 // Store reads and writes entries.
 type Store struct {
@@ -64,12 +81,19 @@ type Query struct {
 	// source detail. Every term has to match; a term matches the start of a
 	// word.
 	Search string
-	// From and To are UTC dates, both inclusive. Nil means no bound.
-	From, To *time.Time
+	// From and Before bound the creation time: From inclusive, Before
+	// exclusive. Nil means no bound. The webapp sends the start of the
+	// reader's own first and last-plus-one days, so a day means their day.
+	From, Before *time.Time
 	// AuthorEmail, when set, keeps only that person's entries.
 	AuthorEmail string
-	Limit       int
-	Offset      int
+	// Author matches the author's name alone: every term has to match the
+	// start of a word in it, so "ale sam" finds "Alex Sample".
+	Author string
+	// Source, when set, keeps only entries from that source.
+	Source string
+	Limit  int
+	Offset int
 }
 
 // Page is one page of entries and how many entries match in total.
@@ -86,6 +110,12 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 	mc.Net = "tcp"
 	mc.Addr = net.JoinHostPort(cfg.Host, cfg.Port)
 	mc.DBName = cfg.Name
+	switch cfg.TLS {
+	case TLSVerify:
+		mc.TLSConfig = "true"
+	case TLSSkipVerify:
+		mc.TLSConfig = "skip-verify"
+	}
 	return openConfig(ctx, mc)
 }
 
@@ -118,23 +148,28 @@ func openConfig(ctx context.Context, mc *mysql.Config) (*Store, error) {
 // Close releases the connection pool.
 func (s *Store) Close() error { return s.db.Close() }
 
-// CheckSchema fails when til_entry doesn't exist, naming the script to
-// run. The service never creates tables itself.
+// CheckSchema fails when til_entry doesn't exist, naming the script to run,
+// or predates a column this version reads, naming the change to make. The
+// service never creates or changes tables itself.
 func (s *Store) CheckSchema(ctx context.Context) error {
-	var n int
+	var tables, notifiedAt int
 	err := s.db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'til_entry'",
-	).Scan(&n)
+		"SELECT (SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'til_entry'), "+
+			"(SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'til_entry' AND column_name = 'notified_at')",
+	).Scan(&tables, &notifiedAt)
 	if err != nil {
 		return fmt.Errorf("store: check schema: %w", err)
 	}
-	if n == 0 {
+	if tables == 0 {
 		return errors.New("store: table til_entry does not exist; run sql/create_til_tables.sql against this database first")
+	}
+	if notifiedAt == 0 {
+		return errors.New("store: table til_entry has no notified_at column; add it with: ALTER TABLE til_entry ADD COLUMN notified_at DATETIME(6) NULL AFTER updated_on")
 	}
 	return nil
 }
 
-const columns = "id, title, author_name, author_email, source, source_detail, content_html, created_on, updated_on"
+const columns = "id, title, author_name, author_email, source, source_detail, content_html, created_on, updated_on, notified_at"
 
 // Create stores a new entry and returns it.
 func (s *Store) Create(ctx context.Context, author Author, c entry.Content) (entry.Entry, error) {
@@ -210,6 +245,32 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
+// ClaimNotification marks an entry as announced now, before the announcement
+// is sent, so two senders can't both announce it. It returns the time it set,
+// and claimed false when the entry was already announced (or is gone).
+func (s *Store) ClaimNotification(ctx context.Context, id string) (at time.Time, claimed bool, err error) {
+	at = s.timestamp()
+	res, err := s.db.ExecContext(ctx, "UPDATE til_entry SET notified_at = ? WHERE id = ? AND notified_at IS NULL", at, id)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("store: claim notification: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("store: claim notification: %w", err)
+	}
+	return at, n == 1, nil
+}
+
+// ReleaseNotification undoes the claim made at at, after its announcement
+// failed, so the entry counts as not announced again. A later claim is left
+// alone.
+func (s *Store) ReleaseNotification(ctx context.Context, id string, at time.Time) error {
+	if _, err := s.db.ExecContext(ctx, "UPDATE til_entry SET notified_at = NULL WHERE id = ? AND notified_at = ?", id, at); err != nil {
+		return fmt.Errorf("store: release notification: %w", err)
+	}
+	return nil
+}
+
 // List returns a page of the entries q selects, newest first.
 func (s *Store) List(ctx context.Context, q Query) (Page, error) {
 	where, args := filters(q)
@@ -252,13 +313,21 @@ func filters(q Query) (string, []any) {
 		conds = append(conds, "author_email = ?")
 		args = append(args, q.AuthorEmail)
 	}
+	if q.Source != "" {
+		conds = append(conds, "source = ?")
+		args = append(args, q.Source)
+	}
+	if c, a := authorConditions(q.Author); len(c) > 0 {
+		conds = append(conds, c...)
+		args = append(args, a...)
+	}
 	if q.From != nil {
 		conds = append(conds, "created_on >= ?")
 		args = append(args, q.From.UTC())
 	}
-	if q.To != nil {
+	if q.Before != nil {
 		conds = append(conds, "created_on < ?")
-		args = append(args, q.To.UTC().AddDate(0, 0, 1))
+		args = append(args, q.Before.UTC())
 	}
 	if c, a := searchConditions(q.Search); len(c) > 0 {
 		conds = append(conds, c...)
@@ -277,8 +346,8 @@ type scanner interface {
 func scanEntry(row scanner) (entry.Entry, error) {
 	var e entry.Entry
 	var detail sql.NullString
-	var updated sql.NullTime
-	if err := row.Scan(&e.ID, &e.Title, &e.Who, &e.SubmittedByEmail, &e.Where, &detail, &e.What, &e.CreatedAt, &updated); err != nil {
+	var updated, notified sql.NullTime
+	if err := row.Scan(&e.ID, &e.Title, &e.Who, &e.SubmittedByEmail, &e.Where, &detail, &e.What, &e.CreatedAt, &updated, &notified); err != nil {
 		return entry.Entry{}, err
 	}
 	if detail.Valid {
@@ -287,6 +356,10 @@ func scanEntry(row scanner) (entry.Entry, error) {
 	if updated.Valid {
 		t := updated.Time.UTC()
 		e.UpdatedAt = &t
+	}
+	if notified.Valid {
+		t := notified.Time.UTC()
+		e.NotifiedAt = &t
 	}
 	e.CreatedAt = e.CreatedAt.UTC()
 	return e, nil

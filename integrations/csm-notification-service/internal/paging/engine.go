@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"regexp"
 	"slices"
 	"strings"
@@ -74,6 +75,11 @@ type ladderStore interface {
 // this, and never loses it -- the wake entry is still there.
 const callClaimTTL = time.Minute
 
+// cardRetryWindow bounds how long a rung's chat card that keeps failing
+// transiently is retried after the rung was due. Past it the card is given up
+// on and logged, so a room that stays down never holds a ladder open.
+const cardRetryWindow = 15 * time.Minute
+
 // incidentNotes abstracts the entity-service client that writes the execution
 // summary back onto the incident (section 11.0).
 type incidentNotes interface {
@@ -113,6 +119,8 @@ type EngineConfig struct {
 	// SME is the Special Ops page, placed by the SRE engine alone. The zero
 	// value is off.
 	SME SMEConfig
+	// IncidentChatFanout is INCIDENT_CHAT_FANOUT, so an incident's paging replies in every space its card went to.
+	IncidentChatFanout map[string][]string
 }
 
 // Engine runs the incident call-escalation ladder.
@@ -128,6 +136,8 @@ type Engine struct {
 	// notifiers is how a rung reaches people, one per selected channel. The
 	// ladder's rules know nothing about which are in play.
 	notifiers []notifier
+	// incidentChat is the shared Chat client, which holds the INCIDENT_CHAT_SPACES spaces incident cards are posted to.
+	incidentChat chatSender
 	// missingChannels names every channel cfg.Channel selected that has no
 	// client to serve it. Recorded rather than rejected: a deployment asking
 	// for both channels with only one client configured should still page
@@ -141,9 +151,8 @@ type Engine struct {
 	smeNotifiers []notifier
 	// smeTeamNotifiers is set only when sme.teamChats is: each listed SME
 	// team's notifiers, posting to its own Chat space. A team not listed
-	// gets smeNoChatNotifiers, the SME channel without chat.
-	smeTeamNotifiers   map[string][]notifier
-	smeNoChatNotifiers []notifier
+	// gets smeNotifiers, the shared SME space.
+	smeTeamNotifiers map[string][]notifier
 	// teamNotifiers is set only when the SRE ladder's teamChats is: each
 	// listed team's notifiers, posting its rung cards to its own space.
 	teamNotifiers map[string][]notifier
@@ -153,14 +162,19 @@ type Engine struct {
 	teamRooms  map[string]chatRoom
 	sharedRoom *chatRoom
 	// smeRooms and smeSharedRoom are where an SME ladder's closing message
-	// goes (sme.unansweredChat): the SME team's own space, else sme.chat
-	// when sme.teamChats is unset.
+	// goes (sme.unansweredChat): the SME team's own space, else sme.chat.
 	smeRooms      map[string]chatRoom
 	smeSharedRoom *chatRoom
 	links         PortalLinks
 	store         ladderStore
 	notes         incidentNotes
 	cfg           EngineConfig
+	// outcomes logs how each placed call ended (ALERTING_CALL_OUTCOME_CHECK);
+	// nil, the default, leaves it off. See call_outcome.go.
+	outcomes *CallOutcomeWatcher
+	// emails sends the rung email (rung_email.go); nil leaves cre.email off.
+	emails       emailSender
+	emailSending RungEmailSending
 	// clock is time.Now unless a test substitutes one; the staleness check
 	// in start is the only thing that reads it, and it has to be testable
 	// against a trigger that is genuinely old.
@@ -210,6 +224,10 @@ func NewEngine(policies map[string]PriorityPolicy, resolver Resolver, calls *not
 			"missingChannel", string(ch), "configuredChannel", string(cfg.Channel))
 	}
 	e.links = links
+	// Assigned only when set: a nil *GoogleChatClient in the interface field would not compare equal to nil.
+	if chat != nil {
+		e.incidentChat = chat
+	}
 	if cfg.Kind == LadderSRE {
 		e.buildTeamChats(cfg, calls, chat, links, defaultChatProduct)
 	}
@@ -225,9 +243,16 @@ func NewEngine(policies map[string]PriorityPolicy, resolver Resolver, calls *not
 			for team, c := range cfg.SME.TeamChats {
 				e.smeTeamNotifiers[teamKeyFor(team)], _ = buildNotifiers(cfg.SME.Channel, c, cfg.UseSSML, calls, chat, links, defaultChatProduct)
 			}
-			e.smeNoChatNotifiers = withoutChat(e.smeNotifiers)
 		}
 	}
+	return e
+}
+
+// WithCallOutcomeWatcher has every call this engine places logged once more,
+// when Twilio says how it ended. Nil leaves it off; nothing about the ladder
+// changes either way.
+func (e *Engine) WithCallOutcomeWatcher(w *CallOutcomeWatcher) *Engine {
+	e.outcomes = w
 	return e
 }
 
@@ -235,6 +260,8 @@ func NewEngine(policies map[string]PriorityPolicy, resolver Resolver, calls *not
 type chatRoom struct {
 	chat chatSender
 	room string
+	// reply is an INCIDENT_CHAT_SPACES space, where messages are short replies under the incident card.
+	reply bool
 }
 
 // buildTeamChats wires the SRE ladder's per-team spaces (teamChats) and the
@@ -259,10 +286,9 @@ func (e *Engine) buildTeamChats(cfg EngineConfig, calls *notifications.TwilioCli
 				e.smeRooms[teamKeyFor(team)] = chatRoom{chat: client, room: room}
 			}
 		}
-		if len(cfg.SME.TeamChats) == 0 {
-			if client, room := ladderChat(cfg.SME.Chat, chat, defaultChatProduct, os.Getenv); client != nil {
-				e.smeSharedRoom = &chatRoom{chat: client, room: room}
-			}
+		// A team with no space of its own closes in the shared one.
+		if client, room := ladderChat(cfg.SME.Chat, chat, defaultChatProduct, os.Getenv); client != nil {
+			e.smeSharedRoom = &chatRoom{chat: client, room: room}
 		}
 	}
 	if !cfg.Ladder.UnansweredChat && !cfg.Ladder.SMEHandoffChat {
@@ -341,6 +367,18 @@ func (e *Engine) sreTeamKey(team string) string {
 // notifier, so a rung rings its engineer once, and one fanoutChat, so a space
 // that fails does not repost the others.
 func (e *Engine) notifiersFor(plan Plan) []notifier {
+	// INCIDENT_CHAT_SPACES alone turns the replies on, whatever channel says; only a log (dry run) ladder posts nothing.
+	if rooms := e.incidentRooms(plan.Trigger); len(rooms) > 0 && e.cfg.Channel != ChannelLog {
+		out := withoutChat(e.notifiers)
+		var fan fanoutChat
+		for _, r := range rooms {
+			fan.chats = append(fan.chats, chatNotifier{chat: r.chat, links: e.links, audience: r.room, reply: r.reply})
+		}
+		if len(fan.chats) == 1 {
+			return append(out, fan.chats[0])
+		}
+		return append(out, fan)
+	}
 	teams := e.chatTeams(plan)
 	switch {
 	case len(teams) == 0 || e.teamNotifiers == nil:
@@ -447,11 +485,7 @@ func (e *Engine) postUnanswered(ctx context.Context, st LadderState) {
 	for i, done := range st.Placed {
 		if done && i < len(st.Plan.Calls) && st.Plan.Calls[i].Recipient.Name != "" {
 			c := st.Plan.Calls[i]
-			label := c.Level.String()
-			if tier, ok := sreTier[c.Level]; ok {
-				label = tier
-			}
-			called = append(called, label+" "+c.Recipient.Name)
+			called = append(called, c.Level.Label()+" "+c.Recipient.Name)
 		}
 	}
 	portal, label := e.links.IncidentLink(t.IncidentID), "View incident"
@@ -474,7 +508,8 @@ func (e *Engine) postUnanswered(ctx context.Context, st LadderState) {
 			Instruction: t.instruction(false),
 			PortalURL:   portal,
 			PortalLabel: label,
-			ThreadKey:   "incident-escalation-" + t.IncidentID,
+			ThreadKey:   t.chatThreadKey(),
+			Reply:       target.reply || e.sreReplies(t),
 		})
 		if err != nil {
 			slog.ErrorContext(ctx, "escalation: the closing message was not posted", "incidentId", t.IncidentID, "audience", target.room, "err", err)
@@ -501,6 +536,13 @@ func (e *Engine) unansweredRooms(plan Plan) ([]chatRoom, string) {
 		}
 		return nil, ""
 	}
+	// An incident space gets the closing reply without sre.unansweredChat, unless the ladder is a log (dry run) one.
+	if rooms := e.incidentRooms(t); len(rooms) > 0 {
+		if e.channelFor(t) == ChannelLog {
+			return nil, ""
+		}
+		return rooms, t.Routing.SREChain()
+	}
 	if !e.cfg.Ladder.UnansweredChat {
 		return nil, ""
 	}
@@ -517,6 +559,27 @@ func (e *Engine) unansweredRooms(plan Plan) ([]chatRoom, string) {
 		return []chatRoom{*e.sharedRoom}, t.Routing.SREChain()
 	}
 	return nil, ""
+}
+
+// sreReplies reports whether an SRE incident's own space gets its messages as replies: only when its rungs post there, so the "Incident Reported" card exists.
+func (e *Engine) sreReplies(t Trigger) bool {
+	return t.sreIncident() && e.channelFor(t).Uses(ChannelChat)
+}
+
+// incidentRooms is the INCIDENT_CHAT_SPACES spaces an incident's card went to; a case or a group without one keeps the ladder's space.
+func (e *Engine) incidentRooms(t Trigger) []chatRoom {
+	if t.isCase() || e.incidentChat == nil {
+		return nil
+	}
+	var rooms []chatRoom
+	for _, group := range notifications.IncidentGroups(e.cfg.IncidentChatFanout, t.Team) {
+		audience := notifications.IncidentAudience(group)
+		if !e.incidentChat.HasAudienceSpace(audience) || slices.ContainsFunc(rooms, func(r chatRoom) bool { return r.room == audience }) {
+			continue
+		}
+		rooms = append(rooms, chatRoom{chat: e.incidentChat, room: audience, reply: true})
+	}
+	return rooms
 }
 
 // sreRoomFor is the SRE space for a team: its own (sre.teamChats), else the
@@ -553,26 +616,24 @@ func smeTeamLabel(key string) string {
 }
 
 // smeNotifiersFor is how the SME page reaches one SME team: its own Chat
-// space when sme.teamChats lists it, no chat card when sme.teamChats is set
-// but does not list it, and the shared SME space when sme.teamChats is unset.
+// space when sme.teamChats (or a room saved on the Alert Settings tab) has
+// one, else the shared SME space -- never no card at all.
 func (e *Engine) smeNotifiersFor(team string) []notifier {
-	if e.smeTeamNotifiers == nil {
-		return e.smeNotifiers
-	}
 	if n, ok := e.smeTeamNotifiers[teamKeyFor(team)]; ok {
 		return n
 	}
-	return e.smeNoChatNotifiers
+	return e.smeNotifiers
 }
 
-// smeTeamHasNoChat reports whether a team's page posts no card only because
-// sme.teamChats does not list it.
-func (e *Engine) smeTeamHasNoChat(team string) bool {
-	if e.smeTeamNotifiers == nil || !e.cfg.SME.Channel.Uses(ChannelChat) {
-		return false
+// onlyChat is notifiers with only the chat ones kept.
+func onlyChat(notifiers []notifier) []notifier {
+	out := []notifier{}
+	for _, n := range notifiers {
+		if n.Channel() == ChannelChat {
+			out = append(out, n)
+		}
 	}
-	_, ok := e.smeTeamNotifiers[teamKeyFor(team)]
-	return !ok
+	return out
 }
 
 // withoutChat is notifiers with the chat ones left out.
@@ -695,7 +756,7 @@ func (e *Engine) Handle(ctx context.Context, record eventbus.Record) error {
 			// must not silence their own pager.
 			return nil
 		}
-		return e.cancelBy(ctx, env.EntityID, cancelPublicComment)
+		return e.cancelBy(ctx, env.EntityID, cancelPublicComment, "")
 	case events.TypeIncidentAssigned:
 		if e.cfg.Kind != LadderSRE {
 			// Assignment is the SRE ladder's acknowledgement, not the CRE
@@ -707,13 +768,13 @@ func (e *Engine) Handle(ctx context.Context, record eventbus.Record) error {
 		if err := json.Unmarshal(env.Payload, &p); err != nil {
 			return fmt.Errorf("escalation: decode incident.assigned payload: %w", err)
 		}
-		err := e.cancelBy(ctx, env.EntityID, cancelAssigned)
+		err := e.cancelBy(ctx, env.EntityID, cancelAssigned, p.AssigneeName)
 		// An engineer taking the incident also answers any Special Ops page
 		// raised before the assignment -- open now or still on its way -- so
 		// only a later press pages again.
 		return errors.Join(err, e.closeSMEPages(ctx, env.EntityID, reportedAt(p.AssignedOn)))
 	default:
-		return e.cancelBy(ctx, env.EntityID, cancelStateChange)
+		return e.cancelBy(ctx, env.EntityID, cancelStateChange, "")
 	}
 }
 
@@ -815,7 +876,15 @@ func (e *Engine) schedule(ctx context.Context, t Trigger, replace bool) error {
 			"level0Included", t.Routing.HasNotificationLevel())
 	}
 
-	plan, err := BuildPlan(ctx, t, e.policies, e.resolver, e.cfg.Channel)
+	resolver := e.resolver
+	var recorded *recordingResolver
+	if e.rungEmailsOn(t) {
+		// The rung emails reach the people the calls' rungs resolve to, so
+		// keep them as BuildPlan asks rather than asking twice.
+		recorded = &recordingResolver{Resolver: e.resolver, got: map[Level][]Recipient{}}
+		resolver = recorded
+	}
+	plan, err := BuildPlan(ctx, t, e.policies, resolver, e.channelFor(t))
 	if err != nil {
 		return fmt.Errorf("escalation: build plan for %s: %w", t.IncidentID, err)
 	}
@@ -825,6 +894,10 @@ func (e *Engine) schedule(ctx context.Context, t Trigger, replace bool) error {
 	// reach. Adopt the stamped copy so every line below names the row the
 	// recipients actually came from.
 	t = plan.Trigger
+	if recorded != nil {
+		// Before applySafety: holding the calls must not hold the emails.
+		e.planEmails(ctx, &plan, recorded.got)
+	}
 	e.applySafety(ctx, &plan)
 	for _, issue := range plan.Issues {
 		// Logged without the recipient's email — plan issues carry one in
@@ -835,12 +908,14 @@ func (e *Engine) schedule(ctx context.Context, t Trigger, replace bool) error {
 			"incidentId", t.IncidentID, "rule", t.Routing.Rule(),
 			"level", issue.Level.String(), "reason", issue.Reason)
 	}
-	if len(plan.Calls) == 0 && plan.CallsHeld {
+	// A plan with rung emails still has something to deliver when it has no
+	// calls; only a plan with neither ends here.
+	if len(plan.Calls) == 0 && len(plan.Emails) == 0 && plan.CallsHeld {
 		// Setup, not an incident outcome: the lead pool has no numbers yet,
 		// and a call-only ladder has nothing else to deliver. No work note.
 		return nil
 	}
-	if len(plan.Calls) == 0 {
+	if len(plan.Calls) == 0 && len(plan.Emails) == 0 {
 		slog.WarnContext(ctx, "escalation: plan has no reachable recipients; nothing scheduled",
 			"incidentId", t.IncidentID, "priority", t.Priority, "rule", t.Routing.Rule(),
 			"shift", string(t.Routing.Shift), "product", t.Routing.Product, "team", t.Routing.AssignedCRETeam)
@@ -859,14 +934,17 @@ func (e *Engine) schedule(ctx context.Context, t Trigger, replace bool) error {
 	// catches up correctly (the due calls go out on the next tick, at the
 	// rung the ladder should be on by now); it is the ladder that has run
 	// its whole course before we heard about it that must be dropped.
-	if last := plan.Calls[len(plan.Calls)-1]; last.At.Before(e.now()) {
+	if last := plan.lastScheduled(); last.Before(e.now()) {
 		slog.WarnContext(ctx, "escalation: trigger is older than its whole ladder; not scheduling",
 			"incidentId", t.IncidentID, "priority", t.Priority, "trigger", string(t.Kind),
-			"triggeredAt", t.At.Format(time.RFC3339), "lastCallAt", last.At.Format(time.RFC3339))
+			"triggeredAt", t.At.Format(time.RFC3339), "lastCallAt", last.Format(time.RFC3339))
 		return nil
 	}
 
 	st := LadderState{Plan: plan, Placed: make([]bool, len(plan.Calls))}
+	if len(plan.Emails) > 0 {
+		st.EmailSent = make([]bool, len(plan.Emails))
+	}
 	if replace {
 		// A replay of the elevation this ladder was built from -- a redelivery, or
 		// the same record dead-lettered by the other ladder's engine and read back
@@ -912,6 +990,12 @@ func (e *Engine) schedule(ctx context.Context, t Trigger, replace bool) error {
 		if err := e.store.Save(ctx, t.IncidentID, st); err != nil {
 			return fmt.Errorf("escalation: replace ladder for %s: %w", t.IncidentID, err)
 		}
+		// Posted only once the new chain is saved: a replay of this change
+		// finds it running at this severity and returns above, so the room is
+		// told once.
+		if hadOne && previous.Cancelled == nil {
+			e.postStopped(ctx, previous, "", &t)
+		}
 	} else {
 		if err := e.seedCaseAssignment(ctx, &st); err != nil {
 			return err
@@ -933,12 +1017,12 @@ func (e *Engine) schedule(ctx context.Context, t Trigger, replace bool) error {
 	if err != nil {
 		return err
 	}
-	if seeded != len(plan.Calls) {
+	if seeded != len(plan.Calls)+len(plan.Emails) {
 		// A ladder written moments ago has nothing placed and nothing failed,
 		// so this cannot happen. If it ever does, the ladder is short of calls
 		// and somebody needs to know which incident.
 		slog.WarnContext(ctx, "escalation: ladder scheduled with fewer wakes than calls",
-			"incidentId", t.IncidentID, "seeded", seeded, "calls", len(plan.Calls))
+			"incidentId", t.IncidentID, "seeded", seeded, "calls", len(plan.Calls), "emails", len(plan.Emails))
 	}
 	// One line that answers "which ladder, and by which path" without anyone
 	// re-deriving section 5.0's table from four fields by hand. levels is the
@@ -951,8 +1035,8 @@ func (e *Engine) schedule(ctx context.Context, t Trigger, replace bool) error {
 		"product", t.Routing.Product, "team", t.Routing.AssignedCRETeam,
 		"abtEligible", t.Routing.ABTEligibility(),
 		"ladder", ladderName(t.Routing.Ladder),
-		"levels", plan.LevelsClimbed(), "calls", len(plan.Calls),
-		"lastCallAt", plan.Calls[len(plan.Calls)-1].At.Format(time.RFC3339))
+		"levels", plan.LevelsClimbed(), "calls", len(plan.Calls), "emails", len(plan.Emails),
+		"lastCallAt", plan.lastScheduled().Format(time.RFC3339))
 	return nil
 }
 
@@ -1068,6 +1152,15 @@ func sameElevation(running, t Trigger) bool {
 		running.At.Equal(t.At) && NormalisePriority(running.Priority) == NormalisePriority(t.Priority)
 }
 
+// sameChain reports whether two triggers started the same ladder. A
+// replacement chain always carries a different trigger: a severity change is
+// stamped with the time it was read, and a replayed elevation is ignored
+// rather than applied (see sameElevation).
+func sameChain(a, b Trigger) bool {
+	return a.Kind == b.Kind && a.At.Equal(b.At) &&
+		NormalisePriority(a.Priority) == NormalisePriority(b.Priority)
+}
+
 func ladderName(l Ladder) string {
 	if l == LadderSRE {
 		return "SRE"
@@ -1079,17 +1172,27 @@ func ladderName(l Ladder) string {
 // made, and reports how many it wrote.
 //
 // The predicate is pendingMembers': not yet placed, and not permanently
-// failed. ZADD with an unchanged score is idempotent, so a member that is
-// already there costs nothing -- which is what makes this safe to run over a
-// ladder that is only partly seeded, without first asking which wakes exist.
+// failed, or still owed its card. ZADD with an unchanged score is
+// idempotent, so a member that is already there costs nothing -- which is
+// what makes this safe to run over a ladder that is only partly seeded,
+// without first asking which wakes exist.
 func (e *Engine) seedPendingWakes(ctx context.Context, incidentID string, st LadderState) (int, error) {
 	seeded := 0
-	for i, placed := range st.Placed {
-		if placed || st.failure(i) != "" || i >= len(st.Plan.Calls) {
+	for i := range st.Placed {
+		if !st.owed(i) || i >= len(st.Plan.Calls) {
 			continue
 		}
 		if err := e.store.AddWake(ctx, wakeMember(incidentID, i), st.Plan.Calls[i].At); err != nil {
 			return seeded, fmt.Errorf("escalation: schedule call %d for %s: %w", i, incidentID, err)
+		}
+		seeded++
+	}
+	for i, email := range st.Plan.Emails {
+		if st.emailDone(i) {
+			continue
+		}
+		if err := e.store.AddWake(ctx, emailWakeMember(incidentID, i), email.At); err != nil {
+			return seeded, fmt.Errorf("escalation: schedule email %d for %s: %w", i, incidentID, err)
 		}
 		seeded++
 	}
@@ -1167,7 +1270,7 @@ func (e *Engine) retireRunning(ctx context.Context, incidentID string) (LadderSt
 // written, then the state is deleted. A failed work note therefore retries
 // with the state still present (and Cancelled already set, so the drop is not
 // repeated), rather than losing the summary.
-func (e *Engine) cancelBy(ctx context.Context, incidentID string, reason cancelReason) error {
+func (e *Engine) cancelBy(ctx context.Context, incidentID string, reason cancelReason, assignee string) error {
 	st, found, err := e.store.Get(ctx, incidentID)
 	if err != nil {
 		return fmt.Errorf("escalation: load ladder for %s: %w", incidentID, err)
@@ -1176,6 +1279,9 @@ func (e *Engine) cancelBy(ctx context.Context, incidentID string, reason cancelR
 		// The common case: an incident acknowledged without a ladder ever
 		// having run, or one already finished.
 		return nil
+	}
+	if st.Cancelled == nil && assignee != "" {
+		st.AssigneeName = assignee
 	}
 
 	// Acknowledgement is BOTH gestures, not either: the incident moved out of
@@ -1237,6 +1343,9 @@ func (e *Engine) stopLadder(ctx context.Context, incidentID string, st LadderSta
 			"rule", st.Plan.Trigger.Routing.Rule(), "priority", st.Plan.Trigger.Priority,
 			"reachedLevel", st.ReachedLevel(), "placedCalls", st.PlacedCount(),
 			"cancelledCalls", len(pending))
+		// Inside the first stop only: a retried stop (the note or the delete
+		// failed) finds Cancelled set and does not post again.
+		e.postStopped(ctx, st, reason, nil)
 	}
 
 	e.writeNote(ctx, st.Plan, st.Placed, st.Failed, st.Cancelled, st.CancelReason)
@@ -1274,6 +1383,9 @@ func (e *Engine) processDue(ctx context.Context, member string) error {
 		slog.ErrorContext(ctx, "escalation: malformed wake member, dropping", "member", member)
 		return e.store.RemoveWakes(ctx, member)
 	}
+	if ladderKey, isEmail := strings.CutSuffix(incidentID, emailWakeTag); isEmail {
+		return e.processDueEmail(ctx, ladderKey, index, member)
+	}
 
 	st, found, err := e.store.Get(ctx, incidentID)
 	if err != nil {
@@ -1284,9 +1396,11 @@ func (e *Engine) processDue(ctx context.Context, member string) error {
 		// leftover. Dropping it is the correct outcome.
 		return e.store.RemoveWakes(ctx, member)
 	}
-	if st.Cancelled != nil || st.Placed[index] || st.failure(index) != "" {
+	if st.Cancelled != nil || !st.owed(index) {
 		return e.store.RemoveWakes(ctx, member)
 	}
+	// The call has its outcome and only its card is owed: post that alone.
+	cardOnly := st.cardPending(index)
 
 	// Two replicas tick independently (a rolling restart always has two for
 	// a moment), and both see the same due call. Only the one that claims it
@@ -1306,15 +1420,25 @@ func (e *Engine) processDue(ctx context.Context, member string) error {
 
 	call := st.Plan.Calls[index]
 	var failure string
-	if err := e.place(ctx, st.Plan, call); err != nil {
+	err, cardErr := e.place(ctx, st.Plan, call, cardOnly)
+	if cardOnly {
+		// No call went out this time; what came back is the card's.
+		err, cardErr = nil, err
+	}
+	posted := postedIncidentCards(errors.Join(err, cardErr))
+	if err != nil {
 		if !isPermanent(err) {
+			// The incident card already went out: record it, so the retry posts only the reply.
+			if len(posted) > 0 {
+				e.recordIncidentCards(ctx, incidentID, st.Plan.Trigger, posted)
+			}
 			// Transient — leave the wake entry and give the claim back, so the
 			// next tick retries.
 			if rerr := e.store.ReleaseCall(ctx, claim); rerr != nil {
 				slog.WarnContext(ctx, "escalation: could not release a failed call's claim; it retries when the claim expires",
 					"incidentId", incidentID, "err", rerr)
 			}
-			return fmt.Errorf("escalation: place %s call for %s: %w", call.Level, incidentID, err)
+			return fmt.Errorf("escalation: place %s call for %s: %w", call.Level, incidentID, errors.Join(err, cardErr))
 		}
 		// The provider rejected the request itself; trying again with the
 		// same number and the same document cannot succeed. Record why, so
@@ -1325,6 +1449,26 @@ func (e *Engine) processDue(ctx context.Context, member string) error {
 			"level", call.Level.String(), "attempt", call.Ordinal,
 			"to", maskPhone(call.Recipient.Phone), "reason", permanentReason(err))
 		failure = permanentReason(err)
+	}
+	// The card of a rung that also rang (see placeVia). The call's outcome is
+	// what gets recorded; a rejected card is logged and dropped, and one that
+	// failed transiently is owed, and retried on its own -- until
+	// cardRetryWindow after the rung was due. A room that stays down must not
+	// hold the ladder open, and a card that late is no longer news.
+	retryCard := false
+	if cardErr != nil {
+		switch {
+		case isPermanent(cardErr):
+			slog.WarnContext(ctx, "escalation: the rung's card was rejected; not retrying it",
+				"incidentId", incidentID, "level", call.Level.String(), "attempt", call.Ordinal,
+				"reason", permanentReason(cardErr))
+		case e.now().After(call.At.Add(cardRetryWindow)):
+			slog.WarnContext(ctx, "escalation: the rung's card still failed after the retry window; giving up on it",
+				"incidentId", incidentID, "level", call.Level.String(), "attempt", call.Ordinal,
+				"window", cardRetryWindow.String(), "err", cardErr)
+		default:
+			retryCard = true
+		}
 	}
 
 	// Re-read before writing, and carry over only what this goroutine owns.
@@ -1346,20 +1490,46 @@ func (e *Engine) processDue(ctx context.Context, member string) error {
 	if err != nil {
 		return fmt.Errorf("escalation: reload ladder for %s: %w", incidentID, err)
 	}
-	if !stillRunning || fresh.Cancelled != nil || index >= len(fresh.Placed) {
-		// Acknowledged, replaced or completed while the call was in flight.
-		// The call did go out, but there is nothing left to record it on.
+	if !stillRunning {
+		// Acknowledged or completed while the call was in flight. The call
+		// did go out, but there is nothing left to record it on.
 		return e.store.RemoveWakes(ctx, member)
 	}
-	if failure != "" {
+	if !sameChain(fresh.Plan.Trigger, st.Plan.Trigger) {
+		// Replaced while the call was in flight (a severity change, an
+		// elevation). The replacement reuses this rung's slot and wake entry,
+		// so recording this result on it would mark its call placed or owe it
+		// a card, and retiring the wake would drop its call. Leave both to the
+		// replacement; this send has already happened.
+		return nil
+	}
+	if fresh.Cancelled != nil || index >= len(fresh.Placed) {
+		// Cancelled while the call was in flight.
+		return e.store.RemoveWakes(ctx, member)
+	}
+	switch {
+	case cardOnly:
+		// The call's outcome was recorded on the tick that placed it.
+	case failure != "":
 		fresh.setFailure(index, failure)
-	} else {
+	default:
 		fresh.Placed[index] = true
 	}
+	fresh.setCardPending(index, retryCard)
+	fresh.Plan.IncidentCards = withRooms(fresh.Plan.IncidentCards, posted)
 	st = fresh
 
 	if err := e.store.Save(ctx, incidentID, st); err != nil {
 		return fmt.Errorf("escalation: record placed call for %s: %w", incidentID, err)
+	}
+	if retryCard {
+		// The card is still owed: keep the wake entry and give the claim
+		// back, so the next tick posts it -- and only it.
+		if rerr := e.store.ReleaseCall(ctx, claim); rerr != nil {
+			slog.WarnContext(ctx, "escalation: could not release a failed card's claim; it retries when the claim expires",
+				"incidentId", incidentID, "err", rerr)
+		}
+		return fmt.Errorf("escalation: post %s card for %s: %w", call.Level, incidentID, cardErr)
 	}
 	if err := e.store.RemoveWakes(ctx, member); err != nil {
 		return fmt.Errorf("escalation: clear placed call for %s: %w", incidentID, err)
@@ -1392,24 +1562,39 @@ func (e *Engine) processDue(ctx context.Context, member string) error {
 // Every channel is attempted even if an earlier one fails, and the errors are
 // joined: a chat webhook being down must not stop the phone ringing, and a
 // phone failing must not cost the room its sight of the escalation.
-func (e *Engine) place(ctx context.Context, plan Plan, call PlannedCall) error {
+//
+// cardOnly posts the rung's card and nothing else, for a rung whose call has
+// already gone out and is owed only its card (LadderState.CardPending).
+func (e *Engine) place(ctx context.Context, plan Plan, call PlannedCall, cardOnly bool) (err, cardErr error) {
+	// The incident's own SRE team may use less than the ladder (Team routing).
+	channel := e.channelFor(plan.Trigger)
+	notifiers := withChannel(e.notifiersFor(plan), e.cfg.Channel, channel)
 	if plan.Trigger.Routing.Ladder == LadderSME {
 		// An SME ladder rides the SRE engine's ticker but pages over the
 		// SME's own channel and Chat space.
-		return e.placeVia(ctx, plan, call, e.smeNotifiersFor(plan.Trigger.Routing.SMETeam), e.cfg.SME.Channel)
+		notifiers, channel = e.smeNotifiersFor(plan.Trigger.Routing.SMETeam), e.cfg.SME.Channel
 	}
-	return e.placeVia(ctx, plan, call, e.notifiersFor(plan), e.cfg.Channel)
+	if cardOnly {
+		notifiers, channel = onlyChat(notifiers), ChannelChat
+	}
+	return e.placeVia(ctx, plan, call, notifiers, channel)
 }
 
 // placeVia is place over the given notifiers; the SME page has its own.
-func (e *Engine) placeVia(ctx context.Context, plan Plan, call PlannedCall, notifiers []notifier, channel Channel) error {
+//
+// A rung that rang a phone is decided by its call alone, so the card's errors
+// come back on their own as cardErr: a webhook blinking must not re-dial the
+// engineer, and a room with no space must not mark a call that went through
+// as failed. Any other rung (chat only, log, a held call) returns every
+// error in err, as it always has.
+func (e *Engine) placeVia(ctx context.Context, plan Plan, call PlannedCall, notifiers []notifier, channel Channel) (err, cardErr error) {
 	t := plan.Trigger
 	if !e.cfg.CallSendingEnabled {
 		slog.InfoContext(ctx, "escalation: sending disabled (CALL_SENDING_ENABLED=false); not notifying",
 			"incidentId", t.IncidentID, "rule", t.Routing.Rule(), "priority", t.Priority,
 			"level", call.Level.String(), "attempt", call.Ordinal,
 			"channel", string(channel), "to", maskPhone(call.Recipient.Phone))
-		return nil
+		return nil, nil
 	}
 	if len(notifiers) == 0 {
 		// Configured for a channel whose client was never constructed. Not an
@@ -1417,7 +1602,7 @@ func (e *Engine) placeVia(ctx context.Context, plan Plan, call PlannedCall, noti
 		slog.ErrorContext(ctx, "escalation: no notifier configured for this channel; nobody was contacted",
 			"incidentId", t.IncidentID, "channel", string(channel),
 			"level", call.Level.String(), "attempt", call.Ordinal)
-		return nil
+		return nil, nil
 	}
 
 	slog.InfoContext(ctx, "escalation: notifying",
@@ -1426,22 +1611,36 @@ func (e *Engine) placeVia(ctx context.Context, plan Plan, call PlannedCall, noti
 		"channel", string(channel), "to", maskPhone(call.Recipient.Phone),
 		"message", messageKind(e.cfg.UseSSML))
 
-	var errs []error
+	var errs, cardErrs []error
+	rang := false
 	for _, n := range notifiers {
 		if call.HoldCall && n.Channel() == ChannelCall {
 			continue
 		}
+		rang = rang || n.Channel() == ChannelCall
 		delivered, err := n.Deliver(ctx, plan, call)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", n.Channel(), err))
+			err = fmt.Errorf("%s: %w", n.Channel(), err)
+			if n.Channel() == ChannelChat {
+				cardErrs = append(cardErrs, err)
+			} else {
+				errs = append(errs, err)
+			}
 			continue
 		}
 		slog.InfoContext(ctx, "escalation: ALERT TRIGGERED",
 			"incidentId", t.IncidentID, "rule", t.Routing.Rule(), "priority", t.Priority,
 			"level", call.Level.String(), "attempt", call.Ordinal,
-			"recipient", call.Recipient.Name, "to", maskPhone(call.Recipient.Phone),
+			"recipientId", call.Recipient.LogID(), "to", maskPhone(call.Recipient.Phone),
 			"channel", string(delivered.Channel), "ref", delivered.Ref,
 			"status", delivered.Status)
+		if delivered.Channel == ChannelCall && delivered.Ref != "" {
+			e.outcomes.watch(watchedCall{
+				incidentID: t.IncidentID, rule: t.Routing.Rule(), priority: t.Priority,
+				level: call.Level.String(), attempt: call.Ordinal,
+				recipientID: call.Recipient.LogID(), callSID: delivered.Ref,
+			})
+		}
 	}
 
 	// Record the call for the evening pairing's fairness rule, whatever the
@@ -1456,7 +1655,10 @@ func (e *Engine) placeVia(ctx context.Context, plan Plan, call PlannedCall, noti
 				"incidentId", t.IncidentID, "err", err)
 		}
 	}
-	return errors.Join(errs...)
+	if rang {
+		return errors.Join(errs...), errors.Join(cardErrs...)
+	}
+	return errors.Join(append(errs, cardErrs...)...), nil
 }
 
 // messageKind names which voice document a call carried, so a log line says
@@ -1519,20 +1721,51 @@ func (e *Engine) RunTicker(ctx context.Context, interval time.Duration) {
 	}
 }
 
-// pendingMembers lists the wake members for calls that have not been placed.
+// pendingMembers lists the wake members for calls that have not been placed,
+// or still owe their card, and rung emails that have not been sent.
 func pendingMembers(incidentID string, st LadderState) []string {
 	var out []string
-	for i, done := range st.Placed {
-		if !done && st.failure(i) == "" {
+	for i := range st.Placed {
+		if st.owed(i) {
 			out = append(out, wakeMember(incidentID, i))
+		}
+	}
+	for i := range st.Plan.Emails {
+		if !st.emailDone(i) {
+			out = append(out, emailWakeMember(incidentID, i))
 		}
 	}
 	return out
 }
 
+// recordIncidentCards saves the rooms a first rung's incident card reached before its reply failed. Best effort: a lost record only posts the card again.
+func (e *Engine) recordIncidentCards(ctx context.Context, incidentID string, chain Trigger, rooms []string) {
+	fresh, found, err := e.store.Get(ctx, incidentID)
+	if err == nil && found && fresh.Cancelled == nil && sameChain(fresh.Plan.Trigger, chain) {
+		fresh.Plan.IncidentCards = withRooms(fresh.Plan.IncidentCards, rooms)
+		err = e.store.Save(ctx, incidentID, fresh)
+	}
+	if err != nil {
+		slog.WarnContext(ctx, "escalation: could not record the posted incident card; the retry may post it again",
+			"incidentId", incidentID, "err", err)
+	}
+}
+
+// withRooms adds the rooms not already listed.
+func withRooms(have, add []string) []string {
+	for _, r := range add {
+		if !slices.Contains(have, r) {
+			have = append(have, r)
+		}
+	}
+	return have
+}
+
 // isPermanent reports whether a call error is one that retrying cannot fix:
 // the provider accepted the request and rejected its content. Anything else —
-// a network failure, a 5xx, a timeout — is transient and stays scheduled.
+// a network failure, a 5xx, a 429, a timeout — is transient and stays
+// scheduled. A 429 is the provider asking to be tried again later (Google
+// Chat's webhook rate limit, or Twilio's), not a rejection of the request.
 // undeliverable is a delivery that no retry can make succeed: the
 // configuration has nowhere to send it. Permanent, so the engine records the
 // reason against the call and the ladder carries on, instead of retrying
@@ -1548,7 +1781,8 @@ func isPermanent(err error) bool {
 	}
 	var upstream *apierror.Error
 	if errors.As(err, &upstream) {
-		return upstream.StatusCode >= 400 && upstream.StatusCode < 500
+		return upstream.StatusCode >= 400 && upstream.StatusCode < 500 &&
+			upstream.StatusCode != http.StatusTooManyRequests
 	}
 	return false
 }
@@ -1607,15 +1841,19 @@ func triggerFromCreated(incidentID string, p events.IncidentCreatedPayload) Trig
 	// the ladder against one shift and route it by another.
 	at := reportedAt(p.ReportedAt)
 	return Trigger{
-		IncidentID: incidentID,
-		Number:     p.Number,
-		WSO2CaseID: p.WSO2CaseID,
-		Priority:   p.Priority,
-		Title:      p.Title,
-		Account:    p.Account,
-		Team:       p.Team,
-		Kind:       TriggerNewIncident,
-		At:         at,
+		IncidentID:  incidentID,
+		Number:      p.Number,
+		WSO2CaseID:  p.WSO2CaseID,
+		Priority:    p.Priority,
+		Title:       p.Title,
+		Account:     p.Account,
+		Team:        p.Team,
+		Kind:        TriggerNewIncident,
+		At:          at,
+		Service:     p.Service,
+		Environment: p.Environment,
+		Category:    p.Category,
+		State:       p.State,
 		Routing: RoutingContext{
 			Product:         p.Product,
 			ABTEligible:     p.ABTEligible,
@@ -1676,6 +1914,8 @@ func reportedAt(raw string) time.Time {
 // ladder that reaches fewer people than the rules say it should is a fact
 // somebody needs on the work note, not a quiet saving.
 func (e *Engine) applySafety(ctx context.Context, plan *Plan) {
+	// The incident's channel, which its SRE team may have narrowed.
+	channel := e.channelFor(plan.Trigger)
 	s := e.cfg.Ladder.Safety
 
 	if top, capped := e.cfg.Ladder.CapLevel(); capped {
@@ -1722,10 +1962,12 @@ func (e *Engine) applySafety(ctx context.Context, plan *Plan) {
 
 	// No calls at all until the lead pool can be called: see
 	// Safety.CallWithoutVerifiedLeads. Log only -- nothing on the work note.
-	if e.cfg.Channel.Uses(ChannelCall) && !s.CallWithoutVerifiedLeads {
+	// A plan with no calls has nothing to hold: flagging it would end the
+	// ladder silently and swallow the "no reachable recipients" work note.
+	if channel.Uses(ChannelCall) && !s.CallWithoutVerifiedLeads && len(plan.Calls) > 0 {
 		if missing, err := e.unverifiedLeads(ctx); err != nil || missing > 0 {
 			plan.CallsHeld = true
-			if e.cfg.Channel == ChannelCall {
+			if channel == ChannelCall {
 				plan.Calls = nil
 			} else {
 				for i := range plan.Calls {
@@ -1741,7 +1983,7 @@ func (e *Engine) applySafety(ctx context.Context, plan *Plan) {
 	// reached about: see Safety.CallHeadsWithoutLowerTiers. Checked after the
 	// number allowlist, so a lower-tier number this deployment may not dial
 	// does not count as reachable. Log only -- nothing on the work note.
-	if e.cfg.Channel.Uses(ChannelCall) && !plan.CallsHeld && !s.CallHeadsWithoutLowerTiers && !lowerTiersDialable(plan.Calls) {
+	if channel.Uses(ChannelCall) && !plan.CallsHeld && !s.CallHeadsWithoutLowerTiers && !lowerTiersDialable(plan.Calls) {
 		kept := plan.Calls[:0]
 		var held int
 		for _, c := range plan.Calls {
@@ -1750,7 +1992,7 @@ func (e *Engine) applySafety(ctx context.Context, plan *Plan) {
 				continue
 			}
 			held++
-			if e.cfg.Channel == ChannelCall {
+			if channel == ChannelCall {
 				// A call-only entry is nothing but the call.
 				continue
 			}

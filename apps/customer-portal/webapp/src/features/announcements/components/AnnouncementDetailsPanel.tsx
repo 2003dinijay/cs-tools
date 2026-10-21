@@ -24,9 +24,7 @@ import {
   Typography,
   useTheme,
 } from "@wso2/oxygen-ui";
-import DOMPurify from "dompurify";
 import { ArrowLeft, Calendar, FileText } from "@wso2/oxygen-ui-icons-react";
-import { INLINE_COMMENT_HTML_PURIFY } from "@features/support/utils/support";
 import type { JSX } from "react";
 import CaseDetailsActionRow from "@features/support/components/case-details/header/CaseDetailsActionRow";
 import {
@@ -46,6 +44,7 @@ import {
   formatAnnouncementDateDisplay,
   isAnnouncementDescriptionEffectivelyEmpty,
   normalizeAnnouncementDescriptionHtml,
+  sanitizeAnnouncementHtml,
 } from "@features/announcements/utils/announcements";
 import { useDarkMode } from "@utils/useDarkMode";
 
@@ -116,6 +115,8 @@ export default function AnnouncementDetailsPanel({
   const statusColorPath = getStatusColor(statusLabel ?? undefined);
   const resolvedStatusColor = resolveColorFromTheme(statusColorPath, theme);
   const updatedOnLabel = formatAnnouncementDateDisplay(data.updatedOn);
+  const isClosed = statusLabel?.toLowerCase() === "closed";
+
   // announcementType is the real classification (entity-service's
   // announcement.announcement_type column); the tag fallback stays for
   // historical data created before that column existed (migration 0088
@@ -195,22 +196,24 @@ export default function AnnouncementDetailsPanel({
                 </Box>
               )}
             </Box>
-            {data.status?.label?.toLowerCase() !== "closed" && (
-              <CaseDetailsActionRow
-                projectId={projectId}
-                caseId={caseId}
-                statusLabel={data.status?.label}
-                assignedEngineer={data.assignedEngineer}
-                engineerInitials={
-                  typeof data.assignedEngineer === "object" &&
-                  data.assignedEngineer?.name
-                    ? (data.assignedEngineer.name.split(" ")[0]?.[0] ?? "")
-                    : ""
-                }
-                closedOn={data.closedOn}
-                restrictToCloseOnly={true}
-              />
-            )}
+            <CaseDetailsActionRow
+              projectId={projectId}
+              caseId={caseId}
+              statusLabel={data.status?.label}
+              isCaseClosed={isClosed}
+              canAddToVerification={false}
+              isPendingVerification={false}
+              pendingVerificationId={null}
+              assignedEngineer={data.assignedEngineer}
+              engineerInitials={
+                typeof data.assignedEngineer === "object" &&
+                data.assignedEngineer?.name
+                  ? (data.assignedEngineer.name.split(" ")[0]?.[0] ?? "")
+                  : ""
+              }
+              closedOn={data.closedOn}
+              restrictToCloseOnly={true}
+            />
           </Box>
         )}
 
@@ -317,7 +320,7 @@ export default function AnnouncementDetailsPanel({
                   // things like an EOL product-version table. Use the same
                   // permissive (default-policy) sanitizer this feature's own
                   // AnnouncementActivityPanel already uses for comments.
-                  __html: DOMPurify.sanitize(normalizedHtml, INLINE_COMMENT_HTML_PURIFY),
+                  __html: sanitizeAnnouncementHtml(normalizedHtml),
                 }}
               />
             );

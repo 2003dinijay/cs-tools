@@ -58,8 +58,8 @@ func TestSMEHandoffChat_TellsTheSRETeamSpaceOnce(t *testing.T) {
 	if h.SMETeam != "Asgardeo" {
 		t.Errorf("SME team = %q; want the SME team's name, Asgardeo", h.SMETeam)
 	}
-	if h.ThreadKey != "incident-escalation-"+testIncidentID {
-		t.Errorf("thread = %q; want the incident's ladder thread", h.ThreadKey)
+	if h.ThreadKey != "incident-"+testIncidentID {
+		t.Errorf("thread = %q; want the incident card's thread", h.ThreadKey)
 	}
 }
 

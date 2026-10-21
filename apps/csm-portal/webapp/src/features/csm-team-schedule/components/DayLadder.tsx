@@ -22,6 +22,7 @@ import type { ScheduleAbsence, ScheduleAbsenceKind, ScheduleAssignment, Schedule
 import {
   dayLabel,
   groupBy,
+  HALF_DAY_LEAVE_CODES,
   initialsOf,
   partsInZone,
   placeOnDay,
@@ -983,6 +984,12 @@ function OffRotaStack({
   // about the gap it leaves, a card per kind split one question ("who is
   // away?") across several, and the kind -- maternity, sick -- is the
   // person's own business on a view the whole team reads.
+  //
+  // A half day is the exception: still off the rota for the day, but which
+  // half they are away is what a lead needs to reach them, and it says
+  // nothing private. Its chip (HD-AM / HD-PM) sits beside the name.
+  const halfDayOf = (kindCode: string): ScheduleAbsenceKind | undefined =>
+    HALF_DAY_LEAVE_CODES.has(kindCode) ? kinds.find((k) => k.code === kindCode) : undefined;
   const BUCKET_ORDER: Record<string, number> = { LEAVE: 0, ALLOCATION: 1, EXCLUDED: 2 };
   const leaveCodes = new Set(kinds.filter((k) => k.bucket === "LEAVE").map((k) => k.code));
   const leaveRows = absences.filter((a) => leaveCodes.has(a.kindCode));
@@ -1028,14 +1035,22 @@ function OffRotaStack({
                     <b>{teamRows.length}</b>
                   </div>
                   <div className="offp">
-                    {teamRows.map((r) => (
-                      <span className="lnm" key={r.id} title={r.engineer.name}>
-                        <span className="av" style={{ background: teamColourOf(r.teamKey) }}>
-                          {initialsOf(r.engineer.name)}
+                    {teamRows.map((r) => {
+                      const half = halfDayOf(r.kindCode);
+                      return (
+                        <span
+                          className="lnm"
+                          key={r.id}
+                          title={half ? `${r.engineer.name} · ${half.label}` : r.engineer.name}
+                        >
+                          <span className="av" style={{ background: teamColourOf(r.teamKey) }}>
+                            {initialsOf(r.engineer.name)}
+                          </span>
+                          <span className="who">{r.engineer.name}</span>
+                          {half ? <span className={`chip sm hdflag ${half.colourToken}`}>{half.shortCode}</span> : null}
                         </span>
-                        <span className="who">{r.engineer.name}</span>
-                      </span>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               ))

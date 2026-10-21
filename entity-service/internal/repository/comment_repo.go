@@ -267,7 +267,11 @@ func (r *commentRepo) SearchComments(ctx context.Context, referenceID string, re
 		args = append(args, *typeEnumFilter)
 		where += fmt.Sprintf(" AND c.type = $%d::comment_type_enum", len(args))
 	}
-	if excludeDeleted {
+	// excludeDeleted is the service's token-based customer check; the
+	// caller's resolved identity is a second, independent one, so a customer
+	// the token lookup could not classify (or a staff user browsing through the
+	// customer portal) still never gets a deleted row.
+	if excludeDeleted || hidesDeletedComments(ctx) {
 		where += " AND c.deleted_at IS NULL"
 	}
 

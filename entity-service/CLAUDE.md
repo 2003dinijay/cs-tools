@@ -231,6 +231,16 @@ Chat cards in the SR's SRE-team space.
   `sr.created` -- in every mode (`WithGithubSRNotices`, routes.go): it exists
   only in Postgres, so no ServiceNow flow ever announces it. Only a new record;
   a delivery that finds the issue's record already there announces nothing.
+  **A ServiceNow-first one** (dual-write with `GITHUB_SR_SERVICENOW_FIRST=true`,
+  `github_sn_case.go`) is created through the ServiceNow integration service's
+  `POST /github-cases` -- ServiceNow's GitHub case API, which needs only account and
+  project, run as the integration service's M2M user (no token is sent, as for an
+  alert's incident) -- and takes ServiceNow's sys_id, CS number and WSO2 Case ID like a
+  portal SR. `OnCreated` still runs (no ServiceNow flow is relied on), as
+  `OnCreatedMirrored`: the acknowledgement also goes to the case through `POST /comments`;
+  the assignment stays Postgres-only (the case API has no group). Its description is
+  ServiceNow's HTML (the workflow's FORMATTED_DESCRIPTION, ported byte for byte), kept on
+  edits; issue edits go to `PATCH /github-cases`, issue comments to `POST /comments`.
 - `sr.acknowledged`: when the SR's account SRE team is in
   `SR_ALERT_SRE_TEAM_IDS`, the SR is first assigned to that team, then gets
   ServiceNow's acknowledgement comment (word for word) and is moved to OPEN --
@@ -298,9 +308,93 @@ Conventions to preserve:
 
 Known limits: a read that races an invalidation can re-cache the old value
 until the TTL; a degraded `GetMe` (e.g. groups unavailable) is cached like any
-other success; `SearchUsers`, `GetUsersByIDs` and `DATA_SOURCE=servicenow` are
-not cached. The client is a plain `redis.NewClient`, so the target must not use
-the "OSS Cluster" clustering policy.
+other success; `SearchUsers` and `GetUsersByIDs` are not cached. The client is
+a plain `redis.NewClient`, so the target must not use the "OSS Cluster"
+clustering policy.
+
+## POST /cases/volume-trend: day-bucketed opened/closed counts for a dashboard chart
+
+Backs the CSM portal's "Case Summary" dashboard trend widget (`apps/csm-portal/webapp`'s
+new `"line"` shape): exactly two fixed series, "Opened" (by `work_item.created_on`) and
+"Closed" (by `caseLikeOwnClosedOnColumn`, the per-type closure timestamp), one point per
+UTC calendar day over a trailing window (`days`, default 30, 1-90). Deliberately narrow,
+unlike `AggregateCasesRequest`'s open-ended `groupBy` -- this backs exactly one chart, not
+a platform, so there's no generic series/bucket-unit config.
+
+**A naive `to_char(timestamp, 'YYYY-MM-DD') = ANY(days)` predicate is non-sargable --
+confirmed against a real staging database (505k `work_item` rows), not assumed.** Wrapping
+the indexed column in `to_char()` before comparing defeats any index on that column
+outright, forcing a full sequential scan regardless of whether one exists: a single day's
+query took ~380-550ms this way, a 30-day cold window over 3s. `CaseRepository.CaseVolumeTrend`
+instead ANDs a sargable range (`col >= start AND col < end`, computed from the min/max of
+the requested days) with the exact `to_char(...) = ANY(days)` membership check -- the range
+half is what an index can actually serve; the exact check on top is what keeps the result
+correct for a non-contiguous/sparse day list (a partially-warm cache asking for just the
+days it's missing). Migration `0226` (`idx_work_item_type_created_on`) is what the "opened"
+branch's range half now uses -- confirmed via `EXPLAIN (ANALYZE, BUFFERS)` against staging:
+23.9ms, down from a full-table scan.
+
+**The "closed" branch still can't use an index, and that's accepted, not a bug to chase
+further.** `caseLikeOwnClosedOnColumn` is a `CASE wi.type WHEN 'CASE' THEN c.closed_on
+WHEN 'ENGAGEMENT' THEN eng.closed_on ... END` spanning five joined tables -- the identical
+structural limitation migration `0195` already documents for `caseLikeStateColumn`'s own
+cross-table `COALESCE` (Postgres can't push an index scan through a CASE/COALESCE spanning
+several joined tables). Migrations `0227`/`0228`/`0230` add a plain `closed_on` index on each of the three
+case-like types this endpoint's own dashboard config actually requests (`case`/`engagement`/
+`security_report_analysis` -- `announcement` and `service_request` are both excluded by that
+config's own `type` filter, so there's no caller needing an `announcement.closed_on` or
+`service_request.closed_on` index yet) anyway, at the
+same explicit "keep it ready for the eventual sargable rewrite" request `0195`-`0198` already
+established for `state` -- not wired up by this query yet. Confirmed via `EXPLAIN`: this branch still costs ~450-460ms per call on staging. The
+caching below is what makes that acceptable rather than something worth a riskier query
+rewrite right now.
+
+**Caching is a plain per-pod in-memory map, deliberately not Redis-backed, by explicit product
+decision** (`internal/cache/case_volume_trend_memory_cache.go`'s `InMemoryCaseVolumeTrendCache`,
+wired directly as `service.CaseVolumeTrendCache` in `routes.go` -- no composite/Redis layer in
+front of it). A day missing from a given pod's own map -- the normal case only right after a
+fresh deployment, when every pod starts empty, or the first time any pod is asked about a given
+day at all -- is the one case that queries Postgres; each pod then simply computes and caches
+independently, which costs nothing worth a shared store's added complexity for data this cheap
+to recompute and identical for every caller (see `service.CaseVolumeTrendCache`'s own doc
+comment).
+
+**"Today"'s own TTL is capped at whatever's left of the UTC day, not a flat duration --
+`ttlUntilNextUTCMidnight` (case_service.go).** By explicit product decision, a day's count
+only needs to be correct as of whenever it was last computed, not refreshed on any shorter
+cycle -- "today" is cached for up to 24h, same as a fully-elapsed day's `caseVolumeTrendStableTTL`
+(120 days) would suggest, except capped at the real day boundary: a flat duration written a few
+minutes before midnight would otherwise still read as "valid" well into the next calendar day,
+serving a snapshot of a day that's already over instead of forcing the one-time recompute that
+actually finalizes it. The cap guarantees that recompute happens on the very first request after
+midnight, on any pod, regardless of how recently "today" had last been refreshed before the day
+ended -- once recomputed past midnight, the day is cached under `caseVolumeTrendStableTTL`
+instead, since by then it's no longer `today`.
+
+**Deliberately NOT keyed by caller identity -- and `CaseVolumeTrend` enforces, not just
+assumes, that every caller is `Unrestricted`.** The portal-wide count is correct for everyone,
+so a day's cache entry is shared globally, keyed only by the request's own filters (a plain
+JSON encoding of `SearchCasesFilters`) and the day itself -- see `service.CaseVolumeTrendCache`'s
+own doc comment. This is only safe because no caller ever gets a scope-restricted result cached
+under that scope-independent key: `CaseVolumeTrend` calls `RequireInternalCaller` (the same gate
+`GetCaseFeedback` in this same file already uses) before doing anything else, so a restricted
+caller is refused with a 403 before the repository -- and therefore the cache -- is ever reached.
+Without this, a restricted caller's own scope-filtered result (the repository call below still
+takes `scope` and applies it) would get cached under the filters-only key and served back to the
+next caller for the same filters regardless of THEIR scope -- a cross-tenant leak in either
+direction, found and fixed by an automated security review rather than designed in from the
+start. Don't add scope-based cache keys back without a real caller that needs per-caller counts;
+doing so for a single-count, dashboard-wide endpoint like this one is needless complexity -- keep
+the internal-only gate instead.
+
+**The dashboard config decides which case types count, not this endpoint.** Like every
+other widget-driving endpoint here, `CaseVolumeTrend` takes whatever `filters` the caller
+sends and applies no default type exclusion of its own -- a caller that wants the "Case
+Summary" dashboard's volume-trend widget to exclude announcements and service requests
+(neither is a real support case) does so the same way `customerHealthCaseLikeTypes` already
+does it elsewhere in this codebase: an inclusion-list `{"field": "type", "op": "in", "values":
+["case", "engagement", "security_report_analysis"]}` filter, set in the dashboard's own JSON
+config, not hardcoded into the endpoint.
 
 ## Salesforce Account ingest
 
@@ -1307,7 +1401,19 @@ service's own `CLAUDE.md`, `dispatch.subjectLine`).
   ever echoes `Number`/`AlreadyAcknowledged`/`AcknowledgedBy`, none of which
   cover `CaseNumber`/`WSO2CaseID`/`Severity`/`Product` — everything
   `csm-notification-service`'s Chat alert needs to display (see that
-  service's own `CLAUDE.md` for the card's exact shape).
+  service's own `CLAUDE.md` for the card's exact shape). Also sets
+  `CaseType` (`strings.ToUpper(derefString(cv.Type))`, the same convention
+  `publishCaseCreated`'s own `CaseType` uses) — added so
+  `csm-notification-service` can render a security_report_analysis
+  acknowledgement with its own dedicated, no-severity card instead of
+  showing "Unknown" where a severity would be (that type never carries
+  one). `caseService.publishCaseAcknowledged` (the plain-Postgres path) sets
+  the identical field the same way. **`CaseType` is new on this payload, and
+  `csm-notification-service`'s own event decoding rejects an unknown field —
+  deploy that service's build that declares `CaseType` before deploying this
+  one**, or an overlapping rollout has every `case.acknowledged` event fail
+  validation there, retry, dead-letter, and eventually drop (see that
+  service's own `CLAUDE.md`/`events.go` for the matching note).
 
 - **`snCaseService.UpdateCase`** also publishes `case.severity_changed` via
   `publishSeverityChanged`, called only when `req.Severity` was set AND
@@ -1470,13 +1576,24 @@ gap ("with servicenow data source all are shown").
   `case.status_changed`'s sake) is now unconditional whenever `req.State` or
   `req.WorkState` is set, since the activity write needs the prior value
   regardless of whether Event Hub is configured at all.
-- **Deliberately out of scope**: `updateCaseFields`'s combinable "plain
-  field" bundle (Subject/Description/DeploymentID/DeployedProductID/fix-ETAs/
-  RelatedCaseID/WorkaroundProvided) does not write to `work_item_activity`
-  yet — up to nine fields in one call, several without a cheaply-available
-  "old" value, is a larger and more speculative addition than the six
-  branches above; left for a future change if it turns out to matter in
-  practice the same way assign/state did.
+- **Workaround and update released**: `updateCaseFields` logs
+  `workaround_provided_on` (set stores the new timestamp, recall stores the
+  prior timestamp as old and an empty new; a recall of an unset workaround
+  logs nothing). It reads the prior stamp via `GetCaseWorkaroundProvidedOn`
+  (`GetCaseByID` does not populate `WorkaroundProvidedOn` on this data
+  source) only when `WorkaroundProvided` is in the request; a failed read is
+  logged and never fails the update. `updateCaseMarkFixIssued` logs `fix_issued_on` as
+  "Update Released" only when `!alreadySet`. Timestamps are RFC 3339 UTC so
+  the feed renders them as date-times. Fix ETA values are deliberately not
+  logged: they are internal until shared with the customer, and the
+  customer portal can request field-change rows. Both paths resolve the
+  actor with `resolveActorOrM2M`, so a pure M2M caller is attributed to its
+  client id (the same value already stamped on `work_item.updated_by`)
+  instead of being dropped by the blank-email guard; such a row has no
+  matching `"user"` record, so the feed shows the client id and no display
+  name. The rest of the plain-field bundle (Subject/Description/
+  DeploymentID/DeployedProductID/fix ETAs/RelatedCaseID) writes no activity
+  entry.
 
 Every helper above runs **synchronously** (not detached/async the way
 `apps/csm-portal/backend`'s own `internal/handler/cases.go` `publishAsync`
@@ -2377,6 +2494,32 @@ window is still set to `Waiting on WSO2`. Postgres could close it with a
 conditional `UPDATE`, but that lives on the `UpdateCase` path this rule
 deliberately reuses unchanged; flagged, not half-closed.
 
+**One concrete failure mode of this race is fixed, though, not just
+flagged: the dual-write mirror no longer re-sends a state the downstream
+data source already holds.** Reported live via a dual-write failure record:
+`Invalid transition from 'Waiting On WSO2' to stateKey 1003. Allowed
+transitions: Closed.` — stateKey 1003 is `Waiting On WSO2` itself, so this
+was a self-transition: the case was already in that state and a mirror
+PATCH tried to set it there again, which that system's own workflow
+doesn't list as a legal move (only `-> Closed` is). Root cause: `UpdateCase`'s
+dual-write mirror dispatch (the `switch` over `State`/`Severity`/`WorkState`
+a few paragraphs above "Customer tags/watch list/...") fired on every
+`req.State != nil`, with no "did the state actually change" guard — unlike
+the sibling activity-log and `case.status_changed`-publish blocks in the
+same method, which both already check `before.State != *req.State` first.
+Combined with this rule's own race above, two near-simultaneous customer
+replies (or a duplicate delivery of one) can both read the case as
+`Awaiting Info`/`Solution Proposed` and both call `UpdateCase` with the
+same target state before either write commits: the first mirror PATCH
+succeeds, and the second — now a same-state no-op against the downstream
+system — is rejected exactly as observed. The dispatch now skips the
+mirror call whenever `before.State` already equals the requested state, the
+same no-op check its sibling blocks use. This does not close the general
+race (a case moved to a genuinely *different* state in the window is still
+set back to `Waiting on WSO2`, per the gap above) — only the specific,
+reported self-transition case, which is also the one this rule's own
+duplicate-firing race actually produces.
+
 Tests: `case_service_customer_reply_test.go` (the recording repository: a
 CASE and a SERVICE_REQUEST in the same table, every state, work note, staff /
 mixed / M2M callers, unresolved identity, a failed move logged with the
@@ -2610,14 +2753,15 @@ already use — no route path, request, or response shape changed.
   labels straight from Postgres's own enum catalog
   (`pg_enum`/`ListSeverities`) rather than hardcoding them, so it can never
   drift from the migration that defines the type.
-  `SyncProductVulnerabilities` has **no Postgres equivalent** and always
-  returns a `ServiceUnavailableError` on that data source: its full-replace
-  semantics (delete anything absent from the submitted set, upsert
-  everything present) need a stable external join key with a
-  database-enforced uniqueness guarantee, and `product_vulnerability` has no
-  `UNIQUE` constraint on any column other than its own generated `id` —
-  adding one is a schema change, out of scope for wiring up the existing
-  table's read queries.
+  `SyncProductVulnerabilities` delegates to ServiceNow when configured
+  (via `NewProductVulnerabilityServiceWithSNSync`), falling back to a
+  `ServiceUnavailableError` when no ServiceNow integration is present:
+  Postgres cannot satisfy its full-replace semantics (delete anything absent
+  from the submitted set, upsert everything present) without a stable external
+  join key with a database-enforced uniqueness guarantee, and
+  `product_vulnerability` has no `UNIQUE` constraint on any column other than
+  its own generated `id`. When `db != nil`, all read queries are served from
+  Postgres regardless of `DATA_SOURCE`.
 - **Time cards**: like comments, the Postgres path has no inbound-auth
   layer to forward a caller's identity through, so `CreateTimeCard`/
   `UpdateTimeCard`/`DeleteTimeCard` resolve the caller's user id from
@@ -3387,6 +3531,8 @@ has neither column, so a hold on one is a 400, never a silent no-op.
 
 ## Change requests
 
+Tests: `entity-service/docs/change-request-tests.md` maps change request scenarios to Go and Playwright tests, lists Vitest coverage, and says how to list and run them.
+
 `change_request` (migration 0043) is a shared-PK extension of `work_item`,
 same pattern as `"case"` (`change_request.id` IS `work_item.id`). `SearchChangeRequests`,
 `AggregateChangeRequests`, `GetChangeRequest`, and `PatchChangeRequest` are
@@ -3396,6 +3542,56 @@ the same `validChangeRequestSortField`/`validChangeRequestSortOrder` maps
 `sn_change_request_service.go` already used, so an unrecognized `sortBy`
 value is a 400 on both data sources instead of silently falling back to
 `created_on DESC` only on Postgres.
+
+### Tags
+
+A change request's tags are the case's tags, on its own work item: the same
+`work_item_tag` / `tag` rows (migration 0026; `work_item_tag.sn_sys_id` from
+0135), read by the same helper and written by the same functions. Nothing
+change-request-specific was added beyond the field on the read model:
+
+- **Read**: `GetChangeRequestByID` fills `ChangeRequest.Tags` through
+  `fetchCaseTags` (case_repo.go, the case detail's own `work_item_tag JOIN tag
+  ... ORDER BY t.name`), so the detail and the PATCH receipt carry `tags`:
+  an array (empty when none) for an Unrestricted (staff) caller, best-effort
+  like the case read (a lookup failure is logged and leaves it null). **For a
+  restricted caller -- a customer, or staff who also hold a customer record --
+  it is null**: tags are internal bookkeeping and never reach a customer. The
+  line is `crViewer`'s, the same the visibility rule draws, so it holds on the
+  entity read itself, not only in the customer portal's BFF (whose typed DTO
+  drops the key anyway: `TestMapChangeRequestDetails_ExposesOnlyTheCustomerFields`
+  pins that a `tags` key from this service never reaches the customer). The
+  ServiceNow data source leaves it null (nothing reads tags there).
+- **Write**: `CaseRepository.AddCaseTag` / `RemoveCaseTag` / `SearchTags`
+  (`POST /cases/{id}/tags`, `DELETE /cases/{id}/tags/{tagId}`, `POST
+  /tags/search`) take a work item id and accept a change request's -- they
+  always did (`AddCaseTag` inserts for whatever `work_item` the id names; the
+  `"patch"` severity side effect reads `"case"` and finds no row). The CSM
+  portal tags a change request through exactly these routes, under the BFF's
+  existing `PermWrite` / `PermView`. `rejectHiddenChangeRequest` still guards
+  both writes: a customer who may not see the change request gets 404.
+- **Never mirrored to the previous system.** On the dual-write data source the
+  case path mirrors a tag change (`"case_tag"` add / remove writebacks, see
+  "Case tags" above). That dispatch is gated on
+  `CaseRepository.IsCaseLikeWorkItem` (`readCaseLikeType`: one of the five
+  case-like types) by `caseService.tagMirrorApplies`: for a change request
+  nothing is dispatched -- no mirror call, no `sn_writeback_failures` row, and
+  `RemoveCaseTag` skips the `sn_sys_id` lookup the mirror feeds. The gate fails
+  closed (a type lookup error means no mirror, logged). A case's mirror is
+  unchanged. `TestCaseService_AddCaseTag_ChangeRequestIsNotMirrored` /
+  `..._RemoveCaseTag_ChangeRequestIsNotMirrored`.
+- **Migrated rows.** The sync writes `tag` / `work_item_tag` rows with
+  sys_id-derived ids, `created_by` `sn-sync` / `system` and nothing else
+  (`sn_sys_id` set or NULL); nothing here reads anything only a portal-written
+  row has. `TestChangeRequestTagsIntegration_*` (CHANGE_REQUEST_TEST_DSN, run
+  as a superuser and as `csm_app`) seed exactly that shape on a CHG-numbered
+  change request with an unlabeled stage and UPPER_SNAKE approver states, and
+  assert the detail returns those tags, a native add lands beside them, a
+  migrated tag (with and without `sn_sys_id`) is removed, and customers never
+  see or reach them. Note for the sync's owner: its `label_entry.yaml` mapping
+  filters `table=sn_customerservice_case`, so change request labels of the
+  previous system are not migrated today; widening that filter (and the
+  `work_item_id` resolution) to `change_request` is what it would take.
 
 ### The approval tables are the sync layer's (state, not status)
 
@@ -6709,6 +6905,48 @@ Two things intentionally left untouched by this same audit, not code bugs:
   synthesizing a value from it would risk returning a plausible-looking but wrong number. This
   stays an explicit TODO (see `project_metadata_service.go`'s own comment) rather than a fix.
 
+## PATCH /projects/{id}: closureState is a direct admin override
+
+`project.wso2_closure_state` was, until now, always derived — recomputed via `wso2ClosureStateRule`
+from the three sub-state fields (`endDateClosureState`/`invoiceDueDateClosureState`/
+`complianceViolationClosureState`) whenever a PATCH touched any of them (see `updateProjectTx`).
+`domain.ProjectUpdateRequest` gained a fourth, independent field, `ClosureState *string
+json:"closureState,omitempty"`, letting a caller set the overall status directly to one of
+`wso2_closure_state_enum`'s five values (`OPEN`/`READ_ONLY`/`CLOSED`/`RESTRICTED`/`SUSPENDED`,
+validated the same case/whitespace-tolerant way the three sub-state fields already are --
+`wso2ClosureStateLabels`, `validateClosureFields`) — this is what backs the CSM Portal's "admin can
+set a project's closure state directly" feature.
+
+- **Applied in `updateProjectTx` *after* the sub-state recompute**, so a request naming both (rare,
+  not rejected) leaves the caller's own explicit value in place rather than whatever the three
+  sub-states would otherwise derive -- the plain `UPDATE project SET wso2_closure_state =
+  $2::wso2_closure_state_enum WHERE id = $1` runs unconditionally whenever `req.ClosureState != nil`,
+  independent of (and after) the existing `IF any sub-state set THEN recompute` block.
+- **A deliberately simple, documented-caveat mechanism, not a tracked override** -- no new column
+  records that a value was set manually rather than derived. The accepted trade-off: a LATER PATCH
+  that touches any of the three sub-state fields recomputes `wso2_closure_state` from them again,
+  silently overwriting the override with no memory that one was ever set. Chosen over a
+  tracking-column design specifically because this endpoint has no production traffic pattern yet
+  that depends on surviving a sub-state write afterward -- the same "don't build for a regression
+  that doesn't exist yet" judgment call this file's own usage-metrics fix made earlier (see "Instances
+  and usage tracking" above).
+- **`hasStoredProjectFields` now includes `ClosureState`**, so a request naming only it is recognized
+  as having something to write (previously would have hit the "at least one field must be provided"
+  validation error). **`hasSNMirrorableProjectFields` is the older check, kept separate and used only
+  to gate the dual-write ServiceNow mirror dispatch** -- `ClosureState` is deliberately excluded from
+  it: it has no ServiceNow equivalent at all (`snProjectUpdateService`'s own payload struct doesn't
+  carry it), so a `postgres-servicenow-dual-write` request naming only `closureState` must not
+  dispatch a mirror write — one would only ever fail against `snProjectUpdateService`'s own "at least
+  one field must be provided" check, recorded as a pointless, permanently-failing
+  `sn_writeback_failures` row for a field that system was never going to support.
+- **No admin-only enforcement at this layer.** Same posture as every other field on this request:
+  entity-service only authorizes the caller against the project itself (`authorizeProject`); which
+  *human roles* may set `closureState` specifically is enforced entirely in `apps/csm-portal/backend`
+  (see that repo's own `CLAUDE.md`), the established "narrow a shared endpoint in-handler" pattern
+  this codebase already uses for `PermCreateAnnouncement`/Security Center rather than re-gating the
+  whole route (which other fields on this same PATCH, like `hasAgent`, still need `cs_engineer` to
+  reach).
+
 ## GetProjectByID 404'd on any project with no linked account
 
 Found in the same audit pass as the SearchProjects fix below, by explicitly
@@ -7011,7 +7249,87 @@ read the curated `team` registry, whose ids `GET /groups/{id}` could not resolve
 beside `GET /teams/{id}/members`) lists the `team` table — `{id, name, type}`,
 ordered by name, with an optional case-insensitive substring `searchQuery` on the
 name. The CSM portal backend calls it for its own `POST /teams/search` and enriches
-rows from its configured registry.
+rows from its configured registry. **Deliberately never includes
+`chat_webhook_url`** (see the next paragraph) — a webhook URL is a bearer
+credential, and this route has no caller restriction beyond `auth.Middleware`
+letting any validated token through.
+
+**`GET /teams/chat-webhooks`** (`team_repo.go` `ListChatWebhooks`, migration `0240`)
+is the replacement for configuring a team's own Chat space by hand in
+`integrations/csm-notification-service`'s `GOOGLE_CHAT_SPACES` env var:
+`team.chat_webhook_url` (nullable TEXT, never written by the ServiceNow sync —
+same "platform-owned config, not synced vocabulary" posture as `team.key`/
+`group_email`) holds the team's own incoming-webhook URL, set directly by
+platform operators. The endpoint returns `{teams: [{name, chatWebhookUrl}]}` for
+every team that has one set — a team with none is left out, same as today's
+"not in `GOOGLE_CHAT_SPACES`" case. **Internal-caller-only**
+(`TeamService.ListChatWebhooks` → `RequireInternalCaller`, the identical gate
+`GET /sla-duration-policy` uses) — a webhook URL lets anyone holding it post
+into that team's Chat space, so this is reference data for a backend service
+(fetched periodically, not once at startup, since operators can add a team's
+webhook while this service keeps running — see that repo's own `CLAUDE.md`),
+never something a portal caller should reach. Standing audiences that aren't
+teams at all ("Incident Monitor", "Onboarding", "Americas", "Evaluation") stay
+config-driven on that service's own side — this table only ever holds a real
+team's own space.
+
+**`GET`/`PATCH /teams/{id}`** (`team_repo.go`'s `GetTeamDetail`/
+`SetChatWebhookURL`, the latter against the same `team.chat_webhook_url`
+column) is the single-team counterpart to the bulk `GET /teams/chat-webhooks`
+above — added so `apps/csm-portal/backend` can let a team manage its own Chat
+space without handing out every other team's webhook URL in the same
+response. **A single generic team resource (id/name/type/chatWebhookUrl),
+mirroring `GET`/`PATCH /users/{id}`, rather than a dedicated
+`/teams/{id}/chat-webhook` route** — `chatWebhookUrl` is the only settable
+field today, but a second one later is a new field on `UpdateTeamRequest`,
+not a new route; `POST /teams/search` still never includes it (a webhook URL
+is a bearer credential). **Internal-caller-only**, identical gate.
+`UpdateTeam` (`team_service.go`) requires at least one field (today, only
+`chatWebhookUrl`, so omitting it is a 400) and validates: a non-empty
+`chatWebhookUrl` must parse as a well-formed URL whose scheme is `https`,
+whose hostname (case-folded, trailing dot stripped) is exactly
+`chat.googleapis.com`, and which carries no embedded userinfo
+(`https://chat.googleapis.com@evil.example/...`) — a plain `strings.HasPrefix(
+..., "https://")` check used to be the whole validation, which would have let
+this endpoint's caller point `csm-notification-service` at an arbitrary
+internal host (SSRF: that service fetches and unattendedly POSTs to whatever
+URL is stored here) or a cloud metadata endpoint; empty clears the stored
+value. **Fine-grained authorization — an Asgardeo admin, or that specific
+team's own lead, may call the PATCH — is enforced entirely by the caller**
+(`apps/csm-portal/backend`), never here: this route's only gate is "internal
+service", same as every other route in this section.
+
+**`POST /teams/{id}/lead`** (`team_repo.go`'s `AssignTeamLead`, a single
+transaction: check team exists, check user exists, demote any other current
+`'lead'` to `'engineer'`, then upsert the chosen user's `team_member` row to
+`'lead'`) reassigns a team's one lead. **This writes the real,
+paging-connected `team_member.role` column** — not a cosmetic label;
+`csm-notification-service`'s incident call-escalation ladder reads this exact
+column to decide who gets paged at its LEVEL_2 rung for this team, so
+reassigning it changes who gets called during an incident, immediately.
+Internal-caller-only here too; **fine-grained authorization (Asgardeo admin
+only) is the caller's job**, same posture as the chat-webhook PATCH above. The
+chosen user does not need to already be a member of the team — a user with no
+existing `team_member` row is inserted with role `'lead'` directly.
+
+**`PATCH /users/{id}`** (`user_service.go`'s `UpdateUser`, `user_repo.go`'s
+`UpdateUserProfile`, reusing the same write path `PATCH /users/me` already
+uses) is the admin-settable counterpart to `PATCH /users/me`: that route
+always resolves the caller's own id from `x-user-id-token`, so there was
+previously no way to update *someone else's* profile. Needed once a team's
+lead can be reassigned through `POST /teams/{id}/lead` above: the incident
+call-escalation ladder dials `"user".phone` (migration 0141) for whoever
+holds `'lead'`, so a newly assigned lead with no phone on file is a silent
+paging gap until this is set here. Both `timeZone` and `phone` are optional
+pointers (unlike `PATCH /users/me`'s own `timeZone`, which can never be
+cleared), but at least one must be present; `phone` has the identical
+trim/length/clear rules as `PATCH /users/me`'s own field. Internal-caller-only;
+a malformed id, neither field present, or an over-`maxPhoneLen`-character
+phone is a `ValidationError`. No fine-grained authorization of its own beyond
+"internal service" — `apps/csm-portal/backend` restricts this to its
+`cs_engineer`/admin roles (the same two roles its own `PermWrite` holds), a
+looser bar than `POST /teams/{id}/lead`'s own admin-only gate, since recording
+a phone number is a lower-stakes action than reassigning who gets paged.
 
 `POST /users/search` keeps the two id spaces apart: `filters.groupIds` are `"group"`
 ids matched against `group_member`, `filters.teamIds` are `team` ids matched against
@@ -7341,7 +7659,20 @@ applied** (never rejected outright) -- matching `changeRequestWhereClause`'s
 own established precedent for the identical class of gap (e.g.
 `change_request`'s own `assignmentGroupId`): `assignmentGroupId` on all
 three of Incident/Problem/IncidentTask, `configurationItemId`, and
-`productName` on Incident. `businessServiceId` on Incident IS applied,
+`productName` on Incident. **`incidentStateKeys` is not one of them**: it is
+ServiceNow's legacy `incident_state` field, which this schema has no column
+for, but ignoring it is not harmless -- a request for the New and In Progress
+incidents of a service then answers with every incident the service ever had
+(a dashboard tile read 21,628 instead of 22 that way). The keys are mapped onto
+`state` (`incidentStatesFromSNKeys`: 1 New, 2 In Progress, 3 On Hold, 6
+Resolved, 7 Closed, 8 Canceled), ANDed with any `state` filter, and a key with
+no state, or a `state` filter that shares none with the keys, is a 400 rather
+than an empty list (which would read as "no filter"). Do not add another
+accepted-but-ignored filter without asking whether a caller could be misled by
+the wider answer. `madeSla` reads `incident.is_sla_met`, which the sync fills
+with `true` for nearly every incident (no row is `false`, a few are NULL), so it
+cannot find a breach; use `slaViolated` (below) for that.
+`businessServiceId` on Incident IS applied,
 mapped to `incident.service_id` -- "business service" is ServiceNow's own
 name for what this schema calls `service`, the same identification
 `service_offering_repo.go` already makes. `assignedUserId` on
@@ -7414,7 +7745,20 @@ Routing is configuration, not code or tables: `SPECIALIST_HANDOFF_CONFIG`
 (one line of JSON, `specialist_handoff_config.go`, validated at startup --
 a bad value refuses to start) lists products, each with its service ids,
 its Special Ops teams (`key` = the handoff's `escalationTeam`, `label`,
-`groupId`) and an optional GitHub repo. A product with several teams
+`groupId`) and an optional GitHub repo. A team with no `groupId` is the
+Team Schedule team keyed `key` (`{"key":"u2"}`): at startup
+`ResolveTeamGroups` (`specialist_handoff_group_repo.go`) takes the team's id
+as its group id and its name as an empty `label`, `smeTeam` defaults to the
+key, and a `"group"` row with that id and name is added when missing --
+`work_item.assignment_group_id` references `"group"`, so the incident needs
+one. ServiceNow-synced teams already share their group's id; an existing
+row is never touched. A key no team holds is logged and the team refuses
+handoffs (409) until the team exists and the service restarts. NewRouter
+resolves its copy of the config at startup; the alert drainer's copy (main.go)
+resolves on demand instead (`WithSpecialOpsAlertTeamGroups`): a group change
+matching no team while a team-only team is unresolved resolves them first,
+and a failed lookup is returned so the change is retried -- a handoff the
+router took always raises its alert. A product with several teams
 (Choreo) requires `escalationTeam`; one with a single team (Asgardeo) takes
 it and records no team, as SN does. `GET /specialist-handoff-teams?serviceId=`
 feeds the dialog, and `IncidentView.CanHandOffToSpecialist` (SN's
@@ -7544,6 +7888,47 @@ copy of this schema. This finally gives the previously ServiceNow-only "instance
 `deployed_product_service.go` gained the two metrics methods (previously
 unconditional `ServiceUnavailableError` stubs).
 
+**All five read paths (`InstanceService`'s own five methods, plus
+`DeployedProductService.SearchDeployedProductMetrics`/
+`SearchDeployedProductUsageCounts`) are deliberately always Postgres-backed,
+by explicit product decision, regardless of `DATA_SOURCE` -- including under
+`postgres-servicenow-dual-write`.** A later change had both read paths fall
+back to the previous system under dual-write, reasoning that `deployment_node`
+rows had no real link to a deployment/deployed product anywhere in this
+database -- true only because the underlying rows genuinely weren't linked
+correctly yet (`deployment_node.deployment_number`/`product_version_id` and
+`deployed_product.product_id` have to agree with the real `deployment`/
+`deployed_product` rows for `instanceRefJoins`/`resolveDeployedProductNodes`
+to resolve anything -- see those functions' own doc comments). Once linked
+correctly, Postgres has the real data and must be read from directly; the
+fallback is removed (`routes.go`'s `activeInstanceSvc` wiring, and both
+methods on `deployedProductService` no longer check `s.snMirror`) rather
+than kept as a standing workaround for what is a one-time data-linkage
+problem, not a structural gap. `DATA_SOURCE=servicenow` (no Postgres pool at
+all) is the one real exception for both services -- `activeInstanceSvc` and
+`activeDeployedProductSvc` each still route to the previous system under
+that one `DATA_SOURCE` value, same as every other entity this service backs
+with it.
+
+Also fixed in this same pass: `resolveDeployedProductNodes` (the shared node
+resolution both `deployed_product_service.go` methods above call) resolved
+a deployed product by its deployment and product-version references alone,
+never checking that its product reference was also set -- the same "is this
+a real deployed product" requirement `deployment_repo.go`'s own
+`productCount` subquery already enforces to decide whether a deployment is
+even offered as a choice at all. Without it, a direct request naming a
+deployed product with no product reference could still resolve its nodes
+and return real usage/metrics data, even though that same record is treated
+everywhere else as having no product at all. The resolver's own lookup now
+requires `product_id IS NOT NULL` too.
+
+Two real bugs were also found and fixed in `SearchInstanceMetricsStats`
+while reconciling this against the real upstream aggregation logic it is
+meant to replicate: it summed every `deployment_information` row per day
+instead of only the latest snapshot per node per day (overcounting any node
+that reports more than once a day), and its stats key was `CORES` instead
+of the real `TOTAL_CORES`.
+
 **"Instance" is `deployment_node`.** `Instance.Key` is `node_id`;
 `Instance.Metadata` comes from that node's latest `deployment_information`
 row (by `payload_updated_on`). `CoreCount` is `deployment_information.core_count`,
@@ -7594,6 +7979,32 @@ matches independent SQL counts. The same resolution is reused by
 `deployment_information.node_id` matches any `deployment_node.node_id` in staging
 (the former are sys_ids and `TEST2`/`TEST3`), so no instance has `Metadata` there.
 
+**`SearchDeployedProductMetrics`/`SearchDeployedProductUsageCounts` read
+`daily_usage_summary`, not `hourly_usage_summary` -- found live, via a real
+HAR capture and direct queries against staging, after the CSM Portal's Usage
+Metrics page showed empty/null charts for deployed products with genuine,
+months-long usage history.** Both methods originally queried
+`hourly_usage_summary` (bucketing its per-event `counted_on` into days in
+Go); for one real deployed product's 7 resolved nodes, that table held zero
+rows, while `daily_usage_summary` -- already shaped as one row per node per
+day per count type, with real `summary_date`/`value` columns -- held 487
+rows of genuine daily transaction counts spanning January through August.
+The two tables are independent sync feeds with no foreign key or rollup
+relationship to each other in this schema (see migration 0054's own doc
+comment), so there's no guarantee one ever catches up to what the other
+already has -- `daily_usage_summary` is simply the more complete, and more
+directly-shaped, source for a per-day chart. A handful of real rows repeat
+the same `(deployment_node_id, summary_date, count_type)` key (an
+uncorrected correction/re-ingest on the sync's side), so both queries `SUM`
+rather than assume exactly one row per key. A direct check found a small
+set of `(node, day, count_type)` keys that exist only in `hourly_usage_summary`
+(10, against 487 in `daily_usage_summary`) -- these two endpoints have no
+production traffic yet, so there is no existing behavior built on that
+narrower coverage to preserve, and the fix is a straight switch to
+`daily_usage_summary` rather than a union of both tables. Revisit if either
+endpoint ever needs to recover that handful of hourly-only keys once real
+callers depend on it.
+
 **Metrics vs. usage vs. usage-stats read three different tables, not one,
 because only one of them carries what each endpoint needs:**
 
@@ -7638,6 +8049,51 @@ shape has a monthly-granularity rollup concept to serve from it;
 `product_usage_map` (a product-code -> display-unit lookup) has no consuming
 field either. Left unused rather than exposed speculatively, same as other
 tables with no current caller elsewhere in this file.
+
+### Telemetry ingestion (the write side, for product-consumption-tracking)
+
+`digiops-cs`'s product-consumption-tracking (PCT) no longer talks to Postgres:
+it writes these tables through `POST /instances/meta`, `/instances/info`,
+`/instances/usage-stats`, `/instances/daily-usages/batch` and verifies telemetry
+signatures with `GET /projects/{key}/secret-key` (`instance_ingestion_*.go`).
+
+- **Internal callers only** (`internalOnly`): PCT's client id must be in
+  `M2M_CLIENT_IDS`. The repository has no system-identity fallback. The
+  secret key is a credential (`Cache-Control: no-store`); a project with no key
+  is a 404. `/projects/by-key/{key}/...` cannot be used: it overlaps
+  `GET /projects/{id}/contacts/{contactId}` and the router refuses it.
+- **One transaction per call, under a per-node advisory lock**
+  (`deployment-node:<nodeId>`). `deployment_node.node_id` is not unique (synced,
+  and ServiceNow's identity is not consistent upstream), and every write is a
+  read-then-insert; without the lock two first heartbeats create two nodes. Do not
+  add a unique index instead. Batches lock their nodes in id order.
+- **Node meta rides on every call**: a blank project key or deployment number
+  never clears a stored one; the product version moves only when both product and
+  version are sent (to NULL for a pair not in the catalogue). Product resolution is
+  exact code, then exact name, then the shortest name containing it, with LIKE
+  wildcards escaped.
+- **Parity with PCT's own SQL**: `daily_usage_summary.deployment_number` is
+  written (the request's, else the node's); the latest count wins on a day's row;
+  a host snapshot is stored once per (node, hash) and later reports move its
+  `payload_updated_on`; rows are `created_by` `product-consumption-tracking`
+  (FILE_UPLOAD rows: the uploader's email).
+- **Times** are RFC 3339 or `YYYY-MM-DD HH:MM:SS` read as UTC, parsed in Go and
+  bound as instants; the daily date is the count's UTC date, never the session's.
+- **Batches** are validated whole (400 naming the entry) and written all or
+  nothing; an entry may override `nodeId`/`deploymentNumber`, and `nodes` registers
+  each node an offline report describes with its own product and version.
+- **Offline usage reports** name their deployment (number) but not their project.
+  PCT verifies a report's signature with the key from
+  `GET /deployments/by-number/{number}/consumption-secret` (internal only; the active
+  deployment wins when two share a number; a project with no key is a 404). The
+  customer portal backend first checks the uploader can see that deployment with
+  `POST /deployments/search` `numbers` (exact match), run as the uploader, which
+  row-level security on `deployment` scopes to their projects.
+
+Tests: `instance_ingestion_integration_test.go` (real Postgres, schema from
+migration 0054, session zone Asia/Colombo; `INSTANCE_INGESTION_TEST_DSN`),
+including concurrent first heartbeats (fails without the lock) and a batch that
+fails part-way.
 
 ## Service offerings and task SLAs
 
@@ -7969,16 +8425,14 @@ ones that should have unconditional access. A caller that reaches entity-service
 *through* another service is identified by that other service's client id, not
 its own.
 
-The three product-consumption routes (`GET`/`PATCH
-/projects/{id}/consumption`, `POST
-/projects/{id}/deployments/{deploymentId}/license`) are scoped too, but check
-membership in `service.authorizeProject` rather than pushing the scope into a
-query. Two of the three have no query to push it into: a write and an upstream
-call that leaves the service entirely. Refused as a 404 for the same reason as
-the by-id reads. **These are scoped on both data sources**, unlike the five
-operations above -- they are registered in ServiceNow mode deliberately (see
-"Product-consumption provisioning state" in `README.md`), so ServiceNow is not
-there to scope them.
+The product-consumption provisioning routes (`GET`/`POST
+/projects/{id}/consumption/status`, `PATCH`/`POST /projects/{id}/consumption`) are
+**internal callers only** (`internalOnly`), not project-scoped: the status carries the
+project's client secret and HMAC secret keys and the update replaces them, so even a
+member of the project must not read or change them. Their one caller is the
+subscription service (`choreo-subscription-on-project-create`), whose client id must
+be in `M2M_CLIENT_IDS`; customers reach provisioning only through it (customer
+portal backend → subscription service). They are registered on both data sources.
 
 **Not yet wired**: every other project/case-adjacent read (comments,
 time cards, attachments, conversations, change requests,
@@ -8336,12 +8790,19 @@ shape**: "every project except the in-progress ones" (6 of the 7 statuses), matc
 already-joined `p.onboarding_status` column (`caseSearchJoins`'s `LEFT JOIN project p`) keeps
 that join alive for every row even in a `COUNT(*)`-only query that reads no other column of `p`;
 replayed Query Store text measured the project lookup alone at ~10,200 of a widget's
-21,000-55,000 total data pages. The filter is now `wi.project_id IS NOT NULL AND wi.project_id
-<> ALL(ARRAY(SELECT id FROM project WHERE onboarding_status IS NULL OR onboarding_status <>
-ALL($n::text[]::onboarding_status_enum[])))` -- same NULL semantics as before (a project with no
-status, or a case with no project, never matches `in`), but with no WHERE-clause reference to the
-`p` alias left for this filter at all, which is what lets the planner drop the dead `LEFT JOIN
-project` from a `COUNT(*)`-only query entirely. The `notIn` branch is deliberately left as the
+21,000-55,000 total data pages. The filter is now `wi.project_id IS NOT NULL AND NOT EXISTS
+(SELECT 1 FROM project excluded WHERE excluded.id = wi.project_id AND (excluded.onboarding_status
+IS NULL OR excluded.onboarding_status <> ALL($n::text[]::onboarding_status_enum[])))` -- same NULL
+semantics as before (a project with no status, or a case with no project, never matches `in`), but
+with no WHERE-clause reference to the `p` alias left for this filter at all, which is what lets the
+planner drop the dead `LEFT JOIN project` from a `COUNT(*)`-only query entirely. It was first
+written as `wi.project_id <> ALL(ARRAY(SELECT id FROM project WHERE ...))`; that form compares
+every case row with every excluded id (no index, no hash), which is cheap for the six-status widget
+list (about a dozen excluded projects) but not when only one or two statuses are selected and the
+exclusion list holds ~1,950 ids: measured on a production-size copy at 93-105 ms against 12 ms for
+the `NOT EXISTS` probe on `project`'s primary key, with identical counts for every single status and
+for the six-status set (where both take ~12 ms). Same problem as the state filter's `notIn`
+(digiops-cs #3459). The `notIn` branch is deliberately left as the
 plain join check: it already satisfies the no-project/no-status cases via its own `OR`, nothing
 marks it as a measured bottleneck the way `in` was, and the equivalent rewrite would need its own
 extra `OR wi.project_id IS NULL` term to keep that behaviour -- not worth the added risk without
@@ -8495,20 +8956,32 @@ results. ids are always non-`NULL` (each branch selects a primary key), so the
 anti-join is an exact negation of `= ANY` here, with no three-valued-logic
 subtlety to account for.
 
-**`projectOnboardingStatus`/its `notIn` sibling deliberately keep filtering
-through the `LEFT JOIN` to `p`, despite the superficial similarity to the
-state-filter rewrite above.** The same "match against the table directly via
-an `ARRAY`-wrapped id lookup instead of filtering through a join" technique
-was tried here too and measured, directly against production-volume data, to
-bring no benefit and in some cases be slower. The state lookup wins because a
-case search's state filter is typically highly selective (e.g. "open" is a
-small fraction of all cases); `projectOnboardingStatus` filters in practice
-tend to be the opposite -- a widget excluding only a couple of terminal
-statuses matches nearly every project -- so building an array of almost
-every project id and checking per-row membership against it costs more than
-the indexed nested-loop join this already was. Revisit only with a
-measurement showing otherwise for a specific, genuinely selective
-onboarding-status filter shape.
+**Each enum-typed branch compares the state column, not `state::TEXT`.**
+Casting the column hides it from its index (`idx_case_state`), so
+`state::TEXT = ANY($n::text[])` was a sequential scan of `"case"` on every
+state-filtered search. The bound list stays `text[]` and is turned into the
+table's own enum by keeping only the labels that enum has
+(`caseLikeEnumStateList`: `ARRAY(SELECT s FROM unnest(enum_range(NULL::case_state_enum))
+s WHERE s::TEXT = ANY($n))`), so a label the enum does not know matches nothing,
+as the text comparison did, instead of failing the query the way a direct
+`$n::text[]::case_state_enum[]` cast would. Measured on a production-size copy
+(129,440 cases): `{OPEN}` 10.3 ms seq scan → 0.4 ms index-only scan, `{CLOSED}`
+13.6 → 5.6 ms, identical counts, unknown labels included. `engagement`,
+`service_request` and `security_report_analysis` use the same form (they have no
+state index today, so it changes nothing for them yet). The announcement branch
+keeps the text comparison, which its `CLOSE`→`CLOSED` normalization needs.
+`TestCaseLikeStateLookupUsesTheColumnNotACast` pins the shape.
+
+**The `projectOnboardingStatus` `notIn` branch deliberately keeps filtering
+through the `LEFT JOIN` to `p`; the `in` branch does not.** `in` is a
+`NOT EXISTS` probe on `project`'s primary key (see "Case search `countOnly`, and
+the projectOnboardingStatus `in` filter's exclusion-list rewrite" above). An
+`ARRAY`-wrapped id lookup like the state filter's was measured against
+production-volume data for this filter and brought no benefit: widgets select
+nearly every status, so the array would hold almost every project id, and
+checking per-row membership against it cost more than the indexed
+nested-loop join. Revisit `notIn` only with a measurement showing a selective
+shape that is slow.
 
 **Known, accepted divergence**: a work_item row whose own `type` disagrees
 with which extension table actually holds its data (see the bullet above --
@@ -9051,8 +9524,11 @@ added `work_item_feedback`, and `pgFeedbackService`
 /cases/feedback/search` and `/aggregate` for both the `postgres` and
 `postgres-servicenow-dual-write` data sources (dual write reads Postgres, never
 the backing system). `unavailableFeedbackService` is now only the fallback for
-a data source with no feedback store. Known gap: the table stores no
-per-rating reason chips, so every `reasons_*` bucket returns an empty result.
+a data source with no feedback store. The `reasons_*` aggregate buckets
+(`reasons_very_dissatisfied`=rating 1 ... `reasons_very_satisfied`=5) count the
+ticked reasons in `work_item_feedback_reason` (migration `0128`), grouped by
+reason text over feedback of that rating (`bucketStart`=reason, `avgRating`=the
+rating, most-ticked first); the older "no reason chips are stored" gap is closed.
 `GET`/`POST /cases/{id}/feedback` (the emoji submission contract) now has a
 real Postgres implementation too — see the dedicated section below.
 

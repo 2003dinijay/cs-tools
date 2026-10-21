@@ -252,21 +252,21 @@ happen to point at the same host in some deployments, which is why `TrackingBase
 guaranteed to always match, so don't collapse them into a single field.
 
 It backs two routes:
-- `POST /projects/{projectId}/deployments/{deploymentId}/license` — provisions (or resumes
-  provisioning) a WSO2 API Manager application/subscription/credentials for a deployment and
-  returns the resulting license. `ProcessLicenseDownload` (`internal/productconsumption/subscription.go`)
-  implements the upstream state machine — it is **not idempotent-by-accident-safe to reimplement
-  casually**: it can make up to 5 sequential upstream calls, several with side effects (creating an
-  application, subscribing it, generating credentials), and each step only runs if the project's
-  upstream-tracked status hasn't reached it yet. Read the whole function before touching it — a
-  subtly wrong condition could create a duplicate WSO2 API Manager application. The handler first
-  calls `entity.GetProject` purely as an access-control gate, discarding the result —
-  entity-service is still the actual authorization boundary for "does this caller own this
-  project." Because up to 5 sequential upstream calls can plausibly exceed the server's global
-  `WriteTimeout` (see `cmd/server/main.go`) even when no single step is slow, the handler extends
-  its own write deadline via `http.NewResponseController(w).SetWriteDeadline` — which only works
-  because `middleware.responseWriter` forwards `SetWriteDeadline`/`SetReadDeadline` to the
-  underlying `ResponseWriter`, the same reason it forwards `Hijack` for the WebSocket route above.
+- `POST /projects/{projectId}/deployments/{deploymentId}/license` — returns the deployment's
+  license. `ProcessLicenseDownload` (`internal/productconsumption/subscription.go`) is **one call**
+  to the subscription service's `POST /projects/{projectId}/deployments/{deploymentId}/license`;
+  the provisioning state machine (create the WSO2 API Manager application, subscribe it, generate
+  credentials and secret keys, each step only once and resumable) lives in that service, not here.
+  Do not move steps back into this backend: a second driver of that state machine could create a
+  duplicate application. The client refuses a `success:false` answer, missing subscription data or
+  a missing signature as a data error rather than handing back an unusable license. The handler
+  first calls `entity.GetProject` purely as an access-control gate, discarding the result —
+  entity-service is still the authorization boundary for "does this caller own this project."
+  Provisioning a first license can still take several upstream calls inside the subscription
+  service, so the handler extends its own write deadline via
+  `http.NewResponseController(w).SetWriteDeadline`, which only works because
+  `middleware.responseWriter` forwards `SetWriteDeadline`/`SetReadDeadline` to the underlying
+  `ResponseWriter`, the same reason it forwards `Hijack` for the WebSocket route above.
 - `POST /deployment-usages` — imports a deployment-usage zip file. Unlike every other endpoint in
   this backend, the request body is **raw binary**, not JSON — see `readBinaryBody` in
   `internal/handler/response.go` (a `readJSONBody` counterpart with a larger size cap,
@@ -274,6 +274,15 @@ It backs two routes:
   check in the handler, which together validate the upload the way the upstream service requires.
   The Go client base64-encodes the bytes before forwarding to the upstream service, matching its
   JSON contract exactly (`{"email": "...", "zip": "<base64>"}`).
+  **The upload names no project, so the report decides whose usage it is.** A usage report is a
+  ZIP holding one JSON file as WSO2 products export it; `usageReportDeploymentNumber`
+  (`internal/handler/usage_report.go`) reads only its `export_metadata.deployment_id`
+  (decompression capped at `maxUsageReportBytes`), and the handler looks that deployment number up
+  with entity-service's `POST /deployments/search` (`numbers`, inactive included) **as the caller**.
+  entity-service returns it only to an internal user or a registered contact of its project, so a
+  report for someone else's deployment is a 404 and is never forwarded. Anything that is not such a
+  report is a 400. The product-consumption service then verifies the report's signature against that
+  deployment's key and refuses a report the product marked invalid; this backend checks neither.
 
 ## The registry service
 
@@ -542,6 +551,21 @@ and the customer's detail still exposes none of the approvals or WSO2 approvers'
 key set is pinned by `TestMapChangeRequestDetails_ExposesOnlyTheCustomerFields`, so a field added to the DTO has
 to be added there on purpose. The PATCH response is unchanged (id / updatedOn / updatedBy); the webapp re-reads
 the detail after an answer.
+
+**`customerApprovalRequired` / `customerReviewRequired` on the change-request detail.** The two requirement
+boxes (does the change need the customer's approval before it is scheduled / the customer's review before it is
+closed), decoded from entity-service's detail as `*bool` (`entity.ChangeRequest`) and passed on **only with a
+read entity-service computed for a customer on the PostgreSQL data source**, which is the read that carries
+`customerCanAnswer` (`dto.MapChangeRequestDetails`). They are the REQUIREMENT, never the outcome
+(`hasCustomerApproved` / `hasCustomerReviewed`), and the webapp's workflow reads them for one thing: a customer
+step the change passed with no approval on record says "Not required" when its box is false, "No approval
+recorded" when it is true or unknown. Absent means *unknown*, never "not required": on the previous system's data
+source entity-service does not compute the boxes and sends them as `false`, so a plain pass-through would call a
+change "not required" on no evidence
+(`TestMapChangeRequestDetails_PassesTheRequirementBoxesOnlyWithACustomerRead`,
+`TestGetChangeRequest_CarriesTheRequirementBoxesOnlyWithACustomerRead`). The webapp reads the approvals
+(`GET /change-requests/{id}/approvals`, unchanged: internal stages as label + status only) for the rest of its
+evidence; see the customer webapp's README, "Change request workflow: evidence, not position".
 
 **Which change requests a customer sees is entity-service's decision, never this API's.** A customer sees a
 change request once it was *designated* to them (it reached Customer Approval and/or Customer Review and they

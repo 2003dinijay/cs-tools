@@ -91,23 +91,74 @@ vi.mock("@features/support/components/all-conversations/AllConversationsList", (
       messageCount: number;
       state: { label: string };
       createdBy: string;
+      case?: { id: string; label: string } | null;
     }) => void;
   }) => (
-    <button
-      onClick={() =>
-        onConversationClick({
-          id: "conv-1",
-          number: "CHAT-1",
-          initialMessage: "Need help",
-          createdOn: "2026-05-01T00:00:00Z",
-          messageCount: 2,
-          state: { label: "Open" },
-          createdBy: "dev@wso2.com",
-        })
-      }
-    >
-      Open Conversation
-    </button>
+    <>
+      <button
+        onClick={() =>
+          onConversationClick({
+            id: "conv-1",
+            number: "CHAT-1",
+            initialMessage: "Need help",
+            createdOn: "2026-05-01T00:00:00Z",
+            messageCount: 2,
+            state: { label: "Open" },
+            createdBy: "dev@wso2.com",
+          })
+        }
+      >
+        Open Conversation
+      </button>
+      <button
+        onClick={() =>
+          onConversationClick({
+            id: "conv-2",
+            number: "CHAT-2",
+            initialMessage: "Need a case",
+            createdOn: "2026-05-01T00:00:00Z",
+            messageCount: 4,
+            state: { label: "Converted" },
+            createdBy: "dev@wso2.com",
+            case: { id: "case-99", label: "CS0000099" },
+          })
+        }
+      >
+        Open Converted Conversation
+      </button>
+      <button
+        onClick={() =>
+          onConversationClick({
+            id: "conv-3",
+            number: "CHAT-3",
+            initialMessage: "Blank case id",
+            createdOn: "2026-05-01T00:00:00Z",
+            messageCount: 1,
+            state: { label: "Open" },
+            createdBy: "dev@wso2.com",
+            case: { id: "   ", label: "" },
+          })
+        }
+      >
+        Open Blank Case Conversation
+      </button>
+      <button
+        onClick={() =>
+          onConversationClick({
+            id: "conv-4",
+            number: "CHAT-4",
+            initialMessage: "Empty case id",
+            createdOn: "2026-05-01T00:00:00Z",
+            messageCount: 1,
+            state: { label: "Open" },
+            createdBy: "dev@wso2.com",
+            case: { id: "", label: "" },
+          })
+        }
+      >
+        Open Empty Case Conversation
+      </button>
+    </>
   ),
 }));
 
@@ -211,5 +262,47 @@ describe("AllConversationsPage", () => {
       },
     );
   });
+
+  it("navigates to the linked case when View is used on a converted chat", () => {
+    mockUseSearchConversations.mockReturnValue({
+      data: { conversations: [{ id: "conv-2" }], totalRecords: 1 },
+      isLoading: false,
+      isError: false,
+    });
+
+    render(<AllConversationsPage />);
+    fireEvent.click(screen.getByText("Open Converted Conversation"));
+
+    expect(mockNavigate).toHaveBeenCalledWith(
+      "/projects/project-1/support/cases/case-99",
+      { state: { returnTo: "/projects/project-1/support" } },
+    );
+  });
+
+  it.each([
+    ["whitespace-only", "Open Blank Case Conversation", "conv-3", "CHAT-3"],
+    ["empty", "Open Empty Case Conversation", "conv-4", "CHAT-4"],
+  ])(
+    "keeps the conversation summary when the linked case id is %s",
+    (_label, buttonText, chatId, chatNumber) => {
+      mockUseSearchConversations.mockReturnValue({
+        data: { conversations: [{ id: chatId }], totalRecords: 1 },
+        isLoading: false,
+        isError: false,
+      });
+
+      render(<AllConversationsPage />);
+      fireEvent.click(screen.getByText(buttonText));
+
+      expect(mockNavigate).toHaveBeenCalledWith(
+        `/projects/project-1/support/conversations/${chatId}`,
+        {
+          state: {
+            conversationSummary: expect.objectContaining({ chatId, chatNumber }),
+          },
+        },
+      );
+    },
+  );
 });
 

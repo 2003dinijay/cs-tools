@@ -63,6 +63,16 @@ type UserService interface {
 	// ServiceUnavailableError naming any requested role not seeded in the role
 	// table.
 	CreateUser(ctx context.Context, req domain.CreateUserRequest) (domain.User, error)
+	// UpdateUser sets the given user's timezone and/or "user".phone (the
+	// number the incident call-escalation ladder dials) by id, not by
+	// resolving the caller from their own token the way PatchMe does -- an
+	// internal caller (RequireInternalCaller) acting on someone else's
+	// profile, e.g. a portal admin recording a newly-assigned team lead's
+	// paging number. Both fields are optional but at least one must be
+	// present. A ValidationError is returned for a malformed id, neither
+	// field present, or an over-long phone; a NotFoundError when no user has
+	// that id.
+	UpdateUser(ctx context.Context, userID string, req domain.UpdateUserRequest) (domain.PatchUserMeResponse, error)
 }
 
 // UserCacheInvalidator clears a user's cached GET /users/{id} and
@@ -85,6 +95,30 @@ type UserCache interface {
 	SetMe(ctx context.Context, email string, me domain.GetUserMeResponse)
 }
 
+// CaseVolumeTrendCache is the read-through, per-day store behind caseService's
+// CaseVolumeTrend caching -- internal/cache.InMemoryCaseVolumeTrendCache, a
+// plain per-pod map, deliberately not Redis-backed (see routes.go's own wiring
+// comment: this endpoint's own cache entry is cheap enough to recompute, and
+// read-only/identical for every caller, that a shared store buys nothing worth
+// its own complexity here). routes.go always wires one, so this is never nil.
+// Deliberately NOT scoped by caller identity: this endpoint only ever reports
+// a portal-wide count (every real caller of it resolves to the same,
+// Unrestricted visibility -- it is reached solely through the CSM portal's
+// internal-staff dashboard), so the same count is correct for every caller and
+// a day's entry is shared globally, keyed only by filtersKey (which
+// request-level filters, if any, produced it) and the day itself. With
+// several pods each running their own copy, each pod simply computes and
+// caches independently -- harmless for this read-only data. A miss just
+// means the day is computed fresh from Postgres; nothing here is a
+// correctness boundary, only a cost-saving one.
+type CaseVolumeTrendCache interface {
+	GetMany(ctx context.Context, filtersKey string, days []string) map[string]domain.CaseVolumeDayCount
+	// Set caches dc for day under filtersKey, for ttl -- see case_service.go's
+	// own CaseVolumeTrend doc comment for why "today"'s own ttl is time left
+	// until UTC midnight, not a flat duration.
+	Set(ctx context.Context, filtersKey, day string, dc domain.CaseVolumeDayCount, ttl time.Duration)
+}
+
 // SavedFilterViewService is the caller's own named list-filter bookmarks
 // (CSM portal saved views). Postgres-only; the caller is always the
 // authenticated user resolved from x-user-id-token — never a client-supplied
@@ -94,6 +128,15 @@ type SavedFilterViewService interface {
 	Save(ctx context.Context, req domain.SaveSavedFilterViewRequest) (domain.SavedFilterViewList, error)
 	Delete(ctx context.Context, listKey domain.SavedFilterListKey, name string) (domain.SavedFilterViewList, error)
 	Reorder(ctx context.Context, req domain.ReorderSavedFilterViewRequest) (domain.SavedFilterViewList, error)
+}
+
+// RunbookService manages the runbook catalog (Operations > Runbooks): numbered, named runbook links and their alert names.
+type RunbookService interface {
+	List(ctx context.Context) (domain.RunbookList, error)
+	Create(ctx context.Context, req domain.SaveRunbookRequest) (domain.Runbook, error)
+	Update(ctx context.Context, id string, req domain.SaveRunbookRequest) (domain.Runbook, error)
+	Delete(ctx context.Context, id string) error
+	Import(ctx context.Context, req domain.ImportRunbooksRequest) (domain.ImportRunbooksResponse, error)
 }
 
 // SNUserService defines the user operations backed by the ServiceNow data source.
@@ -121,6 +164,10 @@ type AccountService interface {
 	// GetAccountByID returns the account with the given UUID. A ValidationError is
 	// returned for a malformed UUID; a NotFoundError if no account matches.
 	GetAccountByID(ctx context.Context, id string) (domain.AccountDetail, error)
+	// GetAccountHealthDetail returns the per-project customer-health breakdown of
+	// the account with the given UUID. A ValidationError is returned for a
+	// malformed UUID; a NotFoundError if no account matches.
+	GetAccountHealthDetail(ctx context.Context, id string) (domain.AccountHealthDetail, error)
 	// UpdateAccountTeams sets the account's CRE and/or SRE team (Postgres data
 	// source only). A ValidationError is returned for a malformed UUID, if
 	// neither field is provided, or if a provided team ID does not reference
@@ -431,6 +478,9 @@ type SNAccountService interface {
 	SearchAccounts(ctx context.Context, req domain.SearchAccountsRequest) (domain.SearchAccountsResponse, error)
 	// GetAccountByID returns the full account detail for the given UUID.
 	GetAccountByID(ctx context.Context, id string) (domain.AccountDetail, error)
+	// GetAccountHealthDetail always fails with a ValidationError: the customer-health
+	// detail is computed from Postgres tables only.
+	GetAccountHealthDetail(ctx context.Context, id string) (domain.AccountHealthDetail, error)
 }
 
 // ProjectService defines the operations available on the project entity.
@@ -446,6 +496,10 @@ type ProjectService interface {
 	// caller-scoped access" for the full rule and why existence is hidden
 	// rather than returning a 403.
 	GetProjectByID(ctx context.Context, id string) (domain.ProjectDetailsView, error)
+	// GetProjectConsumptionStatus returns product consumption state and credentials for the project.
+	GetProjectConsumptionStatus(ctx context.Context, id string) (domain.ProjectConsumptionStatus, error)
+	// UpdateProjectConsumption updates product consumption state, application ID, credentials, and license signing keys.
+	UpdateProjectConsumption(ctx context.Context, id string, req domain.ProjectConsumptionUpdateRequest, updatedBy string) error
 }
 
 // ProjectUpdateService defines the write operations available on a project.
@@ -719,6 +773,13 @@ type CaseService interface {
 	// the remainder folded into AggregateResponse.OthersCount. A ValidationError
 	// is returned for invalid input.
 	AggregateCases(ctx context.Context, req domain.AggregateCasesRequest) (domain.AggregateResponse, error)
+	// CaseVolumeTrend returns the daily opened/closed case counts for a
+	// trailing window (req.Days, default 30), for a dashboard trend chart.
+	// Unlike AggregateCases' open-ended groupBy, this always returns exactly
+	// two fixed series ("Opened", "Closed") -- see
+	// domain.CaseVolumeTrendResponse's own doc comment. A ValidationError is
+	// returned for invalid input.
+	CaseVolumeTrend(ctx context.Context, req domain.CaseVolumeTrendRequest) (domain.CaseVolumeTrendResponse, error)
 	// CreateCaseComment creates a new comment on the case identified by req.CaseID.
 	// A ValidationError is returned for invalid input or constraint violations.
 	CreateCaseComment(ctx context.Context, req domain.CreateCaseCommentRequest) (domain.CreateCaseCommentResponse, error)
@@ -1057,6 +1118,23 @@ type CommentService interface {
 	DeleteComment(ctx context.Context, id string) error
 	// GetCommentEditHistory returns a comment's prior versions, newest first.
 	GetCommentEditHistory(ctx context.Context, id string) (domain.GetCommentEditHistoryResponse, error)
+}
+
+// PendingVerificationService defines the operations available on the
+// pending-verifications entity -- see domain.PendingVerification's own doc
+// comment for what it's for. Like SLAClockService/EventPublishFailureService,
+// this has no ServiceNow equivalent and is always backed by Postgres
+// regardless of DATA_SOURCE.
+type PendingVerificationService interface {
+	// CreatePendingVerification adds a work item to a project's Pending
+	// Verification list.
+	CreatePendingVerification(ctx context.Context, req domain.CreatePendingVerificationRequest) (domain.CreatePendingVerificationResponse, error)
+	// SearchPendingVerifications returns a paginated, filtered page of a
+	// project's Pending Verification list.
+	SearchPendingVerifications(ctx context.Context, req domain.SearchPendingVerificationsRequest) (domain.SearchPendingVerificationsResponse, error)
+	// VerifyPendingVerification marks an entry verified, removing it from
+	// the active list without altering the underlying work item.
+	VerifyPendingVerification(ctx context.Context, req domain.VerifyPendingVerificationRequest) (domain.VerifyPendingVerificationResponse, error)
 }
 
 // TaskSlaService defines the operations available on the task-slas entity.

@@ -104,6 +104,14 @@ func (l Level) String() string {
 	return fmt.Sprintf("LEVEL_%d", int(l))
 }
 
+// Label is the rung as people say it on a chat card: LEVEL_0 is L1, LEVEL_1 is L2, and so on.
+func (l Level) Label() string {
+	if l < Level0 || l > Level4 {
+		return l.String()
+	}
+	return fmt.Sprintf("L%d", int(l)+1)
+}
+
 // Role names who a rung is, in the vocabulary the CS team uses. String gives the position (LEVEL_2); this gives the people
 // (ABT team leads), which is what a reader in a chat space needs to know to
 // tell whether the escalation has reached them.
