@@ -19,10 +19,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import SetFixEtaDialog from "@features/csm-cases/components/SetFixEtaDialog";
 
-// The Product field is now a dropdown backed by the product catalogue
-// (digiops-cs#3449), so every test that reveals it needs a real product list
-// to pick from -- mocked directly rather than pulling in the real backend
-// client (which requires window.config at module load, per this app's own
+// The Product field is now a dropdown backed by the product catalogue,
+// so every test that reveals it needs a real product list to pick from -- mocked directly rather than
+// pulling in the real backend client (which requires window.config at module load, per this app's own
 // testing convention for @api/backend/client-backed hooks).
 const DEFAULT_PRODUCTS = {
   data: [
@@ -99,7 +98,7 @@ describe("SetFixEtaDialog — single combined save", () => {
     expect(onSave).toHaveBeenCalledWith({ bestCaseFixEta: "2099-06-16" });
   });
 
-  it("reveals product/public ticket fields and blocks Save until they're filled, when sharing with customer", async () => {
+  it("reveals product/public ticket fields and enables Save once a product is picked, when sharing with customer", async () => {
     render(
       <SetFixEtaDialog
         currentBestCaseFixEta="2099-06-16"
@@ -111,16 +110,75 @@ describe("SetFixEtaDialog — single combined save", () => {
     fireEvent.click(
       screen.getByRole("switch", { name: /share fix eta with customer/i }),
     );
+    expect(screen.getByLabelText(/public ticket \(optional\)/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/public ticket/i)).not.toBeRequired();
+    // Product is still required.
     expect(screen.getByRole("button", { name: /^save$/i })).toBeDisabled();
+    expect(
+      screen.getByText(/product is required to share with the customer/i),
+    ).toBeInTheDocument();
 
     fireEvent.mouseDown(screen.getByLabelText(/^product/i));
     fireEvent.click(await screen.findByRole("option", { name: "API Manager" }));
-    expect(screen.getByRole("button", { name: /^save$/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^save$/i })).toBeEnabled();
+  });
 
+  it("shares with ETA + product and a blank ticket, omitting publicTicket from the payload", async () => {
+    const onSave = vi.fn();
+    render(
+      <SetFixEtaDialog
+        currentBestCaseFixEta="2099-06-16"
+        isSaving={false}
+        onClose={() => {}}
+        onSave={onSave}
+      />,
+    );
+    fireEvent.click(
+      screen.getByRole("switch", { name: /share fix eta with customer/i }),
+    );
+    fireEvent.mouseDown(screen.getByLabelText(/^product/i));
+    fireEvent.click(await screen.findByRole("option", { name: "API Manager" }));
+    // Whitespace-only counts as blank.
     fireEvent.change(screen.getByLabelText(/public ticket/i), {
-      target: { value: "https://github.com/wso2/product-apim/issues/1" },
+      target: { value: "   " },
     });
     expect(screen.getByRole("button", { name: /^save$/i })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    expect(onSave).toHaveBeenCalledTimes(1);
+    const payload = onSave.mock.calls[0][0];
+    expect(payload).toEqual({
+      bestCaseFixEta: "2099-06-16",
+      addPublicComment: true,
+      product: "API Manager",
+    });
+    expect(payload).not.toHaveProperty("publicTicket");
+  });
+
+  it("sends a provided public ticket trimmed", async () => {
+    const onSave = vi.fn();
+    render(
+      <SetFixEtaDialog
+        currentBestCaseFixEta="2099-06-16"
+        isSaving={false}
+        onClose={() => {}}
+        onSave={onSave}
+      />,
+    );
+    fireEvent.click(
+      screen.getByRole("switch", { name: /share fix eta with customer/i }),
+    );
+    fireEvent.mouseDown(screen.getByLabelText(/^product/i));
+    fireEvent.click(await screen.findByRole("option", { name: "API Manager" }));
+    fireEvent.change(screen.getByLabelText(/public ticket/i), {
+      target: { value: "  https://github.com/example/example/issues/7  " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    expect(onSave).toHaveBeenCalledWith({
+      bestCaseFixEta: "2099-06-16",
+      addPublicComment: true,
+      product: "API Manager",
+      publicTicket: "https://github.com/example/example/issues/7",
+    });
   });
 
   it("blocks sharing with customer when no fix ETA is set, even with product/ticket filled in", async () => {
