@@ -170,19 +170,39 @@ func (c *Client) EnsureLabel(ctx context.Context) error {
 	return nil
 }
 
+// maxListPages bounds one pass: pageSize * maxListPages messages.
+const maxListPages = 20
+
 // ListUnprocessed returns ids of messages matching searchQuery that do not
-// carry the processed label, oldest page first as Gmail returns them.
+// carry the processed label, oldest first. Gmail lists newest first, so every
+// page (up to maxListPages) is collected and the result reversed: a backlog
+// drains in arrival order and a run of failing recent messages cannot starve
+// older ones.
 func (c *Client) ListUnprocessed(ctx context.Context, searchQuery string) ([]string, error) {
-	q := url.Values{"q": {fmt.Sprintf("%s -label:%q", searchQuery, c.label)}, "maxResults": {fmt.Sprint(pageSize)}}
-	var out struct {
-		Messages []struct{ ID string } `json:"messages"`
+	var ids []string
+	pageToken := ""
+	for page := 0; page < maxListPages; page++ {
+		q := url.Values{"q": {fmt.Sprintf("%s -label:%q", searchQuery, c.label)}, "maxResults": {fmt.Sprint(pageSize)}}
+		if pageToken != "" {
+			q.Set("pageToken", pageToken)
+		}
+		var out struct {
+			Messages      []struct{ ID string } `json:"messages"`
+			NextPageToken string                `json:"nextPageToken"`
+		}
+		if err := c.do(ctx, http.MethodGet, "/users/me/messages", q, nil, &out); err != nil {
+			return nil, err
+		}
+		for _, m := range out.Messages {
+			ids = append(ids, m.ID)
+		}
+		if out.NextPageToken == "" {
+			break
+		}
+		pageToken = out.NextPageToken
 	}
-	if err := c.do(ctx, http.MethodGet, "/users/me/messages", q, nil, &out); err != nil {
-		return nil, err
-	}
-	ids := make([]string, 0, len(out.Messages))
-	for _, m := range out.Messages {
-		ids = append(ids, m.ID)
+	for i, j := 0, len(ids)-1; i < j; i, j = i+1, j-1 {
+		ids[i], ids[j] = ids[j], ids[i]
 	}
 	return ids, nil
 }

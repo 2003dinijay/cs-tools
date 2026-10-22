@@ -46,9 +46,6 @@ type Rule struct {
 	SenderRegex string `json:"senderRegex,omitempty"`
 	// EventType is the event published when the rule matches.
 	EventType string `json:"eventType"`
-	// Levels is how far the consumer should escalate (e.g. 3). Carried to the
-	// consumer untouched; this service does not interpret it.
-	Levels int `json:"levels,omitempty"`
 
 	sender *regexp.Regexp
 }

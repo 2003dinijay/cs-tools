@@ -61,7 +61,7 @@ func (f *fakePub) Publish(_ context.Context, _, v []byte) error {
 
 func testRules(t *testing.T) []rules.Rule {
 	t.Helper()
-	rs, err := rules.Parse(`[{"name":"r","recipient":"group@example.com","eventType":"mail.alert.received","levels":3}]`)
+	rs, err := rules.Parse(`[{"name":"r","recipient":"group@example.com","eventType":"mail.alert.received"}]`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestPollPublishesAndMarks(t *testing.T) {
 	}
 	var pl Payload
 	_ = json.Unmarshal(env.Payload, &pl)
-	if env.Type != "mail.alert.received" || env.EntityID != "<a@x>" || pl.DedupeKey != "<a@x>/r" || pl.Levels != 3 || pl.Subject != "DB down" {
+	if env.Type != "mail.alert.received" || env.EntityID != "<a@x>" || pl.DedupeKey != "<a@x>/r" || pl.Subject != "DB down" {
 		t.Errorf("unexpected event %+v %+v", env, pl)
 	}
 }

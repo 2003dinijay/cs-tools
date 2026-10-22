@@ -58,7 +58,6 @@ type Payload struct {
 	Subject    string `json:"subject"`
 	From       string `json:"from"`
 	ReceivedAt string `json:"receivedAt,omitempty"`
-	Levels     int    `json:"levels,omitempty"`
 }
 
 // Poller polls a mailbox and publishes an event per matching message.
@@ -129,7 +128,7 @@ func (p *Poller) handle(ctx context.Context, id string) error {
 		}
 		payload, err := json.Marshal(Payload{
 			RuleName: r.Name, MessageID: msg.ID, DedupeKey: msg.ID + "/" + r.Name, Subject: msg.Subject,
-			From: msg.From, ReceivedAt: msg.ReceivedAt, Levels: r.Levels,
+			From: msg.From, ReceivedAt: msg.ReceivedAt,
 		})
 		if err != nil {
 			return err

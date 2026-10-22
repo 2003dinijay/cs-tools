@@ -75,3 +75,19 @@ func TestClientFlow(t *testing.T) {
 		t.Errorf("mark failed: %v modified=%v", err, modified)
 	}
 }
+
+func TestListUnprocessedPagesOldestFirst(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("pageToken") == "" {
+			_, _ = w.Write([]byte(`{"messages":[{"id":"new"},{"id":"mid"}],"nextPageToken":"p2"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"messages":[{"id":"old"}]}`))
+	}))
+	defer srv.Close()
+	c, _ := New(context.Background(), Config{ProcessedLabel: "processed", APIBaseURL: srv.URL, HTTPClient: srv.Client()})
+	ids, err := c.ListUnprocessed(context.Background(), "x")
+	if err != nil || len(ids) != 3 || ids[0] != "old" || ids[2] != "new" {
+		t.Errorf("ids=%v err=%v", ids, err)
+	}
+}

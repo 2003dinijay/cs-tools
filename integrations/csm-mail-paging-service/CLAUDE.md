@@ -1,7 +1,9 @@
 # csm-mail-paging-service
 
 Polls Gmail and publishes one event per rule-matching email. No Twilio and no
-paging logic lives here; consumers decide what to do with the event.
+paging logic lives here: calls are placed by csm-notification-service's paging
+engine (`internal/paging`) consuming the event, which gives it acknowledgement,
+the on-call rota and durability. Do not add a second call ladder to this service.
 
 - **Gmail label = idempotency.** A message is labelled processed only after all
   its events were published. Do not move that earlier, and do not add a second

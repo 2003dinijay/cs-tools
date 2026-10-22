@@ -36,7 +36,6 @@ needed for correctness.
 | `recipient` | Group or mailbox address the email was sent to |
 | `senderRegex` | Optional: only emails from matching senders |
 | `eventType` | Event type published on a match |
-| `levels` | Passed to the consumer untouched; this service does not use it (see below) |
 
 A new source is another entry in the array.
 

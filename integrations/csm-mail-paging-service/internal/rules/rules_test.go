@@ -19,7 +19,7 @@ package rules
 import "testing"
 
 func TestParseAndMatch(t *testing.T) {
-	rs, err := Parse(`[{"name":"a","recipient":"Oncall@Example.com","senderRegex":"@example\\.org$","eventType":"mail.alert.received","levels":3}]`)
+	rs, err := Parse(`[{"name":"a","recipient":"Oncall@Example.com","senderRegex":"@example\\.org$","eventType":"mail.alert.received"}]`)
 	if err != nil {
 		t.Fatal(err)
 	}
