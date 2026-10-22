@@ -1697,6 +1697,13 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 	instanceHandler := handler.NewInstanceHandler(activeInstanceSvc)
 
+	// Postgres-only: ServiceNow has no air-gapped field to read or mirror.
+	var deploymentAirGapHandler *handler.DeploymentAirGapHandler
+	if db != nil {
+		deploymentAirGapHandler = handler.NewDeploymentAirGapHandler(
+			service.NewDeploymentAirGapService(repository.NewDeploymentAirGapRepository(repository.NewScoped(db))))
+	}
+
 	var instanceIngestionHandler *handler.InstanceIngestionHandler
 	if db != nil {
 		instanceIngestionRepo := repository.NewInstanceIngestionRepository(repository.NewScoped(db))
@@ -2118,6 +2125,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	mux.HandleFunc("POST /deployments", deploymentHandler.CreateDeployment)
 	mux.HandleFunc("POST /deployments/search", deploymentHandler.SearchDeployments)
 	mux.HandleFunc("PATCH /deployments/{id}", deploymentHandler.PatchDeployment)
+	if deploymentAirGapHandler != nil {
+		// internalOnly: the flag decides what licence a customer's products get, so
+		// only WSO2 staff (or an internal service acting for them) may change it.
+		mux.HandleFunc("PUT /deployments/{id}/air-gapped", internalOnly(accessSvc, deploymentAirGapHandler.SetAirGapped))
+	}
 	mux.HandleFunc("POST /deployed-products", deployedProductHandler.CreateDeployedProduct)
 	mux.HandleFunc("POST /deployed-products/search", deployedProductHandler.SearchDeployedProducts)
 	mux.HandleFunc("POST /deployed-products/projects/search", deployedProductHandler.SearchProjectsByProductVersion)

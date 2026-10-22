@@ -1,0 +1,22 @@
+-- Copyright (c) 2026 WSO2 LLC. (https://www.wso2.com).
+--
+-- WSO2 LLC. licenses this file to you under the Apache License,
+-- Version 2.0 (the "License"); you may not use this file except
+-- in compliance with the License.
+-- You may obtain a copy of the License at
+--
+-- http://www.apache.org/licenses/LICENSE-2.0
+--
+-- Unless required by applicable law or agreed to in writing,
+-- software distributed under the License is distributed on an
+-- "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+-- KIND, either express or implied.  See the License for the
+-- specific language governing permissions and limitations
+-- under the License.
+
+-- Marks a deployment as air-gapped: its products cannot reach WSO2, so the licence
+-- file issued for it tells the product not to publish usage online (the product
+-- reads a secrets string ending in the air-gapped marker that way), and its usage
+-- arrives by uploaded report instead. Set only by WSO2 staff, through the
+-- internal-only PUT /deployments/{id}/air-gapped. Safe to run again.
+ALTER TABLE deployment ADD COLUMN IF NOT EXISTS air_gapped BOOLEAN NOT NULL DEFAULT FALSE;

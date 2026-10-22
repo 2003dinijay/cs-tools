@@ -4972,6 +4972,77 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /deployments/{id}/air-gapped:
+    put:
+      summary: Mark a deployment air-gapped or not (internal callers only).
+      description: |
+        An air-gapped deployment's licence file tells its products not to publish usage online; its
+        usage arrives by uploaded report instead. Postgres-only (ServiceNow has no such field) and not
+        mirrored back. The change is attributed to the user in x-user-id-token when present, otherwise
+        to the calling service. A portal exposing this should limit it to the staff allowed to set it.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - airGapped
+              properties:
+                airGapped:
+                  type: boolean
+      responses:
+        "200":
+          description: Set.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  number:
+                    type: string
+                    nullable: true
+                  airGapped:
+                    type: boolean
+                  updatedOn:
+                    type: string
+                    format: date-time
+                  updatedBy:
+                    type: string
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Deployment not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /deployments/search:
     post:
       summary: Search deployments by name, project IDs, or deployment type.
@@ -19812,6 +19883,10 @@ components:
           type: boolean
           nullable: true
           description: Whether the deployment is active.
+        airGapped:
+          type: boolean
+          nullable: true
+          description: Whether the deployment's products cannot reach WSO2, so its licence file tells them not to publish usage online. Null when the data source does not carry it (ServiceNow).
         createdOn:
           type: string
           format: date-time

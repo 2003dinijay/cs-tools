@@ -165,7 +165,7 @@ func (r *deploymentRepo) SearchDeployments(ctx context.Context, req domain.Searc
 	// filter exists to eliminate.
 	dataQuery := fmt.Sprintf(
 		`SELECT d.id, d.number, d.name, d.type::TEXT, d.description,
-		        d.created_on, d.updated_on, d.is_active,
+		        d.created_on, d.updated_on, d.is_active, d.air_gapped,
 		        p.id, p.name, p.sf_id,
 		        (SELECT COUNT(*) FROM deployed_product dp
 		          WHERE dp.deployment_id = d.id AND dp.product_id IS NOT NULL
@@ -204,7 +204,7 @@ func (r *deploymentRepo) SearchDeployments(ctx context.Context, req domain.Searc
 			var deploymentType *string
 			if err := rows.Scan(
 				&d.ID, &d.Number, &d.Name, &deploymentType, &d.Description,
-				&d.CreatedOn, &d.UpdatedOn, &d.Active,
+				&d.CreatedOn, &d.UpdatedOn, &d.Active, &d.AirGapped,
 				&d.Project.ID, &d.Project.Name, &d.ProjectSfID,
 				&d.DeployedProductCount,
 			); err != nil {

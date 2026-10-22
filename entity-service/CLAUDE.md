@@ -9499,6 +9499,24 @@ unaffected and keeps creating external users exactly as before. `apps/csm-portal
 disables the "External" option in its type selector rather than offering a choice the backend will
 reject — all three are temporary, meant to come out together once external-type creation is ready.
 
+## Air-gapped deployments (`deployment.air_gapped`)
+
+Migration 0246 adds `deployment.air_gapped` (default false). An air-gapped deployment's products
+cannot reach WSO2: the licence PCS issues for it ends its `secrets` string in the marker the
+product reads as "do not publish online", and its usage arrives by uploaded report instead. This
+replaces ServiceNow's hand-run licence script, which applied the marker only for one hard-coded
+requester's email and recorded nothing.
+
+- Set through `PUT /deployments/{id}/air-gapped` (`{"airGapped": true|false}`), **internal-only**,
+  Postgres-only (ServiceNow has no such field; nothing is mirrored back, and the handler is not
+  registered without a database). It has its own small repository/service/handler rather than going
+  through `PATCH /deployments/{id}`, whose detail-vs-deactivate rules and ServiceNow write-back do not
+  apply to it. `updated_by` is the x-user-id-token's email when present, else `internal-client`.
+- Entity-service only knows internal vs customer callers; restricting it to a staff group is the
+  portal backend's job.
+- Read back as `airGapped` on `POST /deployments/search` results (`DeploymentView.AirGapped`, null
+  under `DATA_SOURCE=servicenow`), which is where PCS reads it from.
+
 ## SearchDeployments crashed on any page containing a NULL deployment.type
 
 Reported live: `POST /deployments/search` failing with `cannot scan NULL into
