@@ -485,3 +485,21 @@ func TestInstanceIngestion_ExportVersionIsLengthChecked(t *testing.T) {
 		t.Errorf("an over-long export version reached the repository")
 	}
 }
+
+func TestInstanceIngestion_BatchNodeProductAndVersionAreLengthChecked(t *testing.T) {
+	for _, tc := range []struct {
+		node     domain.DailyUsageBatchNode
+		contains string
+	}{
+		{domain.DailyUsageBatchNode{NodeID: "n", Product: strings.Repeat("p", 256), Version: "7.1.0"}, "nodes[0].product"},
+		{domain.DailyUsageBatchNode{NodeID: "n", Product: "wso2is", Version: strings.Repeat("9", 101)}, "nodes[0].version"},
+	} {
+		repo := &mockInstanceIngestionRepo{}
+		_, err := newTestIngestionService(repo).ImportDailyUsagesBatch(context.Background(), domain.DailyUsageBatchRequest{
+			NodeID: "n", Nodes: []domain.DailyUsageBatchNode{tc.node}})
+		wantValidation(t, err, tc.contains)
+		if repo.calls != 0 {
+			t.Errorf("an over-long %s reached the repository", tc.contains)
+		}
+	}
+}

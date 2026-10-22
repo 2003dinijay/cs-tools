@@ -299,6 +299,12 @@ func (s *instanceIngestionService) ImportDailyUsagesBatch(ctx context.Context, r
 		}
 		n.Product = strings.TrimSpace(n.Product)
 		n.Version = strings.TrimSpace(n.Version)
+		if err := checkLen(field("product"), n.Product, maxReportedProductLen); err != nil {
+			return domain.DailyUsageBatchResponse{}, err
+		}
+		if err := checkLen(field("version"), n.Version, maxReportedVersionLen); err != nil {
+			return domain.DailyUsageBatchResponse{}, err
+		}
 	}
 
 	req.ExportVersion = strings.TrimSpace(req.ExportVersion)
