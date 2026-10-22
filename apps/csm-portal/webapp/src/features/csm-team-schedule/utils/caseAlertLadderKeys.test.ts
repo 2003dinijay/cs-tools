@@ -21,6 +21,7 @@ import type { CaseAlertSettings } from "../types";
 import {
   ADVANCED_GROUPS,
   LADDER_KEYS,
+  creTimingRows,
   draftFor,
   fileOnlyRows,
   formatLadderValue,
@@ -102,11 +103,54 @@ describe("caseAlertLadderKeys", () => {
     expect(fileOnlyRows("CRE", f).map((r) => r.label)).toContain("Call the heads when nobody below can be called");
   });
 
+  it("words the CRE-only file settings: the stopped reply, the rung emails and the rule table", () => {
+    const f = {
+      ackChat: false,
+      "email.enabled": true,
+      "email.teamLists": 2,
+      "email.creTeamList": true,
+      "email.csTeamList": false,
+      "rules.custom": false,
+    };
+    const cre = Object.fromEntries(fileOnlyRows("CRE", f).map((r) => [r.label, r.value]));
+    expect(cre).toMatchObject({
+      "Reply in the thread when a chain stops": "No",
+      "Email per step": "On (2 team lists, CRE list set, CS list not set)",
+      "Who each step calls": "Built-in rules (Case Paging Rules sheet)",
+    });
+    expect(fileOnlyRows("CRE", { "email.enabled": false, "rules.custom": true }).map((r) => r.value)).toEqual(
+      expect.arrayContaining(["Off", "The file's own rule table"]),
+    );
+    // SRE has no rung emails and no rule table.
+    const sre = fileOnlyRows("SRE", f).map((r) => r.label);
+    expect(sre).toContain("Reply in the thread when a chain stops");
+    expect(sre).not.toContain("Email per step");
+    expect(sre).not.toContain("Who each step calls");
+  });
+
+  it("words the CRE timing table from the alert service's minutes", () => {
+    const rows = creTimingRows({
+      S0: [[0], [1, 2, 3], [4, 5, 6], [8, 9, 10], [12, 13, 14]],
+      S2: [[9, 12], [15, 19, 23], [30, 34, 38], [45, 49, 53], [60, 64, 68]],
+    });
+    expect(rows).toEqual([
+      { severity: "S0", steps: ["+0", "+1, +2, +3", "+4, +5, +6", "+8, +9, +10", "+12, +13, +14"], ends: "+14 min" },
+      { severity: "S2", steps: ["+9, +12", "+15, +19, +23", "+30, +34, +38", "+45, +49, +53", "+60, +64, +68"], ends: "+68 min" },
+    ]);
+    expect(creTimingRows(undefined)).toEqual([]);
+    expect(creTimingRows({ S1: [[], [9]] })[0].steps).toEqual(["—", "+9", "—", "—", "—"]);
+  });
+
   it("leaves out of the file-only block what the tab now edits", () => {
     const f = { enabled: true, channel: "both", "safety.maxCallsPerLadder": 4, "safety.allowedNumbers": 0 };
     const onTab = new Set(["enabled", "channel", "safety.maxCallsPerLadder", "safety.callWithoutVerifiedLeads"]);
     const labels = fileOnlyRows("SRE", f, onTab).map((r) => r.label);
-    expect(labels).toEqual(["Highest step", "Allowed numbers", "Phone numbers from"]);
+    expect(labels).toEqual([
+      "Highest step",
+      "Allowed numbers",
+      "Phone numbers from",
+      "Reply in the thread when a chain stops",
+    ]);
     // An alert service that does not report them on the tab yet: all still shown here.
     expect(fileOnlyRows("SRE", f).map((r) => r.label)).toContain("Alerts on");
   });

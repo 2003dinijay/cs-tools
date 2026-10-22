@@ -636,6 +636,45 @@ function yesNo(v: boolean | undefined): string {
   return v === undefined ? "—" : v ? "Yes" : "No";
 }
 
+/** The CRE rung emails in words: off, or on with how many team lists and
+ *  whether the CRE and CS lists are set. The addresses never reach the page. */
+function rungEmailWords(f: CaseAlertFileOnly): string {
+  const on = f["email.enabled"];
+  if (on === undefined) return "—";
+  if (!on) return "Off";
+  const lists = f["email.teamLists"] ?? 0;
+  const parts = [
+    `${lists} team ${lists === 1 ? "list" : "lists"}`,
+    `CRE list ${f["email.creTeamList"] ? "set" : "not set"}`,
+    `CS list ${f["email.csTeamList"] ? "set" : "not set"}`,
+  ];
+  return `On (${parts.join(", ")})`;
+}
+
+/** The CRE chain's steps, in the order the timing table lists them. */
+export const CRE_STEP_LABELS = ["L0", "L1", "L2", "L3", "L4"] as const;
+
+/** The severities the timing table lists, most urgent first. */
+export const CRE_TIMING_SEVERITIES = ["S0", "S1", "S2", "S3", "S4"] as const;
+
+/** One row of the CRE timing table: the severity, each step's call minutes
+ *  in words ("+1, +2, +3"; "—" for a step with no calls), and when the chain
+ *  ends. Severities the alert service did not report are left out. */
+export function creTimingRows(
+  timing: CaseAlertFileOnly["timing"],
+): { severity: string; steps: string[]; ends: string }[] {
+  if (!timing) return [];
+  return CRE_TIMING_SEVERITIES.filter((s) => Array.isArray(timing[s])).map((severity) => {
+    const steps = timing[severity] ?? [];
+    const words = CRE_STEP_LABELS.map((_, i) => {
+      const calls = steps[i] ?? [];
+      return calls.length === 0 ? "—" : calls.map((m) => `+${m}`).join(", ");
+    });
+    const all = steps.flat();
+    return { severity, steps: words, ends: all.length === 0 ? "—" : `+${Math.max(...all)} min` };
+  });
+}
+
 /** The settings only the file can set, as rows for people. The heads row is
  *  CRE's only: SRE has no heads. Allowed numbers are a count; the numbers
  *  never reach the page. */
@@ -682,6 +721,16 @@ export function fileOnlyRows(
   }
   const phones = f["phones.source"];
   rows.push({ key: "phones.source", label: "Phone numbers from", value: phones ? (PHONE_WORDS[phones] ?? phones) : "—" });
+  rows.push({ key: "ackChat", label: "Reply in the thread when a chain stops", value: yesNo(f.ackChat) });
+  if (ladder === "CRE") {
+    rows.push({ key: "email.enabled", label: "Email per step", value: rungEmailWords(f) });
+    const custom = f["rules.custom"];
+    rows.push({
+      key: "rules.custom",
+      label: "Who each step calls",
+      value: custom === undefined ? "—" : custom ? "The file's own rule table" : "Built-in rules (Case Paging Rules sheet)",
+    });
+  }
   return rows
     .filter((r) => !onTab.has(r.key))
     .map(({ label, value }) => ({ label, value: safe(value) }));
@@ -753,4 +802,41 @@ export function savedInGroups(
 ): number {
   const keys = new Set(ladderKeysFor(ladder).filter((k) => groups.includes(k.group)).map((k) => k.key));
   return s.values.filter((v) => v.ladder === ladder && keys.has(v.key)).length;
+}
+
+/** The settings the Alert Settings tab shows for each ladder, in this order:
+ *  the switch, the channel, which priorities start a chain, the call limits,
+ *  then SRE's and SME's time between steps. CRE's heads are not shown: left
+ *  empty, the alert service finds them in the leadership team. Every other key
+ *  stays in LADDER_KEYS and keeps its value (the file's, or one saved
+ *  earlier); the tab just doesn't offer it. */
+export const SHOWN_KEYS: Record<CaseAlertRoomLadder, readonly string[]> = {
+  CRE: [
+    "enabled",
+    "channel",
+    "trigger.priorities",
+    "safety.maxCallsPerLadder",
+    "safety.callWithoutVerifiedLeads",
+  ],
+  SRE: [
+    "enabled",
+    "channel",
+    "trigger.priorities",
+    "safety.maxCallsPerLadder",
+    "safety.callWithoutVerifiedLeads",
+    "timing.interval",
+  ],
+  SME: ["enabled", "channel", "timing.interval"],
+};
+
+/** The specs of these keys on a ladder, in the order given. */
+export function ladderKeysByName(ladder: CaseAlertRoomLadder, keys: readonly string[]): LadderKeySpec[] {
+  const specs = ladderKeysFor(ladder);
+  return keys.flatMap((k) => specs.filter((s) => s.key === k));
+}
+
+/** How many of a ladder's saved values are for keys the page doesn't show. */
+export function savedOutside(s: CaseAlertSettings, ladder: CaseAlertRoomLadder, shown: readonly string[]): number {
+  const keys = new Set(shown);
+  return s.values.filter((v) => v.ladder === ladder && !keys.has(v.key)).length;
 }

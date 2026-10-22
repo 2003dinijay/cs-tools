@@ -352,8 +352,12 @@ ticker, with Redis as its only durable state — the same `REDIS_URL`/
   ladder value the process runs with and whether it came from the file or the
   tab -- in shadow the file's, so the tab can copy them. Heads go with a name
   and email, never a phone. It also carries `fileOnly`: what only the file
-  sets (on/off, channel, safety caps, phones.source), shown read-only on the
-  tab; allowed numbers are counted, never listed. `SmallFilePlusSavedIsTheFullFile` pins that
+  sets (on/off, channel, safety caps, phones.source, `ackChat`), shown read-only on the
+  tab; allowed numbers are counted, never listed. CRE's also carries the rung emails
+  (`email.enabled`, `email.teamLists` counted, `email.creTeamList`/`email.csTeamList`
+  as set or not, never an address), `rules.custom` and `timing` (`creChainTiming`:
+  severity to the minutes each step L0-L4 is called, from `DefaultPolicy`, so the
+  tab cannot drift from the code), so every CRE setting shows on the tab. `SmallFilePlusSavedIsTheFullFile` pins that
   `paging-alert.minimal.yaml` plus everything copied from the full file pages
   exactly as the full file.
   **Team channels** (`team_channel.go`): a saved SRE team row may carry a

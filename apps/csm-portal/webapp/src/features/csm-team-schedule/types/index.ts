@@ -644,6 +644,18 @@ export interface CaseAlertFileOnly {
   "safety.callWithoutVerifiedLeads"?: boolean;
   "safety.callHeadsWithoutLowerTiers"?: boolean;
   "phones.source"?: string;
+  /** Whether a stopped chain replies in its thread. */
+  ackChat?: boolean;
+  /** CRE: one email per step. The lists are counted or flagged, never sent. */
+  "email.enabled"?: boolean;
+  "email.teamLists"?: number;
+  "email.creTeamList"?: boolean;
+  "email.csTeamList"?: boolean;
+  /** CRE: true when the file replaces the built-in rule table. */
+  "rules.custom"?: boolean;
+  /** CRE: minutes after the case is created that each step (L0 to L4) is
+   *  called, by severity (S0 to S4). From the code, not the file. */
+  timing?: Partial<Record<string, number[][]>>;
 }
 
 /** A rotation's reminder window: "HH:MM" on the 24-hour clock of an IANA zone. */

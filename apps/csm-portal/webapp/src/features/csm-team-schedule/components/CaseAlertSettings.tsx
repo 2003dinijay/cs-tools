@@ -56,10 +56,12 @@ import {
 } from "../utils/caseAlertDrafts";
 import {
   ADVANCED_GROUPS,
+  SHOWN_KEYS,
   channelWords,
   ladderKeysFor,
   runningLine,
   savedInGroups,
+  savedOutside,
   teamChannelsUnder,
   valuesToCopy,
   type LadderKeyGroup,
@@ -67,7 +69,7 @@ import {
 import { sreGroupDestination, type GroupDestination } from "../utils/caseAlertGroupRouting";
 import { GroupChatSpaces, SpecialistChatSpaces } from "./CaseAlertChatSpaces";
 import CaseAlertDraftsProvider from "./CaseAlertDraftsProvider";
-import { LadderAdvanced, LadderValueGroup } from "./CaseAlertLadderSettings";
+import { CreTimingTable, LadderAdvanced, LadderValueGroup, LadderValueKeys } from "./CaseAlertLadderSettings";
 import CaseAlertModal from "./CaseAlertModal";
 import CaseAlertSection from "./CaseAlertSection";
 
@@ -183,6 +185,11 @@ interface Props {
   /** Teams people are only moved onto (Migration, SaaS Night cover): they
    *  are never alerted as themselves, so they get no chat space or redirect. */
   moveTargetKeys?: readonly string[];
+  /** "short" (the default) shows each ladder's switch and the settings people
+   *  change (SHOWN_KEYS), where alerts go and, for CRE, when each step is
+   *  called. "full" shows every key of the ladders, as before: the rest is
+   *  kept in the code and keeps its value, but the tab doesn't offer it. */
+  layout?: "short" | "full";
 }
 
 /**
@@ -216,6 +223,7 @@ function SettingsPanel({
   chain,
   teams = [],
   moveTargetKeys = [],
+  layout = "short",
 }: Props): JSX.Element | null {
   const settings = useCaseAlertSettings();
   const drafts = useCaseAlertDrafts();
@@ -272,6 +280,18 @@ function SettingsPanel({
   const savedIn = (groups: readonly LadderKeyGroup[]) =>
     editable.reduce((n, l) => n + savedInGroups(s, l, groups), 0);
   const savedWords = (n: number) => (n > 0 ? `${n} saved here` : undefined);
+  // The short layout shows each ladder's switch and the settings people
+  // change; the rest stays in the code and keeps its value.
+  const simple = layout === "short";
+  const shownSaved = editable.reduce(
+    (n, l) => n + s.values.filter((v) => v.ladder === l && SHOWN_KEYS[l].includes(v.key)).length,
+    0,
+  );
+  const hiddenSaved =
+    editable.reduce((n, l) => n + savedOutside(s, l, SHOWN_KEYS[l]), 0) +
+    // CRE's chat spaces and redirects are not on the tab either.
+    (family === "CRE" ? rooms.filter((r) => r.ladder === "CRE").length + routes.filter((r) => r.ladder === "CRE").length : 0);
+  const ladderLabel = several ? `${editable.join(" and ")} ladders` : `${editable[0]} ladder`;
   /** A change was made: say it waits for Submit, in place of the last line. */
   const onSaved = (what: string) => {
     setError(null);
@@ -325,6 +345,35 @@ function SettingsPanel({
         </div>
       ) : null}
 
+      {simple ? (
+        <CaseAlertSection
+          id={`${family}.ladder`}
+          label={ladderLabel}
+          defaultOpen
+          summary={summaryOf(ladderLabel, ...editable.map((l) => switchWords(s, l)), savedWords(shownSaved))}
+        >
+          <p className="cas-sub">
+            {family === "CRE"
+              ? "Turn the CRE ladder on or off, choose how it reaches people and which severities start a chain, and set its call limits."
+              : "Turn each ladder on or off, choose how it reaches people, which priorities start a chain, its call limits and the time between steps."}
+          </p>
+          {editable.map((l) => (
+            <div key={l}>
+              {l === "SRE" ? (
+                <p className="cas-sub">One SRE ladder: these apply to both the SaaS and IaaS chains.</p>
+              ) : null}
+              <LadderValueKeys
+                ladder={l}
+                settings={s}
+                keys={SHOWN_KEYS[l]}
+                heading={several ? `${l} ladder` : undefined}
+                onSaved={onSaved}
+              />
+            </div>
+          ))}
+          <p className="cas-sub cas-running">{runningLine(s)}</p>
+        </CaseAlertSection>
+      ) : (
       <CaseAlertSection
         id={`${family}.switches`}
         label="On/off and channel"
@@ -357,7 +406,10 @@ function SettingsPanel({
           heads) are under Advanced.
         </p>
       </CaseAlertSection>
+      )}
 
+      {/* CRE's chat spaces and redirects are kept, but not offered on the tab. */}
+      {simple && family === "CRE" ? null : (
       <CaseAlertSection
         id={`${family}.where`}
         label="Where alerts go"
@@ -384,6 +436,7 @@ function SettingsPanel({
               space gets the alerts. A webhook URL is never shown again once saved; only its space
               is.
             </p>
+            {simple && unmapped.length > 0 ? <UnmappedGroups groups={unmapped} redirectBelow={false} /> : null}
             {editable.includes("SRE") ? (
               <GroupChatSpaces
                 settings={s}
@@ -429,7 +482,31 @@ function SettingsPanel({
           />
         ) : null}
       </CaseAlertSection>
+      )}
 
+      {simple ? (
+        <>
+          {family === "CRE" ? (
+            <CaseAlertSection
+              id="CRE.timing"
+              label="When each step is called"
+              summary={summaryOf("When each step is called", "read-only")}
+            >
+              {s.running?.fileOnly?.CRE?.timing ? (
+                <CreTimingTable fileOnly={s.running.fileOnly.CRE} heading="" />
+              ) : (
+                <p className="cas-sub cas-empty">Not reported yet: the alert service reports it when it runs.</p>
+              )}
+            </CaseAlertSection>
+          ) : null}
+          <p className="cas-sub cas-hidden-note">
+            The other {family} settings (who is in each team,{family === "CRE" ? " the heads, where alerts go," : ""} how a chain climbs, the alert service&apos;s own) are not
+            shown here and keep their values
+            {hiddenSaved > 0 ? `; ${plural(hiddenSaved, "of them is", "of them are")} saved here and still in use` : ""}.
+          </p>
+        </>
+      ) : (
+      <>
       <CaseAlertSection
         id={`${family}.who`}
         label="Who gets alerts"
@@ -511,6 +588,8 @@ function SettingsPanel({
           />
         ))}
       </CaseAlertSection>
+      </>
+      )}
 
       <SubmitBar
         family={family}
@@ -637,7 +716,14 @@ const UNMAPPED_SHOWN = 5;
 /** The SRE assignment groups nothing routes: no redirect, no team named after
  *  them, nothing in the alert service's file. Their incident cards go to the
  *  shared SRE room. */
-function UnmappedGroups({ groups }: { groups: { id: string; name: string }[] }): JSX.Element {
+function UnmappedGroups({
+  groups,
+  redirectBelow = true,
+}: {
+  groups: { id: string; name: string }[];
+  /** Whether the redirects are on the page below (the full layout). */
+  redirectBelow?: boolean;
+}): JSX.Element {
   const shown = groups.slice(0, UNMAPPED_SHOWN).map((g) => g.name);
   const more = groups.length - shown.length;
   return (
@@ -646,7 +732,7 @@ function UnmappedGroups({ groups }: { groups: { id: string; name: string }[] }):
         ? "1 assignment group has no SRE team"
         : `${groups.length} assignment groups have no SRE team`}
       {groups.length === 1 ? ": its" : ": their"} incident cards go to the shared SRE room
-      and nobody is called. Redirect {groups.length === 1 ? "it" : "them"} below:{" "}
+      and nobody is called{redirectBelow ? `. Redirect ${groups.length === 1 ? "it" : "them"} below: ` : ": "}
       {shown.join(", ")}
       {more > 0 ? ` and ${more} more` : ""}.
     </p>
