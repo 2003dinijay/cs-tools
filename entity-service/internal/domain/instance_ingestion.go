@@ -16,6 +16,8 @@
 
 package domain
 
+import "time"
+
 // InstanceIngestionActor is the created_by/updated_by stamped on rows written by
 // product-consumption-tracking telemetry, the value that service wrote when it
 // still talked to Postgres directly.
@@ -125,6 +127,24 @@ type DeploymentConsumptionSecretResponse struct {
 	ProjectID        string `json:"projectId"`
 	ProjectKey       string `json:"projectKey"`
 	SecretKey        string `json:"secretKey"`
+}
+
+// UnresolvedProductNode is a node whose reported product and version did not match the
+// product catalogue, so it has no product version.
+type UnresolvedProductNode struct {
+	NodeID           string    `json:"nodeId"`
+	ProjectKey       *string   `json:"projectKey"`
+	DeploymentNumber *string   `json:"deploymentNumber"`
+	ReportedProduct  string    `json:"reportedProduct"`
+	ReportedVersion  *string   `json:"reportedVersion"`
+	FirstSeenOn      time.Time `json:"firstSeenOn"`
+	LastSeenOn       time.Time `json:"lastSeenOn"`
+}
+
+// UnresolvedProductsResponse lists nodes with an unresolved product.
+type UnresolvedProductsResponse struct {
+	Nodes []UnresolvedProductNode `json:"nodes"`
+	Count int                     `json:"count"`
 }
 
 // UsageRollupDailyRequest names the UTC day whose daily usage rows are recomputed from

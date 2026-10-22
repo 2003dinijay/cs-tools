@@ -8171,6 +8171,14 @@ signatures with `GET /projects/{key}/secret-key` (`instance_ingestion_*.go`).
   Go counter rule. `pg_cron` is available on the server but not installed (it needs a
   platform admin); a scheduler can call these functions, today `csm-scheduled-tasks` via these
   endpoints.
+- **Unresolved products are kept and listed** (migration 0247). A node's reported product and
+  version are stored as `deployment_node.reported_product`/`reported_version` whenever both are
+  sent; `product_version_id` is the catalogue match and is NULL when there is none (the node then
+  loses any earlier version, rather than keep a stale one). A miss is logged at warn
+  (`reported product is not in the product catalogue`), and `GET /instances/unresolved-products`
+  (`since`, default 24 h ago; `limit`, default 500, max 5000) lists such nodes, grouped by what they
+  reported. This replaces ServiceNow's email to a fixed address on every miss; the daily digest is
+  a csm-scheduled-tasks job. Product and version are now length-checked (255 / 100).
 - **Internal callers only** (`internalOnly`): PCT's client id must be in
   `M2M_CLIENT_IDS`. The repository has no system-identity fallback. The
   secret key is a credential (`Cache-Control: no-store`); a project with no key

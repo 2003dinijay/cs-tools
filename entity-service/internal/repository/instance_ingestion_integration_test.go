@@ -108,6 +108,13 @@ func instanceIngestionTestPool(t *testing.T) *pgxpool.Pool {
 	if _, err := pool.Exec(ctx, string(rollup)); err != nil {
 		t.Fatalf("apply 0245: %v", err)
 	}
+	reported, err := os.ReadFile("../../migrations/0247_deployment_node_reported_product.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	if _, err := pool.Exec(ctx, string(reported)); err != nil {
+		t.Fatalf("apply 0247: %v", err)
+	}
 
 	for _, seed := range []string{
 		`INSERT INTO product (id, name, code) VALUES
@@ -545,6 +552,69 @@ func TestInstanceIngestionIntegration_BatchRegistersReportNodesWithTheirProducts
 		if len(nodes) != 1 || ingestStr(nodes[0].VersionID) != want || ingestStr(nodes[0].DeploymentNumber) != "DEP000002442" {
 			t.Errorf("%s = %+v, want version %s", node, nodes, want)
 		}
+	}
+}
+
+// A node keeps what it reported; one whose product or version is not in the catalogue is
+// listed as unresolved (grouped by what it reported), one that resolves is not, and a node
+// last seen before the window is left out.
+func TestInstanceIngestionIntegration_UnresolvedProductsAreKeptAndListed(t *testing.T) {
+	pool := instanceIngestionTestPool(t)
+	repo := repository.NewInstanceIngestionRepository(repository.NewScoped(pool))
+	ctx := internalCtx()
+	register := func(nodeID, product, version string) {
+		t.Helper()
+		meta := domain.InstanceNodeMeta{ProjectKey: "CUPRSUBDEV", DeploymentNumber: "DEP000001", Product: product, Version: version}
+		if _, err := repo.UpsertDeploymentNode(ctx, nodeID, meta); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reported := func(nodeID string) (product, version *string, resolved bool) {
+		t.Helper()
+		if err := pool.QueryRow(context.Background(),
+			`SELECT reported_product, reported_version, product_version_id IS NOT NULL FROM deployment_node WHERE node_id = $1`,
+			nodeID).Scan(&product, &version, &resolved); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+
+	register("node-known", "wso2am", "4.2.0")      // in the catalogue
+	register("node-unknown", "wso2zz", "1.0.0")    // product not in the catalogue
+	register("node-newversion", "wso2am", "9.9.9") // product known, version not
+	register("node-old", "wso2yy", "2.0.0")        // unresolved, but last seen long ago
+	if _, err := pool.Exec(context.Background(), `UPDATE deployment_node SET updated_on = NOW() - INTERVAL '10 days' WHERE node_id = 'node-old'`); err != nil {
+		t.Fatal(err)
+	}
+
+	if p, v, ok := reported("node-known"); p == nil || *p != "wso2am" || v == nil || *v != "4.2.0" || !ok {
+		t.Errorf("node-known: reported %v %v resolved %v", p, v, ok)
+	}
+	if p, _, ok := reported("node-unknown"); p == nil || *p != "wso2zz" || ok {
+		t.Errorf("node-unknown: reported %v resolved %v", p, ok)
+	}
+
+	nodes, err := repo.ListUnresolvedProductNodes(ctx, time.Now().Add(-24*time.Hour), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, n := range nodes {
+		got = append(got, fmt.Sprintf("%s %s %s", n.NodeID, n.ReportedProduct, ingestStr(n.ReportedVersion)))
+	}
+	want := []string{"node-newversion wso2am 9.9.9", "node-unknown wso2zz 1.0.0"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("unresolved nodes:\n got %v\nwant %v", got, want)
+	}
+
+	// Once the node reports a product the catalogue knows, it is no longer listed.
+	register("node-unknown", "wso2am", "4.2.0")
+	nodes, err = repo.ListUnresolvedProductNodes(ctx, time.Now().Add(-24*time.Hour), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 1 || nodes[0].NodeID != "node-newversion" {
+		t.Errorf("after node-unknown resolved: %+v", nodes)
 	}
 }
 

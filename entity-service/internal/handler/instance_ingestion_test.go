@@ -53,6 +53,13 @@ type mockInstanceIngestionSvc struct {
 	depSecretRes domain.DeploymentConsumptionSecretResponse
 	depSecretErr error
 	gotNumber    string
+
+	gotSince, gotLimit string
+}
+
+func (m *mockInstanceIngestionSvc) ListUnresolvedProducts(_ context.Context, since, limit string) (domain.UnresolvedProductsResponse, error) {
+	m.gotSince, m.gotLimit = since, limit
+	return domain.UnresolvedProductsResponse{Nodes: []domain.UnresolvedProductNode{{NodeID: "n1", ReportedProduct: "wso2xx"}}, Count: 1}, nil
 }
 
 func (m *mockInstanceIngestionSvc) RollupDailyUsage(_ context.Context, req domain.UsageRollupDailyRequest) (domain.UsageRollupResponse, error) {
@@ -281,6 +288,22 @@ func TestInstanceIngestionHandler(t *testing.T) {
 			t.Fatalf("expected 404, got %d", w.Code)
 		}
 	})
+}
+
+func TestInstanceIngestionHandler_ListUnresolvedProducts(t *testing.T) {
+	svc := &mockInstanceIngestionSvc{}
+	h := NewInstanceIngestionHandler(svc)
+	req := httptest.NewRequest(http.MethodGet, "/instances/unresolved-products?since=2026-10-01T00:00:00Z&limit=20", nil)
+	w := httptest.NewRecorder()
+	h.ListUnresolvedProducts(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d", w.Code)
+	}
+	var resp domain.UnresolvedProductsResponse
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if svc.gotSince != "2026-10-01T00:00:00Z" || svc.gotLimit != "20" || resp.Count != 1 {
+		t.Errorf("service saw since %q limit %q, response %+v", svc.gotSince, svc.gotLimit, resp)
+	}
 }
 
 func TestInstanceIngestionHandler_UsageRollups(t *testing.T) {

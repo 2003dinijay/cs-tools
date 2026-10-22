@@ -124,6 +124,18 @@ func (h *InstanceIngestionHandler) RollupMonthlyUsage(w http.ResponseWriter, r *
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
+// ListUnresolvedProducts handles GET /instances/unresolved-products?since=&limit=.
+func (h *InstanceIngestionHandler) ListUnresolvedProducts(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	resp, err := h.svc.ListUnresolvedProducts(r.Context(), q.Get("since"), q.Get("limit"))
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
 // GetProjectSecretKey handles GET /projects/{key}/secret-key, where key is the
 // project key (a project id is accepted too). The body is a credential, so it
 // must never be cached on the way back.

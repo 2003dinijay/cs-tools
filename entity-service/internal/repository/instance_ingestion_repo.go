@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -55,6 +56,9 @@ type InstanceIngestionRepository interface {
 	// RollupMonthlyUsage recomputes a calendar month's monthly usage rows from the daily
 	// ones, inside the database, and returns how many rows it wrote.
 	RollupMonthlyUsage(ctx context.Context, year, month int) (int, error)
+	// ListUnresolvedProductNodes lists nodes seen since the given time whose reported
+	// product and version did not match the catalogue, at most limit of them.
+	ListUnresolvedProductNodes(ctx context.Context, since time.Time, limit int) ([]domain.UnresolvedProductNode, error)
 	GetProjectSecretKey(ctx context.Context, projectKey string) (string, error)
 	GetDeploymentConsumptionSecret(ctx context.Context, deploymentNumber string) (domain.DeploymentConsumptionSecretResponse, error)
 }
@@ -133,6 +137,13 @@ func lockAndUpsertNodeTx(ctx context.Context, tx pgx.Tx, nodeID string, meta dom
 		if err != nil {
 			return "", err
 		}
+		if versionID == nil {
+			// ServiceNow emailed a fixed address on this; it is logged here and listed by
+			// GET /instances/unresolved-products, from the reported_* columns kept below.
+			slog.WarnContext(ctx, "instance ingestion: reported product is not in the product catalogue",
+				"nodeId", nodeID, "product", meta.Product, "version", meta.Version,
+				"projectKey", meta.ProjectKey, "deploymentNumber", meta.DeploymentNumber)
+		}
 	}
 
 	var existingID string
@@ -151,10 +162,13 @@ func lockAndUpsertNodeTx(ctx context.Context, tx pgx.Tx, nodeID string, meta dom
 			SET project_key        = COALESCE(NULLIF($2, ''), project_key),
 			    deployment_number  = COALESCE(NULLIF($3, ''), deployment_number),
 			    product_version_id = CASE WHEN $5 THEN $4::uuid ELSE product_version_id END,
+			    reported_product   = CASE WHEN $5 THEN $7 ELSE reported_product END,
+			    reported_version   = CASE WHEN $5 THEN $8 ELSE reported_version END,
 			    updated_on = NOW(),
 			    updated_by = $6
 			WHERE id = $1::uuid`
-		if _, err := tx.Exec(ctx, updateSQL, existingID, meta.ProjectKey, meta.DeploymentNumber, versionID, moveVersion, domain.InstanceIngestionActor); err != nil {
+		if _, err := tx.Exec(ctx, updateSQL, existingID, meta.ProjectKey, meta.DeploymentNumber, versionID, moveVersion, domain.InstanceIngestionActor,
+			nonBlank(meta.Product), nonBlank(meta.Version)); err != nil {
 			return "", fmt.Errorf("update deployment node: %w", err)
 		}
 		return existingID, nil
@@ -163,14 +177,21 @@ func lockAndUpsertNodeTx(ctx context.Context, tx pgx.Tx, nodeID string, meta dom
 	const insertSQL = `
 		INSERT INTO deployment_node (
 			id, created_on, updated_on, created_by, updated_by,
-			node_id, project_key, deployment_number, product_version_id
+			node_id, project_key, deployment_number, product_version_id,
+			reported_product, reported_version
 		) VALUES (
 			gen_random_uuid(), NOW(), NOW(), $5, $5,
-			$1, $2, NULLIF($3, ''), $4::uuid
+			$1, $2, NULLIF($3, ''), $4::uuid,
+			$6, $7
 		)
 		RETURNING id::text`
+	var reportedProduct, reportedVersion *string
+	if moveVersion {
+		reportedProduct, reportedVersion = nonBlank(meta.Product), nonBlank(meta.Version)
+	}
 	var insertedID string
-	if err := tx.QueryRow(ctx, insertSQL, nodeID, meta.ProjectKey, meta.DeploymentNumber, versionID, domain.InstanceIngestionActor).Scan(&insertedID); err != nil {
+	if err := tx.QueryRow(ctx, insertSQL, nodeID, meta.ProjectKey, meta.DeploymentNumber, versionID, domain.InstanceIngestionActor,
+		reportedProduct, reportedVersion).Scan(&insertedID); err != nil {
 		return "", fmt.Errorf("insert deployment node: %w", err)
 	}
 	return insertedID, nil
@@ -573,4 +594,35 @@ func (r *instanceIngestionRepo) RollupMonthlyUsage(ctx context.Context, year, mo
 		}
 		return written, nil
 	})
+}
+
+// ListUnresolvedProductNodes implements InstanceIngestionRepository. Grouped by what was
+// reported, so the catalogue entries to add read as a list, most recently seen first
+// within each.
+func (r *instanceIngestionRepo) ListUnresolvedProductNodes(ctx context.Context, since time.Time, limit int) ([]domain.UnresolvedProductNode, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT node_id, project_key, deployment_number, reported_product, reported_version, created_on, updated_on
+		FROM deployment_node
+		WHERE product_version_id IS NULL
+		  AND reported_product IS NOT NULL
+		  AND updated_on >= $1
+		ORDER BY reported_product, reported_version NULLS FIRST, updated_on DESC, id
+		LIMIT $2`, since, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list unresolved product nodes: %w", err)
+	}
+	defer rows.Close()
+
+	nodes := []domain.UnresolvedProductNode{}
+	for rows.Next() {
+		var n domain.UnresolvedProductNode
+		if err := rows.Scan(&n.NodeID, &n.ProjectKey, &n.DeploymentNumber, &n.ReportedProduct, &n.ReportedVersion, &n.FirstSeenOn, &n.LastSeenOn); err != nil {
+			return nil, fmt.Errorf("scan unresolved product node: %w", err)
+		}
+		nodes = append(nodes, n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list unresolved product nodes: %w", err)
+	}
+	return nodes, nil
 }
