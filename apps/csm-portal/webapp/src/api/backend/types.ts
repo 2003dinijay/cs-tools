@@ -2875,6 +2875,8 @@ export interface BeChangeRequestDetail extends BeChangeRequestSearchView {
   customerProposal?: BeChangeRequestCustomerProposal | null;
   /** On hold: a change that is on hold cannot change state, Accept proposed time included. */
   onHold?: boolean | null;
+  /** Why it is on hold; `null` while it is not. */
+  onHoldReason?: string | null;
   /** `read_only` in the ServiceNow dictionary — inherently read-only. */
   labels?: string[];
   /**
@@ -3447,7 +3449,8 @@ export interface BePatchChangeRequestPayload {
   //     for the 4 SN priority choices) — left for a follow-up.
   //   - `comment`/`workNote` append journal entries; the existing CR comments
   //     feature (`useCsmChangeRequestComments`, `/change-requests/{id}/comments`)
-  //     already covers that surface — the edit dialog does not duplicate it.
+  //     already covers that surface for one change request — the edit dialog
+  //     does not duplicate it (the list's bulk edit does send them).
   //   - `durationInput` only succeeds when it exactly matches the effective
   //     planned window in whole seconds (see `CHANGES-cr-field-parity.md`
   //     §"durationInput"); building that validation is deferred rather than
@@ -3478,6 +3481,26 @@ export interface BePatchChangeRequestPayload {
   /** Customer Review checkbox. The backend refuses (400) a change once the CR
    * has reached `customer_review`, `closed`, `rollback` or `canceled`. */
   customerReviewRequired?: boolean;
+  /** The IT service and its offering (portal UUIDs: the incident form's pickers). */
+  serviceId?: string;
+  serviceOfferingId?: string;
+  /** "Service outage / downtime" and "Communication plan" (plain text). */
+  serviceOutage?: string;
+  communicationPlan?: string;
+  /**
+   * Puts the change request on hold (`true`) or takes it off (`false`). While a
+   * change request is on hold its state can't change, unless the same request
+   * takes it off hold. `true` replaces the hold reason with `onHoldReason` (or
+   * clears it when that is not sent); `false` always clears it.
+   */
+  onHold?: boolean;
+  /** Why it is on hold; sent alone it edits the reason of an existing hold. */
+  onHoldReason?: string;
+  /**
+   * A customer-visible "Additional comments" journal entry (never blank). Like
+   * `workNote` it can still be added once the change request has been approved.
+   */
+  comment?: string;
   /**
    * ACCEPT the customer's proposed time (WSO2's answer, the previous system's "Agree"):
    * the proposal is applied to the planned window (the planned length kept) and the

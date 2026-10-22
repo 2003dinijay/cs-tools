@@ -49,17 +49,37 @@ the file is then named `-partial` and a notice says how many rows it holds.
 for the whole page) to select change requests. A closed, canceled or rolled-back
 change request can't be selected. The selection bar then offers:
 
-- **Edit (n)**: one change applied to every selected change request. Only the
-  fields you change are sent. **State** offers only the moves every selected
-  change request can make right now (Request Approval, Start implementation,
-  Close, Cancel change, Roll back and so on, when each is legal for all of
-  them); Re-schedule is not offered, since each change needs its own window.
-  Cancel change and Roll back need a reason, which is added to each one as an
-  internal work note. Impact, priority, category, assignment group and assignee
-  apply only to change requests that have not been approved yet: once CAB
-  approval has been received a change request's fields are read-only, so it
-  gets only the state and the work note, and one left with nothing to change is
-  skipped. A **work note** can be added to all of them.
+- **Edit (n)**: one change applied to every selected change request. It opens
+  every field of the change request form, and only the fields you change are
+  sent: short description, state, type, category, impact, priority, originating
+  service request, on hold (with a reason), service and service offering,
+  assignment group, assignee, requested by, planned start and end, rollback
+  duration, Customer Project and deployments, customer approval and review,
+  whether the Implementation Plan is visible to customers, the plans
+  (description, justification, risk and impact analysis, implementation,
+  rollback and test plans, affected services and components), service outage,
+  communication plan, a work note and an additional comment (visible to the
+  customer). A field left empty keeps each change request's own value.
+  - **State** offers only the moves every selected change request can make
+    right now (Request Approval, Start implementation, Close, Cancel change,
+    Roll back and so on, when each is legal for all of them); Re-schedule is not
+    offered, since each change needs its own window. Cancel change and Roll back
+    need a reason, which is added to each one as an internal work note.
+  - **Type** and **Customer Project** can be set only when every selected change
+    request is still New: they are fixed once approval has been requested. Until
+    CAB approval the **deployments** can still change, within the project, when
+    all the selected change requests share one.
+  - A planned date set on its own is checked against each change request's
+    other planned date; one it wouldn't fit is skipped.
+  - **Customer approval** and **Customer review** offer only what every selected
+    change request can take: after New a requirement can be added but not
+    removed, adding one needs a Customer Project, and an Emergency change has
+    neither (setting the type to Emergency turns both off).
+  - A change request on hold can't change state unless the same edit takes it
+    off hold.
+  - Once CAB approval has been received a change request's fields are
+    read-only, so it gets only the state, on hold, the work note and the
+    additional comment, and one left with nothing to change is skipped.
 - **Assign to me (n)**: makes you the assignee of each selected change request
   that has not been approved yet.
 
@@ -272,7 +292,10 @@ problem, caused by change, resolution code and notes, and the incident report.
 - State offers only what every selected incident can move to; Resolved and
   Closed need a resolution code and notes, which apply to all of them.
 - Subcategory needs a category: the one you set, or the one every selected
-  incident already has.
+  incident already has. Changing the category needs a subcategory too.
+- Service offering needs a service: set the service first.
+- The incident report can't be set while resolving: resolving writes each
+  incident's report.
 - The watch list can have people **added** to or **removed** from each
   incident's own list, or be **replaced**.
 

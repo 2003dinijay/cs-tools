@@ -70,6 +70,7 @@ import { userLabel } from "@features/csm-operations/utils/incidentFormOptions";
 import {
   CHANGE_REQUEST_CATEGORY_OPTIONS,
   CHANGE_REQUEST_CREATE_TYPE_OPTIONS,
+  CHANGE_REQUEST_ROLLBACK_DURATION_MAX,
   CHANGE_REQUEST_IMPACT_OPTIONS,
   CHANGE_REQUEST_PRIORITY_OPTIONS,
   CHANGE_REQUEST_TYPE_FROZEN_REASON,
@@ -925,7 +926,7 @@ export default function EditChangeRequestDialog({
           <TextField
             label="Rollback duration"
             value={rollbackDurationText}
-            onChange={(e) => setRollbackDurationText(e.target.value)}
+            onChange={(e) => setRollbackDurationText(e.target.value.slice(0, CHANGE_REQUEST_ROLLBACK_DURATION_MAX))}
             fullWidth
             size="small"
             disabled={fieldsDisabled}

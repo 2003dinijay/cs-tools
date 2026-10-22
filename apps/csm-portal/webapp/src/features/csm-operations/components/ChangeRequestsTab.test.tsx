@@ -107,6 +107,33 @@ vi.mock("@hooks/useIdTokenClaims", () => ({
   useIdTokenClaims: () => ({ email: "user@example.test" }),
 }));
 
+// The bulk edit dialog's other lookups: nothing to find, and no provider of theirs to set up.
+const noResults = vi.hoisted(() => () => ({ data: [], isFetching: false, isError: false }));
+vi.mock("@api/useSearchItServices", () => ({ useSearchItServices: noResults }));
+vi.mock("@api/useSearchServiceOfferings", () => ({ useSearchServiceOfferings: noResults }));
+vi.mock("@features/csm-operations/api/useSearchServiceRequestsForSelect", () => ({
+  useSearchServiceRequestsForSelect: noResults,
+}));
+vi.mock("@features/csm-cases/components/AsyncProjectSelect", () => ({
+  default: ({ label, disabled }: { label: string; disabled?: boolean }) => <input aria-label={label} disabled={disabled} />,
+}));
+vi.mock("@features/csm-operations/api/useChangeRequestScopeLookups", () => ({
+  useChangeRequestScopeLookups: () => ({
+    deployments: [],
+    customerContacts: [],
+    contactsReady: false,
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(),
+  }),
+}));
+// The plan panels' rich-text editor, as a plain text area (it has its own tests).
+vi.mock("@components/rich-text-editor/Editor", () => ({
+  default: ({ onChange, disabled }: { onChange?: (html: string) => void; disabled?: boolean }) => (
+    <textarea disabled={disabled} onChange={(e) => onChange?.(e.target.value)} />
+  ),
+}));
+
 // The real export menu needs an `ErrorBannerProvider` ancestor this test
 // doesn't set up (same approach as CsmIssuesView.test.tsx); it has its own test.
 vi.mock("@components/FilteredExportMenu", () => ({
@@ -359,6 +386,7 @@ describe("ChangeRequestsTab — Assign to me", () => {
     access.canWrite = true;
     const { BackendApiError } = await import("@api/backend/client");
     const other = { ...CR, id: "cr-4", number: "CHG-1004" };
+    apiMock.get.mockImplementation((path: string) => Promise.resolve(path.endsWith("cr-1") ? CR : other));
     apiMock.patch.mockImplementation((path: string) =>
       path.endsWith("cr-1")
         ? Promise.reject(new BackendApiError(400, "change request is on hold; take it off hold first"))
@@ -376,9 +404,30 @@ describe("ChangeRequestsTab — Assign to me", () => {
     expect(apiMock.patch).toHaveBeenCalledTimes(2);
     expect(screen.getByText(/change request is on hold; take it off hold first/)).toBeInTheDocument();
   });
+
+  it("skips a change request whose detail can't be read just then, rather than sending it blind", async () => {
+    access.canWrite = true;
+    const { BackendApiError } = await import("@api/backend/client");
+    const other = { ...CR, id: "cr-4", number: "CHG-1004" };
+    apiMock.get.mockImplementation((path: string) =>
+      path.endsWith("cr-1") ? Promise.reject(new BackendApiError(503, "unavailable")) : Promise.resolve(other),
+    );
+    apiMock.patch.mockResolvedValue({ id: "cr-4" });
+    showRows([CR, other]);
+    render(<ChangeRequestsTab />);
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select all change requests on this page" }));
+    fireEvent.click(screen.getByRole("button", { name: "Assign to me (2)" }));
+
+    await waitFor(() => expect(screen.getByText(/Assigned to you 1 of 2 change requests/)).toBeInTheDocument());
+    expect(apiMock.patch).toHaveBeenCalledTimes(1);
+    expect(apiMock.patch.mock.calls[0][0]).toBe("/change-requests/cr-4");
+    expect(screen.getByText(/Couldn't read it just now, so it was not changed. Try again./)).toBeInTheDocument();
+  });
 });
 
-describe("ChangeRequestsTab — bulk edit", () => {
+// These drive the whole edit dialog, which takes a while to render under a loaded suite.
+describe("ChangeRequestsTab — bulk edit", { timeout: 20_000 }, () => {
   const detail = (cr: BeChangeRequestSearchView, legalNextStates: string[]): BeChangeRequestDetail => ({
     ...cr,
     legalNextStates,
@@ -483,7 +532,8 @@ describe("ChangeRequestsTab — export", () => {
   });
 });
 
-describe("ChangeRequestsTab — bulk runs follow the change request as it is now", () => {
+// These drive the whole edit dialog, which takes a while to render under a loaded suite.
+describe("ChangeRequestsTab — bulk runs follow the change request as it is now", { timeout: 20_000 }, () => {
   it("plans from the current record: one approved since it was picked is skipped by Assign to me", async () => {
     access.canWrite = true;
     const picked = { ...CR, id: "cr-5", number: "CHG-1005", state: "authorize" };
@@ -606,8 +656,12 @@ describe("ChangeRequestsTab — bulk runs follow the change request as it is now
       expect(keys).toContain(JSON.stringify(["change-request-comments", id]));
     }
     expect(keys).toContain(JSON.stringify(["change-requests"]));
-    // The dialog was gone before the refresh, so its detail reads did not run again.
-    expect(apiMock.get.mock.calls.length).toBe(getsBefore);
+    // Each one is read once, just before it is planned (never from the dialog's cached read);
+    // the dialog was gone before the refresh, so its detail reads did not run again after.
+    expect(apiMock.get.mock.calls.slice(getsBefore).map(([path]) => path).sort()).toEqual([
+      "/change-requests/cr-1",
+      "/change-requests/cr-4",
+    ]);
   });
 
   it("moves focus to the outcome after a run, and to the page's select-all box after Clear selection", async () => {

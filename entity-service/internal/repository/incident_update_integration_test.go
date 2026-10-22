@@ -180,3 +180,44 @@ func TestIncidentUpdateIntegration_RecordFields(t *testing.T) {
 		t.Errorf("a rejected update changed the record: subcategory=%v", r2.subcategory)
 	}
 }
+
+// The detail returns the watch list a PATCH wrote: the list's bulk edit adds
+// to and removes from the list it reads, so an empty read would replace the
+// stored watchers instead of adding to them.
+func TestIncidentUpdateIntegration_DetailReadsWatchList(t *testing.T) {
+	repo, _ := newIncidentUpdateIntegrationRepo(t)
+	ctx := WithSystemIdentity(context.Background())
+
+	v, err := repo.GetIncidentByID(ctx, iuIncidentID)
+	if err != nil {
+		t.Fatalf("GetIncidentByID: %v", err)
+	}
+	if v.WatchList == nil || len(v.WatchList) != 0 {
+		t.Fatalf("watch list before any write = %#v, want an empty list (never null)", v.WatchList)
+	}
+
+	if err := repo.UpdateIncidentLifecycle(ctx, iuIncidentID, IncidentLifecycleUpdate{
+		WatchList: &[]string{iuWatcherID},
+	}, "tester@example.com"); err != nil {
+		t.Fatalf("add watcher: %v", err)
+	}
+	v, err = repo.GetIncidentByID(ctx, iuIncidentID)
+	if err != nil {
+		t.Fatalf("GetIncidentByID: %v", err)
+	}
+	if len(v.WatchList) != 1 || v.WatchList[0].ID != iuWatcherID || v.WatchList[0].Email != "iu.watcher@example.com" {
+		t.Fatalf("watch list = %#v, want the one watcher the update wrote", v.WatchList)
+	}
+	if v.WatchList[0].Name != "iu.watcher" {
+		t.Errorf("watcher name = %q, want the user name when the user has no name", v.WatchList[0].Name)
+	}
+
+	if err := repo.UpdateIncidentLifecycle(ctx, iuIncidentID, IncidentLifecycleUpdate{
+		WatchList: &[]string{},
+	}, "tester@example.com"); err != nil {
+		t.Fatalf("clear watch list: %v", err)
+	}
+	if v, err = repo.GetIncidentByID(ctx, iuIncidentID); err != nil || len(v.WatchList) != 0 {
+		t.Errorf("watch list after clearing = %#v (err %v), want empty", v.WatchList, err)
+	}
+}

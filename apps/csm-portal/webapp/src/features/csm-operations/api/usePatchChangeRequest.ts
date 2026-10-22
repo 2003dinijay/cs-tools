@@ -88,8 +88,8 @@ export function usePatchChangeRequest(): UseMutationResult<
  * What a change request's PATCH makes stale, beside the list: its detail, its
  * approvals (entering Assess, Authorize or Review provisions approvers on the
  * server, and leaving a stage cancels the rows nobody answered) and, when a
- * work note was sent, its journal (the activity feed reads it through the
- * comments query). Shared by the single-record edit and the list's bulk edit.
+ * work note or an additional comment was sent, its journal (the activity feed
+ * reads it through the comments query). Shared by the single-record edit and the list's bulk edit.
  */
 export function refreshChangeRequestRecord(
   queryClient: QueryClient,
@@ -98,7 +98,7 @@ export function refreshChangeRequestRecord(
 ): void {
   void queryClient.invalidateQueries({ queryKey: [ApiQueryKeys.CHANGE_REQUEST_DETAILS, id] });
   void queryClient.invalidateQueries({ queryKey: [ApiQueryKeys.CHANGE_REQUEST_APPROVALS, id] });
-  if (patch.workNote) {
+  if (patch.workNote || patch.comment) {
     void queryClient.invalidateQueries({ queryKey: [ApiQueryKeys.CHANGE_REQUEST_COMMENTS, id] });
   }
 }

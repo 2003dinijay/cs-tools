@@ -37,6 +37,11 @@ export interface AsyncEntitySelectProps<T> {
   id: string;
   label: string;
   placeholder?: string;
+  /**
+   * Keeps the label above the field even while it is empty, so the placeholder
+   * shows (e.g. a bulk edit's "No change", beside selects that read the same way).
+   */
+  shrinkLabel?: boolean;
   /** Selected entity id ("" when none). */
   value: string;
   /** Called with the selected entity id, plus (when available) the full
@@ -100,6 +105,7 @@ export default function AsyncEntitySelect<T>({
   id,
   label,
   placeholder,
+  shrinkLabel = false,
   value,
   onChange,
   disabled,
@@ -230,6 +236,7 @@ export default function AsyncEntitySelect<T>({
         <TextField
           {...params}
           label={label}
+          slotProps={shrinkLabel ? { inputLabel: { ...params.InputLabelProps, shrink: true } } : undefined}
           required={required}
           placeholder={value ? undefined : placeholder}
           error={isError || !!error}

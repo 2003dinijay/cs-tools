@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   APPROVED_ASSIGNEE_SKIPPED,
   APPROVED_FIELDS_SKIPPED,
@@ -22,7 +22,17 @@ import {
   bulkChangeRequestEditProblem,
   bulkChangeRequestPlan,
   bulkEditTouchesContent,
+  NEW_ONLY_FIELDS_SKIPPED,
+  ON_HOLD_STATE_SKIPPED,
+  PLANNED_WINDOW_SKIPPED,
+  PROJECT_CHANGED_SKIPPED,
+  type BulkChangeRequestEdit,
 } from "@features/csm-operations/utils/bulkChangeRequestEdit";
+import {
+  CUSTOMER_REQUIREMENT_ADD_ONLY_REASON,
+  CUSTOMER_REQUIREMENT_NEEDS_PROJECT_REASON,
+  EMERGENCY_CUSTOMER_STEPS_HELPER,
+} from "@features/csm-operations/utils/changeRequests";
 
 const OPEN_STATES = ["new", "assess", "authorize"];
 const APPROVED_STATES = ["customer_approval", "scheduled", "implement", "review", "customer_review"];
@@ -66,9 +76,232 @@ describe("bulkChangeRequestPlan", () => {
   it("skips when there is nothing to send", () => {
     expect(bulkChangeRequestPlan({ state: "new" }, { workNote: "   " })).toEqual({ skip: "Nothing to change." });
   });
+
+  // Every field the dialog can set, as it sends them.
+  const FULL_EDIT: BulkChangeRequestEdit = {
+    title: "Rotate the gateway certificates",
+    description: "<p>What</p>",
+    type: "normal",
+    category: "software",
+    impact: "medium",
+    priority: "high",
+    serviceId: "svc-1",
+    serviceOfferingId: "so-1",
+    assignedTeamId: "g-1",
+    assignedEngineerId: "u-1",
+    requestedById: "u-2",
+    caseId: "case-1",
+    plannedStartOn: "2026-11-01T10:00:00Z",
+    plannedEndOn: "2026-11-01T12:00:00Z",
+    rollbackDurationText: "30 mins",
+    justification: "<p>Why</p>",
+    implementationPlan: "<p>How</p>",
+    impactDescription: "<p>Risk</p>",
+    rollbackPlan: "<p>Back out</p>",
+    testPlan: "<p>Test</p>",
+    serviceOutage: "None",
+    communicationPlan: "Email the customer",
+    affectedServicesText: "<p>Gateway</p>",
+    affectedComponentsText: "<p>Certs</p>",
+    projectId: "proj-1",
+    deploymentIds: [],
+    deploymentProductIds: [],
+    customerApprovalRequired: true,
+    customerReviewRequired: true,
+    isPlanningVisibleToCustomers: false,
+    onHold: true,
+    onHoldReason: "Waiting on the vendor",
+    workNote: "note",
+    comment: "comment",
+  };
+
+  it("sends every field the API takes to a change request in New, false and empty lists included", () => {
+    expect(bulkChangeRequestPlan({ state: "new", type: "normal" }, FULL_EDIT)).toEqual({ patch: FULL_EDIT });
+  });
+
+  it.each(APPROVED_STATES)("sends an approved change request (%s) only the state, the hold and the notes", (state) => {
+    expect(bulkChangeRequestPlan({ state }, { ...FULL_EDIT, state: "canceled" })).toEqual({
+      patch: { state: "canceled", onHold: true, onHoldReason: "Waiting on the vendor", workNote: "note", comment: "comment" },
+    });
+  });
+
+  it("never sends a blank text, so a bulk edit clears nothing", () => {
+    expect(bulkChangeRequestPlan({ state: "new" }, { title: "   ", rollbackDurationText: "", comment: " x " })).toEqual({
+      patch: { comment: "x" },
+    });
+  });
+
+  it.each(["assess", "authorize"])(
+    "skips a change request in %s asked for another type or Customer Project: fixed once approval was requested",
+    (state) => {
+      const project = { id: "proj-1", name: "P" };
+      expect(bulkChangeRequestPlan({ state, type: "normal" }, { type: "standard", impact: "low" })).toEqual({
+        skip: NEW_ONLY_FIELDS_SKIPPED,
+      });
+      expect(bulkChangeRequestPlan({ state, project }, { projectId: "proj-2", deploymentIds: [] })).toEqual({
+        skip: NEW_ONLY_FIELDS_SKIPPED,
+      });
+      // Its own type and project are a no-op resend.
+      expect(bulkChangeRequestPlan({ state, type: "Normal" }, { type: "normal", impact: "low" })).toEqual({
+        patch: { impact: "low" },
+      });
+    },
+  );
+
+  // The dialog sends zoneless UTC ("YYYY-MM-DD HH:mm:ss", zonedInputToBackendUtc); the detail reads RFC 3339 with "Z".
+  // Read naively, the zoneless side would be the browser's local time: pinned here (vi.stubEnv), as a user's browser would be.
+  it.each(["Asia/Colombo", "America/New_York", "UTC"])(
+    "compares the dialog's zoneless UTC date with the stored one on the same clock (browser in %s)",
+    (timeZone) => {
+      // Node reads TZ again whenever it is set, so Date follows the stub.
+      vi.stubEnv("TZ", timeZone);
+      try {
+        const stored = { state: "new", plannedStartOn: "2026-11-01T10:00:00Z", plannedEndOn: "2026-11-01T12:00:00Z" };
+        // 13:30 UTC is after the stored 12:00 end: skipped in every timezone.
+        expect(bulkChangeRequestPlan(stored, { plannedStartOn: "2026-11-01 13:30:00" })).toEqual({ skip: PLANNED_WINDOW_SKIPPED });
+        // 11:00 UTC is inside the stored window: sent in every timezone.
+        expect(bulkChangeRequestPlan(stored, { plannedEndOn: "2026-11-01 11:00:00" })).toEqual({
+          patch: { plannedEndOn: "2026-11-01 11:00:00" },
+        });
+        expect(bulkChangeRequestEditProblem({ plannedStartOn: "2026-11-01 13:30:00", plannedEndOn: "2026-11-01 13:00:00" })).toMatch(
+          /Planned end must be after/,
+        );
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    },
+  );
+
+  it("never moves a change request to the project shown fixed: one whose project changed meanwhile is skipped", () => {
+    const edit = { projectFixed: true, projectId: "proj-1", deploymentIds: ["d-1"], deploymentProductIds: ["dp-1"] };
+    // A New one moved to another project since it was picked.
+    expect(bulkChangeRequestPlan({ state: "new", project: { id: "proj-2", name: "Q" } }, edit)).toEqual({
+      skip: PROJECT_CHANGED_SKIPPED,
+    });
+    // Still on it: the deployments change, and the marker itself is never sent.
+    expect(bulkChangeRequestPlan({ state: "assess", project: { id: "proj-1", name: "P" } }, edit)).toEqual({
+      patch: { projectId: "proj-1", deploymentIds: ["d-1"], deploymentProductIds: ["dp-1"] },
+    });
+    expect(bulkEditTouchesContent({ projectFixed: true })).toBe(false);
+  });
+
+  it.each(["assess", "authorize"])("changes the deployments of a change request in %s, within its own project", (state) => {
+    const project = { id: "proj-1", name: "P" };
+    const edit = { projectId: "proj-1", deploymentIds: ["d-1"], deploymentProductIds: ["dp-1"] };
+    expect(bulkChangeRequestPlan({ state, project }, edit)).toEqual({ patch: edit });
+  });
+
+  it("judges the planned window as it will stand: one date set alone meets the change request's own other date", () => {
+    const window = { plannedStartOn: "2026-11-01T10:00:00Z", plannedEndOn: "2026-11-01T12:00:00Z" };
+    expect(bulkChangeRequestPlan({ state: "new", ...window }, { plannedStartOn: "2026-11-03T09:00:00Z" })).toEqual({
+      skip: PLANNED_WINDOW_SKIPPED,
+    });
+    expect(bulkChangeRequestPlan({ state: "new", ...window }, { plannedEndOn: "2026-11-01T09:00:00Z" })).toEqual({
+      skip: PLANNED_WINDOW_SKIPPED,
+    });
+    expect(bulkChangeRequestPlan({ state: "new", ...window }, { plannedStartOn: "2026-11-01T11:00:00Z" })).toEqual({
+      patch: { plannedStartOn: "2026-11-01T11:00:00Z" },
+    });
+    // No stored other date: nothing to judge against.
+    expect(bulkChangeRequestPlan({ state: "new" }, { plannedStartOn: "2026-11-03T09:00:00Z" })).toEqual({
+      patch: { plannedStartOn: "2026-11-03T09:00:00Z" },
+    });
+  });
+
+  it("leaves the New-only fields out for an approved change request, as every other field", () => {
+    expect(bulkChangeRequestPlan({ state: "scheduled" }, { type: "standard", workNote: "x" })).toEqual({
+      patch: { workNote: "x" },
+    });
+  });
+
+  describe("customer requirements", () => {
+    it("turns both off when a change in New is re-typed to Emergency, unless they are off already", () => {
+      expect(
+        bulkChangeRequestPlan(
+          { state: "new", type: "normal", customerApprovalRequired: true, customerReviewRequired: false },
+          { type: "emergency" },
+        ),
+      ).toEqual({ patch: { type: "emergency", customerApprovalRequired: false } });
+    });
+
+    it("never ticks one on an Emergency change", () => {
+      expect(bulkChangeRequestPlan({ state: "new", type: "emergency" }, { customerReviewRequired: true })).toEqual({
+        skip: EMERGENCY_CUSTOMER_STEPS_HELPER,
+      });
+    });
+
+    it("leaves alone an Emergency change already ticked from before the rule, and edits the rest of it", () => {
+      expect(
+        bulkChangeRequestPlan(
+          { state: "assess", type: "emergency", customerApprovalRequired: true },
+          { customerApprovalRequired: true, assignedTeamId: "g-1" },
+        ),
+      ).toEqual({ patch: { assignedTeamId: "g-1" } });
+    });
+
+    it("does not send one that already reads as asked", () => {
+      expect(
+        bulkChangeRequestPlan({ state: "assess", customerApprovalRequired: true }, { customerApprovalRequired: true }),
+      ).toEqual({ skip: "Nothing to change." });
+    });
+
+    it("adds one after New only with a Customer Project, and never removes one then", () => {
+      expect(bulkChangeRequestPlan({ state: "assess" }, { customerApprovalRequired: true })).toEqual({
+        skip: CUSTOMER_REQUIREMENT_NEEDS_PROJECT_REASON,
+      });
+      expect(
+        bulkChangeRequestPlan({ state: "authorize", project: { id: "p", name: "P" } }, { customerApprovalRequired: true }),
+      ).toEqual({ patch: { customerApprovalRequired: true } });
+      expect(
+        bulkChangeRequestPlan({ state: "assess", customerReviewRequired: true }, { customerReviewRequired: false }),
+      ).toEqual({ skip: CUSTOMER_REQUIREMENT_ADD_ONLY_REASON });
+    });
+
+    it("takes the project being set in the same edit as the change request's project", () => {
+      expect(
+        bulkChangeRequestPlan({ state: "new" }, { projectId: "proj-1", deploymentIds: [], customerApprovalRequired: true }),
+      ).toEqual({ patch: { projectId: "proj-1", deploymentIds: [], customerApprovalRequired: true } });
+    });
+  });
+
+  describe("on hold", () => {
+    it("only updates the reason of one already on hold (a second hold would clear it)", () => {
+      expect(bulkChangeRequestPlan({ state: "assess", onHold: true }, { onHold: true, onHoldReason: "Vendor" })).toEqual({
+        patch: { onHoldReason: "Vendor" },
+      });
+      expect(bulkChangeRequestPlan({ state: "assess", onHold: true }, { onHold: true })).toEqual({ skip: "Already on hold." });
+    });
+
+    it("does not take off hold one that isn't on hold", () => {
+      expect(bulkChangeRequestPlan({ state: "assess", onHold: false }, { onHold: false })).toEqual({ skip: "Not on hold." });
+    });
+
+    it("moves one on hold only when the same edit takes it off hold", () => {
+      expect(bulkChangeRequestPlan({ state: "implement", onHold: true }, { state: "review" })).toEqual({
+        skip: ON_HOLD_STATE_SKIPPED,
+      });
+      expect(bulkChangeRequestPlan({ state: "implement", onHold: true }, { state: "review", onHold: false })).toEqual({
+        patch: { state: "review", onHold: false },
+      });
+    });
+  });
 });
 
 describe("bulkChangeRequestEditProblem", () => {
+  it("refuses a planned end at or before the planned start", () => {
+    const start = "2026-11-01T10:00:00Z";
+    expect(bulkChangeRequestEditProblem({ plannedStartOn: start, plannedEndOn: start })).toMatch(/Planned end must be after/);
+    expect(bulkChangeRequestEditProblem({ plannedStartOn: start, plannedEndOn: "2026-11-01T11:00:00Z" })).toBeNull();
+  });
+
+  it("refuses a hold reason without putting on hold, and customer steps on an Emergency change", () => {
+    expect(bulkChangeRequestEditProblem({ onHoldReason: "x" })).toMatch(/hold reason/);
+    expect(bulkChangeRequestEditProblem({ onHold: true, onHoldReason: "x" })).toBeNull();
+    expect(bulkChangeRequestEditProblem({ type: "emergency", customerApprovalRequired: true })).toBe(
+      EMERGENCY_CUSTOMER_STEPS_HELPER,
+    );
+  });
+
   it("asks for a reason to cancel or roll back, and for nothing else", () => {
     expect(bulkChangeRequestEditProblem({ state: "canceled" })).toMatch(/A reason is required/);
     expect(bulkChangeRequestEditProblem({ state: "rollback", workNote: " " })).toMatch(/A reason is required/);
@@ -83,7 +316,11 @@ describe("bulkEditTouchesContent", () => {
     expect(bulkEditTouchesContent({ state: "implement", workNote: "x" })).toBe(false);
     expect(bulkEditTouchesContent({ priority: "low" })).toBe(true);
     expect(bulkEditTouchesContent({ assignedEngineerId: "u" })).toBe(true);
+    expect(bulkEditTouchesContent({ onHold: false, onHoldReason: "x", comment: "y" })).toBe(false);
+    expect(bulkEditTouchesContent({ isPlanningVisibleToCustomers: false })).toBe(true);
+    expect(bulkEditTouchesContent({ deploymentIds: [] })).toBe(true);
   });
+
 });
 
 describe("assignChangeRequestToMePlan", () => {

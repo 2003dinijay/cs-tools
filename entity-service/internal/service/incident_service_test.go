@@ -84,8 +84,13 @@ func TestIncidentPriorityToEnum(t *testing.T) {
 type stubIncidentRepo struct {
 	createIncident               func(ctx context.Context, req domain.CreateIncidentRequest, priority string, subcategoryValue *string, createdBy string) (domain.CreateIncidentResponse, error)
 	createIncidentFromServiceNow func(ctx context.Context, req domain.CreateIncidentRequest, id, number, createdBy string) (domain.CreateIncidentResponse, error)
-	// fromServiceNowPriority records the priority the dual-write create was asked to store.
-	fromServiceNowPriority  string
+	// fromServiceNowPriority / fromServiceNowSubcategory record what the dual-write create was asked to store.
+	fromServiceNowPriority    string
+	fromServiceNowSubcategory *string
+	// checkIncidentFromServiceNow answers CheckIncidentFromServiceNow; unset, the check passes (it writes nothing either way).
+	checkIncidentFromServiceNow func(ctx context.Context, req domain.CreateIncidentRequest, subcategoryValue *string, priority, createdBy string) error
+	// calls records the order of the dual-write create's repository calls ("check", "create").
+	calls                   []string
 	createIncidentComment   func(ctx context.Context, incidentID string, commentType domain.CommentType, content, createdBy string) (domain.CaseComment, error)
 	getIncidentByID         func(ctx context.Context, id string) (domain.IncidentView, error)
 	updateIncidentLifecycle func(ctx context.Context, id string, u repository.IncidentLifecycleUpdate, actorEmail string) error
@@ -177,12 +182,21 @@ func (s *stubIncidentRepo) CreateIncidentComment(ctx context.Context, incidentID
 	}
 	panic("not implemented")
 }
-func (s *stubIncidentRepo) CreateIncidentFromServiceNow(ctx context.Context, req domain.CreateIncidentRequest, id, number, priority, createdBy string) (domain.CreateIncidentResponse, error) {
+func (s *stubIncidentRepo) CreateIncidentFromServiceNow(ctx context.Context, req domain.CreateIncidentRequest, subcategoryValue *string, id, number, priority, createdBy string) (domain.CreateIncidentResponse, error) {
 	if s.createIncidentFromServiceNow != nil {
+		s.calls = append(s.calls, "create")
 		s.fromServiceNowPriority = priority
+		s.fromServiceNowSubcategory = subcategoryValue
 		return s.createIncidentFromServiceNow(ctx, req, id, number, createdBy)
 	}
 	panic("CreateIncidentFromServiceNow called unexpectedly: Postgres must stay untouched when ServiceNow never accepts the incident")
+}
+func (s *stubIncidentRepo) CheckIncidentFromServiceNow(ctx context.Context, req domain.CreateIncidentRequest, subcategoryValue *string, priority, createdBy string) error {
+	s.calls = append(s.calls, "check")
+	if s.checkIncidentFromServiceNow != nil {
+		return s.checkIncidentFromServiceNow(ctx, req, subcategoryValue, priority, createdBy)
+	}
+	return nil
 }
 func (s *stubIncidentRepo) CreateIncident(ctx context.Context, req domain.CreateIncidentRequest, priority string, subcategoryValue *string, createdBy string) (domain.CreateIncidentResponse, error) {
 	if s.createIncident != nil {
@@ -368,32 +382,99 @@ func TestIncidentService_CreateIncident_DoesNotRetryValidationError(t *testing.T
 	}
 }
 
-// TestIncidentService_CreateIncident_RejectsConfigurationItemID guards the
-// one field with no backing column at all on this data source
-// (ConfigurationItemID): rejecting it explicitly is strictly better than
-// silently accepting and dropping it, since ServiceNow would already have
-// stored it by the time Postgres is ever touched.
-func TestIncidentService_CreateIncident_RejectsConfigurationItemID(t *testing.T) {
+// TestIncidentService_CreateIncident_ChecksPostgresBeforeServiceNow: the CSM
+// database is the record of truth, so what its insert would refuse is refused
+// before ServiceNow creates anything -- never an incident in ServiceNow with no
+// CSM row. The check sees the same subcategory and priority the insert gets.
+func TestIncidentService_CreateIncident_ChecksPostgresBeforeServiceNow(t *testing.T) {
+	refusal := &apierror.ValidationError{Msg: "watchList entry 1 is not a known user"}
 	mirror := &stubMirrorIncidentService{
 		createIncident: func(context.Context, domain.CreateIncidentRequest) (domain.CreateIncidentResponse, error) {
-			t.Fatal("ServiceNow must never be called when an unsupported field is rejected up front")
+			t.Fatal("ServiceNow must never be called when Postgres would refuse the incident")
 			return domain.CreateIncidentResponse{}, nil
 		},
 	}
-	repo := &stubIncidentRepo{}
+	var gotSubcategory *string
+	var gotPriority string
+	repo := &stubIncidentRepo{
+		checkIncidentFromServiceNow: func(_ context.Context, _ domain.CreateIncidentRequest, subcategoryValue *string, priority, _ string) error {
+			gotSubcategory, gotPriority = subcategoryValue, priority
+			return refusal
+		},
+	}
 	svc := NewIncidentServiceWithSNMirror(repo, nil, mirror, nil, nil)
 
-	configItemID := "77777777-7777-7777-7777-777777777777"
 	req := validCreateIncidentRequest()
-	req.ConfigurationItemID = &configItemID
-	if _, err := svc.CreateIncident(context.Background(), req); !asValidationError(err, new(*apierror.ValidationError)) {
-		t.Errorf("expected *apierror.ValidationError for configurationItemId, got %T: %v", err, err)
+	sub := domain.IncidentSubcategoryPartialOutage
+	req.Category, req.Subcategory = domain.IncidentCategoryServiceInterruption, &sub
+	_, err := svc.CreateIncident(context.Background(), req)
+	if !errors.Is(err, refusal) {
+		t.Fatalf("CreateIncident error = %v, want the check's refusal", err)
+	}
+	if gotSubcategory == nil || *gotSubcategory != "Partial Outage" {
+		t.Errorf("check got subcategory %v, want incident_subcategory.value %q", gotSubcategory, "Partial Outage")
+	}
+	if want := incidentPriorityFor(req.Impact, req.Urgency); gotPriority != want {
+		t.Errorf("check got priority %q, want %q", gotPriority, want)
+	}
+}
+
+// TestIncidentService_CreateIncident_StoresEveryFieldInPostgres: the
+// configuration item is no longer refused on this path, and the insert gets
+// the subcategory and the whole request (assigned engineer, watch list) after
+// the check and ServiceNow, in that order.
+func TestIncidentService_CreateIncident_StoresEveryFieldInPostgres(t *testing.T) {
+	var snGotCI *string
+	mirror := &stubMirrorIncidentService{
+		createIncident: func(_ context.Context, req domain.CreateIncidentRequest) (domain.CreateIncidentResponse, error) {
+			snGotCI = req.ConfigurationItemID
+			resp := domain.CreateIncidentResponse{Message: "Incident created successfully."}
+			resp.Incident.ID = "66666666-6666-6666-6666-666666666666"
+			resp.Incident.Number = "INC0023004"
+			resp.Incident.CreatedBy = "jane.doe@example.com"
+			return resp, nil
+		},
+	}
+	var stored domain.CreateIncidentRequest
+	repo := &stubIncidentRepo{
+		createIncidentFromServiceNow: func(_ context.Context, req domain.CreateIncidentRequest, id, number, createdBy string) (domain.CreateIncidentResponse, error) {
+			stored = req
+			resp := domain.CreateIncidentResponse{Message: "Incident created successfully."}
+			resp.Incident.ID, resp.Incident.Number, resp.Incident.CreatedBy = id, number, createdBy
+			return resp, nil
+		},
+	}
+	svc := NewIncidentServiceWithSNMirror(repo, nil, mirror, nil, nil)
+
+	ci := "77777777-7777-7777-7777-777777777777"
+	engineer := "88888888-8888-8888-8888-888888888888"
+	sub := domain.IncidentSubcategoryPartialOutage
+	req := validCreateIncidentRequest()
+	req.Category, req.Subcategory = domain.IncidentCategoryServiceInterruption, &sub
+	req.ConfigurationItemID, req.AssignedEngineerID = &ci, &engineer
+	req.WatchList = []string{"watcher@example.com"}
+	if _, err := svc.CreateIncident(context.Background(), req); err != nil {
+		t.Fatalf("CreateIncident: %v", err)
+	}
+	if snGotCI == nil || *snGotCI != ci {
+		t.Errorf("ServiceNow got configurationItemId %v, want %q", snGotCI, ci)
+	}
+	if stored.ConfigurationItemID == nil || *stored.ConfigurationItemID != ci ||
+		stored.AssignedEngineerID == nil || *stored.AssignedEngineerID != engineer ||
+		len(stored.WatchList) != 1 || stored.WatchList[0] != "watcher@example.com" {
+		t.Errorf("Postgres insert got %+v, want the configuration item, assigned engineer and watch list", stored)
+	}
+	if repo.fromServiceNowSubcategory == nil || *repo.fromServiceNowSubcategory != "Partial Outage" {
+		t.Errorf("Postgres insert got subcategory %v, want %q", repo.fromServiceNowSubcategory, "Partial Outage")
+	}
+	if strings.Join(repo.calls, ",") != "check,create" {
+		t.Errorf("repository calls = %v, want the check, then the insert", repo.calls)
 	}
 }
 
 // TestIncidentService_CreateIncident_PersistsAssignmentGroupID guards the
-// fix for work_item.assignment_group_id (migration 0075): unlike
-// ConfigurationItemID, this field DOES have a backing column, so the group
+// fix for work_item.assignment_group_id (migration 0075): this field has a
+// backing column, so the group
 // (the service's support group) must be forwarded through to
 // CreateIncidentFromServiceNow rather than dropped.
 func TestIncidentService_CreateIncident_PersistsAssignmentGroupID(t *testing.T) {

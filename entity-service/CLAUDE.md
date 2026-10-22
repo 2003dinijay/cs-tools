@@ -1232,6 +1232,26 @@ revisited.
   (`incidentPriorityFor`), the optional fields it sets (subcategory,
   assigned engineer, `cmdb_ci_id`, watch list), and `additionalComments` /
   `workNotes` as COMMENT / WORK_NOTE rows, all in one transaction.
+- **`incidentService.createIncidentSNFirst`** (dual-write, ServiceNow writes on)
+  writes the same fields to Postgres as the plain create
+  (`CreateIncidentFromServiceNow`): assignment group, assigned engineer,
+  subcategory, `cmdb_ci_id`, the watch list and the journal rows. The CSM
+  database is the record of truth, so nothing is left for a later sync to fill
+  in. `configurationItemId` is accepted on this path; it used to be a 400,
+  because Postgres had no column for it. Before ServiceNow is called,
+  `CheckIncidentFromServiceNow` runs that same insert under a placeholder id and
+  number, in a transaction that is always rolled back. A request Postgres would
+  refuse (an id it does not hold, a subcategory of another category, an unknown
+  watcher) is then refused before anything exists, and never leaves an incident
+  in ServiceNow with no CSM row. Its rules are the insert's own, so the two
+  cannot drift. A watch-list entry is checked for shape before any lookup,
+  with the same wording as `watchListEmails`. An unknown one is named by its
+  position, never its value, because an entry can be a third party's email
+  and `writeServiceError` logs every ValidationError. Tests:
+  - repository: `TestIncidentCreate_FromServiceNowPersistsEveryField`,
+    `TestIncidentCreate_CheckFromServiceNow`;
+  - service: `TestIncidentService_CreateIncident_ChecksPostgresBeforeServiceNow`,
+    `..._StoresEveryFieldInPostgres`.
 - **`snCaseService.CreateCaseComment`** publishes `case.comment_added` via
   `publishCommentAdded`, called after the SN comment-create call succeeds.
   Enriches via `GetCaseByID` for `ProjectID`/`CaseTitle`/`Recipients`, the
@@ -7884,14 +7904,14 @@ impact or urgency recomputes priority with ServiceNow's lookup; a new category t
 the current subcategory clears it; `watchList` replaces `work_item_watcher`. A field sent as
 `null` is ignored, as on the ServiceNow path; only `environment` can be cleared.
 
-`IncidentView.WatchList`/`LinkedServiceRequests` are always empty slices on
-this data source (never populated) -- `work_item_watcher` could back the
-former (same table `SetCaseWatchList`/`fetchCaseWatchers` already use for
-cases) and `work_item.parent_id` reverse lookups could back the latter,
-matching the pattern `ProblemRepository.GetProblem`'s `LinkedIncidents`
-already uses for `incident.problem_id`'s own reverse lookup -- left as a
-known, flagged gap rather than built out further given the size of this
-change, not because either is infeasible.
+`IncidentView.WatchList` is read from `work_item_watcher` (`incidentWatchers`), the
+table `UpdateIncidentLifecycle`'s `watchList` replaces. The CSM list's bulk edit adds
+people to, or removes them from, the list it reads, so an empty read would replace
+the stored watchers instead. `TestIncidentUpdateIntegration_DetailReadsWatchList`
+holds the round trip. `LinkedServiceRequests` is still always an empty slice on this
+data source (never populated) -- `work_item.parent_id` reverse lookups could back it,
+matching the pattern `ProblemRepository.GetProblem`'s `LinkedIncidents` already uses
+for `incident.problem_id`'s own reverse lookup -- left as a known, flagged gap.
 
 **`SearchIncidentActivities`/`SearchCaseActivities` verify the id is
 actually an incident/case-like work item before reading its activity

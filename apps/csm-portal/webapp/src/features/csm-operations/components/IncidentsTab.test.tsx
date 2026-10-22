@@ -314,7 +314,8 @@ describe("IncidentsTab — Assign to me", () => {
   });
 });
 
-describe("IncidentsTab — bulk edit", () => {
+// These drive the whole edit dialog, which takes a while to render under a loaded suite.
+describe("IncidentsTab — bulk edit", { timeout: 20_000 }, () => {
   it("applies only the changed fields to every selected incident", async () => {
     access.canWrite = true;
     apiMock.patch.mockResolvedValue({ id: "x" });
@@ -350,7 +351,8 @@ describe("IncidentsTab — export", () => {
   });
 });
 
-describe("IncidentsTab — bulk runs follow the incident as it is now", () => {
+// These drive the whole edit dialog, which takes a while to render under a loaded suite.
+describe("IncidentsTab — bulk runs follow the incident as it is now", { timeout: 20_000 }, () => {
   it("skips an incident already assigned to the user, and one closed since it was picked, saying why", async () => {
     access.canWrite = true;
     apiMock.patch.mockResolvedValue({ id: "x" });
@@ -421,12 +423,36 @@ describe("IncidentsTab — bulk runs follow the incident as it is now", () => {
       expect(keys).toContain(JSON.stringify(["csm-incident-tasks", id]));
     }
     expect(keys).toContain(JSON.stringify(["incidents"]));
+    // Every update writes a field-change entry, so the activity feed is refreshed too.
+    expect(keys).toContain(JSON.stringify(["incident-activities", "inc-1"]));
     // The outcome takes focus: the button that started the run has gone.
     expect(screen.getByText("Assigned to you 2 of 2 incidents.").closest("[role=status]")).toHaveFocus();
   });
+
+  it("refreshes each incident's comments and activity when the edit writes a note", async () => {
+    access.canWrite = true;
+    apiMock.patch.mockResolvedValue({ id: "x" });
+    showRows([INCIDENT, INCIDENT_NEW]);
+    render(<IncidentsTab />);
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select all incidents on this page" }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit (2)" }));
+    const dialog = screen.getByRole("dialog", { name: "Edit 2 incidents" });
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Work note (internal)" }), { target: { value: "Investigating." } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Apply to 2 incidents" }));
+    await waitFor(() => expect(screen.getByText("Updated 2 of 2 incidents.")).toBeInTheDocument());
+
+    const keys = invalidate.mock.calls.map(([arg]) => JSON.stringify((arg as { queryKey: unknown }).queryKey));
+    for (const id of ["inc-1", "inc-2"]) {
+      expect(keys).toContain(JSON.stringify(["incident-comments", id]));
+      expect(keys).toContain(JSON.stringify(["incident-activities", id]));
+    }
+  });
 });
 
-describe("IncidentsTab — bulk watch list", () => {
+// These drive the whole edit dialog, which takes a while to render under a loaded suite.
+describe("IncidentsTab — bulk watch list", { timeout: 20_000 }, () => {
   it("adds a person to each selected incident's own watch list, reading each list first", async () => {
     access.canWrite = true;
     apiMock.get.mockImplementation((path: string) =>
@@ -453,5 +479,27 @@ describe("IncidentsTab — bulk watch list", () => {
     expect(apiMock.get).toHaveBeenCalledWith("/incidents/inc-1");
     expect(apiMock.patch).toHaveBeenCalledWith("/incidents/inc-1", { watchList: ["user-3", "user-7"] });
     expect(apiMock.patch).toHaveBeenCalledWith("/incidents/inc-2", { watchList: ["user-7"] });
+  });
+
+  it("reads each watch list afresh, never from a cached detail: what it sends replaces the list", async () => {
+    access.canWrite = true;
+    apiMock.get.mockResolvedValue({ id: "inc-1", watchList: [{ id: "user-9", name: "Dave", email: "d@example.test" }] });
+    apiMock.patch.mockResolvedValue({ id: "x" });
+    showRows([INCIDENT]);
+    render(<IncidentsTab />);
+    // A detail opened moments ago, before Dave was added: still fresh by its own staleTime.
+    queryClient.setQueryData(["incident-details", "inc-1"], { id: "inc-1", watchList: [] });
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select all incidents on this page" }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit (1)" }));
+    const dialog = screen.getByRole("dialog", { name: "Edit 1 incident" });
+    const watchInput = within(dialog).getByRole("combobox", { name: "Watch list" });
+    watchInput.focus();
+    fireEvent.keyDown(watchInput, { key: "ArrowDown" });
+    fireEvent.click(await screen.findByRole("option", { name: /wanda@example.test/ }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Apply to 1 incident" }));
+
+    await waitFor(() => expect(screen.getByText("Updated 1 of 1 incidents.")).toBeInTheDocument());
+    expect(apiMock.patch).toHaveBeenCalledWith("/incidents/inc-1", { watchList: ["user-9", "user-7"] });
   });
 });

@@ -231,6 +231,62 @@ test.describe("change request list — bulk actions", () => {
       ]),
     );
   });
+
+  test("Edit is wide enough that no field is squeezed or scrolls sideways", async ({ page }) => {
+    await fakeLists(page);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto("/operations/change-requests");
+
+    await page.getByRole("checkbox", { name: "Select all change requests on this page" }).check();
+    await page.getByRole("button", { name: "Edit (2)" }).click();
+    const dialog = page.getByRole("dialog", { name: "Edit 2 change requests" });
+    await expect(dialog.getByText("Only the moves every selected change request can make.")).toBeVisible();
+
+    const box = await dialog.boundingBox();
+    expect(box?.width ?? 0).toBeGreaterThanOrEqual(1100);
+    // Nothing in it is wider than the dialog: no sideways scroll, no field pushed out.
+    const overflow = await dialog.locator(".MuiDialogContent-root").evaluate((el) => el.scrollWidth - el.clientWidth);
+    expect(overflow).toBeLessThanOrEqual(0);
+    // Every rich-text panel's toolbar fits whole: none needs its "scroll right" control.
+    await expect(dialog.getByRole("group", { name: "Rollback plan", exact: true })).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "Scroll toolbar right" })).toHaveCount(0);
+  });
+
+  test("Edit sets the plan, the hold and a comment; the approved one gets only the hold and the comment", async ({ page }) => {
+    const api = await fakeLists(page);
+    await page.goto("/operations/change-requests");
+
+    await page.getByRole("checkbox", { name: "Select all change requests on this page" }).check();
+    await page.getByRole("button", { name: "Edit (2)" }).click();
+    const dialog = page.getByRole("dialog", { name: "Edit 2 change requests" });
+    await expect(dialog.getByText("Only the moves every selected change request can make.")).toBeVisible();
+    await expect(dialog.getByText(/1 of the selected change requests has been approved/)).toBeVisible();
+
+    await dialog.getByRole("textbox", { name: "Short description" }).fill("Rotate the gateway certificates");
+    await dialog.getByRole("combobox", { name: "On hold" }).click();
+    await page.getByRole("option", { name: "Put on hold" }).click();
+    await dialog.getByRole("textbox", { name: "On hold reason" }).fill("Waiting on the vendor's window");
+    await dialog.getByRole("group", { name: "Rollback plan", exact: true }).locator(".editor-input").click();
+    await page.keyboard.type("Restore the previous certificates.");
+    await dialog.getByRole("textbox", { name: "Additional comment (customer-visible)" }).fill("We will rotate the certificates.");
+    await dialog.getByRole("button", { name: "Apply to 2 change requests" }).click();
+
+    await expect(page.getByText("Updated 2 of 2 change requests.")).toBeVisible();
+    expect(api.patches).toHaveLength(2);
+    const sentTo = (id: string): Record<string, unknown> | undefined => api.patches.find((p) => p.path.endsWith(id))?.body;
+    expect(sentTo(CHANGE_REQUESTS[0].id)).toEqual({
+      title: "Rotate the gateway certificates",
+      onHold: true,
+      onHoldReason: "Waiting on the vendor's window",
+      rollbackPlan: expect.stringContaining("Restore the previous certificates."),
+      comment: "We will rotate the certificates.",
+    });
+    expect(sentTo(CHANGE_REQUESTS[1].id)).toEqual({
+      onHold: true,
+      onHoldReason: "Waiting on the vendor's window",
+      comment: "We will rotate the certificates.",
+    });
+  });
 });
 
 test.describe("incident list — bulk actions", () => {

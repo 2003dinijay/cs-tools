@@ -383,6 +383,10 @@ Both lists have a checkbox column (for `canWrite` only), a selection bar (`BulkS
   never stops on a refusal: the banner lists each record that was not updated with the backend's own 4xx words
   (`bulkFailureMessage`; a 5xx is a generic line) and each record skipped before sending. The backend stays the authority
   for every rule; the dialogs only keep from offering what cannot work.
+- **Both dialogs are wide** (`maxWidth="lg"`, 1200px) with grid columns of `minmax(0, 1fr)` from `md` up, so no field
+  is squeezed, nothing scrolls sideways and a rich-text panel's toolbar fits whole (the e2e "Edit is wide enough"
+  case checks all three). Their pickers pass `shrinkLabel` (`AsyncEntitySelect` / `AsyncEntityMultiSelect`, opt-in) so
+  they read "No change" under a raised label, like the selects beside them.
 - **Edit, incidents** (`BulkEditIncidentsDialog`): the whole incident form, laid out in ServiceNow's sections, with
   every field `PATCH /incidents/{id}` accepts: short description, state, channel, impact, urgency, environment,
   category, subcategory, service, service offering, configuration item, assignment group, assigned to, watch list,
@@ -393,34 +397,75 @@ Both lists have a checkbox column (for `canWrite` only), a selection bar (`BulkS
     narrowed by one closed since it was picked (it is skipped). Resolved / Closed need a resolution code and notes,
     applied to all; the two can also be set alone.
   - Subcategory follows the category being set, or the category every selected incident shares (else it is disabled
-    with the reason). Service offering narrows to the service being set.
+    with the reason). A new category needs a subcategory (the single Edit dialog's rule): a PATCH can't clear one, so
+    on the ServiceNow paths the old category's subcategory would stay. Service offering is disabled until a service is
+    set, and narrows to it: nothing checks that an offering belongs to an incident's service.
+  - Environment is capped at 40 characters (`incident.environment` is VARCHAR(40); a longer one fails every incident).
+  - Incident report is disabled while the state is Resolved: resolving regenerates the report (entity-service's
+    `IncidentReportService`) seconds later, over whatever was typed.
   - Watch list: add people to each incident's own list, remove them, or replace the list. The API only replaces, so
-    adding or removing reads each incident's detail first (`incidentDetailQuery`, the detail page's cache entry);
-    one whose list cannot be read is skipped, and a list that would not change is not sent.
+    adding or removing reads each incident's detail first, never from the cache (`fetchQuery` with `staleTime: 0`:
+    the list sent back replaces the whole one); one whose list cannot be read is skipped, and a list that would not
+    change is not sent. On the Postgres data sources the detail reads `work_item_watcher` (entity-service
+    `incidentWatchers`; it used to return an empty list there, which made "add" a replace).
   - Parent incident never offers a selected incident (`useSearchIncidentsExcludingIds`), and the plan refuses one as
     its own parent. Caused by change is a change request picker (its column references `change_request`).
   - Not offered: priority (it follows from impact and urgency) and `parentIncidentId` (a second parent column with no
     label in the portal).
-- **Edit, change requests** (`BulkEditChangeRequestsDialog`): State offers the moves every selected change request can
-  make, read from each one's own `legalNextStates` (fetched with `changeRequestDetailQuery`, the detail page's own cache
-  entry) through the action bar's filter (`bulkChangeRequestTargets`: `isOfferedChangeRequestTarget`, never `authorize`,
-  never `scheduled`, never a Close out of Customer Review). Cancel change / Roll back need a reason, sent as `workNote`
-  **in the same PATCH as the state** (a refused move then records no reason; the detail page posts its reason first
-  because it handles one record). The per-record request is `bulkChangeRequestPlan` (`utils/bulkChangeRequestEdit.ts`):
-  an approved change request (Customer Approval and later) gets only the state and the work note, since its fields are
-  read-only (400 `change_request_approved_read_only`), and one left with nothing to send is skipped with the reason.
+- **Edit, change requests** (`BulkEditChangeRequestsDialog`): every field `PATCH /change-requests/{id}` takes from the
+  edit form, plus on hold and the two journals, in sections (Change request, On hold, Service, Assignment, Schedule,
+  Customer, Planning, Notes): short description, state, type, category, impact, priority, originating service request,
+  on hold and its reason, service and offering, assignment group, assigned to, requested by, planned start and end,
+  rollback duration, Customer Project with its deployments, customer approval / review required, Implementation Plan
+  visible to customers, the eight rich-text plans (`ExpandableRichTextField`), service outage, communication plan,
+  work note and additional comment. Not offered: Request approval and the answers to a customer's proposed time (one
+  change request's own conversation). Each record's request is `bulkChangeRequestPlan` (`utils/bulkChangeRequestEdit.ts`).
+  - State offers the moves every selected change request can make, read from each one's own `legalNextStates` (fetched
+    with `changeRequestDetailQuery`) through the action bar's filter (`bulkChangeRequestTargets`:
+    `isOfferedChangeRequestTarget`, never `authorize`, never `scheduled`, never a Close out of Customer Review).
+    Cancel change / Roll back need a reason, sent as `workNote` **in the same PATCH as the state** (a refused move then
+    records no reason; the detail page posts its reason first because it handles one record).
+  - An approved change request (Customer Approval and later) gets only the state, on hold and the two journals: an
+    allow-list (`APPROVED_ALLOWED_FIELDS`), so a field added later is read-only once approved until it is listed (the
+    backend's `approvedLockFields` refuses the rest, 400 `change_request_approved_read_only`).
+  - Type and Customer Project are enabled only while every not-yet-approved selected change request is New (they are
+    fixed once approval is requested). Past New the **deployments** still change until approval (the backend's
+    `changeRequestLinksLockedStates`): when every not-yet-approved one shares a stored project, that project is shown
+    fixed and the deployments are offered within it; with different projects neither is. The scope goes out only when
+    it was changed in the dialog (`scopeTouched`; past New only with deployments picked), so the project shown is never
+    sent on its own (it would clear the deployments). Project, deployments and deployment products go together (the
+    backend validates them as a unit), and Apply waits for the products. The plan skips one asked for another type or
+    project after New; resending its own is a no-op. Past New the edit carries `projectFixed` (plan-only, never sent):
+    a record whose project is no longer the one shown, New included, is skipped rather than moved to it.
+  - Customer approval / review offer "Required" and "Not required" only as far as every selected one can take them
+    (`customerApprovalLockedReason` / `customerReviewLockedReason`: add-only after New, a Customer Project needed, never
+    for an Emergency change). Choosing type Emergency disables both, and the plan turns a ticked one off in the same
+    PATCH (the backend refuses re-typing into Emergency while a box stays ticked). A box already as asked is not sent,
+    checked before the Emergency refusal (an older Emergency change still ticked is left alone, not skipped). A choice
+    is used only while it is offered (`offered`), so one a type change took off the list is never sent unseen.
+  - On hold: "Put on hold" on one already on hold sends only the reason (a second `onHold: true` would clear it), "Take
+    off hold" on one that isn't is not sent, and one on hold is skipped when the edit changes its state without taking
+    it off hold (the backend's gate). The dialog says how many of the selection are on hold.
+  - A blank text is never sent (a bulk edit clears nothing). The planned window is judged as it will stand: nothing
+    in the backend orders the two bounds, so one date set alone is checked against each record's own other date and
+    a record it doesn't fit is skipped (`PLANNED_WINDOW_SKIPPED`). Both sides go through `parseBackendTimestamp`: the
+    edit's zoneless UTC ("YYYY-MM-DD HH:mm:ss") would otherwise read as the browser's local time against the detail's
+    RFC 3339 `Z` (the plan test pins `process.env.TZ` to show it). Rollback duration is capped at 255 characters
+    (`CHANGE_REQUEST_ROLLBACK_DURATION_MAX`, `VARCHAR(255)`; the single edit form too). While the details are
+    loading, or if one can't be loaded, the fields that depend on them say which.
 - **Assign to me** sends `{assignedEngineerId: <me>}`; it skips a record already assigned to the user, and for change
   requests `assignChangeRequestToMePlan` also skips an approved one (its assignee is read-only).
-- **Plan from the record as it is now.** A change request run reads each one's detail first (`queryClient.fetchQuery` of
-  `changeRequestDetailQuery`, which the dialog has just loaded, so it is a cache hit) and plans from it, so one approved
-  since it was picked gets only its state and note, as the dialog says, instead of a refused PATCH. An incident run plans
+- **Plan from the record as it is now.** A change request run reads each one's detail again just before planning
+  (`queryClient.fetchQuery` of `changeRequestDetailQuery` with `staleTime: 0`, not the dialog's cached read) and plans from
+  it, so one approved or put on hold since it was picked is planned as it now is instead of drawing a refused PATCH;
+  one whose detail can't be read is skipped ("Couldn't read it just now…"), never sent blind. An incident run plans
   from the refreshed row and skips one closed since it was picked. The dialogs leave such a record out of the moves they
   offer and say how many will be skipped.
 - **After a run** the dialog is closed with `flushSync` before anything is refreshed (its per-record detail queries would
   otherwise all refetch), then each record is refreshed exactly as a single edit refreshes it:
-  `refreshChangeRequestRecord` (detail, approvals, comments when a work note was sent) and `refreshIncidentRecord` (detail,
-  tasks, and again after the In Progress / Resolved flows), both exported from the single-record PATCH hooks so the two
-  paths cannot drift. Only the run's own ids leave the selection (`remove`).
+  `refreshChangeRequestRecord` (detail, approvals, comments when a work note or comment was sent) and
+  `refreshIncidentRecord` (detail, tasks, activity and comments after every update, and again after the In
+  Progress / Resolved flows), both exported from the single-record PATCH hooks so the two paths cannot drift. Only the run's own ids leave the selection (`remove`).
 - **Focus and announcements**: the result banner takes focus when it appears (the button that started the run has gone
   with the bar, and focus makes a screen reader read the outcome); Clear selection puts focus on the page's select-all
   box; `BulkSelectionBar` keeps one hidden `role="status"` region mounted even at 0, so the first count is announced.
@@ -430,7 +475,8 @@ Both lists have a checkbox column (for `canWrite` only), a selection bar (`BulkS
   escaped, since Excel would read it as a character, and a cell is cut at Excel's 32,767 characters), JSON (one object per row
   keyed by the column header) or PDF (`utils/tableExportPdf.ts`, jsPDF + autotable, loaded on demand). A capped export is
   named `-partial`. `FilteredCsvExportButton` is still used by the other lists.
-- Tests: the two tabs' tests ("bulk selection", "Assign to me", "bulk edit", "export"), `BulkEditIncidentsDialog.test.tsx`,
+- Tests: the two tabs' tests ("bulk selection", "Assign to me", "bulk edit", "export"; the blocks that drive the whole
+  dialog have a 20 s timeout), `BulkEditIncidentsDialog.test.tsx`, `BulkEditChangeRequestsDialog.test.tsx`,
   `utils/__tests__/bulk*.test.ts`, `useRowSelection.test.ts`, `FilteredExportMenu.test.tsx`, `xlsxWriter.test.ts`,
   `listExport.test.ts`, `tableExportPdf.test.ts`; e2e `tests/e2e/specs/operations/list-bulk-actions.spec.ts` (the list
   searches and PATCHes faked in memory, sign-in and pickers real; every export format downloaded and read back).
