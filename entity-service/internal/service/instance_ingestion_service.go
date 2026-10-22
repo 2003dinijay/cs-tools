@@ -38,6 +38,8 @@ type InstanceIngestionService interface {
 	InsertInstanceInfo(ctx context.Context, req domain.InstanceInfoRequest) (domain.InstanceInfoResponse, error)
 	InsertUsageStats(ctx context.Context, req domain.InstanceUsageIngestRequest) (domain.InstanceUsageIngestResponse, error)
 	ImportDailyUsagesBatch(ctx context.Context, req domain.DailyUsageBatchRequest) (domain.DailyUsageBatchResponse, error)
+	RollupDailyUsage(ctx context.Context, req domain.UsageRollupDailyRequest) (domain.UsageRollupResponse, error)
+	RollupMonthlyUsage(ctx context.Context, req domain.UsageRollupMonthlyRequest) (domain.UsageRollupResponse, error)
 	GetProjectSecretKey(ctx context.Context, projectKey string) (domain.ProjectSecretKeyResponse, error)
 	GetDeploymentConsumptionSecret(ctx context.Context, deploymentNumber string) (domain.DeploymentConsumptionSecretResponse, error)
 }
@@ -285,6 +287,45 @@ func (s *instanceIngestionService) ImportDailyUsagesBatch(ctx context.Context, r
 		return domain.DailyUsageBatchResponse{}, err
 	}
 	return domain.DailyUsageBatchResponse{ImportedCount: count, Status: "SUCCESS"}, nil
+}
+
+// RollupDailyUsage recomputes a UTC day's daily usage rows from its hourly rows. A day
+// that has not started yet has nothing to roll up and is refused; today's partial day
+// is allowed.
+func (s *instanceIngestionService) RollupDailyUsage(ctx context.Context, req domain.UsageRollupDailyRequest) (domain.UsageRollupResponse, error) {
+	date := strings.TrimSpace(req.Date)
+	day, err := time.Parse("2006-01-02", date)
+	if err != nil {
+		return domain.UsageRollupResponse{}, &apierror.ValidationError{Msg: "date must be a date (YYYY-MM-DD)"}
+	}
+	if day.After(s.now().UTC()) {
+		return domain.UsageRollupResponse{}, &apierror.ValidationError{Msg: "date must not be in the future"}
+	}
+	written, err := s.repo.RollupDailyUsage(ctx, date)
+	if err != nil {
+		return domain.UsageRollupResponse{}, err
+	}
+	return domain.UsageRollupResponse{RowsWritten: written, Status: "SUCCESS"}, nil
+}
+
+// RollupMonthlyUsage recomputes a calendar month's monthly usage rows from its daily
+// rows. A month that has not started yet is refused; the current month is allowed.
+func (s *instanceIngestionService) RollupMonthlyUsage(ctx context.Context, req domain.UsageRollupMonthlyRequest) (domain.UsageRollupResponse, error) {
+	if req.Month < 1 || req.Month > 12 {
+		return domain.UsageRollupResponse{}, &apierror.ValidationError{Msg: "month must be between 1 and 12"}
+	}
+	if req.Year < 2000 {
+		return domain.UsageRollupResponse{}, &apierror.ValidationError{Msg: "year must be 2000 or later"}
+	}
+	now := s.now().UTC()
+	if req.Year > now.Year() || (req.Year == now.Year() && req.Month > int(now.Month())) {
+		return domain.UsageRollupResponse{}, &apierror.ValidationError{Msg: "month must not be in the future"}
+	}
+	written, err := s.repo.RollupMonthlyUsage(ctx, req.Year, req.Month)
+	if err != nil {
+		return domain.UsageRollupResponse{}, err
+	}
+	return domain.UsageRollupResponse{RowsWritten: written, Status: "SUCCESS"}, nil
 }
 
 // GetProjectSecretKey retrieves the primary secret key for HMAC validation.

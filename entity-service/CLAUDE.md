@@ -8158,6 +8158,19 @@ it writes these tables through `POST /instances/meta`, `/instances/info`,
 `/instances/usage-stats`, `/instances/daily-usages/batch` and verifies telemetry
 signatures with `GET /projects/{key}/secret-key` (`instance_ingestion_*.go`).
 
+- **Rollups run in the database** (`0245_usage_rollup_functions.sql`): `POST
+  /instances/usage-rollups/daily` (`{"date"}`) and `/monthly` (`{"year","month"}`) call
+  `rollup_daily_usage(date)` and `rollup_monthly_usage(year, month)`, set-based SQL that
+  moves no usage row through the service. Daily rebuilds that UTC day's `API_CALL` rows from
+  the hourly rows; monthly rebuilds the month from the daily rows. A **counter**
+  (`usage_count_type_is_counter`: `TRANSACTION_COUNT`, `M2M_TOKEN`, `AGENT_*`) is summed, any other
+  type takes its latest reading. Monthly counts a node-type-day once (the live row over a
+  `FILE_UPLOAD` one) and includes nodes that only have uploaded days (air-gapped). Both are
+  idempotent and only touch the period given. The daily function takes the same per-node
+  advisory locks as ingestion, in id order. Keep `usage_count_type_is_counter` in step with the
+  Go counter rule. `pg_cron` is available on the server but not installed (it needs a
+  platform admin); a scheduler can call these functions, today `csm-scheduled-tasks` via these
+  endpoints.
 - **Internal callers only** (`internalOnly`): PCT's client id must be in
   `M2M_CLIENT_IDS`. The repository has no system-identity fallback. The
   secret key is a credential (`Cache-Control: no-store`); a project with no key

@@ -49,6 +49,12 @@ type InstanceIngestionRepository interface {
 	InsertDeploymentInformation(ctx context.Context, req domain.InstanceInfoRequest, reportedOn time.Time) (string, error)
 	InsertUsageStats(ctx context.Context, req domain.InstanceUsageIngestRequest, countedOn time.Time) error
 	ImportDailyUsagesBatch(ctx context.Context, req domain.DailyUsageBatchRequest) (int, error)
+	// RollupDailyUsage recomputes the API_CALL daily usage rows of a UTC day (YYYY-MM-DD)
+	// from its hourly rows, inside the database, and returns how many rows it wrote.
+	RollupDailyUsage(ctx context.Context, day string) (int, error)
+	// RollupMonthlyUsage recomputes a calendar month's monthly usage rows from the daily
+	// ones, inside the database, and returns how many rows it wrote.
+	RollupMonthlyUsage(ctx context.Context, year, month int) (int, error)
 	GetProjectSecretKey(ctx context.Context, projectKey string) (string, error)
 	GetDeploymentConsumptionSecret(ctx context.Context, deploymentNumber string) (domain.DeploymentConsumptionSecretResponse, error)
 }
@@ -545,4 +551,26 @@ func (r *instanceIngestionRepo) GetDeploymentConsumptionSecret(ctx context.Conte
 		ProjectKey:       key,
 		SecretKey:        *secretKey,
 	}, nil
+}
+
+// RollupDailyUsage runs the rollup_daily_usage SQL function (migration 0245) for a day.
+func (r *instanceIngestionRepo) RollupDailyUsage(ctx context.Context, day string) (int, error) {
+	return InTxReturning(ctx, r.db, func(tx pgx.Tx) (int, error) {
+		var written int
+		if err := tx.QueryRow(ctx, `SELECT rollup_daily_usage($1::date)`, day).Scan(&written); err != nil {
+			return 0, fmt.Errorf("roll up daily usage: %w", err)
+		}
+		return written, nil
+	})
+}
+
+// RollupMonthlyUsage runs the rollup_monthly_usage SQL function (migration 0245) for a month.
+func (r *instanceIngestionRepo) RollupMonthlyUsage(ctx context.Context, year, month int) (int, error) {
+	return InTxReturning(ctx, r.db, func(tx pgx.Tx) (int, error) {
+		var written int
+		if err := tx.QueryRow(ctx, `SELECT rollup_monthly_usage($1, $2)`, year, month).Scan(&written); err != nil {
+			return 0, fmt.Errorf("roll up monthly usage: %w", err)
+		}
+		return written, nil
+	})
 }

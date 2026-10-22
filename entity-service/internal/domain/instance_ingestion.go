@@ -126,3 +126,23 @@ type DeploymentConsumptionSecretResponse struct {
 	ProjectKey       string `json:"projectKey"`
 	SecretKey        string `json:"secretKey"`
 }
+
+// UsageRollupDailyRequest names the UTC day whose daily usage rows are recomputed from
+// the hourly ones.
+type UsageRollupDailyRequest struct {
+	Date string `json:"date"`
+}
+
+// UsageRollupMonthlyRequest names the calendar month whose monthly usage rows are
+// recomputed from the daily ones.
+type UsageRollupMonthlyRequest struct {
+	Year  int `json:"year"`
+	Month int `json:"month"`
+}
+
+// UsageRollupResponse carries the number of usage rows a rollup wrote (inserted or
+// changed); a rerun over unchanged source rows writes none.
+type UsageRollupResponse struct {
+	RowsWritten int    `json:"rowsWritten"`
+	Status      string `json:"status"`
+}

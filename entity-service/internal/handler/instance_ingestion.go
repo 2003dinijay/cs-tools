@@ -94,6 +94,36 @@ func (h *InstanceIngestionHandler) ImportDailyUsagesBatch(w http.ResponseWriter,
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
+// RollupDailyUsage handles POST /instances/usage-rollups/daily.
+func (h *InstanceIngestionHandler) RollupDailyUsage(w http.ResponseWriter, r *http.Request) {
+	var req domain.UsageRollupDailyRequest
+	if !decodeRequest(w, r, &req) {
+		return
+	}
+	resp, err := h.svc.RollupDailyUsage(r.Context(), req)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// RollupMonthlyUsage handles POST /instances/usage-rollups/monthly.
+func (h *InstanceIngestionHandler) RollupMonthlyUsage(w http.ResponseWriter, r *http.Request) {
+	var req domain.UsageRollupMonthlyRequest
+	if !decodeRequest(w, r, &req) {
+		return
+	}
+	resp, err := h.svc.RollupMonthlyUsage(r.Context(), req)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
 // GetProjectSecretKey handles GET /projects/{key}/secret-key, where key is the
 // project key (a project id is accepted too). The body is a credential, so it
 // must never be cached on the way back.

@@ -101,6 +101,13 @@ func instanceIngestionTestPool(t *testing.T) *pgxpool.Pool {
 	if _, err := pool.Exec(ctx, string(migration)); err != nil {
 		t.Fatalf("apply 0054: %v", err)
 	}
+	rollup, err := os.ReadFile("../../migrations/0245_usage_rollup_functions.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	if _, err := pool.Exec(ctx, string(rollup)); err != nil {
+		t.Fatalf("apply 0245: %v", err)
+	}
 
 	for _, seed := range []string{
 		`INSERT INTO product (id, name, code) VALUES
@@ -537,6 +544,276 @@ func TestInstanceIngestionIntegration_BatchRegistersReportNodesWithTheirProducts
 		nodes := readNodes(t, pool, node)
 		if len(nodes) != 1 || ingestStr(nodes[0].VersionID) != want || ingestStr(nodes[0].DeploymentNumber) != "DEP000002442" {
 			t.Errorf("%s = %+v, want version %s", node, nodes, want)
+		}
+	}
+}
+
+// rollupNode registers a node and returns its uuid.
+func rollupNode(t *testing.T, repo repository.InstanceIngestionRepository, nodeID string) string {
+	t.Helper()
+	meta := domain.InstanceNodeMeta{ProjectKey: "CUPRSUBDEV", DeploymentNumber: "DEP000001", Product: "wso2am", Version: "4.2.0"}
+	id, err := repo.UpsertDeploymentNode(internalCtx(), nodeID, meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// rollupDailyValues reads a node's daily rows as "type date source=value".
+func rollupDailyValues(t *testing.T, pool *pgxpool.Pool, nodeID string) []string {
+	t.Helper()
+	rows, err := pool.Query(context.Background(), `
+		SELECT dus.count_type, dus.summary_date::text, dus.data_source::text, dus.value
+		FROM daily_usage_summary dus JOIN deployment_node dn ON dn.id = dus.deployment_node_id
+		WHERE dn.node_id = $1 ORDER BY dus.count_type, dus.summary_date, dus.data_source::text`, nodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var ct, day, src string
+		var v int
+		if err := rows.Scan(&ct, &day, &src, &v); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, fmt.Sprintf("%s %s %s=%d", ct, day, src, v))
+	}
+	return got
+}
+
+func hourlyRow(t *testing.T, pool *pgxpool.Pool, nodeUUID, countType string, count int, at time.Time) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `
+		INSERT INTO hourly_usage_summary (id, created_on, updated_on, created_by, updated_by, deployment_node_id, count_type, count, counted_on)
+		VALUES (gen_random_uuid(), NOW(), NOW(), 't', 't', $1::uuid, $2, $3, $4)`, nodeUUID, countType, count, at); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func dailyRow(t *testing.T, pool *pgxpool.Pool, nodeUUID, day, countType string, value int, source string) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `
+		INSERT INTO daily_usage_summary (id, created_on, updated_on, created_by, updated_by, deployment_node_id, deployment_number, summary_date, count_type, value, data_source)
+		VALUES (gen_random_uuid(), NOW(), NOW(), 't', 't', $1::uuid, 'DEP000001', $2::date, $3, $4, $5::usage_data_source_enum)`,
+		nodeUUID, day, countType, value, source); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func monthlyValues(t *testing.T, pool *pgxpool.Pool, year, month int) []string {
+	t.Helper()
+	rows, err := pool.Query(context.Background(), `
+		SELECT node_id, count_type, count FROM monthly_usage_summary
+		WHERE year = $1 AND month = $2 ORDER BY node_id, count_type`, year, month)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var node, ct string
+		var v int
+		if err := rows.Scan(&node, &ct, &v); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, fmt.Sprintf("%s %s=%d", node, ct, v))
+	}
+	return got
+}
+
+// The SQL counter rule has to stay in step with the one ingestion applies.
+func TestUsageRollup_CounterRule(t *testing.T) {
+	pool := instanceIngestionTestPool(t)
+	for countType, want := range map[string]bool{
+		"TRANSACTION_COUNT": true, "M2M_TOKEN": true, "AGENT_DIRECT_TOKEN": true, "AGENT_DIRECT_REFRESH_TOKEN": true,
+		"AGENT_OBO_TOKEN": true, "AGENT_OBO_REFRESH_TOKEN": true, "AGENT_PROVISION": true,
+		"MAU": false, "TOTAL_USERS": false, "TOTAL_ROOT_ORGS": false, "TOTAL_B2B_ORGS": false,
+		"API_COUNT": false, "MCP_API_COUNT": false, "CORES": false, "AGENTX": false,
+	} {
+		var got bool
+		if err := pool.QueryRow(context.Background(), `SELECT usage_count_type_is_counter($1)`, countType).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Errorf("usage_count_type_is_counter(%q) = %v, want %v", countType, got, want)
+		}
+	}
+}
+
+// The daily rollup sums counters and takes the latest reading of levels from the
+// UTC day's hourly rows, repairs a wrong stored value, leaves another source's row
+// and other days alone, and writes nothing the second time.
+func TestUsageRollup_DailyFromHourlyRows(t *testing.T) {
+	pool := instanceIngestionTestPool(t)
+	repo := repository.NewInstanceIngestionRepository(repository.NewScoped(pool))
+	ctx := internalCtx()
+	node := rollupNode(t, repo, "node-r1")
+	at := func(day, hour, min int) time.Time { return time.Date(2026, 10, day, hour, min, 0, 0, time.UTC) }
+
+	hourlyRow(t, pool, node, "TRANSACTION_COUNT", 100, at(15, 8, 0))
+	hourlyRow(t, pool, node, "TRANSACTION_COUNT", 250, at(15, 9, 0))
+	hourlyRow(t, pool, node, "TRANSACTION_COUNT", 5, at(15, 23, 30)) // 23:30 UTC is already the 16th in the session zone
+	hourlyRow(t, pool, node, "TRANSACTION_COUNT", 10, at(16, 1, 0))  // the next day
+	hourlyRow(t, pool, node, "M2M_TOKEN", 20, at(15, 9, 0))
+	hourlyRow(t, pool, node, "M2M_TOKEN", 30, at(15, 10, 0))
+	hourlyRow(t, pool, node, "AGENT_OBO_TOKEN", 3, at(15, 9, 0))
+	hourlyRow(t, pool, node, "MAU", 40, at(15, 11, 0))
+	hourlyRow(t, pool, node, "MAU", 45, at(15, 12, 0))
+	hourlyRow(t, pool, node, "TOTAL_USERS", 56, at(15, 12, 0))
+	hourlyRow(t, pool, node, "TOTAL_USERS", 50, at(15, 9, 0)) // an earlier hour's report that arrived late
+
+	dailyRow(t, pool, node, "2026-10-15", "TRANSACTION_COUNT", 250, "API_CALL")     // the old "last report" value
+	dailyRow(t, pool, node, "2026-10-15", "TRANSACTION_COUNT", 7777, "FILE_UPLOAD") // an upload for the same day
+
+	written, err := repo.RollupDailyUsage(ctx, "2026-10-15")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"AGENT_OBO_TOKEN 2026-10-15 API_CALL=3",
+		"M2M_TOKEN 2026-10-15 API_CALL=50",
+		"MAU 2026-10-15 API_CALL=45",
+		"TOTAL_USERS 2026-10-15 API_CALL=56",
+		"TRANSACTION_COUNT 2026-10-15 API_CALL=355",
+		"TRANSACTION_COUNT 2026-10-15 FILE_UPLOAD=7777",
+	}
+	if got := rollupDailyValues(t, pool, "node-r1"); strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("daily rows:\n got %v\nwant %v", got, want)
+	}
+	if written != 5 { // four rows inserted, the stale TRANSACTION_COUNT corrected
+		t.Errorf("rows written = %d, want 5", written)
+	}
+
+	again, err := repo.RollupDailyUsage(ctx, "2026-10-15")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again != 0 {
+		t.Errorf("a rerun over unchanged rows wrote %d rows, want 0", again)
+	}
+
+	// The next day is rolled up on its own.
+	if _, err := repo.RollupDailyUsage(ctx, "2026-10-16"); err != nil {
+		t.Fatal(err)
+	}
+	got := rollupDailyValues(t, pool, "node-r1")
+	if len(got) != len(want)+1 || got[len(got)-1] != "TRANSACTION_COUNT 2026-10-16 API_CALL=10" {
+		t.Errorf("after rolling up the 16th: %v", got)
+	}
+}
+
+// The monthly rollup sums counters over the days and takes a level's latest day,
+// counts a node-type-day once (the live row over an uploaded one), includes a node
+// that has only uploaded days (an air-gapped product), skips other months, and writes
+// nothing the second time.
+func TestUsageRollup_MonthlyFromDailyRows(t *testing.T) {
+	pool := instanceIngestionTestPool(t)
+	repo := repository.NewInstanceIngestionRepository(repository.NewScoped(pool))
+	ctx := internalCtx()
+	live := rollupNode(t, repo, "node-m1")
+	airGapped := rollupNode(t, repo, "node-air")
+
+	dailyRow(t, pool, live, "2026-10-01", "TRANSACTION_COUNT", 100, "API_CALL")
+	dailyRow(t, pool, live, "2026-10-02", "TRANSACTION_COUNT", 200, "API_CALL")
+	dailyRow(t, pool, live, "2026-10-02", "TRANSACTION_COUNT", 999, "FILE_UPLOAD") // the live row for that day counts
+	dailyRow(t, pool, live, "2026-10-03", "TRANSACTION_COUNT", 50, "FILE_UPLOAD")  // no live row that day, so the upload counts
+	dailyRow(t, pool, live, "2026-10-05", "MAU", 30, "API_CALL")
+	dailyRow(t, pool, live, "2026-10-20", "MAU", 45, "API_CALL")
+	dailyRow(t, pool, live, "2026-10-12", "MAU", 99, "FILE_UPLOAD")
+	dailyRow(t, pool, live, "2026-09-30", "TRANSACTION_COUNT", 77, "API_CALL") // another month
+
+	dailyRow(t, pool, airGapped, "2026-10-01", "M2M_TOKEN", 10, "FILE_UPLOAD")
+	dailyRow(t, pool, airGapped, "2026-10-02", "M2M_TOKEN", 15, "FILE_UPLOAD")
+	dailyRow(t, pool, airGapped, "2026-10-01", "TOTAL_USERS", 20, "FILE_UPLOAD")
+	dailyRow(t, pool, airGapped, "2026-10-31", "TOTAL_USERS", 22, "FILE_UPLOAD")
+
+	written, err := repo.RollupMonthlyUsage(ctx, 2026, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"node-air M2M_TOKEN=25",
+		"node-air TOTAL_USERS=22",
+		"node-m1 MAU=45",
+		"node-m1 TRANSACTION_COUNT=350",
+	}
+	if got := monthlyValues(t, pool, 2026, 10); strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("monthly rows:\n got %v\nwant %v", got, want)
+	}
+	if written != 4 {
+		t.Errorf("rows written = %d, want 4", written)
+	}
+	if got := monthlyValues(t, pool, 2026, 9); len(got) != 0 {
+		t.Errorf("September was rolled up too: %v", got)
+	}
+
+	again, err := repo.RollupMonthlyUsage(ctx, 2026, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again != 0 {
+		t.Errorf("a rerun over unchanged rows wrote %d rows, want 0", again)
+	}
+
+	// A day that changes afterwards changes the month on the next run.
+	dailyRow(t, pool, live, "2026-10-04", "TRANSACTION_COUNT", 1000, "API_CALL")
+	if n, err := repo.RollupMonthlyUsage(ctx, 2026, 10); err != nil || n != 1 {
+		t.Fatalf("after a new day: wrote %d rows, err %v", n, err)
+	}
+	if got := monthlyValues(t, pool, 2026, 10); got[3] != "node-m1 TRANSACTION_COUNT=1350" {
+		t.Errorf("monthly rows after a new day: %v", got)
+	}
+}
+
+// Reports arriving while the rollup runs must neither deadlock with it nor be lost:
+// the rollup takes the same per-node locks ingestion does, and a final run over the
+// finished hours gives the day's true total.
+func TestUsageRollup_RunsAlongsideIngestion(t *testing.T) {
+	pool := instanceIngestionTestPool(t)
+	repo := repository.NewInstanceIngestionRepository(repository.NewScoped(pool))
+	ctx := internalCtx()
+	meta := domain.InstanceNodeMeta{ProjectKey: "CUPRSUBDEV", DeploymentNumber: "DEP000001", Product: "wso2am", Version: "4.2.0"}
+	day := time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC)
+	rollupNode(t, repo, "node-c1")
+	rollupNode(t, repo, "node-c2")
+
+	const reports = 24
+	var wg sync.WaitGroup
+	errs := make(chan error, 2*reports+40)
+	for _, node := range []string{"node-c1", "node-c2"} {
+		for i := 0; i < reports; i++ {
+			wg.Add(1)
+			go func(node string, hour int) {
+				defer wg.Done()
+				req := domain.InstanceUsageIngestRequest{NodeID: node, CountType: "M2M_TOKEN", Count: 10, InstanceNodeMeta: meta}
+				errs <- repo.InsertUsageStats(ctx, req, day.Add(time.Duration(hour)*time.Hour))
+			}(node, i)
+		}
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 20; i++ {
+			_, err := repo.RollupDailyUsage(ctx, "2026-10-15")
+			errs <- err
+		}
+	}()
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("a concurrent call failed: %v", err)
+		}
+	}
+
+	if _, err := repo.RollupDailyUsage(ctx, "2026-10-15"); err != nil {
+		t.Fatal(err)
+	}
+	for _, node := range []string{"node-c1", "node-c2"} {
+		want := []string{fmt.Sprintf("M2M_TOKEN 2026-10-15 API_CALL=%d", 10*reports)}
+		if got := rollupDailyValues(t, pool, node); strings.Join(got, "|") != strings.Join(want, "|") {
+			t.Errorf("%s daily rows: got %v, want %v", node, got, want)
 		}
 	}
 }

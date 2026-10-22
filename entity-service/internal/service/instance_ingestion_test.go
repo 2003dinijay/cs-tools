@@ -41,6 +41,10 @@ type mockInstanceIngestionRepo struct {
 
 	secret    string
 	secretErr error
+
+	rolledDay   string
+	rolledYear  int
+	rolledMonth int
 }
 
 func (m *mockInstanceIngestionRepo) UpsertDeploymentNode(_ context.Context, nodeID string, meta domain.InstanceNodeMeta) (string, error) {
@@ -65,6 +69,18 @@ func (m *mockInstanceIngestionRepo) ImportDailyUsagesBatch(_ context.Context, re
 	m.calls++
 	m.batch = req
 	return len(req.Usages), nil
+}
+
+func (m *mockInstanceIngestionRepo) RollupDailyUsage(_ context.Context, day string) (int, error) {
+	m.calls++
+	m.rolledDay = day
+	return 7, nil
+}
+
+func (m *mockInstanceIngestionRepo) RollupMonthlyUsage(_ context.Context, year, month int) (int, error) {
+	m.calls++
+	m.rolledYear, m.rolledMonth = year, month
+	return 9, nil
 }
 
 func (m *mockInstanceIngestionRepo) GetProjectSecretKey(_ context.Context, _ string) (string, error) {
@@ -303,5 +319,67 @@ func TestInstanceIngestion_SecretKeyErrorsPassThrough(t *testing.T) {
 	resp, err := newTestIngestionService(repo).GetProjectSecretKey(context.Background(), " PROJ ")
 	if err != nil || resp.SecretKey != "s3cret" {
 		t.Fatalf("resp = %+v, err = %v", resp, err)
+	}
+}
+
+func TestInstanceIngestion_RollupDailyValidatesTheDay(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct{ name, date, contains string }{
+		{"not a date", "15/10/2026", "date must be a date"},
+		{"empty", " ", "date must be a date"},
+		{"tomorrow", "2026-10-17", "must not be in the future"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &mockInstanceIngestionRepo{}
+			_, err := newTestIngestionService(repo).RollupDailyUsage(ctx, domain.UsageRollupDailyRequest{Date: tc.date})
+			wantValidation(t, err, tc.contains)
+			if repo.calls != 0 {
+				t.Errorf("a rejected day reached the repository (%d calls)", repo.calls)
+			}
+		})
+	}
+
+	// Today's partial day is allowed, and the day is handed on trimmed.
+	repo := &mockInstanceIngestionRepo{}
+	resp, err := newTestIngestionService(repo).RollupDailyUsage(ctx, domain.UsageRollupDailyRequest{Date: " 2026-10-16 "})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if repo.rolledDay != "2026-10-16" || resp.RowsWritten != 7 || resp.Status != "SUCCESS" {
+		t.Errorf("rolled %q, response %+v", repo.rolledDay, resp)
+	}
+}
+
+func TestInstanceIngestion_RollupMonthlyValidatesTheMonth(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name        string
+		year, month int
+		contains    string
+	}{
+		{"month zero", 2026, 0, "month must be between 1 and 12"},
+		{"month thirteen", 2026, 13, "month must be between 1 and 12"},
+		{"year too early", 1999, 12, "year must be 2000 or later"},
+		{"next month", 2026, 11, "must not be in the future"},
+		{"next year", 2027, 1, "must not be in the future"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &mockInstanceIngestionRepo{}
+			_, err := newTestIngestionService(repo).RollupMonthlyUsage(ctx, domain.UsageRollupMonthlyRequest{Year: tc.year, Month: tc.month})
+			wantValidation(t, err, tc.contains)
+			if repo.calls != 0 {
+				t.Errorf("a rejected month reached the repository (%d calls)", repo.calls)
+			}
+		})
+	}
+
+	// The current month is allowed.
+	repo := &mockInstanceIngestionRepo{}
+	resp, err := newTestIngestionService(repo).RollupMonthlyUsage(ctx, domain.UsageRollupMonthlyRequest{Year: 2026, Month: 10})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if repo.rolledYear != 2026 || repo.rolledMonth != 10 || resp.RowsWritten != 9 {
+		t.Errorf("rolled %d-%d, response %+v", repo.rolledYear, repo.rolledMonth, resp)
 	}
 }
