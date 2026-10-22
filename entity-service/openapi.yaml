@@ -10118,6 +10118,74 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /reports/product-regressions:
+    get:
+      summary: >-
+        Build one monthly product regression report: the regression-tagged
+        cases on the named products whose fix ETA was shared with the
+        customer during one calendar month, grouped by product. Read-only.
+        Internal callers only.
+      description: >-
+        A case is listed when it is filed against one of `products`
+        (names compared ignoring case and surrounding whitespace), carries
+        the configured regression tag, and its fix ETA was shared at or
+        after the first instant of the month and before the first instant
+        of the next, in the report's timezone (Asia/Colombo). `month`
+        defaults to the month before now and must be a month that has
+        already ended. Groups are in product name order; each group's
+        cases in the order their ETA was shared.
+      operationId: getProductRegressionReport
+      parameters:
+        - name: products
+          in: query
+          required: true
+          style: form
+          explode: false
+          schema:
+            type: array
+            minItems: 1
+            maxItems: 50
+            items:
+              type: string
+          description: The product names the report covers, comma-separated.
+        - name: month
+          in: query
+          required: false
+          schema:
+            type: string
+            pattern: '^[0-9]{4}-[0-9]{2}$'
+          description: The calendar month reported, YYYY-MM. Defaults to last month.
+      responses:
+        "200":
+          description: The report.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductRegressionReport'
+        "400":
+          description: products is missing, or month is not a finished calendar month.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller is not an internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "503":
+          description: The regression tag is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /reports/migration-cases:
     get:
       summary: >-
@@ -26742,6 +26810,77 @@ components:
         sentOn:
           type: string
           format: date-time
+    ProductRegressionReport:
+      type: object
+      description: One monthly product regression report.
+      required: [generatedAt, month, periodStart, periodEnd, tag, products, totalCases, groups]
+      properties:
+        generatedAt:
+          type: string
+          format: date-time
+        month:
+          type: string
+          description: The calendar month reported, YYYY-MM.
+        periodStart:
+          type: string
+          format: date-time
+          description: The first instant of the month, in the report's timezone.
+        periodEnd:
+          type: string
+          format: date-time
+          description: The first instant of the next month; cases are listed when their ETA was shared before it.
+        tag:
+          type: string
+          description: The tag that marks a case as a regression.
+        products:
+          type: array
+          description: The product names asked for, as given.
+          items:
+            type: string
+        totalCases:
+          type: integer
+          description: Cases across every group.
+        groups:
+          type: array
+          description: The cases by product, in product name order.
+          items:
+            $ref: '#/components/schemas/ProductRegressionReportGroup'
+    ProductRegressionReportGroup:
+      type: object
+      description: One product's regression cases.
+      required: [product, cases]
+      properties:
+        product:
+          type: string
+        cases:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProductRegressionReportRow'
+    ProductRegressionReportRow:
+      type: object
+      description: One regression case in the report.
+      required: [id, number, issueKey, subject, product, deployedProduct, etaSharedOn]
+      properties:
+        id:
+          type: string
+          format: uuid
+        number:
+          type: string
+        issueKey:
+          type: string
+          description: The case's customer-facing identifier.
+        subject:
+          type: string
+        product:
+          type: string
+          description: The WSO2 product the case is filed against.
+        deployedProduct:
+          type: string
+          description: The customer's deployment the case concerns; blank when none is named.
+        etaSharedOn:
+          type: string
+          format: date-time
+          description: When the fix ETA was shared with the customer.
     MigrationCaseReport:
       type: object
       description: The weekly migration case scan.
