@@ -3407,7 +3407,7 @@ paths:
 
   /products/vulnerabilities/meta:
     get:
-      summary: Get product vulnerability metadata (severity reference options).
+      summary: Get product vulnerability metadata (severity, product and version options).
       operationId: getProductsVulnerabilitiesMeta
       responses:
         "200":
@@ -9581,6 +9581,39 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ReferenceItem'
+        products:
+          type: array
+          description: >-
+            Distinct product names with the distinct versions found for each,
+            sorted ascending. Every option matches rows when passed back as the
+            exact-match productName/productVersion search filter. versions can
+            be empty.
+          items:
+            $ref: '#/components/schemas/VulnerabilityProductOption'
+      example:
+        severities:
+          - id: "4"
+            label: Critical
+          - id: "3"
+            label: High
+        products:
+          - name: wso2am
+            versions: ["4.10.0", "4.7.0"]
+          - name: wso2update_tool
+            versions: []
+
+    VulnerabilityProductOption:
+      type: object
+      required: [name, versions]
+      properties:
+        name:
+          type: string
+          description: Distinct product name.
+        versions:
+          type: array
+          description: Distinct versions found for this product, sorted ascending.
+          items:
+            type: string
 
     # ---- conversations (GET/PATCH by id, create) ----
 

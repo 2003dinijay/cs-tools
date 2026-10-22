@@ -2411,7 +2411,15 @@ type GlobalSearchResponse struct {
 
 // VulnerabilityMetaResponse is entity-service's response for GET /products/vulnerabilities/meta.
 type VulnerabilityMetaResponse struct {
-	Severities []ChoiceListItem `json:"severities"`
+	Severities []ChoiceListItem             `json:"severities"`
+	Products   []VulnerabilityProductOption `json:"products"`
+}
+
+// VulnerabilityProductOption is one product name with the distinct versions the
+// vulnerability data carries for it.
+type VulnerabilityProductOption struct {
+	Name     string   `json:"name"`
+	Versions []string `json:"versions"`
 }
 
 // --- conversations CRUD ---

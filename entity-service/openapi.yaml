@@ -11358,13 +11358,17 @@ paths:
   /products/vulnerabilities/sync:
     post:
       summary: >-
-        Full-replace sync of product vulnerabilities (ServiceNow data source only).
+        Full-replace sync of product vulnerabilities.
       description: >-
         This is a full-replace sync, not an incremental update. The submitted items MUST be
-        the complete current set of product vulnerabilities: the downstream data source
-        deletes any existing record whose wso2Id is not present in the submitted array and
-        upserts everything that is. Submitting a partial list will delete the records omitted
-        from it. Intended for machine-to-machine callers (e.g. a scheduled sync job), not
+        the complete current set of product vulnerabilities: any existing record whose wso2Id
+        is not present in the submitted array is deleted and everything that is present is
+        upserted. Submitting a partial list will delete the records omitted from it. An empty
+        array is rejected (400) so the whole set cannot be wiped by accident, as is an empty or
+        duplicate wso2Id, a value longer than its column, or an unrecognised severity. The caller
+        must be a configured machine client (its client id is in the service's machine-client
+        allow-list); any other caller, including user tokens, is rejected with 403 and an
+        unauthenticated request with 401. Intended for machine-to-machine callers (e.g. a scheduled sync job), not
         interactive user sessions.
       operationId: syncProductVulnerabilities
       requestBody:
@@ -11390,6 +11394,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "401":
           description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller is not a configured machine client.
           content:
             application/json:
               schema:
@@ -13656,7 +13666,8 @@ paths:
       summary: Get reference metadata for product vulnerabilities (ServiceNow data source only).
       description: >
         Distinct from GET /products/vulnerabilities/{id} — "meta" is a literal path segment
-        here, not a vulnerability ID.
+        here, not a vulnerability ID. Returns the severity choices plus the distinct product
+        names, each with its distinct versions, for the product and version filters.
       operationId: getProductVulnerabilityMeta
       responses:
         "200":
@@ -24489,7 +24500,7 @@ components:
       type: object
       description: >-
         Outcome of a full-replace product vulnerability sync. Fields may be omitted by the
-        downstream data source if a count was not reported.
+        backing data source if a count was not reported.
       properties:
         insertedRecords:
           type: integer
@@ -30154,12 +30165,46 @@ components:
 
     VulnerabilityMetaResponse:
       type: object
-      required: [severities]
+      required: [severities, products]
       properties:
         severities:
           type: array
           items:
             $ref: '#/components/schemas/ChoiceListItem'
+        products:
+          type: array
+          description: >
+            Every distinct product name found in the vulnerability data, each with its distinct
+            versions. Names and versions are sorted ascending; empty names and versions are
+            excluded. The values are the exact strings the product name and product version
+            filters of POST /products/vulnerabilities/search match on, so every option is
+            guaranteed to be selectable. Empty when the backing data source has no such query.
+          items:
+            $ref: '#/components/schemas/VulnerabilityProductOption'
+      example:
+        severities:
+          - id: "4"
+            label: Critical
+          - id: "3"
+            label: High
+        products:
+          - name: wso2am
+            versions: ["4.10.0", "4.7.0"]
+          - name: wso2is
+            versions: ["7.0.0"]
+
+    VulnerabilityProductOption:
+      type: object
+      required: [name, versions]
+      properties:
+        name:
+          type: string
+          description: Distinct product name.
+        versions:
+          type: array
+          description: Distinct versions found for this product, sorted ascending.
+          items:
+            type: string
 
     ConversationState:
       type: string

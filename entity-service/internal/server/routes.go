@@ -100,6 +100,8 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// *cache.UserCache inside a non-nil one -- so the writers below can test
 	// it against nil.
 	var userCacheInvalidator service.UserCacheInvalidator
+	// productVulnerabilityOptionsCache is likewise a nil interface without Redis.
+	var productVulnerabilityOptionsCache service.ProductVulnerabilityOptionsCache
 	closeRedis := func() {}
 	if db != nil && cfg.HasRedis() {
 		rdb, err := cache.NewRedisClient(cfg)
@@ -109,6 +111,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		userCache := cache.NewUserCache(rdb, cfg.UserCacheTTL)
 		userSvc = service.NewCachedUserService(userSvc, userCache)
 		userCacheInvalidator = userCache
+		productVulnerabilityOptionsCache = cache.NewProductVulnerabilityOptionsCache(rdb, cfg.VulnerabilityMetaCacheTTL)
 		closeRedis = func() {
 			if err := rdb.Close(); err != nil {
 				log.Printf("redis: close client: %v", err)
@@ -1348,27 +1351,25 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 	feedbackHandler := handler.NewFeedbackHandler(activeFeedbackSvc)
 
-	// Product vulnerabilities: read queries (SearchProductVulnerabilities,
-	// GetProductVulnerability, GetVulnerabilityMeta) are served from Postgres
-	// whenever the database connection pool is available (db != nil), avoiding
-	// downstream ServiceNow integration dependency and user-level ACL issues
-	// on static metadata. SyncProductVulnerabilities delegates to the ServiceNow
-	// data source when configured. When no database pool is available (db == nil),
-	// falls back to the ServiceNow service.
-	var activeProductVulnerabilitySvc service.ProductVulnerabilityService
+	// Product vulnerabilities: the service follows cfg.DataSource (selection
+	// and the defensive no-database fallback live in
+	// newProductVulnerabilityService). In dual-write mode reads
+	// (SearchProductVulnerabilities, GetProductVulnerability,
+	// GetVulnerabilityMeta) are served from Postgres, avoiding the downstream
+	// ServiceNow integration dependency and user-level ACL issues on static
+	// metadata; SyncProductVulnerabilities writes to Postgres too.
+	// The ServiceNow client may exist for SLA/attachment reads alone, so its
+	// presence says nothing about this service's data source.
+	var productVulnerabilityRepo repository.ProductVulnerabilityRepository
 	if db != nil {
-		productVulnerabilityRepo := repository.NewProductVulnerabilityRepository(db)
-		var snSvc service.ProductVulnerabilityService
-		if serviceNowIntegrationServiceClient != nil {
-			snSvc = service.NewServiceNowProductVulnerabilityService(serviceNowIntegrationServiceClient)
-		}
-		activeProductVulnerabilitySvc = service.NewProductVulnerabilityServiceWithSNSync(productVulnerabilityRepo, snSvc)
-	} else if serviceNowIntegrationServiceClient != nil {
-		activeProductVulnerabilitySvc = service.NewServiceNowProductVulnerabilityService(serviceNowIntegrationServiceClient)
-	} else {
-		activeProductVulnerabilitySvc = service.NewProductVulnerabilityService(repository.NewProductVulnerabilityRepository(nil))
+		productVulnerabilityRepo = repository.NewProductVulnerabilityRepository(db)
 	}
-	productVulnerabilityHandler := handler.NewProductVulnerabilityHandler(activeProductVulnerabilitySvc)
+	var snProductVulnerabilitySvc service.ProductVulnerabilityService
+	if serviceNowIntegrationServiceClient != nil {
+		snProductVulnerabilitySvc = service.NewServiceNowProductVulnerabilityService(serviceNowIntegrationServiceClient)
+	}
+	activeProductVulnerabilitySvc := newProductVulnerabilityService(cfg.DataSource, productVulnerabilityRepo, snProductVulnerabilitySvc, productVulnerabilityOptionsCache)
+	productVulnerabilityHandler := handler.NewProductVulnerabilityHandler(activeProductVulnerabilitySvc, cfg.M2MClientIDs)
 
 	// incident/problem/incident_task/conversation (migrations 000057-000060,
 	// 000066) -- see incident_repo.go/problem_repo.go's own doc comments for

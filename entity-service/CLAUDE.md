@@ -79,6 +79,7 @@ The server loads `.env` automatically on startup (silently ignored if absent). P
 | `REDIS_URL` | no | — | `rediss://:<key>@<host>:<port>` (TLS, Azure Managed Redis); wins over `REDIS_ADDR`. Turns on the user cache (see "User cache (Redis)" below). `Validate` requires a `redis`/`rediss` scheme and a host, and never echoes the URL |
 | `REDIS_ADDR` / `REDIS_PASSWORD` | no | — | Plain, non-TLS Redis for local runs. Either this or `REDIS_URL` makes `Config.HasRedis` true |
 | `USER_CACHE_TTL` | no | `10m` | Backstop lifetime of a cached user; an unparseable or non-positive value falls back to `10m` |
+| `PRODUCT_VULNERABILITY_META_CACHE_TTL` | no | `24h` | Backstop lifetime of the cached product/version options of `GET /products/vulnerabilities/meta`; deleted on a successful vulnerability sync; unparseable or non-positive falls back to `24h` |
 | `INCIDENT_DEFAULT_SERVICE_ID` | no | — | UUID of the service whose support group a new incident gets when no `assignmentGroupId` is sent and its own service has no support group (logged WARN each time). Unset / missing / groupless: such incidents are created unassigned (logged ERROR). A non-UUID refuses to start; checked at startup, log only. See "Incident assignment group on create" |
 | `CR_STRICT_VISIBILITY_FROM` | no | — | RFC 3339 instant **with a zone**: change requests created at or after it are visible to a customer only when designated to them; earlier ones are "legacy" and keep today's visibility. Unset/empty = no cutover, every change request is legacy (the safe default and the rollback; a WARN is logged at startup). An unparsable value refuses to start. Set once per environment at release and never move it — see "Customer visibility and the cutover" |
 | `MIGRATION_CASE_REPORT_HOLD_TAG` | no | `s_mig_hold` | Tag (ignoring case) for the weekly migration scan's "customer requested to hold" table |
@@ -2756,15 +2757,21 @@ already use — no route path, request, or response shape changed.
   labels straight from Postgres's own enum catalog
   (`pg_enum`/`ListSeverities`) rather than hardcoding them, so it can never
   drift from the migration that defines the type.
-  `SyncProductVulnerabilities` delegates to ServiceNow when configured
-  (via `NewProductVulnerabilityServiceWithSNSync`), falling back to a
-  `ServiceUnavailableError` when no ServiceNow integration is present:
-  Postgres cannot satisfy its full-replace semantics (delete anything absent
-  from the submitted set, upsert everything present) without a stable external
-  join key with a database-enforced uniqueness guarantee, and
-  `product_vulnerability` has no `UNIQUE` constraint on any column other than
-  its own generated `id`. When `db != nil`, all read queries are served from
-  Postgres regardless of `DATA_SOURCE`.
+  `SyncProductVulnerabilities` follows `DATA_SOURCE` (see
+  `newProductVulnerabilityService` in `internal/server`): `servicenow`
+  delegates everything to the ServiceNow service; `postgres` and
+  `postgres-servicenow-dual-write` write to Postgres only and never call
+  ServiceNow, even when a ServiceNow client exists for SLA/attachment reads.
+  The Postgres sync is a full replace in ONE transaction under an advisory
+  lock (the table has no `UNIQUE` index besides `id`): the item's `wso2Id` is
+  matched to `business_key`, matches are updated, absent keys inserted, and
+  every row whose key is not submitted (or has no key) is deleted. The service
+  rejects an empty list, an empty or duplicate `wso2Id`, over-length fields and
+  an unrecognised severity before touching the database. `scannerName` has no
+  column and is not stored. Because it is destructive, the sync route accepts
+  only callers whose client id is in `M2M_CLIENT_IDS` (403 for any other
+  caller, user tokens included; 401 when unauthenticated); an empty list
+  rejects everyone.
 - **Time cards**: like comments, the Postgres path has no inbound-auth
   layer to forward a caller's identity through, so `CreateTimeCard`/
   `UpdateTimeCard`/`DeleteTimeCard` resolve the caller's user id from
