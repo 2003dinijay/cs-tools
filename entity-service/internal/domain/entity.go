@@ -7886,6 +7886,19 @@ type GlobalSearchResponse struct {
 // VulnerabilityMetaResponse is the response for GET /products/vulnerabilities/meta.
 type VulnerabilityMetaResponse struct {
 	Severities []ChoiceListItem `json:"severities"`
+	// Products lists every distinct product name found in the vulnerability
+	// data, each with its distinct versions, both sorted ascending. The values
+	// are the exact strings the search filters match on, so any option is
+	// guaranteed to be selectable. Always a JSON array, empty when the backing
+	// data source has no such query.
+	Products []VulnerabilityProductOption `json:"products"`
+}
+
+// VulnerabilityProductOption is one product name with the distinct versions
+// the vulnerability data carries for it.
+type VulnerabilityProductOption struct {
+	Name     string   `json:"name"`
+	Versions []string `json:"versions"`
 }
 
 // --- case feedback (ServiceNow data source only) ---

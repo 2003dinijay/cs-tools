@@ -479,6 +479,7 @@ does not read.
 | `REDIS_ADDR` | No | none | Plain `host:port` for a local Redis. | `localhost:6379` |
 | `REDIS_PASSWORD` | No | none | Password paired with `REDIS_ADDR`. | `<redis-password>` |
 | `USER_CACHE_TTL` | No | `10m` | Lifetime of a cached user record. Writers also invalidate on change, so this is a backstop. | `10m` |
+| `PRODUCT_VULNERABILITY_META_CACHE_TTL` | No | `24h` | Lifetime of the cached distinct product/version options of `GET /products/vulnerabilities/meta` (needs Redis). A successful `POST /products/vulnerabilities/sync` deletes the entry, so this is a backstop. | `24h` |
 
 With neither `REDIS_URL` nor `REDIS_ADDR`, or when Redis is unreachable, user reads go straight to
 PostgreSQL. Cache keys are namespaced `entity:v1:user:*`.

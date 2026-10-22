@@ -709,6 +709,12 @@ type Config struct {
 	// this is the backstop for a missed invalidation, not the main freshness
 	// mechanism.
 	UserCacheTTL time.Duration
+	// VulnerabilityMetaCacheTTL bounds how long the cached distinct
+	// product/version options of GET /products/vulnerabilities/meta survive
+	// (PRODUCT_VULNERABILITY_META_CACHE_TTL, default 24h). A successful
+	// POST /products/vulnerabilities/sync deletes the entry; this is the
+	// backstop for changes made to the table by anything else.
+	VulnerabilityMetaCacheTTL time.Duration
 	// ServerReadTimeout and ServerWriteTimeout are the main API server's
 	// http.Server ReadTimeout/WriteTimeout (SERVER_READ_TIMEOUT,
 	// SERVER_WRITE_TIMEOUT). The health server keeps its own fixed timeouts.
@@ -868,6 +874,7 @@ func Load() *Config {
 	cfg.RedisAddr = strings.TrimSpace(os.Getenv("REDIS_ADDR"))
 	cfg.RedisPassword = os.Getenv("REDIS_PASSWORD")
 	cfg.UserCacheTTL = envDuration("USER_CACHE_TTL", 10*time.Minute)
+	cfg.VulnerabilityMetaCacheTTL = envDuration("PRODUCT_VULNERABILITY_META_CACHE_TTL", 24*time.Hour)
 	cfg.applySREEventHubTopic()
 	return cfg
 }

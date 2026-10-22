@@ -100,6 +100,8 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// *cache.UserCache inside a non-nil one -- so the writers below can test
 	// it against nil.
 	var userCacheInvalidator service.UserCacheInvalidator
+	// productVulnerabilityOptionsCache is likewise a nil interface without Redis.
+	var productVulnerabilityOptionsCache service.ProductVulnerabilityOptionsCache
 	closeRedis := func() {}
 	if db != nil && cfg.HasRedis() {
 		rdb, err := cache.NewRedisClient(cfg)
@@ -109,6 +111,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		userCache := cache.NewUserCache(rdb, cfg.UserCacheTTL)
 		userSvc = service.NewCachedUserService(userSvc, userCache)
 		userCacheInvalidator = userCache
+		productVulnerabilityOptionsCache = cache.NewProductVulnerabilityOptionsCache(rdb, cfg.VulnerabilityMetaCacheTTL)
 		closeRedis = func() {
 			if err := rdb.Close(); err != nil {
 				log.Printf("redis: close client: %v", err)
@@ -1363,6 +1366,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 			snSvc = service.NewServiceNowProductVulnerabilityService(serviceNowIntegrationServiceClient)
 		}
 		activeProductVulnerabilitySvc = service.NewProductVulnerabilityServiceWithSNSync(productVulnerabilityRepo, snSvc)
+		if productVulnerabilityOptionsCache != nil {
+			activeProductVulnerabilitySvc = service.NewCachedProductVulnerabilityService(activeProductVulnerabilitySvc, productVulnerabilityOptionsCache)
+		}
 	} else if serviceNowIntegrationServiceClient != nil {
 		activeProductVulnerabilitySvc = service.NewServiceNowProductVulnerabilityService(serviceNowIntegrationServiceClient)
 	} else {
