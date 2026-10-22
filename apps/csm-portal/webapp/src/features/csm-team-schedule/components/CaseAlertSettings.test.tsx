@@ -125,6 +125,17 @@ function running(channel: string): Settings["running"] {
   };
 }
 
+/** A section's summary, by its whole text: the title and its details are
+ *  separate elements, so getByText can't match the two together. */
+function summaryWith(match: string | RegExp): HTMLElement {
+  const found = [...document.querySelectorAll("summary")].find((x) => {
+    const text = (x.textContent ?? "").replace(/^[▾▸]/, "");
+    return typeof match === "string" ? text === match : match.test(text);
+  });
+  if (!found) throw new Error(`no section summary matching ${String(match)}`);
+  return found as HTMLElement;
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   window.localStorage.clear();
@@ -314,7 +325,7 @@ describe("CaseAlertSettings", () => {
     expect(screen.getByRole("status")).toHaveTextContent(
       "2 assignment groups have no SRE team: their incident cards go to the shared SRE room and nobody is called. Redirect them below: WSO2 IaaS Team, U2 SRE Group.",
     );
-    expect(screen.getByText(/^Where alerts go · 2 unmapped/)).toBeInTheDocument();
+    expect(summaryWith(/^Where alerts go · 2 unmapped/)).toBeInTheDocument();
   });
 
   it("redirects an SRE assignment group that is not a CSM Portal team, typed by name", async () => {

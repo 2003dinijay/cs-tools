@@ -803,7 +803,8 @@ export function savedInGroups(
 
 /** The settings the Alert Settings tab shows for each ladder, in this order:
  *  the switch, the channel, which priorities start a chain, the call limits,
- *  then CRE's heads or SRE's and SME's time between steps. Every other key
+ *  then SRE's and SME's time between steps. CRE's heads are not shown: left
+ *  empty, the alert service finds them in the leadership team. Every other key
  *  stays in LADDER_KEYS and keeps its value (the file's, or one saved
  *  earlier); the tab just doesn't offer it. */
 export const SHOWN_KEYS: Record<CaseAlertRoomLadder, readonly string[]> = {
@@ -813,8 +814,6 @@ export const SHOWN_KEYS: Record<CaseAlertRoomLadder, readonly string[]> = {
     "trigger.priorities",
     "safety.maxCallsPerLadder",
     "safety.callWithoutVerifiedLeads",
-    "heads.cre",
-    "heads.cs",
   ],
   SRE: [
     "enabled",

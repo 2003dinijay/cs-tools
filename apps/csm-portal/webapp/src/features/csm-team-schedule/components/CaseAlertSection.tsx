@@ -94,10 +94,24 @@ export default function CaseAlertSection({
           <span className="cas-mark" aria-hidden="true">
             {open ? "▾" : "▸"}
           </span>
-          {summary}
+          <SummaryText summary={summary} />
         </summary>
         {open ? children : null}
       </details>
     </section>
+  );
+}
+
+/** A summary written as "Title · detail · detail": the title stands out and
+ *  the details read quieter. The text is unchanged, separators included. */
+function SummaryText({ summary }: { summary: ReactNode }): JSX.Element {
+  if (typeof summary !== "string") return <>{summary}</>;
+  const at = summary.indexOf(" · ");
+  if (at < 0) return <span className="cas-sum-title">{summary}</span>;
+  return (
+    <>
+      <span className="cas-sum-title">{summary.slice(0, at)}</span>
+      <span className="cas-sum-rest">{summary.slice(at)}</span>
+    </>
   );
 }

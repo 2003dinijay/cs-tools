@@ -274,7 +274,10 @@ function SettingsPanel({
     (n, l) => n + s.values.filter((v) => v.ladder === l && SHOWN_KEYS[l].includes(v.key)).length,
     0,
   );
-  const hiddenSaved = editable.reduce((n, l) => n + savedOutside(s, l, SHOWN_KEYS[l]), 0);
+  const hiddenSaved =
+    editable.reduce((n, l) => n + savedOutside(s, l, SHOWN_KEYS[l]), 0) +
+    // CRE's chat spaces and redirects are not on the tab either.
+    (family === "CRE" ? rooms.filter((r) => r.ladder === "CRE").length + routes.filter((r) => r.ladder === "CRE").length : 0);
   const ladderLabel = several ? `${editable.join(" and ")} ladders` : `${editable[0]} ladder`;
   /** A change was made: say it waits for Submit, in place of the last line. */
   const onSaved = (what: string) => {
@@ -338,7 +341,7 @@ function SettingsPanel({
         >
           <p className="cas-sub">
             {family === "CRE"
-              ? "Turn the CRE ladder on or off, choose how it reaches people and which severities start a chain, set its call limits and the heads it calls last."
+              ? "Turn the CRE ladder on or off, choose how it reaches people and which severities start a chain, and set its call limits."
               : "Turn each ladder on or off, choose how it reaches people, which priorities start a chain, its call limits and the time between steps."}
           </p>
           {editable.map((l) => (
@@ -388,6 +391,8 @@ function SettingsPanel({
       </CaseAlertSection>
       )}
 
+      {/* CRE's chat spaces and redirects are kept, but not offered on the tab. */}
+      {simple && family === "CRE" ? null : (
       <CaseAlertSection
         id={`${family}.where`}
         label="Where alerts go"
@@ -429,6 +434,7 @@ function SettingsPanel({
           />
         ) : null}
       </CaseAlertSection>
+      )}
 
       {simple ? (
         <>
@@ -446,7 +452,7 @@ function SettingsPanel({
             </CaseAlertSection>
           ) : null}
           <p className="cas-sub cas-hidden-note">
-            The other {family} settings (who is in each team, how a chain climbs, the alert service&apos;s own) are not
+            The other {family} settings (who is in each team,{family === "CRE" ? " the heads, where alerts go," : ""} how a chain climbs, the alert service&apos;s own) are not
             shown here and keep their values
             {hiddenSaved > 0 ? `; ${plural(hiddenSaved, "of them is", "of them are")} saved here and still in use` : ""}.
           </p>

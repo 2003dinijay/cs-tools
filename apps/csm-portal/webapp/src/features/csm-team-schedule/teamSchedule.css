@@ -3293,3 +3293,25 @@
 .csm-ts .cas-select { height: 30px; padding: 0 8px; border: 1px solid var(--line-2); border-radius: 6px; background: var(--surface); font-size: 12.5px; }
 .csm-ts .cas-src-pending { background: var(--accent-soft); color: var(--accent-ink); }
 .csm-ts td > .cas-acts .btn { white-space: nowrap; }
+
+/* Alert Settings layout: each section a card with a clear title, the family
+   title and the ladder and escalation headings larger, roomier tables. */
+.csm-ts .cas h3 { font-size: 16px; }
+.csm-ts .cas h4 { margin: 22px 0 8px; font-size: 15px; font-weight: 600; letter-spacing: normal; text-transform: none; color: var(--ink); }
+.csm-ts .cas h5 { margin: 18px 0 8px; font-size: 15px; font-weight: 600; color: var(--ink); }
+.csm-ts .cas-sec { margin-top: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.csm-ts .cas-sec .cas-det { margin: 0; }
+.csm-ts .cas-sec .cas-det > summary { list-style: none; display: flex; align-items: baseline; flex-wrap: wrap; gap: 0 2px; margin: 0; padding: 12px 16px; font-size: 14px; color: var(--ink); border-radius: 10px; }
+.csm-ts .cas-sec .cas-det > summary::-webkit-details-marker { display: none; }
+.csm-ts .cas-sec .cas-det > summary:hover { background: var(--surface-2); }
+.csm-ts .cas-sec .cas-det[open] > summary { border-bottom: 1px solid var(--line); border-radius: 10px 10px 0 0; }
+.csm-ts .cas-sec .cas-det > :not(summary) { margin-left: 16px; margin-right: 16px; }
+.csm-ts .cas-sec .cas-det > :last-child { margin-bottom: 14px; }
+.csm-ts .cas-sec .cas-det > p.cas-sub:first-of-type { margin-top: 12px; }
+.csm-ts .cas-mark { display: inline-block; width: 16px; color: var(--muted); }
+.csm-ts .cas-sum-title { font-weight: 600; }
+.csm-ts .cas-sum-rest { font-weight: 400; color: var(--muted); font-size: 13px; }
+.csm-ts .cas-values td { padding-top: 10px; padding-bottom: 10px; vertical-align: top; }
+.csm-ts .cas-values td b { font-size: 13.5px; }
+.csm-ts .cas-values td .cas-sub { margin-top: 2px; line-height: 1.4; }
+.csm-ts .cas-hidden-note { margin: 14px 2px 0; padding-top: 10px; border-top: 1px dashed var(--line); }

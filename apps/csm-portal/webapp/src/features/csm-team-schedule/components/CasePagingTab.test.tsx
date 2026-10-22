@@ -334,18 +334,15 @@ describe("CasePagingTab", () => {
   it("keeps a family's changes while the other family is on screen", () => {
     alertSettings.data = {
       ...rights("CRE", "SRE", "SME"),
-      routeOptions: {
-        groups: [{ key: "atlas", name: "Atlas", family: "CRE" }],
-        rotas: [],
-        teams: [{ key: "atlas", name: "Atlas", family: "CRE" }],
+      running: {
+        reportedAt: "2026-10-01T00:00:00Z",
+        mode: "db",
+        ladders: { CRE: { enabled: { value: true, source: "file" } } },
       },
     };
-    window.localStorage.setItem("csm-ts.alert-settings.open", JSON.stringify(["CRE.where"]));
     window.localStorage.setItem(VIEW_KEY, "settings");
     render(<CasePagingTab onOpenRota={vi.fn()} />);
-    fireEvent.change(screen.getByLabelText("When a case is assigned to"), { target: { value: "Atlas" } });
-    fireEvent.change(screen.getByLabelText("send its alerts to"), { target: { value: "team:atlas" } });
-    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    fireEvent.click(screen.getByRole("switch", { name: "Alerts on" }));
     expect(screen.getByRole("region", { name: "CRE changes to submit" })).toHaveTextContent("1 change not saved yet");
 
     fireEvent.click(screen.getByRole("tab", { name: "SRE" }));

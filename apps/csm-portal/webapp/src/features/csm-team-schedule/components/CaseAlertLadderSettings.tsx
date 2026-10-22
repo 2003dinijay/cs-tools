@@ -442,6 +442,8 @@ function ValueRow({
       c.kind === "values" && c.input.ladder === ladder && spec.key in c.input.values,
   );
   const current = queued ? queued.input.values[spec.key] : saved ? saved.value : running?.value;
+  // Going back to the file's value is queued: say so, and don't offer it twice.
+  const resetQueued = Boolean(saved && drafts.changes.some((c) => c.kind === "deleteValue" && c.valueId === saved.id));
   const change = (value: unknown) => {
     const what = `${ladder} ${spec.label}`;
     drafts.add({ family, what, kind: "values", input: { ladder, values: { [spec.key]: value } } });
@@ -494,6 +496,13 @@ function ValueRow({
             )}
             {queued ? (
               <span className="cas-chip cas-src-pending">waits for Submit</span>
+            ) : resetQueued ? (
+              <span className="cas-chip cas-src-pending">file&apos;s value on Submit</span>
+            ) : pending && running ? (
+              // The control shows the saved value; say what still runs.
+              <span className={`cas-chip cas-src-${running.source}`}>
+                In use: {formatLadderValue(spec, running.value)}
+              </span>
             ) : running ? (
               <span className={`cas-chip cas-src-${running.source}`}>
                 {running.source === "file" ? "from the file" : "saved here"}
@@ -523,7 +532,7 @@ function ValueRow({
       </td>
       {canEdit && inline ? (
         <td>
-          {saved ? (
+          {saved && !resetQueued ? (
             <div className="cas-acts">
               <button type="button" className="btn sm" onClick={useFile} aria-label={`${spec.label}: use the file's value`}>
                 Use file&apos;s value
