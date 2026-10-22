@@ -56,6 +56,7 @@ import (
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/schedule"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/stalecases"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/teamschedule"
+	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/usagerollup"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/worklogreport"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/worklogsreport"
 )
@@ -171,6 +172,25 @@ func main() {
 		})
 		if err != nil {
 			slog.Error("failed to construct entity-service availability client", "err", err)
+			os.Exit(1)
+		}
+	}
+
+	// The usage rollups' own client: the same deployment and credentials, two
+	// internal-only endpoints. Off by default for the reason documented on the
+	// task registration below.
+	usageRollupEnabled := envBool("USAGE_ROLLUP_ENABLED", false)
+	var usageRollupClient *usagerollup.Client
+	if usageRollupEnabled {
+		usageRollupClient, err = usagerollup.NewClient(usagerollup.Config{
+			BaseURL:      entityServiceBaseURL,
+			TokenURL:     oauthTokenURL,
+			ClientID:     oauthClientID,
+			ClientSecret: oauthClientSecret,
+			Scopes:       entityServiceScopes,
+		})
+		if err != nil {
+			slog.Error("failed to construct entity-service usage rollup client", "err", err)
 			os.Exit(1)
 		}
 	}
@@ -338,6 +358,11 @@ func main() {
 
 	const availabilityTaskName = "availability_recalculation"
 	availabilityTo, availabilityCc := recipientsFor(recipientOverrides, availabilityTaskName)
+
+	const usageRollupDailyTaskName = "usage_rollup_daily"
+	usageRollupDailyTo, usageRollupDailyCc := recipientsFor(recipientOverrides, usageRollupDailyTaskName)
+	const usageRollupMonthlyTaskName = "usage_rollup_monthly"
+	usageRollupMonthlyTo, usageRollupMonthlyCc := recipientsFor(recipientOverrides, usageRollupMonthlyTaskName)
 
 	const staleCasesTaskName = "stale_cases_report"
 	staleCasesTo, staleCasesCc := recipientsFor(recipientOverrides, staleCasesTaskName)
@@ -613,6 +638,41 @@ func main() {
 			To:       availabilityTo,
 			Cc:       availabilityCc,
 		})
+	}
+
+	// Rebuilds the daily and monthly usage rows from the hourly and daily ones --
+	// the Go replacement for ServiceNow's UsageAggregator. The arithmetic is
+	// set-based SQL in entity-service (migration 0245); these tasks only trigger it.
+	//
+	// *** OFF UNLESS USAGE_ROLLUP_ENABLED=true. *** ServiceNow's aggregation jobs
+	// keep writing u_daily_usage_summary and u_monthly_usage_count, which
+	// csm-sync-service mirrors into the same Postgres tables, so two writers would
+	// fight over those rows (and csm-sync's delete_sync would remove rows
+	// ServiceNow does not have). Turn it on in the same change that switches the
+	// ServiceNow jobs and those csm-sync jobs off.
+	//
+	// Daily at 00:30 UTC rebuilds the last USAGE_ROLLUP_DAILY_LOOKBACK_DAYS days
+	// (default 2) before today; ingestion keeps today's rows current by itself.
+	// Monthly at 01:30 UTC rebuilds last month and the current one. Both are
+	// idempotent, so a repeated or missed run is safe.
+	if usageRollupEnabled {
+		usageRollupLookbackDays := int(envDays("USAGE_ROLLUP_DAILY_LOOKBACK_DAYS", 2).Hours() / 24)
+		tasks = append(tasks,
+			registry.Task{
+				Name:     usageRollupDailyTaskName,
+				Schedule: scheduleFor(scheduleOverrides, usageRollupDailyTaskName, "30 0 * * *"),
+				Handler:  usagerollup.DailyRollup(usageRollupClient, usageRollupLookbackDays, time.Now),
+				To:       usageRollupDailyTo,
+				Cc:       usageRollupDailyCc,
+			},
+			registry.Task{
+				Name:     usageRollupMonthlyTaskName,
+				Schedule: scheduleFor(scheduleOverrides, usageRollupMonthlyTaskName, "30 1 * * *"),
+				Handler:  usagerollup.MonthlyRollup(usageRollupClient, time.Now),
+				To:       usageRollupMonthlyTo,
+				Cc:       usageRollupMonthlyCc,
+			},
+		)
 	}
 
 	// The three rota reminder tasks, on the days and times the rota's owners

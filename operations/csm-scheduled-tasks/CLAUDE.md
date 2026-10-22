@@ -374,6 +374,36 @@ Timeout is five minutes, not the sixty seconds the neighbouring sweeps use.
 Volume is the normal case here, and cutting a healthy run off partway leaves
 some subjects updated and the rest stale.
 
+## Usage rollups
+
+Two sub-crons that rebuild the usage summary tables: **`usage_rollup_daily`** (default `30 0 * * *`)
+rebuilds the daily rows of the last `USAGE_ROLLUP_DAILY_LOOKBACK_DAYS` UTC days before today
+(default 2, newest first), and **`usage_rollup_monthly`** (default `30 1 * * *`) rebuilds the
+previous calendar month and then the current one. They are the Go replacement for ServiceNow's
+`UsageAggregator` (`runAggregationForDate` / `runAggregationForMonth`).
+
+**Off unless `USAGE_ROLLUP_ENABLED=true`** (default false): neither the client nor the tasks are created
+otherwise. ServiceNow's aggregation jobs keep writing `u_daily_usage_summary` and
+`u_monthly_usage_count`, which csm-sync-service mirrors into the same Postgres tables, so two
+writers would fight over those rows, and csm-sync's `delete_sync` would delete rows ServiceNow
+does not have. Turn it on in the same change that switches those ServiceNow jobs and csm-sync
+jobs off (the `AVAILABILITY_RECALC_ENABLED` pattern).
+
+**The arithmetic is in entity-service, not here.** Each task is a trigger: it POSTs to
+`/instances/usage-rollups/daily` or `/monthly`, which run set-based SQL in the database
+(`rollup_daily_usage`, `rollup_monthly_usage`, migration 0245). Summing every node's hourly rows
+over HTTP would drag the working set across the wire each night, and this component holds no
+database credentials. The endpoints are internal-only: this component's client id must be in
+entity-service's `M2M_CLIENT_IDS`. The rule (counters such as `TRANSACTION_COUNT`, `M2M_TOKEN` and
+`AGENT_*` are summed; everything else takes its latest reading) is documented there.
+
+Today is left out of the daily run because entity-service keeps the current day's rows current as
+reports arrive; this run settles each day once it is over. Several days are rebuilt, not just
+yesterday, so a report that reaches PCT late, or a night this task did not run, is picked up by the
+next run. Both rollups are idempotent (a rerun over unchanged rows writes nothing), so the overlap
+costs nothing. One failing day or month does not stop the others; the handler returns every failure
+together and the engine retries the whole run. Days and months are UTC, so run with `TZ=UTC`.
+
 ## Outage emails (moved out)
 
 The two outage emails -- `outage_internal_notification` (internal
@@ -461,6 +491,8 @@ report emails" below for why that's not a generic engine feature.
 | `ROTA_REMINDER_WINDOWS` | No (default `CRE_WEEKEND_NIGHT=08:00-18:00 America/Los_Angeles,CRE_WEEKEND_NIGHT_OC=08:00-18:00 America/Los_Angeles`) | A rotation's hours on its own clock, used in the emails and invitations instead of the Team Schedule's (`CODE=HH:MM-HH:MM Zone`, comma-separated). The Americas Weekend and the LK On-call that covers it are 08:00-18:00 Pacific time, so it moves an hour in UTC and IST when US daylight saving changes; the weekend summary says so when a change is within five weeks. A malformed value stops startup |
 | `ROTA_REMINDER_TIME_ZONE` | No (default `Asia/Colombo`) | The calendar "tomorrow" and "the coming weekend" are counted in |
 | `HOUSEKEEPING_RETENTION_DAYS` | No (default `30`) | Plain integer number of days of resolved history the `housekeeping_cleanup` sub-cron keeps — see "Housekeeping" above |
+| `USAGE_ROLLUP_ENABLED` | No (default `false`) | Registers the `usage_rollup_daily` and `usage_rollup_monthly` sub-crons — see "Usage rollups" above |
+| `USAGE_ROLLUP_DAILY_LOOKBACK_DAYS` | No (default `2`) | Plain integer number of days before today the daily rollup rebuilds each run |
 | `MIGRATION_CASE_REPORT_OLDER_THAN_DAYS` | No (default `180`) | Plain integer number of days a migration must have been open before the `migration_case_report` sub-cron lists it — see "Per-task report emails" below |
 | `MIGRATION_CASE_REPORT_LINK_BASE_URL` | No | The support portal's case page prefix (https), for the links in the migration case scan (`<prefix>/<case number>`). Unset renders plain text |
 
