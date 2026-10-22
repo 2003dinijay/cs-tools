@@ -20,7 +20,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"sync"
 	"testing"
 	"time"
 
@@ -103,52 +102,6 @@ func TestPollPublishFailureLeavesMessageUnmarked(t *testing.T) {
 	if len(mb.marked) != 0 {
 		t.Error("message must stay unprocessed so the next pass retries it")
 	}
-}
-
-type fakeCaller struct {
-	mu    sync.Mutex
-	calls []string
-}
-
-func (f *fakeCaller) MakeCall(_ context.Context, to, msg string) (string, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.calls = append(f.calls, to+"|"+msg)
-	return "CA1", nil
-}
-
-func TestCallPathPlacesLevelsInOrder(t *testing.T) {
-	rs, err := rules.Parse(`[{"name":"r","recipient":"group@example.com","eventType":"e","levelDelaySeconds":60,
-		"callPath":[{"level":2,"to":["+15550102","+15550103"]},{"level":3,"to":["+15550104"]}]}]`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mb := &fakeMailbox{msgs: map[string]rules.Message{"1": {ID: "<a@x>", Recipients: []string{"group@example.com"}, Subject: "DB down"}}}
-	caller := &fakeCaller{}
-	var slept []time.Duration
-	p := New(mb, &fakePub{}, rs, time.Second, "2d").WithCaller(caller)
-	p.sleep = func(_ context.Context, d time.Duration) { slept = append(slept, d) }
-	if err := p.Poll(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	p.wg.Wait()
-	want := []string{"+15550102|Email alert received. DB down", "+15550103|Email alert received. DB down", "+15550104|Email alert received. DB down"}
-	if len(caller.calls) != 3 || caller.calls[0] != want[0] || caller.calls[2] != want[2] {
-		t.Errorf("calls = %v", caller.calls)
-	}
-	if len(slept) != 1 || slept[0] != time.Minute {
-		t.Errorf("slept = %v", slept)
-	}
-}
-
-func TestNoCallerNoCalls(t *testing.T) {
-	rs, _ := rules.Parse(`[{"name":"r","recipient":"group@example.com","eventType":"e","callPath":[{"level":2,"to":["+15550102"]}]}]`)
-	mb := &fakeMailbox{msgs: map[string]rules.Message{"1": {ID: "<a@x>", Recipients: []string{"group@example.com"}}}}
-	p := New(mb, &fakePub{}, rs, time.Second, "2d")
-	if err := p.Poll(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	p.wg.Wait()
 }
 
 func TestPollNoMatchStillMarks(t *testing.T) {

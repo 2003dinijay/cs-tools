@@ -46,67 +46,11 @@ type Rule struct {
 	SenderRegex string `json:"senderRegex,omitempty"`
 	// EventType is the event published when the rule matches.
 	EventType string `json:"eventType"`
-	// CallPath is the ordered escalation of phone calls placed when the rule
-	// matches: each level's numbers are called together, then the next level
-	// after LevelDelaySeconds. Empty means the rule only publishes its event.
-	CallPath []CallLevel `json:"callPath,omitempty"`
-	// CallMessage is spoken before the email subject (default below).
-	CallMessage string `json:"callMessage,omitempty"`
-	// LevelDelaySeconds is the wait between one level and the next.
-	LevelDelaySeconds int `json:"levelDelaySeconds,omitempty"`
 	// Levels is how far the consumer should escalate (e.g. 3). Carried to the
 	// consumer untouched; this service does not interpret it.
 	Levels int `json:"levels,omitempty"`
 
 	sender *regexp.Regexp
-}
-
-// CallLevel is one rung of a rule's call path.
-type CallLevel struct {
-	Level int      `json:"level"`
-	To    []string `json:"to"`
-}
-
-var e164 = regexp.MustCompile(`^\+[1-9][0-9]{6,14}$`)
-
-// DefaultCallMessage is spoken when a rule sets no callMessage.
-const DefaultCallMessage = "Email alert received"
-
-// validateCallPath checks levels are positive, strictly ascending and carry
-// well-formed E.164 numbers.
-func (r *Rule) validateCallPath() error {
-	if len(r.CallPath) == 0 {
-		return nil
-	}
-	if r.LevelDelaySeconds < 0 {
-		return fmt.Errorf("rules: rule %q levelDelaySeconds must not be negative", r.Name)
-	}
-	prev := 0
-	for _, l := range r.CallPath {
-		if l.Level <= prev {
-			return fmt.Errorf("rules: rule %q callPath levels must be positive and ascending", r.Name)
-		}
-		prev = l.Level
-		if len(l.To) == 0 {
-			return fmt.Errorf("rules: rule %q level %d has no numbers", r.Name, l.Level)
-		}
-		for _, n := range l.To {
-			if !e164.MatchString(n) {
-				return fmt.Errorf("rules: rule %q level %d has a number that is not E.164", r.Name, l.Level)
-			}
-		}
-	}
-	return nil
-}
-
-// HasCallPath reports whether any rule places calls.
-func HasCallPath(rs []Rule) bool {
-	for _, r := range rs {
-		if len(r.CallPath) > 0 {
-			return true
-		}
-	}
-	return false
 }
 
 // Parse reads and validates MAIL_TRIGGER_RULES.
@@ -130,9 +74,6 @@ func Parse(raw string) ([]Rule, error) {
 			return nil, fmt.Errorf("rules: rule %q has no recipient", r.Name)
 		case r.EventType == "":
 			return nil, fmt.Errorf("rules: rule %q has no eventType", r.Name)
-		}
-		if err := r.validateCallPath(); err != nil {
-			return nil, err
 		}
 		seen[r.Name] = true
 		r.Recipient = strings.ToLower(strings.TrimSpace(r.Recipient))

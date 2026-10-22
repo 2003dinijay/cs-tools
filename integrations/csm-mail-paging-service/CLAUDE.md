@@ -1,7 +1,7 @@
 # csm-mail-paging-service
 
-Polls Gmail, publishes one event per rule-matching email, and places the rule's
-Twilio call path (`callPath`) when it has one.
+Polls Gmail and publishes one event per rule-matching email. No Twilio and no
+paging logic lives here; consumers decide what to do with the event.
 
 - **Gmail label = idempotency.** A message is labelled processed only after all
   its events were published. Do not move that earlier, and do not add a second
@@ -12,10 +12,3 @@ Twilio call path (`callPath`) when it has one.
 - **`eventbus` and `poller.Envelope` mirror csm-notification-service** (separate
   Go modules, kept in sync by hand).
 - Run `gosec -fmt=text ./...` and `govulncheck ./...` before a PR.
-- **Twilio mirrors csm-notification-service** (`internal/twilio`, same `TWILIO_*`
-  variables, `CALL_SENDING_ENABLED` disable-entirely convention). Credentials are
-  required only when some rule has a `callPath`. Never log phone numbers; the
-  message is escaped through `encoding/xml`, never concatenated into TwiML.
-- **The call path is in-process and unacknowledged** (see the README's "Calls"
-  limits). A durable, acknowledgement-aware ladder is csm-notification-service's
-  `internal/paging`; do not grow a second one here without deciding to.

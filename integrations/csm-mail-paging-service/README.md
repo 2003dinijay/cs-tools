@@ -36,27 +36,9 @@ needed for correctness.
 | `recipient` | Group or mailbox address the email was sent to |
 | `senderRegex` | Optional: only emails from matching senders |
 | `eventType` | Event type published on a match |
-| `callPath` | Optional ordered phone path: `[{"level":2,"to":["+E164",...]},{"level":3,...}]`. Numbers of one level are called together, then the next level after `levelDelaySeconds`. Omit to publish the event only |
-| `levelDelaySeconds` | Wait between levels |
-| `callMessage` | Spoken before the email subject (default "Email alert received") |
 | `levels` | Passed to the consumer untouched; this service does not use it (see below) |
 
 A new source is another entry in the array.
-
-## Calls (Twilio)
-
-When a rule matches and has a `callPath`, the service places the calls itself
-through Twilio, configured with the same `TWILIO_*` variables as
-csm-notification-service (see `.env.example`); Twilio credentials are required
-only if a rule has a `callPath`. `CALL_SENDING_ENABLED=false` turns calling off
-while still publishing events. The call reads `callMessage` plus the email
-subject (cut to 200 characters; escaped, so it cannot inject TwiML).
-
-Limits to know: the path runs in this process, so a restart mid-path drops the
-levels not yet reached; there is no acknowledgement, so every level is called
-after its delay regardless of whether an earlier level answered; and a retried
-message (publish failure) can repeat a level that already rang. Call numbers
-are never logged.
 
 ## Google setup
 

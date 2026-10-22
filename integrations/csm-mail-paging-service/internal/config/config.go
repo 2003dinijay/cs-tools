@@ -23,7 +23,6 @@ import (
 	"fmt"
 	"os"
 	"regexp"
-	"strconv"
 	"time"
 )
 
@@ -38,16 +37,6 @@ type Config struct {
 	KafkaBroker          string
 	KafkaConnection      string
 	KafkaTopic           string
-
-	// Twilio settings mirror csm-notification-service's TWILIO_* variables.
-	TwilioAccountSID   string
-	TwilioAuthToken    string
-	TwilioFromNumber   string
-	TwilioVoice        string
-	TwilioLanguage     string
-	TwilioAPIBaseURL   string
-	TwilioRingTimeout  int
-	CallSendingEnabled bool
 }
 
 var lookbackRe = regexp.MustCompile(`^[0-9]{1,3}[dhm]$`)
@@ -63,22 +52,6 @@ func Load() (Config, error) {
 		KafkaBroker:          os.Getenv("EVENT_BUS_BROKER"),
 		KafkaConnection:      os.Getenv("EVENT_BUS_CONNECTION_STRING"),
 		KafkaTopic:           os.Getenv("EVENT_BUS_TOPIC"),
-		TwilioAccountSID:     os.Getenv("TWILIO_ACCOUNT_SID"),
-		TwilioAuthToken:      os.Getenv("TWILIO_AUTH_TOKEN"),
-		TwilioFromNumber:     os.Getenv("TWILIO_FROM_NUMBER"),
-		TwilioVoice:          os.Getenv("TWILIO_VOICE"),
-		TwilioLanguage:       os.Getenv("TWILIO_LANGUAGE"),
-		TwilioAPIBaseURL:     os.Getenv("TWILIO_API_BASE_URL"),
-		// Disable-entirely convention shared with csm-notification-service:
-		// only the literal "false" turns calling off.
-		CallSendingEnabled: os.Getenv("CALL_SENDING_ENABLED") != "false",
-	}
-	if raw := os.Getenv("TWILIO_RING_TIMEOUT_SECONDS"); raw != "" {
-		n, err := strconv.Atoi(raw)
-		if err != nil || n < 0 {
-			return Config{}, errors.New("TWILIO_RING_TIMEOUT_SECONDS must be a non-negative integer")
-		}
-		c.TwilioRingTimeout = n
 	}
 	interval, err := time.ParseDuration(getenv("MAIL_POLL_INTERVAL", "30s"))
 	if err != nil || interval < time.Second {

@@ -30,7 +30,6 @@ import (
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-mail-paging-service/internal/gmail"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-mail-paging-service/internal/poller"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-mail-paging-service/internal/rules"
-	"github.com/wso2-open-operations/cs-tools/integrations/csm-mail-paging-service/internal/twilio"
 )
 
 func main() {
@@ -66,32 +65,7 @@ func run() error {
 	prod := eventbus.NewProducer(eventbus.Config{Broker: cfg.KafkaBroker, ConnectionString: cfg.KafkaConnection, Topic: cfg.KafkaTopic})
 	defer prod.Close()
 
-	p := poller.New(mb, prod, rs, cfg.PollInterval, cfg.Lookback)
-	switch {
-	case !rules.HasCallPath(rs):
-	case !cfg.CallSendingEnabled:
-		slog.Warn("CALL_SENDING_ENABLED=false: rules with a callPath publish events but place no calls")
-	default:
-		tw, err := twilio.New(twilio.Config{
-			AccountSID: cfg.TwilioAccountSID, AuthToken: cfg.TwilioAuthToken, FromNumber: cfg.TwilioFromNumber,
-			Voice: cfg.TwilioVoice, Language: cfg.TwilioLanguage, RingTimeoutSeconds: cfg.TwilioRingTimeout,
-			APIBaseURL: cfg.TwilioAPIBaseURL,
-		})
-		if err != nil {
-			return err
-		}
-		p.WithCaller(sidCaller{tw})
-	}
-
 	slog.Info("csm-mail-paging-service started", "rules", len(rs), "interval", cfg.PollInterval.String())
-	p.Run(ctx)
+	poller.New(mb, prod, rs, cfg.PollInterval, cfg.Lookback).Run(ctx)
 	return nil
-}
-
-// sidCaller adapts twilio.Client to poller.Caller.
-type sidCaller struct{ c *twilio.Client }
-
-func (s sidCaller) MakeCall(ctx context.Context, to, message string) (string, error) {
-	call, err := s.c.MakeCall(ctx, to, message)
-	return call.SID, err
 }
