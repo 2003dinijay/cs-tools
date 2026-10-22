@@ -8030,6 +8030,17 @@ queried the *new* names) and fixed to match both — with the old names,
 staging with "column does not exist". Still worth checking the live schema
 before trusting any migration file, here or elsewhere.
 
+**Live usage telemetry and the daily table.** `InsertUsageStats` writes one
+`hourly_usage_summary` row per report and recomputes that UTC day's `API_CALL` row of
+`daily_usage_summary` from the day's hourly rows: the **sum** for a counter
+(`TRANSACTION_COUNT`, `M2M_TOKEN`, every `AGENT_*` type -- each report is the amount since the
+previous one) and the **latest report by `counted_on`** for anything else (users,
+organisations, cores, MAU). It used to store the reported count as the day's value, so a
+counter published every hour showed only its last hour. A `FILE_UPLOAD` row (an offline
+report) for the same node, day and type is a separate row and is never touched. A report the
+product re-sends after a timeout is counted twice -- the endpoint has no request id to
+deduplicate on.
+
 **Project/Deployment/DeployedProduct references, verified against staging.**
 `deployment_node.product_version_id` is a real foreign key, so `Product` is
 always reliable. `deployment_node` has no foreign key to project, deployment or
