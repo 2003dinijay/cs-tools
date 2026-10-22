@@ -14,32 +14,34 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- portal_banner: the HTML banners both portals show (top strips and the
--- announcement banner). One row is one banner. The two visibility flags
--- replace the copies that used to live in each portal's config.js, which a
--- CDN kept serving after the file changed. Both false keeps the row and
--- shows it nowhere.
+-- portal_banner: one HTML banner per row, shown above the header in sort_order.
+-- The admin edits these from CSM Settings. status is draft, published, or
+-- removed. Only a published row is eligible to show, and only on a portal
+-- whose visibility flag is true. Draft and removed stay on the Settings list
+-- and never reach either portal. Both flags false means published but shown
+-- nowhere.
 --
--- Content is the html column. The maintenance banner's title, message,
--- severity, and action link are not stored: that notice is the same HTML.
+-- The banner is the html column. A close button lives in that HTML
+-- (data-close-banner). Dismissal in the browser uses the row id. Title,
+-- message, severity, and an action link are not stored.
 --
 -- Entity-service owns this table. It is not a ServiceNow sync table, so
--- operations/csm-sync-service does not carry this file.
+-- operations/csm-sync-service does not carry this file. Access is Asgardeo
+-- plus the admin role on writes. This table has no row-level security.
 --
 -- starts_on / expires_on follow the schema's _on timestamp names. The API
--- can still call them startsAt / expiresAt. Dismissal stays in the browser.
+-- can still call them startsAt / expiresAt.
 
 BEGIN;
 SET LOCAL lock_timeout = '5s';
 
 CREATE TABLE IF NOT EXISTS portal_banner (
     id                            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    kind                          TEXT        NOT NULL CHECK (kind IN ('top', 'announcement')),
+    status                        TEXT        NOT NULL DEFAULT 'draft'
+                                              CHECK (status IN ('draft', 'published', 'removed')),
     sort_order                    INTEGER     NOT NULL DEFAULT 0 CHECK (sort_order >= 0),
     visible_in_customer_portal    BOOLEAN     NOT NULL DEFAULT FALSE,
     visible_in_csm_portal         BOOLEAN     NOT NULL DEFAULT FALSE,
-    closeable                     BOOLEAN     NOT NULL DEFAULT FALSE,
-    storage_key                   TEXT        NOT NULL DEFAULT '',
     html                          TEXT        NOT NULL DEFAULT '',
     starts_on                     TIMESTAMPTZ NULL,
     expires_on                    TIMESTAMPTZ NULL,
@@ -50,6 +52,6 @@ CREATE TABLE IF NOT EXISTS portal_banner (
 );
 
 COMMENT ON TABLE portal_banner IS
-    'HTML portal banners (top, announcement). visible_in_customer_portal and visible_in_csm_portal decide where a row is shown; both false hides it.';
+    'HTML portal banners. status published plus the matching visibility flag is what a portal shows. draft and removed stay hidden. Both visibility flags false shows the row nowhere.';
 
 COMMIT;
