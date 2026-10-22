@@ -69,6 +69,17 @@ describe("usageMetricsProductClassifier", () => {
     }
   });
 
+  it("reads a major-only version as that major", () => {
+    expect(getProductMetricKeys("WSO2 Identity Server", "8")).toEqual([
+      "TOTAL_B2B_ORGS",
+      "TOTAL_ROOT_ORGS",
+      "TOTAL_USERS",
+      "MAU",
+      "M2M_TOKEN",
+      ...AGENT_KEYS,
+    ]);
+  });
+
   it("reads the version from the label when none is given", () => {
     expect(getProductMetricKeys("WSO2 Identity Server 7.3.0")).toContain("AGENT_OBO_REFRESH_TOKEN");
     expect(getProductMetricKeys("WSO2 Identity Server 7.1.0")).not.toContain("AGENT_OBO_TOKEN");

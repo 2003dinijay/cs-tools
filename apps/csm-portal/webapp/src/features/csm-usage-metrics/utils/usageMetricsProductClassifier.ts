@@ -109,7 +109,11 @@ export const CORE_CHART_CONFIG: MetricChartConfig = {
 
 function parseVersionParts(label: string): { major: number; minor: number } {
   const m = label.match(/(\d+)\.(\d+)/);
-  return m ? { major: parseInt(m[1], 10), minor: parseInt(m[2], 10) } : { major: 0, minor: 0 };
+  if (m) return { major: parseInt(m[1], 10), minor: parseInt(m[2], 10) };
+  // A bare major version ("8") reads as minor 0. Only a whole-string number counts, so the
+  // "2" in a product name such as "WSO2 Identity Server" is never taken for a version.
+  const major = label.trim().match(/^v?(\d+)$/i);
+  return major ? { major: parseInt(major[1], 10), minor: 0 } : { major: 0, minor: 0 };
 }
 
 function parseMajorVersion(label: string): number {
