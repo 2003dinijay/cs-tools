@@ -55,6 +55,8 @@ import { canManageRotaAccess, useRotaAccess } from "../api/useRotaAccess";
 import { canViewCaseAlertSettings, useCaseAlertSettings } from "../api/useCaseAlertSettings";
 import { useGetPagingChain } from "../api/usePagingChain";
 import GenerateRotaDialog from "../components/GenerateRotaDialog";
+import ImportRotaDialog from "../components/ImportRotaDialog";
+import { rotaImportOffered } from "../utils/rotaImport";
 import { GENERATED_ROTA } from "../api/useGenerateRota";
 import type {
   PagingChainCode,
@@ -664,6 +666,11 @@ export default function CsmTeamSchedulePage(): JSX.Element {
     (catalogue.data?.teams ?? []).some(
       (t) => t.rotaCode === GENERATED_ROTA && fullTeams.includes(t.key),
     );
+  // An SRE rota's "Import rota", on its roster, to a reader who may edit one of its teams; the server checks every entry again.
+  const [importOpen, setImportOpen] = useState(false);
+  const canImportRota =
+    view === "roster" &&
+    rotaImportOffered(scopeRota, catalogue.data?.rotas ?? [], catalogue.data?.teams ?? [], leadTeams.data ?? []);
   // A family running more than one rota reads only the scoped rota's teams;
   // otherwise the family alone, as before.
   // A reader whose team runs no rota yet (PaaS) reads their own team alone,
@@ -1567,6 +1574,12 @@ export default function CsmTeamSchedulePage(): JSX.Element {
                 <span>Generate month</span>
               </button>
             ) : null}
+
+            {canImportRota ? (
+              <button className="btn sm" onClick={() => setImportOpen(true)}>
+                <span>Import rota</span>
+              </button>
+            ) : null}
           </div>
         </div>
 
@@ -1795,6 +1808,9 @@ export default function CsmTeamSchedulePage(): JSX.Element {
           );
         }}
       />
+      {canImportRota && scopeRota ? (
+        <ImportRotaDialog open={importOpen} onClose={() => setImportOpen(false)} rotaCode={scopeRota} />
+      ) : null}
       {canGenerateRota ? (
         <GenerateRotaDialog
           open={generateOpen}

@@ -14878,6 +14878,88 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
+  /team-schedule/rotas/{code}/import:
+    post:
+      summary: Import a whole rota for a period from one JSON file.
+      description: >
+        Proxied to entity-service's POST /team-schedule/rotas/{code}/import. The file
+        (schemaVersion 1: family, rotaCode, period, mode replace|merge, assignments,
+        absences, people named by email) is forwarded untouched and written all or
+        nothing; dryRun=true reports what it would do without writing. Only SRE rotas.
+        Entity-service decides who may import (a writer of every entry's team, and for a
+        replace of every team of the rota). Refusals carry entity-service's reason, which
+        names the entry at fault.
+      operationId: importTeamScheduleRota
+      parameters:
+        - name: code
+          in: path
+          required: true
+          description: Rota code
+          schema:
+            type: string
+            example: SRE_SAAS
+        - name: dryRun
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImportRotaRequest'
+      responses:
+        "200":
+          description: What the import would do (dryRun). Entity-service's ImportRotaResponse, passed through.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportRotaResponse'
+        "201":
+          description: The file, written. Entity-service's ImportRotaResponse, passed through.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportRotaResponse'
+        "400":
+          description: A malformed file or dryRun, or the problems found in its entries.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: An entry, or a team a replace clears, the caller may not change.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: No such rota.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "409":
+          description: An entry conflicts with the rota.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
   /team-schedule/rotas/{code}/night-crew:
     get:
       summary: The TZ3 people each month of a rota was generated with.
@@ -15654,6 +15736,79 @@ components:
             phone gaps are listed errors first, then by this tier. A missing number is an error
             except for the 2nd and 3rd responders (called together with the 1st), where it is a
             warning.
+    ImportRotaRequest:
+      type: object
+      description: The rota import file, schema version 1.
+      required: [schemaVersion, family, rotaCode, period, mode]
+      properties:
+        schemaVersion:
+          type: integer
+          enum: [1]
+        family:
+          type: string
+          enum: [SRE]
+        rotaCode:
+          type: string
+          example: SRE_SAAS
+        period:
+          type: object
+          required: [from, to]
+          properties:
+            from: {type: string, format: date}
+            to: {type: string, format: date}
+        mode:
+          type: string
+          enum: [replace, merge]
+        assignments:
+          type: array
+          items:
+            type: object
+            required: [email, teamKey, shiftCode, from, to]
+            properties:
+              email: {type: string, format: email, example: user1@example.com}
+              teamKey: {type: string, example: apollo}
+              shiftCode: {type: string, example: SRE_TZ1}
+              tier:
+                type: string
+                enum: [L1, L2, L3]
+                description: Required on an escalation window that does not fix one (SRE_TZ1, SRE_TZ2, SRE_TZ3, the weekend SRE_WE_TZ1, IaaS Day/Night); not allowed on regular hours; a window that fixes a tier takes only that one.
+              from: {type: string, format: date, description: Inside the period.}
+              to: {type: string, format: date, description: Inside the period.}
+              note: {type: string}
+        absences:
+          type: array
+          items:
+            type: object
+            required: [email, teamKey, kindCode, from, to]
+            properties:
+              email: {type: string, format: email, example: user2@example.com}
+              teamKey: {type: string, example: apollo}
+              kindCode: {type: string, example: ANNUAL_LEAVE}
+              allocatedTo: {type: string, maxLength: 100, description: Who an allocation is for; kept only for ALLOCATION kinds.}
+              from: {type: string, format: date, description: The span must overlap the period; it may run past it.}
+              to: {type: string, format: date}
+              note: {type: string}
+    ImportRotaResponse:
+      type: object
+      properties:
+        rotaCode: {type: string}
+        from: {type: string, format: date}
+        to: {type: string, format: date}
+        mode: {type: string, enum: [replace, merge]}
+        dryRun: {type: boolean}
+        cleared: {type: integer, description: Assignments a replace removed first.}
+        applied: {type: integer, description: Assignment days written.}
+        skipped: {type: integer, description: Assignment days the window is not worked on.}
+        skippedDays:
+          type: array
+          items:
+            type: object
+            properties:
+              index: {type: integer, description: The assignment's position in the file.}
+              dates: {type: array, items: {type: string, format: date}}
+        absencesCreated: {type: integer}
+        absencesRemoved: {type: integer, description: Earlier absences the file's spans covered entirely.}
+        absencesTrimmed: {type: integer, description: Earlier absences the file's spans shortened.}
     ErrorPayload:
       type: object
       description: >-
