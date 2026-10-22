@@ -36,6 +36,10 @@ import (
 	integrationservice "github.com/wso2-open-operations/cs-tools/entity-service/internal/servicenow-integration-service"
 )
 
+// publicTicketNotApplicable is the sentinel forwarded as publicTicket when a
+// fix ETA is shared with the customer but no public issue reference exists.
+const publicTicketNotApplicable = "N/A"
+
 // publishCaseCreatedTimeout bounds publishCaseCreated's enrichment
 // (GetCaseByID) + publish, so a slow ServiceNow or Event Hub round trip
 // can't consume all of the request's own deadline (middleware.Timeout) —
@@ -3366,13 +3370,22 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 			if req.Product == nil || *req.Product == "" {
 				return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "product is required when addPublicComment is true"}
 			}
-			if req.PublicTicket == nil || *req.PublicTicket == "" {
-				return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "publicTicket is required when addPublicComment is true"}
-			}
 		}
 		payload.AddPublicComment = req.AddPublicComment
 		payload.Product = req.Product
 		payload.PublicTicket = req.PublicTicket
+		if *req.AddPublicComment {
+			// publicTicket is optional (SaaS products have no public issue URL),
+			// but the backing API rejects an empty value, so a missing or
+			// blank one is forwarded as the "N/A" sentinel.
+			ticket := publicTicketNotApplicable
+			if req.PublicTicket != nil {
+				if trimmed := strings.TrimSpace(*req.PublicTicket); trimmed != "" {
+					ticket = trimmed
+				}
+			}
+			payload.PublicTicket = &ticket
+		}
 	}
 	if req.WorkaroundProvided != nil {
 		payload.WorkaroundProvided = req.WorkaroundProvided

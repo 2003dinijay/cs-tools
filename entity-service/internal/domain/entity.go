@@ -3593,8 +3593,8 @@ type UpdateCaseRequest struct {
 	// Required by ServiceNow when AddPublicComment is true (ServiceNow data source only).
 	Product *string `json:"product"`
 	// PublicTicket is the public-facing ticket/issue reference (e.g. a public GitHub
-	// issue) echoed into the public comment. Required by ServiceNow when
-	// AddPublicComment is true (ServiceNow data source only).
+	// issue) echoed into the public comment. Optional when AddPublicComment is true:
+	// a missing or blank value is sent as "N/A" (ServiceNow data source only).
 	PublicTicket *string `json:"publicTicket"`
 	// Acknowledge, when true, claims the case for the calling engineer: it records
 	// them as the acknowledger if nobody has acknowledged it yet, and otherwise

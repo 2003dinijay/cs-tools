@@ -3194,3 +3194,67 @@ func TestSNCaseService_PatchCaseFieldsBundle_NoOpWhenNoSupportedFieldSet(t *test
 		t.Fatalf("expected 0 HTTP requests for a no-op bundle, got %d", requestCount)
 	}
 }
+
+// TestSNCaseService_UpdateCase_ShareFixEta_PublicTicket verifies publicTicket
+// is optional when sharing a fix ETA: missing/blank values are forwarded as
+// "N/A", a real value is forwarded trimmed, and product stays required.
+func TestSNCaseService_UpdateCase_ShareFixEta_PublicTicket(t *testing.T) {
+	blank := ""
+	spaces := "   "
+	padded := "  https://example.com/org/repo/issues/1  "
+	tests := []struct {
+		name   string
+		ticket *string
+		want   string
+	}{
+		{name: "nil publicTicket forwards N/A", ticket: nil, want: "N/A"},
+		{name: "empty publicTicket forwards N/A", ticket: &blank, want: "N/A"},
+		{name: "whitespace-only publicTicket forwards N/A", ticket: &spaces, want: "N/A"},
+		{name: "real publicTicket forwarded trimmed", ticket: &padded, want: "https://example.com/org/repo/issues/1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotBody map[string]any
+			client := newTestCaseClient(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodPatch {
+					if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+						t.Fatalf("decode request body: %v", err)
+					}
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{
+					"message": "Case updated successfully.",
+					"case": {"id": "` + testWLCaseSysid + `", "updatedOn": "2026-01-02 10:00:00", "updatedBy": "engineer@example.com"}
+				}`))
+			})
+			svc := NewServiceNowCaseService(client, nil, nil, nil, nil, "", nil)
+			add := true
+			eta := "2026-02-01"
+			product := "Example Product"
+			_, err := svc.UpdateCase(contextWithUserIDToken("token"), domain.UpdateCaseRequest{
+				ID: testDeploymentUUID, AddPublicComment: &add, MostLikelyFixEta: &eta,
+				Product: &product, PublicTicket: tt.ticket,
+			})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got := gotBody["publicTicket"]; got != tt.want {
+				t.Fatalf("publicTicket = %v, want %q (body: %+v)", got, tt.want, gotBody)
+			}
+		})
+	}
+}
+
+// TestSNCaseService_UpdateCase_ShareFixEta_ProductStillRequired verifies the
+// product requirement is unchanged by making publicTicket optional.
+func TestSNCaseService_UpdateCase_ShareFixEta_ProductStillRequired(t *testing.T) {
+	svc := NewServiceNowCaseService(nil, nil, nil, nil, nil, "", nil)
+	add := true
+	eta := "2026-02-01"
+	_, err := svc.UpdateCase(contextWithUserIDToken("token"), domain.UpdateCaseRequest{
+		ID: testDeploymentUUID, AddPublicComment: &add, MostLikelyFixEta: &eta,
+	})
+	if _, ok := err.(*apierror.ValidationError); !ok {
+		t.Fatalf("expected *apierror.ValidationError, got %T: %v", err, err)
+	}
+}
