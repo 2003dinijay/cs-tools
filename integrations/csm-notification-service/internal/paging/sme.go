@@ -74,6 +74,8 @@ type SpecialistResolver interface {
 // specialOpsPress is one move into a Special Ops group, as the page needs it.
 type specialOpsPress struct {
 	IncidentID, Number, Title, Product, Priority string
+	// Service and State fill the SME space's incident card.
+	Service, State string
 	// TeamKey/TeamLabel are the Special Ops team; SMETeam the rota team to
 	// page when the publisher names it.
 	TeamKey, TeamLabel, SMETeam string
@@ -99,6 +101,7 @@ func (e *Engine) HandleSpecialOpsAlert(ctx context.Context, incidentID string, p
 	}
 	return e.handleSpecialOps(ctx, specialOpsPress{
 		IncidentID: incidentID, Number: p.Number, Title: p.Subject, Product: p.Product, Priority: p.Priority,
+		Service: p.ServiceName, State: p.State,
 		TeamKey: p.TeamKey, TeamLabel: p.TeamLabel, SMETeam: p.SMETeam,
 		PreviousGroup: p.PreviousAssignmentGroupName, PreviousGroupID: p.PreviousAssignmentGroupID,
 		AssignmentGroup: group, ChangedBy: p.ChangedBy, At: reportedAt(p.ChangedOn),
@@ -259,7 +262,7 @@ func (e *Engine) postSMEHandoffTo(ctx context.Context, target chatRoom, pr speci
 		PortalLabel: "View incident",
 		ThreadKey:   notifications.IncidentThreadKey(pr.IncidentID),
 		// Always an SRE incident, so a reply under its "Incident Reported" card wherever the ladder posted one.
-		Reply: target.reply || e.sreReplies(Trigger{Team: pr.PreviousGroup, Routing: RoutingContext{Ladder: LadderSRE}}),
+		Reply: target.reply || e.threadReplies(Trigger{Team: pr.PreviousGroup, Routing: RoutingContext{Ladder: LadderSRE}}),
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "escalation: the SME handoff message was not posted", "incidentId", pr.IncidentID, "audience", target.room, "err", err)
@@ -299,6 +302,12 @@ func smeTrigger(pr specialOpsPress, team string) Trigger {
 		Team:       label,
 		Kind:       TriggerSpecialOps,
 		At:         pr.At,
+		Priority:   pr.Priority,
+		// The SME space's incident card names these.
+		Service:       pr.Service,
+		State:         pr.State,
+		EscalatedBy:   pr.ChangedBy,
+		EscalatedFrom: pr.PreviousGroup,
 		Routing: RoutingContext{
 			Product:         pr.Product,
 			AssignedCRETeam: pr.AssignmentGroup,

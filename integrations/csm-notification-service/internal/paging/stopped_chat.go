@@ -65,7 +65,7 @@ func (e *Engine) postStopped(ctx context.Context, st LadderState, reason cancelR
 		if !r.chat.HasAudienceSpace(room) {
 			continue
 		}
-		msg.Audience, msg.Reply = room, r.reply || e.sreReplies(t)
+		msg.Audience, msg.Reply = room, r.reply || e.threadReplies(t)
 		// The link the room's rung cards carry.
 		var links incidentLinker = e.links
 		if r.links != nil {
@@ -75,7 +75,7 @@ func (e *Engine) postStopped(ctx context.Context, st LadderState, reason cancelR
 		if t.isCase() {
 			msg.PortalURL = links.CaseLink(t.IncidentID)
 		}
-		if !r.reply && reason == cancelAssigned && e.sreReplies(t) {
+		if !r.reply && reason == cancelAssigned && t.sreIncident() && e.threadReplies(t) {
 			// An assigned SRE incident ends its thread with the "Incident Acknowledged." card, naming only the assignee.
 			ack := notifications.IncidentAssignedAlert{IncidentID: t.IncidentID, Number: t.Number, AssigneeName: st.AssigneeName}
 			if err := r.chat.SendIncidentAssignedAlert(ctx, room, ack); err != nil {

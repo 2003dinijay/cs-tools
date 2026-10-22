@@ -40,6 +40,8 @@ type fakeChat struct {
 	incidents []notifications.IncidentCreatedAlert
 	// incidentAudiences is the space each of incidents went to.
 	incidentAudiences []string
+	// smeIncidents is every "Incident Escalated" card posted to an SME space.
+	smeIncidents []notifications.SMEIncidentEscalatedAlert
 	// acks is every "Incident Acknowledged." reply posted to an SRE space.
 	acks []notifications.IncidentAssignedAlert
 	err  error
@@ -89,6 +91,14 @@ func (f *fakeChat) SendIncidentCreatedAlert(_ context.Context, audience string, 
 	}
 	f.incidents = append(f.incidents, a)
 	f.incidentAudiences = append(f.incidentAudiences, audience)
+	return nil
+}
+
+func (f *fakeChat) SendSMEIncidentEscalatedAlert(_ context.Context, _ string, a notifications.SMEIncidentEscalatedAlert) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.smeIncidents = append(f.smeIncidents, a)
 	return nil
 }
 

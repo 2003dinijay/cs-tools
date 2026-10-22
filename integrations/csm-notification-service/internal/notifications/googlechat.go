@@ -334,6 +334,8 @@ type chatCardWidget struct {
 // reference says it always wraps. WrapText lets Text wrap instead of
 // truncating, as it would by default.
 type chatDecoratedText struct {
+	// TopLabel is a plain string drawn above Text in the same muted label style as BottomLabel.
+	TopLabel    string `json:"topLabel,omitempty"`
 	Text        string `json:"text"`
 	BottomLabel string `json:"bottomLabel,omitempty"`
 	WrapText    bool   `json:"wrapText,omitempty"`
