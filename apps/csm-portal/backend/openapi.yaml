@@ -12976,9 +12976,6 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorPayload'
 
   /runbooks:
     get:
