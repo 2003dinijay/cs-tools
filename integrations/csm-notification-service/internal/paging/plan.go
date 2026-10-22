@@ -325,7 +325,7 @@ func (p Plan) NextRungAfter(call PlannedCall) (rung, in string) {
 		if c.Level <= call.Level {
 			continue
 		}
-		return c.Level.Label(), shortDuration(c.At.Sub(call.At))
+		return c.Level.LabelIn(p.Trigger.Routing.Ladder), shortDuration(c.At.Sub(call.At))
 	}
 	return "", ""
 }

@@ -489,7 +489,7 @@ func (e *Engine) postUnanswered(ctx context.Context, st LadderState) {
 	for i, done := range st.Placed {
 		if done && i < len(st.Plan.Calls) && st.Plan.Calls[i].Recipient.Name != "" {
 			c := st.Plan.Calls[i]
-			called = append(called, c.Level.Label()+" "+c.Recipient.Name)
+			called = append(called, c.Level.LabelIn(t.Routing.Ladder)+" "+c.Recipient.Name)
 		}
 	}
 	portal, label := e.links.IncidentLink(t.IncidentID), "View incident"

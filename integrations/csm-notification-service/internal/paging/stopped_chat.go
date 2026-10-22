@@ -105,9 +105,11 @@ func (e *Engine) stoppedWording(ctx context.Context, st LadderState, reason canc
 			field = "Severity"
 		}
 		to := strings.ToUpper(strings.TrimSpace(next.Priority))
+		// No rung is named: the new plan is not built yet, and its first rung
+		// is L0 on a CRE ladder whose rule has one, L1 otherwise.
 		return notifications.EscalationStopped{
 			Outcome:   fmt.Sprintf("%s changed to %s", field, to),
-			Detail:    fmt.Sprintf("%s changed from %s to %s. A new chain for %s starts from L1.", field, strings.ToUpper(strings.TrimSpace(t.Priority)), to, to),
+			Detail:    fmt.Sprintf("%s changed from %s to %s. A new chain for %s starts from the first rung.", field, strings.ToUpper(strings.TrimSpace(t.Priority)), to, to),
 			Restarted: true,
 		}
 	}
@@ -206,7 +208,7 @@ func pagedList(st LadderState) []string {
 		if c.Recipient.Name == "" {
 			continue
 		}
-		label := c.Level.Label() + " " + c.Recipient.Name
+		label := c.Level.LabelIn(st.Plan.Trigger.Routing.Ladder) + " " + c.Recipient.Name
 		if !seen[label] {
 			seen[label] = true
 			out = append(out, label)
