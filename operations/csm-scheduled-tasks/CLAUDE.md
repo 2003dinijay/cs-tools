@@ -404,6 +404,23 @@ next run. Both rollups are idempotent (a rerun over unchanged rows writes nothin
 costs nothing. One failing day or month does not stop the others; the handler returns every failure
 together and the engine retries the whole run. Days and months are UTC, so run with `TZ=UTC`.
 
+## Unresolved products digest
+
+`internal/unresolvedproducts.SendDigest`, registered as **`unresolved_products_digest`** (default
+`0 6 * * *`), emails the deployment nodes seen in the last 24 hours whose reported product or
+version is not in the product catalogue, so someone adds the missing catalogue entry. It replaces
+ServiceNow's `PRODUCT_NOT_FOUND_ALERT_EMAIL`, which emailed one hard-coded address on every miss.
+
+entity-service keeps what each node reported (`deployment_node.reported_product`/`reported_version`,
+migration 0247) and lists the unresolved ones, grouped by what they reported, at the internal-only
+`GET /instances/unresolved-products`; this task only fetches and sends. Same shape as the other
+report sub-crons ("Per-task report emails"): its own template
+(`internal/notify/templates/unresolved_products_report.html`), its own recipients from its
+`SUB_CRON_RECIPIENTS` entry, a no-op without recipients or with `ALERTS_ENABLED=false`. Unlike
+them it **sends nothing when the list is empty**: the email exists to prompt an action, and a daily
+"nothing to do" would train its recipients to ignore it. The 24-hour window is fixed to match the
+daily schedule; change both together.
+
 ## Outage emails (moved out)
 
 The two outage emails -- `outage_internal_notification` (internal

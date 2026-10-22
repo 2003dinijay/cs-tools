@@ -56,6 +56,7 @@ import (
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/schedule"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/stalecases"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/teamschedule"
+	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/unresolvedproducts"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/usagerollup"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/worklogreport"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/worklogsreport"
@@ -97,6 +98,20 @@ func main() {
 	})
 	if err != nil {
 		slog.Error("failed to construct entity-service client", "err", err)
+		os.Exit(1)
+	}
+
+	// The unresolved products digest's own client: the same deployment and
+	// credentials, one internal-only listing endpoint.
+	unresolvedProductsClient, err := unresolvedproducts.NewClient(unresolvedproducts.Config{
+		BaseURL:      entityServiceBaseURL,
+		TokenURL:     oauthTokenURL,
+		ClientID:     oauthClientID,
+		ClientSecret: oauthClientSecret,
+		Scopes:       entityServiceScopes,
+	})
+	if err != nil {
+		slog.Error("failed to construct entity-service unresolved products client", "err", err)
 		os.Exit(1)
 	}
 
@@ -363,6 +378,9 @@ func main() {
 	usageRollupDailyTo, usageRollupDailyCc := recipientsFor(recipientOverrides, usageRollupDailyTaskName)
 	const usageRollupMonthlyTaskName = "usage_rollup_monthly"
 	usageRollupMonthlyTo, usageRollupMonthlyCc := recipientsFor(recipientOverrides, usageRollupMonthlyTaskName)
+	const unresolvedProductsTaskName = "unresolved_products_digest"
+	unresolvedProductsTo, unresolvedProductsCc := recipientsFor(recipientOverrides, unresolvedProductsTaskName)
+	unresolvedProductsEmail := notify.ForReport(emailClient, debugFor(recipientOverrides, unresolvedProductsTaskName))
 
 	const staleCasesTaskName = "stale_cases_report"
 	staleCasesTo, staleCasesCc := recipientsFor(recipientOverrides, staleCasesTaskName)
@@ -492,6 +510,19 @@ func main() {
 				staleCaseThreshold, staleCasesTo, staleCasesCc, alertsEnabled),
 			To: staleCasesTo,
 			Cc: staleCasesCc,
+		},
+		// Products that deployment nodes report but the product catalogue does not
+		// know -- ServiceNow emailed one fixed address on every such miss. Daily, to
+		// this task's SUB_CRON_RECIPIENTS entry; a no-op until recipients are set, and
+		// silent on a day with nothing to report. The window matches the daily
+		// schedule, so change both together.
+		{
+			Name:     unresolvedProductsTaskName,
+			Schedule: scheduleFor(scheduleOverrides, unresolvedProductsTaskName, "0 6 * * *"),
+			Handler: unresolvedproducts.SendDigest(unresolvedProductsClient, unresolvedProductsEmail,
+				24*time.Hour, unresolvedProductsTo, unresolvedProductsCc, alertsEnabled, time.Now),
+			To: unresolvedProductsTo,
+			Cc: unresolvedProductsCc,
 		},
 		// Emails openCasesTo/Cc a report of every case created before
 		// yesterday that's still in "open" state (nobody has moved it out of
