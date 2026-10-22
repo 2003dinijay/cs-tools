@@ -59,6 +59,9 @@ type InstanceIngestionRepository interface {
 	// ListUnresolvedProductNodes lists nodes seen since the given time whose reported
 	// product and version did not match the catalogue, at most limit of them.
 	ListUnresolvedProductNodes(ctx context.Context, since time.Time, limit int) ([]domain.UnresolvedProductNode, error)
+	// ListUsageReportImports lists imported reports for a project key and/or deployment
+	// number, newest first, at most limit of them.
+	ListUsageReportImports(ctx context.Context, projectKey, deploymentNumber string, limit int) ([]domain.UsageReportImport, error)
 	GetProjectSecretKey(ctx context.Context, projectKey string) (string, error)
 	GetDeploymentConsumptionSecret(ctx context.Context, deploymentNumber string) (domain.DeploymentConsumptionSecretResponse, error)
 }
@@ -502,6 +505,23 @@ func (r *instanceIngestionRepo) ImportDailyUsagesBatch(ctx context.Context, req 
 			}
 			imported++
 		}
+
+		// The import's history row, in the same transaction: a failed import leaves none.
+		var exportedAt *time.Time
+		if v := strings.TrimSpace(req.ExportedAt); v != "" {
+			if t, err := time.Parse(time.RFC3339Nano, v); err == nil {
+				exportedAt = &t
+			}
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO usage_report_import (
+				created_by, project_key, deployment_number, export_version, exported_at, export_valid,
+				node_count, imported_count
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+			actor, nonBlank(req.ProjectKey), nonBlank(req.DeploymentNumber), nonBlank(req.ExportVersion), exportedAt,
+			req.ExportValid, len(nodeIDs), imported); err != nil {
+			return 0, fmt.Errorf("record usage report import: %w", err)
+		}
 		return imported, nil
 	})
 }
@@ -625,4 +645,33 @@ func (r *instanceIngestionRepo) ListUnresolvedProductNodes(ctx context.Context, 
 		return nil, fmt.Errorf("list unresolved product nodes: %w", err)
 	}
 	return nodes, nil
+}
+
+// ListUsageReportImports implements InstanceIngestionRepository.
+func (r *instanceIngestionRepo) ListUsageReportImports(ctx context.Context, projectKey, deploymentNumber string, limit int) ([]domain.UsageReportImport, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT id::text, created_on, created_by, project_key, deployment_number, export_version, exported_at,
+		       export_valid, node_count, imported_count
+		FROM usage_report_import
+		WHERE ($1 = '' OR project_key = $1)
+		  AND ($2 = '' OR deployment_number = $2)
+		ORDER BY created_on DESC, id
+		LIMIT $3`, projectKey, deploymentNumber, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list usage report imports: %w", err)
+	}
+	defer rows.Close()
+	imports := []domain.UsageReportImport{}
+	for rows.Next() {
+		var i domain.UsageReportImport
+		if err := rows.Scan(&i.ID, &i.CreatedOn, &i.CreatedBy, &i.ProjectKey, &i.DeploymentNumber, &i.ExportVersion,
+			&i.ExportedAt, &i.ExportValid, &i.NodeCount, &i.ImportedCount); err != nil {
+			return nil, fmt.Errorf("scan usage report import: %w", err)
+		}
+		imports = append(imports, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list usage report imports: %w", err)
+	}
+	return imports, nil
 }

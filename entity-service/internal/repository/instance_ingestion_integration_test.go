@@ -115,6 +115,13 @@ func instanceIngestionTestPool(t *testing.T) *pgxpool.Pool {
 	if _, err := pool.Exec(ctx, string(reported)); err != nil {
 		t.Fatalf("apply 0247: %v", err)
 	}
+	history, err := os.ReadFile("../../migrations/0248_usage_report_import.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	if _, err := pool.Exec(ctx, string(history)); err != nil {
+		t.Fatalf("apply 0248: %v", err)
+	}
 
 	for _, seed := range []string{
 		`INSERT INTO product (id, name, code) VALUES
@@ -965,5 +972,66 @@ func TestInstanceIngestionIntegration_DailyValueIsDerivedFromHourlyRows(t *testi
 	}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("daily rows:\n got %v\nwant %v", got, want)
+	}
+}
+
+// Every import leaves one history row, in the same transaction: a failed import leaves
+// none. The listing filters by project and deployment, newest first.
+func TestInstanceIngestionIntegration_ImportsAreRecordedInTheirHistory(t *testing.T) {
+	pool := instanceIngestionTestPool(t)
+	repo := repository.NewInstanceIngestionRepository(repository.NewScoped(pool))
+	ctx := internalCtx()
+	valid := true
+	meta := domain.InstanceNodeMeta{ProjectKey: "CUPRSUBDEV", DeploymentNumber: "DEP000001", Product: "wso2am", Version: "4.2.0"}
+
+	first := domain.DailyUsageBatchRequest{
+		NodeID: "node-h1", InstanceNodeMeta: meta, UserEmail: "uploader@example.com",
+		Nodes:         []domain.DailyUsageBatchNode{{NodeID: "node-h1"}, {NodeID: "node-h2"}},
+		Usages:        []domain.DailyUsageBatchItem{{Date: "2026-10-14", Type: "TRANSACTION_COUNT", Value: 10}, {Date: "2026-10-15", Type: "TRANSACTION_COUNT", Value: 20}},
+		ExportVersion: "1.0", ExportedAt: "2026-10-16T05:00:00.123Z", ExportValid: &valid,
+	}
+	if _, err := repo.ImportDailyUsagesBatch(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	second := domain.DailyUsageBatchRequest{
+		NodeID: "node-h3", InstanceNodeMeta: domain.InstanceNodeMeta{ProjectKey: "CUPRSUBDEV", DeploymentNumber: "DEP000002"},
+		Usages:     []domain.DailyUsageBatchItem{{Date: "2026-10-15", Type: "CORES", Value: 4}},
+		ExportedAt: "not a time",
+	}
+	if _, err := repo.ImportDailyUsagesBatch(ctx, second); err != nil {
+		t.Fatal(err)
+	}
+	// A batch that fails part-way (a type too long for its column) records nothing.
+	failing := domain.DailyUsageBatchRequest{
+		NodeID: "node-h4", InstanceNodeMeta: meta,
+		Usages: []domain.DailyUsageBatchItem{{Date: "2026-10-15", Type: strings.Repeat("X", 101), Value: 1}},
+	}
+	if _, err := repo.ImportDailyUsagesBatch(ctx, failing); err == nil {
+		t.Fatal("the failing batch was accepted")
+	}
+
+	all, err := repo.ListUsageReportImports(ctx, "CUPRSUBDEV", "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("history rows = %d, want 2 (the failed import must leave none): %+v", len(all), all)
+	}
+	newest, oldest := all[0], all[1]
+	if ingestStr(newest.DeploymentNumber) != "DEP000002" || newest.ExportedAt != nil || newest.CreatedBy != domain.InstanceIngestionActor || newest.ImportedCount != 1 {
+		t.Errorf("newest: %+v (an unparseable exportedAt is unknown; no uploader means the service)", newest)
+	}
+	if oldest.CreatedBy != "uploader@example.com" || ingestStr(oldest.ExportVersion) != "1.0" || oldest.ExportValid == nil || !*oldest.ExportValid ||
+		oldest.ExportedAt == nil || !oldest.ExportedAt.Equal(time.Date(2026, 10, 16, 5, 0, 0, 123000000, time.UTC)) ||
+		oldest.NodeCount != 2 || oldest.ImportedCount != 2 {
+		t.Errorf("oldest: %+v", oldest)
+	}
+
+	byDeployment, err := repo.ListUsageReportImports(ctx, "", "DEP000001", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byDeployment) != 1 || byDeployment[0].ID != oldest.ID {
+		t.Errorf("by deployment: %+v", byDeployment)
 	}
 }

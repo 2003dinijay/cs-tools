@@ -2438,6 +2438,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("POST /instances/usage-rollups/daily", internalOnly(accessSvc, instanceIngestionHandler.RollupDailyUsage))
 		mux.HandleFunc("POST /instances/usage-rollups/monthly", internalOnly(accessSvc, instanceIngestionHandler.RollupMonthlyUsage))
 		mux.HandleFunc("GET /instances/unresolved-products", internalOnly(accessSvc, instanceIngestionHandler.ListUnresolvedProducts))
+		mux.HandleFunc("GET /instances/daily-usages/imports", internalOnly(accessSvc, instanceIngestionHandler.ListUsageReportImports))
 		mux.HandleFunc("GET /projects/{key}/secret-key", internalOnly(accessSvc, instanceIngestionHandler.GetProjectSecretKey))
 		mux.HandleFunc("GET /deployments/by-number/{number}/consumption-secret", internalOnly(accessSvc, instanceIngestionHandler.GetDeploymentConsumptionSecret))
 	}

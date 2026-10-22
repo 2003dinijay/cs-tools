@@ -55,6 +55,8 @@ type mockInstanceIngestionSvc struct {
 	gotNumber    string
 
 	gotSince, gotLimit string
+
+	gotProject, gotDeployment, gotImportsLimit string
 }
 
 func (m *mockInstanceIngestionSvc) ListUnresolvedProducts(_ context.Context, since, limit string) (domain.UnresolvedProductsResponse, error) {
@@ -70,6 +72,11 @@ func (m *mockInstanceIngestionSvc) RollupDailyUsage(_ context.Context, req domai
 func (m *mockInstanceIngestionSvc) RollupMonthlyUsage(_ context.Context, req domain.UsageRollupMonthlyRequest) (domain.UsageRollupResponse, error) {
 	m.gotMonth = req
 	return m.rollupRes, m.rollupErr
+}
+
+func (m *mockInstanceIngestionSvc) ListUsageReportImports(_ context.Context, projectKey, deploymentNumber, limit string) (domain.UsageReportImportsResponse, error) {
+	m.gotProject, m.gotDeployment, m.gotImportsLimit = projectKey, deploymentNumber, limit
+	return domain.UsageReportImportsResponse{Imports: []domain.UsageReportImport{{ID: "i1"}}, Count: 1}, nil
 }
 
 func (m *mockInstanceIngestionSvc) GetDeploymentConsumptionSecret(_ context.Context, number string) (domain.DeploymentConsumptionSecretResponse, error) {
@@ -344,4 +351,15 @@ func TestInstanceIngestionHandler_UsageRollups(t *testing.T) {
 			t.Fatalf("expected 400, got %d", w.Code)
 		}
 	})
+}
+
+func TestInstanceIngestionHandler_ListUsageReportImports(t *testing.T) {
+	svc := &mockInstanceIngestionSvc{}
+	h := NewInstanceIngestionHandler(svc)
+	req := httptest.NewRequest(http.MethodGet, "/instances/daily-usages/imports?projectKey=SCTPSUB&deploymentNumber=DEP000002519&limit=5", nil)
+	w := httptest.NewRecorder()
+	h.ListUsageReportImports(w, req)
+	if w.Code != http.StatusOK || svc.gotProject != "SCTPSUB" || svc.gotDeployment != "DEP000002519" || svc.gotImportsLimit != "5" {
+		t.Fatalf("status %d, service saw %q %q %q", w.Code, svc.gotProject, svc.gotDeployment, svc.gotImportsLimit)
+	}
 }

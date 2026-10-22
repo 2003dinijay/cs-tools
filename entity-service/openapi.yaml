@@ -15308,6 +15308,17 @@ paths:
                         type: string
                       version:
                         type: string
+                exportVersion:
+                  type: string
+                  maxLength: 20
+                  description: The report's export version, recorded in its import history.
+                exportedAt:
+                  type: string
+                  format: date-time
+                  description: When the product exported the report (RFC 3339); recorded as unknown when it does not parse.
+                exportValid:
+                  type: boolean
+                  description: The product's own integrity verdict on the report.
                 usages:
                   type: array
                   maxItems: 5000
@@ -15547,6 +15558,93 @@ paths:
                         lastSeenOn:
                           type: string
                           format: date-time
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /instances/daily-usages/imports:
+    get:
+      summary: List imported offline usage reports (internal callers only).
+      description: |
+        One row per report imported through POST /instances/daily-usages/batch, written in the same
+        transaction as the import. Filter by project key, deployment number or both (at least one).
+      parameters:
+        - name: projectKey
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: deploymentNumber
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 100
+      responses:
+        "200":
+          description: The imports, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count:
+                    type: integer
+                  imports:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        createdOn:
+                          type: string
+                          format: date-time
+                        createdBy:
+                          type: string
+                          description: The uploader's email, or the ingesting service.
+                        projectKey:
+                          type: string
+                          nullable: true
+                        deploymentNumber:
+                          type: string
+                          nullable: true
+                        exportVersion:
+                          type: string
+                          nullable: true
+                        exportedAt:
+                          type: string
+                          format: date-time
+                          nullable: true
+                        exportValid:
+                          type: boolean
+                          nullable: true
+                        nodeCount:
+                          type: integer
+                        importedCount:
+                          type: integer
         "400":
           description: Bad request.
           content:

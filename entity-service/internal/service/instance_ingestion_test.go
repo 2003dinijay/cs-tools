@@ -42,11 +42,13 @@ type mockInstanceIngestionRepo struct {
 	secret    string
 	secretErr error
 
-	rolledDay       string
-	rolledYear      int
-	rolledMonth     int
-	unresolvedSince time.Time
-	unresolvedLimit int
+	rolledDay                         string
+	rolledYear                        int
+	rolledMonth                       int
+	unresolvedSince                   time.Time
+	unresolvedLimit                   int
+	importsProject, importsDeployment string
+	importsLimit                      int
 }
 
 func (m *mockInstanceIngestionRepo) UpsertDeploymentNode(_ context.Context, nodeID string, meta domain.InstanceNodeMeta) (string, error) {
@@ -89,6 +91,12 @@ func (m *mockInstanceIngestionRepo) ListUnresolvedProductNodes(_ context.Context
 	m.calls++
 	m.unresolvedSince, m.unresolvedLimit = since, limit
 	return []domain.UnresolvedProductNode{{NodeID: "n1", ReportedProduct: "wso2xx"}}, nil
+}
+
+func (m *mockInstanceIngestionRepo) ListUsageReportImports(_ context.Context, projectKey, deploymentNumber string, limit int) ([]domain.UsageReportImport, error) {
+	m.calls++
+	m.importsProject, m.importsDeployment, m.importsLimit = projectKey, deploymentNumber, limit
+	return []domain.UsageReportImport{{ID: "i1", ImportedCount: 3}}, nil
 }
 
 func (m *mockInstanceIngestionRepo) GetProjectSecretKey(_ context.Context, _ string) (string, error) {
@@ -431,6 +439,30 @@ func TestInstanceIngestion_ListUnresolvedProductsDefaultsAndValidation(t *testin
 	}
 }
 
+func TestInstanceIngestion_ListUsageReportImportsValidation(t *testing.T) {
+	ctx := context.Background()
+	repo := &mockInstanceIngestionRepo{}
+	resp, err := newTestIngestionService(repo).ListUsageReportImports(ctx, " SCTPSUB ", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repo.importsProject != "SCTPSUB" || repo.importsDeployment != "" || repo.importsLimit != 100 || resp.Count != 1 {
+		t.Errorf("defaults: %q %q %d, response %+v", repo.importsProject, repo.importsDeployment, repo.importsLimit, resp)
+	}
+	for _, tc := range []struct{ project, deployment, limit, contains string }{
+		{"", "", "", "projectKey or deploymentNumber is required"},
+		{"P", "", "0", "limit must be between 1 and 1000"},
+		{"", "DEP1", "1001", "limit must be between 1 and 1000"},
+	} {
+		repo := &mockInstanceIngestionRepo{}
+		_, err := newTestIngestionService(repo).ListUsageReportImports(ctx, tc.project, tc.deployment, tc.limit)
+		wantValidation(t, err, tc.contains)
+		if repo.calls != 0 {
+			t.Errorf("a rejected request reached the repository")
+		}
+	}
+}
+
 func TestInstanceIngestion_ReportedProductAndVersionAreLengthChecked(t *testing.T) {
 	repo := &mockInstanceIngestionRepo{}
 	_, err := newTestIngestionService(repo).UpsertInstanceMeta(context.Background(), domain.InstanceMetaRequest{
@@ -441,5 +473,15 @@ func TestInstanceIngestion_ReportedProductAndVersionAreLengthChecked(t *testing.
 	wantValidation(t, err, "version")
 	if repo.calls != 0 {
 		t.Errorf("an over-long product or version reached the repository")
+	}
+}
+
+func TestInstanceIngestion_ExportVersionIsLengthChecked(t *testing.T) {
+	repo := &mockInstanceIngestionRepo{}
+	_, err := newTestIngestionService(repo).ImportDailyUsagesBatch(context.Background(), domain.DailyUsageBatchRequest{
+		NodeID: "n", ExportVersion: strings.Repeat("1", 21)})
+	wantValidation(t, err, "exportVersion")
+	if repo.calls != 0 {
+		t.Errorf("an over-long export version reached the repository")
 	}
 }

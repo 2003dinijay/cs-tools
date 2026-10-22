@@ -106,6 +106,11 @@ type DailyUsageBatchRequest struct {
 	UserEmail string                `json:"userEmail"`
 	Nodes     []DailyUsageBatchNode `json:"nodes,omitempty"`
 	Usages    []DailyUsageBatchItem `json:"usages"`
+	// The report's own export metadata, recorded in its import history row. All optional.
+	ExportVersion string `json:"exportVersion,omitempty"`
+	// ExportedAt is RFC 3339; a value that does not parse is recorded as unknown.
+	ExportedAt  string `json:"exportedAt,omitempty"`
+	ExportValid *bool  `json:"exportValid,omitempty"`
 }
 
 // DailyUsageBatchResponse carries the number of imported daily usage entries.
@@ -165,4 +170,24 @@ type UsageRollupMonthlyRequest struct {
 type UsageRollupResponse struct {
 	RowsWritten int    `json:"rowsWritten"`
 	Status      string `json:"status"`
+}
+
+// UsageReportImport is one imported offline usage report, as recorded in its history.
+type UsageReportImport struct {
+	ID               string     `json:"id"`
+	CreatedOn        time.Time  `json:"createdOn"`
+	CreatedBy        string     `json:"createdBy"`
+	ProjectKey       *string    `json:"projectKey"`
+	DeploymentNumber *string    `json:"deploymentNumber"`
+	ExportVersion    *string    `json:"exportVersion"`
+	ExportedAt       *time.Time `json:"exportedAt"`
+	ExportValid      *bool      `json:"exportValid"`
+	NodeCount        int        `json:"nodeCount"`
+	ImportedCount    int        `json:"importedCount"`
+}
+
+// UsageReportImportsResponse lists imported reports, newest first.
+type UsageReportImportsResponse struct {
+	Imports []UsageReportImport `json:"imports"`
+	Count   int                 `json:"count"`
 }
