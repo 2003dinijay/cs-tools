@@ -3285,3 +3285,11 @@
 .csm-ts .ladder .lane .lhand { position: absolute; left: -13px; width: 20px; min-height: 20px; z-index: 3; box-sizing: border-box; display: flex; align-items: center; justify-content: center; border-radius: 9px; background: var(--accent); color: #fff; box-shadow: 0 0 0 2px var(--surface-solid), 0 1px 3px rgba(0,0,0,.25); cursor: default; }
 .csm-ts .ladder .lane .lhand i { font-style: normal; font-size: 12px; font-weight: 800; line-height: 1; }
 .csm-ts .ladder .lax .laxhand { position: absolute; right: 0; width: 3px; border-radius: 2px; background: var(--accent); }
+
+/* A yes or no and a pick from a few are changed right in their row. */
+.csm-ts .cas-inline { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.csm-ts button.switch { border: 0; background: transparent; padding: 0; }
+.csm-ts button.switch:disabled { opacity: .6; cursor: default; }
+.csm-ts .cas-select { height: 30px; padding: 0 8px; border: 1px solid var(--line-2); border-radius: 6px; background: var(--surface); font-size: 12.5px; }
+.csm-ts .cas-src-pending { background: var(--accent-soft); color: var(--accent-ink); }
+.csm-ts td > .cas-acts .btn { white-space: nowrap; }

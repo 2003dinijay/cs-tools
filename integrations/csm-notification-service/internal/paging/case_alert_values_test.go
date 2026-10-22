@@ -542,3 +542,57 @@ func TestCaseAlertGroupRouting(t *testing.T) {
 		t.Fatal("the running report carries no groups")
 	}
 }
+
+// The tab shows every CRE setting, including the ones only the file or the
+// code sets: whether a stopped chain replies, the rung emails (counted or
+// flagged, never their addresses), whether the rule table is the built-in
+// one, and when each step is called -- the same minutes the engine runs on.
+func TestRunningCaseAlertValues_CREFileOnlyShowsTheWholeChain(t *testing.T) {
+	cfg := loadConfigText(t, prodShapedConfig)
+	cfg.CRE.Email = RungEmail{
+		Enabled:     true,
+		TeamLists:   map[string]string{"atlas": "atlas-list@example.test", "vega": "vega-list@example.test"},
+		CRETeamList: "cre-list@example.test",
+	}
+	b, _ := json.Marshal(RunningCaseAlertValues(cfg, nil))
+	if strings.Contains(string(b), "list@example.test") {
+		t.Fatal("a rung email address was reported")
+	}
+	var r struct {
+		FileOnly map[string]map[string]json.RawMessage `json:"fileOnly"`
+	}
+	if err := json.Unmarshal(b, &r); err != nil {
+		t.Fatal(err)
+	}
+	cre, sre := r.FileOnly["CRE"], r.FileOnly["SRE"]
+	for key, want := range map[string]string{
+		"ackChat":           "true",
+		"email.enabled":     "true",
+		"email.teamLists":   "2",
+		"email.creTeamList": "true",
+		"email.csTeamList":  "false",
+		"rules.custom":      "false",
+	} {
+		if got := string(cre[key]); got != want {
+			t.Errorf("CRE %s = %s, want %s", key, got, want)
+		}
+	}
+	var timing map[string][][]int
+	if err := json.Unmarshal(cre["timing"], &timing); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := timing["S0"], [][]int{{0}, {1, 2, 3}, {4, 5, 6}, {8, 9, 10}, {12, 13, 14}}; !reflect.DeepEqual(got, want) {
+		t.Errorf("S0 timing = %v, want %v (the rules sheet's CRE timing)", got, want)
+	}
+	if got := timing["S1"][1]; !reflect.DeepEqual(got, []int{9, 11, 13}) {
+		t.Errorf("S1 L1 = %v, want [9 11 13]", got)
+	}
+	if string(sre["ackChat"]) != "true" {
+		t.Errorf("SRE ackChat = %s, want true", sre["ackChat"])
+	}
+	for _, key := range []string{"timing", "email.enabled", "rules.custom"} {
+		if _, ok := sre[key]; ok {
+			t.Errorf("SRE reports %s, a CRE-only setting", key)
+		}
+	}
+}

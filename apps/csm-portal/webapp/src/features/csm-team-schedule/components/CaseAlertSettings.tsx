@@ -56,16 +56,18 @@ import {
 } from "../utils/caseAlertDrafts";
 import {
   ADVANCED_GROUPS,
+  SHOWN_KEYS,
   channelWords,
   ladderKeysFor,
   runningLine,
   savedInGroups,
+  savedOutside,
   teamChannelsUnder,
   valuesToCopy,
   type LadderKeyGroup,
 } from "../utils/caseAlertLadderKeys";
 import CaseAlertDraftsProvider from "./CaseAlertDraftsProvider";
-import { LadderAdvanced, LadderValueGroup } from "./CaseAlertLadderSettings";
+import { CreTimingTable, LadderAdvanced, LadderValueGroup, LadderValueKeys } from "./CaseAlertLadderSettings";
 import CaseAlertModal from "./CaseAlertModal";
 import CaseAlertSection from "./CaseAlertSection";
 
@@ -181,6 +183,11 @@ interface Props {
   /** Teams people are only moved onto (Migration, SaaS Night cover): they
    *  are never alerted as themselves, so they get no chat space or redirect. */
   moveTargetKeys?: readonly string[];
+  /** "short" (the default) shows each ladder's switch and the settings people
+   *  change (SHOWN_KEYS), where alerts go and, for CRE, when each step is
+   *  called. "full" shows every key of the ladders, as before: the rest is
+   *  kept in the code and keeps its value, but the tab doesn't offer it. */
+  layout?: "short" | "full";
 }
 
 /**
@@ -214,6 +221,7 @@ function SettingsPanel({
   chain,
   teams = [],
   moveTargetKeys = [],
+  layout = "short",
 }: Props): JSX.Element | null {
   const settings = useCaseAlertSettings();
   const drafts = useCaseAlertDrafts();
@@ -259,6 +267,15 @@ function SettingsPanel({
   const savedIn = (groups: readonly LadderKeyGroup[]) =>
     editable.reduce((n, l) => n + savedInGroups(s, l, groups), 0);
   const savedWords = (n: number) => (n > 0 ? `${n} saved here` : undefined);
+  // The short layout shows each ladder's switch and the settings people
+  // change; the rest stays in the code and keeps its value.
+  const simple = layout === "short";
+  const shownSaved = editable.reduce(
+    (n, l) => n + s.values.filter((v) => v.ladder === l && SHOWN_KEYS[l].includes(v.key)).length,
+    0,
+  );
+  const hiddenSaved = editable.reduce((n, l) => n + savedOutside(s, l, SHOWN_KEYS[l]), 0);
+  const ladderLabel = several ? `${editable.join(" and ")} ladders` : `${editable[0]} ladder`;
   /** A change was made: say it waits for Submit, in place of the last line. */
   const onSaved = (what: string) => {
     setError(null);
@@ -312,6 +329,35 @@ function SettingsPanel({
         </div>
       ) : null}
 
+      {simple ? (
+        <CaseAlertSection
+          id={`${family}.ladder`}
+          label={ladderLabel}
+          defaultOpen
+          summary={summaryOf(ladderLabel, ...editable.map((l) => switchWords(s, l)), savedWords(shownSaved))}
+        >
+          <p className="cas-sub">
+            {family === "CRE"
+              ? "Turn the CRE ladder on or off, choose how it reaches people and which severities start a chain, set its call limits and the heads it calls last."
+              : "Turn each ladder on or off, choose how it reaches people, which priorities start a chain, its call limits and the time between steps."}
+          </p>
+          {editable.map((l) => (
+            <div key={l}>
+              {l === "SRE" ? (
+                <p className="cas-sub">One SRE ladder: these apply to both the SaaS and IaaS chains.</p>
+              ) : null}
+              <LadderValueKeys
+                ladder={l}
+                settings={s}
+                keys={SHOWN_KEYS[l]}
+                heading={several ? `${l} ladder` : undefined}
+                onSaved={onSaved}
+              />
+            </div>
+          ))}
+          <p className="cas-sub cas-running">{runningLine(s)}</p>
+        </CaseAlertSection>
+      ) : (
       <CaseAlertSection
         id={`${family}.switches`}
         label="On/off and channel"
@@ -340,6 +386,7 @@ function SettingsPanel({
           </div>
         ))}
       </CaseAlertSection>
+      )}
 
       <CaseAlertSection
         id={`${family}.where`}
@@ -383,6 +430,29 @@ function SettingsPanel({
         ) : null}
       </CaseAlertSection>
 
+      {simple ? (
+        <>
+          {family === "CRE" ? (
+            <CaseAlertSection
+              id="CRE.timing"
+              label="When each step is called"
+              summary={summaryOf("When each step is called", "read-only")}
+            >
+              {s.running?.fileOnly?.CRE?.timing ? (
+                <CreTimingTable fileOnly={s.running.fileOnly.CRE} heading="" />
+              ) : (
+                <p className="cas-sub cas-empty">Not reported yet: the alert service reports it when it runs.</p>
+              )}
+            </CaseAlertSection>
+          ) : null}
+          <p className="cas-sub cas-hidden-note">
+            The other {family} settings (who is in each team, how a chain climbs, the alert service&apos;s own) are not
+            shown here and keep their values
+            {hiddenSaved > 0 ? `; ${plural(hiddenSaved, "of them is", "of them are")} saved here and still in use` : ""}.
+          </p>
+        </>
+      ) : (
+      <>
       <CaseAlertSection
         id={`${family}.who`}
         label="Who gets alerts"
@@ -430,6 +500,8 @@ function SettingsPanel({
           />
         ))}
       </CaseAlertSection>
+      </>
+      )}
 
       <SubmitBar
         family={family}

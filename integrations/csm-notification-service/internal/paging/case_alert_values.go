@@ -534,11 +534,14 @@ func compactJSON(v any) string {
 
 func sameJSON(a, b any) bool { return compactJSON(a) == compactJSON(b) }
 
-// fileOnlyCaseAlertValues is what only the file can set, shown read-only on
-// the tab so nobody has to open the file to see what a ladder may do: whether
-// it runs, its channel, its caps, where numbers come from. The allowed
-// numbers are counted, never listed.
-func fileOnlyCaseAlertValues(cfg Config, l LadderConfig) map[string]any {
+// fileOnlyCaseAlertValues is what only the file (or the code) sets, shown
+// read-only on the tab so nobody has to open the file to see what a ladder may
+// do: whether it runs, its channel, its caps, where numbers come from, and
+// whether it replies when it stops. For CRE also the rung emails, whether the
+// rule table is the built-in one, and when each step is called. The allowed
+// numbers are counted, never listed; the rung emails' lists are counted or
+// flagged, never their addresses.
+func fileOnlyCaseAlertValues(cfg Config, ladder string, l LadderConfig) map[string]any {
 	out := map[string]any{
 		"enabled":                           cfg.Enabled && l.Enabled,
 		"channel":                           string(l.Channel),
@@ -547,9 +550,38 @@ func fileOnlyCaseAlertValues(cfg Config, l LadderConfig) map[string]any {
 		"safety.callWithoutVerifiedLeads":   l.Safety.CallWithoutVerifiedLeads,
 		"safety.callHeadsWithoutLowerTiers": l.Safety.CallHeadsWithoutLowerTiers,
 		"phones.source":                     l.PhoneSource(),
+		"ackChat":                           l.AckChatOn(),
 	}
 	if lvl, capped := l.CapLevel(); capped {
 		out["safety.maxLevel"] = int(lvl)
+	}
+	if ladder == "CRE" {
+		out["email.enabled"] = l.Email.Enabled
+		out["email.teamLists"] = len(l.Email.TeamLists)
+		out["email.creTeamList"] = strings.TrimSpace(l.Email.CRETeamList) != ""
+		out["email.csTeamList"] = strings.TrimSpace(l.Email.CSTeamList) != ""
+		out["rules.custom"] = len(l.Rules) > 0
+		out["timing"] = creChainTiming(DefaultPolicy)
+	}
+	return out
+}
+
+// creChainTiming is when each step of the CRE chain is called, by severity:
+// minutes after the case is created, one list per step L0 to L4. It comes from
+// the policy the CRE engine runs on, so the tab cannot drift from the code.
+// Every CRE rule has an L0 step, so L0 is always included.
+func creChainTiming(policies map[string]PriorityPolicy) map[string][][]int {
+	out := map[string][][]int{}
+	for i, sev := range []string{"S0", "S1", "S2", "S3", "S4"} {
+		p, ok := policies[fmt.Sprintf("P%d", i)]
+		if !ok {
+			continue
+		}
+		steps := make([][]int, int(Level4)+1)
+		for _, a := range Schedule(p, true) {
+			steps[a.Level] = append(steps[a.Level], int(a.After/time.Minute))
+		}
+		out[sev] = steps
 	}
 	return out
 }
@@ -562,7 +594,7 @@ func fileOnlyCaseAlertValues(cfg Config, l LadderConfig) map[string]any {
 func RunningCaseAlertValues(cfg Config, saved map[string]map[string]bool) map[string]any {
 	fileOnly := map[string]any{}
 	for _, ladder := range caseAlertBoth {
-		fileOnly[ladder] = fileOnlyCaseAlertValues(cfg, *ladderFor(&cfg, ladder))
+		fileOnly[ladder] = fileOnlyCaseAlertValues(cfg, ladder, *ladderFor(&cfg, ladder))
 	}
 	fileOnly["SME"] = map[string]any{
 		"enabled":               cfg.Enabled && cfg.SME.Enabled,

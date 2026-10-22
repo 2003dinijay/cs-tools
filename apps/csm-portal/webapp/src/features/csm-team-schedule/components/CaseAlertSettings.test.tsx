@@ -139,7 +139,7 @@ describe("CaseAlertSettings", () => {
     settings.data = make({
       canManage: { view: false, roomLadders: [], routeLadders: [] },
     });
-    const { container } = render(<CaseAlertSettings chain="SRE_SAAS" />);
+    const { container } = render(<CaseAlertSettings layout="full" chain="SRE_SAAS" />);
     expect(container).toBeEmptyDOMElement();
   });
 
@@ -147,7 +147,7 @@ describe("CaseAlertSettings", () => {
     settings.data = make({
       canManage: { view: true, roomLadders: ["SRE", "SME"], routeLadders: ["SRE"] },
     });
-    render(<CaseAlertSettings family="SRE" />);
+    render(<CaseAlertSettings layout="full" family="SRE" />);
     expect(screen.getByRole("heading", { name: "SRE settings" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Chat space for each team" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Assignment groups" })).toBeInTheDocument();
@@ -162,7 +162,7 @@ describe("CaseAlertSettings", () => {
     settings.data = make({
       canManage: { view: true, roomLadders: ["SME"], routeLadders: [] },
     });
-    render(<CaseAlertSettings family="SRE" />);
+    render(<CaseAlertSettings layout="full" family="SRE" />);
     expect(screen.getByRole("heading", { name: "SRE settings" })).toBeInTheDocument();
     expect(screen.queryByText(/redirect/i)).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Assignment groups" })).not.toBeInTheDocument();
@@ -180,7 +180,7 @@ describe("CaseAlertSettings", () => {
       settings.data = make({
         canManage: { view: true, roomLadders: [...ladders], routeLadders: [] },
       });
-      const { container, unmount } = render(<CaseAlertSettings family={family} />);
+      const { container, unmount } = render(<CaseAlertSettings layout="full" family={family} />);
       expect(container).toBeEmptyDOMElement();
       unmount();
     }
@@ -190,7 +190,7 @@ describe("CaseAlertSettings", () => {
     settings.data = make({
       revision: { saved: 5, applied: 4, appliedMode: "db" },
     });
-    const { unmount } = render(<CaseAlertSettings chain="SRE_SAAS" />);
+    const { unmount } = render(<CaseAlertSettings layout="full" chain="SRE_SAAS" />);
     expect(screen.getByText("Saved · applies after a restart")).toHaveAccessibleName(
       /^Status: Saved\. Changes apply the next time the alert service restarts/,
     );
@@ -203,7 +203,7 @@ describe("CaseAlertSettings", () => {
         appliedAt: "2026-10-13T10:00:00Z",
       },
     });
-    const { unmount: unmount2 } = render(<CaseAlertSettings chain="SRE_SAAS" />);
+    const { unmount: unmount2 } = render(<CaseAlertSettings layout="full" chain="SRE_SAAS" />);
     expect(screen.getByText("In use", { selector: ".cas-state" })).toHaveAccessibleName(
       /^Status: In use by the alert service \(as the alert service reported at/,
     );
@@ -212,13 +212,13 @@ describe("CaseAlertSettings", () => {
     unmount2();
     // Shadow mode is out of the ordinary: said in a line of its own too.
     settings.data = make({ revision: { saved: 5, applied: 5, appliedMode: "shadow" } });
-    render(<CaseAlertSettings chain="SRE_SAAS" />);
+    render(<CaseAlertSettings layout="full" chain="SRE_SAAS" />);
     expect(screen.getByText("Not in use: shadow mode")).toBeInTheDocument();
     expect(screen.getByText(/^Saved, not in use yet\./)).toBeInTheDocument();
   });
 
   it("adds a redirect and removes one as changes, saved together on Submit", async () => {
-    render(<CaseAlertSettings chain="SRE_SAAS" />);
+    render(<CaseAlertSettings layout="full" chain="SRE_SAAS" />);
     fireEvent.change(screen.getByLabelText("When an incident is assigned to"), {
       target: { value: "Asgardeo" },
     });
@@ -256,7 +256,7 @@ describe("CaseAlertSettings", () => {
         ],
       },
     });
-    render(<CaseAlertSettings chain="SRE_SAAS" />);
+    render(<CaseAlertSettings layout="full" chain="SRE_SAAS" />);
     expect(screen.getAllByRole("option", { name: "Apollo" })).toHaveLength(2); // the group list and the target list
     fireEvent.change(screen.getByLabelText("When an incident is assigned to"), {
       target: { value: `\u0000ag:${IAAS}` },
@@ -283,7 +283,7 @@ describe("CaseAlertSettings", () => {
     settings.data = make({
       routeOptions: { ...base.routeOptions!, assignmentGroups: [{ id: IAAS, name: "WSO2 IaaS Team" }] },
     });
-    render(<CaseAlertSettings chain="SRE_SAAS" />);
+    render(<CaseAlertSettings layout="full" chain="SRE_SAAS" />);
     fireEvent.change(screen.getByLabelText("When an incident is assigned to"), {
       target: { value: "\u0000other" },
     });
@@ -310,7 +310,7 @@ describe("CaseAlertSettings", () => {
         { id: "a2", name: "U2 SRE Group" },
       ],
     });
-    render(<CaseAlertSettings chain="SRE_SAAS" />);
+    render(<CaseAlertSettings layout="full" chain="SRE_SAAS" />);
     expect(screen.getByRole("status")).toHaveTextContent(
       "2 assignment groups have no SRE team: their incident cards go to the shared SRE room and nobody is called. Redirect them below: WSO2 IaaS Team, U2 SRE Group.",
     );
@@ -318,7 +318,7 @@ describe("CaseAlertSettings", () => {
   });
 
   it("redirects an SRE assignment group that is not a CSM Portal team, typed by name", async () => {
-    render(<CaseAlertSettings chain="SRE_SAAS" />);
+    render(<CaseAlertSettings layout="full" chain="SRE_SAAS" />);
     fireEvent.change(screen.getByLabelText("When an incident is assigned to"), {
       target: { value: "\u0000other" },
     });
@@ -340,7 +340,7 @@ describe("CaseAlertSettings", () => {
   });
 
   it("sends an SME team's incidents to a whole rota, picked from lists", async () => {
-    render(<CaseAlertSettings chain="SRE_SAAS" />);
+    render(<CaseAlertSettings layout="full" chain="SRE_SAAS" />);
     expect(
       screen.getByText("Every team on the SaaS SRE rota"),
     ).toBeInTheDocument();
@@ -365,7 +365,7 @@ describe("CaseAlertSettings", () => {
   });
 
   it("offers the ladder's own teams, then whole rotas, as where alerts go", async () => {
-    render(<CaseAlertSettings chain="SRE_SAAS" />);
+    render(<CaseAlertSettings layout="full" chain="SRE_SAAS" />);
     const to = screen.getByLabelText("send its alerts to");
     expect(
       within(to).getByRole("option", { name: "Apollo" }),
@@ -400,7 +400,7 @@ describe("CaseAlertSettings", () => {
         },
       ],
     });
-    render(<CaseAlertSettings chain="SRE_SAAS" />);
+    render(<CaseAlertSettings layout="full" chain="SRE_SAAS" />);
     const redirect = screen
       .getByRole("cell", { name: "Asgardeo" })
       .closest("tr") as HTMLElement;
@@ -425,7 +425,7 @@ describe("CaseAlertSettings", () => {
         },
       ],
     });
-    render(<CaseAlertSettings chain="SRE_SAAS" />);
+    render(<CaseAlertSettings layout="full" chain="SRE_SAAS" />);
     expect(
       screen.queryByText(
         "Same team, not needed: it is alerted as itself anyway",
@@ -447,7 +447,7 @@ describe("CaseAlertSettings", () => {
         },
       ],
     });
-    render(<CaseAlertSettings chain="SRE_SAAS" />);
+    render(<CaseAlertSettings layout="full" chain="SRE_SAAS" />);
     expect(
       screen.getByText("Same team, not needed: it is alerted as itself anyway"),
     ).toBeInTheDocument();
@@ -469,7 +469,7 @@ describe("CaseAlertSettings", () => {
         },
       ],
     });
-    render(<CaseAlertSettings chain="SRE_SAAS" />);
+    render(<CaseAlertSettings layout="full" chain="SRE_SAAS" />);
     const redirect = screen
       .getByRole("cell", { name: "Asgardeo" })
       .closest("tr") as HTMLElement;
@@ -480,7 +480,7 @@ describe("CaseAlertSettings", () => {
     settings.data = make({
       canManage: { view: true, roomLadders: ["CRE"], routeLadders: ["CRE"] },
     });
-    render(<CaseAlertSettings chain="CRE" />);
+    render(<CaseAlertSettings layout="full" chain="CRE" />);
     const from = screen.getByLabelText("When a case is assigned to");
     expect(
       within(from).getByRole("option", { name: "Vega" }),
@@ -496,7 +496,7 @@ describe("CaseAlertSettings", () => {
   });
 
   it("names the parts: each team's chat space, and where an incident's or a case's alerts go", () => {
-    const { unmount } = render(<CaseAlertSettings chain="SRE_SAAS" />);
+    const { unmount } = render(<CaseAlertSettings layout="full" chain="SRE_SAAS" />);
     expect(
       screen.getByRole("heading", { name: "Chat space for each team" }),
     ).toBeInTheDocument();
@@ -516,7 +516,7 @@ describe("CaseAlertSettings", () => {
       canManage: { view: true, roomLadders: ["CRE"], routeLadders: ["CRE"] },
       routes: [],
     });
-    render(<CaseAlertSettings chain="CRE" />);
+    render(<CaseAlertSettings layout="full" chain="CRE" />);
     expect(
       screen.getByRole("group", {
         name: "Send a case's alerts to another CRE team",
@@ -581,7 +581,7 @@ describe("Where each assignment group's alerts go", () => {
 
   it("says for each group where its alerts go and why: the file, a team's name, or nowhere", () => {
     settings.data = withGroups({ unmappedGroups: [{ id: U2, name: "U2 SRE Group" }] });
-    render(<CaseAlertSettings chain="SRE_SAAS" />);
+    render(<CaseAlertSettings layout="full" chain="SRE_SAAS" />);
     expect(within(groupRow("WSO2 IaaS Team")).getByText("IaaS")).toBeInTheDocument();
     expect(within(groupRow("WSO2 IaaS Team")).getByText("From the alert service's file")).toBeInTheDocument();
     // A team key the page has no name for is shown as the key.
@@ -615,7 +615,7 @@ describe("Where each assignment group's alerts go", () => {
         },
       ],
     });
-    render(<CaseAlertSettings chain="SRE_SAAS" />);
+    render(<CaseAlertSettings layout="full" chain="SRE_SAAS" />);
     const iaas = groupRow("WSO2 IaaS Team");
     expect(within(iaas).getByText("Every team on the SaaS SRE rota")).toBeInTheDocument();
     expect(within(iaas).getByText("Redirect saved here")).toBeInTheDocument();
@@ -641,7 +641,7 @@ describe("Where each assignment group's alerts go", () => {
         },
       ],
     });
-    render(<CaseAlertSettings chain="SRE_SAAS" />);
+    render(<CaseAlertSettings layout="full" chain="SRE_SAAS" />);
     const from = screen.getByLabelText("When an incident is assigned to");
     const to = screen.getByLabelText("send its alerts to");
     fireEvent.click(within(groupRow("U2 SRE Group")).getByRole("button", { name: "Redirect U2 SRE Group" }));
@@ -674,14 +674,14 @@ describe("Where each assignment group's alerts go", () => {
 
   it("names a group the file doesn't report as not mapped, and says nothing about the file", () => {
     settings.data = withGroups({ running: undefined });
-    render(<CaseAlertSettings chain="SRE_SAAS" />);
+    render(<CaseAlertSettings layout="full" chain="SRE_SAAS" />);
     expect(within(groupRow("WSO2 IaaS Team")).getByText("The shared SRE room")).toBeInTheDocument();
     expect(screen.queryByText("From the alert service's file")).not.toBeInTheDocument();
   });
 
   it("offers no change to a reader who may not change SRE's redirects", () => {
     settings.data = withGroups({ canManage: { view: true, roomLadders: ["SRE"], routeLadders: [] } });
-    render(<CaseAlertSettings chain="SRE_SAAS" />);
+    render(<CaseAlertSettings layout="full" chain="SRE_SAAS" />);
     expect(within(groupRow("U2 SRE Group")).queryByRole("button")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("When an incident is assigned to")).not.toBeInTheDocument();
   });
