@@ -8167,7 +8167,8 @@ signatures with `GET /projects/{key}/secret-key` (`instance_ingestion_*.go`).
   type takes its latest reading. Monthly counts a node-type-day once (the live row over a
   `FILE_UPLOAD` one) and includes nodes that only have uploaded days (air-gapped). Both are
   idempotent and only touch the period given. The daily function takes the same per-node
-  advisory locks as ingestion, in id order. Keep `usage_count_type_is_counter` in step with the
+  advisory locks as ingestion, in id order; the monthly one serialises runs of the same month
+  (`monthly_usage_summary` has no unique key). Keep `usage_count_type_is_counter` in step with the
   Go counter rule. `pg_cron` is available on the server but not installed (it needs a
   platform admin); a scheduler can call these functions, today `csm-scheduled-tasks` via these
   endpoints.

@@ -122,6 +122,10 @@ DECLARE
     v_next    date := (make_date(p_year, p_month, 1) + INTERVAL '1 month')::date;
     v_written integer;
 BEGIN
+    -- monthly_usage_summary has no unique key, so two runs for the same month would
+    -- both pass the NOT EXISTS check and insert twice. Serialise them per month.
+    PERFORM pg_advisory_xact_lock(hashtextextended('usage-rollup-month:' || p_year || '-' || p_month, 0));
+
     WITH per_day AS (
         SELECT DISTINCT ON (d.deployment_node_id, d.count_type, d.summary_date)
                d.deployment_node_id AS node_uuid, d.count_type, d.summary_date, d.value

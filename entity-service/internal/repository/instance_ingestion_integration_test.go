@@ -1035,3 +1035,52 @@ func TestInstanceIngestionIntegration_ImportsAreRecordedInTheirHistory(t *testin
 		t.Errorf("by deployment: %+v", byDeployment)
 	}
 }
+
+// monthly_usage_summary has no unique key, so two rollups of the same month must not run
+// at once: the second waits for the first to commit, then finds the rows already there.
+func TestUsageRollup_MonthlyRunsForOneMonthAreSerialised(t *testing.T) {
+	pool := instanceIngestionTestPool(t)
+	repo := repository.NewInstanceIngestionRepository(repository.NewScoped(pool))
+	node := rollupNode(t, repo, "node-serial")
+	dailyRow(t, pool, node, "2026-10-01", "TRANSACTION_COUNT", 100, "API_CALL")
+
+	bg := context.Background()
+	first, err := pool.Begin(bg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = first.Rollback(bg) }()
+	if _, err := first.Exec(bg, `SELECT set_config('app.is_internal', 'true', true)`); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := first.QueryRow(bg, `SELECT rollup_monthly_usage(2026, 10)`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("first rollup: wrote %d, err %v", n, err)
+	}
+
+	type result struct {
+		n   int
+		err error
+	}
+	second := make(chan result, 1)
+	go func() {
+		n, err := repo.RollupMonthlyUsage(internalCtx(), 2026, 10)
+		second <- result{n, err}
+	}()
+	select {
+	case r := <-second:
+		t.Fatalf("the second rollup did not wait for the first: wrote %d, err %v", r.n, r.err)
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	if err := first.Commit(bg); err != nil {
+		t.Fatal(err)
+	}
+	r := <-second
+	if r.err != nil || r.n != 0 {
+		t.Fatalf("second rollup after the first committed: wrote %d, err %v (want 0)", r.n, r.err)
+	}
+	if got := monthlyValues(t, pool, 2026, 10); strings.Join(got, "|") != "node-serial TRANSACTION_COUNT=100" {
+		t.Errorf("monthly rows: %v", got)
+	}
+}
