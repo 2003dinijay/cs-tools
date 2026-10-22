@@ -3220,3 +3220,11 @@
 .csm-ts .ladder .lane .lhand { position: absolute; left: -13px; width: 20px; min-height: 20px; z-index: 3; box-sizing: border-box; display: flex; align-items: center; justify-content: center; border-radius: 9px; background: var(--accent); color: #fff; box-shadow: 0 0 0 2px var(--surface-solid), 0 1px 3px rgba(0,0,0,.25); cursor: default; }
 .csm-ts .ladder .lane .lhand i { font-style: normal; font-size: 12px; font-weight: 800; line-height: 1; }
 .csm-ts .ladder .lax .laxhand { position: absolute; right: 0; width: 3px; border-radius: 2px; background: var(--accent); }
+
+/* Alert Settings: each assignment group's and SME sub team's chat space. */
+.csm-ts .cas-sr { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.csm-ts .cas-link { background: none; border: 0; padding: 0 0 0 6px; color: var(--accent, #3b5bdb); font: inherit; font-size: 12px; cursor: pointer; text-decoration: underline; }
+.csm-ts .cas-urlform { margin-top: 0; }
+.csm-ts .cas-urlform .cas-acts { flex-basis: 100%; }
+.csm-ts .cas-spaces td { vertical-align: top; }
+.csm-ts .cas-spaces tr.cas-other td { color: var(--ink-2); }

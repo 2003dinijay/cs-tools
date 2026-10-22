@@ -23520,6 +23520,10 @@ components:
       properties:
         id: { type: string, format: uuid, description: 'The "group" row (an assignment group mirrored from ServiceNow).' }
         name: { type: string }
+        services:
+          type: array
+          items: { type: string }
+          description: "Route options only: the names of the services it is the support group of, by name."
     CaseAlertRouteOptions:
       type: object
       required: [groups, teams, rotas]
@@ -23702,7 +23706,9 @@ components:
       properties:
         id: { type: string, format: uuid }
         ladder: { type: string, enum: [CRE, SRE, SME] }
-        teamKey: { type: string, description: "The SRE or SME team whose room it is; absent for the ladder's shared room (CRE, SRE). An SME room is always a team's." }
+        teamKey: { type: string, description: "The SRE or SME team whose room it is; absent for the ladder's shared room (CRE, SRE) and a group's room. An SME room is always a team's." }
+        groupId: { type: string, format: uuid, description: "An SRE assignment group's own room (0244): the group whose incident card and paging replies go here. Absent for a ladder's or a team's room." }
+        groupName: { type: string, description: "The group's current name, with groupId." }
         label: { type: string }
         enabled: { type: boolean }
         teamless: { type: boolean, description: "Also gets the cards of an incident with no SRE team of its own." }
@@ -23734,7 +23740,8 @@ components:
       properties:
         ladder: { type: string, enum: [CRE, SRE, SME] }
         teamKey: { type: string, description: "An SRE or SME team of the Team Schedule (required for SME); omit for the ladder's shared room." }
-        label: { type: string, maxLength: 100 }
+        groupId: { type: string, format: uuid, description: "SRE only, instead of teamKey: an assignment group from routeOptions.assignmentGroups, whose incident card and paging replies go to this room (who is called does not change). No teamless flag or channel. 400 when it is not one." }
+        label: { type: string, maxLength: 100, description: "May be left out with groupId: the group's own name is used." }
         enabled: { type: boolean, default: true }
         teamless: { type: boolean, default: false, description: "SRE team rooms only." }
         channel: { type: string, enum: ["", log, chat, call, both], description: "An SRE team room only: chat, call, both or log; an empty string goes back to the ladder's. Refused on a ladder's shared room and on an SME room." }
@@ -23785,6 +23792,8 @@ components:
       properties:
         ladder: { type: string, enum: [CRE, SRE, SME] }
         teamKey: { type: string }
+        groupId: { type: string, format: uuid, description: "An SRE assignment group's room." }
+        groupName: { type: string, description: "The group's current name: what an incident's assignment group is matched against." }
         label: { type: string }
         teamless: { type: boolean }
         webhookUrl: { type: string, description: "The opened webhook URL, or empty for a team room saved only for its channel. Returned only on this service-only route." }

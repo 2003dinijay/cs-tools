@@ -127,9 +127,13 @@ type CaseAlertRevisionRow struct {
 
 // CaseAlertRoomRow is one paging_chat_room row, with whether a URL is stored.
 type CaseAlertRoomRow struct {
-	ID             string
-	Ladder         string
-	TeamKey        string
+	ID      string
+	Ladder  string
+	TeamKey string
+	// GroupID is the SRE assignment group whose room this is ("" for a
+	// ladder's or a team's room); GroupName is that group's current name.
+	GroupID        string
+	GroupName      string
 	Label          string
 	Enabled        bool
 	Teamless       bool
@@ -144,11 +148,12 @@ type CaseAlertRoomRow struct {
 	UpdatedOn      time.Time
 }
 
-// CaseAlertRoomWrite is a room as saved. TeamKey "" is the ladder's shared
-// room.
+// CaseAlertRoomWrite is a room as saved. TeamKey and GroupID both "" is the
+// ladder's shared room; at most one of them is set.
 type CaseAlertRoomWrite struct {
 	Ladder   string
 	TeamKey  string
+	GroupID  string
 	Label    string
 	Enabled  bool
 	Teamless bool
@@ -196,9 +201,11 @@ type CaseAlertTeamRow struct {
 	Key, Name, Family string
 }
 
-// CaseAlertGroupRow is a "group" row as a route option.
+// CaseAlertGroupRow is a "group" row as a route option. Services are the
+// names of the services it is the support group of (AssignmentGroups only).
 type CaseAlertGroupRow struct {
 	ID, Name string
+	Services []string
 }
 
 // CaseAlertRotaRow is an active SRE rota as a route option.
@@ -281,17 +288,19 @@ func (r *caseAlertSettingsRepository) RecordApplied(ctx context.Context, by stri
 }
 
 const caseAlertRoomColumns = `
-       r.id::text, r.ladder, COALESCE(r.team_key, ''), r.label, r.enabled, r.teamless, COALESCE(r.channel, ''),
+       r.id::text, r.ladder, COALESCE(r.team_key, ''), COALESCE(r.group_id::text, ''), COALESCE(btrim(g.name), ''),
+       r.label, r.enabled, r.teamless, COALESCE(r.channel, ''),
        (s.room_id IS NOT NULL), r.webhook_hint, r.webhook_set_at, r.webhook_set_by,
        r.last_test_at, r.last_test_status, r.updated_by, r.updated_on`
 
 const caseAlertRoomFrom = `
   FROM paging_chat_room r
+  LEFT JOIN "group" g ON g.id = r.group_id
   LEFT JOIN paging_chat_secret s ON s.room_id = r.id`
 
 func scanCaseAlertRoom(row pgx.Row) (CaseAlertRoomRow, error) {
 	var c CaseAlertRoomRow
-	err := row.Scan(&c.ID, &c.Ladder, &c.TeamKey, &c.Label, &c.Enabled, &c.Teamless, &c.Channel,
+	err := row.Scan(&c.ID, &c.Ladder, &c.TeamKey, &c.GroupID, &c.GroupName, &c.Label, &c.Enabled, &c.Teamless, &c.Channel,
 		&c.HasSecret, &c.WebhookHint, &c.WebhookSetAt, &c.WebhookSetBy,
 		&c.LastTestAt, &c.LastTestStatus, &c.UpdatedBy, &c.UpdatedOn)
 	return c, err
@@ -299,7 +308,7 @@ func scanCaseAlertRoom(row pgx.Row) (CaseAlertRoomRow, error) {
 
 func (r *caseAlertSettingsRepository) ListRooms(ctx context.Context) ([]CaseAlertRoomRow, error) {
 	rows, err := r.db.Query(ctx, `SELECT `+caseAlertRoomColumns+caseAlertRoomFrom+`
-		 ORDER BY r.ladder, r.team_key NULLS FIRST`)
+		 ORDER BY r.ladder, r.team_key NULLS FIRST, lower(btrim(g.name)) NULLS FIRST`)
 	if err != nil {
 		return nil, fmt.Errorf("list case alert rooms: %w", err)
 	}
@@ -331,12 +340,12 @@ func (r *caseAlertSettingsRepository) SaveRoom(ctx context.Context, actor string
 	var id string
 	err := r.inTx(ctx, actor, func(tx pgx.Tx) error {
 		err := tx.QueryRow(ctx, `
-			INSERT INTO paging_chat_room (created_by, updated_by, ladder, team_key, label, enabled, teamless, channel)
-			VALUES ($1, $1, $2, NULLIF($3, ''), $4, $5, $6, NULLIF($7, ''))
-			ON CONFLICT (ladder, COALESCE(team_key, '')) DO UPDATE
+			INSERT INTO paging_chat_room (created_by, updated_by, ladder, team_key, label, enabled, teamless, channel, group_id)
+			VALUES ($1, $1, $2, NULLIF($3, ''), $4, $5, $6, NULLIF($7, ''), NULLIF($8, '')::uuid)
+			ON CONFLICT (ladder, COALESCE(team_key, ''), COALESCE(group_id::text, '')) DO UPDATE
 			   SET label = EXCLUDED.label, enabled = EXCLUDED.enabled, teamless = EXCLUDED.teamless,
 			       channel = EXCLUDED.channel, updated_by = EXCLUDED.updated_by, updated_on = now()
-			RETURNING id::text`, actor, w.Ladder, w.TeamKey, w.Label, w.Enabled, w.Teamless, w.Channel).Scan(&id)
+			RETURNING id::text`, actor, w.Ladder, w.TeamKey, w.Label, w.Enabled, w.Teamless, w.Channel, w.GroupID).Scan(&id)
 		if err != nil {
 			return fmt.Errorf("save case alert room: %w", err)
 		}
@@ -664,8 +673,13 @@ func (r *caseAlertSettingsRepository) RouteGroups(ctx context.Context) ([]CaseAl
 // AssignmentGroups implements CaseAlertSettingsRepository: the support-group
 // set (supportGroupSetSQL), what incidents are assigned to on create.
 func (r *caseAlertSettingsRepository) AssignmentGroups(ctx context.Context) ([]CaseAlertGroupRow, error) {
-	rows, err := r.db.Query(ctx, `SELECT s.id::text, btrim(s.name) FROM (`+supportGroupSetSQL+`) s
-		 WHERE btrim(COALESCE(s.name, '')) <> '' ORDER BY lower(btrim(s.name)), s.id`)
+	rows, err := r.db.Query(ctx, `SELECT s.id::text, btrim(s.name),
+		       COALESCE(array_agg(btrim(sv.name) ORDER BY lower(btrim(sv.name))) FILTER (WHERE btrim(COALESCE(sv.name, '')) <> ''), '{}')
+		  FROM (`+supportGroupSetSQL+`) s
+		  LEFT JOIN service sv ON sv.support_group_id = s.id
+		 WHERE btrim(COALESCE(s.name, '')) <> ''
+		 GROUP BY s.id, s.name
+		 ORDER BY lower(btrim(s.name)), s.id`)
 	if err != nil {
 		return nil, fmt.Errorf("case alert assignment groups: %w", err)
 	}
@@ -673,7 +687,7 @@ func (r *caseAlertSettingsRepository) AssignmentGroups(ctx context.Context) ([]C
 	out := []CaseAlertGroupRow{}
 	for rows.Next() {
 		var g CaseAlertGroupRow
-		if err := rows.Scan(&g.ID, &g.Name); err != nil {
+		if err := rows.Scan(&g.ID, &g.Name, &g.Services); err != nil {
 			return nil, fmt.Errorf("scan case alert assignment group: %w", err)
 		}
 		out = append(out, g)

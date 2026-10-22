@@ -19,6 +19,7 @@
 import { describe, expect, it } from "vitest";
 import type { CaseAlertSettings } from "../types";
 import {
+  ADVANCED_GROUPS,
   LADDER_KEYS,
   draftFor,
   fileOnlyRows,
@@ -110,20 +111,22 @@ describe("caseAlertLadderKeys", () => {
     expect(fileOnlyRows("SRE", f).map((r) => r.label)).toContain("Alerts on");
   });
 
-  it("puts each family's on/off and channel on the tab, and the safety holds on CRE and SRE only", () => {
-    const keys = (l: "CRE" | "SRE" | "SME") =>
+  it("puts only each family's switch and channel under On/off and channel, and the call limits on CRE and SRE under Advanced", () => {
+    const keys = (l: "CRE" | "SRE" | "SME", group: string) =>
       ladderKeysFor(l)
-        .filter((k) => k.group === "On/off and channel")
+        .filter((k) => k.group === group)
         .map((k) => k.key);
-    expect(keys("SME")).toEqual(["enabled", "channel"]);
-    expect(keys("CRE")).toEqual([
-      "enabled",
-      "channel",
+    for (const l of ["CRE", "SRE", "SME"] as const) {
+      expect(keys(l, "On/off and channel")).toEqual(["enabled", "channel"]);
+    }
+    expect(keys("SME", "Call limits")).toEqual([]);
+    expect(keys("CRE", "Call limits")).toEqual([
       "safety.maxCallsPerLadder",
       "safety.callWithoutVerifiedLeads",
       "safety.callHeadsWithoutLowerTiers",
     ]);
-    expect(keys("SRE")).toEqual(keys("CRE"));
+    expect(keys("SRE", "Call limits")).toEqual(keys("CRE", "Call limits"));
+    expect(ADVANCED_GROUPS[0]).toBe("Call limits");
     expect(parseDraft(spec("channel"), { ...draft, text: "chat" })).toEqual({ ok: true, value: "chat" });
     expect(parseDraft(spec("safety.maxCallsPerLadder"), { ...draft, text: "4" })).toEqual({ ok: true, value: 4 });
     expect(formatLadderValue(spec("channel"), "both")).toBe("Calls and chat");

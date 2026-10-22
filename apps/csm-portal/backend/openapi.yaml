@@ -12520,9 +12520,9 @@ paths:
       summary: Create or change a Case Alerts chat room.
       operationId: putTeamScheduleCaseAlertRoom
       description: >
-        A ladder's shared room (no teamKey), an SRE team's room, or an SME team's room (SME
-        has team rooms only). Only the fields below are forwarded; the entity service decides
-        who may.
+        A ladder's shared room (no teamKey), an SRE team's room, an SME team's room (SME
+        has team rooms only), or an SRE assignment group's room (groupId). Only the fields
+        below are forwarded; the entity service decides who may.
       requestBody:
         required: true
         content:
@@ -12533,6 +12533,12 @@ paths:
               properties:
                 ladder: { type: string, enum: [CRE, SRE, SME] }
                 teamKey: { type: string }
+                groupId:
+                  type: string
+                  format: uuid
+                  description: >
+                    An SRE assignment group (routeOptions.assignmentGroups) whose incident card and
+                    paging replies go to this room; who is called does not change. Not with teamKey.
                 label: { type: string, maxLength: 100 }
                 enabled: { type: boolean }
                 teamless: { type: boolean }
