@@ -170,18 +170,16 @@ func (c *Client) EnsureLabel(ctx context.Context) error {
 	return nil
 }
 
-// maxListPages bounds one pass: pageSize * maxListPages messages.
-const maxListPages = 20
-
 // ListUnprocessed returns ids of messages matching searchQuery that do not
 // carry the processed label, oldest first. Gmail lists newest first, so every
-// page (up to maxListPages) is collected and the result reversed: a backlog
-// drains in arrival order and a run of failing recent messages cannot starve
-// older ones.
+// page is collected (ids only, bounded by MAIL_LOOKBACK) and the result
+// reversed: a backlog drains in arrival order and a run of failing recent
+// messages cannot starve older ones.
 func (c *Client) ListUnprocessed(ctx context.Context, searchQuery string) ([]string, error) {
 	var ids []string
+	seen := map[string]bool{}
 	pageToken := ""
-	for page := 0; page < maxListPages; page++ {
+	for {
 		q := url.Values{"q": {fmt.Sprintf("%s -label:%q", searchQuery, c.label)}, "maxResults": {fmt.Sprint(pageSize)}}
 		if pageToken != "" {
 			q.Set("pageToken", pageToken)
@@ -196,9 +194,12 @@ func (c *Client) ListUnprocessed(ctx context.Context, searchQuery string) ([]str
 		for _, m := range out.Messages {
 			ids = append(ids, m.ID)
 		}
-		if out.NextPageToken == "" {
+		// An empty or repeated token ends the scan, so a misbehaving API
+		// cannot loop it forever.
+		if out.NextPageToken == "" || seen[out.NextPageToken] {
 			break
 		}
+		seen[out.NextPageToken] = true
 		pageToken = out.NextPageToken
 	}
 	for i, j := 0, len(ids)-1; i < j; i, j = i+1, j-1 {

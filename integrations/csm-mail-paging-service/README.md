@@ -1,8 +1,9 @@
 # csm-mail-paging-service
 
 Polls a Gmail mailbox and publishes an event to the event bus for every email
-that matches a configured rule. It does not place calls: a consumer (for
-example csm-notification-service's paging engine) reacts to the event.
+that matches a configured rule. It does not place calls. Paging on these events
+(csm-notification-service's paging engine) is planned follow-up work and is not
+active: until a consumer exists, publishing the event pages nobody.
 
 ```
 Gmail (group mail) -> poll -> rules -> event bus (Envelope) -> consumer
