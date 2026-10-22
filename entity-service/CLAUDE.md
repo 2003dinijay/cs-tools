@@ -2768,7 +2768,10 @@ already use — no route path, request, or response shape changed.
   every row whose key is not submitted (or has no key) is deleted. The service
   rejects an empty list, an empty or duplicate `wso2Id`, over-length fields and
   an unrecognised severity before touching the database. `scannerName` has no
-  column and is not stored.
+  column and is not stored. Because it is destructive, the sync route accepts
+  only callers whose client id is in `M2M_CLIENT_IDS` (403 for any other
+  caller, user tokens included; 401 when unauthenticated); an empty list
+  rejects everyone.
 - **Time cards**: like comments, the Postgres path has no inbound-auth
   layer to forward a caller's identity through, so `CreateTimeCard`/
   `UpdateTimeCard`/`DeleteTimeCard` resolve the caller's user id from

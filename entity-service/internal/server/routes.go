@@ -1369,7 +1369,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		snProductVulnerabilitySvc = service.NewServiceNowProductVulnerabilityService(serviceNowIntegrationServiceClient)
 	}
 	activeProductVulnerabilitySvc := newProductVulnerabilityService(cfg.DataSource, productVulnerabilityRepo, snProductVulnerabilitySvc, productVulnerabilityOptionsCache)
-	productVulnerabilityHandler := handler.NewProductVulnerabilityHandler(activeProductVulnerabilitySvc)
+	productVulnerabilityHandler := handler.NewProductVulnerabilityHandler(activeProductVulnerabilitySvc, cfg.M2MClientIDs)
 
 	// incident/problem/incident_task/conversation (migrations 000057-000060,
 	// 000066) -- see incident_repo.go/problem_repo.go's own doc comments for

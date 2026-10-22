@@ -11276,7 +11276,10 @@ paths:
         is not present in the submitted array is deleted and everything that is present is
         upserted. Submitting a partial list will delete the records omitted from it. An empty
         array is rejected (400) so the whole set cannot be wiped by accident, as is an empty or
-        duplicate wso2Id, a value longer than its column, or an unrecognised severity. Intended for machine-to-machine callers (e.g. a scheduled sync job), not
+        duplicate wso2Id, a value longer than its column, or an unrecognised severity. The caller
+        must be a configured machine client (its client id is in the service's machine-client
+        allow-list); any other caller, including user tokens, is rejected with 403 and an
+        unauthenticated request with 401. Intended for machine-to-machine callers (e.g. a scheduled sync job), not
         interactive user sessions.
       operationId: syncProductVulnerabilities
       requestBody:
@@ -11302,6 +11305,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "401":
           description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller is not a configured machine client.
           content:
             application/json:
               schema:
