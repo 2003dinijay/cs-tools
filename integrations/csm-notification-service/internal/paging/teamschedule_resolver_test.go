@@ -1195,3 +1195,18 @@ func TestResolve_CRETeamNameMapsThroughAlias(t *testing.T) {
 		t.Errorf("LEVEL_1 = %v, want Rigel's own lead", got)
 	}
 }
+
+// An empty lead pool is named in the log, with the keys it was asked for:
+// otherwise the "Team leads" rung reads as unstaffed and the lead check holds
+// every call, with nothing saying why.
+func TestTeamLeadPool_EmptyIsLogged(t *testing.T) {
+	logs := captureLogs(t)
+	pool, err := testResolver(&stubScheduleReader{}).LeadPool(context.Background())
+	if err != nil || len(pool) != 0 {
+		t.Fatalf("pool = %v, %v; want empty", pool, err)
+	}
+	out := logs.String()
+	if !strings.Contains(out, "the ABT lead pool is empty") || !strings.Contains(out, "teamKeys=apollo,artemis,atlas") {
+		t.Errorf("log = %q; want the empty pool named with its team keys", out)
+	}
+}

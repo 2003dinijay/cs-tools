@@ -56,16 +56,23 @@ func TestEscalationCard_Header(t *testing.T) {
 // tells a reader it has been through a rung it has not.
 func TestEscalationCard_Level0IsNotAnEscalation(t *testing.T) {
 	a := sampleAlert()
-	a.Rung = "L1"
+	a.Rung, a.FirstRung = "L0", true
 	title := buildEscalationCard(a).CardsV2[0].Card.Header.Title
 	if strings.Contains(title, "Escalated") {
-		t.Errorf("title = %q; L1 is a notification, not an escalation", title)
+		t.Errorf("title = %q; LEVEL_0 is a notification, not an escalation", title)
 	}
 	if !strings.Contains(title, "Notifying") {
 		t.Errorf("title = %q, want it to say the rotation is being notified", title)
 	}
 
-	a.Rung = "L4"
+	// The verb comes from FirstRung, never the label: the CRE ladder's team
+	// lead is "L1" and has been escalated to, not notified.
+	a.Rung, a.FirstRung = "L1", false
+	if title := buildEscalationCard(a).CardsV2[0].Card.Header.Title; !strings.Contains(title, "Escalated to L1") {
+		t.Errorf("title = %q; the CRE team lead's L1 is an escalation", title)
+	}
+
+	a.Rung, a.FirstRung = "L4", false
 	if title := buildEscalationCard(a).CardsV2[0].Card.Header.Title; !strings.Contains(title, "Escalated") {
 		t.Errorf("title = %q; a real rung is an escalation", title)
 	}
@@ -311,7 +318,7 @@ func TestBuildEscalationReply(t *testing.T) {
 	if msg.Thread == nil || msg.Thread.ThreadKey != "incident-abc" {
 		t.Errorf("thread = %+v, want the incident card's thread", msg.Thread)
 	}
-	if title := buildEscalationReply(EscalationAlert{Rung: "L1"}).CardsV2[0].Card.Header.Title; title != "Notifying L1" {
+	if title := buildEscalationReply(EscalationAlert{Rung: "L1", FirstRung: true}).CardsV2[0].Card.Header.Title; title != "Notifying L1" {
 		t.Errorf("first rung title = %q, want Notifying L1", title)
 	}
 }

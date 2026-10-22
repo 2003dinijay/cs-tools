@@ -35,6 +35,7 @@ import (
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/middleware"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/salesentity"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/scim"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/service"
 	integrationservice "github.com/wso2-open-operations/cs-tools/entity-service/internal/servicenow-integration-service"
 )
@@ -331,6 +332,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	var pagingChainHandler *handler.PagingChainHandler
 	var caseAlertSettingsHandler *handler.CaseAlertSettingsHandler
 	var migrationCaseReportHandler *handler.MigrationCaseReportHandler
+	var runbookHandler *handler.RunbookHandler
+	// runbookRepo stays a nil interface without a pool, so no incident service gets a catalog.
+	var runbookRepo repository.RunbookRepository
 
 	// Customer-health risk tracking (migration 0219) has no upstream
 	// equivalent either -- it replaces a standalone MySQL database
@@ -397,6 +401,22 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		if cfg.CSMMigrationSalesforceAccountIngestEnabled {
 			accountIngestRepo = accountRepo
 		}
+		// Owners is left at its zero value (disabled) when the SCIM
+		// connection is not configured: lookupOwner then keeps writing NULL
+		// and warning for an account person reference with no matching CSM
+		// user, exactly as it did before this was added.
+		var owners service.OwnerProvisioning
+		if cfg.SCIMConfigured() {
+			owners = service.OwnerProvisioning{
+				SCIM: scim.New(cfg.SCIMBaseURL, scim.ClientCredentialsConfig{
+					TokenURL:     cfg.SCIMTokenURL,
+					ClientID:     cfg.SCIMClientID,
+					ClientSecret: cfg.SCIMClientSecret,
+					Scopes:       cfg.SCIMScopes,
+				}),
+				Users: userRepo,
+			}
+		}
 		// The shared ingest support is flag-independent: the full account
 		// repository serves EnsureAccount's read even while the Account
 		// branch (the write side) is off, and the salesforce_ingest_state
@@ -406,6 +426,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 			Accounts: accountRepo,
 			States:   repository.NewSalesforceIngestStateRepository(db),
 			Projects: projectIngestRepo,
+			Owners:   owners,
 		}
 		// The Project branch is update-only unless its insert switch is on
 		// too (csm-sync-service still inserts project rows until cutover).
@@ -1457,6 +1478,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 					AccountsTag:       cfg.MigrationCaseReportAccountsTag,
 					RecipientTeamKeys: cfg.MigrationCaseReportTeamKeys,
 				}))
+		// Runbooks: the alert-name to runbook catalog, matched against every new incident's subject.
+		runbookRepo = repository.NewRunbookRepository(db)
+		runbookHandler = handler.NewRunbookHandler(service.NewRunbookService(runbookRepo))
 		caseAlertSettingsHandler = handler.NewCaseAlertSettingsHandler(
 			service.NewCaseAlertSettingsService(repository.NewCaseAlertSettingsRepository(db), repository.NewPagingChainRepository(db), accessSvc,
 				service.CaseAlertSettingsConfig{
@@ -1879,6 +1903,14 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// internalOnly: the scan names accounts, their owners and who is
 		// assigned to each migration; a customer token must never reach it.
 		mux.HandleFunc("GET /reports/migration-cases", internalOnly(accessSvc, migrationCaseReportHandler.GetMigrationCaseReport))
+	}
+	if runbookHandler != nil {
+		// Runbooks (Operations > Runbooks): internal callers only.
+		mux.HandleFunc("GET /runbooks", internalOnly(accessSvc, runbookHandler.ListRunbooks))
+		mux.HandleFunc("POST /runbooks", internalOnly(accessSvc, runbookHandler.CreateRunbook))
+		mux.HandleFunc("POST /runbooks/import", internalOnly(accessSvc, runbookHandler.ImportRunbooks))
+		mux.HandleFunc("PUT /runbooks/{id}", internalOnly(accessSvc, runbookHandler.UpdateRunbook))
+		mux.HandleFunc("DELETE /runbooks/{id}", internalOnly(accessSvc, runbookHandler.DeleteRunbook))
 	}
 	if caseAlertSettingsHandler != nil {
 		// Case Alerts settings: chat rooms, group routes and the other ladder

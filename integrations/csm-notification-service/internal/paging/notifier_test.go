@@ -40,6 +40,8 @@ type fakeChat struct {
 	incidents []notifications.IncidentCreatedAlert
 	// incidentAudiences is the space each of incidents went to.
 	incidentAudiences []string
+	// smeIncidents is every "Incident Escalated" card posted to an SME space.
+	smeIncidents []notifications.SMEIncidentEscalatedAlert
 	// acks is every "Incident Acknowledged." reply posted to an SRE space.
 	acks []notifications.IncidentAssignedAlert
 	err  error
@@ -89,6 +91,14 @@ func (f *fakeChat) SendIncidentCreatedAlert(_ context.Context, audience string, 
 	}
 	f.incidents = append(f.incidents, a)
 	f.incidentAudiences = append(f.incidentAudiences, audience)
+	return nil
+}
+
+func (f *fakeChat) SendSMEIncidentEscalatedAlert(_ context.Context, _ string, a notifications.SMEIncidentEscalatedAlert) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.smeIncidents = append(f.smeIncidents, a)
 	return nil
 }
 
@@ -184,7 +194,7 @@ func TestChatNotifier_PostsOncePerRung(t *testing.T) {
 	if len(chat.posted) != 4 {
 		t.Fatalf("posted %d cards, want 4 (one per rung, not one per attempt)", len(chat.posted))
 	}
-	wantRungs := []string{"L2", "L3", "L4", "L5"}
+	wantRungs := []string{"L1", "L2", "L3", "L4"}
 	for i, want := range wantRungs {
 		if chat.posted[i].Rung != want {
 			t.Errorf("card %d is %s, want %s (the rungs must climb in order)", i+1, chat.posted[i].Rung, want)
@@ -215,7 +225,7 @@ func TestChatNotifier_CardCarriesTheContext(t *testing.T) {
 	}
 
 	card := chat.posted[0]
-	if card.Rung != "L2" || card.RungRole == "" {
+	if card.Rung != "L1" || card.RungRole == "" {
 		t.Errorf("rung = %q / %q; a reader needs both the level and who it is", card.Rung, card.RungRole)
 	}
 	if card.IncidentRef != "INC0012345" {
@@ -464,8 +474,8 @@ func TestChatChannel_ClimbsOverTimeAndStopsOnAcknowledgement(t *testing.T) {
 	if err := e.Tick(context.Background(), at.Add(6*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	if len(chat.posted) != 1 || chat.posted[0].Rung != "L2" {
-		t.Fatalf("after six minutes: %d cards, first %v; want one L2 card", len(chat.posted), rungsOf(chat.posted))
+	if len(chat.posted) != 1 || chat.posted[0].Rung != "L1" {
+		t.Fatalf("after six minutes: %d cards, first %v; want one L1 card", len(chat.posted), rungsOf(chat.posted))
 	}
 
 	// LEVEL_2 does not open until fifteen: the initial wait plus LEVEL_1's
@@ -481,8 +491,8 @@ func TestChatChannel_ClimbsOverTimeAndStopsOnAcknowledgement(t *testing.T) {
 	if err := e.Tick(context.Background(), at.Add(15*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	if len(chat.posted) != 2 || chat.posted[1].Rung != "L3" {
-		t.Fatalf("after fifteen minutes: %v; want L2 then L3", rungsOf(chat.posted))
+	if len(chat.posted) != 2 || chat.posted[1].Rung != "L2" {
+		t.Fatalf("after fifteen minutes: %v; want L1 then L2", rungsOf(chat.posted))
 	}
 
 	// Somebody picks it up. Every remaining rung is cancelled.
@@ -536,8 +546,8 @@ func TestChatNotifier_CardCarriesTheClock(t *testing.T) {
 	if first.Elapsed != "6m" {
 		t.Errorf("first card says unattended %q, want 6m", first.Elapsed)
 	}
-	if first.NextRung != "L3" || first.NextIn != "9m" {
-		t.Errorf("first card points at %q in %q, want L3 in 9m", first.NextRung, first.NextIn)
+	if first.NextRung != "L2" || first.NextIn != "9m" {
+		t.Errorf("first card points at %q in %q, want L2 in 9m", first.NextRung, first.NextIn)
 	}
 
 	// Every rung of one incident belongs to one conversation.
@@ -549,8 +559,8 @@ func TestChatNotifier_CardCarriesTheClock(t *testing.T) {
 
 	// The last rung has nowhere to climb and must not claim otherwise.
 	last := chat.posted[len(chat.posted)-1]
-	if last.Rung != "L5" {
-		t.Fatalf("last card is %s, want L5", last.Rung)
+	if last.Rung != "L4" {
+		t.Fatalf("last card is %s, want L4", last.Rung)
 	}
 	if last.NextRung != "" || last.NextIn != "" {
 		t.Errorf("the final rung claims it escalates to %q in %q", last.NextRung, last.NextIn)

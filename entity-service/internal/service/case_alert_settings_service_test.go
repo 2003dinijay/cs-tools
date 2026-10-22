@@ -100,7 +100,7 @@ func (f *fakeCaseAlertRepo) RecordApplied(_ context.Context, by string, rev int6
 func (f *fakeCaseAlertRepo) ListRooms(context.Context) ([]repository.CaseAlertRoomRow, error) {
 	f.listed = true
 	out := []repository.CaseAlertRoomRow{}
-	for _, id := range []string{roomCRE, roomShared, roomApollo} {
+	for _, id := range []string{roomCRE, roomShared, roomApollo, roomIaaSGroup} {
 		if r, ok := f.rooms[id]; ok {
 			c := *r
 			_, c.HasSecret = f.secrets[id]
@@ -122,7 +122,7 @@ func (f *fakeCaseAlertRepo) GetRoom(_ context.Context, id string) (*repository.C
 
 func (f *fakeCaseAlertRepo) SaveRoom(_ context.Context, actor string, w repository.CaseAlertRoomWrite) (repository.CaseAlertRoomRow, error) {
 	f.actor, f.saved = actor, &w
-	return repository.CaseAlertRoomRow{ID: roomShared, Ladder: w.Ladder, TeamKey: w.TeamKey, Label: w.Label, Enabled: w.Enabled, Teamless: w.Teamless, UpdatedBy: actor}, nil
+	return repository.CaseAlertRoomRow{ID: roomShared, Ladder: w.Ladder, TeamKey: w.TeamKey, GroupID: w.GroupID, Label: w.Label, Enabled: w.Enabled, Teamless: w.Teamless, UpdatedBy: actor}, nil
 }
 
 func (f *fakeCaseAlertRepo) DeleteRoom(_ context.Context, actor, id string) (bool, error) {

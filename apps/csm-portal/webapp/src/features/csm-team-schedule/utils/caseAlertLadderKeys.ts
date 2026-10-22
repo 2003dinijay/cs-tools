@@ -42,6 +42,7 @@ export const CHAIN_LADDER: Partial<Record<PagingChainCode, CaseAlertLadder>> = {
 export type LadderKeyGroup =
   | "On/off and channel"
   | "Who gets alerts"
+  | "Call limits"
   | "When a ladder starts"
   | "How it climbs"
   | "Heads"
@@ -50,6 +51,7 @@ export type LadderKeyGroup =
 export const LADDER_KEY_GROUPS: LadderKeyGroup[] = [
   "On/off and channel",
   "Who gets alerts",
+  "Call limits",
   "When a ladder starts",
   "How it climbs",
   "Heads",
@@ -105,8 +107,9 @@ const CHANNEL_OPTIONS = [
 ];
 
 export const LADDER_KEYS: LadderKeySpec[] = [
-  // On/off and channel. The alert service's file keeps a master switch and an
-  // emergency off switch outside this page.
+  // On/off and channel: a switch and a channel, nothing else. The alert
+  // service's file keeps a master switch and an emergency off switch outside
+  // this page. The call limits that sat here are under Advanced.
   {
     key: "enabled",
     ladders: ALL,
@@ -127,7 +130,7 @@ export const LADDER_KEYS: LadderKeySpec[] = [
   {
     key: "safety.maxCallsPerLadder",
     ladders: BOTH,
-    group: "On/off and channel",
+    group: "Call limits",
     label: "Max calls per ladder",
     help: "The most calls one incident or case may place. Extra calls are dropped and noted.",
     editor: "int",
@@ -137,7 +140,7 @@ export const LADDER_KEYS: LadderKeySpec[] = [
   {
     key: "safety.callWithoutVerifiedLeads",
     ladders: BOTH,
-    group: "On/off and channel",
+    group: "Call limits",
     label: "Call before every lead has a number",
     help: "Off, no calls are placed while any ABT lead has no phone number. On, calls go out anyway.",
     editor: "bool",
@@ -145,7 +148,7 @@ export const LADDER_KEYS: LadderKeySpec[] = [
   {
     key: "safety.callHeadsWithoutLowerTiers",
     ladders: BOTH,
-    group: "On/off and channel",
+    group: "Call limits",
     label: "Call the heads when nobody below can be called",
     help: "Off, the top steps are held when nobody on the lower steps has a number. On, they are called anyway.",
     editor: "bool",

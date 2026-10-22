@@ -3315,3 +3315,11 @@
 .csm-ts .cas-values td b { font-size: 13.5px; }
 .csm-ts .cas-values td .cas-sub { margin-top: 2px; line-height: 1.4; }
 .csm-ts .cas-hidden-note { margin: 14px 2px 0; padding-top: 10px; border-top: 1px dashed var(--line); }
+
+/* Alert Settings: each assignment group's and SME sub team's chat space. */
+.csm-ts .cas-sr { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.csm-ts .cas-link { background: none; border: 0; padding: 0 0 0 6px; color: var(--accent, #3b5bdb); font: inherit; font-size: 12px; cursor: pointer; text-decoration: underline; }
+.csm-ts .cas-urlform { margin-top: 0; }
+.csm-ts .cas-urlform .cas-acts { flex-basis: 100%; }
+.csm-ts .cas-spaces td { vertical-align: top; }
+.csm-ts .cas-spaces tr.cas-other td { color: var(--ink-2); }

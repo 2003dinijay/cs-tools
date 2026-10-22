@@ -301,7 +301,7 @@ describe("CasePagingTab", () => {
     expect(window.localStorage.getItem(VIEW_KEY)).toBe("chain");
   });
 
-  it("lists SRE and SME teams together in the SRE tab's chat routing", () => {
+  it("lists the SME teams after escalation, never a move-only team, and keeps the team spaces off the tab", () => {
     alertSettings.data = {
       ...rights("SRE", "SME"),
       routeOptions: {
@@ -314,7 +314,7 @@ describe("CasePagingTab", () => {
       },
     };
     window.localStorage.setItem(VIEW_KEY, "settings");
-    window.localStorage.setItem("csm-ts.alert-settings.open", JSON.stringify(["SRE.where"]));
+    window.localStorage.setItem("csm-ts.alert-settings.open", JSON.stringify(["SRE.where", "SRE.advanced"]));
     render(
       <CasePagingTab
         onOpenRota={vi.fn()}
@@ -322,13 +322,14 @@ describe("CasePagingTab", () => {
         moveTargetKeys={["saas-night-cover"]}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "+ Add chat space" }));
-    const team = within(screen.getByRole("dialog")).getByLabelText("Team");
-    expect(within(team).getAllByRole("option").map((o) => o.textContent)).toEqual([
-      "All SRE teams (shared space)",
-      "Apollo",
-      "Asgardeo",
-    ]);
+    const after = screen.getByRole("group", { name: "After escalation" });
+    expect(within(after).getByText("Asgardeo")).toBeInTheDocument();
+    expect(within(after).queryByText("SaaS Night cover")).not.toBeInTheDocument();
+    // The SRE teams' own spaces and the redirects are in the full layout only:
+    // the tab shows each ladder's switch, the important settings and where
+    // alerts go.
+    expect(screen.queryByRole("region", { name: "Advanced" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "+ Add chat space" })).not.toBeInTheDocument();
   });
 
   it("keeps a family's changes while the other family is on screen", () => {

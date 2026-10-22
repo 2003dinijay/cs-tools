@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"os"
 	"slices"
 	"sort"
 	"strings"
@@ -649,6 +650,23 @@ type GroupRouting struct {
 	Aliases       map[string]string `json:"aliases"`
 	DefaultGroups []string          `json:"defaultGroups"`
 	TeamlessRooms []string          `json:"teamlessRooms"`
+	// GroupRooms are the groups with a chat room of their own
+	// (sre.groupChats), lower-cased. SRE only.
+	GroupRooms []string `json:"groupRooms,omitempty"`
+	// SharedRoom is whether the ladder has its shared room (sre.chat), where
+	// a group that maps to no room gets its card: its variable is set, or it
+	// names an audience. SRE only; absent from an older report.
+	SharedRoom *bool `json:"sharedRoom,omitempty"`
+}
+
+// chatConfigured reports whether a chat section can be posted to: its
+// variable holds a URL, or (with no variable) it names an audience, whose
+// GOOGLE_CHAT_SPACES entry is not checked here.
+func chatConfigured(c Chat) bool {
+	if name := strings.TrimSpace(c.WebhookURLEnv); name != "" {
+		return strings.TrimSpace(os.Getenv(name)) != ""
+	}
+	return strings.TrimSpace(c.Audience) != ""
 }
 
 // CaseAlertGroupRouting reports GroupRouting for the CRE and SRE ladders.
@@ -675,6 +693,14 @@ func CaseAlertGroupRouting(cfg Config) map[string]GroupRouting {
 				}
 			}
 			sort.Strings(g.DefaultGroups)
+			for group := range l.GroupChats {
+				if k := teamKeyFor(group); k != "" {
+					g.GroupRooms = append(g.GroupRooms, k)
+				}
+			}
+			sort.Strings(g.GroupRooms)
+			shared := chatConfigured(l.Chat)
+			g.SharedRoom = &shared
 		}
 		out[ladder] = g
 	}

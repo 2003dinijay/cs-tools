@@ -104,12 +104,18 @@ func (l Level) String() string {
 	return fmt.Sprintf("LEVEL_%d", int(l))
 }
 
-// Label is the rung as people say it on a chat card: LEVEL_0 is L1, LEVEL_1 is L2, and so on.
-func (l Level) Label() string {
+// LabelIn is the rung as people on that ladder say it on a chat card. The CRE
+// ladder counts from zero, as its rules sheet does: LEVEL_0 is L0, the first
+// responders. The SRE and SME ladders name their rungs after the support tier
+// each one calls, so LEVEL_0 is L1, LEVEL_1 is L2, and so on.
+func (l Level) LabelIn(ladder Ladder) string {
 	if l < Level0 || l > Level4 {
 		return l.String()
 	}
-	return fmt.Sprintf("L%d", int(l)+1)
+	if ladder == LadderSRE || ladder == LadderSME {
+		return fmt.Sprintf("L%d", int(l)+1)
+	}
+	return fmt.Sprintf("L%d", int(l))
 }
 
 // Role names who a rung is, in the vocabulary the CS team uses. String gives the position (LEVEL_2); this gives the people

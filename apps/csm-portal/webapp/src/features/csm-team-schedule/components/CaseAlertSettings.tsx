@@ -66,6 +66,8 @@ import {
   valuesToCopy,
   type LadderKeyGroup,
 } from "../utils/caseAlertLadderKeys";
+import { sreGroupDestination, type GroupDestination } from "../utils/caseAlertGroupRouting";
+import { GroupChatSpaces, SpecialistChatSpaces } from "./CaseAlertChatSpaces";
 import CaseAlertDraftsProvider from "./CaseAlertDraftsProvider";
 import { CreTimingTable, LadderAdvanced, LadderValueGroup, LadderValueKeys } from "./CaseAlertLadderSettings";
 import CaseAlertModal from "./CaseAlertModal";
@@ -256,6 +258,17 @@ function SettingsPanel({
     ],
   };
   const rooms = s.rooms.filter((r) => ladders.includes(r.ladder));
+  // The SRE family's "Where alerts go" is per assignment group (before an
+  // escalation) and per SME sub team (after one); the team spaces and the
+  // redirects that decide where a group without a space of its own ends up
+  // sit under Advanced.
+  const byGroup = family === "SRE";
+  const groupRooms = rooms.filter((r) => r.groupId);
+  const smeTeams = roomOptions.teams.filter((t) => t.family === "SME");
+  const teamRooms = rooms.filter((r) => !r.groupId && (!byGroup || r.ladder !== "SME"));
+  // Seeing a family's part and changing it go together: the server sends
+  // nobody the rooms of a ladder they may not change.
+  const teamRoomLadders = byGroup ? editable.filter((l) => l !== "SME") : ladders;
   const status = statusLine(s);
   // The ladder's own channel is the file's; a team can only do less.
   const ladderChannel = s.running?.fileOnly?.[family === "CRE" ? "CRE" : "SRE"]?.channel;
@@ -372,7 +385,7 @@ function SettingsPanel({
         )}
       >
         <p className="cas-sub">
-          Whether each ladder alerts, by calls, chat or both, and its safety holds.
+          Turn each ladder on or off, and choose how it reaches people.
         </p>
         {editable.map((l) => (
           <div key={l}>
@@ -388,6 +401,10 @@ function SettingsPanel({
             />
           </div>
         ))}
+        <p className="cas-sub">
+          Call limits (max calls per ladder, calling before every lead has a number, calling the
+          heads) are under Advanced.
+        </p>
       </CaseAlertSection>
       )}
 
@@ -396,33 +413,64 @@ function SettingsPanel({
       <CaseAlertSection
         id={`${family}.where`}
         label="Where alerts go"
-        summary={summaryOf(
-          "Where alerts go",
-          unmapped.length > 0 && `${unmapped.length} unmapped`,
-          routes.length > 0 && plural(routes.length, "redirect"),
-          rooms.length > 0 && plural(rooms.length, "chat space") + " saved here",
-        )}
+        summary={
+          byGroup
+            ? summaryOf(
+                "Where alerts go",
+                groupRooms.length > 0 && plural(groupRooms.length, "group space") + " saved here",
+                rooms.some((r) => r.ladder === "SME") &&
+                  plural(rooms.filter((r) => r.ladder === "SME").length, "SME space") + " saved here",
+              )
+            : summaryOf(
+                "Where alerts go",
+                routes.length > 0 && plural(routes.length, "redirect"),
+                rooms.length > 0 && plural(rooms.length, "chat space") + " saved here",
+              )
+        }
       >
-        {routeLadders.includes("SRE") ? (
-          <AssignmentGroups
-            settings={{ ...s, routeOptions }}
-            rooms={rooms.filter((r) => r.ladder === "SRE")}
+        {byGroup ? (
+          <>
+            <p className="cas-sub">
+              For each assignment group: the SRE sub team that is called, and the Google Chat space
+              its alerts are posted to. After escalation, the SME sub team is called and its own
+              space gets the alerts. A webhook URL is never shown again once saved; only its space
+              is.
+            </p>
+            {simple && unmapped.length > 0 ? <UnmappedGroups groups={unmapped} redirectBelow={false} /> : null}
+            {editable.includes("SRE") ? (
+              <GroupChatSpaces
+                settings={s}
+                options={routeOptions}
+                rooms={rooms}
+                canEdit={editable.includes("SRE")}
+                onError={setError}
+                onSaved={onSaved}
+              />
+            ) : null}
+            {editable.includes("SME") ? (
+              <SpecialistChatSpaces
+                settings={s}
+                teams={smeTeams}
+                rooms={rooms}
+                canEdit={editable.includes("SME")}
+                onError={setError}
+                onSaved={onSaved}
+              />
+            ) : null}
+          </>
+        ) : (
+          <TeamChatRouting
+            ladders={ladders}
+            editable={editable}
+            rooms={teamRooms}
+            options={roomOptions}
             ladderChannel={ladderChannel}
+            roomsOnly
+            webhooksEnabled={s.webhooksEnabled}
             onError={setError}
             onSaved={onSaved}
           />
-        ) : null}
-        <TeamChatRouting
-          ladders={ladders}
-          editable={editable}
-          rooms={rooms}
-          options={roomOptions}
-          ladderChannel={ladderChannel}
-          roomsOnly
-          webhooksEnabled={s.webhooksEnabled}
-          onError={setError}
-          onSaved={onSaved}
-        />
+        )}
         {routeLadders.includes("CRE") ? (
           <Redirects
             ladder="CRE"
@@ -481,7 +529,10 @@ function SettingsPanel({
         label="Advanced"
         summary={summaryOf(
           "Advanced",
-          "timing, escalation, heads, chat messages and the file's own settings",
+          byGroup && teamRoomLadders.length > 0
+            ? "call limits, team spaces, redirects, timing, escalation, heads, chat messages and the file's own settings"
+            : "call limits, timing, escalation, heads, chat messages and the file's own settings",
+          byGroup && unmapped.length > 0 && `${unmapped.length} unmapped`,
           savedWords(
             savedIn(ADVANCED_GROUPS) +
               editable.reduce(
@@ -496,6 +547,37 @@ function SettingsPanel({
         )}
       >
         <p className="cas-sub cas-running">{runningLine(s)}</p>
+        {byGroup && teamRoomLadders.length > 0 ? (
+          <div className="cas-ladder" role="group" aria-label="Routing">
+            <h4>Routing</h4>
+            <p className="cas-sub">
+              Where a group with no chat space of its own ends up: the space of the team it is
+              routed to, else the shared space. A redirect changes who is called.
+            </p>
+            {routeLadders.includes("SRE") ? (
+              <AssignmentGroups
+                settings={{ ...s, routeOptions }}
+                rooms={teamRooms.filter((r) => r.ladder === "SRE")}
+                ladderChannel={ladderChannel}
+                onError={setError}
+                onSaved={onSaved}
+              />
+            ) : null}
+            {teamRoomLadders.length > 0 ? (
+              <TeamChatRouting
+                ladders={teamRoomLadders}
+                editable={teamRoomLadders}
+                rooms={teamRooms}
+                options={{ ...roomOptions, teams: roomOptions.teams.filter((t) => t.family !== "SME") }}
+                ladderChannel={ladderChannel}
+                roomsOnly
+                webhooksEnabled={s.webhooksEnabled}
+                onError={setError}
+                onSaved={onSaved}
+              />
+            ) : null}
+          </div>
+        ) : null}
         {editable.map((l) => (
           <LadderAdvanced
             key={l}
@@ -634,7 +716,14 @@ const UNMAPPED_SHOWN = 5;
 /** The SRE assignment groups nothing routes: no redirect, no team named after
  *  them, nothing in the alert service's file. Their incident cards go to the
  *  shared SRE room. */
-function UnmappedGroups({ groups }: { groups: { id: string; name: string }[] }): JSX.Element {
+function UnmappedGroups({
+  groups,
+  redirectBelow = true,
+}: {
+  groups: { id: string; name: string }[];
+  /** Whether the redirects are on the page below (the full layout). */
+  redirectBelow?: boolean;
+}): JSX.Element {
   const shown = groups.slice(0, UNMAPPED_SHOWN).map((g) => g.name);
   const more = groups.length - shown.length;
   return (
@@ -643,24 +732,11 @@ function UnmappedGroups({ groups }: { groups: { id: string; name: string }[] }):
         ? "1 assignment group has no SRE team"
         : `${groups.length} assignment groups have no SRE team`}
       {groups.length === 1 ? ": its" : ": their"} incident cards go to the shared SRE room
-      and nobody is called. Redirect {groups.length === 1 ? "it" : "them"} below:{" "}
+      and nobody is called{redirectBelow ? `. Redirect ${groups.length === 1 ? "it" : "them"} below: ` : ": "}
       {shown.join(", ")}
       {more > 0 ? ` and ${more} more` : ""}.
     </p>
   );
-}
-
-/** Where an assignment group's incidents go, and why. */
-interface GroupDestination {
-  /** "team:<key>", "rota:<code>", or "" for the shared room. */
-  target: string;
-  /** The destination, for people. */
-  name: string;
-  /** Why: a redirect saved here, the file, the team's name, or nothing. */
-  why: string;
-  /** Not mapped: the shared room only. */
-  unmapped?: boolean;
-  route?: CaseAlertGroupRoute;
 }
 
 interface AssignmentGroupsProps {
@@ -692,47 +768,19 @@ function AssignmentGroups({
   const canEdit = s.canManage.routeLadders.includes("SRE");
   const options = s.routeOptions;
   const routes = s.routes.filter((r) => r.ladder === "SRE");
-  const routing = s.running?.groups?.SRE;
   const form = useRouteForm();
   const targetRef = useRef<HTMLSelectElement>(null);
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const lower = (x: string) => x.trim().toLowerCase();
-  const teams = (options?.teams ?? []).filter((t) => t.family === "SRE");
   const named = [...(options?.groups ?? []), ...(options?.teams ?? [])];
-  const teamName = (key: string) => teams.find((t) => t.key === key)?.name ?? key;
-  const rotaName = (code: string) => {
-    const r = (options?.rotas ?? []).find((x) => x.code === code);
-    return r && r.label !== code ? r.label : code;
-  };
   const outcome = teamOutcomeFor(rooms, ladderChannel);
-
+  const routed = sreGroupDestination(s, options);
+  // This table names the shared room and the rota in full.
   const destination = (name: string, route?: CaseAlertGroupRoute): GroupDestination => {
-    if (route && route.enabled) {
-      // The alert service matches a team by its key, so a redirect from a
-      // name that already is the key changes nothing.
-      const needless = !!route.teamKey && lower(route.groupName) === route.teamKey.toLowerCase();
-      return route.teamKey
-        ? {
-            target: `team:${route.teamKey}`,
-            name: teamName(route.teamKey),
-            why: needless ? "Same team, not needed: it is alerted as itself anyway" : "Redirect saved here",
-            route,
-          }
-        : {
-            target: `rota:${route.rotaCode ?? ""}`,
-            name: `Every team on the ${rotaName(route.rotaCode ?? "")} rota`,
-            why: "Redirect saved here",
-            route,
-          };
-    }
-    const alias = routing?.aliases?.[lower(name)];
-    if (alias) return { target: `team:${alias}`, name: teamName(alias), why: "From the alert service's file", route };
-    if ((routing?.defaultGroups ?? []).some((g) => lower(g) === lower(name))) {
-      return { target: "", name: "The default SRE rota", why: "From the alert service's file", route };
-    }
-    const team = named.find((t) => lower(t.key) === lower(name) || lower(t.name) === lower(name));
-    if (team) return { target: `team:${team.key}`, name: team.name, why: "A team has this name", route };
-    return { target: "", name: "The shared SRE room", why: "Not mapped: nobody is called", unmapped: true, route };
+    const d = routed(name, route);
+    if (d.unmapped) return { ...d, name: "The shared SRE room" };
+    if (d.defaultRota && !d.route?.enabled) return { ...d, name: "The default SRE rota" };
+    return d;
   };
 
   const groupRows = (options?.assignmentGroups ?? []).map((g) => {

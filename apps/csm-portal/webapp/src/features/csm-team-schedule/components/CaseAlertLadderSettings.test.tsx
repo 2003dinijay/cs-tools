@@ -491,6 +491,7 @@ describe("CaseAlertLadderSettings: the whole CRE ladder, kept in the code", () =
     renderWholeCreLadder();
     const ladder = screen.getByRole("group", { name: "CRE ladder" });
     expect(within(ladder).getAllByRole("heading", { level: 5 }).map((h) => h.textContent)).toEqual([
+      "Call limits",
       "When a ladder starts",
       "How it climbs",
       "Heads",
@@ -752,6 +753,7 @@ describe("CaseAlertLadderSettings: SRE, the full layout kept in the code", () =>
     fireEvent.click(summaryWith(/^Advanced · /));
     const ladder = screen.getByRole("group", { name: "SRE ladder" });
     expect(within(ladder).getAllByRole("heading", { level: 5 }).map((h) => h.textContent)).toEqual([
+      "Call limits",
       "When a ladder starts",
       "How it climbs",
       "Chat messages",

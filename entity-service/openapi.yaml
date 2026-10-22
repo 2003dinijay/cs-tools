@@ -10182,6 +10182,258 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /runbooks:
+    get:
+      summary: List the runbook catalog.
+      description: >
+        Every runbook with its number, link and alert names, newest number first. The
+        portal shows an incident's runbook in its Related tab: the runbook
+        holding the longest alert name the incident's subject contains,
+        ignoring case. Internal callers only.
+      operationId: listRunbooks
+      responses:
+        "200":
+          description: The catalog.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunbookList'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      summary: Add a runbook.
+      description: The runbook gets the next number (RB0000001). 409 when its name, or one of the alert names, already belongs to another runbook (ignoring case and surrounding spaces).
+      operationId: createRunbook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SaveRunbookRequest'
+      responses:
+        "201":
+          description: The entry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Runbook'
+        "400":
+          description: Invalid alert name or link.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Runbooks are not available on this deployment (it has no database).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: The alert name already has an entry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /runbooks/import:
+    post:
+      summary: Create or replace many runbooks, matched by their alerts.
+      description: >
+        One transaction. An entry replaces the link and alerts of the runbook
+        that holds its first listed alert (ignoring case and surrounding
+        spaces), or is created with the next number when none of its alerts
+        is listed. An entry with no name keeps the matched runbook's name; a
+        new one is named after its first alert; a name already taken by
+        another runbook is a 409, and two entries with one name a 400. An
+        alert listed under another runbook moves to the entry's runbook, and
+        a runbook left without alerts is removed: `removed` lists each one's
+        number, name and the link it had. Every runbook that holds an
+        imported alert is locked first, so a concurrent edit or import
+        waits. Within the request, a later entry wins over an earlier one
+        with the same alert; an entry left without alerts by later entries is
+        a 400 and nothing is written. At most 5000 entries.
+      operationId: importRunbooks
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImportRunbooksRequest'
+      responses:
+        "200":
+          description: What the import did.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportRunbooksResponse'
+        "400":
+          description: An entry is invalid; nothing was written.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Runbooks are not available on this deployment (it has no database).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /runbooks/{id}:
+    put:
+      summary: Change a runbook, replacing its alerts.
+      description: The number never changes. 409 when the name, or one of the alert names, already belongs to another runbook.
+      operationId: updateRunbook
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SaveRunbookRequest'
+      responses:
+        "200":
+          description: The entry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Runbook'
+        "400":
+          description: Invalid id, alert name or link.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: No entry with that id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: The alert name already has an entry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      summary: Remove a runbook and its alerts.
+      operationId: deleteRunbook
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Removed.
+        "400":
+          description: Invalid id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: No entry with that id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /team-schedule/case-alerts/settings:
     get:
       summary: The Case Alerts chat rooms, group routes and ladder values.
@@ -25568,6 +25820,10 @@ components:
       properties:
         id: { type: string, format: uuid, description: 'The "group" row (an assignment group mirrored from ServiceNow).' }
         name: { type: string }
+        services:
+          type: array
+          items: { type: string }
+          description: "Route options only: the names of the services it is the support group of, by name."
     CaseAlertRouteOptions:
       type: object
       required: [groups, teams, rotas]
@@ -25754,7 +26010,9 @@ components:
       properties:
         id: { type: string, format: uuid }
         ladder: { type: string, enum: [CRE, SRE, SME] }
-        teamKey: { type: string, description: "The SRE or SME team whose room it is; absent for the ladder's shared room (CRE, SRE). An SME room is always a team's." }
+        teamKey: { type: string, description: "The SRE or SME team whose room it is; absent for the ladder's shared room (CRE, SRE) and a group's room. An SME room is always a team's." }
+        groupId: { type: string, format: uuid, description: "An SRE assignment group's own room (0244): the group whose incident card and paging replies go here. Absent for a ladder's or a team's room." }
+        groupName: { type: string, description: "The group's current name, with groupId." }
         label: { type: string }
         enabled: { type: boolean }
         teamless: { type: boolean, description: "Also gets the cards of an incident with no SRE team of its own." }
@@ -25786,7 +26044,8 @@ components:
       properties:
         ladder: { type: string, enum: [CRE, SRE, SME] }
         teamKey: { type: string, description: "An SRE or SME team of the Team Schedule (required for SME); omit for the ladder's shared room." }
-        label: { type: string, maxLength: 100 }
+        groupId: { type: string, format: uuid, description: "SRE only, instead of teamKey: an assignment group from routeOptions.assignmentGroups, whose incident card and paging replies go to this room (who is called does not change). No teamless flag or channel. 400 when it is not one." }
+        label: { type: string, maxLength: 100, description: "May be left out with groupId: the group's own name is used." }
         enabled: { type: boolean, default: true }
         teamless: { type: boolean, default: false, description: "SRE team rooms only." }
         channel: { type: string, enum: ["", log, chat, call, both], description: "An SRE team room only: chat, call, both or log; an empty string goes back to the ladder's. Refused on a ladder's shared room and on an SME room." }
@@ -25837,6 +26096,8 @@ components:
       properties:
         ladder: { type: string, enum: [CRE, SRE, SME] }
         teamKey: { type: string }
+        groupId: { type: string, format: uuid, description: "An SRE assignment group's room." }
+        groupName: { type: string, description: "The group's current name: what an incident's assignment group is matched against." }
         label: { type: string }
         teamless: { type: boolean }
         webhookUrl: { type: string, description: "The opened webhook URL, or empty for a team room saved only for its channel. Returned only on this service-only route." }
@@ -26652,6 +26913,119 @@ components:
                         properties:
                           id: { type: string }
                           key: { type: string }
+    Runbook:
+      type: object
+      required: [id, number, name, runbookUrl, alerts, createdOn, createdBy, updatedOn, updatedBy]
+      properties:
+        id:
+          type: string
+          format: uuid
+        number:
+          type: string
+          description: The runbook's own number (RB0000001), given when it is created and never changed.
+        name:
+          type: string
+          description: Unique, ignoring case and surrounding spaces.
+        runbookUrl:
+          type: string
+          nullable: true
+          description: The runbook link; null when the runbook is not written yet.
+        alerts:
+          type: array
+          description: Alert names matched against an incident's subject (contains, ignoring case), ordered by name.
+          items:
+            type: string
+        createdOn:
+          type: string
+          format: date-time
+        createdBy:
+          type: string
+        updatedOn:
+          type: string
+          format: date-time
+        updatedBy:
+          type: string
+    RunbookList:
+      type: object
+      required: [runbooks]
+      properties:
+        runbooks:
+          type: array
+          items:
+            $ref: '#/components/schemas/Runbook'
+    SaveRunbookRequest:
+      type: object
+      required: [name, alerts]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 1000
+          description: Unique, ignoring case and surrounding spaces; blank is refused.
+        runbookUrl:
+          type: string
+          nullable: true
+          description: A full http(s) link; empty or null records that no runbook exists.
+        alerts:
+          type: array
+          minItems: 1
+          maxItems: 500
+          description: Blank and repeated (ignoring case) names are dropped; at least one must remain.
+          items:
+            type: string
+            maxLength: 1000
+    ImportRunbookEntry:
+      type: object
+      required: [alerts]
+      properties:
+        name:
+          type: string
+          maxLength: 1000
+          description: Optional; with none a matched runbook keeps its name and a new one is named after its first alert.
+        runbookUrl:
+          type: string
+          nullable: true
+          description: A full http(s) link; empty or null records that no runbook exists.
+        alerts:
+          type: array
+          minItems: 1
+          maxItems: 500
+          description: Blank and repeated (ignoring case) names are dropped; at least one must remain.
+          items:
+            type: string
+            maxLength: 1000
+    ImportRunbooksRequest:
+      type: object
+      required: [runbooks]
+      properties:
+        runbooks:
+          type: array
+          maxItems: 5000
+          items:
+            $ref: '#/components/schemas/ImportRunbookEntry'
+    ImportRunbooksResponse:
+      type: object
+      required: [created, updated, removed]
+      properties:
+        created:
+          type: integer
+        updated:
+          type: integer
+        removed:
+          type: array
+          description: Runbooks left without alerts because the import moved all of them elsewhere, by number.
+          items:
+            type: object
+            required: [number, name, runbookUrl]
+            properties:
+              number:
+                type: string
+              name:
+                type: string
+              runbookUrl:
+                type: string
+                nullable: true
+                description: The link the removed runbook had.
     ErrorResponse:
       type: object
       description: >-

@@ -130,6 +130,15 @@ type SavedFilterViewService interface {
 	Reorder(ctx context.Context, req domain.ReorderSavedFilterViewRequest) (domain.SavedFilterViewList, error)
 }
 
+// RunbookService manages the runbook catalog (Operations > Runbooks): numbered, named runbook links and their alert names.
+type RunbookService interface {
+	List(ctx context.Context) (domain.RunbookList, error)
+	Create(ctx context.Context, req domain.SaveRunbookRequest) (domain.Runbook, error)
+	Update(ctx context.Context, id string, req domain.SaveRunbookRequest) (domain.Runbook, error)
+	Delete(ctx context.Context, id string) error
+	Import(ctx context.Context, req domain.ImportRunbooksRequest) (domain.ImportRunbooksResponse, error)
+}
+
 // SNUserService defines the user operations backed by the ServiceNow data source.
 type SNUserService interface {
 	// SearchUsers returns a paginated list of ServiceNow users that match the

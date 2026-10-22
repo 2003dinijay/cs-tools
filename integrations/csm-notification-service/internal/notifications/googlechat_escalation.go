@@ -49,6 +49,10 @@ type EscalationAlert struct {
 	Audience string
 	// Rung is the level being contacted, e.g. "L2".
 	Rung string
+	// FirstRung marks the notification level (LEVEL_0), whose label depends
+	// on the ladder -- L0 on the CRE ladder, L1 on the SRE one -- so the
+	// header's verb cannot be read off Rung.
+	FirstRung bool
 	// RungRole names who that rung is, e.g. "ABT team leads".
 	RungRole string
 	// Attempt is which notification of this rung it is, 1-based.
@@ -174,14 +178,14 @@ func buildEscalationReply(a EscalationAlert) chatCardMessage {
 		}
 		lines = append(lines, calling)
 	}
-	return escalationReply("incident-escalation-rung", rungVerb(a.Rung)+" "+a.Rung, a.IncidentRef, a.ThreadKey, lines)
+	return escalationReply("incident-escalation-rung", rungVerb(a)+" "+a.Rung, a.IncidentRef, a.ThreadKey, lines)
 }
 
 // buildEscalationCard assembles the card, split from the send so its exact
 // shape can be asserted on without a webhook.
 func buildEscalationCard(a EscalationAlert) chatCardMessage {
 
-	header := fmt.Sprintf("%s %s %s", escalationSeverityMark(a.Priority), rungVerb(a.Rung), a.Rung)
+	header := fmt.Sprintf("%s %s %s", escalationSeverityMark(a.Priority), rungVerb(a), a.Rung)
 	subtitle := a.IncidentRef
 	if a.Title != "" {
 		subtitle = a.IncidentRef + " - " + a.Title
@@ -292,16 +296,16 @@ func threadFor(key string) *chatThread {
 	return &chatThread{ThreadKey: key}
 }
 
-// rungVerb keeps the header honest about what L1 (LEVEL_0) is.
+// rungVerb keeps the header honest about what LEVEL_0 is.
 //
 // Section 3.0 calls it the notification level and says in as many words that
 // it is "represented as the initial escalation level (but not an actual
 // escalation level)" - it exists to tell the rotation an incident has arrived,
-// before any escalation has happened. A card announcing "Escalated to L1"
+// before any escalation has happened. A card announcing "Escalated to L0"
 // contradicts the document it implements, and tells a reader the incident has
 // already been through a rung it has not.
-func rungVerb(rung string) string {
-	if rung == "L1" {
+func rungVerb(a EscalationAlert) string {
+	if a.FirstRung {
 		return "Notifying"
 	}
 	return "Escalated to"

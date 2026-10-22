@@ -295,7 +295,18 @@ func (s *caseAlertSettingsService) Get(ctx context.Context) (domain.CaseAlertSet
 		return domain.CaseAlertSettings{}, err
 	}
 	if c.ladder[familySRE] {
-		out.UnmappedGroups = unmappedSREGroups(out.RouteOptions, routes, reportedSRERouting(out.Running))
+		routed := reportedSRERouting(out.Running)
+		if routed == nil {
+			routed = map[string]bool{}
+		}
+		// A group with a room of its own has its cards in that room, not the
+		// shared SRE room.
+		for _, r := range rooms {
+			if r.Ladder == familySRE && r.GroupID != "" && r.Enabled && r.HasSecret {
+				routed["id:"+r.GroupID] = true
+			}
+		}
+		out.UnmappedGroups = unmappedSREGroups(out.RouteOptions, routes, routed)
 	}
 	return out, nil
 }
@@ -355,7 +366,7 @@ func (s *caseAlertSettingsService) routeOptions(ctx context.Context) (*domain.Ca
 		AssignmentGroups: []domain.CaseAlertAssignmentGroup{},
 	}
 	for _, g := range assignment {
-		out.AssignmentGroups = append(out.AssignmentGroups, domain.CaseAlertAssignmentGroup{ID: g.ID, Name: g.Name})
+		out.AssignmentGroups = append(out.AssignmentGroups, domain.CaseAlertAssignmentGroup{ID: g.ID, Name: g.Name, Services: g.Services})
 	}
 	for _, g := range groups {
 		out.Groups = append(out.Groups, domain.CaseAlertTeamOption{Key: g.Key, Name: g.Name, Family: g.Family})
@@ -473,8 +484,8 @@ func revisionView(r repository.CaseAlertRevisionRow) domain.CaseAlertRevision {
 
 func roomView(r repository.CaseAlertRoomRow) domain.CaseAlertChatRoom {
 	v := domain.CaseAlertChatRoom{
-		ID: r.ID, Ladder: r.Ladder, TeamKey: r.TeamKey, Label: r.Label, Enabled: r.Enabled, Teamless: r.Teamless,
-		Channel: r.Channel, HasWebhook: r.HasSecret, WebhookSetAt: r.WebhookSetAt, LastTestAt: r.LastTestAt,
+		ID: r.ID, Ladder: r.Ladder, TeamKey: r.TeamKey, GroupID: r.GroupID, GroupName: r.GroupName, Label: r.Label,
+		Enabled: r.Enabled, Teamless: r.Teamless, Channel: r.Channel, HasWebhook: r.HasSecret, WebhookSetAt: r.WebhookSetAt, LastTestAt: r.LastTestAt,
 		UpdatedBy: r.UpdatedBy, UpdatedOn: r.UpdatedOn,
 	}
 	if r.HasSecret && r.WebhookHint != nil {
@@ -510,10 +521,20 @@ func (s *caseAlertSettingsService) SaveRoom(ctx context.Context, req domain.Save
 		return domain.CaseAlertChatRoom{}, err
 	}
 	label := strings.TrimSpace(req.Label)
+	groupID := strings.ToLower(strings.TrimSpace(req.GroupID))
+	if groupID != "" {
+		g, err := s.roomGroup(ctx, ladder, groupID, req)
+		if err != nil {
+			return domain.CaseAlertChatRoom{}, err
+		}
+		if label == "" {
+			label = g.Name
+		}
+	}
 	if label == "" || len(label) > maxCaseAlertLabel {
 		return domain.CaseAlertChatRoom{}, &apierror.ValidationError{Msg: fmt.Sprintf("label must be 1 to %d characters", maxCaseAlertLabel)}
 	}
-	w := repository.CaseAlertRoomWrite{Ladder: ladder, TeamKey: strings.ToLower(strings.TrimSpace(req.TeamKey)), Label: label, Enabled: true}
+	w := repository.CaseAlertRoomWrite{Ladder: ladder, TeamKey: strings.ToLower(strings.TrimSpace(req.TeamKey)), GroupID: groupID, Label: label, Enabled: true}
 	if req.Enabled != nil {
 		w.Enabled = *req.Enabled
 	}
@@ -547,6 +568,8 @@ func (s *caseAlertSettingsService) SaveRoom(ctx context.Context, req domain.Save
 		if !ok || family != ladder {
 			return domain.CaseAlertChatRoom{}, &apierror.ValidationError{Msg: fmt.Sprintf("teamKey must be an %s team of the Team Schedule", ladder)}
 		}
+	} else if w.GroupID != "" {
+		// Checked by roomGroup: an SRE assignment group, nothing but its URL.
 	} else if w.Teamless {
 		return domain.CaseAlertChatRoom{}, &apierror.ValidationError{Msg: "teamless is for a team's room; the shared room is not one"}
 	} else if w.Channel != "" {
@@ -557,6 +580,33 @@ func (s *caseAlertSettingsService) SaveRoom(ctx context.Context, req domain.Save
 		return domain.CaseAlertChatRoom{}, err
 	}
 	return roomView(row), nil
+}
+
+// roomGroup is the assignment group a group's room is saved for: the SRE
+// ladder only, one of the support groups the tab offers (supportGroupSetSQL),
+// and nothing but a URL -- no team, teamless flag or channel (0244). The
+// group's calls still follow its route; only its chat space is the room's.
+func (s *caseAlertSettingsService) roomGroup(ctx context.Context, ladder, groupID string, req domain.SaveCaseAlertRoomRequest) (repository.CaseAlertGroupRow, error) {
+	if ladder != familySRE {
+		return repository.CaseAlertGroupRow{}, &apierror.ValidationError{Msg: "only the SRE ladder has a room per assignment group"}
+	}
+	if strings.TrimSpace(req.TeamKey) != "" {
+		return repository.CaseAlertGroupRow{}, &apierror.ValidationError{Msg: "send groupId or teamKey, not both"}
+	}
+	if (req.Teamless != nil && *req.Teamless) || (req.Channel != nil && strings.TrimSpace(*req.Channel) != "") {
+		return repository.CaseAlertGroupRow{}, &apierror.ValidationError{Msg: "teamless and channel are for team rooms; a group's room has only its URL"}
+	}
+	if err := validateUUIDs("groupId", []string{groupID}); err != nil {
+		return repository.CaseAlertGroupRow{}, err
+	}
+	g, ok, err := s.repo.AssignmentGroupByID(ctx, groupID)
+	if err != nil {
+		return repository.CaseAlertGroupRow{}, err
+	}
+	if !ok || g.Name == "" {
+		return repository.CaseAlertGroupRow{}, &apierror.ValidationError{Msg: "groupId is not an assignment group"}
+	}
+	return g, nil
 }
 
 // room is a room the caller may change, by id.
@@ -959,8 +1009,13 @@ func (s *caseAlertSettingsService) Runtime(ctx context.Context) (domain.CaseAler
 		if webhook == "" && r.Channel == "" {
 			continue
 		}
+		if r.GroupID != "" && (webhook == "" || r.GroupName == "") {
+			// A group's room is only its URL, matched by the group's name.
+			continue
+		}
 		out.Rooms = append(out.Rooms, domain.CaseAlertRuntimeRoom{
-			Ladder: r.Ladder, TeamKey: r.TeamKey, Label: r.Label, Teamless: r.Teamless, WebhookURL: webhook, Channel: r.Channel,
+			Ladder: r.Ladder, TeamKey: r.TeamKey, GroupID: r.GroupID, GroupName: r.GroupName, Label: r.Label,
+			Teamless: r.Teamless, WebhookURL: webhook, Channel: r.Channel,
 		})
 	}
 	routes, err := s.repo.ListRoutes(ctx)

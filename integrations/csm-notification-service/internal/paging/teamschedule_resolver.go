@@ -1027,10 +1027,23 @@ func unassignedLeadCount(n int) int {
 }
 
 func (r TeamScheduleResolver) teamLeadPool(ctx context.Context) ([]Recipient, error) {
+	var (
+		pool []Recipient
+		err  error
+	)
 	if len(r.teamLeadKeys) > 0 {
-		return r.leadsOf(ctx, r.teamLeadKeys)
+		pool, err = r.leadsOf(ctx, r.teamLeadKeys)
+	} else {
+		pool, err = r.leadsOfABT(ctx)
 	}
-	return r.leadsOfABT(ctx)
+	if err == nil && len(pool) == 0 {
+		// Named, because an empty pool is silent everywhere else: the "Team
+		// leads" rung reads as unstaffed and the lead check holds every call.
+		// The keys say whether the configuration or the team data is wrong.
+		slog.WarnContext(ctx, "escalation: the ABT lead pool is empty; the Team leads rung reaches nobody and the lead check holds calls",
+			"teamKeys", strings.Join(r.teamLeadKeys, ","), "abtType", r.abtType)
+	}
+	return pool, err
 }
 
 // LeadPool implements LeadPoolResolver: every lead the lead tiers
