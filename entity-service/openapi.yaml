@@ -6842,8 +6842,11 @@ paths:
     post:
       summary: Create a call request.
       description: >
-        Postgres: inserts a customer_call row in state pending_on_wso2. The call request's
-        number is not generated on this data source yet (returned as an empty string on read).
+        Postgres: inserts a customer_call row. state defaults to pending_on_wso2
+        (a customer-raised request). pending_on_customer is accepted when an agent
+        raises the request from the CSM portal; the customer must approve before it
+        becomes pending_on_wso2. The call request's number is not generated on this
+        data source yet (returned as an empty string on read).
       operationId: createCallRequest
       requestBody:
         required: true
@@ -24565,6 +24568,12 @@ components:
           type: integer
           minimum: 1
           description: Duration of the call in minutes.
+        state:
+          type: string
+          enum: [pending_on_customer]
+          description: >
+            Optional starting state. Omit it and the request starts pending_on_wso2.
+            pending_on_customer is the only other accepted value.
 
     CreateCallRequestResponse:
       type: object
