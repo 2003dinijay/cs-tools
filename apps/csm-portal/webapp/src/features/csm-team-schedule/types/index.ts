@@ -410,7 +410,13 @@ export interface PagingReadinessResponse {
  * Somebody who may change nothing gets empty lists, and the tab is not shown.
  */
 export interface RotaAccess {
-  canManage: { rotaAdmins: boolean; markerFamilies: RotaFamily[] };
+  canManage: {
+    rotaAdmins: boolean;
+    markerFamilies: RotaFamily[];
+    /** The families whose teams' members the reader may add and remove (the
+     *  same rule as markerFamilies). Absent from an older server. */
+    memberFamilies?: RotaFamily[];
+  };
   rotaAdmins: RotaAdminGrant[];
   markers: RotaMarkerGrant[];
 }

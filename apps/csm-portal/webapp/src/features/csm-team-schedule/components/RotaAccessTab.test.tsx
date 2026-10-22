@@ -32,6 +32,7 @@ const found: { data: { id: string; firstName: string; lastName: string; email: s
 vi.mock("../api/useRotaAccess", () => ({
   useRotaAccess: () => ({ data: access.data, isLoading: false, isError: false }),
   useChangeRotaAccess: () => ({ mutate, isPending: false }),
+  memberFamiliesOf: (a: RotaAccess | undefined) => a?.canManage.memberFamilies ?? [],
 }));
 vi.mock("@api/useSearchUsersByName", () => ({
   useSearchInternalUsersByName: (q: string, enabled: boolean) => ({ data: enabled && q ? found.data : [], isLoading: false }),
@@ -69,7 +70,7 @@ beforeEach(() => {
   mutate.mockReset();
   found.data = [];
   access.data = {
-    canManage: { rotaAdmins: true, markerFamilies: ["CRE", "SRE", "SME"] },
+    canManage: { rotaAdmins: true, markerFamilies: ["CRE", "SRE", "SME"], memberFamilies: ["CRE", "SRE", "SME"] },
     rotaAdmins: [{ family: "SRE", userId: BEN, name: "Ben", email: "ben@example.test", ...granted }],
     markers: [{ teamKey: "apollo", family: "SRE", userId: ANA, name: "Ana", email: "ana@example.test", ...granted }],
   };
@@ -162,5 +163,124 @@ describe("RotaAccessTab", () => {
     render(<RotaAccessTab teams={TEAMS} />);
     fireEvent.click(screen.getByRole("button", { name: "Remove Ben as SRE rota admin" }));
     expect(screen.getByRole("alert")).toHaveTextContent("only a CSM admin can grant or remove rota admin");
+  });
+
+  describe("team members", () => {
+    it("lists the chosen team's members, lead first, and removes one only after asking", () => {
+      render(<RotaAccessTab teams={TEAMS} />);
+      fireEvent.click(screen.getByRole("tab", { name: "SRE" }));
+      const list = screen.getByRole("list", { name: "Apollo members" });
+      expect(within(list).getAllByRole("listitem").map((li) => li.textContent?.replace("×", "").trim())).toEqual([
+        "Leoleo@example.testlead",
+        "Anaana@example.test",
+        "Benben@example.test",
+      ]);
+      expect(screen.getByText(/3 members · Lead Leo/)).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "Remove Ana from Apollo" }));
+      expect(mutate).not.toHaveBeenCalled();
+      expect(screen.getByText("Remove Ana from Apollo?")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+      expect(lastChange()).toEqual({ kind: "member", teamKey: "apollo", userId: ANA, grant: false });
+    });
+
+    it("cancels a removal without changing anything", () => {
+      render(<RotaAccessTab teams={TEAMS} />);
+      fireEvent.click(screen.getByRole("tab", { name: "SRE" }));
+      fireEvent.click(screen.getByRole("button", { name: "Remove Ben from Apollo" }));
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      expect(mutate).not.toHaveBeenCalled();
+      expect(screen.getByRole("button", { name: "Remove Ben from Apollo" })).toBeInTheDocument();
+    });
+
+    it("shows one team at a time, picked from the group's teams with their sizes", () => {
+      const twoTeams: ScheduleTeam[] = [
+        ...TEAMS,
+        { key: "iaas", name: "IaaS", family: "SRE", sortOrder: 3, members: [member(ME, "Mina")] },
+      ];
+      render(<RotaAccessTab teams={twoTeams} />);
+      fireEvent.click(screen.getByRole("tab", { name: "SRE" }));
+      const teams = screen.getByRole("tablist", { name: "Team" });
+      expect(within(teams).getAllByRole("tab").map((t) => t.textContent)).toEqual(["Apollo3", "IaaS1"]);
+      expect(screen.getByRole("list", { name: "Apollo members" })).toBeInTheDocument();
+      fireEvent.click(within(teams).getByRole("tab", { name: /IaaS/ }));
+      expect(screen.queryByRole("list", { name: "Apollo members" })).toBeNull();
+      expect(within(screen.getByRole("list", { name: "IaaS members" })).getByText("Mina")).toBeInTheDocument();
+    });
+
+    it("filters a big team's members by name or email", () => {
+      const big = Array.from({ length: 12 }, (_, i) =>
+        member(`aaaaaaaa-aaaa-4aaa-8aaa-${String(i).padStart(12, "0")}`, `Engineer ${String(i).padStart(2, "0")}`),
+      );
+      render(<RotaAccessTab teams={[{ key: "apollo", name: "Apollo", family: "SRE", sortOrder: 1, members: big }]} />);
+      fireEvent.click(screen.getByRole("tab", { name: "SRE" }));
+      fireEvent.change(screen.getByRole("searchbox", { name: "Filter Apollo members" }), { target: { value: "engineer 1" } });
+      expect(within(screen.getByRole("list", { name: "Apollo members" })).getAllByRole("listitem")).toHaveLength(2);
+      fireEvent.change(screen.getByRole("searchbox", { name: "Filter Apollo members" }), { target: { value: "nobody" } });
+      expect(screen.getByText(/No member matches/)).toBeInTheDocument();
+    });
+
+    it("adds a member found among internal staff, leaving out who is already on the team", () => {
+      found.data = [
+        { id: ME, firstName: "Mina", lastName: "Silva", email: "mina@example.test" },
+        { id: ANA, firstName: "Ana", lastName: "", email: "ana@example.test" },
+      ];
+      render(<RotaAccessTab teams={TEAMS} />);
+      fireEvent.click(screen.getByRole("tab", { name: "SRE" }));
+      fireEvent.change(screen.getByRole("searchbox", { name: "Add a member to Apollo" }), { target: { value: "a" } });
+      fireEvent.change(screen.getByRole("searchbox", { name: "Add a member to Apollo" }), { target: { value: "an" } });
+      const matches = screen.getByRole("list", { name: "Add a member to Apollo: matches" });
+      expect(within(matches).queryByRole("button", { name: /^Ana/ })).toBeNull();
+      fireEvent.click(within(matches).getByRole("button", { name: /Mina Silva/ }));
+      expect(lastChange()).toEqual({ kind: "member", teamKey: "apollo", userId: ME, grant: true });
+    });
+
+    it("offers a CSM admin the lead's removal, and a rota admin not", () => {
+      render(<RotaAccessTab teams={TEAMS} />);
+      fireEvent.click(screen.getByRole("tab", { name: "SRE" }));
+      expect(screen.getByRole("button", { name: "Remove Leo from Apollo" })).toBeInTheDocument();
+    });
+
+    it("shows a rota admin only their own group's teams, without the lead's removal", () => {
+      access.data = {
+        canManage: { rotaAdmins: false, markerFamilies: ["SRE"], memberFamilies: ["SRE"] },
+        rotaAdmins: [],
+        markers: [],
+      };
+      render(<RotaAccessTab teams={TEAMS} />);
+      expect(screen.getByRole("heading", { name: "Team members" })).toBeInTheDocument();
+      expect(screen.getByRole("list", { name: "Apollo members" })).toBeInTheDocument();
+      expect(screen.queryByRole("list", { name: "Lyra members" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Remove Leo from Apollo" })).toBeNull();
+      expect(screen.getByRole("button", { name: "Remove Ben from Apollo" })).toBeInTheDocument();
+      expect(screen.getByText(/a team lead only by a CSM admin/)).toBeInTheDocument();
+    });
+
+    it("brings a refused removal's reason into view, however far down the list it was clicked", () => {
+      const scrolled = vi.fn();
+      Element.prototype.scrollIntoView = scrolled;
+      mutate.mockImplementation((_c: RotaAccessChange, opts?: { onError?: (e: Error) => void }) =>
+        opts?.onError?.(new Error("this person still has 1 upcoming turn on apollo: remove or reassign them on the roster first")),
+      );
+      render(<RotaAccessTab teams={TEAMS} />);
+      fireEvent.click(screen.getByRole("tab", { name: "SRE" }));
+      fireEvent.click(screen.getByRole("button", { name: "Remove Ben from Apollo" }));
+      fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+      const alert = screen.getByRole("alert");
+      expect(alert).toHaveTextContent("1 upcoming turn on apollo");
+      expect(scrolled).toHaveBeenCalled();
+      expect(scrolled.mock.contexts.at(-1)).toBe(alert);
+    });
+
+    it("offers no member changes when the server says the reader may make none", () => {
+      access.data = {
+        canManage: { rotaAdmins: false, markerFamilies: ["SRE"] },
+        rotaAdmins: [],
+        markers: [],
+      };
+      render(<RotaAccessTab teams={TEAMS} />);
+      expect(screen.queryByRole("heading", { name: "Team members" })).toBeNull();
+      expect(screen.queryByRole("searchbox", { name: /Add a member/ })).toBeNull();
+    });
   });
 });

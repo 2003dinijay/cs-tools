@@ -36,6 +36,8 @@ type entityRotaAccessClient interface {
 	DeleteRotaAdmin(ctx context.Context, family, userID string) ([]byte, error)
 	PutRotaMarker(ctx context.Context, teamKey, userID string) ([]byte, error)
 	DeleteRotaMarker(ctx context.Context, teamKey, userID string) ([]byte, error)
+	PutTeamMember(ctx context.Context, teamKey, userID string) ([]byte, error)
+	DeleteTeamMember(ctx context.Context, teamKey, userID string) ([]byte, error)
 }
 
 // RotaAccessHandler proxies the Rota access tab: who holds a rota admin role
@@ -92,6 +94,20 @@ func (h *RotaAccessHandler) PutRotaMarker(w http.ResponseWriter, r *http.Request
 // DeleteRotaMarker handles DELETE /team-schedule/rota-access/markers/{teamKey}/{userId}.
 func (h *RotaAccessHandler) DeleteRotaMarker(w http.ResponseWriter, r *http.Request) {
 	h.change(w, r, "teamKey", rotaTeamKeyRe, "DeleteRotaMarker", "Failed to remove the rota manager.", h.entity.DeleteRotaMarker)
+}
+
+// PutTeamMember handles PUT /team-schedule/teams/{teamKey}/members/{userId}:
+// adding somebody to a team. Who may, and to which team, is entity-service's
+// decision -- a CSM admin, or the rota admin of the team's family.
+func (h *RotaAccessHandler) PutTeamMember(w http.ResponseWriter, r *http.Request) {
+	h.change(w, r, "teamKey", rotaTeamKeyRe, "PutTeamMember", "Failed to add the team member.", h.entity.PutTeamMember)
+}
+
+// DeleteTeamMember handles DELETE /team-schedule/teams/{teamKey}/members/{userId}.
+// entity-service refuses it while the person has upcoming turns, a Case Alerts
+// tier or (for a rota admin) a lead role, and says why; the reason is passed on.
+func (h *RotaAccessHandler) DeleteTeamMember(w http.ResponseWriter, r *http.Request) {
+	h.change(w, r, "teamKey", rotaTeamKeyRe, "DeleteTeamMember", "Failed to remove the team member.", h.entity.DeleteTeamMember)
 }
 
 // change checks one grant or removal's path, forwards it, and answers 204.

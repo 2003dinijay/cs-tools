@@ -1955,6 +1955,10 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("DELETE /team-schedule/rota-access/admins/{family}/{userId}", rotaAccessHandler.RevokeRotaAdmin)
 		mux.HandleFunc("PUT /team-schedule/rota-access/markers/{teamKey}/{userId}", rotaAccessHandler.GrantRotaMarker)
 		mux.HandleFunc("DELETE /team-schedule/rota-access/markers/{teamKey}/{userId}", rotaAccessHandler.RevokeRotaMarker)
+		// Who is on a team: the same people who name its markers, for the
+		// teams of their own family.
+		mux.HandleFunc("PUT /team-schedule/teams/{teamKey}/members/{userId}", rotaAccessHandler.AddTeamMember)
+		mux.HandleFunc("DELETE /team-schedule/teams/{teamKey}/members/{userId}", rotaAccessHandler.RemoveTeamMember)
 	}
 	if scheduleReminderHandler != nil {
 		mux.HandleFunc("GET /team-schedule/reminders/{family}/{kind}/{periodStart}", scheduleReminderHandler.GetReminder)

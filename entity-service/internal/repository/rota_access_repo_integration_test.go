@@ -175,3 +175,103 @@ func TestScheduleIntegration_RotaAccessLookups(t *testing.T) {
 		t.Fatalf("UserIsInternal(outsider) = %v, %v", ok, err)
 	}
 }
+
+// Adding puts the person on the team once as an engineer, however often it
+// is asked; removing is refused, with nothing written, while upcoming turns,
+// a Case Alerts tier or (unless allowed) a lead role keep them on it, and
+// otherwise takes them off with their rota marker grant for the team.
+func TestScheduleIntegration_TeamMemberAddAndRemove(t *testing.T) {
+	_, pool := newScheduleIntegrationRepo(t)
+	access := NewRotaAccessRepository(pool)
+	ctx := context.Background()
+	t.Cleanup(func() {
+		mustExec(t, pool, `DELETE FROM team_schedule_assignment WHERE created_by = 'member-fixture'`)
+		mustExec(t, pool, `DELETE FROM team_member WHERE user_id = $1`, schedOutsiderID)
+		mustExec(t, pool, `DELETE FROM team_schedule_rota_marker WHERE user_id = $1`, schedOutsiderID)
+	})
+	members := func(userID string) int {
+		return countRows(t, pool, `SELECT count(*) FROM team_member m JOIN team t ON t.id = m.team_id
+			WHERE t.key = $1 AND m.user_id = $2`, schedTeamKey, userID)
+	}
+
+	for i, want := range []bool{true, false} {
+		added, err := access.AddTeamMember(ctx, schedOutsiderID, schedTeamKey, schedMarkerActor)
+		if err != nil || added != want {
+			t.Fatalf("add #%d = %v, %v; want %v", i+1, added, err, want)
+		}
+	}
+	if n := members(schedOutsiderID); n != 1 {
+		t.Fatalf("memberships after two adds = %d, want 1", n)
+	}
+	var role, createdBy string
+	if err := pool.QueryRow(ctx, `SELECT m.role, m.created_by FROM team_member m JOIN team t ON t.id = m.team_id
+		WHERE t.key = $1 AND m.user_id = $2`, schedTeamKey, schedOutsiderID).Scan(&role, &createdBy); err != nil {
+		t.Fatalf("read membership: %v", err)
+	}
+	if role != "engineer" || createdBy != schedMarkerActor {
+		t.Fatalf("membership = %s by %s; want engineer by %s", role, createdBy, schedMarkerActor)
+	}
+	if _, err := access.AddTeamMember(ctx, schedOutsiderID, "no-such-team", schedMarkerActor); err == nil {
+		t.Fatal("adding to a team that does not exist succeeded")
+	}
+
+	// An upcoming turn keeps them on; a past one does not.
+	mustExec(t, pool, `
+		INSERT INTO team_schedule_assignment
+		  (user_id, team_id, team_key, shift_id, rota_date, starts_at, ends_at, created_by, updated_by)
+		SELECT $1::uuid, $2::uuid, $3, s.id, (NOW() + interval '2 days')::date,
+		       NOW() + interval '2 days', NOW() + interval '2 days 4 hours', 'member-fixture', 'member-fixture'
+		  FROM team_schedule_shift s ORDER BY s.code LIMIT 1`, schedOutsiderID, schedTeamID, schedTeamKey)
+	mustExec(t, pool, `
+		INSERT INTO team_schedule_assignment
+		  (user_id, team_id, team_key, shift_id, rota_date, starts_at, ends_at, created_by, updated_by)
+		SELECT $1::uuid, $2::uuid, $3, s.id, (NOW() - interval '9 days')::date,
+		       NOW() - interval '9 days', NOW() - interval '9 days' + interval '4 hours', 'member-fixture', 'member-fixture'
+		  FROM team_schedule_shift s ORDER BY s.code LIMIT 1`, schedOutsiderID, schedTeamID, schedTeamKey)
+	res, err := access.RemoveTeamMember(ctx, schedOutsiderID, schedTeamKey, schedMarkerActor, true)
+	if err != nil || res.Removed || !res.Member || res.UpcomingTurns != 1 {
+		t.Fatalf("remove with an upcoming turn = %+v, %v; want kept with 1 upcoming turn", res, err)
+	}
+	if n := members(schedOutsiderID); n != 1 {
+		t.Fatalf("a kept member was removed (%d rows)", n)
+	}
+	mustExec(t, pool, `DELETE FROM team_schedule_assignment WHERE created_by = 'member-fixture' AND ends_at > NOW()`)
+
+	// A responder tier keeps them on.
+	mustExec(t, pool, `UPDATE team_member m SET alert_tier = 'T3' FROM team t
+		WHERE t.id = m.team_id AND t.key = $1 AND m.user_id = $2`, schedTeamKey, schedOutsiderID)
+	if res, err := access.RemoveTeamMember(ctx, schedOutsiderID, schedTeamKey, schedMarkerActor, true); err != nil || res.Removed || res.AlertTier != "T3" {
+		t.Fatalf("remove with a tier = %+v, %v; want kept with T3", res, err)
+	}
+	mustExec(t, pool, `UPDATE team_member m SET alert_tier = NULL FROM team t
+		WHERE t.id = m.team_id AND t.key = $1 AND m.user_id = $2`, schedTeamKey, schedOutsiderID)
+
+	// Nothing keeps them: they go, with their marker grant for the team.
+	mustExec(t, pool, `INSERT INTO team_schedule_rota_marker (created_by, updated_by, user_id, team_key)
+		VALUES ('member-fixture', 'member-fixture', $1, $2)`, schedOutsiderID, schedTeamKey)
+	res, err = access.RemoveTeamMember(ctx, schedOutsiderID, schedTeamKey, schedMarkerActor, false)
+	if err != nil || !res.Removed {
+		t.Fatalf("remove = %+v, %v; want removed", res, err)
+	}
+	if n := members(schedOutsiderID); n != 0 {
+		t.Fatalf("memberships after removal = %d, want 0", n)
+	}
+	if n := countRows(t, pool, `SELECT count(*) FROM team_schedule_rota_marker WHERE user_id = $1`, schedOutsiderID); n != 0 {
+		t.Fatalf("the marker grant outlived the membership (%d rows)", n)
+	}
+	if n := countRows(t, pool, `SELECT count(*) FROM team_schedule_assignment WHERE user_id = $1`, schedOutsiderID); n != 1 {
+		t.Fatalf("a past turn was touched (%d rows left, want 1)", n)
+	}
+	if res, err := access.RemoveTeamMember(ctx, schedOutsiderID, schedTeamKey, schedMarkerActor, false); err != nil || res.Member || res.Removed {
+		t.Fatalf("removing again = %+v, %v; want not a member", res, err)
+	}
+
+	// A lead stays unless the caller may remove one.
+	res, err = access.RemoveTeamMember(ctx, schedLeadID, schedTeamKey, schedMarkerActor, false)
+	if err != nil || res.Removed || res.Role != "lead" {
+		t.Fatalf("a rota admin removing the lead = %+v, %v; want kept as lead", res, err)
+	}
+	if n := members(schedLeadID); n == 0 {
+		t.Fatal("the lead was removed")
+	}
+}

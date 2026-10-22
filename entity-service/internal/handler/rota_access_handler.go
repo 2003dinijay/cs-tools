@@ -65,6 +65,16 @@ func (h *RotaAccessHandler) RevokeRotaMarker(w http.ResponseWriter, r *http.Requ
 	h.done(w, r, h.svc.RevokeRotaMarker(r.Context(), r.PathValue("teamKey"), r.PathValue("userId")))
 }
 
+// AddTeamMember handles PUT /team-schedule/teams/{teamKey}/members/{userId}.
+func (h *RotaAccessHandler) AddTeamMember(w http.ResponseWriter, r *http.Request) {
+	h.done(w, r, h.svc.AddTeamMember(r.Context(), r.PathValue("teamKey"), r.PathValue("userId")))
+}
+
+// RemoveTeamMember handles DELETE /team-schedule/teams/{teamKey}/members/{userId}.
+func (h *RotaAccessHandler) RemoveTeamMember(w http.ResponseWriter, r *http.Request) {
+	h.done(w, r, h.svc.RemoveTeamMember(r.Context(), r.PathValue("teamKey"), r.PathValue("userId")))
+}
+
 // done answers a grant or removal: 204, or the service's refusal.
 func (h *RotaAccessHandler) done(w http.ResponseWriter, r *http.Request, err error) {
 	if err != nil {

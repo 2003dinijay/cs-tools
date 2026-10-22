@@ -37,6 +37,28 @@ type RotaAccessRights struct {
 	// MarkerFamilies are the families whose teams' markers the caller may
 	// change: every family for a CSM admin, their own for a rota admin.
 	MarkerFamilies []string `json:"markerFamilies"`
+	// MemberFamilies are the families whose teams' members the caller may
+	// add and remove: the same rule as MarkerFamilies (every family for a
+	// CSM admin, their own for a rota admin), named apart so the two can
+	// diverge without a client reading one for the other.
+	MemberFamilies []string `json:"memberFamilies"`
+}
+
+// TeamMemberRemoval is what removing a person from a team found: whether
+// they were on it, and what kept them on it. A removal that is kept is not
+// written; the service turns the reason into the caller's refusal.
+type TeamMemberRemoval struct {
+	// Removed is true when the membership was deleted.
+	Removed bool
+	// Member is false when the person was not on the team at all.
+	Member bool
+	// Role is the membership's role (engineer, lead, ...).
+	Role string
+	// AlertTier is the person's Case Alerts responder tier (T1-T3), or "".
+	AlertTier string
+	// UpcomingTurns counts the person's turns on this team that have not
+	// ended yet.
+	UpcomingTurns int
 }
 
 // RotaAdminGrant is one person holding one family's rota admin role.

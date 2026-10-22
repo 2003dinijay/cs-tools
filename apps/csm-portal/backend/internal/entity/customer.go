@@ -1228,6 +1228,16 @@ func (c *CustomerEntityClient) DeleteRotaMarker(ctx context.Context, teamKey, us
 	return c.do(ctx, http.MethodDelete, "/team-schedule/rota-access/markers/"+url.PathEscape(teamKey)+"/"+url.PathEscape(userID), nil)
 }
 
+// PutTeamMember calls PUT /team-schedule/teams/{teamKey}/members/{userId}.
+func (c *CustomerEntityClient) PutTeamMember(ctx context.Context, teamKey, userID string) ([]byte, error) {
+	return c.do(ctx, http.MethodPut, "/team-schedule/teams/"+url.PathEscape(teamKey)+"/members/"+url.PathEscape(userID), nil)
+}
+
+// DeleteTeamMember calls DELETE /team-schedule/teams/{teamKey}/members/{userId}.
+func (c *CustomerEntityClient) DeleteTeamMember(ctx context.Context, teamKey, userID string) ([]byte, error) {
+	return c.do(ctx, http.MethodDelete, "/team-schedule/teams/"+url.PathEscape(teamKey)+"/members/"+url.PathEscape(userID), nil)
+}
+
 // GetRotaReminderSettings calls GET /team-schedule/reminder-settings/{family}:
 // 404 when nothing was saved for the family.
 func (c *CustomerEntityClient) GetRotaReminderSettings(ctx context.Context, family string) ([]byte, error) {
