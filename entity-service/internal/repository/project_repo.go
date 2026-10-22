@@ -976,7 +976,12 @@ func (r *projectRepo) UpdateProjectConsumption(ctx context.Context, id string, r
 		    product_consumption_primary_secret_key = COALESCE($6, product_consumption_primary_secret_key),
 		    product_consumption_secondary_secret_key = COALESCE($7, product_consumption_secondary_secret_key),
 		    product_consumption_license_secrets = COALESCE($8, product_consumption_license_secrets),
-		    consumption_tracking_file_generated_on = CASE WHEN $10 THEN NOW() ELSE consumption_tracking_file_generated_on END,
+		    consumption_tracking_file_generated_on = CASE
+		        WHEN $10 AND (COALESCE($3::choreo_application_status_enum, choreo_application_status) = 'COMPLETED'
+		              OR (COALESCE($3::choreo_application_status_enum, choreo_application_status) = 'GENERATED_CREDENTIALS'
+		                  AND COALESCE($6, product_consumption_primary_secret_key, '') <> '')) THEN NOW()
+		        WHEN $11 AND consumption_tracking_file_generated_on IS NULL THEN NOW()
+		        ELSE consumption_tracking_file_generated_on END,
 		    updated_on = NOW(),
 		    updated_by = $9
 		WHERE id = $1`,
@@ -989,8 +994,11 @@ func (r *projectRepo) UpdateProjectConsumption(ctx context.Context, id string, r
 		req.SecondarySecretKey,
 		req.LicenseSecrets,
 		updatedBy,
-		// Reaching COMPLETED is when the project's licence secrets are generated, which is
-		// when ServiceNow stamped u_product_consumption_tracking_file_generated_date.
+		// The date records when the licence secrets were generated, which ServiceNow stamped on
+		// its status-5 update. It is set when this update brings secrets and the project then
+		// reads as completed (also a status-4 update that carries the key, which reads as 5), and
+		// the first time status 5 is reached; a repeated status 5 with no secrets keeps it.
+		consumptionSecretsSupplied(req),
 		req.Status >= 5,
 	)
 	if err != nil {
@@ -1004,6 +1012,16 @@ func (r *projectRepo) UpdateProjectConsumption(ctx context.Context, id string, r
 		return &apierror.NotFoundError{Msg: "project not found"}
 	}
 	return nil
+}
+
+// consumptionSecretsSupplied reports whether an update brings any licence secret.
+func consumptionSecretsSupplied(req domain.ProjectConsumptionUpdateRequest) bool {
+	for _, v := range []*string{req.PrimarySecretKey, req.SecondarySecretKey, req.LicenseSecrets} {
+		if v != nil && *v != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // consumptionStatusToEnum maps the 1-based consumption lifecycle status int onto

@@ -61,7 +61,7 @@ func consumptionStampPool(t *testing.T) *pgxpool.Pool {
 	for _, ddl := range []string{
 		`CREATE TYPE choreo_application_status_enum AS ENUM ('PENDING', 'CREATED_APPLICATION', 'SUBSCRIBED_APPLICATION', 'GENERATED_CREDENTIALS', 'COMPLETED')`,
 		`CREATE TABLE project (
-			id UUID PRIMARY KEY, choreo_application_id VARCHAR(255), choreo_application_status choreo_application_status_enum,
+			id UUID PRIMARY KEY, name VARCHAR(255), description TEXT, choreo_application_id VARCHAR(255), choreo_application_status choreo_application_status_enum,
 			product_consumption_client_id VARCHAR(255), product_consumption_client_secret VARCHAR(255),
 			product_consumption_primary_secret_key VARCHAR(255), product_consumption_secondary_secret_key VARCHAR(255),
 			product_consumption_license_secrets TEXT, consumption_tracking_file_generated_on TIMESTAMPTZ,
@@ -114,5 +114,62 @@ func TestProjectConsumption_StampsTheFileGeneratedDateOnCompletion(t *testing.T)
 	}
 	if got := stamp(); got == nil || !got.Equal(*first) {
 		t.Errorf("a later lower status changed the stamp: %v, want %v", got, *first)
+	}
+
+	// A repeated status 5 with no secrets is not a regeneration: the stamp stays.
+	if err := repo.UpdateProjectConsumption(ctx, id, domain.ProjectConsumptionUpdateRequest{Status: 5}, "pcs"); err != nil {
+		t.Fatal(err)
+	}
+	if got := stamp(); got == nil || !got.Equal(*first) {
+		t.Errorf("a repeated status 5 without secrets changed the stamp: %v, want %v", got, *first)
+	}
+
+	// Status 5 that brings new secrets is a regeneration, as in ServiceNow: the stamp moves.
+	newKey := "def"
+	if err := repo.UpdateProjectConsumption(ctx, id, domain.ProjectConsumptionUpdateRequest{Status: 5, PrimarySecretKey: &newKey}, "pcs"); err != nil {
+		t.Fatal(err)
+	}
+	if got := stamp(); got == nil || !got.After(*first) {
+		t.Errorf("regenerated secrets did not move the stamp: %v, first %v", got, *first)
+	}
+}
+
+// A status-4 update that carries the secret key reads back as status 5, so it is stamped
+// too; a legacy row that already reads as 5 is not stamped by an update bringing nothing.
+func TestProjectConsumption_StampFollowsTheStatusTheProjectReadsAs(t *testing.T) {
+	pool := consumptionStampPool(t)
+	repo := repository.NewProjectRepository(repository.NewScoped(pool))
+	ctx := internalCtx()
+	const fresh, legacy = "7d8783f7-3b65-4b10-9140-4c6aa5e45a87", "8e9894a8-4c76-4c21-a251-5d7bb6f56b98"
+	if _, err := pool.Exec(context.Background(), `INSERT INTO project (id, choreo_application_status, product_consumption_primary_secret_key)
+		VALUES ($1, 'GENERATED_CREDENTIALS', 'old')`, legacy); err != nil {
+		t.Fatal(err)
+	}
+	stamp := func(id string) *time.Time {
+		t.Helper()
+		var v *time.Time
+		if err := pool.QueryRow(context.Background(), `SELECT consumption_tracking_file_generated_on FROM project WHERE id = $1`, id).Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+
+	key := "abc"
+	if err := repo.UpdateProjectConsumption(ctx, fresh, domain.ProjectConsumptionUpdateRequest{Status: 4, PrimarySecretKey: &key}, "pcs"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := repo.GetProjectConsumptionStatus(ctx, fresh); err != nil || got.Status != 5 {
+		t.Fatalf("status after a status-4 update with the key: %+v, %v", got, err)
+	}
+	if stamp(fresh) == nil {
+		t.Error("a status-4 update carrying the key, which reads as 5, was not stamped")
+	}
+
+	app := "app-1"
+	if err := repo.UpdateProjectConsumption(ctx, legacy, domain.ProjectConsumptionUpdateRequest{Status: 4, ApplicationID: &app}, "pcs"); err != nil {
+		t.Fatal(err)
+	}
+	if got := stamp(legacy); got != nil {
+		t.Errorf("an update bringing no secrets stamped a legacy row: %v", got)
 	}
 }
