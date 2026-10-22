@@ -393,8 +393,9 @@ func TestTeamChatSpaces_EachSMETeamPostsToItsOwnSpace(t *testing.T) {
 	raise(t, e, handoff("Apollo", "asgardeo", "asgardeo", testClock))
 	raise(t, e, handoff("Apollo", "", "choreo", testClock.Add(time.Minute)))
 
-	if asgardeo.count() != 1 || choreo.count() != 1 {
-		t.Errorf("cards: Asgardeo %d, Choreo %d; want one each, in its own space", asgardeo.count(), choreo.count())
+	// Each space gets its "Incident Escalated" card and the L1 reply under it.
+	if asgardeo.count() != 2 || choreo.count() != 2 {
+		t.Errorf("posts: Asgardeo %d, Choreo %d; want the incident card and L1 in each, in its own space", asgardeo.count(), choreo.count())
 	}
 	if shared.count() != 0 {
 		t.Errorf("%d card(s) in the shared SME space; with sme.teamChats set it gets none", shared.count())

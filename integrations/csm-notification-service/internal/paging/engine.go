@@ -513,7 +513,7 @@ func (e *Engine) postUnanswered(ctx context.Context, st LadderState) {
 			PortalURL:   portal,
 			PortalLabel: label,
 			ThreadKey:   t.chatThreadKey(),
-			Reply:       target.reply || e.sreReplies(t),
+			Reply:       target.reply || e.threadReplies(t),
 		})
 		if err != nil {
 			slog.ErrorContext(ctx, "escalation: the closing message was not posted", "incidentId", t.IncidentID, "audience", target.room, "err", err)
@@ -565,8 +565,11 @@ func (e *Engine) unansweredRooms(plan Plan) ([]chatRoom, string) {
 	return nil, ""
 }
 
-// sreReplies reports whether an SRE incident's own space gets its messages as replies: only when its rungs post there, so the "Incident Reported" card exists.
-func (e *Engine) sreReplies(t Trigger) bool {
+// threadReplies reports whether an SRE or SME incident's own space gets its messages as replies: only when its rungs post there, so the parent incident card exists.
+func (e *Engine) threadReplies(t Trigger) bool {
+	if t.smeIncident() {
+		return e.cfg.SME.Channel.Uses(ChannelChat)
+	}
 	return t.sreIncident() && e.channelFor(t).Uses(ChannelChat)
 }
 
@@ -922,7 +925,7 @@ func (e *Engine) postNoOneOnCall(ctx context.Context, plan Plan, why string) {
 		if r.links != nil {
 			links = r.links
 		}
-		msg.Audience, msg.Reply = room, r.reply || e.sreReplies(t)
+		msg.Audience, msg.Reply = room, r.reply || e.threadReplies(t)
 		msg.PortalURL = links.IncidentLink(t.IncidentID)
 		if t.isCase() {
 			msg.PortalURL = links.CaseLink(t.IncidentID)
