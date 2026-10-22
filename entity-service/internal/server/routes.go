@@ -1351,29 +1351,24 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 	feedbackHandler := handler.NewFeedbackHandler(activeFeedbackSvc)
 
-	// Product vulnerabilities: read queries (SearchProductVulnerabilities,
-	// GetProductVulnerability, GetVulnerabilityMeta) are served from Postgres
-	// whenever the database connection pool is available (db != nil), avoiding
-	// downstream ServiceNow integration dependency and user-level ACL issues
-	// on static metadata. SyncProductVulnerabilities delegates to the ServiceNow
-	// data source when configured. When no database pool is available (db == nil),
-	// falls back to the ServiceNow service.
-	var activeProductVulnerabilitySvc service.ProductVulnerabilityService
+	// Product vulnerabilities: the service follows cfg.DataSource (selection
+	// and the defensive no-database fallback live in
+	// newProductVulnerabilityService). In dual-write mode reads
+	// (SearchProductVulnerabilities, GetProductVulnerability,
+	// GetVulnerabilityMeta) are served from Postgres, avoiding the downstream
+	// ServiceNow integration dependency and user-level ACL issues on static
+	// metadata; SyncProductVulnerabilities writes to Postgres too.
+	// The ServiceNow client may exist for SLA/attachment reads alone, so its
+	// presence says nothing about this service's data source.
+	var productVulnerabilityRepo repository.ProductVulnerabilityRepository
 	if db != nil {
-		productVulnerabilityRepo := repository.NewProductVulnerabilityRepository(db)
-		var snSvc service.ProductVulnerabilityService
-		if serviceNowIntegrationServiceClient != nil {
-			snSvc = service.NewServiceNowProductVulnerabilityService(serviceNowIntegrationServiceClient)
-		}
-		activeProductVulnerabilitySvc = service.NewProductVulnerabilityServiceWithSNSync(productVulnerabilityRepo, snSvc)
-		if productVulnerabilityOptionsCache != nil {
-			activeProductVulnerabilitySvc = service.NewCachedProductVulnerabilityService(activeProductVulnerabilitySvc, productVulnerabilityOptionsCache)
-		}
-	} else if serviceNowIntegrationServiceClient != nil {
-		activeProductVulnerabilitySvc = service.NewServiceNowProductVulnerabilityService(serviceNowIntegrationServiceClient)
-	} else {
-		activeProductVulnerabilitySvc = service.NewProductVulnerabilityService(repository.NewProductVulnerabilityRepository(nil))
+		productVulnerabilityRepo = repository.NewProductVulnerabilityRepository(db)
 	}
+	var snProductVulnerabilitySvc service.ProductVulnerabilityService
+	if serviceNowIntegrationServiceClient != nil {
+		snProductVulnerabilitySvc = service.NewServiceNowProductVulnerabilityService(serviceNowIntegrationServiceClient)
+	}
+	activeProductVulnerabilitySvc := newProductVulnerabilityService(cfg.DataSource, productVulnerabilityRepo, snProductVulnerabilitySvc, productVulnerabilityOptionsCache)
 	productVulnerabilityHandler := handler.NewProductVulnerabilityHandler(activeProductVulnerabilitySvc)
 
 	// incident/problem/incident_task/conversation (migrations 000057-000060,

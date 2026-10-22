@@ -779,6 +779,9 @@ const (
 	// sync's, which share the same table but never carry this value. See
 	// internal/service/sla_policy_resolver.go.
 	SLAEngineActor = "sla-engine"
+	// ProductVulnerabilitySyncActor is created_by/updated_by for every
+	// product_vulnerability row the full-replace sync writes.
+	ProductVulnerabilitySyncActor = "product-vulnerability-sync"
 )
 
 // SalesforceEntityLinkedOpportunity is the Linked_Opportunity__c custom
@@ -5684,8 +5687,9 @@ type SearchProductVulnerabilitiesResponse struct {
 }
 
 // ProductVulnerabilitySyncItem is one entry submitted to a full-replace sync of product
-// vulnerabilities. WSO2ID is the join key the downstream data source uses to match this item
-// against an existing record.
+// vulnerabilities. WSO2ID is the join key used to match this item against an existing
+// record (the business_key column). ScannerName is accepted for wire compatibility but has
+// no column in product_vulnerability and is not stored by the Postgres data source.
 type ProductVulnerabilitySyncItem struct {
 	WSO2ID                 string `json:"wso2Id"`
 	ComponentName          string `json:"componentName"`

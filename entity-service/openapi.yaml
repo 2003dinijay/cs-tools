@@ -11269,13 +11269,14 @@ paths:
   /products/vulnerabilities/sync:
     post:
       summary: >-
-        Full-replace sync of product vulnerabilities (ServiceNow data source only).
+        Full-replace sync of product vulnerabilities.
       description: >-
         This is a full-replace sync, not an incremental update. The submitted items MUST be
-        the complete current set of product vulnerabilities: the downstream data source
-        deletes any existing record whose wso2Id is not present in the submitted array and
-        upserts everything that is. Submitting a partial list will delete the records omitted
-        from it. Intended for machine-to-machine callers (e.g. a scheduled sync job), not
+        the complete current set of product vulnerabilities: any existing record whose wso2Id
+        is not present in the submitted array is deleted and everything that is present is
+        upserted. Submitting a partial list will delete the records omitted from it. An empty
+        array is rejected (400) so the whole set cannot be wiped by accident, as is an empty or
+        duplicate wso2Id, a value longer than its column, or an unrecognised severity. Intended for machine-to-machine callers (e.g. a scheduled sync job), not
         interactive user sessions.
       operationId: syncProductVulnerabilities
       requestBody:
@@ -24401,7 +24402,7 @@ components:
       type: object
       description: >-
         Outcome of a full-replace product vulnerability sync. Fields may be omitted by the
-        downstream data source if a count was not reported.
+        backing data source if a count was not reported.
       properties:
         insertedRecords:
           type: integer
