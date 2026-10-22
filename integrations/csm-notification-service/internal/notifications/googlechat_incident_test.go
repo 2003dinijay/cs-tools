@@ -199,7 +199,7 @@ func TestBuildSMEIncidentEscalatedCard(t *testing.T) {
 		EscalatedAt: "22 Oct 2026, 20:31 IST", IncidentLink: "https://portal/incidents/inc-1",
 	})
 	card := msg.CardsV2[0].Card
-	if card.Header.Title != "CHOREO RUNTIME SME | Critical Priority Incident Escalated" || card.Header.Subtitle != "#INC0089973 | Moseif" {
+	if card.Header.Title != "CHOREO RUNTIME | Critical Priority Incident Escalated" || card.Header.Subtitle != "#INC0089973 | Moseif" {
 		t.Errorf("header = %+v", card.Header)
 	}
 	if msg.Thread == nil || msg.Thread.ThreadKey != IncidentThreadKey("inc-1") {

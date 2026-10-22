@@ -229,7 +229,7 @@ type SMEIncidentEscalatedAlert struct {
 	IncidentLink string
 }
 
-// SendSMEIncidentEscalatedAlert posts the "<SME team> SME | <priority> Priority Incident Escalated" card an SME ladder's rung replies sit under.
+// SendSMEIncidentEscalatedAlert posts the "<SME team> | <priority> Priority Incident Escalated" card an SME ladder's rung replies sit under.
 func (c *GoogleChatClient) SendSMEIncidentEscalatedAlert(ctx context.Context, audience string, a SMEIncidentEscalatedAlert) error {
 	if a.IncidentID == "" {
 		return fmt.Errorf("notifications: incidentId is required")
@@ -245,7 +245,7 @@ func buildSMEIncidentEscalatedCard(a SMEIncidentEscalatedAlert) chatCardMessage 
 		title = priority.word + " " + title
 	}
 	if team := strings.TrimSpace(a.SMETeam); team != "" {
-		title = strings.ToUpper(team) + " SME | " + title
+		title = strings.ToUpper(team) + " | " + title
 	}
 	subtitle := "#" + incidentRef(a.Number, a.IncidentID)
 	if service := strings.TrimSpace(a.Service); service != "" {
