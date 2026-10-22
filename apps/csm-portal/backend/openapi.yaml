@@ -13271,6 +13271,10 @@ paths:
         "500":
           description: Internal server error.
           content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
   /team-schedule/case-alerts/settings:
     get:
       summary: Case Alerts chat rooms, group routes and ladder values, and what the caller may change.
