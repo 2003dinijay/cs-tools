@@ -19651,6 +19651,18 @@ components:
               format: date-time
               nullable: true
               description: The project's onboarding start date (midnight UTC).
+            totalOnboardingHours:
+              type: number
+              nullable: true
+              description: Total onboarding hours allotted to the project.
+            consumedOnboardingHours:
+              type: number
+              nullable: true
+              description: Onboarding hours consumed so far (reported as a non-negative value).
+            remainingOnboardingHours:
+              type: number
+              nullable: true
+              description: Onboarding hours remaining.
             goLivePlanDate:
               type: string
               format: date-time
