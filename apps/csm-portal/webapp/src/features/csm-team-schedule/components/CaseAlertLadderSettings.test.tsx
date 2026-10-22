@@ -56,6 +56,10 @@ const CRE_ROWS = [
   "Priorities",
   "Max calls per ladder",
   "Call before every lead has a number",
+  "Email per step",
+  "ABT team lists (Cc on L1 and L2)",
+  "CRE team list (Cc on L3)",
+  "CS team list (Cc on L4)",
 ];
 
 function make(over: Partial<Settings> = {}): Settings {
@@ -495,6 +499,7 @@ describe("CaseAlertLadderSettings: the whole CRE ladder, kept in the code", () =
       "When a ladder starts",
       "How it climbs",
       "Heads",
+      "Case Alert email",
       "Set in the alert service's file (read-only)",
     ]);
     expect(within(row("Team leads to call")).getByText("3")).toBeInTheDocument();

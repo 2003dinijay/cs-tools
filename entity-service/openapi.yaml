@@ -25892,7 +25892,9 @@ components:
             teams.rotaTeams, teams.unassignedTeamLead,
             teams.unassignedTeamLeadCount, heads.cre, heads.cs (name and email
             only), alertDuty.tiers, alertDuty.perTeam,
-            acknowledgement.requireBoth. SRE: teams.defaultRota,
+            acknowledgement.requireBoth, email.enabled, email.teamLists (CRE
+            team key to one mailing list address), email.creTeamList,
+            email.csTeamList (one address each). SRE: teams.defaultRota,
             timing.initialWait (0s to 30m), timing.interval (1m to 30m),
             timing.includeL4, unansweredChat, smeHandoffChat. SME:
             timing.initialWait (0s to 30m), timing.interval (1m to 30m),

@@ -154,6 +154,10 @@ func TestMergeCaseAlertSettings_EveryValueLandsInItsField(t *testing.T) {
 		{"CRE", "alertDuty.tiers", json.RawMessage(`["T1","T2"]`)},
 		{"CRE", "alertDuty.perTeam", json.RawMessage(`1`)},
 		{"CRE", "acknowledgement.requireBoth", json.RawMessage(`false`)},
+		{"CRE", "email.enabled", json.RawMessage(`true`)},
+		{"CRE", "email.teamLists", json.RawMessage(`{"atlas":"atlas-list@example.test"}`)},
+		{"CRE", "email.creTeamList", json.RawMessage(`"cre-list@example.test"`)},
+		{"CRE", "email.csTeamList", json.RawMessage(`"cs-list@example.test"`)},
 		{"SRE", "trigger.priorities", json.RawMessage(`["S0"]`)},
 		{"SRE", "onLeave", json.RawMessage(`"skip"`)},
 		{"SRE", "teams.abtType", json.RawMessage(`"sre-abt"`)},
@@ -197,6 +201,10 @@ func TestMergeCaseAlertSettings_EveryValueLandsInItsField(t *testing.T) {
 		"tiers":            slices.Equal(c.AlertTiers(), []string{"T1", "T2"}),
 		"per team":         c.AlertDuty.PerTeam == 1,
 		"require both":     !c.RequireBothGestures(),
+		"email on":         c.Email.Enabled,
+		"email team lists": reflect.DeepEqual(c.Email.TeamLists, map[string]string{"atlas": "atlas-list@example.test"}),
+		"email cre list":   c.Email.CRETeamList == "cre-list@example.test",
+		"email cs list":    c.Email.CSTeamList == "cs-list@example.test",
 		"sre priorities":   slices.Equal(s.Start.Priorities, []string{"S0"}),
 		"sre on leave":     s.OnLeave == OnLeaveSkip,
 		"sre abts":         slices.Equal(s.Teams.ABTs, []string{"apollo", "artemis", "iaas"}) && s.Teams.ABTType == "sre-abt",
@@ -357,7 +365,9 @@ func TestCaseAlertKeysMatchTheTab(t *testing.T) {
 		"teams.rotaTeams": caseAlertCRE, "teams.unassignedTeamLead": caseAlertCRE, "teams.unassignedTeamLeadCount": caseAlertCRE,
 		"heads.cre": caseAlertCRE, "heads.cs": caseAlertCRE, "alertDuty.tiers": caseAlertCRE, "alertDuty.perTeam": caseAlertCRE,
 		"acknowledgement.requireBoth": caseAlertCRE,
-		"teams.defaultRota":           caseAlertSRE, "timing.initialWait": caseAlertSRE, "timing.interval": caseAlertSRE,
+		"email.enabled":               caseAlertCRE, "email.teamLists": caseAlertCRE, "email.creTeamList": caseAlertCRE,
+		"email.csTeamList":  caseAlertCRE,
+		"teams.defaultRota": caseAlertSRE, "timing.initialWait": caseAlertSRE, "timing.interval": caseAlertSRE,
 		"timing.includeL4": caseAlertSRE, "unansweredChat": caseAlertSRE, "smeHandoffChat": caseAlertSRE,
 		"enabled": caseAlertBoth, "channel": caseAlertBoth, "safety.maxCallsPerLadder": caseAlertBoth,
 		"safety.callWithoutVerifiedLeads": caseAlertBoth, "safety.callHeadsWithoutLowerTiers": caseAlertBoth,
@@ -555,14 +565,16 @@ func TestRunningCaseAlertValues_CREFileOnlyShowsTheWholeChain(t *testing.T) {
 		CRETeamList: "cre-list@example.test",
 	}
 	b, _ := json.Marshal(RunningCaseAlertValues(cfg, nil))
-	if strings.Contains(string(b), "list@example.test") {
-		t.Fatal("a rung email address was reported")
-	}
 	var r struct {
 		FileOnly map[string]map[string]json.RawMessage `json:"fileOnly"`
 	}
 	if err := json.Unmarshal(b, &r); err != nil {
 		t.Fatal(err)
+	}
+	// The lists are tab values now (shown with their addresses, like a
+	// head's); the read-only summary still only counts or flags them.
+	if fo, _ := json.Marshal(r.FileOnly); strings.Contains(string(fo), "list@example.test") {
+		t.Fatal("a rung email address was reported among the file-only values")
 	}
 	cre, sre := r.FileOnly["CRE"], r.FileOnly["SRE"]
 	for key, want := range map[string]string{

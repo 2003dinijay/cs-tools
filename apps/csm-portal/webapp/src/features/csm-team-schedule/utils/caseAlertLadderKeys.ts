@@ -46,6 +46,7 @@ export type LadderKeyGroup =
   | "When a ladder starts"
   | "How it climbs"
   | "Heads"
+  | "Case Alert email"
   | "Chat messages";
 
 export const LADDER_KEY_GROUPS: LadderKeyGroup[] = [
@@ -55,12 +56,13 @@ export const LADDER_KEY_GROUPS: LadderKeyGroup[] = [
   "When a ladder starts",
   "How it climbs",
   "Heads",
+  "Case Alert email",
   "Chat messages",
 ];
 
 /** How a value is edited: a checkbox, a number, a pick from a few, a line of
- *  text, a comma-separated list, SHIFT=n pairs, key=team pairs, a time like
- *  5m, or a head's name and email. */
+ *  text, a comma-separated list, SHIFT=n pairs, key=team pairs, key=address
+ *  pairs, a time like 5m, or a head's name and email. */
 export type LadderKeyEditor =
   | "bool"
   | "int"
@@ -69,6 +71,7 @@ export type LadderKeyEditor =
   | "list"
   | "shiftCounts"
   | "teamMap"
+  | "teamEmails"
   | "duration"
   | "head";
 
@@ -433,6 +436,48 @@ export const LADDER_KEYS: LadderKeySpec[] = [
     empty: "not named (looked up in the leadership team)",
   },
 
+  // Case Alert email: the Case Alert Notification sent at L1 to L4 of a
+  // customer case's CRE chain. The lists are mailing addresses, Cc'd only.
+  {
+    key: "email.enabled",
+    ladders: CRE,
+    group: "Case Alert email",
+    label: "Email per step",
+    help: "Send the Case Alert Notification email at L1 to L4 of a case's chain (L0 gets none), to the step's team leads or head, Cc the team lists below.",
+    editor: "bool",
+  },
+  {
+    key: "email.teamLists",
+    ladders: CRE,
+    group: "Case Alert email",
+    label: "ABT team lists (Cc on L1 and L2)",
+    help: "Each ABT team's mailing list, Cc'd on the email to its team lead (L1) and on the email to every ABT team lead (L2). At night the Americas team's list is Cc'd too.",
+    editor: "teamEmails",
+    max: 30,
+    empty: "none (no Cc on L1 and L2)",
+    placeholder: "e.g. atlas=atlas-team@example.com",
+  },
+  {
+    key: "email.creTeamList",
+    ladders: CRE,
+    group: "Case Alert email",
+    label: "CRE team list (Cc on L3)",
+    help: "Cc'd on the L3 email to the Head of CRE.",
+    editor: "text",
+    empty: "none (no Cc on L3)",
+    placeholder: "e.g. cre-team@example.com",
+  },
+  {
+    key: "email.csTeamList",
+    ladders: CRE,
+    group: "Case Alert email",
+    label: "CS team list (Cc on L4)",
+    help: "Cc'd on the L4 email to the Head of CS.",
+    editor: "text",
+    empty: "none (no Cc on L4)",
+    placeholder: "e.g. cs-team@example.com",
+  },
+
   // Chat messages
   {
     key: "unansweredChat",
@@ -516,7 +561,7 @@ export function draftFor(spec: LadderKeySpec, value: unknown): LadderDraft {
     return { ...draft, name: h?.name ?? "", email: h?.email ?? "" };
   }
   if (Array.isArray(value)) return { ...draft, text: value.map(String).join(", ") };
-  if ((spec.editor === "shiftCounts" || spec.editor === "teamMap") && isRecord(value)) {
+  if ((spec.editor === "shiftCounts" || spec.editor === "teamMap" || spec.editor === "teamEmails") && isRecord(value)) {
     return { ...draft, text: Object.entries(value).map(([k, v]) => `${k}=${String(v)}`).join(", ") };
   }
   if (typeof value === "string" || typeof value === "number") return { ...draft, text: String(value) };
@@ -561,6 +606,15 @@ export function parseDraft(spec: LadderKeySpec, draft: LadderDraft): ParsedDraft
         const m = /^([A-Za-z0-9_.-]+)\s*=\s*([A-Za-z0-9_.-]+)$/.exec(part);
         if (!m) return { ok: false, error: `${spec.label}: write each as key=team, e.g. asgardeo-ops=asgardeo.` };
         out[m[1].toLowerCase()] = m[2].toLowerCase();
+      }
+      return { ok: true, value: out };
+    }
+    case "teamEmails": {
+      const out: Record<string, string> = {};
+      for (const part of text.split(",").map((v) => v.trim()).filter(Boolean)) {
+        const m = /^([A-Za-z0-9_.-]+)\s*=\s*([^\s,=@]+@[^\s,=@]+)$/.exec(part);
+        if (!m) return { ok: false, error: `${spec.label}: write each as team=address, e.g. atlas=atlas-team@example.com.` };
+        out[m[1].toLowerCase()] = m[2];
       }
       return { ok: true, value: out };
     }
@@ -749,6 +803,8 @@ export function limitHint(spec: LadderKeySpec): string | null {
       return `SHIFT=number, separated with commas${spec.max ? `, each 0 to ${spec.max}` : ""}. ${empty}`;
     case "teamMap":
       return `key=team, separated with commas. ${empty}`;
+    case "teamEmails":
+      return `team=address, separated with commas${spec.max ? `, up to ${spec.max}` : ""}. ${empty}`;
     default:
       return null;
   }
@@ -806,7 +862,8 @@ export function savedInGroups(
 
 /** The settings the Alert Settings tab shows for each ladder, in this order:
  *  the switch, the channel, which priorities start a chain, the call limits,
- *  then SRE's and SME's time between steps. CRE's heads are not shown: left
+ *  then CRE's Case Alert email and SRE's and SME's time between steps. CRE's
+ *  heads are not shown: left
  *  empty, the alert service finds them in the leadership team. Every other key
  *  stays in LADDER_KEYS and keeps its value (the file's, or one saved
  *  earlier); the tab just doesn't offer it. */
@@ -817,6 +874,10 @@ export const SHOWN_KEYS: Record<CaseAlertRoomLadder, readonly string[]> = {
     "trigger.priorities",
     "safety.maxCallsPerLadder",
     "safety.callWithoutVerifiedLeads",
+    "email.enabled",
+    "email.teamLists",
+    "email.creTeamList",
+    "email.csTeamList",
   ],
   SRE: [
     "enabled",

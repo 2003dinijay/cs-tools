@@ -43,7 +43,7 @@ const draft = { text: "", checked: false, name: "", email: "" };
 describe("caseAlertLadderKeys", () => {
   it("lists each key once, on the ladders the design gives it", () => {
     expect(new Set(LADDER_KEYS.map((k) => k.key)).size).toBe(LADDER_KEYS.length);
-    expect(ladderKeysFor("CRE")).toHaveLength(27);
+    expect(ladderKeysFor("CRE")).toHaveLength(31);
     expect(ladderKeysFor("SRE")).toHaveLength(19);
     expect(ladderKeysFor("SRE").map((k) => k.key)).not.toContain("heads.cre");
     expect(ladderKeysFor("CRE").map((k) => k.key)).not.toContain("timing.interval");
@@ -84,6 +84,17 @@ describe("caseAlertLadderKeys", () => {
     expect(parseDraft(spec("teams.teamLeadsToCall"), { ...draft, text: "three" }).ok).toBe(false);
     expect(parseDraft(spec("heads.cs"), { ...draft, name: "N" }).ok).toBe(false);
     expect(parseDraft(spec("timing.interval"), { ...draft, text: " 5m " })).toEqual({ ok: true, value: "5m" });
+    expect(
+      parseDraft(spec("email.teamLists"), { ...draft, text: "Atlas = atlas-team@example.com, americas=americas@example.com" }),
+    ).toEqual({ ok: true, value: { atlas: "atlas-team@example.com", americas: "americas@example.com" } });
+    expect(parseDraft(spec("email.teamLists"), { ...draft, text: "atlas=atlas team" }).ok).toBe(false);
+    expect(parseDraft(spec("email.teamLists"), { ...draft, text: "atlas=a@b@c" }).ok).toBe(false);
+    expect(parseDraft(spec("email.teamLists"), draft)).toEqual({ ok: true, value: {} });
+    expect(draftFor(spec("email.teamLists"), { atlas: "atlas-team@example.com" }).text).toBe("atlas=atlas-team@example.com");
+    expect(parseDraft(spec("email.creTeamList"), { ...draft, text: " cre@example.com " })).toEqual({
+      ok: true,
+      value: "cre@example.com",
+    });
     expect(draftFor(spec("teams.rotaMembersToCall"), { LK: 2, USA: 1 }).text).toBe("LK=2, USA=1");
     expect(draftFor(spec("onLeave"), undefined).text).toBe("skip");
   });
