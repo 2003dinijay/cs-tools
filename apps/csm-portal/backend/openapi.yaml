@@ -5108,7 +5108,10 @@ paths:
 
   /cases/{id}/call-requests:
     post:
-      summary: Create a call request for a case (ServiceNow data source only).
+      summary: Create a call request for a case.
+      description: >
+        The created call starts pending on the customer. It becomes pending on WSO2
+        only after the customer approves it.
       operationId: createCallRequest
       parameters:
         - name: id
