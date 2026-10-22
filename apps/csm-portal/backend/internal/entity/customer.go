@@ -1297,6 +1297,31 @@ func (c *CustomerEntityClient) DeleteCaseAlertValue(ctx context.Context, valueID
 	return c.do(ctx, http.MethodDelete, "/team-schedule/case-alerts/settings/values/"+url.PathEscape(valueID), nil)
 }
 
+// ListRunbooks calls GET /runbooks: the alert-name to runbook catalog.
+func (c *CustomerEntityClient) ListRunbooks(ctx context.Context) ([]byte, error) {
+	return c.do(ctx, http.MethodGet, "/runbooks", nil)
+}
+
+// CreateRunbook calls POST /runbooks.
+func (c *CustomerEntityClient) CreateRunbook(ctx context.Context, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, "/runbooks", body)
+}
+
+// UpdateRunbook calls PUT /runbooks/{id}.
+func (c *CustomerEntityClient) UpdateRunbook(ctx context.Context, id string, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPut, "/runbooks/"+url.PathEscape(id), body)
+}
+
+// DeleteRunbook calls DELETE /runbooks/{id}.
+func (c *CustomerEntityClient) DeleteRunbook(ctx context.Context, id string) ([]byte, error) {
+	return c.do(ctx, http.MethodDelete, "/runbooks/"+url.PathEscape(id), nil)
+}
+
+// ImportRunbooks calls POST /runbooks/import.
+func (c *CustomerEntityClient) ImportRunbooks(ctx context.Context, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, "/runbooks/import", body)
+}
+
 // GetMyLeadTeams calls GET /team-schedule/my-lead-teams on the entity service.
 func (c *CustomerEntityClient) GetMyLeadTeams(ctx context.Context) ([]byte, error) {
 	return c.do(ctx, http.MethodGet, "/team-schedule/my-lead-teams", nil)

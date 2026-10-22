@@ -140,6 +140,7 @@ describe("firstEnabledPathTab / enabledPathTabKeys", () => {
       "incidents",
       "problems",
       "outages",
+      "runbooks",
     ]);
     expect(firstEnabledPathTab("operations")).toBe("service-requests");
   });
@@ -152,6 +153,7 @@ describe("firstEnabledPathTab / enabledPathTabKeys", () => {
       "change-requests",
       "problems",
       "outages",
+      "runbooks",
     ]);
     expect(firstEnabledPathTab("does-not-exist")).toBeUndefined();
   });

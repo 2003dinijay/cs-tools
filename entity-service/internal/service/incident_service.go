@@ -676,6 +676,10 @@ func (s *incidentService) SearchIncidentActivities(ctx context.Context, req doma
 // delegates to createIncidentSNFirst -- see that method's own doc comment.
 // Otherwise it is createIncidentPortal, the native Postgres create.
 func (s *incidentService) CreateIncident(ctx context.Context, req domain.CreateIncidentRequest) (domain.CreateIncidentResponse, error) {
+	// Both create paths validate the same way; doing it first keeps a bad request from reaching the group lookup and the runbook catalog.
+	if err := validateCreateIncidentRequest(req); err != nil {
+		return domain.CreateIncidentResponse{}, err
+	}
 	decision, err := resolveAssignmentGroup(ctx, req, s.defaultServiceID, s.assignmentGroupLookups())
 	if err != nil {
 		return domain.CreateIncidentResponse{}, err
