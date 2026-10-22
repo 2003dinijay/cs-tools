@@ -71,18 +71,25 @@ export function usePatchIncident(): UseMutationResult<
 }
 
 /**
- * What an incident's PATCH makes stale, beside the list: its detail and its
- * tasks (a move to Closed or Cancelled closes them), and once more after the
+ * What an incident's PATCH makes stale, beside the list: its detail, its
+ * tasks (a move to Closed or Cancelled closes them), its activity feed and
+ * its notes (the update's own, and the flows'), and once more after the
  * background flows of In Progress / Resolved have had time to run. Shared by
  * the single-record edit and the list's bulk edit, so both refresh the same.
  */
 export function refreshIncidentRecord(queryClient: QueryClient, id: string, patch: BeUpdateIncidentPayload): void {
   void queryClient.invalidateQueries({ queryKey: [ApiQueryKeys.INCIDENT_DETAILS, id] });
   void queryClient.invalidateQueries({ queryKey: [ApiQueryKeys.CSM_INCIDENT_TASKS, id] });
+  // The update writes a field-change entry to the activity feed.
+  void queryClient.invalidateQueries({ queryKey: [ApiQueryKeys.INCIDENT_ACTIVITIES, id] });
+  // Notes sent with the update (work notes, close notes) land in the comments lane.
+  void queryClient.invalidateQueries({ queryKey: [ApiQueryKeys.INCIDENT_COMMENTS, id] });
   if (patch.state && STATES_WITH_FLOWS.has(patch.state)) {
     setTimeout(() => {
       void queryClient.invalidateQueries({ queryKey: [ApiQueryKeys.INCIDENT_DETAILS, id] });
       void queryClient.invalidateQueries({ queryKey: [ApiQueryKeys.CSM_INCIDENT_TASKS, id] });
+      // The flows add work notes of their own.
+      void queryClient.invalidateQueries({ queryKey: [ApiQueryKeys.INCIDENT_COMMENTS, id] });
     }, INCIDENT_FLOW_SETTLE_MS);
   }
 }

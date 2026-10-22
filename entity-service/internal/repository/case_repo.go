@@ -4911,12 +4911,25 @@ func (r *caseRepo) SearchTags(ctx context.Context, searchQuery, _ string, limit 
 // badly: an "_id" suffix is natural in a column name but not in a label a
 // person reads ("Assigned To Id"), and English keeps an assignment's own
 // preposition lowercase ("Assigned to", not "Assigned To").
+//
+// SearchIncidentActivities labels through the same map, so the incident field names
+// (incidentFieldChanges, incident_service.go) are here too.
 var caseActivityFieldChangeLabelOverrides = map[string]string{
 	"assigned_to_id":          "Assigned to",
 	"acknowledged_by_user_id": "Acknowledged by",
 	"parent_id":               "Parent case",
 	"workaround_provided_on":  "Workaround Provided",
 	"fix_issued_on":           "Update Released",
+	"assignment_group_id":     "Assignment group",
+	"service_id":              "Service",
+	"service_offering_id":     "Service offering",
+	"configuration_item_id":   "Configuration item",
+	"contact_type":            "Channel",
+	"problem_id":              "Problem",
+	"parent_incident_id":      "Parent incident",
+	"change_request_id":       "Change request",
+	"caused_by_id":            "Caused by",
+	"resolution_code":         "Resolution code",
 }
 
 func caseActivityFieldChangeLabel(fieldName string) string {

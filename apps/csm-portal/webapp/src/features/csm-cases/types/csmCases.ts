@@ -341,6 +341,9 @@ export interface CaseAuditFieldChange {
   previousValue?: string;
   /** Absent/empty when the field was cleared. */
   newValue?: string;
+  /** Changes in the same save that drove this one, shown beneath it -- an incident's
+   * impact/urgency under the priority they moved (see `groupIncidentActivity`). */
+  details?: CaseAuditFieldChange[];
 }
 
 /** One Case Feedback survey submission for a case, shown in its activity feed. */
