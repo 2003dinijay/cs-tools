@@ -79,8 +79,12 @@ The server loads `.env` automatically on startup (silently ignored if absent). P
 | `REDIS_URL` | no | — | `rediss://:<key>@<host>:<port>` (TLS, Azure Managed Redis); wins over `REDIS_ADDR`. Turns on the user cache (see "User cache (Redis)" below). `Validate` requires a `redis`/`rediss` scheme and a host, and never echoes the URL |
 | `REDIS_ADDR` / `REDIS_PASSWORD` | no | — | Plain, non-TLS Redis for local runs. Either this or `REDIS_URL` makes `Config.HasRedis` true |
 | `USER_CACHE_TTL` | no | `10m` | Backstop lifetime of a cached user; an unparseable or non-positive value falls back to `10m` |
+| `PRODUCT_VULNERABILITY_META_CACHE_TTL` | no | `24h` | Backstop lifetime of the cached product/version options of `GET /products/vulnerabilities/meta`; deleted on a successful vulnerability sync; unparseable or non-positive falls back to `24h` |
 | `INCIDENT_DEFAULT_SERVICE_ID` | no | — | UUID of the service whose support group a new incident gets when no `assignmentGroupId` is sent and its own service has no support group (logged WARN each time). Unset / missing / groupless: such incidents are created unassigned (logged ERROR). A non-UUID refuses to start; checked at startup, log only. See "Incident assignment group on create" |
 | `CR_STRICT_VISIBILITY_FROM` | no | — | RFC 3339 instant **with a zone**: change requests created at or after it are visible to a customer only when designated to them; earlier ones are "legacy" and keep today's visibility. Unset/empty = no cutover, every change request is legacy (the safe default and the rollback; a WARN is logged at startup). An unparsable value refuses to start. Set once per environment at release and never move it — see "Customer visibility and the cutover" |
+| `MIGRATION_CASE_REPORT_HOLD_TAG` | no | `s_mig_hold` | Tag (ignoring case) for the weekly migration scan's "customer requested to hold" table |
+| `MIGRATION_CASE_REPORT_ACCOUNTS_TAG` | no | `s_acc` | Tag (ignoring case) for its "waiting on accounts team" table |
+| `MIGRATION_CASE_REPORT_TEAM_KEYS` | no | none | Team keys whose `group_email` the scan returns as recipients |
 
 \* `DB_USER`/`DB_PASSWORD`/`DB_NAME` are required when `DATA_SOURCE=postgres`
 and **optional** when `DATA_SOURCE=servicenow`, where entity reads and writes
@@ -1596,13 +1600,24 @@ gap ("with servicenow data source all are shown").
   `case.status_changed`'s sake) is now unconditional whenever `req.State` or
   `req.WorkState` is set, since the activity write needs the prior value
   regardless of whether Event Hub is configured at all.
-- **Deliberately out of scope**: `updateCaseFields`'s combinable "plain
-  field" bundle (Subject/Description/DeploymentID/DeployedProductID/fix-ETAs/
-  RelatedCaseID/WorkaroundProvided) does not write to `work_item_activity`
-  yet — up to nine fields in one call, several without a cheaply-available
-  "old" value, is a larger and more speculative addition than the six
-  branches above; left for a future change if it turns out to matter in
-  practice the same way assign/state did.
+- **Workaround and update released**: `updateCaseFields` logs
+  `workaround_provided_on` (set stores the new timestamp, recall stores the
+  prior timestamp as old and an empty new; a recall of an unset workaround
+  logs nothing). It reads the prior stamp via `GetCaseWorkaroundProvidedOn`
+  (`GetCaseByID` does not populate `WorkaroundProvidedOn` on this data
+  source) only when `WorkaroundProvided` is in the request; a failed read is
+  logged and never fails the update. `updateCaseMarkFixIssued` logs `fix_issued_on` as
+  "Update Released" only when `!alreadySet`. Timestamps are RFC 3339 UTC so
+  the feed renders them as date-times. Fix ETA values are deliberately not
+  logged: they are internal until shared with the customer, and the
+  customer portal can request field-change rows. Both paths resolve the
+  actor with `resolveActorOrM2M`, so a pure M2M caller is attributed to its
+  client id (the same value already stamped on `work_item.updated_by`)
+  instead of being dropped by the blank-email guard; such a row has no
+  matching `"user"` record, so the feed shows the client id and no display
+  name. The rest of the plain-field bundle (Subject/Description/
+  DeploymentID/DeployedProductID/fix ETAs/RelatedCaseID) writes no activity
+  entry.
 
 Every helper above runs **synchronously** (not detached/async the way
 `apps/csm-portal/backend`'s own `internal/handler/cases.go` `publishAsync`
@@ -2762,15 +2777,21 @@ already use — no route path, request, or response shape changed.
   labels straight from Postgres's own enum catalog
   (`pg_enum`/`ListSeverities`) rather than hardcoding them, so it can never
   drift from the migration that defines the type.
-  `SyncProductVulnerabilities` delegates to ServiceNow when configured
-  (via `NewProductVulnerabilityServiceWithSNSync`), falling back to a
-  `ServiceUnavailableError` when no ServiceNow integration is present:
-  Postgres cannot satisfy its full-replace semantics (delete anything absent
-  from the submitted set, upsert everything present) without a stable external
-  join key with a database-enforced uniqueness guarantee, and
-  `product_vulnerability` has no `UNIQUE` constraint on any column other than
-  its own generated `id`. When `db != nil`, all read queries are served from
-  Postgres regardless of `DATA_SOURCE`.
+  `SyncProductVulnerabilities` follows `DATA_SOURCE` (see
+  `newProductVulnerabilityService` in `internal/server`): `servicenow`
+  delegates everything to the ServiceNow service; `postgres` and
+  `postgres-servicenow-dual-write` write to Postgres only and never call
+  ServiceNow, even when a ServiceNow client exists for SLA/attachment reads.
+  The Postgres sync is a full replace in ONE transaction under an advisory
+  lock (the table has no `UNIQUE` index besides `id`): the item's `wso2Id` is
+  matched to `business_key`, matches are updated, absent keys inserted, and
+  every row whose key is not submitted (or has no key) is deleted. The service
+  rejects an empty list, an empty or duplicate `wso2Id`, over-length fields and
+  an unrecognised severity before touching the database. `scannerName` has no
+  column and is not stored. Because it is destructive, the sync route accepts
+  only callers whose client id is in `M2M_CLIENT_IDS` (403 for any other
+  caller, user tokens included; 401 when unauthenticated); an empty list
+  rejects everyone.
 - **Time cards**: like comments, the Postgres path has no inbound-auth
   layer to forward a caller's identity through, so `CreateTimeCard`/
   `UpdateTimeCard`/`DeleteTimeCard` resolve the caller's user id from
@@ -7424,6 +7445,28 @@ gap), so the note lands in ServiceNow only. `DATA_SOURCE=servicenow` uses the sa
 ServiceNow's services (`scanSNServices`: only a complete scan may conclude "not there"); the service
 list carries no group's active flag, so that set cannot leave out an inactive group.
 `GET /incidents/create-defaults` (internal only) reports the default service and its group.
+
+## Case Alerts group routes reference the assignment group (migration 0243)
+
+`paging_group_route` (0233) matched an incident's assignment group by its typed name only.
+0243 adds a nullable `group_id` (FK `"group"`, `ON DELETE SET NULL`), a unique partial index
+`(ladder, group_id)` and a backfill where exactly one `"group"` row has the route's name;
+`IF NOT EXISTS` throughout, re-runnable. `SaveRoute` with a `groupId` (Alert Settings picks it from
+`routeOptions.assignmentGroups`, the active support groups, `supportGroupSetSQL`) stores the
+group's own name and id, 400 when the id is not one of them. `ListRoutes`/`Runtime` read the
+group's current name through `group_id`, so a rename in ServiceNow keeps its route.
+`CaseAlertSettings.unmappedGroups` (SRE viewers only) lists the support groups no enabled SRE route
+covers, no team is named after and the running config does not route (an alias or a default group in
+the notifier's last report, `running.groups.SRE`; without a report only routes and team names count):
+csm-notification-service posts their incident cards to the shared SRE room. Deploy entity-service before the BFF and webapp that send `groupId` (strict decoding).
+
+**Who may see and change each family's Case Alerts settings** (`whoIsAsking`): a CSM or
+portal admin and the CS head (`cs_head` on any team): all three families; the CRE rota admin and
+the CRE head (`cre_head`): CRE; the SRE rota admin: SRE; the SME rota admin: SME. Seeing and changing
+go together, and another family's rooms, routes, values and running report are never sent. The saved
+values include each ladder's own switches (`enabled`, `channel` for CRE, SRE and SME;
+`safety.maxCallsPerLadder` 1-50, `safety.callWithoutVerifiedLeads`, `safety.callHeadsWithoutLowerTiers`
+for CRE and SRE), so they follow the same per-family rule.
 
 ## IT services (CMDB services)
 

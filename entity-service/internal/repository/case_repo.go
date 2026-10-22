@@ -676,6 +676,12 @@ type CaseRepository interface {
 	// directly through pgFallback instead, rather than paying for a full
 	// CaseRepository.GetCaseByID just for one column.
 	GetCaseEtaSharedOn(ctx context.Context, caseID string) (*time.Time, error)
+	// GetCaseWorkaroundProvidedOn returns work_item.workaround_provided_on
+	// for caseID -- nil (not an error) when no workaround is marked
+	// provided, or the case id doesn't exist. GetCaseByID does not populate
+	// CaseView.WorkaroundProvidedOn on this data source, so the activity
+	// entries for a workaround set/recall read the prior stamp here.
+	GetCaseWorkaroundProvidedOn(ctx context.Context, caseID string) (*time.Time, error)
 	// ProjectContactEmailsByRole returns the distinct project_contact.email
 	// addresses for projectID whose contact currently holds role (a
 	// project_role_enum label, e.g. "SECURITY_CONTACT" or "PORTAL_USER") via
@@ -3609,11 +3615,7 @@ func buildCaseSearchWhere(req domain.SearchCasesRequest, scope SearchScope) (str
 	// ServiceNow side restricts this to ten named SLA definitions; this
 	// matches any breached row until that list is mapped onto sla_policy.
 	if req.Parsed.HasBreachedSLA != nil {
-		if *req.Parsed.HasBreachedSLA {
-			where += " AND EXISTS (SELECT 1 FROM sla_live bs WHERE bs.work_item_id = wi.id AND bs.live_has_breached IS TRUE)"
-		} else {
-			where += " AND NOT EXISTS (SELECT 1 FROM sla_live bs WHERE bs.work_item_id = wi.id AND bs.live_has_breached IS TRUE)"
-		}
+		where += slaBreachedPredicate("wi.id", *req.Parsed.HasBreachedSLA)
 	}
 	if req.Parsed.StartCreatedDate != nil {
 		where += fmt.Sprintf(" AND wi.created_on >= $%d", argIdx)
@@ -3694,26 +3696,11 @@ func buildCaseSearchWhere(req domain.SearchCasesRequest, scope SearchScope) (str
 		argIdx++
 	}
 
-	// taskSLABusinessElapsedPercent: matches a case with at least one SLA row
-	// whose business_elapsed_percentage is within the bound(s). Both bounds
-	// apply to the SAME row (a range like 75..100 means one SLA in that range,
-	// not one row >= 75 and another <= 100), which is why this is a single
-	// EXISTS. Any SLA row counts, whatever its stage -- the contract of
-	// domain.TaskSLAFilter. The percentage is uncapped (long-overdue SLAs
-	// climb far past 100), and 0 is a real bound, hence the nil checks.
-	if f := req.Parsed.TaskSLAFilter; f != nil && (f.MinBusinessElapsedPercent != nil || f.MaxBusinessElapsedPercent != nil) {
-		slaWhere := "tsla.work_item_id = wi.id"
-		if f.MinBusinessElapsedPercent != nil {
-			slaWhere += fmt.Sprintf(" AND tsla.live_elapsed_percentage >= $%d::numeric", argIdx)
-			filterArgs = append(filterArgs, *f.MinBusinessElapsedPercent)
-			argIdx++
-		}
-		if f.MaxBusinessElapsedPercent != nil {
-			slaWhere += fmt.Sprintf(" AND tsla.live_elapsed_percentage <= $%d::numeric", argIdx)
-			filterArgs = append(filterArgs, *f.MaxBusinessElapsedPercent)
-			argIdx++
-		}
-		where += " AND EXISTS (SELECT 1 FROM sla_live tsla WHERE " + slaWhere + ")"
+	// taskSLABusinessElapsedPercent: see slaPercentPredicate.
+	{
+		var slaClause string
+		slaClause, filterArgs, argIdx = slaPercentPredicate("wi.id", req.Parsed.TaskSLAFilter, filterArgs, argIdx)
+		where += slaClause
 	}
 
 	// product: matched on the deployed product's own catalog name (prod is
@@ -4277,6 +4264,19 @@ func (r *caseRepo) GetCaseEtaSharedOn(ctx context.Context, caseID string) (*time
 		return nil, fmt.Errorf("get case eta shared on: %w", err)
 	}
 	return etaSharedOn, nil
+}
+
+// GetCaseWorkaroundProvidedOn implements CaseRepository.
+func (r *caseRepo) GetCaseWorkaroundProvidedOn(ctx context.Context, caseID string) (*time.Time, error) {
+	var providedOn *time.Time
+	err := r.db.QueryRow(ctx, `SELECT workaround_provided_on FROM work_item WHERE id = $1`, caseID).Scan(&providedOn)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get case workaround provided on: %w", err)
+	}
+	return providedOn, nil
 }
 
 // ProjectContactEmailsByRole implements CaseRepository.
@@ -4911,10 +4911,25 @@ func (r *caseRepo) SearchTags(ctx context.Context, searchQuery, _ string, limit 
 // badly: an "_id" suffix is natural in a column name but not in a label a
 // person reads ("Assigned To Id"), and English keeps an assignment's own
 // preposition lowercase ("Assigned to", not "Assigned To").
+//
+// SearchIncidentActivities labels through the same map, so the incident field names
+// (incidentFieldChanges, incident_service.go) are here too.
 var caseActivityFieldChangeLabelOverrides = map[string]string{
 	"assigned_to_id":          "Assigned to",
 	"acknowledged_by_user_id": "Acknowledged by",
 	"parent_id":               "Parent case",
+	"workaround_provided_on":  "Workaround Provided",
+	"fix_issued_on":           "Update Released",
+	"assignment_group_id":     "Assignment group",
+	"service_id":              "Service",
+	"service_offering_id":     "Service offering",
+	"configuration_item_id":   "Configuration item",
+	"contact_type":            "Channel",
+	"problem_id":              "Problem",
+	"parent_incident_id":      "Parent incident",
+	"change_request_id":       "Change request",
+	"caused_by_id":            "Caused by",
+	"resolution_code":         "Resolution code",
 }
 
 func caseActivityFieldChangeLabel(fieldName string) string {

@@ -119,6 +119,13 @@ type IncidentRepository interface {
 	// transaction: both are saved or neither is, so a retried request never saves one twice.
 	// nil or blank texts are skipped.
 	CreateIncidentNotes(ctx context.Context, incidentID string, workNotes, additionalComments *string, createdBy string) error
+	// RecordIncidentFieldChanges inserts one work_item_activity row per change, all in one
+	// statement, attributed to actorEmail -- the write half of SearchIncidentActivities'
+	// field_change branch, which nothing wrote on the Postgres data sources before (the same
+	// gap CaseRepository.RecordCaseFieldChangeActivity closed for cases). Values longer than
+	// the 255-character columns are cut. No changes is a no-op. Callers treat a failure as
+	// best-effort: the update it describes has already committed.
+	RecordIncidentFieldChanges(ctx context.Context, incidentID string, changes []IncidentFieldChange, actorEmail string) error
 	// CreateIncidentFromServiceNow inserts a new incident row (both work_item
 	// and "incident"), for DATA_SOURCE=postgres-servicenow-dual-write's SN-first
 	// incident creation (see incidentService.createIncidentSNFirst's own doc
@@ -435,11 +442,12 @@ func incidentWhereClause(f domain.SearchIncidentsFilters, priorities, states, se
 		add("inc.is_sla_met = $%d", *madeSla)
 	}
 	if slaViolated != nil {
-		if *slaViolated {
-			where += fmt.Sprintf(" AND EXISTS (SELECT 1 FROM sla_live sla WHERE sla.work_item_id = wi.id AND sla.live_has_breached = true)")
-		} else {
-			where += fmt.Sprintf(" AND NOT EXISTS (SELECT 1 FROM sla_live sla WHERE sla.work_item_id = wi.id AND sla.live_has_breached = true)")
-		}
+		where += slaBreachedPredicate("wi.id", *slaViolated)
+	}
+	{
+		var slaClause string
+		slaClause, args, argIdx = slaPercentPredicate("wi.id", f.ParsedTaskSLA, args, argIdx)
+		where += slaClause
 	}
 	if createdStartDate != nil {
 		add("wi.created_on >= $%d", *createdStartDate)
@@ -1358,6 +1366,38 @@ func (r *incidentRepo) CreateIncidentNotes(ctx context.Context, incidentID strin
 	})
 }
 
+// IncidentFieldChange is one field of an incident that an update changed, as it is written to
+// work_item_activity: Field is the field_name key (labelled by caseActivityFieldChangeLabel),
+// OldValue/NewValue the display values, "" when the field had or has none.
+type IncidentFieldChange struct {
+	Field    string
+	OldValue string
+	NewValue string
+}
+
+// RecordIncidentFieldChanges implements IncidentRepository.
+func (r *incidentRepo) RecordIncidentFieldChanges(ctx context.Context, incidentID string, changes []IncidentFieldChange, actorEmail string) error {
+	if len(changes) == 0 {
+		return nil
+	}
+	fields := make([]string, len(changes))
+	oldValues := make([]string, len(changes))
+	newValues := make([]string, len(changes))
+	for i, c := range changes {
+		fields[i], oldValues[i], newValues[i] = c.Field, c.OldValue, c.NewValue
+	}
+	_, err := r.db.Exec(ctx,
+		`INSERT INTO work_item_activity (id, created_on, created_by, work_item_id, field_name, old_value, new_value, user_email)
+		 SELECT gen_random_uuid(), NOW(), $1, $2::uuid, left(c.f, 255), left(c.o, 255), left(c.n, 255), $1
+		   FROM unnest($3::text[], $4::text[], $5::text[]) AS c(f, o, n)`,
+		actorEmail, incidentID, fields, oldValues, newValues,
+	)
+	if err != nil {
+		return fmt.Errorf("record incident field changes: %w", err)
+	}
+	return nil
+}
+
 // insertIncidentNotesTx inserts the non-blank work note and public comment on incidentID inside tx,
 // with createIncidentCommentQuery's own existence check: an incident that is not there is a
 // ValidationError, and rolls the whole transaction back.
@@ -1433,8 +1473,9 @@ func (r *incidentRepo) UpdateIncidentLifecycle(ctx context.Context, id string, u
 // Work notes ServiceNow's OOB "Cascade closure of Incident Tasks" writes on
 // each task it closes (incident, after insert/update, state changes to
 // Closed or Canceled; on when com.snc.incident.incident_task.closure is
-// "true", as it is on WSO2's instance). Discovery scripts 57-59 in
-// integrations/csm-flow-service/docs/servicenow-discovery have the evidence.
+// "true", as it is on WSO2's instance). Established by reading the
+// business rule on the live instance; the discovery scripts that did so
+// are kept out of this repository.
 const (
 	incidentTaskClosedOnCloseNote  = "Incident Task is Closed Incomplete based on closure of %s."
 	incidentTaskClosedOnCancelNote = "Incident Task is Closed Skipped based on cancelation of %s."

@@ -50,8 +50,17 @@ permission (see `apps/csm-portal/backend`'s own `CLAUDE.md`, "PATCH /projects/{i
 requires PermAdmin") — hiding the pencil icon for a `cs_engineer` just avoids offering an action that
 would 403 for them.
 
+**`AddUserDialog.tsx` only collects an email — there are no first/last name fields.** The backend
+(`apps/csm-portal/backend`'s own `CLAUDE.md`, "Creating a user") looks that email up in SCIM and fills
+`firstName`/`lastName`/phone from that record; a 400 from SCIM having no matching user (or a match with
+no name on file) surfaces in the form's error banner like any other create failure. This is a different
+mechanism from the token-sourced `cs_engineer` auto-provisioning on `GET /users/me` (same backend
+doc) — that path has the-caller's-own token to read from, this one doesn't (the admin is creating a
+row for someone else's email), so it has no choice but to ask SCIM.
+
 `AddUserDialog.tsx` has two independent role-shaped controls that must not be confused with each
-other. One narrower, required control: **"User type" (Internal/External)**. entity-service's `user_type` has no plain settable
+other. One narrower, required control: **"User type" (Internal/External)**, defaulting to **Internal**
+(`EMPTY_FORM.userType`). entity-service's `user_type` has no plain settable
 column — it's derived by a DB trigger from role membership (`recompute_user_type`, migration 0011) —
 so this selector works by sending exactly one of `roles: ["internal"]`/`["external"]` on submit, not a
 `type` field on the wire; `external` (not `customer`/`partner`/...) is the role every
@@ -455,7 +464,7 @@ Both lists have a checkbox column (for `canWrite` only), a selection bar (`BulkS
 - **After a run** the dialog is closed with `flushSync` before anything is refreshed (its per-record detail queries would
   otherwise all refetch), then each record is refreshed exactly as a single edit refreshes it:
   `refreshChangeRequestRecord` (detail, approvals, comments when a work note or comment was sent) and
-  `refreshIncidentRecord` (detail, tasks, comments and activity when a note was written, and again after the In
+  `refreshIncidentRecord` (detail, tasks, activity and comments after every update, and again after the In
   Progress / Resolved flows), both exported from the single-record PATCH hooks so the two paths cannot drift. Only the run's own ids leave the selection (`remove`).
 - **Focus and announcements**: the result banner takes focus when it appears (the button that started the run has gone
   with the bar, and focus makes a screen reader read the outcome); Clear selection puts focus on the page's select-all

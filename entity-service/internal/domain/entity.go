@@ -779,6 +779,9 @@ const (
 	// sync's, which share the same table but never carry this value. See
 	// internal/service/sla_policy_resolver.go.
 	SLAEngineActor = "sla-engine"
+	// ProductVulnerabilitySyncActor is created_by/updated_by for every
+	// product_vulnerability row the full-replace sync writes.
+	ProductVulnerabilitySyncActor = "product-vulnerability-sync"
 )
 
 // SalesforceEntityLinkedOpportunity is the Linked_Opportunity__c custom
@@ -1529,6 +1532,17 @@ type ProjectUpdateRequest struct {
 	// and tolerant of spaces (normalized the same way the three sub-state
 	// fields above already are).
 	ClosureState *string `json:"closureState,omitempty"`
+	// OnboardingStatus sets the project's onboarding status (Postgres data
+	// sources only; rejected on the ServiceNow data source). Accepts the labels
+	// reads return ("Not-Started", "In-Progress", "On-Hold", "Completed",
+	// "Cancelled", "Expired", "Not-Applicable"), ignoring case, hyphens,
+	// underscores and spaces.
+	OnboardingStatus *string `json:"onboardingStatus,omitempty"`
+	// OnboardingOwner sets the project's onboarding owner to this user id
+	// (Postgres data sources only; rejected on the ServiceNow data source).
+	// Must be an active internal user. Clearing the owner is not supported:
+	// null and omitted both leave it unchanged.
+	OnboardingOwner *string `json:"onboardingOwner,omitempty"`
 }
 
 // ProjectUpdateResponse is the result of a project update operation
@@ -1550,6 +1564,10 @@ type ProjectUpdateResult struct {
 	ComplianceViolationClosureState *string         `json:"complianceViolationClosureState"`
 	SuspensionProcessState          json.RawMessage `json:"suspensionProcessState"`
 	VerificationEnabled             *bool           `json:"verificationEnabled,omitempty"`
+	// OnboardingStatus and OnboardingOwner are populated on Postgres data
+	// sources only.
+	OnboardingStatus *string    `json:"onboardingStatus,omitempty"`
+	OnboardingOwner  *PersonRef `json:"onboardingOwner,omitempty"`
 }
 
 // ProjectConsumptionStatus represents the product consumption state and keys for a project.
@@ -2346,6 +2364,31 @@ type DeployedProductView struct {
 	Updates   []ProductUpdateEntry `json:"updates"`
 	CreatedOn time.Time            `json:"createdOn"`
 	UpdatedOn time.Time            `json:"updatedOn"`
+	// DeploymentType is the type of the deployment this deployed product belongs
+	// to, nil when the deployment has none or the data source does not say. It
+	// is not a field of its own on the wire: MarshalJSON nests it in "deployment".
+	DeploymentType *DeploymentType `json:"-"`
+}
+
+// MarshalJSON writes the deployment as {id, name, type}: EntityRef alone has no
+// room for the deployment type, and widening that shared type would touch every
+// endpoint that uses it. type is null when DeploymentType is nil.
+func (v DeployedProductView) MarshalJSON() ([]byte, error) {
+	type plain DeployedProductView // no MarshalJSON, so this does not recurse
+	return json.Marshal(struct {
+		plain
+		// Deployment shadows plain.Deployment (same JSON name, shallower depth).
+		Deployment struct {
+			EntityRef
+			Type *DeploymentType `json:"type"`
+		} `json:"deployment"`
+	}{
+		plain: plain(v),
+		Deployment: struct {
+			EntityRef
+			Type *DeploymentType `json:"type"`
+		}{EntityRef: v.Deployment, Type: v.DeploymentType},
+	})
 }
 
 // ProductRef is a reference to a product, carrying the short key ServiceNow
@@ -5644,8 +5687,9 @@ type SearchProductVulnerabilitiesResponse struct {
 }
 
 // ProductVulnerabilitySyncItem is one entry submitted to a full-replace sync of product
-// vulnerabilities. WSO2ID is the join key the downstream data source uses to match this item
-// against an existing record.
+// vulnerabilities. WSO2ID is the join key used to match this item against an existing
+// record (the business_key column). ScannerName is accepted for wire compatibility but has
+// no column in product_vulnerability and is not stored by the Postgres data source.
 type ProductVulnerabilitySyncItem struct {
 	WSO2ID                 string `json:"wso2Id"`
 	ComponentName          string `json:"componentName"`
@@ -6442,8 +6486,22 @@ type SearchIncidentsFilters struct {
 	//     column, so the keys (1 New, 2 In Progress, 3 On Hold, 6 Resolved,
 	//     7 Closed, 8 Canceled) are applied to `state`, ANDed with any "state"
 	//     filter; a key with no state is a 400.
+	//   - "slaBreached" (op eq): a single boolean value; identical in meaning
+	//     to "slaViolated" (restricts to incidents with, or without, a
+	//     currently-breached SLA record) under the name every work-item type
+	//     shares. Supplying both with different values is a 400.
+	//   - "taskSLABusinessElapsedPercent" (op gte/lte): a non-negative
+	//     integer; restricts to incidents having an SLA record whose
+	//     business-elapsed percentage is within the bound(s) (both bounds
+	//     apply to the same SLA record). Uncapped above. Not supported by the
+	//     ServiceNow-backed incident service: rejected with a 400 there, and
+	//     therefore also when SLA_DATA_SOURCE routes the search to it.
 	// See service.ParseIncidentFieldFilters.
 	Filters []IncidentFieldFilter `json:"filters,omitempty"`
+	// ParsedTaskSLA is populated by the service layer from the
+	// "taskSLABusinessElapsedPercent" filter before the request reaches the
+	// Postgres repository; it carries no wire representation of its own.
+	ParsedTaskSLA *TaskSLAFilter `json:"-"`
 
 	// AssignmentGroupIDs / Categories / UpdatedStart / UpdatedEnd are the parsed
 	// "assignmentGroupId", "category" and "updatedOn" filters, set by the
@@ -7832,6 +7890,19 @@ type GlobalSearchResponse struct {
 // VulnerabilityMetaResponse is the response for GET /products/vulnerabilities/meta.
 type VulnerabilityMetaResponse struct {
 	Severities []ChoiceListItem `json:"severities"`
+	// Products lists every distinct product name found in the vulnerability
+	// data, each with its distinct versions, both sorted ascending. The values
+	// are the exact strings the search filters match on, so any option is
+	// guaranteed to be selectable. Always a JSON array, empty when the backing
+	// data source has no such query.
+	Products []VulnerabilityProductOption `json:"products"`
+}
+
+// VulnerabilityProductOption is one product name with the distinct versions
+// the vulnerability data carries for it.
+type VulnerabilityProductOption struct {
+	Name     string   `json:"name"`
+	Versions []string `json:"versions"`
 }
 
 // --- case feedback (ServiceNow data source only) ---

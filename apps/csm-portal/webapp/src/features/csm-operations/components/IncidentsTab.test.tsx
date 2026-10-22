@@ -423,8 +423,8 @@ describe("IncidentsTab — bulk runs follow the incident as it is now", { timeou
       expect(keys).toContain(JSON.stringify(["csm-incident-tasks", id]));
     }
     expect(keys).toContain(JSON.stringify(["incidents"]));
-    // No note was written, so the comments and activity feed are left alone.
-    expect(keys).not.toContain(JSON.stringify(["incident-comments", "inc-1"]));
+    // Every update writes a field-change entry, so the activity feed is refreshed too.
+    expect(keys).toContain(JSON.stringify(["incident-activities", "inc-1"]));
     // The outcome takes focus: the button that started the run has gone.
     expect(screen.getByText("Assigned to you 2 of 2 incidents.").closest("[role=status]")).toHaveFocus();
   });
