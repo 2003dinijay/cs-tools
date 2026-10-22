@@ -246,3 +246,57 @@ func TestIncidentService_SearchIncidentActivities_HasMore(t *testing.T) {
 		})
 	}
 }
+
+// TestHandOffIncidentToSpecialist_RecordsFieldChangeActivity: a handoff's group move and cleared
+// assignee land in the activity feed, attributed to the caller, after the handoff has committed.
+func TestHandOffIncidentToSpecialist_RecordsFieldChangeActivity(t *testing.T) {
+	id := hoIncidentID
+	before := domain.IncidentView{
+		ID:              &id,
+		AssignedTo:      &domain.EntityRef{ID: "33333333-3333-4333-8333-333333333333", Name: "Jane Doe"},
+		AssignmentGroup: &domain.EntityRef{ID: "44444444-4444-4444-8444-444444444444", Name: "Choreo Operations"},
+	}
+	after := domain.IncidentView{ID: &id, AssignmentGroup: &domain.EntityRef{ID: hoChoreoSpecial, Name: "Choreo Special Ops"}}
+	reads := 0
+	repo := &stubIncidentRepo{
+		getIncidentByID: func(context.Context, string) (domain.IncidentView, error) {
+			reads++
+			if reads == 1 {
+				return before, nil
+			}
+			return after, nil
+		},
+		applySpecialistHandoff: func(_ context.Context, _, _ string, plan func(repository.SpecialistHandoffSnapshot) (repository.SpecialistHandoffPlan, error)) (repository.SpecialistHandoffWritten, error) {
+			snap := hoSnapshot(hoChoreoService, "44444444-4444-4444-8444-444444444444", "IN_PROGRESS")
+			if _, err := plan(snap); err != nil {
+				return repository.SpecialistHandoffWritten{}, err
+			}
+			return repository.SpecialistHandoffWritten{Before: snap, GroupName: "Choreo Special Ops"}, nil
+		},
+		createIncidentComment: func(context.Context, string, domain.CommentType, string, string) (domain.CaseComment, error) {
+			return domain.CaseComment{}, nil
+		},
+	}
+	svc := WithSpecialistHandoffConfig(NewIncidentService(repo, nil), hoConfig(t))
+	noIssue := false
+	_, err := svc.HandOffIncidentToSpecialist(contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com")),
+		domain.HandOffIncidentToSpecialistRequest{IncidentID: hoIncidentID, ReasonCode: domain.IncidentSpecialistHandoffReasonNoRunbook,
+			EscalationTeam: hoTeam("choreo-special-ops"), CreateGithubIssue: &noIssue})
+	if err != nil {
+		t.Fatalf("handoff: %v", err)
+	}
+	if len(repo.recordedChanges) != 1 {
+		t.Fatalf("RecordIncidentFieldChanges calls = %d, want 1", len(repo.recordedChanges))
+	}
+	rec := repo.recordedChanges[0]
+	if rec.incidentID != hoIncidentID || rec.actorEmail != "jane.doe@example.com" {
+		t.Errorf("recorded for %q by %q", rec.incidentID, rec.actorEmail)
+	}
+	want := []repository.IncidentFieldChange{
+		{Field: "assigned_to_id", OldValue: "Jane Doe", NewValue: ""},
+		{Field: "assignment_group_id", OldValue: "Choreo Operations", NewValue: "Choreo Special Ops"},
+	}
+	if !reflect.DeepEqual(rec.changes, want) {
+		t.Errorf("changes = %+v, want %+v", rec.changes, want)
+	}
+}

@@ -31,17 +31,50 @@ import (
 // when the incident could not be read before the change (nothing to compare against) or there is
 // no actor to attribute it to.
 func (s *incidentService) recordIncidentFieldChanges(ctx context.Context, req domain.UpdateIncidentRequest, before, after domain.IncidentView, actorEmail string) {
-	if before.ID == nil || actorEmail == "" {
+	if before.ID == nil {
 		return
 	}
-	changes := incidentFieldChanges(req, before, after)
-	if len(changes) == 0 {
+	s.writeIncidentFieldChanges(ctx, req.ID, incidentFieldChanges(req, before, after), actorEmail)
+}
+
+// recordHandoffFieldChanges writes the activity-feed entries for a specialist handoff that has
+// already committed: the assignment group it moved and the assignee it cleared. Best-effort and
+// skipped without a baseline, as recordIncidentFieldChanges.
+func (s *incidentService) recordHandoffFieldChanges(ctx context.Context, incidentID string, before, after domain.IncidentView, actorEmail string) {
+	if before.ID == nil {
 		return
 	}
-	if err := s.repo.RecordIncidentFieldChanges(ctx, req.ID, changes, actorEmail); err != nil {
-		slog.ErrorContext(ctx, "update incident: record field change activity failed",
-			"incidentId", req.ID, "fields", len(changes), "error", err)
+	s.writeIncidentFieldChanges(ctx, incidentID, handoffFieldChanges(before, after), actorEmail)
+}
+
+// writeIncidentFieldChanges records changes, attributed to actorEmail; nothing to record, or no
+// actor to attribute it to, writes nothing. A failure is logged, never returned.
+func (s *incidentService) writeIncidentFieldChanges(ctx context.Context, incidentID string, changes []repository.IncidentFieldChange, actorEmail string) {
+	if len(changes) == 0 || actorEmail == "" {
+		return
 	}
+	if err := s.repo.RecordIncidentFieldChanges(ctx, incidentID, changes, actorEmail); err != nil {
+		slog.ErrorContext(ctx, "incident: record field change activity failed",
+			"incidentId", incidentID, "fields", len(changes), "error", err)
+	}
+}
+
+// handoffFieldChanges lists what a specialist handoff changed, in the feed's field order: it
+// clears the assignee and moves the incident to the specialist group (ApplySpecialistHandoff).
+func handoffFieldChanges(before, after domain.IncidentView) []repository.IncidentFieldChange {
+	var out []repository.IncidentFieldChange
+	for _, f := range []struct {
+		field string
+		b, a  *domain.EntityRef
+	}{
+		{"assigned_to_id", before.AssignedTo, after.AssignedTo},
+		{"assignment_group_id", before.AssignmentGroup, after.AssignmentGroup},
+	} {
+		if incidentRefID(f.b) != incidentRefID(f.a) {
+			out = append(out, repository.IncidentFieldChange{Field: f.field, OldValue: incidentRefLabel(f.b), NewValue: incidentRefLabel(f.a)})
+		}
+	}
+	return out
 }
 
 // incidentFieldChanges lists the fields an update changed, comparing the incident before and after
