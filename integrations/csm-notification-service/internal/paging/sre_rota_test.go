@@ -143,8 +143,10 @@ func TestResolveSRE_NoRotaCodesKeepsTheOldBehaviour(t *testing.T) {
 	if got := resolveSRE(t, r, Level0, "Atlas"); len(got) != 1 || got[0] != "i-l1@example.com" {
 		t.Errorf("team-less L1 = %v; with no rotas the IaaS zone sorts first, as it always did", got)
 	}
-	if got := resolveSRE(t, r, Level2, "Apollo"); len(got) != 1 || got[0] != "i-l3@example.com" {
-		t.Errorf("Apollo L3 = %v; with no rotas any SRE window's L3 answers", got)
+	// An SRE team's incident still reaches only its own team, rota codes or
+	// not: the IaaS L3 is never Apollo's.
+	if got := resolveSRE(t, r, Level2, "Apollo"); strings.Contains(strings.Join(got, ","), "i-l3") {
+		t.Errorf("Apollo L3 = %v; another team's L3 must not answer an Apollo incident", got)
 	}
 	if rota, _ := r.SRERota(context.Background(), RoutingContext{AssignedCRETeam: "Apollo"}); rota != "" {
 		t.Errorf("SRERota = %q; want empty with no rotas", rota)

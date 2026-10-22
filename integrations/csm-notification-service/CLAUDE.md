@@ -469,12 +469,24 @@ instant: a ladder reported at 13:25 opens L2 at 13:30, inside TZ2, and asked
 at 13:25 it called TZ1's L2 after they had gone home, or nobody when TZ1 had
 no holder for the tier. `BuildPlan` sets `RoutingContext.At` to the rung's
 opening time for the SRE ladder only; the CRE ladder keeps the report instant,
-its rungs being fixed by the shift the incident arrived in. Picked in this order: the
-incident's own SRE team; then the zone whose L1 block is live -- weekdays
+its rungs being fixed by the shift the incident arrived in. **An SRE team's
+incident reaches only its own team** (`tierPicks`): by day another team's
+holder never answers, so an Apollo L1 on leave or off the rota leaves the L1
+rung empty and the ladder goes on to Apollo's L2 (it used to borrow Artemis's
+L1). The exception is the shared night crew, `sharedCrewZone` (TZ3, 21:00-06:00
+IST, weekends included), whose holders answer either SaaS team. **When nobody
+holds L1, L2 or L3, the L3 rung calls the team lead** (one of them), at the L3
+slot; an incident with no SRE team of its own (a default group, a CRE P0 with
+no SRE team) calls one lead of every team on its rota instead (both SaaS
+teams). A missing tier with somebody on another one is just an empty rung. An
+incident with no SRE team of its own still takes whoever holds the tier.
+Picked in this order: on-leave holders only when nobody else in the team holds
+the tier; then the zone whose L1 block is live -- weekdays
 12:00-15:00 IST the TZ1 and TZ2 escalation windows are both live, and the SRE
 team confirmed only one person is called; then `sre.teams.abts` order; then
 email. The rota has no L4 tier, so L4 is the lead of the answering team -- the
-incident's own, or for a CRE P0 the team of whoever took L1. An assumption.
+incident's own, or for a CRE P0 the team of whoever took L1 -- and it calls
+nobody when the leads were already called on the L3 rung. An assumption.
 
 **"Default" group** (`sre.teams.defaultGroups`, opt-in): an incident whose
 assignment group is listed (the alert flow's "Default") is an SRE incident

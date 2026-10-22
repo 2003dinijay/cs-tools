@@ -49,7 +49,7 @@ func TestDefaultGroup_ClimbsTheSRELadderFromWhoeverIsOnDuty(t *testing.T) {
 	}{
 		{Level0, "a-l1@example.com"}, // both teams hold L1: apollo first in sre.teams.abts
 		{Level1, "a-l2@example.com"},
-		{Level2, "r-l3@example.com"}, // only artemis has an L3 today
+		{Level2, "a-l3@example.com"}, // both teams hold L3: apollo first again
 	} {
 		got := resolveSRE(t, r, c.level, "Default")
 		if len(got) != 1 || got[0] != c.want {
@@ -128,7 +128,7 @@ func TestUnansweredChat_PostsToTheTeamsOwnSpace(t *testing.T) {
 	if u.Audience != "Apollo SRE" || u.Team != "Apollo" || u.IncidentRef != "INC0099001" {
 		t.Errorf("closing message = %+v", u)
 	}
-	if got := strings.Join(u.Called, ", "); got != "L1 a-l1, L2 a-l2, L3 r-l3" {
+	if got := strings.Join(u.Called, ", "); got != "L1 a-l1, L2 a-l2, L3 a-l3" {
 		t.Errorf("called = %q; want the three rungs in order", got)
 	}
 	if u.ThreadKey != "incident-"+testIncidentID {
