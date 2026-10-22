@@ -32,7 +32,9 @@ import (
 // queueIdentity so the two paths cannot drift.
 const setViewerProjectIDsSQL = `SELECT set_config('app.viewer_project_ids', COALESCE((
 	SELECT array_agg(pc.project_id)::text FROM project_contact pc
-	WHERE LOWER(pc.email) = LOWER(NULLIF($1, '')) AND pc.state = 'REGISTERED'
+	JOIN project p ON p.id = pc.project_id AND p.is_active IS DISTINCT FROM FALSE
+	LEFT JOIN account a ON a.id = p.account_id
+	WHERE LOWER(pc.email) = LOWER(NULLIF($1, '')) AND pc.state = 'REGISTERED' AND a.deleted_on IS NULL
 ), '{}'), true)`
 
 // setCallerIdentity sets the two session-local GUCs a caller-scoped
