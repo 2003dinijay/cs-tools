@@ -17,6 +17,7 @@
 import {
   useMutation,
   useQueryClient,
+  type QueryClient,
   type UseMutationResult,
 } from "@tanstack/react-query";
 import { ApiQueryKeys } from "@constants/apiConstants";
@@ -62,28 +63,28 @@ export function usePatchIncident(): UseMutationResult<
       ),
     onSuccess: (_data, variables) => {
       void queryClient.invalidateQueries({
-        queryKey: [ApiQueryKeys.INCIDENT_DETAILS, variables.id],
-      });
-      void queryClient.invalidateQueries({
         queryKey: [ApiQueryKeys.INCIDENTS],
       });
-      void queryClient.invalidateQueries({
-        queryKey: [ApiQueryKeys.CSM_INCIDENT_TASKS, variables.id],
-      });
-      // The update writes a field-change entry to the activity feed.
-      void queryClient.invalidateQueries({
-        queryKey: [ApiQueryKeys.INCIDENT_ACTIVITIES, variables.id],
-      });
-      if (variables.patch.state && STATES_WITH_FLOWS.has(variables.patch.state)) {
-        setTimeout(() => {
-          void queryClient.invalidateQueries({
-            queryKey: [ApiQueryKeys.INCIDENT_DETAILS, variables.id],
-          });
-          void queryClient.invalidateQueries({
-            queryKey: [ApiQueryKeys.CSM_INCIDENT_TASKS, variables.id],
-          });
-        }, INCIDENT_FLOW_SETTLE_MS);
-      }
+      refreshIncidentRecord(queryClient, variables.id, variables.patch);
     },
   });
+}
+
+/**
+ * What an incident's PATCH makes stale, beside the list: its detail and its
+ * tasks (a move to Closed or Cancelled closes them), and once more after the
+ * background flows of In Progress / Resolved have had time to run. Shared by
+ * the single-record edit and the list's bulk edit, so both refresh the same.
+ */
+export function refreshIncidentRecord(queryClient: QueryClient, id: string, patch: BeUpdateIncidentPayload): void {
+  void queryClient.invalidateQueries({ queryKey: [ApiQueryKeys.INCIDENT_DETAILS, id] });
+  void queryClient.invalidateQueries({ queryKey: [ApiQueryKeys.CSM_INCIDENT_TASKS, id] });
+  // The update writes a field-change entry to the activity feed.
+  void queryClient.invalidateQueries({ queryKey: [ApiQueryKeys.INCIDENT_ACTIVITIES, id] });
+  if (patch.state && STATES_WITH_FLOWS.has(patch.state)) {
+    setTimeout(() => {
+      void queryClient.invalidateQueries({ queryKey: [ApiQueryKeys.INCIDENT_DETAILS, id] });
+      void queryClient.invalidateQueries({ queryKey: [ApiQueryKeys.CSM_INCIDENT_TASKS, id] });
+    }, INCIDENT_FLOW_SETTLE_MS);
+  }
 }

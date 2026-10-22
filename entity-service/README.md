@@ -417,6 +417,8 @@ group marked "together" must be all set or all unset.
 | `REQUEST_TIMEOUT` | No | `60s` | Per-request context deadline. Must be > 0. | `60s` |
 | `UPSTREAM_CLIENT_TIMEOUT` | No | `60s` | Timeout of the HTTP client used for upstream calls. Must be > 0. | `60s` |
 | `AVAILABILITY_TIMEZONE` | No | `Asia/Colombo` | IANA zone in which availability sweeps resolve period boundaries. | `UTC` |
+| `WORKLOG_REPORT_TEAM_TYPES` | No | `cre-abt,cre` | `team.type` values the CS Worklogs reports cover. |
+| `WORKLOG_REPORT_EXCLUDED_TEAM_KEYS` | No | empty | `team.key` values dropped from that scope — no section, no members in the totals, no lead on the derived audience. |
 
 ### Database
 
@@ -509,6 +511,9 @@ synchronous with a bounded timeout, and failures are recorded in `event_publish_
 | `OUTAGE_NOTICE_POLL_INTERVAL` | No | `60s` | Fallback poll of the outage notice drainer. | `60s` |
 | `OUTAGE_NOTIFICATION_RECIPIENTS` | No | none | Comma-separated recipients of the internal-stakeholder outage notification. Empty disables that email. | `<recipient>` |
 | `OUTAGE_COMMUNICATION_RECIPIENTS` | No | none | Comma-separated recipients of the outage communication. Empty disables that email. | `<recipient>` |
+| `MIGRATION_CASE_REPORT_HOLD_TAG` | No | `s_mig_hold` | Tag name (matched ignoring case) that places a long-running migration in the weekly scan's "customer requested to hold" table (`GET /reports/migration-cases`). | `s_mig_hold` |
+| `MIGRATION_CASE_REPORT_ACCOUNTS_TAG` | No | `s_acc` | Tag name (matched ignoring case) for the scan's "waiting on accounts team" table. | `s_acc` |
+| `MIGRATION_CASE_REPORT_TEAM_KEYS` | No | none | Comma-separated team keys whose mail groups (`team.group_email`) the scan returns as its `recipients`. Empty = the scan derives no recipients and the scheduled task must configure its own. | `atlas,vega` |
 | `CLOUD_STATUS_SERVICE_IDS` | No | none | Comma-separated service UUIDs whose outages feed the public cloud status data. Empty makes the sweep a no-op. | `00000000-0000-0000-0000-000000000000` |
 | `CLOUD_STATUS_DRAINER_ENABLED` | No | `false` | Exact `true` starts the cloud status drainer (it also rewrites cloud monitor status). | `true` |
 | `CLOUD_STATUS_POLL_INTERVAL` | No | `10s` | Poll interval of that drainer. | `10s` |

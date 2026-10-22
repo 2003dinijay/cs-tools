@@ -234,8 +234,18 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		githubSync service.GithubSyncService
 	)
 	var scheduledTaskRunHandler *handler.ScheduledTaskRunHandler
+	var worklogReportHandler *handler.WorklogReportHandler
 	if db != nil {
 		scheduledTaskRunHandler = handler.NewScheduledTaskRunHandler(service.NewScheduledTaskRunService(repository.NewScheduledTaskRunRepository(db)))
+		// Which teams the CS Worklogs reports cover is deployment
+		// configuration, not a constant: the default is the CRE
+		// delivery teams, which is what the delivered mails show, but
+		// type 'cre' also catches approval and review teams nobody
+		// wants in a report, and teams come and go.
+		worklogReportHandler = handler.NewWorklogReportHandler(
+			service.NewWorklogReportService(
+				repository.NewWorklogReportRepository(repository.NewScoped(db)),
+				cfg.WorklogReportTeamTypes, cfg.WorklogReportExcludedTeamKeys))
 		if cfg.HasGithubIntegration() {
 			githubLabels, labelErr := service.NewGithubLabels(service.GithubLabelOverrides{
 				TypeIncident:       cfg.GithubLabelTypeIncident,
@@ -321,6 +331,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	var pagingChainHandler *handler.PagingChainHandler
 	var caseAlertSettingsHandler *handler.CaseAlertSettingsHandler
 	var runbookHandler *handler.RunbookHandler
+	var migrationCaseReportHandler *handler.MigrationCaseReportHandler
 	// runbookRepo stays a nil interface without a pool, so no incident service gets a catalog.
 	var runbookRepo repository.RunbookRepository
 
@@ -1401,6 +1412,14 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// (what the call-escalation ladders start from) and takes work notes, with no ServiceNow behind it.
 		activeIncidentSvc = service.NewIncidentServiceWithPublisher(incidentRepo, userRepo, incidentEventPublisher)
 	}
+	// SLA_DATA_SOURCE=servicenow: SLA-filtered incident search/aggregate is
+	// answered by a read-only ServiceNow-backed incident service instead of the
+	// Postgres sla_live query, the same routing the case service gets via
+	// snSLASearchDelegate. Not DataSourceServiceNow, where the whole incident
+	// service is already ServiceNow-backed.
+	if cfg.SLADataSource == config.SLADataSourceServiceNow && cfg.DataSource != config.DataSourceServiceNow {
+		activeIncidentSvc = service.WithSLASearchDelegate(activeIncidentSvc, service.NewServiceNowIncidentMirrorService(serviceNowIntegrationServiceClient))
+	}
 	// Which Special Ops team a handoff goes to, and which GitHub repository
 	// its internal issue goes to, is configuration. A value that does not
 	// parse would silently offer no handoff anywhere; refuse to start instead.
@@ -1438,6 +1457,17 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// Runbooks: the alert-name to runbook catalog, matched against every new incident's subject.
 		runbookRepo = repository.NewRunbookRepository(db)
 		runbookHandler = handler.NewRunbookHandler(service.NewRunbookService(runbookRepo))
+		// Weekly migration case scan: the long-running migration engagements,
+		// bucketed by the tags the CS team keeps on them, for the scheduled
+		// task that mails the scan to the teams' mail groups.
+		migrationCaseReportHandler = handler.NewMigrationCaseReportHandler(
+			service.NewMigrationCaseReportService(
+				repository.NewMigrationCaseReportRepository(repository.NewScoped(db)),
+				service.MigrationCaseReportConfig{
+					HoldTag:           cfg.MigrationCaseReportHoldTag,
+					AccountsTag:       cfg.MigrationCaseReportAccountsTag,
+					RecipientTeamKeys: cfg.MigrationCaseReportTeamKeys,
+				}))
 		caseAlertSettingsHandler = handler.NewCaseAlertSettingsHandler(
 			service.NewCaseAlertSettingsService(repository.NewCaseAlertSettingsRepository(db), repository.NewPagingChainRepository(db), accessSvc,
 				service.CaseAlertSettingsConfig{
@@ -1814,6 +1844,12 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("POST /github/service-requests", githubServiceRequestHandler.Create)
 	}
 
+	if worklogReportHandler != nil {
+		// internalOnly, not merely authenticated. The report names every
+		// engineer, what they worked on and how long it took; a customer
+		// token must never reach it.
+		mux.HandleFunc("GET /reports/worklogs", internalOnly(accessSvc, worklogReportHandler.GetWorklogReport))
+	}
 	if scheduledTaskRunHandler != nil {
 		mux.HandleFunc("POST /scheduled-tasks/attempts", scheduledTaskRunHandler.AttemptScheduledTaskRun)
 		mux.HandleFunc("PATCH /scheduled-tasks/attempts/{id}", scheduledTaskRunHandler.UpdateScheduledTaskRunAttempt)
@@ -1850,6 +1886,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("DELETE /team-schedule/paging-contacts/{userId}", pagingChainHandler.DeletePagingPhone)
 		mux.HandleFunc("POST /team-schedule/paging-contacts/{userId}/test", pagingChainHandler.RequestTestCall)
 		mux.HandleFunc("PUT /team-schedule/paging-contacts/{userId}/test-result", pagingChainHandler.RecordTestResult)
+	}
+	if migrationCaseReportHandler != nil {
+		// internalOnly: the scan names accounts, their owners and who is
+		// assigned to each migration; a customer token must never reach it.
+		mux.HandleFunc("GET /reports/migration-cases", internalOnly(accessSvc, migrationCaseReportHandler.GetMigrationCaseReport))
 	}
 	if runbookHandler != nil {
 		// Runbooks (Operations > Runbooks): internal callers only.

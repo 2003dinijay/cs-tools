@@ -520,6 +520,15 @@ type CaseRepository interface {
 	// CreateCaseAttachment path uses, and sits within the create call's latency
 	// of the moment ServiceNow accepted the file.
 	CreateCaseAttachmentFromServiceNow(ctx context.Context, req domain.CreateAttachmentRequest, id string, sizeBytes int, uploadedBy string) (domain.Attachment, error)
+	// RecordChangeRequestAttachmentFromServiceNow records the metadata of an
+	// attachment ServiceNow has just accepted for a change request, in
+	// work_item_attachment -- the table SearchWorkItemAttachments lists a change
+	// request's attachments from, which the sync otherwise fills from ServiceNow
+	// later. id is ServiceNow's own sys_id as a UUID, the id the sync writes the
+	// same row under, so ON CONFLICT DO NOTHING makes that later copy (or a
+	// retry) a no-op. case_attachment cannot hold it: its writes are limited to
+	// case-like work items. Returns the stored row's created_on.
+	RecordChangeRequestAttachmentFromServiceNow(ctx context.Context, req domain.CreateAttachmentRequest, id string, sizeBytes int, createdByEmail string) (time.Time, error)
 	// SearchCaseAttachments returns a paginated slice of attachments for the given
 	// case, most recently created first, together with the total matching count.
 	SearchCaseAttachments(ctx context.Context, caseID string, pagination domain.Pagination) ([]domain.Attachment, int, error)
@@ -2923,6 +2932,36 @@ func (r *caseRepo) CreateCaseAttachment(ctx context.Context, req domain.CreateAt
 	return a, nil
 }
 
+// RecordChangeRequestAttachmentFromServiceNow implements CaseRepository.
+//
+// crvis: guarded by r.vis.requireVisibleChangeRequest below
+func (r *caseRepo) RecordChangeRequestAttachmentFromServiceNow(ctx context.Context, req domain.CreateAttachmentRequest, id string, sizeBytes int, createdByEmail string) (time.Time, error) {
+	if err := r.vis.requireVisibleChangeRequest(ctx, r.db, req.ReferenceID); err != nil {
+		return time.Time{}, err
+	}
+	const insert = `
+		INSERT INTO work_item_attachment (id, created_on, updated_on, created_by, updated_by, name, content_type, work_item_id, size_bytes, state)
+		SELECT $1::uuid, NOW(), NOW(), $2::text, $2::text, $3::text, $4::text, $5::uuid, $6::bigint, 'AVAILABLE'
+		WHERE EXISTS (SELECT 1 FROM work_item w WHERE w.id = $5::uuid AND w.type = 'CHANGE_REQUEST'::work_item_type_enum)
+		ON CONFLICT (id) DO NOTHING
+		RETURNING created_on`
+	var createdOn time.Time
+	err := r.db.QueryRow(ctx, insert, id, createdByEmail, req.Name, req.Type, req.ReferenceID, sizeBytes).Scan(&createdOn)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Either the id is already recorded (the sync, or a retry, got there
+		// first) or the work item is not a change request.
+		const existing = `SELECT created_on FROM work_item_attachment WHERE id = $1::uuid AND work_item_id = $2::uuid`
+		err = r.db.QueryRow(ctx, existing, id, req.ReferenceID).Scan(&createdOn)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return time.Time{}, &apierror.ValidationError{Msg: "one or more referenced IDs do not exist"}
+		}
+	}
+	if err != nil {
+		return time.Time{}, fmt.Errorf("record change request attachment from servicenow: %w", err)
+	}
+	return createdOn.UTC(), nil
+}
+
 // CreateCaseAttachmentFromServiceNow implements CaseRepository. See the
 // interface doc comment for the identity/storage_key/status conventions this
 // follows -- id is supplied by the caller (ServiceNow's own attachment
@@ -3493,6 +3532,19 @@ func buildCaseSearchWhere(req domain.SearchCasesRequest, scope SearchScope) (str
 		argIdx++
 	}
 
+	// accountId notIn: a case with no account satisfies it (it is in none of
+	// them), the same NULL reading projectId notIn has. Top level only:
+	// rejectUnsupportedOrGroupFields refuses it inside an anyOf branch.
+	if len(req.Parsed.ExcludeAccountIDs) > 0 {
+		where += fmt.Sprintf(" AND (wi.account_id IS NULL OR wi.account_id <> ALL($%d::uuid[]))", argIdx)
+		filterArgs = append(filterArgs, req.Parsed.ExcludeAccountIDs)
+		argIdx++
+	}
+	// assignedUserId isEmpty: no assigned engineer. Top level only, as above.
+	if req.Parsed.Unassigned {
+		where += " AND wi.assigned_to_id IS NULL"
+	}
+
 	// number/internalId: exact-match filters parsed by case_filters.go (see
 	// ParsedCaseFilters.Number/InternalID's own doc comments) but never
 	// actually applied here until now -- every by-number/by-internal-id
@@ -3563,11 +3615,7 @@ func buildCaseSearchWhere(req domain.SearchCasesRequest, scope SearchScope) (str
 	// ServiceNow side restricts this to ten named SLA definitions; this
 	// matches any breached row until that list is mapped onto sla_policy.
 	if req.Parsed.HasBreachedSLA != nil {
-		if *req.Parsed.HasBreachedSLA {
-			where += " AND EXISTS (SELECT 1 FROM sla_live bs WHERE bs.work_item_id = wi.id AND bs.live_has_breached IS TRUE)"
-		} else {
-			where += " AND NOT EXISTS (SELECT 1 FROM sla_live bs WHERE bs.work_item_id = wi.id AND bs.live_has_breached IS TRUE)"
-		}
+		where += slaBreachedPredicate("wi.id", *req.Parsed.HasBreachedSLA)
 	}
 	if req.Parsed.StartCreatedDate != nil {
 		where += fmt.Sprintf(" AND wi.created_on >= $%d", argIdx)
@@ -3648,26 +3696,11 @@ func buildCaseSearchWhere(req domain.SearchCasesRequest, scope SearchScope) (str
 		argIdx++
 	}
 
-	// taskSLABusinessElapsedPercent: matches a case with at least one SLA row
-	// whose business_elapsed_percentage is within the bound(s). Both bounds
-	// apply to the SAME row (a range like 75..100 means one SLA in that range,
-	// not one row >= 75 and another <= 100), which is why this is a single
-	// EXISTS. Any SLA row counts, whatever its stage -- the contract of
-	// domain.TaskSLAFilter. The percentage is uncapped (long-overdue SLAs
-	// climb far past 100), and 0 is a real bound, hence the nil checks.
-	if f := req.Parsed.TaskSLAFilter; f != nil && (f.MinBusinessElapsedPercent != nil || f.MaxBusinessElapsedPercent != nil) {
-		slaWhere := "tsla.work_item_id = wi.id"
-		if f.MinBusinessElapsedPercent != nil {
-			slaWhere += fmt.Sprintf(" AND tsla.live_elapsed_percentage >= $%d::numeric", argIdx)
-			filterArgs = append(filterArgs, *f.MinBusinessElapsedPercent)
-			argIdx++
-		}
-		if f.MaxBusinessElapsedPercent != nil {
-			slaWhere += fmt.Sprintf(" AND tsla.live_elapsed_percentage <= $%d::numeric", argIdx)
-			filterArgs = append(filterArgs, *f.MaxBusinessElapsedPercent)
-			argIdx++
-		}
-		where += " AND EXISTS (SELECT 1 FROM sla_live tsla WHERE " + slaWhere + ")"
+	// taskSLABusinessElapsedPercent: see slaPercentPredicate.
+	{
+		var slaClause string
+		slaClause, filterArgs, argIdx = slaPercentPredicate("wi.id", req.Parsed.TaskSLAFilter, filterArgs, argIdx)
+		where += slaClause
 	}
 
 	// product: matched on the deployed product's own catalog name (prod is

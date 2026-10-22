@@ -315,12 +315,27 @@ func NewServiceNowIncidentMirrorService(client *integrationservice.Client) Incid
 	return &snIncidentService{client: client}
 }
 
+// rejectUnsupportedIncidentSLAFilters refuses the SLA filters the incident
+// search/aggregate endpoint cannot express. Breach (slaViolated, which
+// slaBreached is folded into) is supported; a business-elapsed-percent range is
+// not -- the endpoint's filter object has no such field and silently ignores
+// or rejects unknown keys, so forwarding it would return an unfiltered result.
+func rejectUnsupportedIncidentSLAFilters(p parsedIncidentFilters) error {
+	if p.TaskSLA != nil {
+		return &apierror.ValidationError{Msg: "filters: field \"" + slaFilterFieldPercent + "\" is not supported for incidents by the incident backing service"}
+	}
+	return nil
+}
+
 func (s *snIncidentService) SearchIncidents(ctx context.Context, req domain.SearchIncidentsRequest) (domain.SearchIncidentsResponse, error) {
 	if err := normalizePagination(&req.Pagination); err != nil {
 		return domain.SearchIncidentsResponse{}, err
 	}
 	if err := validateSearchQuery(req.Filters.SearchQuery); err != nil {
 		return domain.SearchIncidentsResponse{}, err
+	}
+	if len(req.Filters.AnyOf) > 0 {
+		return domain.SearchIncidentsResponse{}, &apierror.ValidationError{Msg: "filters.anyOf is not supported by this data source"}
 	}
 	if err := validateExactNumber("number", req.Filters.Number); err != nil {
 		return domain.SearchIncidentsResponse{}, err
@@ -344,6 +359,9 @@ func (s *snIncidentService) SearchIncidents(ctx context.Context, req domain.Sear
 	}
 	parsedFilters, err := ParseIncidentFieldFilters(req.Filters.Filters, time.Now().UTC())
 	if err != nil {
+		return domain.SearchIncidentsResponse{}, err
+	}
+	if err := rejectUnsupportedIncidentSLAFilters(parsedFilters); err != nil {
 		return domain.SearchIncidentsResponse{}, err
 	}
 	if parsedFilters.EndCreatedDate != nil && parsedFilters.StartCreatedDate != nil &&
@@ -488,6 +506,9 @@ func (s *snIncidentService) AggregateIncidents(ctx context.Context, req domain.A
 	if err := validateSearchQuery(req.Filters.SearchQuery); err != nil {
 		return domain.AggregateResponse{}, err
 	}
+	if len(req.Filters.AnyOf) > 0 {
+		return domain.AggregateResponse{}, &apierror.ValidationError{Msg: "filters.anyOf is not supported by this data source"}
+	}
 	if err := validateExactNumber("number", req.Filters.Number); err != nil {
 		return domain.AggregateResponse{}, err
 	}
@@ -501,6 +522,9 @@ func (s *snIncidentService) AggregateIncidents(ctx context.Context, req domain.A
 	}
 	parsedFilters, err := ParseIncidentFieldFilters(req.Filters.Filters, time.Now().UTC())
 	if err != nil {
+		return domain.AggregateResponse{}, err
+	}
+	if err := rejectUnsupportedIncidentSLAFilters(parsedFilters); err != nil {
 		return domain.AggregateResponse{}, err
 	}
 	if parsedFilters.EndCreatedDate != nil && parsedFilters.StartCreatedDate != nil &&

@@ -1975,6 +1975,83 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /reports/worklogs:
+    get:
+      summary: >-
+        Build the CS Worklogs daily or weekly report for a date range.
+        Read-only, and the aggregation behind the two mails CS leads
+        receive. Dates are plain calendar dates in the report's own
+        timezone: time_card.work_date is a DATE, so the caller decides
+        which calendar day it means.
+      tags:
+        - Reports
+      parameters:
+        - name: cadence
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [daily, weekly]
+          description: >-
+            The two cadences differ in substance, not only in
+            presentation: the weekly per-team average divides by the
+            member count less one, the daily by present members less
+            leads, and only the daily carries leave and disapproved
+            entries.
+        - name: from
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+          description: First day of the range, inclusive.
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+          description: >-
+            Last day of the range, inclusive. Defaults to `from`, which
+            is what the daily report wants. The range may not exceed 92
+            days.
+      responses:
+        "200":
+          description: The report.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorklogReport'
+        "400":
+          description: Missing or malformed cadence or dates, or a range over 92 days.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthenticated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Forbidden. The report is internal-only.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "503":
+          description: The access check could not be completed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /scheduled-tasks/attempts:
     post:
       summary: >-
@@ -2536,7 +2613,7 @@ paths:
         `roles` also decides `userType`, since `recompute_user_type`'s trigger
         derives it from role membership rather than a plain settable column —
         granting `admin`/`internal` resolves to INTERNAL and is rejected with
-        400 unless `email` is a `@wso2.com` address.
+        400 unless `email` is a `@example.com` address.
       operationId: createUser
       tags: [Users]
       requestBody:
@@ -2556,7 +2633,7 @@ paths:
           description: >
             Bad request — missing/invalid email, neither firstName nor
             lastName supplied, roles requests an internal-resolving role
-            (admin/internal) for a non-@wso2.com email, or roles requests an
+            (admin/internal) for a non-@example.com email, or roles requests an
             external-resolving role (external/partner/customer/partner_admin/
             customer_admin) — creating an external-type user is temporarily
             disabled regardless of email.
@@ -8468,9 +8545,9 @@ paths:
       description: >
         The registry keys of every team this caller may edit: teams they lead,
         every team in a family they are rota admin for, and teams they are the
-        rota marker for. An empty list is a valid answer for somebody who may
+        rota manager for. An empty list is a valid answer for somebody who may
         edit nothing; the portal uses it to decide which rows to offer an edit
-        control on. markerOnlyTeamKeys are the teams held only as rota marker:
+        control on. markerOnlyTeamKeys are the teams held only as rota manager:
         the caller may mark their days but may not generate the rota or change
         the shared tags.
       operationId: getMyLeadTeams
@@ -9096,11 +9173,11 @@ paths:
       summary: Who may change the rotas beyond the team leads.
       description: >
         The Team Schedule's Rota access tab: every rota admin (cre_rota_admin,
-        sre_rota_admin, sme_rota_admin) and the rota markers of the families
+        sre_rota_admin, sme_rota_admin) and the rota managers of the families
         the caller may manage, with what the caller may change. A CSM Portal
         admin -- a token role listed in AUTH_ADMIN_ROLES, the same setting the
         portal uses -- manages everything; a rota admin manages their own family's
-        markers. Anybody else internal gets an empty answer (200), which is how
+        rota managers. Anybody else internal gets an empty answer (200), which is how
         the portal decides not to show the tab. Needs a user token.
       operationId: getRotaAccess
       responses:
@@ -9247,11 +9324,11 @@ paths:
 
   /team-schedule/rota-access/markers/{teamKey}/{userId}:
     put:
-      summary: Make somebody a team's rota marker.
+      summary: Make somebody a team's rota manager.
       description: >
-        A rota marker may mark the team's rota -- rotations, leave and
+        A rota manager may mark the team's rota -- rotations, leave and
         allocations -- and nothing else: not the shared tags, not Generate month,
-        not the paging chain. A CSM admin may name any team's marker, a rota
+        not the paging chain. A CSM admin may name any team's rota manager, a rota
         admin their own family's. The person must be active internal staff and a
         member of the team; the grant stops counting when they leave it. Audited.
       operationId: grantRotaMarker
@@ -9303,7 +9380,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
     delete:
-      summary: Take a team's rota marker away.
+      summary: Take a team's rota manager away.
       description: >
         Same permission as granting. The person need not still be on the team. Audited.
       operationId: revokeRotaMarker
@@ -9912,12 +9989,17 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
   /team-schedule/paging-contacts/{userId}/test:
     post:
-      summary: Ask for a test call to a person's paging-only number.
+      summary: Ask for a test call to the number Case Alerts dials for a person.
       description: >
-        Marks the test pending and publishes paging.test_call_requested on the
-        main event topic; csm-notification-service places the call and
-        reports the outcome (PUT .../test-result). Same permission as setting
-        the number. At most one test every two minutes per person.
+        Rings the number Case Alerts dials from CSM: the one on the person's
+        own profile ("user".phone) when it can be called, else their
+        paging-only number. Marks the test pending and publishes
+        paging.test_call_requested on the main event topic;
+        csm-notification-service places the call and reports the outcome
+        (PUT .../test-result). Only a portal admin, or the rota admin of a
+        family one of the person's teams is in, may ask (a lead or head who
+        may set the number may not ring it). At most one test every two
+        minutes per person, across both numbers.
       operationId: requestPagingTestCall
       parameters:
         - name: userId
@@ -9959,7 +10041,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         "409":
-          description: The person has no paging number.
+          description: CSM holds no number to dial for the person (no callable profile number and no paging-only number).
           content:
             application/json:
               schema:
@@ -10032,6 +10114,70 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "500":
           description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /reports/migration-cases:
+    get:
+      summary: >-
+        Build the weekly migration case scan: the migration engagements
+        still open after a given age, in three tables by the tags the CS
+        team keeps on them. Read-only. Internal callers only.
+      description: >-
+        A migration is an engagement of type MIGRATION that is neither
+        closed nor awaiting the customer's sign-off, created on or before
+        the start of the day `olderThanDays` days ago in the report's
+        timezone (Asia/Colombo). One tagged as on hold is listed under
+        `onHold`, one tagged as waiting on the accounts team under
+        `waitingOnAccounts`, one carrying both tags under both, and one
+        carrying neither under `inProgress`. Each table is oldest first.
+        `recipients` are the mail groups of the teams configured to
+        receive the scan.
+      operationId: getMigrationCaseReport
+      parameters:
+        - name: olderThanDays
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 3650
+            default: 180
+          description: The age a migration must have reached to be listed.
+      responses:
+        "200":
+          description: The scan.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MigrationCaseReport'
+        "400":
+          description: olderThanDays is not a whole number of days in range.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "503":
+          description: The scan's tags are not configured on this deployment, or the caller's identity could not be checked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
           content:
             application/json:
               schema:
@@ -17688,7 +17834,7 @@ components:
         At least one of firstName/lastName is required. userType is never
         accepted here -- it is derived by the database from role membership.
         Granting a role that resolves to userType INTERNAL (admin/internal)
-        for a non-@wso2.com email is rejected with 400. Granting a role that
+        for a non-@example.com email is rejected with 400. Granting a role that
         resolves to userType EXTERNAL (external/partner/customer/partner_admin/
         customer_admin) is rejected with 400 regardless of email -- creating
         an external-type user via this endpoint is temporarily disabled.
@@ -19314,7 +19460,7 @@ components:
           type: string
         currentSupportStatus:
           type: string
-          enum: [available, extended, deprecated, discontinued]
+          enum: [available, extended, deprecated, discontinued, null]
           nullable: true
         releaseDate:
           type: string
@@ -19625,13 +19771,36 @@ components:
         - id
         - name
 
+    DeployedProductDeployment:
+      type: object
+      description: The deployment a deployed product belongs to.
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          nullable: true
+        type:
+          type: string
+          nullable: true
+          description: Type of the deployment; null when it has none.
+          enum:
+            - primary_production
+            - staging
+            - qa
+            - stress
+            - uat
+            - development
+            - null
+
     DeployedProductView:
       type: object
       properties:
         id:
           type: string
         deployment:
-          $ref: '#/components/schemas/EntityRef'
+          $ref: '#/components/schemas/DeployedProductDeployment'
         product:
           $ref: '#/components/schemas/ProductRef'
         version:
@@ -22067,6 +22236,27 @@ components:
         message:
           type: string
 
+    ChangeRequestBranchFilter:
+      type: object
+      required: [field, op, values]
+      description: >-
+        One condition of a change request search's `anyOf` branch: "field is
+        one of values". Its own schema because a branch takes fields the generic
+        filter array does not (state, impact, projectId) and only the "in"
+        operator. `tag` is internal callers only. PostgreSQL only.
+      properties:
+        field:
+          type: string
+          enum: [state, impact, projectId, type, assignmentGroupId, assignedUserId, tag]
+        op:
+          type: string
+          enum: [in]
+        values:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: string
     ChangeRequestFieldFilter:
       type: object
       required: [field, op]
@@ -22078,9 +22268,14 @@ components:
             - assignmentGroupId
             - approval
             - assignedUserId
+            - tag
+            - updatedOn
+            - plannedStartOn
+            - plannedEndOn
+            - type
         op:
           type: string
-          enum: [gte, lte, in, eq]
+          enum: [gte, lte, in, eq, notIn]
         values:
           type: array
           items:
@@ -22107,6 +22302,14 @@ components:
           field.
         - **assignedUserId** (in): assignee UUIDs to filter the change
           request's assigned user by.
+        - **tag** (in / notIn): tag names, case-insensitive; in = carries any
+          of them, notIn = carries none. PostgreSQL only; internal callers only
+          (403 otherwise).
+        - **updatedOn** / **plannedStartOn** / **plannedEndOn** (gte / lte):
+          same value syntax as createdOn, bounding the last update, the
+          planned start and the planned end. PostgreSQL only.
+        - **type** (in): change types (standard, normal, emergency, ...). A
+          type with no equivalent on the data source is a 400. PostgreSQL only.
 
     SearchChangeRequestsRequest:
       type: object
@@ -22153,6 +22356,21 @@ components:
                 A single change request number (e.g. "CHG0010001"); matches
                 exactly. Routed as a first-class filter rather than through
                 the free-text searchQuery scan.
+            anyOf:
+              type: array
+              description: >-
+                Cross-field OR, as on case search: each branch's filters are
+                ANDed, the branches are OR'd, and the result is ANDed with the
+                other filters. At most 10 branches of at most 10 filters each,
+                op "in" only. Branch fields: state, impact, projectId, type, assignmentGroupId, assignedUserId, tag (internal callers only). PostgreSQL only (400 otherwise).
+              items:
+                type: object
+                required: [filters]
+                properties:
+                  filters:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ChangeRequestBranchFilter'
             filters:
               type: array
               items:
@@ -22167,7 +22385,7 @@ components:
           properties:
             field:
               type: string
-              enum: [createdOn, updatedOn]
+              enum: [createdOn, updatedOn, plannedStartOn, plannedEndOn]
             order:
               type: string
               enum: [asc, desc]
@@ -22857,7 +23075,7 @@ components:
           type: string
           nullable: true
           description: >-
-            WSO2 internal case id (e.g. "SCTPSUB-88") for caseId. Null if the
+            WSO2 internal case id (e.g. "KITE-88") for caseId. Null if the
             case record could not be resolved or has no internal id assigned.
         rating:
           type: integer
@@ -23467,6 +23685,16 @@ components:
       description: >
         Any combination of fields may be supplied; at least one is required.
         Omitted fields are left unchanged.
+        APPROVED CHANGE REQUESTS ARE READ-ONLY (PostgreSQL data source): once a change
+        request has been approved -- it is in customer_approval, scheduled, implement,
+        review, customer_review, closed or rollback, which it reaches only through its CAB
+        approval (a Standard change, pre-approved, through Request Approval) -- a request
+        that changes any of its fields is a 400 naming them, with errorCode
+        change_request_approved_read_only, and nothing is written. A field resent with the
+        value it already holds is accepted. Still accepted: state, onHold / onHoldReason,
+        requestApproval, workNote and comment, a Re-schedule (state authorize with a new
+        planned window, out of customer_approval) and WSO2's answer to a time the customer
+        proposed.
       properties:
         title:
           type: string
@@ -23488,8 +23716,8 @@ components:
           format: uuid
           description: >-
             Must belong to the change request's project (a change request with no project
-            takes none) and, like deploymentIds, can change only before implement; the
-            stored value resent is accepted. Cannot be combined with deploymentIds.
+            takes none) and, like deploymentIds, can change only until the change request is
+            approved; the stored value resent is accepted. Cannot be combined with deploymentIds.
         deployedProductId:
           type: string
           format: uuid
@@ -23720,9 +23948,10 @@ components:
             the stored one). Changing `projectId` while deployments are stored
             requires `deploymentIds` in the same request. Cannot be combined
             with `deploymentId` / `deployedProductId`. Deployment products are
-            always re-derived. EDIT WINDOW: `projectId`, `deploymentIds` and
-            `deploymentProductIds` can be changed only while the change request
-            has not reached `implement` (states new .. scheduled); afterwards a
+            always re-derived. EDIT WINDOW: `deploymentIds` and
+            `deploymentProductIds` can be changed only until the change request
+            is approved (states new, assess, authorize; `projectId` only in new,
+            see its own description); afterwards a
             change is a 400 ("<field> can no longer be changed: ...") while
             resending the stored value is accepted. PostgreSQL data source only.
         environmentIds:
@@ -25178,6 +25407,31 @@ components:
         hasProfilePhone:
           type: boolean
           description: Whether the person has a callable (E.164) number on their own profile ("user".phone), which paging calls ahead of the paging-only number. Absent when paging numbers are not configured.
+        canTestCall:
+          type: boolean
+          description: Whether the caller may place a test call to this person (a portal admin, or the rota admin of a family one of the person's teams is in).
+        testCall:
+          allOf:
+            - $ref: '#/components/schemas/PagingTestCall'
+          description: The number a test call would ring and its last test. Only for a caller who canTestCall; absent when CSM holds no number to dial.
+    PagingTestCall:
+      type: object
+      required: [masked, source]
+      properties:
+        masked:
+          type: string
+          description: The number with its country code and last three digits shown.
+        source:
+          type: string
+          enum: [profile, paging]
+          description: profile = the number on the person's own profile; paging = their paging-only number.
+        lastTestAt:
+          type: string
+          format: date-time
+          description: When the last test of this number was asked for or answered. Absent until one is requested, and after the number changes.
+        lastTestStatus:
+          type: string
+          enum: [pending, completed, no-answer, busy, failed]
     PagingChainPermissions:
       type: object
       required: [responderTeams, teamLeadTeams, americasTeamLead, heads]
@@ -25313,7 +25567,7 @@ components:
             tiers held in the range ("L1, L2"), or the SME teams rostered on.
     RotaEditTeams:
       type: object
-      description: Which teams the caller may edit, and which of those only as the team's rota marker.
+      description: Which teams the caller may edit, and which of those only as the team's rota manager.
       required: [teamKeys, markerOnlyTeamKeys]
       properties:
         teamKeys:
@@ -25502,7 +25756,7 @@ components:
           description: True for a CSM admin, who alone grants and removes rota admin.
         markerFamilies:
           type: array
-          description: The families whose teams' markers the caller may change.
+          description: The families whose teams' rota managers the caller may change.
           items:
             type: string
             enum: [CRE, SRE, SME]
@@ -25612,6 +25866,20 @@ components:
           $ref: '#/components/schemas/CaseAlertRunning'
         routeOptions:
           $ref: '#/components/schemas/CaseAlertRouteOptions'
+        unmappedGroups:
+          type: array
+          description: >
+            SRE viewers only: active ServiceNow assignment groups (the support group of
+            at least one service) that no enabled SRE route covers and no Team Schedule
+            team is named after. Their incident cards go to the shared SRE room. Absent
+            when there are none.
+          items: { $ref: '#/components/schemas/CaseAlertAssignmentGroup' }
+    CaseAlertAssignmentGroup:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: string, format: uuid, description: 'The "group" row (an assignment group mirrored from ServiceNow).' }
+        name: { type: string }
     CaseAlertRouteOptions:
       type: object
       required: [groups, teams, rotas]
@@ -25631,6 +25899,10 @@ components:
         rotas:
           type: array
           items: { $ref: '#/components/schemas/CaseAlertRotaOption' }
+        assignmentGroups:
+          type: array
+          description: The active assignment groups (support groups of a service) a route can be picked for, by name.
+          items: { $ref: '#/components/schemas/CaseAlertAssignmentGroup' }
     CaseAlertTeamOption:
       type: object
       required: [key, name, family]
@@ -25710,14 +25982,55 @@ components:
         fileOnly:
           type: object
           description: >
-            Ladder (CRE, SRE) to what only the file sets, shown read-only:
+            Ladder (CRE, SRE, SME) to the file's own settings as running:
             enabled, channel, safety.maxCallsPerLadder, safety.maxLevel (absent
             when there is no cap), safety.allowedNumbers (a count, never the
             numbers), safety.callWithoutVerifiedLeads,
-            safety.callHeadsWithoutLowerTiers, phones.source.
+            safety.callHeadsWithoutLowerTiers, phones.source. enabled, channel
+            and the three safety values above can now also be saved as values
+            (ladders); safety.maxLevel, safety.allowedNumbers and phones.source
+            stay file-only.
           additionalProperties:
             type: object
             additionalProperties: true
+        channels:
+          type: object
+          description: >
+            Ladder (CRE, SRE, SME) to whether it runs (its own switch and the
+            file's master switch), its channel, and for each SRE and SME team
+            the channel it actually uses (the ladder's narrowed by the team's
+            own) and whether it has a room. Filtered to the caller's families.
+          additionalProperties:
+            type: object
+            properties:
+              enabled: { type: boolean }
+              channel: { type: string, enum: [call, chat, both, log] }
+              teams:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    team: { type: string }
+                    channel: { type: string }
+                    teamChannel: { type: string }
+                    room: { type: boolean }
+        groups:
+          type: object
+          description: >
+            Ladder (CRE, SRE) to how the running config routes an incident's
+            assignment group without a saved route: aliases (group, lower-cased,
+            to team key: the file's plus the saved routes to a team),
+            defaultGroups (SRE: groups paged on the default rota) and
+            teamlessRooms (SRE: teams with a room but no rota). The tab reads
+            it to show where each group goes, and the unmapped warning no
+            longer lists a group the file already routes. Filtered to the
+            caller's families.
+          additionalProperties:
+            type: object
+            properties:
+              aliases: { type: object, additionalProperties: { type: string } }
+              defaultGroups: { type: array, items: { type: string } }
+              teamlessRooms: { type: array, items: { type: string } }
     CaseAlertSettingsRights:
       type: object
       required: [view, roomLadders, routeLadders]
@@ -25768,7 +26081,8 @@ components:
       properties:
         id: { type: string, format: uuid }
         ladder: { type: string, enum: [CRE, SRE] }
-        groupName: { type: string, description: "Lower-cased, as the case or incident carries it." }
+        groupName: { type: string, description: "Lower-cased, as the case or incident carries it. For a route with a groupId, the group's current name." }
+        groupId: { type: string, format: uuid, description: 'The assignment group ("group" row) the route was picked for; absent for a route saved by name.' }
         teamKey: { type: string }
         rotaCode: { type: string }
         enabled: { type: boolean }
@@ -25794,7 +26108,8 @@ components:
       required: [ladder, groupName]
       properties:
         ladder: { type: string, enum: [CRE, SRE] }
-        groupName: { type: string, maxLength: 255, description: "A CSM Portal team's name: a CRE team for CRE, an SRE or SME team for SRE. SRE also takes an assignment group no CSM Portal team has (WSO2 IaaS Team), but never a CRE team's name." }
+        groupName: { type: string, maxLength: 255, description: "A CSM Portal team's name: a CRE team for CRE, an SRE or SME team for SRE. SRE also takes an assignment group no CSM Portal team has (WSO2 IaaS Team), but never a CRE team's name. With groupId, the group's own name is stored instead." }
+        groupId: { type: string, format: uuid, description: "Optional. An assignment group from routeOptions.assignmentGroups; the route follows the group if it is renamed. 400 when it is not one." }
         teamKey: { type: string }
         rotaCode: { type: string, description: "SRE only. An active SRE rota, e.g. SRE_SAAS." }
         enabled: { type: boolean, default: true }
@@ -26502,6 +26817,77 @@ components:
           format: date-time
         updatedBy:
           type: string
+    MigrationCaseReport:
+      type: object
+      description: The weekly migration case scan.
+      required: [generatedAt, olderThanDays, createdBefore, onHold, waitingOnAccounts, inProgress, recipients]
+      properties:
+        generatedAt:
+          type: string
+          format: date-time
+        olderThanDays:
+          type: integer
+          description: The age every listed migration has reached.
+        createdBefore:
+          type: string
+          format: date-time
+          description: Every listed migration was created on or before this instant.
+        onHold:
+          type: array
+          description: Migrations the customer asked to pause.
+          items:
+            $ref: '#/components/schemas/MigrationCaseReportRow'
+        waitingOnAccounts:
+          type: array
+          description: Migrations blocked on the accounts team.
+          items:
+            $ref: '#/components/schemas/MigrationCaseReportRow'
+        inProgress:
+          type: array
+          description: The remaining long-running migrations, carrying neither tag.
+          items:
+            $ref: '#/components/schemas/MigrationCaseReportRow'
+        recipients:
+          type: array
+          description: Mail groups of the teams configured to receive the scan.
+          items:
+            type: string
+    MigrationCaseReportRow:
+      type: object
+      description: One migration engagement in the scan with the account facts shown beside it.
+      required: [id, number, issueKey, createdOn, assignedTo, product, account, csTeam, salesRegion, accountManager, technicalOwner]
+      properties:
+        id:
+          type: string
+        number:
+          type: string
+        issueKey:
+          type: string
+          description: The engagement's customer-facing identifier.
+        createdOn:
+          type: string
+          format: date-time
+        lastCustomerCommentOn:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the customer last commented on the engagement; null when they never have.
+        assignedTo:
+          type: string
+          description: Display name of the assignee, or empty.
+        product:
+          type: string
+        account:
+          type: string
+        csTeam:
+          type: string
+          description: Name of the CS team that owns the account.
+        salesRegion:
+          type: string
+        accountManager:
+          type: string
+        technicalOwner:
+          type: string
     RunbookList:
       type: object
       required: [runbooks]
@@ -26583,6 +26969,110 @@ components:
                 type: string
                 nullable: true
                 description: The link the removed runbook had.
+    WorklogReport:
+      type: object
+      description: >-
+        One CS Worklogs report. Hours are rounded to two decimals;
+        member counts can be fractional, because a half-day absence
+        counts as half a present person.
+      properties:
+        cadence:
+          type: string
+          enum: [daily, weekly]
+        from:
+          type: string
+          format: date
+        to:
+          type: string
+          format: date
+        totals:
+          type: object
+          properties:
+            members: { type: integer }
+            issues: { type: integer }
+            totalHours: { type: number, format: double }
+            approvedHours: { type: number, format: double }
+            pendingHours: { type: number, format: double }
+            avgHoursPerPerson: { type: number, format: double }
+            avgApprovedHoursPerPerson: { type: number, format: double }
+            avgPendingHoursPerPerson: { type: number, format: double }
+            averagePeoplePerDay: { type: number, format: double }
+            onLeaveMembers: { type: integer }
+            nonLeaveMembers: { type: number, format: double }
+            queryIssues: { type: integer }
+            incidentIssues: { type: integer }
+        byType:
+          type: array
+          items:
+            type: object
+            properties:
+              type: { type: string }
+              label:
+                type: string
+                description: What the report calls the type. "Query" where the schema says CASE.
+              issues: { type: integer }
+              totalHours: { type: number, format: double }
+              approvedHours: { type: number, format: double }
+              pendingHours: { type: number, format: double }
+        recipients:
+          type: object
+          description: >-
+            The audience derived from the team registry. Carried for
+            comparison only -- the delivered mails are configured, not
+            derived.
+          properties:
+            to:
+              type: array
+              items: { type: string }
+            cc:
+              type: array
+              items: { type: string }
+        teams:
+          type: array
+          items:
+            type: object
+            properties:
+              teamKey: { type: string }
+              teamName: { type: string }
+              teamType: { type: string }
+              members: { type: integer }
+              membersForAverage:
+                type: number
+                format: double
+                description: >-
+                  The divisor behind the averages, which is not the
+                  member count: the weekly report uses members less one,
+                  the daily present members less leads.
+              issues: { type: integer }
+              approvedHours: { type: number, format: double }
+              pendingHours: { type: number, format: double }
+              totalHours: { type: number, format: double }
+              avgApprovedHoursPerPerson: { type: number, format: double }
+              avgTotalHoursPerPerson: { type: number, format: double }
+              developers:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    userId: { type: string }
+                    email: { type: string }
+                    name: { type: string }
+                    workedDays: { type: number, format: double }
+                    leave: { type: string }
+                    approvedIssues: { type: integer }
+                    approvedHours: { type: number, format: double }
+                    pendingIssues: { type: integer }
+                    pendingHours: { type: number, format: double }
+                    disapprovedEntries: { type: integer }
+                    avgTimePerDay: { type: number, format: double }
+                    totalHours: { type: number, format: double }
+                    issues:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          id: { type: string }
+                          key: { type: string }
     ErrorResponse:
       type: object
       description: >-
@@ -26630,7 +27120,11 @@ components:
             `incident_assignment_group_not_allowed` (400: an assignmentGroupId that is
             not an active support group of any service; nothing created), and, on POST
             /incidents/{id}/specialist-handoffs, `incident_handoff_needs_assignee` (409:
-            the incident is assigned to nobody). The list grows, so this is
+            the incident is assigned to nobody), and, on PATCH /change-requests/{id},
+            `change_request_approved_read_only` (400: a field of a change request that has
+            been approved -- CAB approval received, or a Standard change once scheduled --
+            would change; its fields are read-only, work notes can still be added; nothing
+            written). The list grows, so this is
             deliberately not a closed enum: a value not listed here is a newer server's.
           example: change_request_on_hold
 
@@ -27083,6 +27577,27 @@ components:
         updatedOn:
           type: string
 
+    IncidentBranchFilter:
+      type: object
+      required: [field, op, values]
+      description: >-
+        One condition of an incident search's `anyOf` branch: "field is one of
+        values". Its own schema because a branch takes `priority`, which the
+        generic filter array does not, and only the "in" operator. PostgreSQL
+        only.
+      properties:
+        field:
+          type: string
+          enum: [state, priority, category, businessServiceId, assignmentGroupId, assignedUserId]
+        op:
+          type: string
+          enum: [in]
+        values:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: string
     IncidentFieldFilter:
       type: object
       required: [field, op]
@@ -27099,6 +27614,10 @@ components:
             - productName
             - assignedUserId
             - incidentStateKeys
+            - slaBreached
+            - taskSLABusinessElapsedPercent
+            - category
+            - updatedOn
         op:
           type: string
           enum: [in, gte, lte, eq]
@@ -27125,6 +27644,16 @@ components:
         - **slaViolated** (eq): a single boolean value ("true"/"false").
           Restricts to incidents with (or without) at least one breached SLA
           record.
+        - **slaBreached** (eq): a single boolean value ("true"/"false"),
+          the same filter case search accepts. Identical in meaning to
+          **slaViolated**; supplying both with different values is a 400.
+        - **taskSLABusinessElapsedPercent** (gte/lte): a non-negative integer
+          percentage (uncapped above), the same filter case search accepts.
+          Restricts to incidents having an SLA record whose business-elapsed
+          percentage is within the bound(s); gte and lte together describe a
+          single SLA record. Not supported when the search is served by an
+          external backing data source (the incident data source, or the SLA
+          data source routing an SLA-filtered search there): answered 400.
         - **madeSla** (eq): a single boolean value ("true"/"false").
           Restricts to incidents matching ServiceNow's raw `made_sla` field.
           Deliberately separate from **slaViolated** above: slaViolated is
@@ -27138,6 +27667,10 @@ components:
           narrows rather than guarantees full coverage.
         - **assignedUserId** (in): assignee UUIDs to filter the incident's
           assigned user by.
+        - **category** (in): incident category labels (e.g. INQUIRY),
+          case-insensitive. PostgreSQL only.
+        - **updatedOn** (gte/lte): same syntax as createdOn, on the incident's
+          last update. PostgreSQL only.
         - **incidentStateKeys** (in): one or more raw ServiceNow
           `incident_state` numeric keys, passed through unmapped (unlike
           state above, which translates the domain IncidentState enum to
@@ -27191,6 +27724,23 @@ components:
                 caller that set CreateIncidentRequest.correlationId find that
                 same incident again without a free-text searchQuery scan over
                 subject or workNotes.
+            anyOf:
+              type: array
+              description: >-
+                Cross-field OR, as on case search: each branch's filters are
+                ANDed, the branches are OR'd, and the result is ANDed with the
+                other filters. At most 10 branches of at most 10 filters each,
+                op "in" only. Branch fields: state, priority, category,
+                businessServiceId, assignmentGroupId, assignedUserId.
+                PostgreSQL only (400 otherwise).
+              items:
+                type: object
+                required: [filters]
+                properties:
+                  filters:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/IncidentBranchFilter'
             filters:
               type: array
               items:
