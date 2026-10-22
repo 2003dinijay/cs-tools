@@ -448,6 +448,10 @@ type Config struct {
 	// accounts team" tables. MigrationCaseReportTeamKeys are the teams whose
 	// mail groups (team.group_email) receive the scan; empty means the scan
 	// derives no recipients and the scheduled task must configure its own.
+	// ProductRegressionReportTag is the tag name (matched ignoring case)
+	// that marks a case as a regression for the monthly product regression
+	// reports (GET /reports/product-regressions).
+	ProductRegressionReportTag     string
 	MigrationCaseReportHoldTag     string
 	MigrationCaseReportAccountsTag string
 	MigrationCaseReportTeamKeys    []string
@@ -813,6 +817,7 @@ func Load() *Config {
 		OutageNoticePollInterval:                      envDuration("OUTAGE_NOTICE_POLL_INTERVAL", 60*time.Second),
 		OutageNotificationRecipients:                  splitComma(os.Getenv("OUTAGE_NOTIFICATION_RECIPIENTS")),
 		OutageCommunicationRecipients:                 splitComma(os.Getenv("OUTAGE_COMMUNICATION_RECIPIENTS")),
+		ProductRegressionReportTag:                    getEnvOrDefault("PRODUCT_REGRESSION_REPORT_TAG", "s_rg"),
 		MigrationCaseReportHoldTag:                    getEnvOrDefault("MIGRATION_CASE_REPORT_HOLD_TAG", "s_mig_hold"),
 		MigrationCaseReportAccountsTag:                getEnvOrDefault("MIGRATION_CASE_REPORT_ACCOUNTS_TAG", "s_acc"),
 		MigrationCaseReportTeamKeys:                   splitComma(os.Getenv("MIGRATION_CASE_REPORT_TEAM_KEYS")),
