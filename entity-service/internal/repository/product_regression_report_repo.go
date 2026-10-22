@@ -83,6 +83,9 @@ SELECT wi.id::text,
                 WHERE wt.work_item_id = wi.id AND LOWER(t.name) = LOWER($4))
  ORDER BY TRIM(p.name), wi.eta_shared_on, wi.number`
 
+// ListRegressionCases runs listRegressionCasesSQL with the product names
+// lower-cased and trimmed; a list with no usable name returns an empty
+// list without a query.
 func (r *productRegressionReportRepository) ListRegressionCases(ctx context.Context, periodStart, periodEnd time.Time, tag string, products []string) ([]domain.ProductRegressionReportRow, error) {
 	names := make([]string, 0, len(products))
 	for _, p := range products {

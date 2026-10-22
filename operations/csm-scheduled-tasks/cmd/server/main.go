@@ -476,10 +476,18 @@ func main() {
 	// attempt, and a failed period is retried on every tick. The audience
 	// is business unit mail groups; an entity-service outage must not send
 	// them an hourly FAILED notice. Failures go to ALERT_RECIPIENTS alone.
+	// Because To is nil, the EMAIL_BASE_URL check below cannot see these
+	// tasks' own audiences; regressionTasksWithRecipients carries them
+	// there, so a deployment that names readers but no email service still
+	// refuses to start instead of failing silently on the 1st.
 	var regressionTasks []registry.Task
+	var regressionTasksWithRecipients []string
 	for _, v := range regressionVariants {
 		name := regressionscan.TaskName(v)
 		to, cc := recipientsFor(recipientOverrides, name)
+		if len(to) > 0 {
+			regressionTasksWithRecipients = append(regressionTasksWithRecipients, name)
+		}
 		regressionTasks = append(regressionTasks, registry.Task{
 			Name:     name,
 			Schedule: scheduleFor(scheduleOverrides, name, "30 3 1 * *"),
@@ -824,9 +832,12 @@ func main() {
 		slog.Error("ROTA_REMINDERS_ENABLED is true but EMAIL_BASE_URL is not set; refusing to start since no reminder could be sent")
 		os.Exit(1)
 	}
-	if alertsEnabled && emailBaseURL == "" && (len(alertRecipients) > 0 || len(tasksWithRecipients) > 0) {
+	// The product regression reports keep their audience out of task.To (see
+	// their registration above), so it is checked here by name instead.
+	if alertsEnabled && emailBaseURL == "" && (len(alertRecipients) > 0 || len(tasksWithRecipients) > 0 || len(regressionTasksWithRecipients) > 0) {
 		slog.Error("failure alert recipients are configured but EMAIL_BASE_URL is not; refusing to start since those alerts could never actually send",
-			"alertRecipientsSet", len(alertRecipients) > 0, "tasksWithOwnRecipients", tasksWithRecipients)
+			"alertRecipientsSet", len(alertRecipients) > 0, "tasksWithOwnRecipients", tasksWithRecipients,
+			"reportTasksWithOwnRecipients", regressionTasksWithRecipients)
 		os.Exit(1)
 	}
 

@@ -120,6 +120,7 @@ func ApplyProductOverrides(variants []Variant, raw string) ([]Variant, error) {
 	return out, nil
 }
 
+// keys names the variants, comma-separated, for an error message.
 func keys(variants []Variant) string {
 	names := make([]string, 0, len(variants))
 	for _, v := range variants {

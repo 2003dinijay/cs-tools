@@ -66,6 +66,8 @@ func NewProductRegressionReportService(repo repository.ProductRegressionReportRe
 	return &productRegressionReportService{repo: repo, cfg: cfg, loc: loc}
 }
 
+// BuildReport validates the request, resolves the month, lists the cases
+// under the system identity and groups them by product.
 func (s *productRegressionReportService) BuildReport(ctx context.Context, req domain.ProductRegressionReportRequest) (domain.ProductRegressionReport, error) {
 	products := make([]string, 0, len(req.Products))
 	for _, p := range req.Products {

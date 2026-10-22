@@ -19,6 +19,7 @@ package service_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -45,6 +46,16 @@ func (f *fakeProductRegressionReportRepo) ListRegressionCases(_ context.Context,
 
 func regressionRow(number, product string, shared time.Time) domain.ProductRegressionReportRow {
 	return domain.ProductRegressionReportRow{ID: "id-" + number, Number: number, Product: product, EtaSharedOn: shared}
+}
+
+// tooManyProducts is n distinct, non-blank product names: enough to reach
+// the limit check rather than the empty-list one.
+func tooManyProducts(n int) []string {
+	out := make([]string, n)
+	for i := range out {
+		out[i] = fmt.Sprintf("Product %d", i)
+	}
+	return out
 }
 
 func colombo(t *testing.T) *time.Location {
@@ -174,7 +185,7 @@ func TestProductRegressionReportRejectsBadInput(t *testing.T) {
 	for _, req := range []domain.ProductRegressionReportRequest{
 		{},
 		{Products: []string{" ", ""}},
-		{Products: make([]string, service.ProductRegressionReportMaxProducts+1)},
+		{Products: tooManyProducts(service.ProductRegressionReportMaxProducts + 1)},
 		{Products: []string{"WSO2 API Manager"}, Month: "2099-01"},
 	} {
 		if _, err := svc.BuildReport(context.Background(), req); !errors.As(err, &ve) {
