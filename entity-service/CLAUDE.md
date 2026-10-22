@@ -7387,6 +7387,18 @@ covers, no team is named after and the running config does not route (an alias o
 the notifier's last report, `running.groups.SRE`; without a report only routes and team names count):
 csm-notification-service posts their incident cards to the shared SRE room. Deploy entity-service before the BFF and webapp that send `groupId` (strict decoding).
 
+**An SRE assignment group's own chat room (migration 0244).** `paging_chat_room.group_id` (FK
+`"group"`, `ON DELETE CASCADE`; a check keeps such a room SRE-only with no team, teamless flag or
+channel) gives one support group a webhook of its own; the room scope index became
+`paging_chat_room_scope_group_uq` on `(ladder, team_key, group_id)` (the old
+`paging_chat_room_scope_uq` is dropped, so deploy this build with the migration: the old build's
+`ON CONFLICT` names the old index). `SaveRoom` with `groupId` checks it against the support-group
+set (`AssignmentGroupByID`) and defaults the label to the group's name; `ListRooms` returns the
+group's current name; `Runtime` sends a group room only with its URL, as `groupId`/`groupName`. A
+group with an enabled room that has a URL is not listed in `unmappedGroups`. `routeOptions.
+assignmentGroups[].services` lists each group's services by name (one aggregate over `service`).
+Only the chat space follows the group: who is called still follows its route.
+
 **Who may see and change each family's Case Alerts settings** (`whoIsAsking`): a CSM or
 portal admin and the CS head (`cs_head` on any team): all three families; the CRE rota admin and
 the CRE head (`cre_head`): CRE; the SRE rota admin: SRE; the SME rota admin: SME. Seeing and changing

@@ -62,7 +62,12 @@ export function sameTarget(a: DraftChange | NewChange, b: DraftChange | NewChang
   if (a.family !== b.family || a.kind !== b.kind) return false;
   switch (a.kind) {
     case "room":
-      return b.kind === "room" && a.input.ladder === b.input.ladder && (a.input.teamKey ?? "") === (b.input.teamKey ?? "");
+      return (
+        b.kind === "room" &&
+        a.input.ladder === b.input.ladder &&
+        (a.input.teamKey ?? "") === (b.input.teamKey ?? "") &&
+        (a.input.groupId ?? "") === (b.input.groupId ?? "")
+      );
     case "deleteRoom":
       return b.kind === "deleteRoom" && a.roomId === b.roomId;
     case "route":

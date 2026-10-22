@@ -490,7 +490,7 @@ describe("CaseAlertLadderSettings", () => {
       "▾On/off and channel · CRE on, calls and chat",
       "▸Where alerts go",
       "▸Who gets alerts · 1 saved here",
-      "▸Advanced · timing, escalation, heads, chat messages and the file's own settings · 1 saved here",
+      "▸Advanced · call limits, timing, escalation, heads, chat messages and the file's own settings · 1 saved here",
     ]);
     // The switches are open: the rows are drawn.
     expect(row("Alerts on")).toBeInTheDocument();
@@ -509,6 +509,7 @@ describe("CaseAlertLadderSettings", () => {
     const advanced = screen.getByRole("region", { name: "Advanced" });
     expect(within(advanced).getByRole("heading", { level: 4, name: "CRE ladder" })).toBeInTheDocument();
     expect(within(advanced).getAllByRole("heading", { level: 5 }).map((h) => h.textContent)).toEqual([
+      "Call limits",
       "When a ladder starts",
       "How it climbs",
       "Heads",

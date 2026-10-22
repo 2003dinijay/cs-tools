@@ -487,6 +487,8 @@ export interface CaseAlertSettings {
 export interface CaseAlertAssignmentGroup {
   id: string;
   name: string;
+  /** The services it is the support group of. Absent from an older server. */
+  services?: string[];
 }
 
 /** A team as a route option: CRE, SRE or SME. */
@@ -516,6 +518,9 @@ export interface CaseAlertChatRoom {
   id: string;
   ladder: CaseAlertRoomLadder;
   teamKey?: string;
+  /** An SRE assignment group's own room: the group, and its current name. */
+  groupId?: string;
+  groupName?: string;
   label: string;
   enabled: boolean;
   /** Also gets the cards of an incident with no SRE team. */
@@ -602,6 +607,11 @@ export interface CaseAlertGroupRouting {
   defaultGroups?: string[];
   /** SRE: teams with a chat space but no rota of their own. */
   teamlessRooms?: string[];
+  /** SRE: the groups (lower-cased) with a chat space of their own in use. */
+  groupRooms?: string[];
+  /** SRE: whether the ladder has its shared space, where a group that maps
+   *  to no space gets its card. Absent from an older report. */
+  sharedRoom?: boolean;
 }
 
 /** One team's channel as running: the ladder's narrowed by the team's own. */

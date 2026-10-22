@@ -130,7 +130,7 @@ beforeEach(() => {
   window.localStorage.clear();
   // "Where alerts go" starts closed; these tests work inside it, so it opens
   // as for a person who opened it before.
-  window.localStorage.setItem("csm-ts.alert-settings.open", JSON.stringify(["SRE.where", "CRE.where"]));
+  window.localStorage.setItem("csm-ts.alert-settings.open", JSON.stringify(["SRE.where", "CRE.where", "SRE.advanced"]));
   settings.data = make();
 });
 
@@ -314,7 +314,8 @@ describe("CaseAlertSettings", () => {
     expect(screen.getByRole("status")).toHaveTextContent(
       "2 assignment groups have no SRE team: their incident cards go to the shared SRE room and nobody is called. Redirect them below: WSO2 IaaS Team, U2 SRE Group.",
     );
-    expect(screen.getByText(/^Where alerts go · 2 unmapped/)).toBeInTheDocument();
+    // The redirects sit under Advanced now, and its summary counts them.
+    expect(screen.getByText(/^Advanced · .* · 2 unmapped/)).toBeInTheDocument();
   });
 
   it("redirects an SRE assignment group that is not a CSM Portal team, typed by name", async () => {

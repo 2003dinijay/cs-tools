@@ -160,7 +160,7 @@ beforeEach(() => {
   window.localStorage.clear();
   // The chat spaces sit under "Where alerts go", which starts closed; these
   // tests work inside it, so it opens as for a person who opened it before.
-  window.localStorage.setItem("csm-ts.alert-settings.open", JSON.stringify(["SRE.where", "CRE.where"]));
+  window.localStorage.setItem("csm-ts.alert-settings.open", JSON.stringify(["SRE.where", "CRE.where", "SRE.advanced"]));
   settings.data = make();
 });
 
@@ -319,35 +319,38 @@ const asgardeo = room({
 });
 
 describe("Chat space for each team: changes wait for Submit", () => {
-  it("offers every team of the reader's ladders, marking those with a space, and hides teams people are only moved onto", () => {
+  it("offers the SRE teams' spaces under Advanced, and the SME teams after escalation, never a move-only team", () => {
     settings.data = make({
       canManage: { view: true, roomLadders: ["SRE", "SME"], routeLadders: ["SRE"] },
       rooms: [apollo, iaas, asgardeo],
     });
     render(<CaseAlertSettings family="SRE" teams={SME_TEAMS} moveTargetKeys={["zeus"]} />);
     const { dialog } = openAdd();
-    const team = within(dialog).getByLabelText("Team");
-    expect(optionNames(team)).toEqual([
+    expect(optionNames(within(dialog).getByLabelText("Team"))).toEqual([
       "All SRE teams (shared space)",
       "Apollo · has a space",
       "Artemis",
       "IaaS · has a space",
-      "Asgardeo · has a space",
+    ]);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    const after = screen.getByRole("table", { name: "Each SME sub team's chat space" });
+    expect(within(after).getAllByRole("row").slice(1).map((r) => (r as HTMLTableRowElement).cells[0].textContent)).toEqual([
+      "Asgardeo",
       "U2",
     ]);
-    expect(within(team).getAllByRole("group").map((g) => g.getAttribute("label"))).toEqual(["SRE teams", "SME teams"]);
+    expect(within(after).getByText(HINT)).toBeInTheDocument();
+    expect(within(after).getByText(/^Not set · uses the shared SME space/)).toBeInTheDocument();
   });
 
-  it("lists SRE and SME rows together, each changeable only by its own admin", () => {
+  it("shows each family's table only to those who may change it", () => {
     settings.data = make({
       canManage: { view: true, roomLadders: ["SRE"], routeLadders: ["SRE"] },
       rooms: [apollo, asgardeo],
     });
     render(<CaseAlertSettings family="SRE" teams={SME_TEAMS} />);
     expect(within(chatRow("Apollo")).getByRole("button", { name: "Edit" })).toBeInTheDocument();
-    expect(within(chatRow("Asgardeo")).queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
-    const { dialog } = openAdd();
-    expect(optionNames(within(dialog).getByLabelText("Team"))).not.toContain("U2");
+    expect(screen.queryByRole("group", { name: "After escalation" })).not.toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Before escalation" })).toBeInTheDocument();
   });
 
   it("needs a Google Chat webhook URL for a new space", () => {
@@ -516,7 +519,7 @@ describe("Chat space for each team: changes wait for Submit", () => {
     expect(screen.getByText(/^✓ Saved/)).toHaveTextContent(`✓ Saved 1 change. ${NOT_DB}`);
   });
 
-  it("adds an SME team's space with ladder SME and no SRE box", async () => {
+  it("adds an SME team's space from its row: ladder SME, nothing but its URL", async () => {
     settings.data = make({
       rooms: [asgardeo],
       canManage: { view: true, roomLadders: ["SME"], routeLadders: [] },
@@ -524,21 +527,206 @@ describe("Chat space for each team: changes wait for Submit", () => {
     saveRoom.mutateAsync.mockResolvedValue({ ...asgardeo, id: "u2-room" });
     setWebhook.mutateAsync.mockResolvedValue({});
     render(<CaseAlertSettings family="SRE" teams={SME_TEAMS} />);
-    const { dialog } = openAdd();
-    expect(optionNames(within(dialog).getByLabelText("Team"))).toEqual(["Asgardeo · has a space", "U2"]);
-    fireEvent.change(within(dialog).getByLabelText("Team"), { target: { value: "SME|u2" } });
-    expect(within(dialog).queryByRole("checkbox")).not.toBeInTheDocument();
-    fireEvent.change(within(dialog).getByLabelText("Google Chat webhook URL"), { target: { value: HOOK } });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Add to changes" }));
+    expect(screen.queryByRole("group", { name: "Before escalation" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Add a chat space URL for U2" }));
+    const field = screen.getByLabelText("Google Chat webhook URL for U2");
+    expect(field).toHaveFocus();
+    fireEvent.change(field, { target: { value: "https://example.com/hook" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add to changes" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("isn't a Google Chat webhook URL");
+    fireEvent.change(field, { target: { value: HOOK } });
+    fireEvent.click(screen.getByRole("button", { name: "Add to changes" }));
+    expect(pending()).toHaveTextContent("U2 chat space added");
+    expect(screen.getByText("New URL waits for Submit")).toBeInTheDocument();
+    expect(saveRoom.mutateAsync).not.toHaveBeenCalled();
     await submit();
-    expect(saveRoom.mutateAsync).toHaveBeenCalledWith({
-      ladder: "SME",
-      teamKey: "u2",
-      label: "U2 SME",
-      enabled: true,
-      teamless: false,
-      channel: "",
-    });
+    expect(saveRoom.mutateAsync).toHaveBeenCalledWith({ ladder: "SME", teamKey: "u2", label: "U2 SME" });
     expect(setWebhook.mutateAsync).toHaveBeenCalledWith({ roomId: "u2-room", url: HOOK });
+  });
+});
+
+const IAAS_GROUP = { id: "77777777-7777-4777-8777-000000000001", name: "WSO2 IaaS Team", services: ["WSO2 IaaS"] };
+const APOLLO_GROUP = {
+  id: "77777777-7777-4777-8777-000000000002",
+  name: "Apollo SRE Group",
+  services: ["Asgardeo", "Moesif", "client-a", "client-b", "client-c"],
+};
+const ARTEMIS_GROUP = { id: "77777777-7777-4777-8777-000000000003", name: "Artemis SRE Group", services: ["Choreo"] };
+const DEFAULT_GROUP = { id: "77777777-7777-4777-8777-000000000004", name: "Default SRE Group", services: [] };
+
+/** The SRE ladder's shared space, with a URL saved here. */
+const sharedSpace = room({ id: "shared-room", hasWebhook: true, webhookHint: "spaces/SHARED01 · …abcd" });
+
+/** A row of the before-escalation table, by its group's name. */
+function groupRow(name: string): HTMLTableRowElement {
+  const table = screen.getByRole("table", { name: "Each assignment group's chat space" });
+  const tr = within(table).getByText(name).closest("tr");
+  if (!tr) throw new Error(`no row for ${name}`);
+  return tr;
+}
+
+describe("Each assignment group's chat space", () => {
+  const groupSettings = (over: Partial<Settings> = {}) =>
+    make({
+      rooms: [apollo, sharedSpace, iaas],
+      routeOptions: {
+        groups: [],
+        teams: [
+          { key: "apollo", name: "Apollo", family: "SRE" },
+          { key: "artemis", name: "Artemis", family: "SRE" },
+          { key: "iaas", name: "IaaS", family: "SRE" },
+        ],
+        rotas: [],
+        assignmentGroups: [IAAS_GROUP, APOLLO_GROUP, ARTEMIS_GROUP, DEFAULT_GROUP],
+      },
+      running: {
+        reportedAt: AT,
+        mode: "db",
+        ladders: {},
+        groups: {
+          SRE: {
+            aliases: { "apollo sre group": "apollo", "artemis sre group": "artemis", "wso2 iaas team": "iaas" },
+            defaultGroups: ["default sre group"],
+            teamlessRooms: ["apollo", "artemis"],
+          },
+        },
+      },
+      ...over,
+    });
+
+  it("lists every assignment group with its SRE sub team, its services and where its alerts go", () => {
+    settings.data = groupSettings();
+    render(<CaseAlertSettings family="SRE" />);
+    const table = screen.getByRole("table", { name: "Each assignment group's chat space" });
+    expect(within(table).getAllByRole("row").slice(1).map((r) => (r as HTMLTableRowElement).cells[0].textContent)).toEqual([
+      "Apollo SRE Group",
+      "Artemis SRE Group",
+      "Default SRE Group",
+      "WSO2 IaaS Team",
+      "Any other group",
+    ]);
+    expect(groupRow("Apollo SRE Group").cells[1]).toHaveTextContent(/^Apollo$/);
+    expect(groupRow("Apollo SRE Group").cells[2]).toHaveTextContent("Asgardeo, Moesif, client-a + 2 more");
+    expect(groupRow("Default SRE Group").cells[1]).toHaveTextContent("Default SRE rota");
+    // No space of its own: where its cards go now, from what is saved and reported.
+    expect(groupRow("Apollo SRE Group")).toHaveTextContent("Not set · uses the Apollo SRE space");
+    expect(groupRow("Artemis SRE Group")).toHaveTextContent("Not set · uses the shared SRE space (SRE Case Alerts)");
+    expect(groupRow("Default SRE Group")).toHaveTextContent("Not set · uses the Apollo SRE space");
+    expect(groupRow("Any other group")).toHaveTextContent("Uses the shared SRE space (SRE Case Alerts)");
+  });
+
+  it("shows a group's own space, and says when two groups share one", () => {
+    const apolloSpace = room({
+      id: "apollo-group-room",
+      groupId: APOLLO_GROUP.id,
+      groupName: APOLLO_GROUP.name,
+      label: APOLLO_GROUP.name,
+      hasWebhook: true,
+      webhookHint: HINT,
+      lastTestStatus: "delivered",
+      lastTestAt: AT,
+    });
+    const artemisSpace = room({
+      ...apolloSpace,
+      id: "artemis-group-room",
+      groupId: ARTEMIS_GROUP.id,
+      groupName: ARTEMIS_GROUP.name,
+      label: ARTEMIS_GROUP.name,
+    });
+    settings.data = groupSettings({ rooms: [apolloSpace, artemisSpace, sharedSpace] });
+    render(<CaseAlertSettings family="SRE" />);
+    expect(groupRow("Apollo SRE Group")).toHaveTextContent("same space as Artemis SRE Group");
+    expect(groupRow("Artemis SRE Group")).toHaveTextContent("same space as Apollo SRE Group");
+    expect(within(groupRow("Apollo SRE Group")).getByRole("button", { name: /Change the chat space URL of/ })).toBeInTheDocument();
+    fireEvent.click(within(groupRow("Apollo SRE Group")).getByRole("button", { name: /Send a test card/ }));
+    expect(testRoom.mutate).toHaveBeenCalledWith("apollo-group-room", expect.anything());
+  });
+
+  it("adds a group's URL as a change: the room for the group, then its URL, on Submit", async () => {
+    settings.data = groupSettings();
+    saveRoom.mutateAsync.mockResolvedValue(room({ id: "iaas-group-room", groupId: IAAS_GROUP.id }));
+    setWebhook.mutateAsync.mockResolvedValue({});
+    render(<CaseAlertSettings family="SRE" />);
+    fireEvent.click(screen.getByRole("button", { name: "Add a chat space URL for WSO2 IaaS Team" }));
+    fireEvent.change(screen.getByLabelText("Google Chat webhook URL for WSO2 IaaS Team"), { target: { value: HOOK } });
+    fireEvent.click(screen.getByRole("button", { name: "Add to changes" }));
+    expect(pending()).toHaveTextContent("WSO2 IaaS Team chat space added");
+    // Undo takes it back before anything is saved.
+    fireEvent.click(within(groupRow("WSO2 IaaS Team")).getByRole("button", { name: "Undo" }));
+    expect(pending()).toHaveTextContent("No changes to submit.");
+    fireEvent.click(screen.getByRole("button", { name: "Add a chat space URL for WSO2 IaaS Team" }));
+    fireEvent.change(screen.getByLabelText("Google Chat webhook URL for WSO2 IaaS Team"), { target: { value: HOOK } });
+    fireEvent.click(screen.getByRole("button", { name: "Add to changes" }));
+    await submit();
+    expect(saveRoom.mutateAsync).toHaveBeenCalledWith({ ladder: "SRE", groupId: IAAS_GROUP.id, label: "WSO2 IaaS Team" });
+    expect(setWebhook.mutateAsync).toHaveBeenCalledWith({ roomId: "iaas-group-room", url: HOOK });
+  });
+
+  it("removes a group's space as a change, after asking", async () => {
+    const iaasSpace = room({
+      id: "iaas-group-room",
+      groupId: IAAS_GROUP.id,
+      groupName: IAAS_GROUP.name,
+      label: IAAS_GROUP.name,
+      hasWebhook: true,
+      webhookHint: HINT,
+    });
+    settings.data = groupSettings({ rooms: [iaasSpace, iaas, sharedSpace] });
+    deleteRoom.mutateAsync.mockResolvedValue({});
+    render(<CaseAlertSettings family="SRE" />);
+    fireEvent.click(within(groupRow("WSO2 IaaS Team")).getByRole("button", { name: /Remove WSO2 IaaS Team/ }));
+    expect(groupRow("WSO2 IaaS Team")).toHaveTextContent("Remove? It then uses the shared SRE space (SRE Case Alerts).");
+    fireEvent.click(within(groupRow("WSO2 IaaS Team")).getByRole("button", { name: "Remove" }));
+    expect(groupRow("WSO2 IaaS Team")).toHaveTextContent("Removed when you Submit");
+    await submit();
+    expect(deleteRoom.mutateAsync).toHaveBeenCalledWith("iaas-group-room");
+  });
+
+  it("reads a redirect to the default rota as a default group, and says when no card is posted", () => {
+    settings.data = groupSettings({
+      rooms: [apollo],
+      routes: [
+        {
+          id: "r-default",
+          ladder: "SRE",
+          groupName: "default sre group",
+          groupId: DEFAULT_GROUP.id,
+          rotaCode: "SRE_SAAS",
+          enabled: true,
+          updatedBy: "x",
+          updatedOn: AT,
+        },
+        {
+          id: "r-apollo",
+          ladder: "SRE",
+          groupName: "apollo sre group",
+          groupId: APOLLO_GROUP.id,
+          teamKey: "artemis",
+          enabled: true,
+          updatedBy: "x",
+          updatedOn: AT,
+        },
+      ],
+      running: {
+        reportedAt: AT,
+        mode: "db",
+        ladders: {},
+        groups: { SRE: { aliases: {}, defaultGroups: [], teamlessRooms: ["apollo"], sharedRoom: false } },
+      },
+    });
+    render(<CaseAlertSettings family="SRE" />);
+    // A redirect shows where the group is called, wherever the file pointed it.
+    expect(groupRow("Apollo SRE Group").cells[1]).toHaveTextContent(/^Artemis$/);
+    // Redirected to the default rota: its cards go to the teamless spaces.
+    expect(groupRow("Default SRE Group")).toHaveTextContent("Not set · uses the Apollo SRE space");
+    // Artemis has no space and the ladder no shared one: nothing is posted.
+    expect(groupRow("Apollo SRE Group")).toHaveTextContent("Not set · gets no card: the SRE ladder has no shared space");
+    expect(groupRow("Any other group")).toHaveTextContent("Gets no card: the SRE ladder has no shared space");
+  });
+
+  it("offers no change to a reader who may not change SRE", () => {
+    settings.data = groupSettings({ canManage: { view: true, roomLadders: ["SRE", "SME"], routeLadders: ["SRE"] } });
+    render(<CaseAlertSettings family="SRE" teams={SME_TEAMS} />);
+    expect(screen.getAllByRole("button", { name: /Add a chat space URL for/ }).length).toBeGreaterThan(0);
   });
 });

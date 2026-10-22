@@ -213,9 +213,9 @@ function ChannelsGroup({
 }
 
 /** The settings only the alert service's file can set, read-only for
- *  everyone. Whether a ladder runs, its channel and its safety holds are
- *  edited under On/off and channel once the alert service reports them; the
- *  rest stay a reviewed change to the file. */
+ *  everyone. Whether a ladder runs and its channel are edited under On/off
+ *  and channel, and its call limits under Advanced, once the alert service
+ *  reports them; the rest stay a reviewed change to the file. */
 function FileOnlyGroup({
   ladder,
   fileOnly,

@@ -31,12 +31,15 @@ import (
 // Spaces maps incident audiences to webhook URLs:
 //   - every SRE team key with a room: a group named as the key needs no alias;
 //   - every aliased group whose team has a room;
+//   - every group with a room of its own (sre.groupChats, saved on the
+//     Alert Settings tab), which wins over the two above;
 //   - notifications.IncidentFallbackAudience: the ladder's shared room
 //     (sre.chat), for a group that maps to no room.
 //
 // Fanout maps each default group (sre.teams.defaultGroups: an incident with
 // no SRE team of its own) to the sre.teamlessChats team keys, so its card goes
-// to the rooms its paging cards already go to.
+// to the rooms its paging cards already go to -- unless the group has a room
+// of its own, which then takes its card.
 type IncidentRouteTable struct {
 	Spaces map[string]string
 	Fanout map[string][]string
@@ -67,6 +70,19 @@ func BuildIncidentRoutes(l LadderConfig, url func(Chat) (string, bool)) Incident
 			out.Mapped++
 		}
 	}
+	ownRoom := map[string]bool{}
+	for group, c := range l.GroupChats {
+		key := teamKeyFor(group)
+		u, ok := url(c)
+		if key == "" || !ok {
+			continue
+		}
+		if _, mapped := out.Spaces[notifications.IncidentAudience(key)]; !mapped {
+			out.Mapped++
+		}
+		out.Spaces[notifications.IncidentAudience(key)] = u
+		ownRoom[key] = true
+	}
 	var teamless []string
 	for _, k := range l.TeamlessChats {
 		if _, ok := teamURL[teamKeyFor(k)]; ok {
@@ -75,7 +91,7 @@ func BuildIncidentRoutes(l LadderConfig, url func(Chat) (string, bool)) Incident
 	}
 	if len(teamless) > 0 {
 		for _, g := range l.Teams.DefaultGroups {
-			if key := teamKeyFor(g); key != "" {
+			if key := teamKeyFor(g); key != "" && !ownRoom[key] {
 				out.Fanout[key] = teamless
 			}
 		}
