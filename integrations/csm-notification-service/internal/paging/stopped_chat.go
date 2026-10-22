@@ -75,7 +75,7 @@ func (e *Engine) postStopped(ctx context.Context, st LadderState, reason cancelR
 		if t.isCase() {
 			msg.PortalURL = links.CaseLink(t.IncidentID)
 		}
-		if !r.reply && reason == cancelAssigned && e.threadReplies(t) {
+		if !r.reply && reason == cancelAssigned && t.sreIncident() && e.threadReplies(t) {
 			// An assigned SRE incident ends its thread with the "Incident Acknowledged." card, naming only the assignee.
 			ack := notifications.IncidentAssignedAlert{IncidentID: t.IncidentID, Number: t.Number, AssigneeName: st.AssigneeName}
 			if err := r.chat.SendIncidentAssignedAlert(ctx, room, ack); err != nil {

@@ -20,6 +20,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/events"
 )
 
 // An SME space gets one "Incident Escalated" card naming who escalated it and the L1 on call, then every rung as a reply under it.
@@ -57,5 +59,26 @@ func TestSMECards_IncidentCardThenReplies(t *testing.T) {
 		if !r.Reply || r.ThreadKey == "" {
 			t.Errorf("rung %s: reply %v, thread %q; want a reply in the incident card's thread", r.Rung, r.Reply, r.ThreadKey)
 		}
+	}
+}
+
+// An SME ladder stopped by an assignment ends its thread with its own stopped reply, never the SRE "Incident Acknowledged." card.
+func TestSMECards_AssignmentPostsTheStoppedReply(t *testing.T) {
+	ctx := context.Background()
+	smeChat := &fakeChat{}
+	e := smeEngine(smeTieredReader(), newMemStore(), &fakeNotes{}, &fakeChat{}, smeChat, smeOn)
+
+	raise(t, e, handoff("Apollo", "asgardeo", "asgardeo", testClock))
+	handle(t, e, record(t, events.TypeIncidentAssigned, events.IncidentAssignedPayload{
+		AssigneeID: "s-a", AssigneeName: "s-a", AssignedOn: testClock.Add(2 * time.Minute).Format(time.RFC3339)}))
+	if err := e.Tick(ctx, testClock.Add(20*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(smeChat.acks) != 0 {
+		t.Errorf("the SME space got %d \"Incident Acknowledged.\" cards; want none", len(smeChat.acks))
+	}
+	if len(smeChat.stopped) != 1 || !smeChat.stopped[0].Reply {
+		t.Errorf("stopped replies = %+v; want one, as a reply under the incident card", smeChat.stopped)
 	}
 }
