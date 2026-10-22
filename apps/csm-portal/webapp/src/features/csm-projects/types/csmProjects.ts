@@ -142,6 +142,13 @@ export interface ProjectDetails {
   goLiveDate?: string | null;
   /** Onboarding expiry date; see {@link onboardingStartDate} for the format. */
   onboardingExpiryDate?: string | null;
+  /** Onboarding hours entitlement, in hours. `null`/absent when not tracked. */
+  totalOnboardingHours?: number | null;
+  /** Onboarding hours consumed, in hours. `null`/absent when not tracked. */
+  consumedOnboardingHours?: number | null;
+  /** Onboarding hours remaining, in hours. `null`/absent when not tracked;
+   *  `0` means none remaining. */
+  remainingOnboardingHours?: number | null;
 }
 
 export interface SearchProjectsRequest {

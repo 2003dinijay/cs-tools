@@ -91,4 +91,59 @@ describe("ProjectOnboardingTab", () => {
     );
     expect(screen.getAllByText("—")).toHaveLength(6);
   });
+
+  describe("onboarding hours", () => {
+    const withHours = (hours: Partial<ProjectDetails>): ProjectDetails =>
+      ({ ...PROJECT, ...hours }) as ProjectDetails;
+    const show = (p: ProjectDetails) =>
+      render(<ProjectOnboardingTab project={p} canEdit={false} onEdit={() => {}} />);
+
+    it("renders total, consumed, remaining and a progress bar when set", () => {
+      show(
+        withHours({
+          totalOnboardingHours: 40,
+          consumedOnboardingHours: 10.5,
+          remainingOnboardingHours: 29.5,
+        }),
+      );
+      expect(screen.getByText("Onboarding hours")).toBeInTheDocument();
+      expect(screen.getByText("Total").nextElementSibling).toHaveTextContent("40 h");
+      expect(screen.getByText("Consumed").nextElementSibling).toHaveTextContent("10.5 h");
+      expect(screen.getByText("Remaining").nextElementSibling).toHaveTextContent("29.5 h");
+      const bar = screen.getByRole("progressbar", { name: "Onboarding hours consumed" });
+      expect(bar).toHaveAttribute("aria-valuenow", "26");
+    });
+
+    it("omits the group when no hours value is set", () => {
+      show(
+        withHours({
+          totalOnboardingHours: null,
+          consumedOnboardingHours: null,
+          remainingOnboardingHours: null,
+        }),
+      );
+      expect(screen.queryByText("Onboarding hours")).not.toBeInTheDocument();
+      expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+    });
+
+    it("clamps the bar to 100% when consumed exceeds total", () => {
+      show(
+        withHours({
+          totalOnboardingHours: 10,
+          consumedOnboardingHours: 25,
+          remainingOnboardingHours: 0,
+        }),
+      );
+      expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "100");
+    });
+
+    it("shows no bar when total is 0 or null", () => {
+      const { unmount } = show(withHours({ totalOnboardingHours: 0, consumedOnboardingHours: 3 }));
+      expect(screen.getByText("Onboarding hours")).toBeInTheDocument();
+      expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+      unmount();
+      show(withHours({ totalOnboardingHours: null, consumedOnboardingHours: 3 }));
+      expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+    });
+  });
 });

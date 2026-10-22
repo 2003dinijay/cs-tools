@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { Box, Button, Card, Typography } from "@wso2/oxygen-ui";
+import { Box, Button, Card, LinearProgress, Typography } from "@wso2/oxygen-ui";
 import { Pencil } from "@wso2/oxygen-ui-icons-react";
 import type { JSX } from "react";
 import ProjectMetaCell from "@features/csm-projects/components/ProjectMetaCell";
@@ -37,6 +37,12 @@ function dateCell(value?: string | null): string {
   return formatUtcDateForDisplay(value) ?? "—";
 }
 
+/** Hours with at most two decimals and no trailing zeros ("12", "12.5"). */
+function hoursCell(value?: number | null): string {
+  if (value == null) return "—";
+  return `${Number(value.toFixed(2))} h`;
+}
+
 /**
  * Project detail "Onboarding" tab: onboarding status, owner and the four
  * onboarding dates, read-only unless `canEdit`. The per-contact onboarding
@@ -48,6 +54,12 @@ export default function ProjectOnboardingTab({
   canEdit,
   onEdit,
 }: ProjectOnboardingTabProps): JSX.Element {
+  const { totalOnboardingHours: total, consumedOnboardingHours: consumed } = project;
+  const remaining = project.remainingOnboardingHours;
+  const hasHours = total != null || consumed != null || remaining != null;
+  const progress =
+    total != null && total > 0 ? Math.min(100, Math.max(0, ((consumed ?? 0) / total) * 100)) : null;
+
   return (
     <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2 }}>
       <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 1 }}>
@@ -97,6 +109,40 @@ export default function ProjectOnboardingTab({
           <Typography variant="body2">{dateCell(project.onboardingExpiryDate)}</Typography>
         </ProjectMetaCell>
       </Box>
+      {hasHours && (
+        <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
+          <Typography variant="subtitle2">Onboarding hours</Typography>
+          <Box
+            sx={{
+              display: "grid",
+              gap: 2,
+              gridTemplateColumns: {
+                xs: "1fr",
+                sm: "repeat(2, minmax(0, 1fr))",
+                md: "repeat(3, minmax(0, 1fr))",
+              },
+            }}
+          >
+            <ProjectMetaCell label="Total">
+              <Typography variant="body2">{hoursCell(total)}</Typography>
+            </ProjectMetaCell>
+            <ProjectMetaCell label="Consumed">
+              <Typography variant="body2">{hoursCell(consumed)}</Typography>
+            </ProjectMetaCell>
+            <ProjectMetaCell label="Remaining">
+              <Typography variant="body2">{hoursCell(remaining)}</Typography>
+            </ProjectMetaCell>
+          </Box>
+          {progress !== null && (
+            <LinearProgress
+              variant="determinate"
+              value={progress}
+              aria-label="Onboarding hours consumed"
+              sx={{ height: 6, borderRadius: 3 }}
+            />
+          )}
+        </Box>
+      )}
     </Card>
   );
 }
