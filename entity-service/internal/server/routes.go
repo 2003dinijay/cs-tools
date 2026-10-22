@@ -335,6 +335,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	var caseAlertSettingsHandler *handler.CaseAlertSettingsHandler
 	var runbookHandler *handler.RunbookHandler
 	var migrationCaseReportHandler *handler.MigrationCaseReportHandler
+	var productRegressionReportHandler *handler.ProductRegressionReportHandler
 	// runbookRepo stays a nil interface without a pool, so no incident service gets a catalog.
 	var runbookRepo repository.RunbookRepository
 
@@ -1469,6 +1470,13 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 					AccountsTag:       cfg.MigrationCaseReportAccountsTag,
 					RecipientTeamKeys: cfg.MigrationCaseReportTeamKeys,
 				}))
+		// Monthly product regression reports: one business unit's regression
+		// cases whose fix ETA was shared last month, for the scheduled task
+		// that mails one report per unit.
+		productRegressionReportHandler = handler.NewProductRegressionReportHandler(
+			service.NewProductRegressionReportService(
+				repository.NewProductRegressionReportRepository(repository.NewScoped(db)),
+				service.ProductRegressionReportConfig{Tag: cfg.ProductRegressionReportTag}))
 		caseAlertSettingsHandler = handler.NewCaseAlertSettingsHandler(
 			service.NewCaseAlertSettingsService(repository.NewCaseAlertSettingsRepository(db), repository.NewPagingChainRepository(db), accessSvc,
 				service.CaseAlertSettingsConfig{
@@ -1899,6 +1907,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// internalOnly: the scan names accounts, their owners and who is
 		// assigned to each migration; a customer token must never reach it.
 		mux.HandleFunc("GET /reports/migration-cases", internalOnly(accessSvc, migrationCaseReportHandler.GetMigrationCaseReport))
+	}
+	if productRegressionReportHandler != nil {
+		// internalOnly: the report names customers' cases and deployments; a
+		// customer token must never reach it.
+		mux.HandleFunc("GET /reports/product-regressions", internalOnly(accessSvc, productRegressionReportHandler.GetProductRegressionReport))
 	}
 	if runbookHandler != nil {
 		// Runbooks (Operations > Runbooks): internal callers only.
