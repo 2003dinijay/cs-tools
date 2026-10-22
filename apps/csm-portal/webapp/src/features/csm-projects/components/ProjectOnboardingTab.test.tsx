@@ -89,7 +89,28 @@ describe("ProjectOnboardingTab", () => {
         onEdit={() => {}}
       />,
     );
-    expect(screen.getAllByText("—")).toHaveLength(6);
+    expect(screen.getAllByText("—")).toHaveLength(5);
+  });
+
+  describe("onboarding owner visibility", () => {
+    const show = (p: ProjectDetails, canEdit = false) =>
+      render(<ProjectOnboardingTab project={p} canEdit={canEdit} onEdit={() => {}} />);
+
+    it.each(["Not-Applicable", undefined, null])(
+      "hides the owner cell when status is %s, keeping Edit for editors",
+      (status) => {
+        show({ ...PROJECT, onboardingStatus: status } as unknown as ProjectDetails, true);
+        expect(screen.queryByText("Onboarding owner")).not.toBeInTheDocument();
+        expect(screen.queryByText("Jane Doe")).not.toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Edit" })).toBeInTheDocument();
+      },
+    );
+
+    it("shows the owner when onboarding is enabled", () => {
+      show(PROJECT);
+      expect(screen.getByText("Onboarding owner")).toBeInTheDocument();
+      expect(screen.getByText("Jane Doe")).toBeInTheDocument();
+    });
   });
 
   describe("onboarding hours", () => {

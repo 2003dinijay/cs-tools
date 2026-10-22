@@ -39,17 +39,25 @@ const DATES = {
   onboardingExpiryDate: "2026-12-31T00:00:00Z",
 };
 
-function renderDialog(onSave = vi.fn()) {
-  render(
+function dialog(
+  onSave = vi.fn(),
+  dates: typeof DATES = DATES,
+  status = "In-Progress",
+) {
+  return (
     <EditProjectOnboardingDialog
-      currentStatus="In-Progress"
+      currentStatus={status}
       currentOwner={{ id: "00000000-0000-0000-0000-000000000000", name: "Jane Doe" }}
-      currentDates={DATES}
+      currentDates={dates}
       isSaving={false}
       onClose={() => {}}
       onSave={onSave}
-    />,
+    />
   );
+}
+
+function renderDialog(onSave = vi.fn(), dates: typeof DATES = DATES) {
+  render(dialog(onSave, dates));
   return onSave;
 }
 
@@ -120,5 +128,49 @@ describe("EditProjectOnboardingDialog dates", () => {
   it("offers no clear buttons", () => {
     renderDialog();
     expect(screen.queryByRole("button", { name: /clear/i })).not.toBeInTheDocument();
+  });
+
+  it("keeps the open-time baseline when the project refreshes under the dialog", () => {
+    const onSave = vi.fn();
+    const { rerender } = render(dialog(onSave));
+    rerender(
+      dialog(
+        onSave,
+        { ...DATES, goLivePlanDate: "2026-09-09T00:00:00Z", onboardingStartDate: "2026-01-01T00:00:00Z" },
+        "Completed",
+      ),
+    );
+    expect(dateInput("Go-live plan date")).toHaveValue("04/01/2026");
+    typeDate("Go-live date", "05/15/2026");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(onSave).toHaveBeenCalledWith({ onboardingGoLiveDate: "2026-05-15" });
+  });
+
+  it("blocks Save when the start moves after an unchanged stored go-live plan date", () => {
+    renderDialog();
+    typeDate("Onboarding start date", "04/15/2026");
+    expect(
+      screen.getByText("The stored date (2026-04-01) is earlier than the new onboarding start date."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+  });
+
+  it("allows the start to move before the stored dates", () => {
+    const onSave = renderDialog();
+    typeDate("Onboarding start date", "01/15/2026");
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(onSave).toHaveBeenCalledWith({ onboardingStartDate: "2026-01-15" });
+  });
+
+  it("does not block an unrelated edit on stored dates that already violate the order", () => {
+    const onSave = renderDialog(vi.fn(), {
+      ...DATES,
+      goLivePlanDate: "2026-02-01T00:00:00Z",
+    });
+    typeDate("Go-live date", "05/15/2026");
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(onSave).toHaveBeenCalledWith({ onboardingGoLiveDate: "2026-05-15" });
   });
 });

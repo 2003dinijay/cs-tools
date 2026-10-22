@@ -127,25 +127,27 @@ export default function EditProjectOnboardingDialog({
   onClose,
   onSave,
 }: EditProjectOnboardingDialogProps): JSX.Element {
-  const initialStatus = matchCurrentStatus(currentStatus);
-  const initialOwnerId = currentOwner?.id ?? "";
-  const [status, setStatus] = useState<ProjectOnboardingStatusValue | "">(initialStatus);
-  const [ownerId, setOwnerId] = useState(initialOwnerId);
-
-  const initialDates = useMemo<Record<DateField, string>>(
-    () => ({
+  // Baseline captured once per open session (the caller mounts this dialog
+  // only while open). The live project query can refresh underneath an open
+  // dialog; comparing against refreshed props would desync "changed" from the
+  // editable state and could send a stale value.
+  const [baseline] = useState(() => ({
+    status: matchCurrentStatus(currentStatus),
+    ownerId: currentOwner?.id ?? "",
+    dates: {
       start: utcDateOnlyValue(currentDates?.onboardingStartDate) ?? "",
       plan: utcDateOnlyValue(currentDates?.goLivePlanDate) ?? "",
       goLive: utcDateOnlyValue(currentDates?.goLiveDate) ?? "",
       expiry: utcDateOnlyValue(currentDates?.onboardingExpiryDate) ?? "",
-    }),
-    [
-      currentDates?.onboardingStartDate,
-      currentDates?.goLivePlanDate,
-      currentDates?.goLiveDate,
-      currentDates?.onboardingExpiryDate,
-    ],
-  );
+    } as Record<DateField, string>,
+  }));
+  const {
+    status: initialStatus,
+    ownerId: initialOwnerId,
+    dates: initialDates,
+  } = baseline;
+  const [status, setStatus] = useState<ProjectOnboardingStatusValue | "">(initialStatus);
+  const [ownerId, setOwnerId] = useState(initialOwnerId);
   const [dates, setDates] = useState<Record<DateField, string>>(initialDates);
 
   // A date counts as changed only when non-empty and different from the stored
@@ -166,14 +168,24 @@ export default function EditProjectOnboardingDialog({
   }, [status, initialStatus, ownerId, initialOwnerId, dates, initialDates]);
 
   // The start date the backend will compare against: the one being sent, else
-  // the stored one. Only fields being changed are checked (ISO dates compare
-  // correctly as strings).
+  // the stored one. A later date is checked when it, or the start date, is
+  // being changed, against its effective value (the edit, else the stored
+  // one), so moving the start past an untouched stored date is caught here
+  // rather than rejected by the backend. Unrelated edits are never blocked by
+  // stored data that already violates the order. ISO dates compare correctly
+  // as strings.
   const effectiveStart = dates.start || initialDates.start;
+  const startChanged = isDateChanged("start");
   const dateErrors: Partial<Record<DateField, string>> = {};
   if (effectiveStart) {
     for (const k of ["plan", "goLive", "expiry"] as const) {
-      if (isDateChanged(k) && dates[k] < effectiveStart) {
-        dateErrors[k] = "Can't be earlier than the onboarding start date.";
+      const changed = isDateChanged(k);
+      if (!changed && !startChanged) continue;
+      const effective = changed ? dates[k] : initialDates[k];
+      if (effective && effective < effectiveStart) {
+        dateErrors[k] = changed
+          ? "Can't be earlier than the onboarding start date."
+          : `The stored date (${effective}) is earlier than the new onboarding start date.`;
       }
     }
   }

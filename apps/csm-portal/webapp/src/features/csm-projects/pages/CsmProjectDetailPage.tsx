@@ -44,6 +44,7 @@ import ProjectMetaCell from "@features/csm-projects/components/ProjectMetaCell";
 import ProjectOnboardingOwnerValue from "@features/csm-projects/components/ProjectOnboardingOwnerValue";
 import ProjectOnboardingTab from "@features/csm-projects/components/ProjectOnboardingTab";
 import ProjectContactsTab from "@features/csm-projects/components/ProjectContactsTab";
+import { isOnboardingEnabled } from "@features/csm-projects/utils/projectOnboardingEnabled";
 import ProjectOnboardingStatusChip from "@features/csm-projects/components/ProjectOnboardingStatusChip";
 import WorkItemsTab from "@features/csm-projects/components/WorkItemsTab";
 import {
@@ -245,7 +246,7 @@ export default function CsmProjectDetailPage(): JSX.Element {
   // Existing display gate: the onboarding cells show only for an
   // onboarding-enabled project. An editor additionally always sees them (see
   // below) so onboarding can be started on a project that has none yet.
-  const onboardingEnabled = !!p.onboardingStatus && p.onboardingStatus !== "Not-Applicable";
+  const onboardingEnabled = isOnboardingEnabled(p.onboardingStatus);
   // Handed to each "Create X" menu item below as router state, so that
   // create page's own Back/Cancel -- and the entity it creates -- return
   // here instead of their hardcoded top-level list (see CsmCaseCreatePage.tsx

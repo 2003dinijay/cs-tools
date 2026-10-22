@@ -20,6 +20,7 @@ import type { JSX } from "react";
 import ProjectMetaCell from "@features/csm-projects/components/ProjectMetaCell";
 import ProjectOnboardingOwnerValue from "@features/csm-projects/components/ProjectOnboardingOwnerValue";
 import ProjectOnboardingStatusChip from "@features/csm-projects/components/ProjectOnboardingStatusChip";
+import { isOnboardingEnabled } from "@features/csm-projects/utils/projectOnboardingEnabled";
 import type { ProjectDetails } from "@features/csm-projects/types/csmProjects";
 import { formatUtcDateForDisplay } from "@utils/dateTime";
 
@@ -93,9 +94,11 @@ export default function ProjectOnboardingTab({
             emptyFallback={<Typography variant="body2">—</Typography>}
           />
         </ProjectMetaCell>
-        <ProjectMetaCell label="Onboarding owner">
-          <ProjectOnboardingOwnerValue owner={project.onboardingOwner} />
-        </ProjectMetaCell>
+        {isOnboardingEnabled(project.onboardingStatus) && (
+          <ProjectMetaCell label="Onboarding owner">
+            <ProjectOnboardingOwnerValue owner={project.onboardingOwner} />
+          </ProjectMetaCell>
+        )}
         <ProjectMetaCell label="Onboarding start date">
           <Typography variant="body2">{dateCell(project.onboardingStartDate)}</Typography>
         </ProjectMetaCell>
