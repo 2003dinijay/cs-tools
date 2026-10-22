@@ -1903,6 +1903,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// internalOnly: the scan names accounts, their owners and who is
 		// assigned to each migration; a customer token must never reach it.
 		mux.HandleFunc("GET /reports/migration-cases", internalOnly(accessSvc, migrationCaseReportHandler.GetMigrationCaseReport))
+	}
 	if runbookHandler != nil {
 		// Runbooks (Operations > Runbooks): internal callers only.
 		mux.HandleFunc("GET /runbooks", internalOnly(accessSvc, runbookHandler.ListRunbooks))

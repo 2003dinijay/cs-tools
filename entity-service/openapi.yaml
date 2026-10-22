@@ -10154,6 +10154,34 @@ paths:
                 $ref: '#/components/schemas/MigrationCaseReport'
         "400":
           description: olderThanDays is not a whole number of days in range.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "503":
+          description: The scan's tags are not configured on this deployment, or the caller's identity could not be checked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /runbooks:
     get:
       summary: List the runbook catalog.
@@ -10357,8 +10385,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        "503":
-          description: The scan's tags are not configured on this deployment, or the caller's identity could not be checked.
         "500":
           description: Unexpected error.
           content:

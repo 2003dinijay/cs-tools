@@ -644,12 +644,6 @@ function RunbookAlertSearch({ runbooks }: { runbooks: Runbook[] }): JSX.Element 
         slotProps={{ htmlInput: { "aria-label": "Search runbook with alert name" } }}
       />
       {query.trim() && (
-        <Alert severity={match?.runbookUrl ? "success" : "warning"}>
-          <Typography variant="body2" sx={{ wordBreak: "break-word" }}>
-            {match ? `Matched alert: ${match.alertName}` : "No runbook covers this alert."}
-          </Typography>
-          {match?.runbookUrl ? (
-        <Alert severity={match?.runbook.runbookUrl ? "success" : "warning"}>
         <Alert severity={match?.runbook.runbookUrl ? "success" : partial.length > 0 ? "info" : "warning"}>
           {match ? (
             <Typography variant="body2" sx={{ wordBreak: "break-word" }}>
@@ -692,7 +686,7 @@ function RunbookAlertSearch({ runbooks }: { runbooks: Runbook[] }): JSX.Element 
             </Link>
           ) : match ? (
             <Typography variant="body2" sx={{ mt: 0.5, fontWeight: 600 }}>
-              No runbook written for it yet.
+              No runbook available for this alert.
             </Typography>
           ) : null}
         </Alert>

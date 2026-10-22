@@ -189,14 +189,6 @@ export function parseRunbookImport(text: string): RunbookInput[] {
   throw new Error("Expected an object of alert names to link, or a list of runbooks.");
 }
 
-/** Runbooks as an import file: an object of alert name to link, "" for an alert with no runbook yet. */
-export function runbooksToImportJson(runbooks: Pick<Runbook, "alertName" | "runbookUrl">[]): string {
-  // fromEntries defines own properties, so an alert named __proto__ is kept rather than setting the prototype.
-  const out = Object.fromEntries(runbooks.map((rb) => [rb.alertName, rb.runbookUrl ?? ""]));
-  return `${JSON.stringify(out, null, 2)}\n`;
-}
-
-export const RUNBOOK_CSV_HEADER = ["Alert name", "Runbook link", "Last updated by", "Last updated"];
 /** Runbooks as an import file: a list of {number, name, runbookUrl, alerts}; the import ignores the number and matches by alert. */
 export function runbooksToImportJson(runbooks: Pick<Runbook, "number" | "name" | "runbookUrl" | "alerts">[]): string {
   const out = runbooks.map((rb) => ({ number: rb.number, name: rb.name, runbookUrl: rb.runbookUrl, alerts: rb.alerts }));
@@ -205,8 +197,7 @@ export function runbooksToImportJson(runbooks: Pick<Runbook, "number" | "name" |
 
 export const RUNBOOK_CSV_HEADER = ["Number", "Name", "Alerts", "Runbook link", "Last updated"];
 
-/** One CSV row per runbook, in the order of RUNBOOK_CSV_HEADER. */
+/** One CSV row per runbook, in the order of RUNBOOK_CSV_HEADER; the alerts share a cell, one per line. */
 export function runbooksToCsvRows(runbooks: Runbook[]): string[][] {
-  return runbooks.map((rb) => [rb.alertName, rb.runbookUrl ?? "", rb.updatedBy, rb.updatedOn]);
   return runbooks.map((rb) => [rb.number, rb.name, rb.alerts.join("\n"), rb.runbookUrl ?? "", rb.updatedOn]);
 }
