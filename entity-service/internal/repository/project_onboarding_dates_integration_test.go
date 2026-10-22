@@ -116,4 +116,24 @@ func TestProjectOnboardingDatesIntegration(t *testing.T) {
 	got, _ = repo.GetProjectByID(ctx, podProject, scope)
 	check("after rejections", [4]*time.Time{got.OnboardingStartDate, got.GoLivePlanDate, got.GoLiveDate, got.OnboardingExpiryDate},
 		"2026-02-01", "2026-05-01", "2026-05-15", "2027-03-01")
+
+	// Stored data that already violates the order (e.g. overwritten by a sync)
+	// must not block an edit to a different date; the supplied date is still
+	// checked against the stored start, and moving the start re-checks all.
+	if _, err := pool.Exec(ctx, `UPDATE project SET onboarding_go_live_date = '2026-01-10' WHERE id = $1`, podProject); err != nil {
+		t.Fatalf("seed violation: %v", err)
+	}
+	if _, err := patch(domain.ProjectUpdateRequest{OnboardingExpiryDate: str("2027-04-01")}); err != nil {
+		t.Fatalf("expiry-only edit blocked by a stored violation: %v", err)
+	}
+	var ve *apierror.ValidationError
+	if _, err := patch(domain.ProjectUpdateRequest{OnboardingGoLivePlanDate: str("2026-01-05")}); !errors.As(err, &ve) {
+		t.Errorf("supplied plan before the stored start: err = %v, want ValidationError", err)
+	}
+	if _, err := patch(domain.ProjectUpdateRequest{OnboardingStartDate: str("2026-02-02")}); !errors.As(err, &ve) {
+		t.Errorf("start change over a stored violation: err = %v, want ValidationError", err)
+	}
+	got, _ = repo.GetProjectByID(ctx, podProject, scope)
+	check("after stored-violation edits", [4]*time.Time{got.OnboardingStartDate, got.GoLivePlanDate, got.GoLiveDate, got.OnboardingExpiryDate},
+		"2026-02-01", "2026-05-01", "2026-01-10", "2027-04-01")
 }

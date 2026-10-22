@@ -713,18 +713,21 @@ func updateProjectTx(ctx context.Context, tx pgx.Tx, id string, req domain.Proje
 		onboardingOwner = req.OnboardingOwner
 	}
 
-	// The merged dates (supplied value, else stored) must keep go-live plan,
-	// go-live and expiry on or after the start date. Only checked when the
-	// request sets a date, so an unrelated patch is never blocked by old data.
+	// Order rules: when the request moves the start date, every merged date
+	// (supplied value, else stored) must stay on or after it. Otherwise only
+	// the dates the request supplies are checked, against the stored start, so
+	// stored data that already violates the order never blocks an unrelated edit.
 	dates, _ := ParseOnboardingDates(req) // validated by UpdateProject
-	if dates != (OnboardingDates{}) {
+	if dates.Start != nil {
 		merged := OnboardingDates{
-			Start: firstDate(dates.Start, stored.Start), GoLivePlan: firstDate(dates.GoLivePlan, stored.GoLivePlan),
+			Start: dates.Start, GoLivePlan: firstDate(dates.GoLivePlan, stored.GoLivePlan),
 			GoLive: firstDate(dates.GoLive, stored.GoLive), Expiry: firstDate(dates.Expiry, stored.Expiry),
 		}
 		if err := merged.checkOrder(merged.Start); err != nil {
 			return domain.ProjectUpdateResult{}, err
 		}
+	} else if err := dates.checkOrder(stored.Start); err != nil {
+		return domain.ProjectUpdateResult{}, err
 	}
 
 	// project.updated_on/updated_by is bumped on every successful call, even one
