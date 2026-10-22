@@ -22,7 +22,10 @@ import error500Svg from "@assets/error/error-500.svg";
 import EmptyIcon from "@components/empty-state/EmptyIcon";
 import SearchNoResultsIcon from "@components/empty-state/SearchNoResultsIcon";
 import { formatDateTime } from "@features/support/utils/support";
-import { formatDuration } from "@features/operations/utils/changeRequests";
+import {
+  formatDuration,
+  getChangeRequestCaseNumber,
+} from "@features/operations/utils/changeRequests";
 import {
   getChangeRequestImpactColor,
   getChangeRequestStateColor,
@@ -128,6 +131,7 @@ export default function ChangeRequestsList({
         const startTime = formatDateTime(item.startDate);
         const endTime = formatDateTime(item.endDate);
         const durationText = formatDuration(item.duration);
+        const caseNumber = getChangeRequestCaseNumber(item.case);
 
         return (
           <Form.CardButton
@@ -255,7 +259,7 @@ export default function ChangeRequestsList({
                     </Typography>
                   </Box>
                 )}
-                {(item.case?.internalId || item.case?.number) && (
+                {(item.case?.internalId || caseNumber) && (
                   <>
                     <Typography variant="body2" color="text.disabled">
                       |
@@ -265,14 +269,14 @@ export default function ChangeRequestsList({
                         {item.case.internalId}
                       </Typography>
                     )}
-                    {item.case?.internalId && item.case?.number && (
+                    {item.case?.internalId && caseNumber && (
                       <Typography variant="body2" color="text.disabled">
                         |
                       </Typography>
                     )}
-                    {item.case?.number && (
+                    {caseNumber && (
                       <Typography variant="body2" color="text.secondary">
-                        {CHANGE_REQUESTS_LIST_SR_PREFIX} {item.case.number}
+                        {CHANGE_REQUESTS_LIST_SR_PREFIX} {caseNumber}
                       </Typography>
                     )}
                   </>
