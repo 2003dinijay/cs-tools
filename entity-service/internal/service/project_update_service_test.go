@@ -417,6 +417,44 @@ func TestPgProjectUpdateService_DualWriteDispatchesExactlyOneMirrorCallOnSuccess
 	}
 }
 
+// TestPgProjectUpdateService_MirrorDropsOnboardingFieldsFromMixedRequest pins
+// that a request mixing a mirrorable field with the Postgres-only onboarding
+// fields still reaches the mirror, carrying only the mirrorable field.
+func TestPgProjectUpdateService_MirrorDropsOnboardingFieldsFromMixedRequest(t *testing.T) {
+	hasAgent := true
+	status := "In-Progress"
+	owner := "00000000-0000-0000-0000-000000000001"
+	start, planned, golive, expiry := "2026-03-01", "2026-05-01", "2026-05-15", "2027-03-01"
+	repo := &stubProjectUpdateRepo{}
+	mirror := &stubProjectMirror{}
+	dispatcher := NewSNWritebackDispatcher(&recordingSNWritebackFailures{})
+	svc := NewProjectUpdateServiceWithSNWriteback(repo, testProjectUserRepo(), alwaysUnrestrictedAccess{}, dispatcher, mirror)
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	req := domain.ProjectUpdateRequest{
+		HasAgent: &hasAgent, OnboardingStatus: &status, OnboardingOwner: &owner,
+		OnboardingStartDate: &start, OnboardingGoLivePlanDate: &planned,
+		OnboardingGoLiveDate: &golive, OnboardingExpiryDate: &expiry,
+	}
+	if _, err := svc.UpdateProject(ctx, "11111111-1111-1111-1111-111111111111", req); err != nil {
+		t.Fatalf("UpdateProject() error = %v, want success", err)
+	}
+	if repo.gotReq.OnboardingStartDate == nil || repo.gotReq.OnboardingStatus == nil {
+		t.Fatalf("repo must still receive the onboarding fields, got %+v", repo.gotReq)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if mirror.calls != 1 {
+		t.Fatalf("mirror calls = %d, want 1", mirror.calls)
+	}
+	got := mirror.gotReq
+	if got.HasAgent == nil || !*got.HasAgent {
+		t.Fatalf("mirror request lost hasAgent: %+v", got)
+	}
+	if got.OnboardingStatus != nil || got.OnboardingOwner != nil || hasOnboardingDates(got) {
+		t.Fatalf("mirror request still carries onboarding fields: %+v", got)
+	}
+}
+
 // TestPgProjectUpdateService_AcceptsOnboardingFields pins that an onboarding-only
 // request counts as a stored field, reaches the repository, and is never
 // dispatched to the dual-write mirror.

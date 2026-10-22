@@ -137,7 +137,16 @@ func (s *pgProjectUpdateService) UpdateProject(ctx context.Context, id string, r
 	// first/async shape as caseService.UpdateCase's own mirror (see that
 	// method's own doc comment).
 	if s.snWriteback != nil && s.snMirror != nil && hasSNMirrorableProjectFields(req) {
+		// Strip the Postgres-only onboarding fields: the mirror rejects them
+		// outright, which would otherwise drop the mirrorable fields of a
+		// mixed request (e.g. hasAgent together with an onboarding date).
 		mirrorReq := req
+		mirrorReq.OnboardingStatus = nil
+		mirrorReq.OnboardingOwner = nil
+		mirrorReq.OnboardingStartDate = nil
+		mirrorReq.OnboardingGoLivePlanDate = nil
+		mirrorReq.OnboardingGoLiveDate = nil
+		mirrorReq.OnboardingExpiryDate = nil
 		s.snWriteback.Dispatch(ctx, "project", id, "update", mirrorReq, func(writeCtx context.Context) error {
 			_, err := s.snMirror.UpdateProject(writeCtx, id, mirrorReq)
 			return err
