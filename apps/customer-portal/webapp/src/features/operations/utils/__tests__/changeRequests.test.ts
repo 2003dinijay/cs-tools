@@ -21,6 +21,7 @@ import {
   formatChangeRequestDuration,
   formatDuration,
   getAnsweredWindow,
+  getChangeRequestCaseNumber,
   getChangeRequestDecisionMode,
   describeChangeRequestActionError,
   isAwaitingInternalReview,
@@ -1253,5 +1254,24 @@ describe("isAwaitingInternalReview", () => {
     }
     expect(isAwaitingInternalReview(null)).toBe(false);
     expect(isAwaitingInternalReview({ state: null })).toBe(false);
+  });
+});
+
+describe("getChangeRequestCaseNumber", () => {
+  it("falls back to the reference label when number is absent", () => {
+    expect(
+      getChangeRequestCaseNumber({ id: "c1", label: "CS0000001" } as never),
+    ).toBe("CS0000001");
+  });
+
+  it("prefers number over label", () => {
+    expect(
+      getChangeRequestCaseNumber({ number: "CS0000002", label: "x" }),
+    ).toBe("CS0000002");
+  });
+
+  it("returns undefined for a missing reference", () => {
+    expect(getChangeRequestCaseNumber(null)).toBeUndefined();
+    expect(getChangeRequestCaseNumber({ label: "" })).toBeUndefined();
   });
 });

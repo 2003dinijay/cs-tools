@@ -153,6 +153,19 @@ export function formatChangeRequestDisplayDate(
 }
 
 /**
+ * Case number of a change request's linked service request. The API returns the
+ * case number as the reference `label`; `number` is only set on some payloads.
+ *
+ * @param caseRef - The change request's `case` reference.
+ * @returns The case number, or undefined when none is present.
+ */
+export function getChangeRequestCaseNumber(
+  caseRef: { number?: string | null; label?: string | null } | null | undefined,
+): string | undefined {
+  return caseRef?.number || caseRef?.label || undefined;
+}
+
+/**
  * Format minutes as "X hours Y minutes".
  *
  * @param minutes - Total minutes.
@@ -1199,7 +1212,7 @@ export function generateChangeRequestDetailsPdf(
     ["Customer Project", changeRequest.project?.label || "N/A"],
     ["Environment", changeRequest.deployment?.label || "N/A"],
     ["State", changeRequest.state?.label || "N/A"],
-    ["Service Request", changeRequest.case?.number || "N/A"],
+    ["Service Request", getChangeRequestCaseNumber(changeRequest.case) || "N/A"],
     ["Created By", changeRequest.createdBy || "N/A"],
     ["Created Date", getDateOrNA(changeRequest.createdOn)],
     ["Start Date", getDateOrNA(changeRequest.startDate)],
