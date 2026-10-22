@@ -441,13 +441,14 @@ func (r *callRequestRepo) SearchAllCallRequests(ctx context.Context, f domain.Se
 }
 
 // createCallRequestStateEnum is the customer_call_state_enum label for a
-// create. The service resolves this first; an empty value (a direct repository
-// caller, including older tests) stays the customer-raised default.
-func createCallRequestStateEnum(state domain.CallRequestStateType) string {
-	if state == "" {
-		state = domain.CallRequestStatePendingOnWSO2
+// create. The service resolves and validates state before this is called. A
+// nil or empty value (a direct repository caller, including older tests)
+// stays the customer-raised default.
+func createCallRequestStateEnum(state *domain.CallRequestStateType) string {
+	if state == nil || *state == "" {
+		return callRequestStateToEnum(domain.CallRequestStatePendingOnWSO2)
 	}
-	return callRequestStateToEnum(state)
+	return callRequestStateToEnum(*state)
 }
 
 // CreateCallRequest implements CallRequestRepository.

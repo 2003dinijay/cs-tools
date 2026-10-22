@@ -6003,16 +6003,16 @@ type SearchITServicesResponse struct {
 }
 
 // CreateCallRequestRequest is the input for POST /call-requests.
-// State is optional. Omitted, a request starts pending_on_wso2 (the customer
-// raised it). pending_on_customer is the only other value accepted, and is
-// what the CSM portal sends when an agent raises the request: the customer
-// must approve before it becomes pending_on_wso2.
+// State is optional. A nil state means the field was omitted, so the request
+// starts pending_on_wso2 (the customer raised it). A supplied value, including
+// an empty string, is validated: only pending_on_customer is accepted, which
+// is what the CSM portal sends when an agent raises the request.
 type CreateCallRequestRequest struct {
-	CaseID          string               `json:"caseId"`
-	Reason          string               `json:"reason"`
-	UTCTimes        []string             `json:"utcTimes"`
-	DurationMinutes int                  `json:"durationInMinutes"`
-	State           CallRequestStateType `json:"state,omitempty"`
+	CaseID          string                `json:"caseId"`
+	Reason          string                `json:"reason"`
+	UTCTimes        []string              `json:"utcTimes"`
+	DurationMinutes int                   `json:"durationInMinutes"`
+	State           *CallRequestStateType `json:"state,omitempty"`
 }
 
 // CreateCallRequestResponse is the output for POST /call-requests.

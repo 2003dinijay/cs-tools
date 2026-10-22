@@ -109,19 +109,18 @@ func callerEmail(ctx context.Context) (string, error) {
 }
 
 // resolveCreateCallRequestState picks the row's starting state.
-// An omitted state means the customer raised the request, so it waits on WSO2.
-// An agent-raised request (CSM portal) passes pending_on_customer, and stays
-// there until the customer approves. Any other state is refused: create cannot
-// schedule, reject, or conclude a call.
-func resolveCreateCallRequestState(state domain.CallRequestStateType) (domain.CallRequestStateType, error) {
-	switch state {
-	case "":
+// A nil state means the field was omitted: the customer raised the request, so
+// it waits on WSO2. A supplied value is checked before any repository call.
+// Only pending_on_customer is accepted (an agent-raised request). An empty
+// string and every other state are refused.
+func resolveCreateCallRequestState(state *domain.CallRequestStateType) (domain.CallRequestStateType, error) {
+	if state == nil {
 		return domain.CallRequestStatePendingOnWSO2, nil
-	case domain.CallRequestStatePendingOnCustomer:
-		return domain.CallRequestStatePendingOnCustomer, nil
-	default:
-		return "", &apierror.ValidationError{Msg: "state on create must be omitted or pending_on_customer"}
 	}
+	if *state == domain.CallRequestStatePendingOnCustomer {
+		return domain.CallRequestStatePendingOnCustomer, nil
+	}
+	return "", &apierror.ValidationError{Msg: "state on create must be omitted or pending_on_customer"}
 }
 
 // CreateCallRequest implements CallRequestService.
@@ -145,7 +144,7 @@ func (s *callRequestService) CreateCallRequest(ctx context.Context, req domain.C
 	if err != nil {
 		return domain.CreateCallRequestResponse{}, err
 	}
-	req.State = state
+	req.State = &state
 
 	email, err := callerEmail(ctx)
 	if err != nil {
