@@ -1,0 +1,118 @@
+// Copyright (c) 2026 WSO2 LLC. (https://www.wso2.com).
+//
+// WSO2 LLC. licenses this file to you under the Apache License,
+// Version 2.0 (the "License"); you may not use this file except
+// in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+package repository_test
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
+)
+
+// consumptionStampPool builds a private schema with the project columns the consumption
+// update writes. Skipped without INSTANCE_INGESTION_TEST_DSN.
+func consumptionStampPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	dsn := os.Getenv("INSTANCE_INGESTION_TEST_DSN")
+	if dsn == "" {
+		t.Skip("INSTANCE_INGESTION_TEST_DSN not set")
+	}
+	ctx := context.Background()
+	admin, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(admin.Close)
+	schema := fmt.Sprintf("consumption_stamp_test_%d", time.Now().UnixNano())
+	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = admin.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE") })
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	for _, ddl := range []string{
+		`CREATE TYPE choreo_application_status_enum AS ENUM ('PENDING', 'CREATED_APPLICATION', 'SUBSCRIBED_APPLICATION', 'GENERATED_CREDENTIALS', 'COMPLETED')`,
+		`CREATE TABLE project (
+			id UUID PRIMARY KEY, choreo_application_id VARCHAR(255), choreo_application_status choreo_application_status_enum,
+			product_consumption_client_id VARCHAR(255), product_consumption_client_secret VARCHAR(255),
+			product_consumption_primary_secret_key VARCHAR(255), product_consumption_secondary_secret_key VARCHAR(255),
+			product_consumption_license_secrets TEXT, consumption_tracking_file_generated_on TIMESTAMPTZ,
+			updated_on TIMESTAMPTZ, updated_by VARCHAR(255))`,
+		`INSERT INTO project (id, choreo_application_status) VALUES ('7d8783f7-3b65-4b10-9140-4c6aa5e45a87', 'PENDING')`,
+	} {
+		if _, err := pool.Exec(ctx, ddl); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return pool
+}
+
+// Reaching COMPLETED stamps when the licence file's secrets were generated, as ServiceNow's
+// status 5 update did; the earlier steps don't, and a later lower status keeps the stamp.
+func TestProjectConsumption_StampsTheFileGeneratedDateOnCompletion(t *testing.T) {
+	pool := consumptionStampPool(t)
+	repo := repository.NewProjectRepository(repository.NewScoped(pool))
+	ctx := internalCtx()
+	const id = "7d8783f7-3b65-4b10-9140-4c6aa5e45a87"
+	stamp := func() *time.Time {
+		t.Helper()
+		var v *time.Time
+		if err := pool.QueryRow(context.Background(), `SELECT consumption_tracking_file_generated_on FROM project WHERE id = $1`, id).Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	app, key := "app-1", "abc"
+
+	for _, status := range []int{2, 3, 4} {
+		if err := repo.UpdateProjectConsumption(ctx, id, domain.ProjectConsumptionUpdateRequest{Status: status, ApplicationID: &app}, "pcs"); err != nil {
+			t.Fatal(err)
+		}
+		if got := stamp(); got != nil {
+			t.Fatalf("status %d stamped the file-generated date: %v", status, got)
+		}
+	}
+
+	if err := repo.UpdateProjectConsumption(ctx, id, domain.ProjectConsumptionUpdateRequest{Status: 5, PrimarySecretKey: &key}, "pcs"); err != nil {
+		t.Fatal(err)
+	}
+	first := stamp()
+	if first == nil {
+		t.Fatal("reaching COMPLETED did not stamp the file-generated date")
+	}
+
+	if err := repo.UpdateProjectConsumption(ctx, id, domain.ProjectConsumptionUpdateRequest{Status: 4}, "pcs"); err != nil {
+		t.Fatal(err)
+	}
+	if got := stamp(); got == nil || !got.Equal(*first) {
+		t.Errorf("a later lower status changed the stamp: %v, want %v", got, *first)
+	}
+}

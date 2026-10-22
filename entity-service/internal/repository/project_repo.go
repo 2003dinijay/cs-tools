@@ -976,6 +976,7 @@ func (r *projectRepo) UpdateProjectConsumption(ctx context.Context, id string, r
 		    product_consumption_primary_secret_key = COALESCE($6, product_consumption_primary_secret_key),
 		    product_consumption_secondary_secret_key = COALESCE($7, product_consumption_secondary_secret_key),
 		    product_consumption_license_secrets = COALESCE($8, product_consumption_license_secrets),
+		    consumption_tracking_file_generated_on = CASE WHEN $10 THEN NOW() ELSE consumption_tracking_file_generated_on END,
 		    updated_on = NOW(),
 		    updated_by = $9
 		WHERE id = $1`,
@@ -988,6 +989,9 @@ func (r *projectRepo) UpdateProjectConsumption(ctx context.Context, id string, r
 		req.SecondarySecretKey,
 		req.LicenseSecrets,
 		updatedBy,
+		// Reaching COMPLETED is when the project's licence secrets are generated, which is
+		// when ServiceNow stamped u_product_consumption_tracking_file_generated_date.
+		req.Status >= 5,
 	)
 	if err != nil {
 		var pgErr *pgconn.PgError
