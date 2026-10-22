@@ -21,9 +21,11 @@
 -- and never reach either portal. Both flags false means published but shown
 -- nowhere.
 --
--- The banner is the html column. A close button lives in that HTML
--- (data-close-banner). Dismissal in the browser uses the row id. Title,
--- message, severity, and an action link are not stored.
+-- The banner is the html column. closeable is a separate choice: true means
+-- the portal draws a close button and the browser remembers the dismissal
+-- under the row id; false means the banner stays until it expires or an
+-- admin changes it. Title, message, severity, and an action link are not
+-- stored.
 --
 -- Entity-service owns this table. It is not a ServiceNow sync table, so
 -- operations/csm-sync-service does not carry this file. Access is Asgardeo
@@ -42,6 +44,7 @@ CREATE TABLE IF NOT EXISTS portal_banner (
     sort_order                    INTEGER     NOT NULL DEFAULT 0 CHECK (sort_order >= 0),
     visible_in_customer_portal    BOOLEAN     NOT NULL DEFAULT FALSE,
     visible_in_csm_portal         BOOLEAN     NOT NULL DEFAULT FALSE,
+    closeable                     BOOLEAN     NOT NULL DEFAULT FALSE,
     html                          TEXT        NOT NULL DEFAULT '',
     starts_on                     TIMESTAMPTZ NULL,
     expires_on                    TIMESTAMPTZ NULL,
@@ -52,6 +55,6 @@ CREATE TABLE IF NOT EXISTS portal_banner (
 );
 
 COMMENT ON TABLE portal_banner IS
-    'HTML portal banners. status published plus the matching visibility flag is what a portal shows. draft and removed stay hidden. Both visibility flags false shows the row nowhere.';
+    'HTML portal banners. closeable draws a close button. status published plus the matching visibility flag is what a portal shows. draft and removed stay hidden.';
 
 COMMIT;
