@@ -516,9 +516,20 @@ func (s *salesforceEventService) provisionOwner(ctx context.Context, sfID, role,
 		return nil, nil
 	}
 
+	firstName := strings.TrimSpace(person.GivenName)
+	lastName := strings.TrimSpace(person.FamilyName)
+	if firstName == "" && lastName == "" {
+		// SCIM found a directory entry with neither name field set -- not
+		// enough to provision a usable CSM user from, so this is treated like
+		// any other lookup miss rather than creating a nameless row.
+		slog.WarnContext(ctx, "salesforce: SCIM match has no given or family name, skipping auto-provision",
+			"accountSfId", sfID, "role", role, "email", email)
+		return nil, nil
+	}
+
 	created, err := s.support.Owners.Users.CreateUser(ctx, domain.CreateUserRequest{
-		FirstName: strings.TrimSpace(person.GivenName),
-		LastName:  strings.TrimSpace(person.FamilyName) + ownerAutoProvisionSuffix,
+		FirstName: firstName,
+		LastName:  lastName + ownerAutoProvisionSuffix,
 		Email:     email,
 		Roles:     []domain.UserRole{ownerAutoProvisionRole},
 	}, domain.SalesforceSyncActor)
