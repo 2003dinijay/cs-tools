@@ -35,6 +35,7 @@ import (
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/middleware"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/salesentity"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/scim"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/service"
 	integrationservice "github.com/wso2-open-operations/cs-tools/entity-service/internal/servicenow-integration-service"
 )
@@ -397,6 +398,22 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		if cfg.CSMMigrationSalesforceAccountIngestEnabled {
 			accountIngestRepo = accountRepo
 		}
+		// Owners is left at its zero value (disabled) when the SCIM
+		// connection is not configured: lookupOwner then keeps writing NULL
+		// and warning for an account person reference with no matching CSM
+		// user, exactly as it did before this was added.
+		var owners service.OwnerProvisioning
+		if cfg.SCIMConfigured() {
+			owners = service.OwnerProvisioning{
+				SCIM: scim.New(cfg.SCIMBaseURL, scim.ClientCredentialsConfig{
+					TokenURL:     cfg.SCIMTokenURL,
+					ClientID:     cfg.SCIMClientID,
+					ClientSecret: cfg.SCIMClientSecret,
+					Scopes:       cfg.SCIMScopes,
+				}),
+				Users: userRepo,
+			}
+		}
 		// The shared ingest support is flag-independent: the full account
 		// repository serves EnsureAccount's read even while the Account
 		// branch (the write side) is off, and the salesforce_ingest_state
@@ -406,6 +423,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 			Accounts: accountRepo,
 			States:   repository.NewSalesforceIngestStateRepository(db),
 			Projects: projectIngestRepo,
+			Owners:   owners,
 		}
 		// The Project branch is update-only unless its insert switch is on
 		// too (csm-sync-service still inserts project rows until cutover).
