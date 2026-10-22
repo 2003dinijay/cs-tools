@@ -21,7 +21,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/service"
 )
@@ -40,9 +39,11 @@ func NewProductRegressionReportHandler(svc service.ProductRegressionReportServic
 // GetProductRegressionReport handles
 // GET /reports/product-regressions?products=<name>,<name>&month=YYYY-MM.
 //
-// products is required and may be given once comma-separated or repeated.
-// month is optional and defaults to the month before now. The scheduled
-// task that mails the reports is the only expected caller.
+// products is required and may be given once comma-separated or repeated;
+// the service answers a missing list with a validation error, which
+// writeServiceError maps to 400 like every other one. month is optional
+// and defaults to the month before now. The scheduled task that mails the
+// reports is the only expected caller.
 func (h *ProductRegressionReportHandler) GetProductRegressionReport(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	var products []string
@@ -52,10 +53,6 @@ func (h *ProductRegressionReportHandler) GetProductRegressionReport(w http.Respo
 				products = append(products, p)
 			}
 		}
-	}
-	if len(products) == 0 {
-		apierror.WriteJSON(w, http.StatusBadRequest, "products is required: one or more product names, comma-separated")
-		return
 	}
 	report, err := h.svc.BuildReport(r.Context(), domain.ProductRegressionReportRequest{
 		Products: products,
