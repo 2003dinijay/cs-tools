@@ -414,7 +414,6 @@ func smeIncidentCard(plan Plan, link string) notifications.SMEIncidentEscalatedA
 		EscalatedBy:      t.EscalatedBy,
 		EscalatedFrom:    t.EscalatedFrom,
 		OnCall:           onCallName(plan),
-		Rotation:         rotationOf(plan),
 		EscalatedAt:      istStamp(t.At),
 		IncidentLink:     link,
 	}

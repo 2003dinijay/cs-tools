@@ -195,7 +195,7 @@ func TestBuildSMEIncidentEscalatedCard(t *testing.T) {
 	msg := buildSMEIncidentEscalatedCard(SMEIncidentEscalatedAlert{
 		IncidentID: "inc-1", Number: "INC0089973", SMETeam: "Choreo Runtime", Priority: "P1",
 		ShortDescription: "OOM on opensearch-data-cold-5", Service: "Moseif", State: "IN_PROGRESS",
-		EscalatedBy: "Kasun Perera", EscalatedFrom: "Apollo SRE Group", OnCall: "Nimal <Silva>", Rotation: "Night",
+		EscalatedBy: "Kasun Perera", EscalatedFrom: "Apollo SRE Group", OnCall: "Nimal <Silva>",
 		EscalatedAt: "22 Oct 2026, 20:31 IST", IncidentLink: "https://portal/incidents/inc-1",
 	})
 	card := msg.CardsV2[0].Card
@@ -209,14 +209,15 @@ func TestBuildSMEIncidentEscalatedCard(t *testing.T) {
 	if w[1].DecoratedText == nil || w[1].DecoratedText.TopLabel != "Escalated by" || w[1].DecoratedText.Text != "<b>Kasun Perera</b> from Apollo SRE Group" {
 		t.Errorf("escalated by widget = %+v", w[1].DecoratedText)
 	}
-	if w[2].DecoratedText == nil || w[2].DecoratedText.TopLabel != "SME on call (L1, Night)" || w[2].DecoratedText.Text != "<b>Nimal &lt;Silva&gt;</b>" {
+	if w[2].DecoratedText == nil || w[2].DecoratedText.TopLabel != "SME on call" || w[2].DecoratedText.Text != "<b>Nimal &lt;Silva&gt;</b>" {
 		t.Errorf("on call widget = %+v", w[2].DecoratedText)
 	}
 	if w[3].ButtonList == nil || w[3].ButtonList.Buttons[0].OnClick.OpenLink.URL != "https://portal/incidents/inc-1" {
 		t.Errorf("view incident button = %+v", w[3].ButtonList)
 	}
 	details := card.Sections[1]
-	if !details.Collapsible || !strings.Contains(details.Widgets[0].TextParagraph.Text, "<b>Escalated from:</b> Apollo SRE Group") {
+	if !details.Collapsible || !strings.Contains(details.Widgets[0].TextParagraph.Text, "<b>Escalated from:</b> Apollo SRE Group") ||
+		strings.Contains(details.Widgets[0].TextParagraph.Text, "Paging:") {
 		t.Errorf("details = %+v", details)
 	}
 }

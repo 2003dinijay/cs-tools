@@ -223,9 +223,8 @@ type SMEIncidentEscalatedAlert struct {
 	// EscalatedBy is who escalated it; EscalatedFrom the SRE team it left.
 	EscalatedBy   string
 	EscalatedFrom string
-	// OnCall is the SME the first rung pages; Rotation its shift, e.g. "Night".
+	// OnCall is the SME the first rung pages.
 	OnCall       string
-	Rotation     string
 	EscalatedAt  string
 	IncidentLink string
 }
@@ -263,15 +262,11 @@ func buildSMEIncidentEscalatedCard(a SMEIncidentEscalatedAlert) chatCardMessage 
 		}
 		summary = append(summary, chatCardWidget{DecoratedText: &chatDecoratedText{TopLabel: "Escalated by", Text: text, WrapText: true}})
 	}
-	onCallLabel := "SME on call (L1)"
-	if r := strings.TrimSpace(a.Rotation); r != "" {
-		onCallLabel = "SME on call (L1, " + r + ")"
-	}
 	onCall := caseAlertLine("<b>%s</b>", a.OnCall)
 	if strings.TrimSpace(a.OnCall) == "" {
 		onCall = `<font color="#B3261E">Nobody rostered</font>`
 	}
-	summary = append(summary, chatCardWidget{DecoratedText: &chatDecoratedText{TopLabel: onCallLabel, Text: onCall, WrapText: true}})
+	summary = append(summary, chatCardWidget{DecoratedText: &chatDecoratedText{TopLabel: "SME on call", Text: onCall, WrapText: true}})
 	if a.IncidentLink != "" {
 		summary = append(summary, chatCardWidget{ButtonList: &chatButtonList{
 			Buttons: []chatButton{{Text: "View Incident", OnClick: chatOnClick{OpenLink: chatOpenLink{URL: a.IncidentLink}}}},
@@ -287,7 +282,6 @@ func buildSMEIncidentEscalatedCard(a SMEIncidentEscalatedAlert) chatCardMessage 
 	if at := strings.TrimSpace(a.EscalatedAt); at != "" {
 		details = append(details, caseAlertLine(`<b>Escalated at:</b> %s`, at))
 	}
-	details = append(details, caseAlertLine(`<b>Paging:</b> L1, then L2 and L3 until someone is assigned`))
 
 	return chatCardMessage{
 		CardsV2: []chatCardWrapper{{CardID: "incident-sme-escalated-alert", Card: chatCard{
