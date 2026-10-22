@@ -327,7 +327,7 @@ func TestInstanceIngestionIntegration_UsageStatsRollUp(t *testing.T) {
 	}
 	want := []string{
 		"CORES=8 DEP000001 2026-10-15 API_CALL",
-		"TRANSACTION_COUNT=250 DEP000001 2026-10-15 API_CALL",
+		"TRANSACTION_COUNT=350 DEP000001 2026-10-15 API_CALL",
 	}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("daily rows:\n got %v\nwant %v", got, want)
@@ -538,5 +538,85 @@ func TestInstanceIngestionIntegration_BatchRegistersReportNodesWithTheirProducts
 		if len(nodes) != 1 || ingestStr(nodes[0].VersionID) != want || ingestStr(nodes[0].DeploymentNumber) != "DEP000002442" {
 			t.Errorf("%s = %+v, want version %s", node, nodes, want)
 		}
+	}
+}
+
+// dailyValues reads the node's daily rows as "type date source=value".
+func dailyValues(t *testing.T, pool *pgxpool.Pool, nodeID string) []string {
+	t.Helper()
+	rows, err := pool.Query(context.Background(), `
+		SELECT dus.count_type, dus.summary_date::text, dus.data_source::text, dus.value
+		FROM daily_usage_summary dus JOIN deployment_node dn ON dn.id = dus.deployment_node_id
+		WHERE dn.node_id = $1 ORDER BY dus.count_type, dus.summary_date, dus.data_source::text`, nodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var ct, day, src string
+		var v int
+		if err := rows.Scan(&ct, &day, &src, &v); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, fmt.Sprintf("%s %s %s=%d", ct, day, src, v))
+	}
+	return got
+}
+
+// A counter a product publishes every hour adds up over the day, a level keeps
+// its latest reading (even when an older hour's report arrives late), each day
+// has its own row, and an uploaded FILE_UPLOAD row is left alone.
+func TestInstanceIngestionIntegration_DailyValueIsDerivedFromHourlyRows(t *testing.T) {
+	pool := instanceIngestionTestPool(t)
+	repo := repository.NewInstanceIngestionRepository(repository.NewScoped(pool))
+	ctx := internalCtx()
+	meta := domain.InstanceNodeMeta{ProjectKey: "CUPRSUBDEV", DeploymentNumber: "DEP000001", Product: "wso2am", Version: "4.2.0"}
+	at := func(day, hour int) time.Time { return time.Date(2026, 10, day, hour, 0, 0, 0, time.UTC) }
+	send := func(ct string, count int, when time.Time) {
+		t.Helper()
+		req := domain.InstanceUsageIngestRequest{NodeID: "node-d", CountType: ct, Count: count, InstanceNodeMeta: meta}
+		if err := repo.InsertUsageStats(ctx, req, when); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Counters: one report per hour, each the amount since the previous one.
+	for _, c := range []int{100, 250, 50} {
+		send("TRANSACTION_COUNT", c, at(15, 8+c/50))
+	}
+	send("M2M_TOKEN", 20, at(15, 9))
+	send("M2M_TOKEN", 30, at(15, 10))
+	send("AGENT_OBO_TOKEN", 3, at(15, 9))
+	send("AGENT_OBO_TOKEN", 4, at(15, 10))
+	send("TRANSACTION_COUNT", 10, at(16, 1)) // the next day is its own row
+
+	// Levels: the latest reading of the day stands, whatever order they arrive in.
+	send("MAU", 40, at(15, 11))
+	send("MAU", 45, at(15, 12))
+	send("TOTAL_USERS", 56, at(15, 12))
+	send("TOTAL_USERS", 50, at(15, 9)) // late report from an earlier hour
+
+	// An uploaded day for the same node and type sits beside the live one.
+	if _, err := repo.ImportDailyUsagesBatch(ctx, domain.DailyUsageBatchRequest{
+		NodeID: "node-d", InstanceNodeMeta: meta,
+		Usages: []domain.DailyUsageBatchItem{{Date: "2026-10-15", Type: "TRANSACTION_COUNT", Value: 7777}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	send("TRANSACTION_COUNT", 5, at(15, 14)) // live data after the upload
+
+	got := dailyValues(t, pool, "node-d")
+	want := []string{
+		"AGENT_OBO_TOKEN 2026-10-15 API_CALL=7",
+		"M2M_TOKEN 2026-10-15 API_CALL=50",
+		"MAU 2026-10-15 API_CALL=45",
+		"TOTAL_USERS 2026-10-15 API_CALL=56",
+		"TRANSACTION_COUNT 2026-10-15 API_CALL=405",
+		"TRANSACTION_COUNT 2026-10-15 FILE_UPLOAD=7777",
+		"TRANSACTION_COUNT 2026-10-16 API_CALL=10",
+	}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("daily rows:\n got %v\nwant %v", got, want)
 	}
 }

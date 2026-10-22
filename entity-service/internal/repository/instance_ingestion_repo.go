@@ -315,8 +315,11 @@ func (r *instanceIngestionRepo) InsertDeploymentInformation(ctx context.Context,
 }
 
 // InsertUsageStats registers the node from the request's meta, records the
-// count in hourly_usage_summary and rolls it into the day's API_CALL row of
-// daily_usage_summary (the day is countedOn's UTC date).
+// count in hourly_usage_summary and recomputes the day's API_CALL row of
+// daily_usage_summary from that day's hourly rows (the day is countedOn's UTC
+// date): the sum for a counter, the latest report for anything else. The row
+// used to take the reported count as the day's value, so a counter published
+// every hour showed only its last hour.
 func (r *instanceIngestionRepo) InsertUsageStats(ctx context.Context, req domain.InstanceUsageIngestRequest, countedOn time.Time) error {
 	if strings.TrimSpace(req.NodeID) == "" {
 		return &apierror.ValidationError{Msg: "nodeId is required"}
@@ -348,9 +351,49 @@ func (r *instanceIngestionRepo) InsertUsageStats(ctx context.Context, req domain
 				return err
 			}
 		}
+		dayValue, err := dailyUsageValueTx(ctx, tx, nodeUUID, req.CountType, countedOn)
+		if err != nil {
+			return err
+		}
 		summaryDate := countedOn.UTC().Format("2006-01-02")
-		return upsertDailyUsageTx(ctx, tx, nodeUUID, deploymentNumber, summaryDate, req.CountType, req.Count, "API_CALL", domain.InstanceIngestionActor)
+		return upsertDailyUsageTx(ctx, tx, nodeUUID, deploymentNumber, summaryDate, req.CountType, dayValue, "API_CALL", domain.InstanceIngestionActor)
 	})
+}
+
+// isCounterCountType reports whether a count type is a per-period delta that
+// adds up over a day, as opposed to a level (users, organisations, cores, MAU)
+// whose day value is its latest reading. A product publishes each cycle's
+// transactions, M2M tokens and agent token or lifecycle events as the amount
+// since its previous publish.
+func isCounterCountType(countType string) bool {
+	return countType == "TRANSACTION_COUNT" || countType == "M2M_TOKEN" || strings.HasPrefix(countType, "AGENT_")
+}
+
+// dailyUsageValueTx derives a node's day value for a count type from its
+// hourly rows of that UTC day (the day countedOn falls in): the sum for a
+// counter (capped at what the INTEGER column holds), the latest report by
+// counted_on for anything else, so a late report from an earlier hour does not
+// replace a newer one.
+func dailyUsageValueTx(ctx context.Context, tx pgx.Tx, nodeUUID, countType string, countedOn time.Time) (int, error) {
+	u := countedOn.UTC()
+	start := time.Date(u.Year(), u.Month(), u.Day(), 0, 0, 0, 0, time.UTC)
+	end := start.AddDate(0, 0, 1)
+
+	query := `
+		SELECT count FROM hourly_usage_summary
+		WHERE deployment_node_id = $1::uuid AND count_type = $2 AND counted_on >= $3 AND counted_on < $4
+		ORDER BY counted_on DESC, created_on DESC
+		LIMIT 1`
+	if isCounterCountType(countType) {
+		query = `
+			SELECT LEAST(COALESCE(SUM(count), 0), 2147483647)::int FROM hourly_usage_summary
+			WHERE deployment_node_id = $1::uuid AND count_type = $2 AND counted_on >= $3 AND counted_on < $4`
+	}
+	var value int
+	if err := tx.QueryRow(ctx, query, nodeUUID, countType, start, end).Scan(&value); err != nil {
+		return 0, fmt.Errorf("derive daily usage: %w", err)
+	}
+	return value, nil
 }
 
 // ImportDailyUsagesBatch writes an offline import's daily usages as FILE_UPLOAD
