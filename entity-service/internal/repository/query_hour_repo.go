@@ -170,7 +170,14 @@ SELECT p.id::text,
              + COALESCE(tc.providing_solution_minutes, 0)
              + COALESCE(tc.patching_minutes, 0)
            ELSE 0 END), 0)::int,
-       COALESCE(FLOOR(EXTRACT(EPOCH FROM p.consumed_onboarding_duration) / 60), 0)::int
+       CASE
+           WHEN COALESCE(p.onboarding_status::text, 'NOT_APPLICABLE') = 'NOT_APPLICABLE'
+               THEN 0
+           ELSE LEAST(
+               COALESCE(FLOOR(EXTRACT(EPOCH FROM p.consumed_onboarding_duration) / 60), 0),
+               COALESCE(FLOOR(EXTRACT(EPOCH FROM p.total_onboarding_duration) / 60), 0)
+           )
+       END::int
   FROM sf_opportunity_link l
   JOIN project p ON p.id = l.project_id
   LEFT JOIN time_card tc
@@ -179,7 +186,8 @@ SELECT p.id::text,
         AND tc.work_date >= $2
         AND tc.work_date <= $3
  WHERE l.opportunity_id = $1
- GROUP BY p.id, p.key, p.name, p.sf_id, p.consumed_onboarding_duration
+ GROUP BY p.id, p.key, p.name, p.sf_id,
+          p.onboarding_status, p.consumed_onboarding_duration, p.total_onboarding_duration
  ORDER BY p.key`
 
 func (r *queryHourRepo) ProjectConsumption(ctx context.Context, opportunityID string, from, to time.Time) ([]QueryHourProjectRow, error) {

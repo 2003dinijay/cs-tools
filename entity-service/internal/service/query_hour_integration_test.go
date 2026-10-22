@@ -164,17 +164,24 @@ type qhCase struct {
 	productName  string
 	quantity     float64
 	billableMins int
+	// onboarding, when set, gives the project an onboarding grant and
+	// records how much of it has been drawn.
+	onboardingStatus   string
+	onboardingTotal    int
+	onboardingConsumed int
 }
 
 // Three accounts, one per outcome. OVER is overdrawn, NEAR sits at 92%
 // of its allowance, FINE has barely touched it.
 var qhFixture = []qhCase{
-	{"OVER", "Overdrawn Ltd", "am-over@example.com", "to-over@example.com",
-		"Development Support - 100 hours", 1, 7000},
-	{"NEAR", "Nearly Ltd", "am-near@example.com", "customer@elsewhere.com",
-		"Development Support - 100 hours", 1, 5520},
-	{"FINE", "Comfortable Ltd", "am-fine@example.com", "",
-		"Development Support - 200 hours", 1, 600},
+	{key: "OVER", accountName: "Overdrawn Ltd", amEmail: "am-over@example.com",
+		toEmail: "to-over@example.com", productName: "Development Support - 100 hours",
+		quantity: 1, billableMins: 7000},
+	{key: "NEAR", accountName: "Nearly Ltd", amEmail: "am-near@example.com",
+		toEmail: "customer@elsewhere.com", productName: "Development Support - 100 hours",
+		quantity: 1, billableMins: 5520},
+	{key: "FINE", accountName: "Comfortable Ltd", amEmail: "am-fine@example.com",
+		productName: "Development Support - 200 hours", quantity: 1, billableMins: 600},
 }
 
 func seedQueryHourFixture(ctx context.Context, t *testing.T, pool *pgxpool.Pool) {
@@ -186,29 +193,28 @@ func seedQueryHourFixture(ctx context.Context, t *testing.T, pool *pgxpool.Pool)
 		}
 	}
 
-	// Only this fixture's own rows, by key -- never a TRUNCATE, which
-	// on a fully migrated database cascades into reference data that
-	// the migrations seed once.
-	keys := []string{"OVER", "NEAR", "FINE"}
+	// Everything this fixture owns, not just the rows the current case
+	// list would create. Cleaning up by the live list leaves behind
+	// whatever a previous run with a different list created, and the
+	// deterministic ids then collide on the next insert.
+	//
+	// Never a TRUNCATE: on a fully migrated database that cascades
+	// into reference data the migrations seed once.
 	exec(`DELETE FROM time_card WHERE created_by = 'qh-seed'`)
-	exec(`DELETE FROM sf_opportunity_product WHERE opportunity_id IN
-	        (SELECT id FROM sf_opportunity WHERE name = ANY($1))`, keys)
-	exec(`DELETE FROM sf_opportunity_link WHERE project_id IN
-	        (SELECT id FROM project WHERE key = ANY($1))`, keys)
-	exec(`DELETE FROM sf_opportunity WHERE name = ANY($1)`, keys)
+	exec(`DELETE FROM sf_opportunity_product WHERE created_by = 'qh-seed'`)
+	exec(`DELETE FROM sf_opportunity_link WHERE created_by = 'qh-seed'`)
+	exec(`DELETE FROM sf_opportunity WHERE created_by = 'qh-seed'`)
 	exec(`DELETE FROM work_item WHERE created_by = 'qh-seed'`)
-	exec(`DELETE FROM project WHERE key = ANY($1)`, keys)
-	exec(`DELETE FROM account WHERE name LIKE '%Ltd'`)
-	// Only this fixture's own people. A broader match would collide
-	// with other suites' users, which other tables reference.
-	var emails []string
-	for _, c := range qhFixture {
-		emails = append(emails, c.amEmail)
-		if c.toEmail != "" {
-			emails = append(emails, c.toEmail)
-		}
+	exec(`DELETE FROM project WHERE created_by = 'qh-seed'`)
+	exec(`DELETE FROM account WHERE created_by = 'qh-seed'`)
+	// The people are identified by the id range the fixture allocates
+	// from, since they carry no created_by of their own.
+	var ids []string
+	for i := 0; i < 50; i++ {
+		ids = append(ids, uuidFor(4000+i), uuidFor(5000+i))
 	}
-	exec(`DELETE FROM "user" WHERE email = ANY($1)`, emails)
+	exec(`DELETE FROM team_member WHERE user_id = ANY($1::uuid[])`, ids)
+	exec(`DELETE FROM "user" WHERE id = ANY($1::uuid[])`, ids)
 
 	for i, c := range qhFixture {
 		accID := uuidFor(1000 + i)
@@ -228,10 +234,18 @@ func seedQueryHourFixture(ctx context.Context, t *testing.T, pool *pgxpool.Pool)
 		        name, number, sf_id, account_manager_id, technical_owner_id)
 		      VALUES ($1, NOW(), NOW(), 'qh-seed', 'qh-seed', $2, $3, $4, $5, $6)`,
 			accID, c.accountName, "ACC-"+c.key, "001"+c.key, amID, nullIfEmpty(c.toEmail, toID))
+		status := c.onboardingStatus
+		if status == "" {
+			status = "NOT_APPLICABLE"
+		}
 		exec(`INSERT INTO project (id, created_on, updated_on, created_by, updated_by,
-		        name, key, sf_id, account_id)
-		      VALUES ($1, NOW(), NOW(), 'qh-seed', 'qh-seed', $2, $3, $4, $5)`,
-			projID, c.accountName+" Project", c.key, "a0"+c.key, accID)
+		        name, key, sf_id, account_id, onboarding_status,
+		        total_onboarding_duration, consumed_onboarding_duration)
+		      VALUES ($1, NOW(), NOW(), 'qh-seed', 'qh-seed', $2, $3, $4, $5,
+		              $6::onboarding_status_enum,
+		              make_interval(mins => $7), make_interval(mins => $8))`,
+			projID, c.accountName+" Project", c.key, "a0"+c.key, accID,
+			status, c.onboardingTotal, c.onboardingConsumed)
 		exec(`INSERT INTO sf_opportunity (id, created_on, updated_on, created_by, updated_by,
 		        name, sf_id, account_id)
 		      VALUES ($1, NOW(), NOW(), 'qh-seed', 'qh-seed', $2, $3, $4)`,
@@ -283,4 +297,83 @@ func nullIfEmpty(check, value string) any {
 		return nil
 	}
 	return value
+}
+
+// *** THE ONBOARDING GRANT IS ONE-TIME, AND ONLY NEW PROJECTS GET ONE. ***
+//
+// A new project is granted onboarding hours -- 200 on this deployment --
+// and work is charged against those before it reaches the query-support
+// allowance. A renewal has no grant: its hours come straight off query
+// support.
+//
+// Once onboarding is COMPLETED the grant stops absorbing, so later work
+// lands on query hours. What it already absorbed stays absorbed, which
+// is what makes the grant one-time rather than a discount that is
+// clawed back the moment onboarding closes.
+func TestQueryHourOnboardingGrantAppliesToNewProjectsOnly(t *testing.T) {
+	dsn := os.Getenv("ENTITY_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("ENTITY_TEST_DATABASE_URL is not set; skipping the live-database tests")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer pool.Close()
+
+	// Each project logs the same 3000 billable minutes against the same
+	// 100-hour allowance, and differs only in its onboarding state.
+	saved := qhFixture
+	qhFixture = []qhCase{
+		{key: "INPROG", accountName: "In Progress Ltd", amEmail: "am-inprog@example.com",
+			productName: "Development Support - 100 hours", quantity: 1, billableMins: 3000,
+			onboardingStatus: "IN_PROGRESS", onboardingTotal: 200 * 60, onboardingConsumed: 1200},
+		{key: "DONE", accountName: "Completed Ltd", amEmail: "am-done@example.com",
+			productName: "Development Support - 100 hours", quantity: 1, billableMins: 3000,
+			onboardingStatus: "COMPLETED", onboardingTotal: 200 * 60, onboardingConsumed: 1200},
+		{key: "RENEW", accountName: "Renewal Ltd", amEmail: "am-renew@example.com",
+			productName: "Development Support - 100 hours", quantity: 1, billableMins: 3000,
+			onboardingStatus: "NOT_APPLICABLE"},
+		// A renewal carrying a stale onboarding figure must still not
+		// have it credited -- the status decides, not the number.
+		{key: "STALE", accountName: "Stale Ltd", amEmail: "am-stale@example.com",
+			productName: "Development Support - 100 hours", quantity: 1, billableMins: 3000,
+			onboardingStatus: "NOT_APPLICABLE", onboardingTotal: 200 * 60, onboardingConsumed: 1200},
+	}
+	defer func() { qhFixture = saved }()
+
+	seedQueryHourFixture(ctx, t, pool)
+	ctx = repository.WithSystemIdentity(ctx)
+	if _, err := service.NewQueryHourService(
+		repository.NewQueryHourRepository(repository.NewScoped(pool)), "@example.com").
+		Recompute(ctx); err != nil {
+		t.Fatalf("Recompute: %v", err)
+	}
+
+	consumed := func(key string) int {
+		var mins int
+		if err := pool.QueryRow(ctx,
+			`SELECT COALESCE(FLOOR(EXTRACT(EPOCH FROM consumed_duration)/60),0)::int
+			   FROM project WHERE key = $1`, key).Scan(&mins); err != nil {
+			t.Fatalf("read %s: %v", key, err)
+		}
+		return mins
+	}
+
+	// Onboarding live: 1200 of the 3000 came out of the grant.
+	if got := consumed("INPROG"); got != 1800 {
+		t.Errorf("IN_PROGRESS consumed = %d, want 1800 (3000 less the 1200 onboarding absorbed)", got)
+	}
+	// Onboarding finished: what it absorbed stays absorbed.
+	if got := consumed("DONE"); got != 1800 {
+		t.Errorf("COMPLETED consumed = %d, want 1800 -- a one-time grant is not clawed back", got)
+	}
+	// Renewal: the whole 3000 hits query hours.
+	if got := consumed("RENEW"); got != 3000 {
+		t.Errorf("renewal consumed = %d, want 3000 -- renewals have no grant", got)
+	}
+	if got := consumed("STALE"); got != 3000 {
+		t.Errorf("renewal with a stale onboarding figure consumed = %d, want 3000", got)
+	}
 }
