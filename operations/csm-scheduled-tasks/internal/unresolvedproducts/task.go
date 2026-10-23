@@ -25,7 +25,7 @@ import (
 
 // Lister is the subset of *Client this package depends on.
 type Lister interface {
-	ListSince(ctx context.Context, since time.Time) ([]Node, error)
+	ListSince(ctx context.Context, since time.Time) (Listing, error)
 }
 
 // EmailSender is the subset of *notify.Client this package depends on.
@@ -40,15 +40,21 @@ type EmailSender interface {
 // recipients configured it succeeds without contacting entity-service. Unlike them, a run
 // that finds nothing sends nothing, since the point is to prompt someone to add a
 // catalogue entry, and an empty digest every day would train its recipients to ignore it.
+//
+// A node stays in the digest every day for as long as it keeps reporting a product the
+// catalogue lacks: the digest is the list of entries still to add, not a one-off alert.
+// Each row shows how long it has been unresolved, and a list entity-service cut off at
+// its limit says so.
 func SendDigest(list Lister, email EmailSender, window time.Duration, to, cc []string, emailsEnabled bool, now func() time.Time) func(ctx context.Context) error {
 	return func(ctx context.Context) error {
 		if !emailsEnabled || len(to) == 0 {
 			return nil
 		}
-		nodes, err := list.ListSince(ctx, now().Add(-window))
+		listing, err := list.ListSince(ctx, now().Add(-window))
 		if err != nil {
 			return fmt.Errorf("unresolvedproducts: list unresolved products: %w", err)
 		}
+		nodes := listing.Nodes
 		if len(nodes) == 0 {
 			return nil
 		}
@@ -62,7 +68,7 @@ func SendDigest(list Lister, email EmailSender, window time.Duration, to, cc []s
 				DeploymentNumber: deref(n.DeploymentNumber),
 				ReportedProduct:  n.ReportedProduct,
 				ReportedVersion:  deref(n.ReportedVersion),
-				FirstSeenOn:      n.FirstSeenOn,
+				UnresolvedSince:  n.UnresolvedSince,
 				LastSeenOn:       n.LastSeenOn,
 			})
 			products[n.ReportedProduct+" "+deref(n.ReportedVersion)] = struct{}{}
@@ -71,6 +77,7 @@ func SendDigest(list Lister, email EmailSender, window time.Duration, to, cc []s
 		body := notify.RenderUnresolvedProductsReport(notify.UnresolvedProductsReportData{
 			WindowHours: int(window.Hours()),
 			Nodes:       rows,
+			Truncated:   listing.Truncated,
 		})
 		if err := email.SendEmail(ctx, to, cc, subject, body); err != nil {
 			return fmt.Errorf("unresolvedproducts: send digest email: %w", err)

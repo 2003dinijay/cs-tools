@@ -46,11 +46,15 @@ func TestClient_ListSinceSendsTheWindowAndDecodes(t *testing.T) {
 	var path, since, limit, auth string
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		path, since, limit, auth = r.URL.Path, r.URL.Query().Get("since"), r.URL.Query().Get("limit"), r.Header.Get("Authorization")
-		_, _ = w.Write([]byte(`{"count":1,"nodes":[{"nodeId":"n1","reportedProduct":"wso2zz","reportedVersion":"1.0.0","firstSeenOn":"2026-10-21T01:00:00Z","lastSeenOn":"2026-10-21T02:00:00Z"}]}`))
+		_, _ = w.Write([]byte(`{"count":1,"nodes":[{"nodeId":"n1","reportedProduct":"wso2zz","reportedVersion":"1.0.0","unresolvedSince":"2026-10-21T01:00:00Z","lastSeenOn":"2026-10-21T02:00:00Z"}],"truncated":true}`))
 	})
-	nodes, err := c.ListSince(context.Background(), time.Date(2026, 10, 21, 6, 0, 0, 0, time.UTC))
+	listing, err := c.ListSince(context.Background(), time.Date(2026, 10, 21, 6, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatal(err)
+	}
+	nodes := listing.Nodes
+	if !listing.Truncated || !nodes[0].UnresolvedSince.Equal(time.Date(2026, 10, 21, 1, 0, 0, 0, time.UTC)) {
+		t.Errorf("listing %+v", listing)
 	}
 	if path != "/instances/unresolved-products" || since != "2026-10-21T06:00:00Z" || limit != "5000" || auth != "Bearer test-token" {
 		t.Errorf("path %q since %q limit %q auth %q", path, since, limit, auth)

@@ -80,21 +80,29 @@ func NewClient(cfg Config) (*Client, error) {
 
 // Node is one unresolved node, in entity-service's wire shape.
 type Node struct {
-	NodeID           string    `json:"nodeId"`
-	ProjectKey       *string   `json:"projectKey"`
-	DeploymentNumber *string   `json:"deploymentNumber"`
-	ReportedProduct  string    `json:"reportedProduct"`
-	ReportedVersion  *string   `json:"reportedVersion"`
-	FirstSeenOn      time.Time `json:"firstSeenOn"`
-	LastSeenOn       time.Time `json:"lastSeenOn"`
+	NodeID           string  `json:"nodeId"`
+	ProjectKey       *string `json:"projectKey"`
+	DeploymentNumber *string `json:"deploymentNumber"`
+	ReportedProduct  string  `json:"reportedProduct"`
+	ReportedVersion  *string `json:"reportedVersion"`
+	// UnresolvedSince is when the node's reports stopped matching the catalogue.
+	UnresolvedSince time.Time `json:"unresolvedSince"`
+	LastSeenOn      time.Time `json:"lastSeenOn"`
+}
+
+// Listing is one page of unresolved nodes. Truncated is true when entity-service had
+// more than it returned.
+type Listing struct {
+	Nodes     []Node
+	Truncated bool
 }
 
 // maxNodes is the most rows one digest asks for: entity-service's own cap.
 const maxNodes = 5000
 
 // ListSince returns the nodes last seen since the given time whose reported product is not
-// in the catalogue, grouped by what they reported.
-func (c *Client) ListSince(ctx context.Context, since time.Time) ([]Node, error) {
+// in the catalogue, grouped by what they reported, and whether the list was cut off.
+func (c *Client) ListSince(ctx context.Context, since time.Time) (Listing, error) {
 	q := url.Values{}
 	q.Set("since", since.UTC().Format(time.RFC3339))
 	q.Set("limit", fmt.Sprint(maxNodes))
@@ -102,26 +110,27 @@ func (c *Client) ListSince(ctx context.Context, since time.Time) ([]Node, error)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
 	if err != nil {
-		return nil, fmt.Errorf("unresolvedproducts: build request: %w", err)
+		return Listing{}, fmt.Errorf("unresolvedproducts: build request: %w", err)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("unresolvedproducts: GET /instances/unresolved-products: %w", err)
+		return Listing{}, fmt.Errorf("unresolvedproducts: GET /instances/unresolved-products: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("unresolvedproducts: read response body: %w", err)
+		return Listing{}, fmt.Errorf("unresolvedproducts: read response body: %w", err)
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, &apierror.Error{StatusCode: resp.StatusCode, Body: string(body)}
+		return Listing{}, &apierror.Error{StatusCode: resp.StatusCode, Body: string(body)}
 	}
 	var parsed struct {
-		Nodes []Node `json:"nodes"`
+		Nodes     []Node `json:"nodes"`
+		Truncated bool   `json:"truncated"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
-		return nil, fmt.Errorf("unresolvedproducts: decode response: %w", err)
+		return Listing{}, fmt.Errorf("unresolvedproducts: decode response: %w", err)
 	}
-	return parsed.Nodes, nil
+	return Listing{Nodes: parsed.Nodes, Truncated: parsed.Truncated}, nil
 }

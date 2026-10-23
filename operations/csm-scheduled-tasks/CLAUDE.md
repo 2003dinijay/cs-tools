@@ -389,6 +389,10 @@ writers would fight over those rows, and csm-sync's `delete_sync` would delete r
 does not have. Turn it on in the same change that switches those ServiceNow jobs and csm-sync
 jobs off (the `AVAILABILITY_RECALC_ENABLED` pattern).
 
+**Backfill and late uploads.** These tasks rebuild only recent days and months. entity-service
+rebuilds a late upload's months itself when its own `USAGE_ROLLUP_ENABLED` is on, and its
+CLAUDE.md describes the one-time backfill to run when the rollups are switched on.
+
 **The arithmetic is in entity-service, not here.** Each task is a trigger: it POSTs to
 `/instances/usage-rollups/daily` or `/monthly`, which run set-based SQL in the database
 (`rollup_daily_usage`, `rollup_monthly_usage`, migration 0245). Summing every node's hourly rows
@@ -420,6 +424,12 @@ report sub-crons ("Per-task report emails"): its own template
 them it **sends nothing when the list is empty**: the email exists to prompt an action, and a daily
 "nothing to do" would train its recipients to ignore it. The 24-hour window is fixed to match the
 daily schedule; change both together.
+
+**A node is listed every day until its catalogue entry is added**, on purpose: the digest is the
+list of entries still missing, not a one-off alert (the previous system emailed on every miss).
+Each row shows when the node went unresolved (`unresolvedSince`, entity-service's
+`deployment_node.unresolved_since`), not when it first reported, and a list entity-service cut off
+at its 5000-node limit says it is incomplete.
 
 ## Outage emails (moved out)
 

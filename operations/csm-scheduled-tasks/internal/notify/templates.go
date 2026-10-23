@@ -428,7 +428,7 @@ type UnresolvedProductNode struct {
 	DeploymentNumber string
 	ReportedProduct  string
 	ReportedVersion  string
-	FirstSeenOn      time.Time
+	UnresolvedSince  time.Time
 	LastSeenOn       time.Time
 }
 
@@ -437,6 +437,8 @@ type UnresolvedProductNode struct {
 type UnresolvedProductsReportData struct {
 	WindowHours int
 	Nodes       []UnresolvedProductNode
+	// Truncated says entity-service had more nodes than it returned.
+	Truncated bool
 }
 
 // RenderUnresolvedProductsReport fills in the unresolved products digest, one row per
@@ -446,6 +448,7 @@ func RenderUnresolvedProductsReport(data UnresolvedProductsReportData) string {
 		"<!-- [NODE_COUNT] -->", strconv.Itoa(len(data.Nodes)),
 		"<!-- [WINDOW_HOURS] -->", strconv.Itoa(data.WindowHours),
 		"<!-- [NODE_ROWS] -->", renderUnresolvedProductRows(data.Nodes),
+		"<!-- [TRUNCATED_NOTE] -->", unresolvedProductsTruncatedNote(data.Truncated),
 		"<!-- [YEAR] -->", strconv.Itoa(time.Now().Year()),
 	)
 	return replacer.Replace(unresolvedProductsReportTemplate)
@@ -472,11 +475,21 @@ func renderUnresolvedProductRows(nodes []UnresolvedProductNode) string {
 			escapeHTML(shortNodeID(n.NodeID)),
 			orDash(escapeHTML(n.ProjectKey)),
 			orDash(escapeHTML(n.DeploymentNumber)),
-			n.FirstSeenOn.UTC().Format("2006-01-02"),
+			n.UnresolvedSince.UTC().Format("2006-01-02"),
 			n.LastSeenOn.UTC().Format("2006-01-02"),
 		)
 	}
 	return b.String()
+}
+
+// unresolvedProductsTruncatedNote is the line shown when the list was cut off at
+// entity-service's limit, so a reader knows more nodes are missing than are listed.
+func unresolvedProductsTruncatedNote(truncated bool) string {
+	if !truncated {
+		return ""
+	}
+	return `<p style="margin:0 0 20px; color:#b45309;"><strong>This list is incomplete:</strong> more nodes matched than one digest can hold. ` +
+		`The full list is at entity-service <code>GET /instances/unresolved-products</code>.</p>`
 }
 
 // shortNodeID keeps a long node id readable in a table cell: products report 64-character

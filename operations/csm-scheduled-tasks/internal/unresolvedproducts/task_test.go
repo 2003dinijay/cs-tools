@@ -24,16 +24,17 @@ import (
 )
 
 type fakeLister struct {
-	nodes []Node
-	err   error
-	since time.Time
-	calls int
+	nodes     []Node
+	truncated bool
+	err       error
+	since     time.Time
+	calls     int
 }
 
-func (f *fakeLister) ListSince(_ context.Context, since time.Time) ([]Node, error) {
+func (f *fakeLister) ListSince(_ context.Context, since time.Time) (Listing, error) {
 	f.calls++
 	f.since = since
-	return f.nodes, f.err
+	return Listing{Nodes: f.nodes, Truncated: f.truncated}, f.err
 }
 
 type fakeEmail struct {
@@ -55,9 +56,9 @@ func ptr(s string) *string { return &s }
 func TestSendDigest_SendsTheNodesSeenInTheWindow(t *testing.T) {
 	list := &fakeLister{nodes: []Node{
 		{NodeID: strings.Repeat("a", 64), ProjectKey: ptr("SCTPSUB"), DeploymentNumber: ptr("DEP000002519"),
-			ReportedProduct: "wso2am", ReportedVersion: ptr("9.9.9"), FirstSeenOn: fixedNow(), LastSeenOn: fixedNow()},
-		{NodeID: "node-2", ReportedProduct: "wso2am", ReportedVersion: ptr("9.9.9"), FirstSeenOn: fixedNow(), LastSeenOn: fixedNow()},
-		{NodeID: "node-3", ReportedProduct: "wso2zz<script>", FirstSeenOn: fixedNow(), LastSeenOn: fixedNow()},
+			ReportedProduct: "wso2am", ReportedVersion: ptr("9.9.9"), UnresolvedSince: fixedNow(), LastSeenOn: fixedNow()},
+		{NodeID: "node-2", ReportedProduct: "wso2am", ReportedVersion: ptr("9.9.9"), UnresolvedSince: fixedNow(), LastSeenOn: fixedNow()},
+		{NodeID: "node-3", ReportedProduct: "wso2zz<script>", UnresolvedSince: fixedNow(), LastSeenOn: fixedNow()},
 	}}
 	email := &fakeEmail{}
 	err := SendDigest(list, email, 24*time.Hour, []string{"catalogue@wso2.com"}, []string{"cc@wso2.com"}, true, fixedNow)(context.Background())
@@ -118,5 +119,29 @@ func TestSendDigest_ListingFailureFailsTheRun(t *testing.T) {
 	err := SendDigest(list, &fakeEmail{}, 24*time.Hour, []string{"x@wso2.com"}, nil, true, fixedNow)(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestSendDigest_ShowsWhenEachNodeWentUnresolvedAndWhenTheListIsCut(t *testing.T) {
+	since := time.Date(2026, 9, 3, 10, 0, 0, 0, time.UTC)
+	list := &fakeLister{truncated: true, nodes: []Node{
+		{NodeID: "node-1", ReportedProduct: "wso2am", ReportedVersion: ptr("9.9.9"), UnresolvedSince: since, LastSeenOn: fixedNow()},
+	}}
+	email := &fakeEmail{}
+	if err := SendDigest(list, email, 24*time.Hour, []string{"x@wso2.com"}, nil, true, fixedNow)(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"2026-09-03", "Unresolved Since", "This list is incomplete"} {
+		if !strings.Contains(email.body, want) {
+			t.Errorf("body is missing %q", want)
+		}
+	}
+
+	list.truncated = false
+	if err := SendDigest(list, email, 24*time.Hour, []string{"x@wso2.com"}, nil, true, fixedNow)(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(email.body, "This list is incomplete") {
+		t.Error("a complete list must not be marked incomplete")
 	}
 }
