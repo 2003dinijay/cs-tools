@@ -640,7 +640,8 @@ file's `sme.enabled`:
   alert is handled, with chat in `sme.channel` and sending on, whoever is on
   call. Nobody rostered on any tier: the card still goes out ("Nobody
   rostered") and no ladder starts. L1 empty: the card goes out at once rather
-  than with L2. The rooms it reached are saved on the ladder (`IncidentCards`)
+  than with L2, and names the first rostered tier and when it is called
+  ("Nobody rostered before L2", then the L2 and the time). The rooms it reached are saved on the ladder (`IncidentCards`)
   before any rung is scheduled, so the first rung posts only its reply; a room
   the card missed gets it from the first rung, as before. At the start a work note says who
   L1 is, or why nobody can be paged (`NO_RECIPIENTS`, `NO_NUMBER`,

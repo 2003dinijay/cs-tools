@@ -104,7 +104,7 @@ func TestSMECards_NobodyOnCallStillPostsTheCard(t *testing.T) {
 	}
 }
 
-// With L1 empty the card goes out at the escalation, not five minutes later with L2, and L2 then posts only its reply.
+// With L1 empty the card goes out at the escalation naming L2 and when it is called, and L2 then posts only its reply.
 func TestSMECards_NoL1PostsTheCardAtOnce(t *testing.T) {
 	ctx := context.Background()
 	r := rotaReader(true)
@@ -113,8 +113,11 @@ func TestSMECards_NoL1PostsTheCardAtOnce(t *testing.T) {
 	e := smeEngine(r, newMemStore(), &fakeNotes{}, &fakeChat{}, smeChat, smeOn)
 
 	raise(t, e, handoff("Apollo", "asgardeo", "asgardeo", testClock))
-	if len(smeChat.smeIncidents) != 1 || smeChat.smeIncidents[0].OnCall != "" {
-		t.Fatalf("at once: SME incident cards = %+v; want one with nobody on call at L1", smeChat.smeIncidents)
+	if len(smeChat.smeIncidents) != 1 {
+		t.Fatalf("at once: SME incident cards = %d; want one", len(smeChat.smeIncidents))
+	}
+	if card := smeChat.smeIncidents[0]; card.OnCall != "s-l2" || card.OnCallRung != "L2" || card.OnCallAt != istStamp(testClock.Add(5*time.Minute)) {
+		t.Errorf("card on call = %q %q %q; want s-l2 at L2, called five minutes after the escalation", card.OnCall, card.OnCallRung, card.OnCallAt)
 	}
 	if len(smeChat.posted) != 0 {
 		t.Fatalf("at once: SME rungs = %d; want none before L2 is due", len(smeChat.posted))
