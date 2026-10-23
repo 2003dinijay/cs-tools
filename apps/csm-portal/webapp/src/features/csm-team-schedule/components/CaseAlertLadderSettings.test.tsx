@@ -56,6 +56,10 @@ const CRE_ROWS = [
   "Priorities",
   "Max calls per ladder",
   "Call before every lead has a number",
+  "Email per step",
+  "ABT team lists (Cc on L1 and L2)",
+  "CRE team list (Cc on L3)",
+  "CS team list (Cc on L4)",
 ];
 
 function make(over: Partial<Settings> = {}): Settings {
@@ -326,6 +330,68 @@ describe("CaseAlertLadderSettings: CRE", () => {
     expect(screen.getByRole("region", { name: "CRE changes to submit" })).toHaveTextContent("No changes to submit.");
   });
 
+  it("edits the ABT team lists one team at a time, and marks a bad address on its own row", async () => {
+    render(<CaseAlertSettings chain="CRE" />);
+    const { dialog } = openEdit("ABT team lists (Cc on L1 and L2)");
+    // One field per ABT team (the saved teams.abts), named, no key=value line.
+    const atlas = within(dialog).getByLabelText("Atlas");
+    const castor = within(dialog).getByLabelText("Castor");
+    expect(atlas).toHaveAttribute("type", "email");
+    expect(within(dialog).getByText("Leave a team empty for no Cc.", { exact: false })).toBeInTheDocument();
+    fireEvent.change(atlas, { target: { value: "atlas team" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add to changes" }));
+    expect(within(dialog).getByText("Enter one email address, like team-list@example.com.")).toBeInTheDocument();
+    expect(atlas).toHaveAttribute("aria-invalid", "true");
+    expect(castor).not.toHaveAttribute("aria-invalid");
+    fireEvent.change(atlas, { target: { value: " atlas-team@example.test " } });
+    expect(within(dialog).queryByText("Enter one email address, like team-list@example.com.")).not.toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add to changes" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    // The row shows what waits for Submit, by team.
+    const r = row("ABT team lists (Cc on L1 and L2)");
+    expect(within(r).getByText("waits for Submit")).toBeInTheDocument();
+    expect(within(r).getByText("atlas-team@example.test")).toBeInTheDocument();
+    expect(within(r).getByText("1 of 2 teams has a list")).toBeInTheDocument();
+    await submit();
+    expect(saveValues.mutateAsync).toHaveBeenCalledWith({
+      ladder: "CRE",
+      values: { "email.teamLists": { atlas: "atlas-team@example.test" } },
+    });
+  });
+
+  it("lists a saved team list of a team that is no longer an ABT, marked, and leaves it out of the count", () => {
+    const base = make();
+    settings.data = {
+      ...base,
+      values: [
+        ...base.values,
+        {
+          id: "77777777-7777-4777-8777-777777777777",
+          ladder: "CRE",
+          key: "email.teamLists",
+          value: { atlas: "atlas@example.test", castor: "castor@example.test", rigel: "rigel@example.test" },
+          updatedBy: "a@b",
+          updatedOn: AT,
+        },
+      ],
+    };
+    render(<CaseAlertSettings chain="CRE" />);
+    const r = row("ABT team lists (Cc on L1 and L2)");
+    expect(within(r).getByText("rigel@example.test")).toBeInTheDocument();
+    expect(within(r).getByText("(not used)", { exact: false })).toBeInTheDocument();
+    expect(within(r).getByText("2 of 2 teams have a list")).toBeInTheDocument();
+  });
+
+  it("asks for one address for the CRE and CS lists", () => {
+    render(<CaseAlertSettings chain="CRE" />);
+    const { dialog } = openEdit("CRE team list (Cc on L3)");
+    const input = within(dialog).getByLabelText("Mailing list");
+    expect(input).toHaveAttribute("type", "email");
+    fireEvent.change(input, { target: { value: "a@example.test, b@example.test" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add to changes" }));
+    expect(within(dialog).getByRole("alert")).toHaveTextContent("enter one email address");
+  });
+
   it("saves a head as a name and an email, in the full layout", async () => {
     render(<CaseAlertSettings chain="CRE" layout="full" />);
     const { dialog } = openEdit("Head of CS");
@@ -495,6 +561,7 @@ describe("CaseAlertLadderSettings: the whole CRE ladder, kept in the code", () =
       "When a ladder starts",
       "How it climbs",
       "Heads",
+      "Case Alert email",
       "Set in the alert service's file (read-only)",
     ]);
     expect(within(row("Team leads to call")).getByText("3")).toBeInTheDocument();

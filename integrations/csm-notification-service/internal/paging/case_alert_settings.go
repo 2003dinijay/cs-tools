@@ -275,6 +275,7 @@ func MergeCaseAlertSettings(cfg Config, s CaseAlertSettings) (Config, map[string
 		}
 	}
 
+	dropUnknownEmailTeamLists(&out.CRE, &changes)
 	if err := out.validate(); err != nil {
 		return cfg, nil, changes, err
 	}

@@ -51,7 +51,8 @@ type caseAlertKey struct {
 	ladders []string
 	set     func(l *LadderConfig, raw json.RawMessage) error
 	get     func(l LadderConfig) (any, bool)
-	// private values are logged as changed, never with the value (heads).
+	// private values are logged as changed, never with the value (heads,
+	// the rung email lists).
 	private bool
 }
 
@@ -123,8 +124,32 @@ var caseAlertKeys = map[string]caseAlertKey{
 			return maps.Clone(l.Teams.RotaMembersToCall), true
 		},
 	},
-	"heads.cre":         headKey(func(l *LadderConfig) *Person { return &l.Heads.CRE }),
-	"heads.cs":          headKey(func(l *LadderConfig) *Person { return &l.Heads.CS }),
+	"heads.cre": headKey(func(l *LadderConfig) *Person { return &l.Heads.CRE }),
+	"heads.cs":  headKey(func(l *LadderConfig) *Person { return &l.Heads.CS }),
+	// The Case Alert Notification email (rung_email.go): its switch, the
+	// ABT/Americas team lists Cc'd on L1/L2, and the CRE and CS team lists
+	// Cc'd on L3/L4.
+	"email.enabled":     boolKey(caseAlertCRE, func(l *LadderConfig) *bool { return &l.Email.Enabled }),
+	"email.creTeamList": privateKey(stringKey(caseAlertCRE, func(l *LadderConfig) *string { return &l.Email.CRETeamList })),
+	"email.csTeamList":  privateKey(stringKey(caseAlertCRE, func(l *LadderConfig) *string { return &l.Email.CSTeamList })),
+	"email.teamLists": {
+		ladders: caseAlertCRE,
+		private: true,
+		set: func(l *LadderConfig, raw json.RawMessage) error {
+			var v map[string]string
+			if err := strictJSON(raw, &v); err != nil {
+				return err
+			}
+			l.Email.TeamLists = v
+			return nil
+		},
+		get: func(l LadderConfig) (any, bool) {
+			if l.Email.TeamLists == nil {
+				return nil, false
+			}
+			return maps.Clone(l.Email.TeamLists), true
+		},
+	},
 	"alertDuty.tiers":   listKey(caseAlertCRE, func(l *LadderConfig) *[]string { return &l.AlertDuty.Tiers }),
 	"alertDuty.perTeam": intKey(caseAlertCRE, func(l *LadderConfig) *int { return &l.AlertDuty.PerTeam }),
 	"acknowledgement.requireBoth": {
@@ -389,6 +414,41 @@ func fileDuration(d time.Duration) string {
 type caseAlertHead struct {
 	Name  string `json:"name"`
 	Email string `json:"email"`
+}
+
+// dropUnknownEmailTeamLists drops the rung email lists of teams that are
+// neither an ABT nor the Americas team, the one check on cre.email that
+// spans keys. A list saved on the tab for such a team, or a saved
+// teams.abts that leaves out a team the file has a list for, would
+// otherwise refuse the whole merge and put every saved setting out of use.
+// The list is replaced, never written into, so the file's map is untouched.
+func dropUnknownEmailTeamLists(l *LadderConfig, changes *[]string) {
+	if len(l.Teams.ABTs) == 0 || len(l.Email.TeamLists) == 0 {
+		return
+	}
+	var dropped []string
+	for k := range l.Email.TeamLists {
+		key := teamKeyFor(k)
+		if key != "" && !contains(l.Teams.ABTs, key) && key != teamKeyFor(l.Teams.Americas) {
+			dropped = append(dropped, k)
+		}
+	}
+	if len(dropped) == 0 {
+		return
+	}
+	slices.Sort(dropped)
+	kept := maps.Clone(l.Email.TeamLists)
+	for _, k := range dropped {
+		delete(kept, k)
+		*changes = append(*changes, fmt.Sprintf("cre.email.teamLists: dropped %s (neither in teams.abts nor teams.americas)", k))
+	}
+	l.Email.TeamLists = kept
+}
+
+// privateKey logs k's changes without the value (an email address).
+func privateKey(k caseAlertKey) caseAlertKey {
+	k.private = true
+	return k
 }
 
 func headKey(field func(*LadderConfig) *Person) caseAlertKey {

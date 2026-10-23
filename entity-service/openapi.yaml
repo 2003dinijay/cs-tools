@@ -25892,7 +25892,9 @@ components:
             teams.rotaTeams, teams.unassignedTeamLead,
             teams.unassignedTeamLeadCount, heads.cre, heads.cs (name and email
             only), alertDuty.tiers, alertDuty.perTeam,
-            acknowledgement.requireBoth. SRE: teams.defaultRota,
+            acknowledgement.requireBoth, email.enabled, email.teamLists (CRE
+            team key to one mailing list address), email.creTeamList,
+            email.csTeamList (one address each). SRE: teams.defaultRota,
             timing.initialWait (0s to 30m), timing.interval (1m to 30m),
             timing.includeL4, unansweredChat, smeHandoffChat. SME:
             timing.initialWait (0s to 30m), timing.interval (1m to 30m),
@@ -25936,8 +25938,10 @@ components:
             email.csTeamList (whether set, never the addresses), rules.custom
             (the file replaces the built-in rule table) and timing (severity
             S0-S4 to the minutes each step L0-L4 is called, from the code).
-            enabled, channel and the three safety values above can now also be
-            saved as values (ladders); the rest stay file-only.
+            These are the values as running, whatever their source: enabled,
+            channel, the three safety values above and the four CRE email
+            settings can also be saved as values (ladders), which then report
+            them with their source; the rest stay file-only.
           additionalProperties:
             type: object
             additionalProperties: true

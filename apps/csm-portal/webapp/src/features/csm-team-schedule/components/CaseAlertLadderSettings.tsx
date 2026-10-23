@@ -40,9 +40,13 @@ import {
   limitHint,
   parseDraft,
   sameLadderValue,
+  teamEmailErrors,
+  teamEmailRows,
+  teamEmailRowsFor,
   type LadderDraft,
   type LadderKeyGroup,
   type LadderKeySpec,
+  type TeamEmailRow,
 } from "../utils/caseAlertLadderKeys";
 import CaseAlertModal from "./CaseAlertModal";
 
@@ -123,6 +127,7 @@ function ValueRows({
             running={running[spec.key]}
             reported={Boolean(s.running)}
             canEdit={canEdit}
+            teamRows={spec.editor === "teamEmails" ? teamEmailRows(s, ladder) : undefined}
             onSaved={onSaved}
           />
         ))}
@@ -415,7 +420,36 @@ interface ValueRowProps {
   canEdit: boolean;
   /** A key this page doesn't know: it can only go back to the file's. */
   unknown?: boolean;
+  /** The teams a team email list has a field for. */
+  teamRows?: TeamEmailRow[];
   onSaved: (what: string) => void;
+}
+
+/** A team email list in the row: each team that has a list, by name, and
+ *  how many teams have one. */
+function TeamEmailList({ rows, value, empty }: { rows: TeamEmailRow[]; value: unknown; empty: string }): JSX.Element {
+  const map = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+  const set = teamEmailRowsFor(rows, map).filter((r) => typeof map[r.key] === "string" && String(map[r.key]).trim() !== "");
+  if (set.length === 0) return <span className="cas-val">{empty}</span>;
+  // A team that is no longer offered is listed, marked, but not counted.
+  const used = set.filter((r) => !r.stale).length;
+  const ofTeams = rows.length > 0 ? ` of ${rows.length} teams` : used === 1 ? " team" : " teams";
+  return (
+    <div className="cas-val">
+      <ul className="cas-team-list">
+        {set.map((r) => (
+          <li key={r.key} className={r.stale ? "cas-stale" : undefined}>
+            <span className="cas-team-name">{r.name}</span> <span className="cas-team-addr">{String(map[r.key])}</span>
+            {r.stale ? <span className="cas-sub"> (not used)</span> : null}
+          </li>
+        ))}
+      </ul>
+      <div className="cas-sub">
+        {used}
+        {ofTeams} {used === 1 ? "has" : "have"} a list
+      </div>
+    </div>
+  );
 }
 
 function ValueRow({
@@ -426,6 +460,7 @@ function ValueRow({
   reported,
   canEdit,
   unknown,
+  teamRows,
   onSaved,
 }: ValueRowProps): JSX.Element {
   const [editing, setEditing] = useState(false);
@@ -511,9 +546,23 @@ function ValueRow({
               <span className="cas-chip">not reported yet</span>
             )}
           </span>
+        ) : queued || resetQueued ? (
+          // A change from the dialog waits for Submit: show it, as a switch does.
+          <>
+            {queued && teamRows ? (
+              <TeamEmailList rows={teamRows} value={current} empty={spec.empty ?? "none"} />
+            ) : queued ? (
+              <span className="cas-val">{formatLadderValue(spec, current)}</span>
+            ) : null}
+            <span className="cas-chip cas-src-pending">{queued ? "waits for Submit" : "file's value on Submit"}</span>
+          </>
         ) : running ? (
           <>
-            <span className="cas-val">{formatLadderValue(spec, running.value)}</span>
+            {teamRows ? (
+              <TeamEmailList rows={teamRows} value={running.value} empty={spec.empty ?? "none"} />
+            ) : (
+              <span className="cas-val">{formatLadderValue(spec, running.value)}</span>
+            )}
             <span className={`cas-chip cas-src-${running.source}`}>
               {running.source === "file" ? "from the file" : "saved here"}
             </span>
@@ -524,9 +573,16 @@ function ValueRow({
             {reported ? null : <span className="cas-chip">not reported yet</span>}
           </>
         )}
-        {pending ? (
+        {pending && !queued ? (
           <div className="cas-sub cas-saved" title={`Saved by ${saved.updatedBy} at ${when(saved.updatedOn)}`}>
-            Saved: {formatLadderValue(spec, saved.value)} · not in use yet
+            {teamRows ? (
+              <>
+                Saved, not in use yet:
+                <TeamEmailList rows={teamRows} value={saved.value} empty={spec.empty ?? "none"} />
+              </>
+            ) : (
+              <>Saved: {formatLadderValue(spec, saved.value)} · not in use yet</>
+            )}
           </div>
         ) : null}
       </td>
@@ -554,6 +610,7 @@ function ValueRow({
               saved={saved}
               start={saved ? saved.value : running?.value}
               unknown={unknown}
+              teamRows={teamRows}
               returnFocus={editRef}
               onClose={() => setEditing(false)}
               onSaved={onSaved}
@@ -572,6 +629,7 @@ interface ValueDialogProps {
   /** What the editor starts from: the saved value, else the one in use. */
   start: unknown;
   unknown?: boolean;
+  teamRows?: TeamEmailRow[];
   /** The Edit button, which gets focus back when the dialog closes. */
   returnFocus: RefObject<HTMLButtonElement | null>;
   onClose: () => void;
@@ -587,6 +645,7 @@ function ValueDialog({
   saved,
   start,
   unknown,
+  teamRows,
   returnFocus,
   onClose,
   onSaved,
@@ -599,8 +658,12 @@ function ValueDialog({
   const [draft, setDraft] = useState<LadderDraft>(() => draftFor(spec, start));
   const [error, setError] = useState<string | null>(null);
   const [confirmFile, setConfirmFile] = useState(false);
+  // Each team's field is marked once a send was tried, and clears as it is fixed.
+  const [tried, setTried] = useState(false);
   const busy = drafts.submitting === family;
   const hint = unknown ? null : limitHint(spec);
+  const rows = teamRows ? teamEmailRowsFor(teamRows, start) : undefined;
+  const rowErrors = tried && rows ? teamEmailErrors(draft) : {};
 
   // min and max are hints: the server checks every limit and its message
   // names the key, so the browser doesn't stop the send.
@@ -608,6 +671,7 @@ function ValueDialog({
     e.preventDefault();
     if (busy || unknown) return;
     setError(null);
+    setTried(true);
     const parsed = parseDraft(spec, draft);
     if (!parsed.ok) {
       setError(parsed.error);
@@ -639,7 +703,7 @@ function ValueDialog({
         {unknown ? (
           <p className="cp-help">Saved here: {formatLadderValue(undefined, saved?.value)}</p>
         ) : (
-          <Editor spec={spec} draft={draft} onChange={setDraft} />
+          <Editor spec={spec} draft={draft} onChange={setDraft} teamRows={rows} errors={rowErrors} />
         )}
         {error ? (
           <p className="cp-err" role="alert">
@@ -689,13 +753,18 @@ interface EditorProps {
   spec: LadderKeySpec;
   draft: LadderDraft;
   onChange: (d: LadderDraft) => void;
+  /** For a team email list: a field per team. */
+  teamRows?: TeamEmailRow[];
+  /** Each team field's refusal, by team. */
+  errors?: Record<string, string>;
 }
 
 /** The editor for one key, by the kind of value it takes. */
-function Editor({ spec, draft, onChange }: EditorProps): JSX.Element {
-  const text = (type: "text" | "number" = "text") => (
+function Editor({ spec, draft, onChange, teamRows, errors }: EditorProps): JSX.Element {
+  const ids = useId();
+  const text = (type: "text" | "number" | "email" = "text") => (
     <label>
-      New value
+      {spec.inputLabel ?? "New value"}
       <input
         type={type}
         min={type === "number" ? spec.min : undefined}
@@ -733,6 +802,50 @@ function Editor({ spec, draft, onChange }: EditorProps): JSX.Element {
           </select>
         </label>
       );
+    case "teamEmails":
+      if (!teamRows || teamRows.length === 0) {
+        return <p className="cas-sub">No ABT teams are listed for this ladder yet.</p>;
+      }
+      return (
+        <table className="cas-team-emails">
+          <thead>
+            <tr>
+              <th scope="col">Team</th>
+              <th scope="col">Mailing list</th>
+            </tr>
+          </thead>
+          <tbody>
+            {teamRows.map((r) => {
+              const id = `${ids}-${r.key}`;
+              const err = errors?.[r.key];
+              return (
+                <tr key={r.key} className={r.stale ? "cas-stale" : undefined}>
+                  <th scope="row">
+                    <label htmlFor={id}>{r.name}</label>
+                    {r.note ? <div className="cas-sub">{r.note}</div> : null}
+                  </th>
+                  <td>
+                    <input
+                      id={id}
+                      type="email"
+                      value={draft.map[r.key] ?? ""}
+                      placeholder={spec.placeholder}
+                      aria-invalid={err ? true : undefined}
+                      aria-describedby={err ? `${id}-err` : undefined}
+                      onChange={(e) => onChange({ ...draft, map: { ...draft.map, [r.key]: e.target.value } })}
+                    />
+                    {err ? (
+                      <div id={`${id}-err`} className="cp-err">
+                        {err}
+                      </div>
+                    ) : null}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      );
     case "head":
       return (
         <>
@@ -747,6 +860,6 @@ function Editor({ spec, draft, onChange }: EditorProps): JSX.Element {
         </>
       );
     default:
-      return text();
+      return text(spec.inputType ?? "text");
   }
 }

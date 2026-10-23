@@ -18,6 +18,7 @@ package paging
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -689,24 +690,71 @@ func TestEmailWakeMember_RoundTrips(t *testing.T) {
 	}
 }
 
-// cre.email lives in the file, not on the Alert Settings tab: merging the
-// saved settings over the small file keeps it exactly as the file has it.
-func TestRungEmail_ConfigSurvivesSavedSettings(t *testing.T) {
-	full, errFull := LoadConfig("../../../../scripts/csm-compose/paging-alert.yaml")
-	small, errSmall := LoadConfig("../../../../scripts/csm-compose/paging-alert.minimal.yaml")
-	if errFull != nil || errSmall != nil {
-		t.Fatalf("shipped examples: %v / %v", errFull, errSmall)
+// cre.email is saved on the Alert Settings tab like any other CRE value: a
+// saved email key replaces the file's, and a key nobody saved keeps the file's.
+func TestRungEmail_SavedSettingsReplaceTheFile(t *testing.T) {
+	small, err := LoadConfig("../../../../scripts/csm-compose/paging-alert.minimal.yaml")
+	if err != nil {
+		t.Fatalf("shipped example: %v", err)
 	}
 	small.CRE.Email = RungEmail{Enabled: true, TeamLists: map[string]string{"atlas": "atlas-team@example.com"},
 		CRETeamList: "cre-team@example.com", CSTeamList: "cs-team@example.com"}
-	saved := savedFrom(full)
-	saved.Values = valuesFrom(t, full)
-	merged, _, _, err := MergeCaseAlertSettings(small, saved)
+
+	merged, _, _, err := MergeCaseAlertSettings(small, CaseAlertSettings{Values: []CaseAlertValue{
+		{"CRE", "trigger.priorities", json.RawMessage(`["S0","S1"]`)},
+	}})
 	if err != nil {
 		t.Fatalf("merge: %v", err)
 	}
 	if !reflect.DeepEqual(merged.CRE.Email, small.CRE.Email) {
-		t.Fatalf("cre.email after the merge = %+v, want the file's %+v", merged.CRE.Email, small.CRE.Email)
+		t.Fatalf("nothing saved: cre.email = %+v, want the file's %+v", merged.CRE.Email, small.CRE.Email)
+	}
+
+	merged, _, _, err = MergeCaseAlertSettings(small, CaseAlertSettings{Values: []CaseAlertValue{
+		{"CRE", "email.enabled", json.RawMessage(`false`)},
+		{"CRE", "email.teamLists", json.RawMessage(`{"atlas":"atlas-saved@example.com"}`)},
+		{"CRE", "email.csTeamList", json.RawMessage(`"cs-saved@example.com"`)},
+	}})
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	want := RungEmail{TeamLists: map[string]string{"atlas": "atlas-saved@example.com"},
+		CRETeamList: "cre-team@example.com", CSTeamList: "cs-saved@example.com"}
+	if !reflect.DeepEqual(merged.CRE.Email, want) {
+		t.Fatalf("saved: cre.email = %+v, want %+v", merged.CRE.Email, want)
+	}
+	if !small.CRE.Email.Enabled || small.CRE.Email.TeamLists["atlas"] != "atlas-team@example.com" {
+		t.Fatal("the merge wrote into the file's own config")
+	}
+
+	// A saved list the file's validation refuses refuses the merge.
+	if _, _, _, err := MergeCaseAlertSettings(small, CaseAlertSettings{Values: []CaseAlertValue{
+		{"CRE", "email.creTeamList", json.RawMessage(`"not an address"`)},
+	}}); err == nil {
+		t.Fatal("a saved list that is not an address was merged")
+	}
+}
+
+// A saved list for a team that is neither an ABT nor the Americas team is
+// dropped and said so, never a reason to refuse every saved setting.
+func TestRungEmail_SavedListForAnUnknownTeamIsDropped(t *testing.T) {
+	small, err := LoadConfig("../../../../scripts/csm-compose/paging-alert.minimal.yaml")
+	if err != nil {
+		t.Fatalf("shipped example: %v", err)
+	}
+	merged, _, changes, err := MergeCaseAlertSettings(small, CaseAlertSettings{Values: []CaseAlertValue{
+		{"CRE", "teams.abts", json.RawMessage(`["atlas"]`)},
+		{"CRE", "email.teamLists", json.RawMessage(`{"atlas":"atlas-team@example.com","vega":"vega-team@example.com"}`)},
+	}})
+	if err != nil {
+		t.Fatalf("merge refused: %v", err)
+	}
+	if want := map[string]string{"atlas": "atlas-team@example.com"}; !reflect.DeepEqual(merged.CRE.Email.TeamLists, want) {
+		t.Fatalf("teamLists = %v, want %v", merged.CRE.Email.TeamLists, want)
+	}
+	joined := strings.Join(changes, "\n")
+	if !strings.Contains(joined, "cre.email.teamLists: dropped vega") || strings.Contains(joined, "@example.com") {
+		t.Errorf("changes = %s", joined)
 	}
 }
 

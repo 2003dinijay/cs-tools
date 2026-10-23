@@ -355,7 +355,8 @@ ticker, with Redis as its only durable state — the same `REDIS_URL`/
   sets (on/off, channel, safety caps, phones.source, `ackChat`), shown read-only on the
   tab; allowed numbers are counted, never listed. CRE's also carries the rung emails
   (`email.enabled`, `email.teamLists` counted, `email.creTeamList`/`email.csTeamList`
-  as set or not, never an address), `rules.custom` and `timing` (`creChainTiming`:
+  as set or not, never an address; the tab hides that row now that the four are
+  tab values, which `running` reports with their addresses, like a head's), `rules.custom` and `timing` (`creChainTiming`:
   severity to the minutes each step L0-L4 is called, from `DefaultPolicy`, so the
   tab cannot drift from the code), so every CRE setting shows on the tab. `SmallFilePlusSavedIsTheFullFile` pins that
   `paging-alert.minimal.yaml` plus everything copied from the full file pages
@@ -860,11 +861,17 @@ state and response SLA remaining time is <t>" ("...was breached <t> ago" once
 past it), counted from the chain's start against the `response` clock of the
 SLA duration policy the SLA engine fetches at startup (`RungEmailSending.SLADurations`),
 else WSO2's published defaults (S0 15m, S1 1h, S2 4h, S3 6h, S4 24h, as migration
-0192 seeds them). `cre.email` lives in the file -- both `paging-alert.yaml` and
-`paging-alert.minimal.yaml` -- never on the Alert Settings tab: it is a switch
-and a few addresses, and `MergeCaseAlertSettings` keeps it as the file has it
-(`TestRungEmail_ConfigSurvivesSavedSettings`). Leave its lists out rather than
-empty in the shipped files, so the two load alike.
+0192 seeds them). `cre.email` is set on the Alert Settings tab like any other
+CRE value, so no new setting goes into the mounted file: `email.enabled`,
+`email.teamLists` (team key -> address), `email.creTeamList`,
+`email.csTeamList` (`caseAlertKeys`, `caseAlertValueSpecs` in entity-service).
+A saved key replaces the file's, an unsaved one keeps it
+(`TestRungEmail_SavedSettingsReplaceTheFile`); the three list keys log
+"changed", never an address. A list for a team that is neither in
+`teams.abts` nor `teams.americas` is dropped with a change line before
+`Config.validate` (`dropUnknownEmailTeamLists`), so one stale list cannot
+refuse the whole merge. A file that still has the block keeps working. Leave
+its lists out rather than empty in the shipped files, so the two load alike.
 
 **Not built**: the two
 erroneous-scenario emails (section 12.0), LEVEL_0 availability filtering
