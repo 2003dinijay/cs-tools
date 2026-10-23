@@ -1715,9 +1715,17 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 	instanceHandler := handler.NewInstanceHandler(activeInstanceSvc)
 
+	// Postgres-only: ServiceNow has no air-gapped field to read or mirror.
+	var deploymentAirGapHandler *handler.DeploymentAirGapHandler
+	if db != nil {
+		deploymentAirGapHandler = handler.NewDeploymentAirGapHandler(
+			service.NewDeploymentAirGapService(repository.NewDeploymentAirGapRepository(repository.NewScoped(db))))
+	}
+
 	var instanceIngestionHandler *handler.InstanceIngestionHandler
 	if db != nil {
-		instanceIngestionRepo := repository.NewInstanceIngestionRepository(repository.NewScoped(db))
+		instanceIngestionRepo := repository.NewInstanceIngestionRepository(repository.NewScoped(db),
+			repository.WithMonthlyRollupOnImport(cfg.UsageRollupEnabled))
 		instanceIngestionSvc := service.NewInstanceIngestionService(instanceIngestionRepo)
 		instanceIngestionHandler = handler.NewInstanceIngestionHandler(instanceIngestionSvc)
 	}
@@ -2147,6 +2155,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	mux.HandleFunc("POST /deployments", deploymentHandler.CreateDeployment)
 	mux.HandleFunc("POST /deployments/search", deploymentHandler.SearchDeployments)
 	mux.HandleFunc("PATCH /deployments/{id}", deploymentHandler.PatchDeployment)
+	if deploymentAirGapHandler != nil {
+		// internalOnly: the flag decides what licence a customer's products get, so
+		// only WSO2 staff (or an internal service acting for them) may change it.
+		mux.HandleFunc("PUT /deployments/{id}/air-gapped", internalOnly(accessSvc, deploymentAirGapHandler.SetAirGapped))
+	}
 	mux.HandleFunc("POST /deployed-products", deployedProductHandler.CreateDeployedProduct)
 	mux.HandleFunc("POST /deployed-products/search", deployedProductHandler.SearchDeployedProducts)
 	mux.HandleFunc("POST /deployed-products/projects/search", deployedProductHandler.SearchProjectsByProductVersion)
@@ -2452,6 +2465,10 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("POST /instances/info", internalOnly(accessSvc, instanceIngestionHandler.InsertInstanceInfo))
 		mux.HandleFunc("POST /instances/usage-stats", internalOnly(accessSvc, instanceIngestionHandler.InsertUsageStats))
 		mux.HandleFunc("POST /instances/daily-usages/batch", internalOnly(accessSvc, instanceIngestionHandler.ImportDailyUsagesBatch))
+		mux.HandleFunc("POST /instances/usage-rollups/daily", internalOnly(accessSvc, instanceIngestionHandler.RollupDailyUsage))
+		mux.HandleFunc("POST /instances/usage-rollups/monthly", internalOnly(accessSvc, instanceIngestionHandler.RollupMonthlyUsage))
+		mux.HandleFunc("GET /instances/unresolved-products", internalOnly(accessSvc, instanceIngestionHandler.ListUnresolvedProducts))
+		mux.HandleFunc("GET /instances/daily-usages/imports", internalOnly(accessSvc, instanceIngestionHandler.ListUsageReportImports))
 		mux.HandleFunc("GET /projects/{key}/secret-key", internalOnly(accessSvc, instanceIngestionHandler.GetProjectSecretKey))
 		mux.HandleFunc("GET /deployments/by-number/{number}/consumption-secret", internalOnly(accessSvc, instanceIngestionHandler.GetDeploymentConsumptionSecret))
 	}

@@ -81,6 +81,9 @@ per period. Every failed attempt sends a failure alert email (see [Alerting](#al
 | `publish_scheduled_announcements` | `*/15 * * * *` | Always | Finds scheduled announcements whose publish time has arrived and asks entity-service to publish each one. Every due item is attempted independently; failures are joined into one error. |
 | `cloud_status_webhooks` | `*/5 * * * *` | Only if `CLOUD_STATUS_ENABLED=true` | Asks entity-service which service-status transitions owe an outbound webhook, posts each to its configured status-dashboard base URL, and records delivery. |
 | `availability_recalculation` | `0 3 * * *` | Only if `AVAILABILITY_RECALC_ENABLED=true` | Triggers entity-service to recompute service availability figures; fails the run on a partial sweep or an empty subject list. The arithmetic runs in entity-service. |
+| `usage_rollup_daily` | `30 0 * * *` | Only if `USAGE_ROLLUP_ENABLED=true` | Triggers entity-service to rebuild the daily usage rows of the last `USAGE_ROLLUP_DAILY_LOOKBACK_DAYS` days (default 2) before today from the hourly rows. The arithmetic runs in the database. |
+| `usage_rollup_monthly` | `30 1 * * *` | Only if `USAGE_ROLLUP_ENABLED=true` | Triggers entity-service to rebuild last month's and the current month's monthly usage rows from the daily rows. |
+| `unresolved_products_digest` | `0 6 * * *` | Only does anything once `SUB_CRON_RECIPIENTS` names its recipients | Emails the deployment nodes seen in the last 24 hours whose reported product or version is not in the product catalogue (from entity-service's `GET /instances/unresolved-products`). Sends nothing on a day with nothing to report. |
 
 Effective promptness of any task is bounded by the shared driver cadence, not by its schedule
 string alone. Task names are API contracts: renaming one orphans its history and stops matching any
@@ -244,6 +247,8 @@ treated as unset, except where noted. All example values are placeholders.
 | `DRIVER_INTERVAL` | No | `1h` | Expected invocation cadence; must match the platform trigger. Go duration syntax, must be positive. Used as the default retry backoff and to size the orphaned-claim safety margin. | `15m` |
 | `HOUSEKEEPING_RETENTION_DAYS` | No | `30` | Days of resolved ledger history kept by `housekeeping_cleanup`. Plain positive integer, not a duration string. | `30` |
 | `AVAILABILITY_RECALC_ENABLED` | No | `false` | Registers `availability_recalculation`. Enable only once no other process writes the same availability data, otherwise rows can be duplicated. | `true` |
+| `USAGE_ROLLUP_ENABLED` | No | `false` | Registers `usage_rollup_daily` and `usage_rollup_monthly`. Enable only once ServiceNow's usage aggregation jobs and csm-sync-service's mirroring of the same tables are off, otherwise the rows are fought over. | `true` |
+| `USAGE_ROLLUP_DAILY_LOOKBACK_DAYS` | No | `2` | How many days before today the daily rollup rebuilds each night. | `3` |
 | `CLOUD_STATUS_ENABLED` | No | `false` | Registers `cloud_status_webhooks`. Enable only once no other system posts the same status events, otherwise each event is published twice. | `true` |
 | `CLOUD_STATUS_WEBHOOK_URLS` | Yes, when `CLOUD_STATUS_ENABLED` is true | none | JSON object mapping a cloud slug to the status dashboard's base URL (`/api/v1/webhook` is appended). Empty or unparseable stops startup. | `{"cloud-a":"https://status-a.example.com"}` |
 | `CLOUD_STATUS_WEBHOOK_SECRETS` | Yes, when `CLOUD_STATUS_ENABLED` is true | none | JSON object of the full `X-Webhook-Signature` header value, per cloud slug, with a `default` key as fallback. The value is the whole header, including any scheme prefix the receiver expects. Empty or unparseable stops startup. | `{"default":"Secret <token>"}` |

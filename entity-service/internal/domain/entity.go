@@ -2206,7 +2206,11 @@ type DeploymentView struct {
 	ProjectSfID *string `json:"projectSfId"`
 	// Active reports whether the deployment is active; null when the data
 	// source does not say.
-	Active    *bool     `json:"active"`
+	Active *bool `json:"active"`
+	// AirGapped reports whether the deployment's products cannot reach WSO2, so
+	// its licence file is issued to stop them publishing usage online; null when
+	// the data source does not carry it (ServiceNow).
+	AirGapped *bool     `json:"airGapped"`
 	CreatedOn time.Time `json:"createdOn"`
 	UpdatedOn time.Time `json:"updatedOn"`
 	// DeployedProductCount is the number of deployed products in this
@@ -2301,6 +2305,20 @@ type UpdateDeploymentRequest struct {
 	Type        *DeploymentType `json:"type"`
 	Description **string        `json:"description"`
 	Active      *bool           `json:"active"`
+}
+
+// SetDeploymentAirGappedRequest is the body of PUT /deployments/{id}/air-gapped.
+type SetDeploymentAirGappedRequest struct {
+	AirGapped *bool `json:"airGapped"`
+}
+
+// DeploymentAirGapped is a deployment's air-gapped state after it was set.
+type DeploymentAirGapped struct {
+	ID        string    `json:"id"`
+	Number    *string   `json:"number"`
+	AirGapped bool      `json:"airGapped"`
+	UpdatedOn time.Time `json:"updatedOn"`
+	UpdatedBy string    `json:"updatedBy"`
 }
 
 // UpdateDeploymentResponse is the response for PATCH /deployments/{id}.

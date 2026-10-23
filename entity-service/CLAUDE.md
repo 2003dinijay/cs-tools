@@ -8050,6 +8050,17 @@ queried the *new* names) and fixed to match both — with the old names,
 staging with "column does not exist". Still worth checking the live schema
 before trusting any migration file, here or elsewhere.
 
+**Live usage telemetry and the daily table.** `InsertUsageStats` writes one
+`hourly_usage_summary` row per report and recomputes that UTC day's `API_CALL` row of
+`daily_usage_summary` from the day's hourly rows: the **sum** for a counter
+(`TRANSACTION_COUNT`, `M2M_TOKEN`, every `AGENT_*` type -- each report is the amount since the
+previous one) and the **latest report by `counted_on`** for anything else (users,
+organisations, cores, MAU). It used to store the reported count as the day's value, so a
+counter published every hour showed only its last hour. A `FILE_UPLOAD` row (an offline
+report) for the same node, day and type is a separate row and is never touched. A report the
+product re-sends after a timeout is counted twice -- the endpoint has no request id to
+deduplicate on.
+
 **Project/Deployment/DeployedProduct references, verified against staging.**
 `deployment_node.product_version_id` is a real foreign key, so `Product` is
 always reliable. `deployment_node` has no foreign key to project, deployment or
@@ -8121,6 +8132,18 @@ because only one of them carries what each endpoint needs:**
   or 2) only has something to filter against there.
   `instanceDataSourceEnum` (`instance_service.go`) maps 1/2 to the enum
   labels; an unrecognized value is a `ValidationError`, not a silent no-op.
+- `POST /deployed-products/{id}/metrics/search` (the Core Usage chart on the
+  deployed-product usage pages) draws a node's cores from either source: a `CORES` row
+  of `daily_usage_summary` (offline reports, products that send cores as a usage count),
+  or `deployment_information.core_count` (the host snapshot every live heartbeat's info
+  call carries, and what `SearchInstanceMetricsStats` already reads). A `CORES` row wins
+  for its node and day; a snapshot fills the days without one, one value per node per
+  day. A snapshot stands for every UTC day from its first to its last report (a repeated
+  hash only moves `payload_updated_on`, and an unchanged hash means unchanged cores);
+  where two overlap on a day the one first reported later wins, and if it has no
+  `core_count` the node has no reading that day. It used to read only the usage rows, so telemetry
+  that reports cores through the snapshot never drew a chart here although the instance
+  stats showed it; the CSM portal's Core Usage panel was empty for it.
 - `SearchInstanceMetricsStats` has the same `DataSource` field on its
   request type (`InstanceStatsFilters` is shared), but `deployment_information`
   has no data-source column at all -- there's nothing to filter on Postgres.
@@ -8155,6 +8178,57 @@ it writes these tables through `POST /instances/meta`, `/instances/info`,
 `/instances/usage-stats`, `/instances/daily-usages/batch` and verifies telemetry
 signatures with `GET /projects/{key}/secret-key` (`instance_ingestion_*.go`).
 
+- **Rollups run in the database** (`0245_usage_rollup_functions.sql`): `POST
+  /instances/usage-rollups/daily` (`{"date"}`) and `/monthly` (`{"year","month"}`) call
+  `rollup_daily_usage(date[, node_ids])` and `rollup_monthly_usage(year, month)`, set-based SQL that
+  moves no usage row through the service. Daily rebuilds that UTC day's `API_CALL` rows from
+  the hourly rows; monthly rebuilds the month from the daily rows. A **counter**
+  (`usage_count_type_is_counter`: `TRANSACTION_COUNT`, `M2M_TOKEN`, `AGENT_*`) is summed, any other
+  type takes its latest reading. Monthly counts a node-type-day once (the live row over a
+  `FILE_UPLOAD` one) and includes nodes that only have uploaded days (air-gapped). Both are
+  idempotent and only touch the period given. The daily function takes the same per-node
+  advisory locks as ingestion, in byte order (`COLLATE "C"`, the order Go's `sort.Strings` gives
+  the batch import, whatever the database collation), and the service runs it 100 nodes per
+  transaction so a busy day never holds thousands of advisory locks at once; the monthly one
+  serialises runs of the same month (`monthly_usage_summary` has no unique key). Keep
+  `usage_count_type_is_counter` in step with the Go counter rule.
+- **A retried report is stored once.** `hourly_usage_summary` has no unique key, and counters are
+  summed, so `InsertUsageStats` skips a row whose node, count type and `counted_on` are already
+  there (under the node lock, so it cannot race). Both sums (the live recompute and
+  `rollup_daily_usage`) also count one row per `counted_on`, for duplicates already in the table.
+  No unique index: synced rows may already hold duplicates, which would fail it.
+- **Late uploads reach the monthly table** when `USAGE_ROLLUP_ENABLED=true` (default off, the
+  switch csm-scheduled-tasks uses too): the batch import then rebuilds every month its rows fall
+  in, oldest first, in its own transaction. Off, nothing writes `monthly_usage_summary` here, so it
+  keeps one writer while the previous system's aggregation jobs and csm-sync still fill it.
+- **Backfill, once, when the rollups are switched on.** Days ingested before the hourly-derived
+  daily value hold the last report rather than the day's sum, and the scheduled daily task only
+  rebuilds the last 2 days. Call `POST /instances/usage-rollups/daily` for each day since product
+  consumption tracking started writing here (or run csm-scheduled-tasks once with
+  `USAGE_ROLLUP_DAILY_LOOKBACK_DAYS` covering them), then `/monthly` for each of those months, and
+  `/monthly` for any month an earlier upload covered. Every call is idempotent, and a day with no
+  hourly rows (one the previous system filled) is left as it is. `pg_cron` is available on the server but not installed (it needs a
+  platform admin); a scheduler can call these functions, today `csm-scheduled-tasks` via these
+  endpoints.
+- **Unresolved products are kept and listed** (migration 0247). A node's reported product and
+  version are stored as `deployment_node.reported_product`/`reported_version` whenever both are
+  sent; `product_version_id` is the catalogue match and is NULL when there is none (the node then
+  loses any earlier version, rather than keep a stale one). A miss is logged at warn
+  (`reported product is not in the product catalogue`), and `GET /instances/unresolved-products`
+  (`since`, default 24 h ago; `limit`, default 500, max 5000) lists such nodes, grouped by what they
+  reported. This replaces ServiceNow's email to a fixed address on every miss; the daily digest is
+  a csm-scheduled-tasks job. Product and version are now length-checked (255 / 100).
+  `deployment_node.unresolved_since` records when the node's reports stopped matching (kept across
+  heartbeats, cleared when it matches, set afresh if it goes unresolved again) and is returned as
+  `unresolvedSince`; `updated_on` moves with every heartbeat and `created_on` is the node's first
+  report, so neither says that. The response says `truncated: true` when more nodes matched than
+  the limit.
+- **Every report import is recorded** (migration 0248, `usage_report_import`): the batch import
+  writes one history row in its own transaction (uploader, project, deployment, the report's
+  `exportVersion`/`exportedAt`/`exportValid`, node and row counts), so a failed import leaves none.
+  `GET /instances/daily-usages/imports` (`projectKey` and/or `deploymentNumber`, `limit` default
+  100, max 1000) lists them newest first. The previous system's equivalent was
+  `u_product_consumption_import_history`.
 - **Internal callers only** (`internalOnly`): PCT's client id must be in
   `M2M_CLIENT_IDS`. The repository has no system-identity fallback. The
   secret key is a credential (`Cache-Control: no-store`); a project with no key
@@ -9482,6 +9556,24 @@ unaffected and keeps creating external users exactly as before. `apps/csm-portal
 `UsersHandler.CreateUser` mirrors the same check for a fast 400, and the webapp's Add User form
 disables the "External" option in its type selector rather than offering a choice the backend will
 reject — all three are temporary, meant to come out together once external-type creation is ready.
+
+## Air-gapped deployments (`deployment.air_gapped`)
+
+Migration 0246 adds `deployment.air_gapped` (default false). An air-gapped deployment's products
+cannot reach WSO2: the licence PCS issues for it ends its `secrets` string in the marker the
+product reads as "do not publish online", and its usage arrives by uploaded report instead. This
+replaces ServiceNow's hand-run licence script, which applied the marker only for one hard-coded
+requester's email and recorded nothing.
+
+- Set through `PUT /deployments/{id}/air-gapped` (`{"airGapped": true|false}`), **internal-only**,
+  Postgres-only (ServiceNow has no such field; nothing is mirrored back, and the handler is not
+  registered without a database). It has its own small repository/service/handler rather than going
+  through `PATCH /deployments/{id}`, whose detail-vs-deactivate rules and ServiceNow write-back do not
+  apply to it. `updated_by` is the x-user-id-token's email when present, else `internal-client`.
+- Entity-service only knows internal vs customer callers; restricting it to a staff group is the
+  portal backend's job.
+- Read back as `airGapped` on `POST /deployments/search` results (`DeploymentView.AirGapped`, null
+  under `DATA_SOURCE=servicenow`), which is where PCS reads it from.
 
 ## SearchDeployments crashed on any page containing a NULL deployment.type
 

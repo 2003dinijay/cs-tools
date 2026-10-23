@@ -4972,6 +4972,83 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /deployments/{id}/air-gapped:
+    put:
+      summary: Mark a deployment air-gapped or not (internal callers only).
+      description: |
+        An air-gapped deployment's licence file tells its products not to publish usage online; its
+        usage arrives by uploaded report instead. Postgres-only (ServiceNow has no such field) and not
+        mirrored back. The change is attributed to the user in x-user-id-token when present, otherwise
+        to the calling service. A portal exposing this should limit it to the staff allowed to set it.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - airGapped
+              properties:
+                airGapped:
+                  type: boolean
+      responses:
+        "200":
+          description: Set.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  number:
+                    type: string
+                    nullable: true
+                  airGapped:
+                    type: boolean
+                  updatedOn:
+                    type: string
+                    format: date-time
+                  updatedBy:
+                    type: string
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Deployment not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /deployments/search:
     post:
       summary: Search deployments by name, project IDs, or deployment type.
@@ -15305,6 +15382,17 @@ paths:
                         type: string
                       version:
                         type: string
+                exportVersion:
+                  type: string
+                  maxLength: 20
+                  description: The report's export version, recorded in its import history.
+                exportedAt:
+                  type: string
+                  format: date-time
+                  description: When the product exported the report (RFC 3339); recorded as unknown when it does not parse.
+                exportValid:
+                  type: boolean
+                  description: The product's own integrity verdict on the report.
                 usages:
                   type: array
                   maxItems: 5000
@@ -15356,6 +15444,318 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "403":
           description: Not an internal caller (product-consumption-tracking's client id must be in M2M_CLIENT_IDS).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /instances/usage-rollups/daily:
+    post:
+      summary: Recompute one UTC day's daily usage rows from the hourly rows (internal callers only).
+      description: |
+        Runs inside the database. For each node and count type with hourly rows that day, writes the
+        day's API_CALL row: the sum for a counter (TRANSACTION_COUNT, M2M_TOKEN, every AGENT_* type), the
+        latest report for any other type. FILE_UPLOAD rows are never touched. Safe to repeat: a rerun over
+        unchanged rows writes nothing. Today's partial day is allowed; a later day is refused.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - date
+              properties:
+                date:
+                  type: string
+                  format: date
+      responses:
+        "200":
+          description: Rolled up.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rowsWritten:
+                    type: integer
+                    description: Rows inserted or changed.
+                  status:
+                    type: string
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /instances/usage-rollups/monthly:
+    post:
+      summary: Recompute one calendar month's monthly usage rows from the daily rows (internal callers only).
+      description: |
+        Runs inside the database. Per node and count type: the sum of the days for a counter, the latest
+        day's value for any other type. A node-type-day with both a live (API_CALL) and an uploaded
+        (FILE_UPLOAD) row counts once, the live one; a node with only uploaded days is included from them.
+        Other months are never touched. Safe to repeat. The current month is allowed; a later month is refused.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - year
+                - month
+              properties:
+                year:
+                  type: integer
+                  minimum: 2000
+                month:
+                  type: integer
+                  minimum: 1
+                  maximum: 12
+      responses:
+        "200":
+          description: Rolled up.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rowsWritten:
+                    type: integer
+                  status:
+                    type: string
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /instances/unresolved-products:
+    get:
+      summary: List nodes whose reported product is not in the product catalogue (internal callers only).
+      description: |
+        A node reports its product and version; when they match no catalogue entry it is stored with
+        no product version, and what it reported is kept. This lists such nodes seen since a time,
+        grouped by what they reported, so the missing catalogue entries can be added. A node stays
+        listed for as long as it keeps reporting an unknown product.
+      parameters:
+        - name: since
+          in: query
+          required: false
+          description: RFC 3339 time; nodes last seen before it are left out. Defaults to 24 hours ago.
+          schema:
+            type: string
+            format: date-time
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 5000
+            default: 500
+      responses:
+        "200":
+          description: The unresolved nodes.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count:
+                    type: integer
+                  truncated:
+                    type: boolean
+                    description: More nodes matched than the limit; the list is not complete.
+                  nodes:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        nodeId:
+                          type: string
+                        projectKey:
+                          type: string
+                          nullable: true
+                        deploymentNumber:
+                          type: string
+                          nullable: true
+                        reportedProduct:
+                          type: string
+                        reportedVersion:
+                          type: string
+                          nullable: true
+                        unresolvedSince:
+                          type: string
+                          format: date-time
+                          description: When the node's reports stopped matching the catalogue.
+                        lastSeenOn:
+                          type: string
+                          format: date-time
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /instances/daily-usages/imports:
+    get:
+      summary: List imported offline usage reports (internal callers only).
+      description: |
+        One row per report imported through POST /instances/daily-usages/batch, written in the same
+        transaction as the import. Filter by project key, deployment number or both (at least one).
+      parameters:
+        - name: projectKey
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: deploymentNumber
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 100
+      responses:
+        "200":
+          description: The imports, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count:
+                    type: integer
+                  imports:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        createdOn:
+                          type: string
+                          format: date-time
+                        createdBy:
+                          type: string
+                          description: The uploader's email, or the ingesting service.
+                        projectKey:
+                          type: string
+                          nullable: true
+                        deploymentNumber:
+                          type: string
+                          nullable: true
+                        exportVersion:
+                          type: string
+                          nullable: true
+                        exportedAt:
+                          type: string
+                          format: date-time
+                          nullable: true
+                        exportValid:
+                          type: boolean
+                          nullable: true
+                        nodeCount:
+                          type: integer
+                        importedCount:
+                          type: integer
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller.
           content:
             application/json:
               schema:
@@ -19760,6 +20160,10 @@ components:
           type: boolean
           nullable: true
           description: Whether the deployment is active.
+        airGapped:
+          type: boolean
+          nullable: true
+          description: Whether the deployment's products cannot reach WSO2, so its licence file tells them not to publish usage online. Null when the data source does not carry it (ServiceNow).
         createdOn:
           type: string
           format: date-time

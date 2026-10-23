@@ -61,6 +61,36 @@ export const METRIC_CHART_CONFIG: Record<string, MetricChartConfig> = {
     caption: "B2B organizations over time",
     stroke: "#F97316",
   },
+  MAU: {
+    title: "Monthly Active Users",
+    caption: "Distinct active users per month",
+    stroke: "#06B6D4",
+  },
+  M2M_TOKEN: {
+    title: "M2M Tokens",
+    caption: "Machine-to-machine tokens issued per period",
+    stroke: "#6366F1",
+  },
+  AGENT_DIRECT_TOKEN: {
+    title: "Agent Direct Tokens",
+    caption: "Tokens issued to agents signing in directly",
+    stroke: "#EC4899",
+  },
+  AGENT_DIRECT_REFRESH_TOKEN: {
+    title: "Agent Direct Refresh Tokens",
+    caption: "Refresh tokens from agents signing in directly",
+    stroke: "#A855F7",
+  },
+  AGENT_OBO_TOKEN: {
+    title: "Agent OBO Tokens",
+    caption: "Tokens issued to agents acting on behalf of users",
+    stroke: "#EAB308",
+  },
+  AGENT_OBO_REFRESH_TOKEN: {
+    title: "Agent OBO Refresh Tokens",
+    caption: "Refresh tokens from agents acting on behalf of users",
+    stroke: "#84CC16",
+  },
 };
 
 export const METRIC_CHART_CONFIG_FALLBACK: MetricChartConfig = {
@@ -75,9 +105,22 @@ export const CORE_CHART_CONFIG: MetricChartConfig = {
   stroke: "#F97316",
 };
 
+function parseVersionParts(label: string): { major: number; minor: number } {
+  const m = label.match(/(\d+)\.(\d+)/);
+  if (m) return { major: parseInt(m[1], 10), minor: parseInt(m[2], 10) };
+  // A bare major version ("8") reads as minor 0. Only a whole-string number counts, so the
+  // "2" in a product name such as "WSO2 Identity Server" is never taken for a version.
+  const major = label.trim().match(/^v?(\d+)$/i);
+  return major ? { major: parseInt(major[1], 10), minor: 0 } : { major: 0, minor: 0 };
+}
+
 function parseMajorVersion(label: string): number {
-  const m = label.match(/(\d+)\.\d+/);
-  return m ? parseInt(m[1], 10) : 0;
+  return parseVersionParts(label).major;
+}
+
+/** The agent token counters exist from Identity Server 7.2.0. */
+function hasAgentMetrics(major: number, minor: number): boolean {
+  return major > 7 || (major === 7 && minor >= 2);
 }
 
 const PRODUCT_TYPE_PATTERNS: [WsoProductType, RegExp][] = [
@@ -116,16 +159,25 @@ export function classifyProductLabel(label: string): {
  */
 export function getProductMetricKeys(label: string, version?: string): string[] {
   const { type, majorVersion: labelMajorVersion } = classifyProductLabel(label);
-  const majorVersion = version != null ? parseMajorVersion(version) : labelMajorVersion;
+  const hasVersion = version != null && version !== "";
+  const versionSource = hasVersion ? version : label;
+  const majorVersion = hasVersion ? parseMajorVersion(version) : labelMajorVersion;
   switch (type) {
     case WsoProductType.APIM:
       return majorVersion >= 7
         ? ["TRANSACTION_COUNT", "API_COUNT", "MCP_API_COUNT"]
         : ["TRANSACTION_COUNT", "API_COUNT"];
-    case WsoProductType.IS:
-      return majorVersion >= 7
-        ? ["TOTAL_B2B_ORGS", "TOTAL_ROOT_ORGS", "TOTAL_USERS"]
-        : ["TOTAL_ROOT_ORGS", "TOTAL_USERS"];
+    case WsoProductType.IS: {
+      const totals =
+        majorVersion >= 7
+          ? ["TOTAL_B2B_ORGS", "TOTAL_ROOT_ORGS", "TOTAL_USERS"]
+          : ["TOTAL_ROOT_ORGS", "TOTAL_USERS"];
+      const { minor } = parseVersionParts(versionSource);
+      const agentKeys = hasAgentMetrics(majorVersion, minor)
+        ? ["AGENT_DIRECT_TOKEN", "AGENT_DIRECT_REFRESH_TOKEN", "AGENT_OBO_TOKEN", "AGENT_OBO_REFRESH_TOKEN"]
+        : [];
+      return [...totals, "MAU", "M2M_TOKEN", ...agentKeys];
+    }
     case WsoProductType.MI:
       return ["TRANSACTION_COUNT"];
     default:

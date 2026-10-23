@@ -16,6 +16,8 @@
 
 package domain
 
+import "time"
+
 // InstanceIngestionActor is the created_by/updated_by stamped on rows written by
 // product-consumption-tracking telemetry, the value that service wrote when it
 // still talked to Postgres directly.
@@ -104,6 +106,11 @@ type DailyUsageBatchRequest struct {
 	UserEmail string                `json:"userEmail"`
 	Nodes     []DailyUsageBatchNode `json:"nodes,omitempty"`
 	Usages    []DailyUsageBatchItem `json:"usages"`
+	// The report's own export metadata, recorded in its import history row. All optional.
+	ExportVersion string `json:"exportVersion,omitempty"`
+	// ExportedAt is RFC 3339; a value that does not parse is recorded as unknown.
+	ExportedAt  string `json:"exportedAt,omitempty"`
+	ExportValid *bool  `json:"exportValid,omitempty"`
 }
 
 // DailyUsageBatchResponse carries the number of imported daily usage entries.
@@ -125,4 +132,65 @@ type DeploymentConsumptionSecretResponse struct {
 	ProjectID        string `json:"projectId"`
 	ProjectKey       string `json:"projectKey"`
 	SecretKey        string `json:"secretKey"`
+}
+
+// UnresolvedProductNode is a node whose reported product and version did not match the
+// product catalogue, so it has no product version.
+type UnresolvedProductNode struct {
+	NodeID           string  `json:"nodeId"`
+	ProjectKey       *string `json:"projectKey"`
+	DeploymentNumber *string `json:"deploymentNumber"`
+	ReportedProduct  string  `json:"reportedProduct"`
+	ReportedVersion  *string `json:"reportedVersion"`
+	// UnresolvedSince is when the node's reports stopped matching the catalogue.
+	UnresolvedSince time.Time `json:"unresolvedSince"`
+	LastSeenOn      time.Time `json:"lastSeenOn"`
+}
+
+// UnresolvedProductsResponse lists nodes with an unresolved product. Truncated is true
+// when more nodes matched than the limit allowed, so the list is not complete.
+type UnresolvedProductsResponse struct {
+	Nodes     []UnresolvedProductNode `json:"nodes"`
+	Count     int                     `json:"count"`
+	Truncated bool                    `json:"truncated"`
+}
+
+// UsageRollupDailyRequest names the UTC day whose daily usage rows are recomputed from
+// the hourly ones.
+type UsageRollupDailyRequest struct {
+	Date string `json:"date"`
+}
+
+// UsageRollupMonthlyRequest names the calendar month whose monthly usage rows are
+// recomputed from the daily ones.
+type UsageRollupMonthlyRequest struct {
+	Year  int `json:"year"`
+	Month int `json:"month"`
+}
+
+// UsageRollupResponse carries the number of usage rows a rollup wrote (inserted or
+// changed); a rerun over unchanged source rows writes none.
+type UsageRollupResponse struct {
+	RowsWritten int    `json:"rowsWritten"`
+	Status      string `json:"status"`
+}
+
+// UsageReportImport is one imported offline usage report, as recorded in its history.
+type UsageReportImport struct {
+	ID               string     `json:"id"`
+	CreatedOn        time.Time  `json:"createdOn"`
+	CreatedBy        string     `json:"createdBy"`
+	ProjectKey       *string    `json:"projectKey"`
+	DeploymentNumber *string    `json:"deploymentNumber"`
+	ExportVersion    *string    `json:"exportVersion"`
+	ExportedAt       *time.Time `json:"exportedAt"`
+	ExportValid      *bool      `json:"exportValid"`
+	NodeCount        int        `json:"nodeCount"`
+	ImportedCount    int        `json:"importedCount"`
+}
+
+// UsageReportImportsResponse lists imported reports, newest first.
+type UsageReportImportsResponse struct {
+	Imports []UsageReportImport `json:"imports"`
+	Count   int                 `json:"count"`
 }

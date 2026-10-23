@@ -36,6 +36,9 @@ var staleCasesReportTemplateRaw string
 //go:embed templates/open_cases_report.html
 var openCasesReportTemplateRaw string
 
+//go:embed templates/unresolved_products_report.html
+var unresolvedProductsReportTemplateRaw string
+
 // wso2LogoURL is the white WSO2 logo variant — the alert template's header
 // sits on an orange background, unlike
 // integrations/csm-notification-service's own equivalent constant of the
@@ -56,6 +59,7 @@ func bakeLogo(raw string) string {
 var alertTemplate = bakeLogo(alertTemplateRaw)
 var staleCasesReportTemplate = bakeLogo(staleCasesReportTemplateRaw)
 var openCasesReportTemplate = bakeLogo(openCasesReportTemplateRaw)
+var unresolvedProductsReportTemplate = bakeLogo(unresolvedProductsReportTemplateRaw)
 
 // escapeHTML mirrors integrations/csm-notification-service's own
 // internal/notifications.escapeHTML exactly: HTML-escapes s and
@@ -414,4 +418,85 @@ func humanizeState(state string) string {
 		words[i] = strings.ToUpper(w[:1]) + w[1:]
 	}
 	return strings.Join(words, " ")
+}
+
+// UnresolvedProductNode is one row of the unresolved products digest: a node whose
+// reported product or version is not in the product catalogue.
+type UnresolvedProductNode struct {
+	NodeID           string
+	ProjectKey       string
+	DeploymentNumber string
+	ReportedProduct  string
+	ReportedVersion  string
+	UnresolvedSince  time.Time
+	LastSeenOn       time.Time
+}
+
+// UnresolvedProductsReportData holds every value substituted into the unresolved
+// products digest template.
+type UnresolvedProductsReportData struct {
+	WindowHours int
+	Nodes       []UnresolvedProductNode
+	// Truncated says entity-service had more nodes than it returned.
+	Truncated bool
+}
+
+// RenderUnresolvedProductsReport fills in the unresolved products digest, one row per
+// node in the order given (entity-service groups them by what they reported).
+func RenderUnresolvedProductsReport(data UnresolvedProductsReportData) string {
+	replacer := strings.NewReplacer(
+		"<!-- [NODE_COUNT] -->", strconv.Itoa(len(data.Nodes)),
+		"<!-- [WINDOW_HOURS] -->", strconv.Itoa(data.WindowHours),
+		"<!-- [NODE_ROWS] -->", renderUnresolvedProductRows(data.Nodes),
+		"<!-- [TRUNCATED_NOTE] -->", unresolvedProductsTruncatedNote(data.Truncated),
+		"<!-- [YEAR] -->", strconv.Itoa(time.Now().Year()),
+	)
+	return replacer.Replace(unresolvedProductsReportTemplate)
+}
+
+func renderUnresolvedProductRows(nodes []UnresolvedProductNode) string {
+	if len(nodes) == 0 {
+		return `<tr><td colspan="7" style="padding:16px 10px; text-align:center; color:#8a8f98;">No unresolved products.</td></tr>`
+	}
+	var b strings.Builder
+	for _, n := range nodes {
+		fmt.Fprintf(&b,
+			`<tr>`+
+				`<td style="padding:8px 10px; border-bottom:1px solid #e8eaed;"><strong>%s</strong></td>`+
+				`<td style="padding:8px 10px; border-bottom:1px solid #e8eaed;">%s</td>`+
+				`<td style="padding:8px 10px; border-bottom:1px solid #e8eaed; font-family:monospace; font-size:12px;">%s</td>`+
+				`<td style="padding:8px 10px; border-bottom:1px solid #e8eaed;">%s</td>`+
+				`<td style="padding:8px 10px; border-bottom:1px solid #e8eaed;">%s</td>`+
+				`<td style="padding:8px 10px; border-bottom:1px solid #e8eaed;">%s</td>`+
+				`<td style="padding:8px 10px; border-bottom:1px solid #e8eaed;">%s</td>`+
+				`</tr>`,
+			escapeHTML(n.ReportedProduct),
+			orDash(escapeHTML(n.ReportedVersion)),
+			escapeHTML(shortNodeID(n.NodeID)),
+			orDash(escapeHTML(n.ProjectKey)),
+			orDash(escapeHTML(n.DeploymentNumber)),
+			n.UnresolvedSince.UTC().Format("2006-01-02"),
+			n.LastSeenOn.UTC().Format("2006-01-02"),
+		)
+	}
+	return b.String()
+}
+
+// unresolvedProductsTruncatedNote is the line shown when the list was cut off at
+// entity-service's limit, so a reader knows more nodes are missing than are listed.
+func unresolvedProductsTruncatedNote(truncated bool) string {
+	if !truncated {
+		return ""
+	}
+	return `<p style="margin:0 0 20px; color:#b45309;"><strong>This list is incomplete:</strong> more nodes matched than one digest can hold. ` +
+		`The full list is at entity-service <code>GET /instances/unresolved-products</code>.</p>`
+}
+
+// shortNodeID keeps a long node id readable in a table cell: products report 64-character
+// hashes. The first twelve characters are enough to find the node.
+func shortNodeID(id string) string {
+	if len(id) <= 16 {
+		return id
+	}
+	return id[:12] + "…"
 }

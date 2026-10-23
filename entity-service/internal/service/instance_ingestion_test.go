@@ -41,6 +41,15 @@ type mockInstanceIngestionRepo struct {
 
 	secret    string
 	secretErr error
+
+	rolledDay                         string
+	rolledYear                        int
+	rolledMonth                       int
+	unresolvedSince                   time.Time
+	unresolvedLimit                   int
+	unresolvedNodes                   []domain.UnresolvedProductNode
+	importsProject, importsDeployment string
+	importsLimit                      int
 }
 
 func (m *mockInstanceIngestionRepo) UpsertDeploymentNode(_ context.Context, nodeID string, meta domain.InstanceNodeMeta) (string, error) {
@@ -65,6 +74,33 @@ func (m *mockInstanceIngestionRepo) ImportDailyUsagesBatch(_ context.Context, re
 	m.calls++
 	m.batch = req
 	return len(req.Usages), nil
+}
+
+func (m *mockInstanceIngestionRepo) RollupDailyUsage(_ context.Context, day string) (int, error) {
+	m.calls++
+	m.rolledDay = day
+	return 7, nil
+}
+
+func (m *mockInstanceIngestionRepo) RollupMonthlyUsage(_ context.Context, year, month int) (int, error) {
+	m.calls++
+	m.rolledYear, m.rolledMonth = year, month
+	return 9, nil
+}
+
+func (m *mockInstanceIngestionRepo) ListUnresolvedProductNodes(_ context.Context, since time.Time, limit int) ([]domain.UnresolvedProductNode, error) {
+	m.calls++
+	m.unresolvedSince, m.unresolvedLimit = since, limit
+	if m.unresolvedNodes != nil {
+		return m.unresolvedNodes, nil
+	}
+	return []domain.UnresolvedProductNode{{NodeID: "n1", ReportedProduct: "wso2xx"}}, nil
+}
+
+func (m *mockInstanceIngestionRepo) ListUsageReportImports(_ context.Context, projectKey, deploymentNumber string, limit int) ([]domain.UsageReportImport, error) {
+	m.calls++
+	m.importsProject, m.importsDeployment, m.importsLimit = projectKey, deploymentNumber, limit
+	return []domain.UsageReportImport{{ID: "i1", ImportedCount: 3}}, nil
 }
 
 func (m *mockInstanceIngestionRepo) GetProjectSecretKey(_ context.Context, _ string) (string, error) {
@@ -303,5 +339,194 @@ func TestInstanceIngestion_SecretKeyErrorsPassThrough(t *testing.T) {
 	resp, err := newTestIngestionService(repo).GetProjectSecretKey(context.Background(), " PROJ ")
 	if err != nil || resp.SecretKey != "s3cret" {
 		t.Fatalf("resp = %+v, err = %v", resp, err)
+	}
+}
+
+func TestInstanceIngestion_RollupDailyValidatesTheDay(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct{ name, date, contains string }{
+		{"not a date", "15/10/2026", "date must be a date"},
+		{"empty", " ", "date must be a date"},
+		{"tomorrow", "2026-10-17", "must not be in the future"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &mockInstanceIngestionRepo{}
+			_, err := newTestIngestionService(repo).RollupDailyUsage(ctx, domain.UsageRollupDailyRequest{Date: tc.date})
+			wantValidation(t, err, tc.contains)
+			if repo.calls != 0 {
+				t.Errorf("a rejected day reached the repository (%d calls)", repo.calls)
+			}
+		})
+	}
+
+	// Today's partial day is allowed, and the day is handed on trimmed.
+	repo := &mockInstanceIngestionRepo{}
+	resp, err := newTestIngestionService(repo).RollupDailyUsage(ctx, domain.UsageRollupDailyRequest{Date: " 2026-10-16 "})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if repo.rolledDay != "2026-10-16" || resp.RowsWritten != 7 || resp.Status != "SUCCESS" {
+		t.Errorf("rolled %q, response %+v", repo.rolledDay, resp)
+	}
+}
+
+func TestInstanceIngestion_RollupMonthlyValidatesTheMonth(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name        string
+		year, month int
+		contains    string
+	}{
+		{"month zero", 2026, 0, "month must be between 1 and 12"},
+		{"month thirteen", 2026, 13, "month must be between 1 and 12"},
+		{"year too early", 1999, 12, "year must be 2000 or later"},
+		{"next month", 2026, 11, "must not be in the future"},
+		{"next year", 2027, 1, "must not be in the future"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &mockInstanceIngestionRepo{}
+			_, err := newTestIngestionService(repo).RollupMonthlyUsage(ctx, domain.UsageRollupMonthlyRequest{Year: tc.year, Month: tc.month})
+			wantValidation(t, err, tc.contains)
+			if repo.calls != 0 {
+				t.Errorf("a rejected month reached the repository (%d calls)", repo.calls)
+			}
+		})
+	}
+
+	// The current month is allowed.
+	repo := &mockInstanceIngestionRepo{}
+	resp, err := newTestIngestionService(repo).RollupMonthlyUsage(ctx, domain.UsageRollupMonthlyRequest{Year: 2026, Month: 10})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if repo.rolledYear != 2026 || repo.rolledMonth != 10 || resp.RowsWritten != 9 {
+		t.Errorf("rolled %d-%d, response %+v", repo.rolledYear, repo.rolledMonth, resp)
+	}
+}
+
+func TestInstanceIngestion_ListUnresolvedProductsDefaultsAndValidation(t *testing.T) {
+	ctx := context.Background()
+
+	repo := &mockInstanceIngestionRepo{}
+	resp, err := newTestIngestionService(repo).ListUnresolvedProducts(ctx, "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// newTestIngestionService's clock is 2026-10-16T08:00Z: the default window is the last 24 hours.
+	// The repository is asked for one more than the limit, to tell a cut-off list.
+	if !repo.unresolvedSince.Equal(time.Date(2026, 10, 15, 8, 0, 0, 0, time.UTC)) || repo.unresolvedLimit != 501 {
+		t.Errorf("defaults: since %v limit %d", repo.unresolvedSince, repo.unresolvedLimit)
+	}
+	if resp.Count != 1 || resp.Nodes[0].ReportedProduct != "wso2xx" {
+		t.Errorf("response %+v", resp)
+	}
+
+	repo = &mockInstanceIngestionRepo{}
+	if _, err := newTestIngestionService(repo).ListUnresolvedProducts(ctx, "2026-10-01T00:00:00Z", "20"); err != nil {
+		t.Fatal(err)
+	}
+	if !repo.unresolvedSince.Equal(time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)) || repo.unresolvedLimit != 21 {
+		t.Errorf("explicit: since %v limit %d", repo.unresolvedSince, repo.unresolvedLimit)
+	}
+
+	for _, tc := range []struct{ since, limit, contains string }{
+		{"yesterday", "", "since must be an RFC 3339 time"},
+		{"", "0", "limit must be between 1 and 5000"},
+		{"", "5001", "limit must be between 1 and 5000"},
+		{"", "ten", "limit must be between 1 and 5000"},
+	} {
+		repo := &mockInstanceIngestionRepo{}
+		_, err := newTestIngestionService(repo).ListUnresolvedProducts(ctx, tc.since, tc.limit)
+		wantValidation(t, err, tc.contains)
+		if repo.calls != 0 {
+			t.Errorf("a rejected request (%q, %q) reached the repository", tc.since, tc.limit)
+		}
+	}
+}
+
+func TestInstanceIngestion_ListUsageReportImportsValidation(t *testing.T) {
+	ctx := context.Background()
+	repo := &mockInstanceIngestionRepo{}
+	resp, err := newTestIngestionService(repo).ListUsageReportImports(ctx, " SCTPSUB ", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repo.importsProject != "SCTPSUB" || repo.importsDeployment != "" || repo.importsLimit != 100 || resp.Count != 1 {
+		t.Errorf("defaults: %q %q %d, response %+v", repo.importsProject, repo.importsDeployment, repo.importsLimit, resp)
+	}
+	for _, tc := range []struct{ project, deployment, limit, contains string }{
+		{"", "", "", "projectKey or deploymentNumber is required"},
+		{"P", "", "0", "limit must be between 1 and 1000"},
+		{"", "DEP1", "1001", "limit must be between 1 and 1000"},
+	} {
+		repo := &mockInstanceIngestionRepo{}
+		_, err := newTestIngestionService(repo).ListUsageReportImports(ctx, tc.project, tc.deployment, tc.limit)
+		wantValidation(t, err, tc.contains)
+		if repo.calls != 0 {
+			t.Errorf("a rejected request reached the repository")
+		}
+	}
+}
+
+func TestInstanceIngestion_ReportedProductAndVersionAreLengthChecked(t *testing.T) {
+	repo := &mockInstanceIngestionRepo{}
+	_, err := newTestIngestionService(repo).UpsertInstanceMeta(context.Background(), domain.InstanceMetaRequest{
+		NodeID: "n", InstanceNodeMeta: domain.InstanceNodeMeta{Product: strings.Repeat("p", 256), Version: "1"}})
+	wantValidation(t, err, "product")
+	_, err = newTestIngestionService(repo).UpsertInstanceMeta(context.Background(), domain.InstanceMetaRequest{
+		NodeID: "n", InstanceNodeMeta: domain.InstanceNodeMeta{Product: "wso2is", Version: strings.Repeat("9", 101)}})
+	wantValidation(t, err, "version")
+	if repo.calls != 0 {
+		t.Errorf("an over-long product or version reached the repository")
+	}
+}
+
+func TestInstanceIngestion_ExportVersionIsLengthChecked(t *testing.T) {
+	repo := &mockInstanceIngestionRepo{}
+	_, err := newTestIngestionService(repo).ImportDailyUsagesBatch(context.Background(), domain.DailyUsageBatchRequest{
+		NodeID: "n", ExportVersion: strings.Repeat("1", 21)})
+	wantValidation(t, err, "exportVersion")
+	if repo.calls != 0 {
+		t.Errorf("an over-long export version reached the repository")
+	}
+}
+
+func TestInstanceIngestion_BatchNodeProductAndVersionAreLengthChecked(t *testing.T) {
+	for _, tc := range []struct {
+		node     domain.DailyUsageBatchNode
+		contains string
+	}{
+		{domain.DailyUsageBatchNode{NodeID: "n", Product: strings.Repeat("p", 256), Version: "7.1.0"}, "nodes[0].product"},
+		{domain.DailyUsageBatchNode{NodeID: "n", Product: "wso2is", Version: strings.Repeat("9", 101)}, "nodes[0].version"},
+	} {
+		repo := &mockInstanceIngestionRepo{}
+		_, err := newTestIngestionService(repo).ImportDailyUsagesBatch(context.Background(), domain.DailyUsageBatchRequest{
+			NodeID: "n", Nodes: []domain.DailyUsageBatchNode{tc.node}})
+		wantValidation(t, err, tc.contains)
+		if repo.calls != 0 {
+			t.Errorf("an over-long %s reached the repository", tc.contains)
+		}
+	}
+}
+
+func TestInstanceIngestion_ListUnresolvedProductsSaysWhenTheListIsCut(t *testing.T) {
+	ctx := context.Background()
+	three := []domain.UnresolvedProductNode{{NodeID: "a"}, {NodeID: "b"}, {NodeID: "c"}}
+
+	repo := &mockInstanceIngestionRepo{unresolvedNodes: three}
+	resp, err := newTestIngestionService(repo).ListUnresolvedProducts(ctx, "", "2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Truncated || resp.Count != 2 || len(resp.Nodes) != 2 {
+		t.Errorf("limit 2 of 3: %+v", resp)
+	}
+
+	repo = &mockInstanceIngestionRepo{unresolvedNodes: three}
+	if resp, err = newTestIngestionService(repo).ListUnresolvedProducts(ctx, "", "3"); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Truncated || resp.Count != 3 {
+		t.Errorf("limit 3 of 3: %+v", resp)
 	}
 }

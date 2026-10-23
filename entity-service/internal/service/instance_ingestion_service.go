@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -38,6 +39,10 @@ type InstanceIngestionService interface {
 	InsertInstanceInfo(ctx context.Context, req domain.InstanceInfoRequest) (domain.InstanceInfoResponse, error)
 	InsertUsageStats(ctx context.Context, req domain.InstanceUsageIngestRequest) (domain.InstanceUsageIngestResponse, error)
 	ImportDailyUsagesBatch(ctx context.Context, req domain.DailyUsageBatchRequest) (domain.DailyUsageBatchResponse, error)
+	RollupDailyUsage(ctx context.Context, req domain.UsageRollupDailyRequest) (domain.UsageRollupResponse, error)
+	RollupMonthlyUsage(ctx context.Context, req domain.UsageRollupMonthlyRequest) (domain.UsageRollupResponse, error)
+	ListUnresolvedProducts(ctx context.Context, since string, limit string) (domain.UnresolvedProductsResponse, error)
+	ListUsageReportImports(ctx context.Context, projectKey, deploymentNumber, limit string) (domain.UsageReportImportsResponse, error)
 	GetProjectSecretKey(ctx context.Context, projectKey string) (domain.ProjectSecretKeyResponse, error)
 	GetDeploymentConsumptionSecret(ctx context.Context, deploymentNumber string) (domain.DeploymentConsumptionSecretResponse, error)
 }
@@ -53,6 +58,16 @@ const (
 	maxJDKVersionLen       = 64
 	maxInfoHashLen         = 128
 	maxDailyUsageBatchSize = 5000
+	maxReportedProductLen  = 255
+	maxReportedVersionLen  = 100
+
+	defaultUnresolvedProductsWindow = 24 * time.Hour
+	defaultUnresolvedProductsLimit  = 500
+	maxUnresolvedProductsLimit      = 5000
+	maxExportVersionLen             = 20
+
+	defaultUsageReportImportsLimit = 100
+	maxUsageReportImportsLimit     = 1000
 )
 
 // ingestionTimeLayout is the zoneless layout product-consumption-tracking's
@@ -103,6 +118,12 @@ func normalizeNodeMeta(meta domain.InstanceNodeMeta) (domain.InstanceNodeMeta, e
 		return meta, err
 	}
 	if err := checkLen("deploymentNumber", meta.DeploymentNumber, maxDeploymentNumberLen); err != nil {
+		return meta, err
+	}
+	if err := checkLen("product", meta.Product, maxReportedProductLen); err != nil {
+		return meta, err
+	}
+	if err := checkLen("version", meta.Version, maxReportedVersionLen); err != nil {
 		return meta, err
 	}
 	return meta, nil
@@ -278,6 +299,17 @@ func (s *instanceIngestionService) ImportDailyUsagesBatch(ctx context.Context, r
 		}
 		n.Product = strings.TrimSpace(n.Product)
 		n.Version = strings.TrimSpace(n.Version)
+		if err := checkLen(field("product"), n.Product, maxReportedProductLen); err != nil {
+			return domain.DailyUsageBatchResponse{}, err
+		}
+		if err := checkLen(field("version"), n.Version, maxReportedVersionLen); err != nil {
+			return domain.DailyUsageBatchResponse{}, err
+		}
+	}
+
+	req.ExportVersion = strings.TrimSpace(req.ExportVersion)
+	if err := checkLen("exportVersion", req.ExportVersion, maxExportVersionLen); err != nil {
+		return domain.DailyUsageBatchResponse{}, err
 	}
 
 	count, err := s.repo.ImportDailyUsagesBatch(ctx, req)
@@ -285,6 +317,100 @@ func (s *instanceIngestionService) ImportDailyUsagesBatch(ctx context.Context, r
 		return domain.DailyUsageBatchResponse{}, err
 	}
 	return domain.DailyUsageBatchResponse{ImportedCount: count, Status: "SUCCESS"}, nil
+}
+
+// RollupDailyUsage recomputes a UTC day's daily usage rows from its hourly rows. A day
+// that has not started yet has nothing to roll up and is refused; today's partial day
+// is allowed.
+func (s *instanceIngestionService) RollupDailyUsage(ctx context.Context, req domain.UsageRollupDailyRequest) (domain.UsageRollupResponse, error) {
+	date := strings.TrimSpace(req.Date)
+	day, err := time.Parse("2006-01-02", date)
+	if err != nil {
+		return domain.UsageRollupResponse{}, &apierror.ValidationError{Msg: "date must be a date (YYYY-MM-DD)"}
+	}
+	if day.After(s.now().UTC()) {
+		return domain.UsageRollupResponse{}, &apierror.ValidationError{Msg: "date must not be in the future"}
+	}
+	written, err := s.repo.RollupDailyUsage(ctx, date)
+	if err != nil {
+		return domain.UsageRollupResponse{}, err
+	}
+	return domain.UsageRollupResponse{RowsWritten: written, Status: "SUCCESS"}, nil
+}
+
+// RollupMonthlyUsage recomputes a calendar month's monthly usage rows from its daily
+// rows. A month that has not started yet is refused; the current month is allowed.
+func (s *instanceIngestionService) RollupMonthlyUsage(ctx context.Context, req domain.UsageRollupMonthlyRequest) (domain.UsageRollupResponse, error) {
+	if req.Month < 1 || req.Month > 12 {
+		return domain.UsageRollupResponse{}, &apierror.ValidationError{Msg: "month must be between 1 and 12"}
+	}
+	if req.Year < 2000 {
+		return domain.UsageRollupResponse{}, &apierror.ValidationError{Msg: "year must be 2000 or later"}
+	}
+	now := s.now().UTC()
+	if req.Year > now.Year() || (req.Year == now.Year() && req.Month > int(now.Month())) {
+		return domain.UsageRollupResponse{}, &apierror.ValidationError{Msg: "month must not be in the future"}
+	}
+	written, err := s.repo.RollupMonthlyUsage(ctx, req.Year, req.Month)
+	if err != nil {
+		return domain.UsageRollupResponse{}, err
+	}
+	return domain.UsageRollupResponse{RowsWritten: written, Status: "SUCCESS"}, nil
+}
+
+// ListUnresolvedProducts lists nodes seen since the given RFC 3339 time (the last 24
+// hours when empty) whose reported product did not match the catalogue. limit defaults
+// to 500 and may be at most 5000.
+func (s *instanceIngestionService) ListUnresolvedProducts(ctx context.Context, since string, limit string) (domain.UnresolvedProductsResponse, error) {
+	sinceTime := s.now().UTC().Add(-defaultUnresolvedProductsWindow)
+	if v := strings.TrimSpace(since); v != "" {
+		t, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			return domain.UnresolvedProductsResponse{}, &apierror.ValidationError{Msg: "since must be an RFC 3339 time"}
+		}
+		sinceTime = t
+	}
+	n := defaultUnresolvedProductsLimit
+	if v := strings.TrimSpace(limit); v != "" {
+		parsed, err := strconv.Atoi(v)
+		if err != nil || parsed < 1 || parsed > maxUnresolvedProductsLimit {
+			return domain.UnresolvedProductsResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("limit must be between 1 and %d", maxUnresolvedProductsLimit)}
+		}
+		n = parsed
+	}
+	// One more than asked for tells a complete list from a cut-off one.
+	nodes, err := s.repo.ListUnresolvedProductNodes(ctx, sinceTime, n+1)
+	if err != nil {
+		return domain.UnresolvedProductsResponse{}, err
+	}
+	truncated := len(nodes) > n
+	if truncated {
+		nodes = nodes[:n]
+	}
+	return domain.UnresolvedProductsResponse{Nodes: nodes, Count: len(nodes), Truncated: truncated}, nil
+}
+
+// ListUsageReportImports lists imported offline reports for a project key and/or a
+// deployment number (at least one is required), newest first. limit defaults to 100 and
+// may be at most 1000.
+func (s *instanceIngestionService) ListUsageReportImports(ctx context.Context, projectKey, deploymentNumber, limit string) (domain.UsageReportImportsResponse, error) {
+	projectKey, deploymentNumber = strings.TrimSpace(projectKey), strings.TrimSpace(deploymentNumber)
+	if projectKey == "" && deploymentNumber == "" {
+		return domain.UsageReportImportsResponse{}, &apierror.ValidationError{Msg: "projectKey or deploymentNumber is required"}
+	}
+	n := defaultUsageReportImportsLimit
+	if v := strings.TrimSpace(limit); v != "" {
+		parsed, err := strconv.Atoi(v)
+		if err != nil || parsed < 1 || parsed > maxUsageReportImportsLimit {
+			return domain.UsageReportImportsResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("limit must be between 1 and %d", maxUsageReportImportsLimit)}
+		}
+		n = parsed
+	}
+	imports, err := s.repo.ListUsageReportImports(ctx, projectKey, deploymentNumber, n)
+	if err != nil {
+		return domain.UsageReportImportsResponse{}, err
+	}
+	return domain.UsageReportImportsResponse{Imports: imports, Count: len(imports)}, nil
 }
 
 // GetProjectSecretKey retrieves the primary secret key for HMAC validation.

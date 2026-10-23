@@ -60,6 +60,8 @@ import (
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/schedule"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/stalecases"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/teamschedule"
+	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/unresolvedproducts"
+	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/usagerollup"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/worklogreport"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/worklogsreport"
 )
@@ -100,6 +102,20 @@ func main() {
 	})
 	if err != nil {
 		slog.Error("failed to construct entity-service client", "err", err)
+		os.Exit(1)
+	}
+
+	// The unresolved products digest's own client: the same deployment and
+	// credentials, one internal-only listing endpoint.
+	unresolvedProductsClient, err := unresolvedproducts.NewClient(unresolvedproducts.Config{
+		BaseURL:      entityServiceBaseURL,
+		TokenURL:     oauthTokenURL,
+		ClientID:     oauthClientID,
+		ClientSecret: oauthClientSecret,
+		Scopes:       entityServiceScopes,
+	})
+	if err != nil {
+		slog.Error("failed to construct entity-service unresolved products client", "err", err)
 		os.Exit(1)
 	}
 
@@ -205,6 +221,25 @@ func main() {
 		})
 		if err != nil {
 			slog.Error("failed to construct entity-service availability client", "err", err)
+			os.Exit(1)
+		}
+	}
+
+	// The usage rollups' own client: the same deployment and credentials, two
+	// internal-only endpoints. Off by default for the reason documented on the
+	// task registration below.
+	usageRollupEnabled := envBool("USAGE_ROLLUP_ENABLED", false)
+	var usageRollupClient *usagerollup.Client
+	if usageRollupEnabled {
+		usageRollupClient, err = usagerollup.NewClient(usagerollup.Config{
+			BaseURL:      entityServiceBaseURL,
+			TokenURL:     oauthTokenURL,
+			ClientID:     oauthClientID,
+			ClientSecret: oauthClientSecret,
+			Scopes:       entityServiceScopes,
+		})
+		if err != nil {
+			slog.Error("failed to construct entity-service usage rollup client", "err", err)
 			os.Exit(1)
 		}
 	}
@@ -372,6 +407,14 @@ func main() {
 
 	const availabilityTaskName = "availability_recalculation"
 	availabilityTo, availabilityCc := recipientsFor(recipientOverrides, availabilityTaskName)
+
+	const usageRollupDailyTaskName = "usage_rollup_daily"
+	usageRollupDailyTo, usageRollupDailyCc := recipientsFor(recipientOverrides, usageRollupDailyTaskName)
+	const usageRollupMonthlyTaskName = "usage_rollup_monthly"
+	usageRollupMonthlyTo, usageRollupMonthlyCc := recipientsFor(recipientOverrides, usageRollupMonthlyTaskName)
+	const unresolvedProductsTaskName = "unresolved_products_digest"
+	unresolvedProductsTo, unresolvedProductsCc := recipientsFor(recipientOverrides, unresolvedProductsTaskName)
+	unresolvedProductsEmail := notify.ForReport(emailClient, debugFor(recipientOverrides, unresolvedProductsTaskName))
 
 	const staleCasesTaskName = "stale_cases_report"
 	staleCasesTo, staleCasesCc := recipientsFor(recipientOverrides, staleCasesTaskName)
@@ -574,6 +617,19 @@ func main() {
 			To: staleCasesTo,
 			Cc: staleCasesCc,
 		},
+		// Products that deployment nodes report but the product catalogue does not
+		// know -- ServiceNow emailed one fixed address on every such miss. Daily, to
+		// this task's SUB_CRON_RECIPIENTS entry; a no-op until recipients are set, and
+		// silent on a day with nothing to report. The window matches the daily
+		// schedule, so change both together.
+		{
+			Name:     unresolvedProductsTaskName,
+			Schedule: scheduleFor(scheduleOverrides, unresolvedProductsTaskName, "0 6 * * *"),
+			Handler: unresolvedproducts.SendDigest(unresolvedProductsClient, unresolvedProductsEmail,
+				24*time.Hour, unresolvedProductsTo, unresolvedProductsCc, alertsEnabled, time.Now),
+			To: unresolvedProductsTo,
+			Cc: unresolvedProductsCc,
+		},
 		// Emails openCasesTo/Cc a report of every case created before
 		// yesterday that's still in "open" state (nobody has moved it out of
 		// initial triage) — see internal/opencases's own doc comment. Sends
@@ -743,6 +799,45 @@ func main() {
 			To:       availabilityTo,
 			Cc:       availabilityCc,
 		})
+	}
+
+	// Rebuilds the daily and monthly usage rows from the hourly and daily ones --
+	// the Go replacement for ServiceNow's UsageAggregator. The arithmetic is
+	// set-based SQL in entity-service (migration 0245); these tasks only trigger it.
+	//
+	// *** OFF UNLESS USAGE_ROLLUP_ENABLED=true. *** ServiceNow's aggregation jobs
+	// keep writing u_daily_usage_summary and u_monthly_usage_count, which
+	// csm-sync-service mirrors into the same Postgres tables, so two writers would
+	// fight over those rows (and csm-sync's delete_sync would remove rows
+	// ServiceNow does not have). Turn it on in the same change that switches the
+	// ServiceNow jobs and those csm-sync jobs off.
+	//
+	// Daily at 00:30 UTC rebuilds the last USAGE_ROLLUP_DAILY_LOOKBACK_DAYS days
+	// (default 2) before today; ingestion keeps today's rows current by itself.
+	// Monthly at 01:30 UTC rebuilds last month and the current one. Both are
+	// idempotent, so a repeated or missed run is safe. Each handler's clock is its
+	// scheduled period's start, not the wall clock: a failed run retried after
+	// midnight (or a month boundary) still rebuilds the days (or months) it was for.
+	if usageRollupEnabled {
+		usageRollupLookbackDays := int(envDays("USAGE_ROLLUP_DAILY_LOOKBACK_DAYS", 2).Hours() / 24)
+		usageRollupDailySchedule := scheduleFor(scheduleOverrides, usageRollupDailyTaskName, "30 0 * * *")
+		usageRollupMonthlySchedule := scheduleFor(scheduleOverrides, usageRollupMonthlyTaskName, "30 1 * * *")
+		tasks = append(tasks,
+			registry.Task{
+				Name:     usageRollupDailyTaskName,
+				Schedule: usageRollupDailySchedule,
+				Handler:  usagerollup.DailyRollup(usageRollupClient, usageRollupLookbackDays, periodStart(usageRollupDailySchedule)),
+				To:       usageRollupDailyTo,
+				Cc:       usageRollupDailyCc,
+			},
+			registry.Task{
+				Name:     usageRollupMonthlyTaskName,
+				Schedule: usageRollupMonthlySchedule,
+				Handler:  usagerollup.MonthlyRollup(usageRollupClient, periodStart(usageRollupMonthlySchedule)),
+				To:       usageRollupMonthlyTo,
+				Cc:       usageRollupMonthlyCc,
+			},
+		)
 	}
 
 	// The three rota reminder tasks, on the days and times the rota's owners
