@@ -97,7 +97,7 @@ func importFile() domain.ImportRotaRequest {
 		Family:        "SRE",
 		RotaCode:      "SRE_SAAS",
 		Period:        domain.ImportRotaPeriod{From: "2026-11-01", To: "2026-11-30"},
-		Mode:          "replace",
+		Mode:          importStr("replace"),
 		Assignments: []domain.ImportRotaAssignment{
 			{Email: "user1@example.com", TeamKey: "apollo", ShiftCode: "SRE_TZ1_L1", From: "2026-11-02", To: "2026-11-06"},
 			{Email: "User2@Example.com", TeamKey: "Apollo", ShiftCode: "sre_tz1", Tier: importStr("l2"), From: "2026-11-02", To: "2026-11-06"},
@@ -131,11 +131,14 @@ func TestImportRota_HandsTheResolvedFileToTheRepository(t *testing.T) {
 	if repo.gotActorEml != "lead@example.com" {
 		t.Errorf("actor %q, want the caller", repo.gotActorEml)
 	}
-	if w.RotaCode != "SRE_SAAS" || w.From != "2026-11-01" || w.To != "2026-11-30" || !w.Replace || w.DryRun {
+	if w.RotaCode != "SRE_SAAS" || w.From != "2026-11-01" || w.To != "2026-11-30" || w.DryRun {
 		t.Errorf("write header %+v", *w)
 	}
 	if !reflect.DeepEqual(w.TeamKeys, []string{"apollo", "artemis"}) {
 		t.Errorf("team keys %v, want the rota's two teams and no other", w.TeamKeys)
+	}
+	if !reflect.DeepEqual(w.WritableTeams, []string{"apollo", "artemis"}) {
+		t.Errorf("writable teams %v, want both: the caller writes every team of the rota", w.WritableTeams)
 	}
 
 	got := w.Assignments
@@ -160,7 +163,7 @@ func TestImportRota_HandsTheResolvedFileToTheRepository(t *testing.T) {
 		t.Errorf("absences[1] lost who the allocation is for: %+v", abs[1])
 	}
 
-	if res.Applied != 3 || res.AbsencesCreated != 2 || res.Mode != "replace" || res.DryRun || res.SkippedDays == nil {
+	if res.Applied != 3 || res.AbsencesCreated != 2 || res.DryRun || res.SkippedDays == nil {
 		t.Errorf("response %+v", res)
 	}
 }
@@ -257,7 +260,6 @@ func TestImportRota_RefusesTheFileItself(t *testing.T) {
 		{name: "unknown rota", code: "SRE_PAAS", mutate: func(f *domain.ImportRotaRequest) { f.RotaCode = "SRE_PAAS" }, notFound: true},
 		{name: "not an SRE rota", code: "SME_MOESIF", mutate: func(f *domain.ImportRotaRequest) { f.RotaCode = "SME_MOESIF"; f.Family = "SME" }, want: "only SRE rotas can be imported"},
 		{name: "family does not match", code: "SRE_SAAS", mutate: func(f *domain.ImportRotaRequest) { f.Family = "CRE" }, want: "family must be SRE"},
-		{name: "unknown mode", code: "SRE_SAAS", mutate: func(f *domain.ImportRotaRequest) { f.Mode = "upsert" }, want: `mode must be "replace" or "merge"`},
 		{name: "period is not a date", code: "SRE_SAAS", mutate: func(f *domain.ImportRotaRequest) { f.Period.From = "01/11/2026" }, want: "period: from must be YYYY-MM-DD"},
 		{name: "period runs backwards", code: "SRE_SAAS", mutate: func(f *domain.ImportRotaRequest) { f.Period.To = "2026-10-01" }, want: "period: to is before from"},
 		{name: "period longer than a year", code: "SRE_SAAS", mutate: func(f *domain.ImportRotaRequest) { f.Period.To = "2027-12-31" }, want: "period: longer than a year"},
@@ -296,7 +298,6 @@ func TestImportRota_RefusesTheFileItself(t *testing.T) {
 
 func TestImportRota_EveryEntryNeedsAWriterOfItsTeam(t *testing.T) {
 	file := importFile()
-	file.Mode = "merge"
 
 	repo := &fakeScheduleRepo{}
 	svc := newImportService(repo)
@@ -311,7 +312,7 @@ func TestImportRota_EveryEntryNeedsAWriterOfItsTeam(t *testing.T) {
 	}
 }
 
-func TestImportRota_AReplaceNeedsAWriterOfEveryTeam(t *testing.T) {
+func TestImportRota_WritesOverOnlyTeamsTheCallerMayWrite(t *testing.T) {
 	file := importFile()
 	file.Assignments = file.Assignments[:2]
 	file.Absences = file.Absences[:1]
@@ -319,17 +320,25 @@ func TestImportRota_AReplaceNeedsAWriterOfEveryTeam(t *testing.T) {
 	repo := &fakeScheduleRepo{}
 	svc := newImportService(repo)
 	repo.ledTeams = []string{"apollo"}
-	if _, err := svc.ImportRota(leadCtx("apollo.lead@example.com"), "SRE_SAAS", file, false); err == nil {
-		t.Fatal("an Apollo lead replaced the whole SaaS rota, Artemis included")
-	}
-	if repo.gotImport != nil {
-		t.Fatal("the replace was written")
-	}
-
-	// The same file merged touches only Apollo, which this lead may change.
-	file.Mode = "merge"
 	if _, err := svc.ImportRota(leadCtx("apollo.lead@example.com"), "SRE_SAAS", file, false); err != nil {
-		t.Fatalf("an Apollo-only merge by the Apollo lead: %v", err)
+		t.Fatalf("an Apollo-only file by the Apollo lead: %v", err)
+	}
+	if got := repo.gotImport.WritableTeams; !reflect.DeepEqual(got, []string{"apollo"}) {
+		t.Errorf("writable teams %v, want only Apollo: an Artemis row is not the Apollo lead's to write over", got)
+	}
+}
+
+func TestImportRota_IgnoresTheOldMode(t *testing.T) {
+	for _, mode := range []string{"replace", "merge", "upsert", ""} {
+		file := importFile()
+		file.Mode = importStr(mode)
+		repo := &fakeScheduleRepo{}
+		if _, err := newImportService(repo).ImportRota(leadCtx("lead@example.com"), "SRE_SAAS", file, false); err != nil {
+			t.Fatalf("mode %q: %v", mode, err)
+		}
+		if repo.gotImport == nil {
+			t.Fatalf("mode %q: nothing reached the repository", mode)
+		}
 	}
 }
 
@@ -392,7 +401,6 @@ func TestImportRota_RepositoryRefusalComesBackAsIs(t *testing.T) {
 
 func importOverlapFile(assignments []domain.ImportRotaAssignment, absences []domain.ImportRotaAbsence) domain.ImportRotaRequest {
 	f := importFile()
-	f.Mode = "merge"
 	f.Assignments, f.Absences = assignments, absences
 	return f
 }
@@ -543,7 +551,6 @@ func (c *countingScheduleRepo) UserInTeam(ctx context.Context, user, team string
 
 func TestImportRota_AsksTheWriterRuleOncePerTeamAndPerson(t *testing.T) {
 	file := importFile()
-	file.Mode = "merge"
 	file.Absences = nil
 	file.Assignments = nil
 	for d := 2; d <= 27; d++ {

@@ -14886,11 +14886,11 @@ paths:
       summary: Import a whole rota for a period from one JSON file.
       description: >
         Proxied to entity-service's POST /team-schedule/rotas/{code}/import. The file
-        (schemaVersion 1: family, rotaCode, period, mode replace|merge, assignments,
-        absences, people named by email) is forwarded untouched and written all or
-        nothing; dryRun=true reports what it would do without writing. Only SRE rotas.
-        Entity-service decides who may import (a writer of every entry's team, and for a
-        replace of every team of the rota). Refusals carry entity-service's reason, which
+        (schemaVersion 1: family, rotaCode, period, assignments, absences, people named
+        by email; a mode field is ignored) is forwarded untouched and written all or
+        nothing, over whatever it clashes with on the teams the caller may write;
+        dryRun=true reports what it would do without writing. Only SRE rotas.
+        Entity-service decides who may import (a writer of every entry's team). Refusals carry entity-service's reason, which
         names the entry at fault.
       operationId: importTeamScheduleRota
       parameters:

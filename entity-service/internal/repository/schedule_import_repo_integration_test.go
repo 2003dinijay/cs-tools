@@ -53,11 +53,11 @@ func seedImportRows(t *testing.T, repo ScheduleRepository, shift string) {
 
 func importWeek(shift string) RotaImportWrite {
 	return RotaImportWrite{
-		RotaCode: "SRE_SAAS",
-		TeamKeys: []string{schedTeamKey},
-		From:     schedMonday,
-		To:       importSunday,
-		Replace:  true,
+		RotaCode:      "SRE_SAAS",
+		TeamKeys:      []string{schedTeamKey},
+		From:          schedMonday,
+		To:            importSunday,
+		WritableTeams: []string{schedTeamKey},
 		Assignments: []domain.ApplyScheduleRangeRequest{
 			{UserID: schedMemberID, TeamKey: schedTeamKey, ShiftCode: shift, From: schedMonday, To: importSunday},
 		},
@@ -75,7 +75,14 @@ func assignmentsOn(t *testing.T, pool *pgxpool.Pool, user, team, from, to string
 		user, team, from, to)
 }
 
-func TestScheduleIntegration_ImportRotaReplacesThePeriodAndWritesTheFile(t *testing.T) {
+func writtenOverActivity(t *testing.T, pool *pgxpool.Pool, user string) int {
+	t.Helper()
+	return countRows(t, pool, `
+		SELECT count(*) FROM team_schedule_assignment_activity
+		 WHERE user_id = $1::uuid AND action = 'DELETED' AND note = $2`, user, rotaImportWriteOverNote)
+}
+
+func TestScheduleIntegration_ImportRotaWritesTheFileAndKeepsWhatItDoesNotMention(t *testing.T) {
 	repo, pool := newScheduleIntegrationRepo(t)
 	shift := shiftWithScope(t, pool, "CRE", "WEEKDAY")
 	seedImportRows(t, repo, shift)
@@ -84,8 +91,8 @@ func TestScheduleIntegration_ImportRotaReplacesThePeriodAndWritesTheFile(t *test
 	if err != nil {
 		t.Fatalf("ImportRota: %v", err)
 	}
-	if res.Cleared != 1 {
-		t.Errorf("cleared %d, want the one row of the team inside the period", res.Cleared)
+	if res.Cleared != 0 {
+		t.Errorf("cleared %d, want nothing: the file does not mention the seeded rows", res.Cleared)
 	}
 	if len(res.Assignments) != 1 || res.Assignments[0].Applied != 5 || res.Assignments[0].Skipped != 2 {
 		t.Errorf("assignment result %+v, want the 5 weekdays applied and the weekend skipped", res.Assignments)
@@ -93,20 +100,8 @@ func TestScheduleIntegration_ImportRotaReplacesThePeriodAndWritesTheFile(t *test
 	if len(res.Absences) != 1 || res.Absences[0].Created != 1 {
 		t.Errorf("absence result %+v", res.Absences)
 	}
-
-	if n := assignmentsOn(t, pool, schedOtherID, schedTeamKey, schedMonday, importSunday); n != 0 {
-		t.Errorf("%d of the replaced rows are still inside the period", n)
-	}
-	// The cleared row is in the activity feed, as a delete on the roster would be.
-	if n := countRows(t, pool, `
-		SELECT count(*) FROM team_schedule_assignment_activity
-		 WHERE user_id = $1::uuid AND team_key = $2 AND rota_date = $3::date AND shift_code = $4
-		   AND action = 'DELETED' AND actor_email = $5 AND note = $6`,
-		schedOtherID, schedTeamKey, schedMonday, shift, schedLeadEmail, rotaImportReplaceNote); n != 1 {
-		t.Errorf("%d DELETED activity rows for the cleared assignment, want 1", n)
-	}
-	if n := assignmentsOn(t, pool, schedOtherID, schedTeamKey, importNextMon, importNextMon); n != 1 {
-		t.Errorf("the row after the period was touched (%d left)", n)
+	if n := assignmentsOn(t, pool, schedOtherID, schedTeamKey, schedMonday, importSunday); n != 1 {
+		t.Errorf("somebody the file does not mention lost their row (%d left)", n)
 	}
 	if n := assignmentsOn(t, pool, schedLeadID, schedOtherTeam, schedMonday, schedMonday); n != 1 {
 		t.Errorf("a team outside the import was touched (%d left)", n)
@@ -119,6 +114,136 @@ func TestScheduleIntegration_ImportRotaReplacesThePeriodAndWritesTheFile(t *test
 		 WHERE user_id = $1::uuid AND starts_on = $2::date AND ends_on = $3::date`,
 		schedLeadID, importWednesday, importThursday); n != 1 {
 		t.Errorf("%d imported absences, want 1", n)
+	}
+}
+
+func TestScheduleIntegration_ImportRotaWritesOverAClashOnAnotherWritableTeam(t *testing.T) {
+	repo, pool := newScheduleIntegrationRepo(t)
+	shift := shiftWithScope(t, pool, "CRE", "WEEKDAY")
+	seedImportRows(t, repo, shift)
+
+	w := importWeek(shift)
+	w.Absences = nil
+	w.Assignments = []domain.ApplyScheduleRangeRequest{
+		{UserID: schedLeadID, TeamKey: schedTeamKey, ShiftCode: shift, From: schedMonday, To: schedMonday},
+	}
+
+	// The lead's same window on the other team blocks the insert, and that team is not the caller's to write.
+	_, err := repo.ImportRota(context.Background(), w, schedLeadEmail)
+	var conflict *apierror.ConflictError
+	if !errors.As(err, &conflict) || !strings.HasPrefix(conflict.Msg, "assignments[0]: ") {
+		t.Fatalf("a clash on a team the caller may not write: want a ConflictError naming assignments[0], got %v", err)
+	}
+
+	w.TeamKeys = []string{schedTeamKey, schedOtherTeam}
+	w.WritableTeams = w.TeamKeys
+	res, err := repo.ImportRota(context.Background(), w, schedLeadEmail)
+	if err != nil {
+		t.Fatalf("ImportRota over a writable clash: %v", err)
+	}
+	if res.Cleared != 1 {
+		t.Errorf("cleared %d, want the lead's row on the other team", res.Cleared)
+	}
+	if n := assignmentsOn(t, pool, schedLeadID, schedOtherTeam, schedMonday, schedMonday); n != 0 {
+		t.Errorf("the clashing row is still there (%d)", n)
+	}
+	if n := assignmentsOn(t, pool, schedLeadID, schedTeamKey, schedMonday, schedMonday); n != 1 {
+		t.Errorf("%d rows where the file put the lead, want 1", n)
+	}
+	if n := writtenOverActivity(t, pool, schedLeadID); n != 1 {
+		t.Errorf("%d DELETED activity rows for the written-over row, want 1", n)
+	}
+}
+
+func TestScheduleIntegration_ImportRotaWritesOverTheTierHolder(t *testing.T) {
+	repo, pool := newScheduleIntegrationRepo(t)
+	ctx := context.Background()
+	if _, err := repo.ApplyRange(ctx, domain.ApplyScheduleRangeRequest{
+		UserID: schedOtherID, TeamKey: schedTeamKey, ShiftCode: "SRE_TZ1_L1", From: schedMonday, To: schedMonday,
+	}, schedLeadEmail); err != nil {
+		t.Fatalf("seed the L1 holder: %v", err)
+	}
+
+	w := importWeek("SRE_TZ1_L1")
+	w.Absences = nil
+	w.Assignments = []domain.ApplyScheduleRangeRequest{
+		{UserID: schedMemberID, TeamKey: schedTeamKey, ShiftCode: "SRE_TZ1_L1", From: schedMonday, To: schedMonday},
+	}
+	res, err := repo.ImportRota(ctx, w, schedLeadEmail)
+	if err != nil {
+		t.Fatalf("ImportRota onto a held tier: %v", err)
+	}
+	if res.Cleared != 1 {
+		t.Errorf("cleared %d, want the earlier L1 holder", res.Cleared)
+	}
+	if n := assignmentsOn(t, pool, schedOtherID, schedTeamKey, schedMonday, schedMonday); n != 0 {
+		t.Errorf("the earlier holder still holds L1 (%d rows)", n)
+	}
+	if n := assignmentsOn(t, pool, schedMemberID, schedTeamKey, schedMonday, schedMonday); n != 1 {
+		t.Errorf("%d rows for the file's L1, want 1", n)
+	}
+}
+
+func TestScheduleIntegration_ImportRotaTwoEntriesForOneTierAreRefused(t *testing.T) {
+	repo, pool := newScheduleIntegrationRepo(t)
+
+	w := importWeek("SRE_TZ1_L1")
+	w.Absences = nil
+	w.Assignments = []domain.ApplyScheduleRangeRequest{
+		{UserID: schedMemberID, TeamKey: schedTeamKey, ShiftCode: "SRE_TZ1_L1", From: schedMonday, To: schedMonday},
+		{UserID: schedOtherID, TeamKey: schedTeamKey, ShiftCode: "SRE_TZ1_L1", From: schedMonday, To: schedMonday},
+	}
+	_, err := repo.ImportRota(context.Background(), w, schedLeadEmail)
+	var conflict *apierror.ConflictError
+	if !errors.As(err, &conflict) || !strings.HasPrefix(conflict.Msg, "assignments[1]: ") {
+		t.Fatalf("the file giving one tier to two people: want a ConflictError naming assignments[1], got %v", err)
+	}
+	if n := assignmentsOn(t, pool, schedMemberID, schedTeamKey, schedMonday, schedMonday); n != 0 {
+		t.Errorf("a refused file left %d rows", n)
+	}
+}
+
+func TestScheduleIntegration_ImportRotaWritesOverTheLeaveUnderAnAssignment(t *testing.T) {
+	repo, pool := newScheduleIntegrationRepo(t)
+	ctx := context.Background()
+	shift := shiftWithScope(t, pool, "CRE", "WEEKDAY")
+	// Leave from the Monday to the next Monday: the week's weekdays are written over, the weekend and the next Monday stay.
+	if _, err := repo.ApplyAbsence(ctx, domain.ApplyScheduleAbsenceRequest{
+		UserID: schedMemberID, TeamKey: schedTeamKey, KindCode: "ANNUAL_LEAVE", From: schedMonday, To: importNextMon,
+	}, schedLeadEmail); err != nil {
+		t.Fatalf("seed leave: %v", err)
+	}
+	// Leave filed on a team the caller may not write is left alone.
+	if _, err := repo.ApplyAbsence(ctx, domain.ApplyScheduleAbsenceRequest{
+		UserID: schedOtherID, TeamKey: schedOtherTeam, KindCode: "ANNUAL_LEAVE", From: schedMonday, To: schedMonday,
+	}, schedLeadEmail); err != nil {
+		t.Fatalf("seed leave on the other team: %v", err)
+	}
+
+	w := importWeek(shift)
+	w.Absences = nil
+	w.Assignments = append(w.Assignments, domain.ApplyScheduleRangeRequest{
+		UserID: schedOtherID, TeamKey: schedTeamKey, ShiftCode: shift, From: schedMonday, To: schedMonday,
+	})
+	res, err := repo.ImportRota(ctx, w, schedLeadEmail)
+	if err != nil {
+		t.Fatalf("ImportRota over leave: %v", err)
+	}
+	trimmed := 0
+	for _, a := range res.Absences {
+		trimmed += a.Trimmed
+	}
+	if trimmed != 1 {
+		t.Errorf("trimmed %d, want the member's leave cut back to the weekend", trimmed)
+	}
+	if n := countRows(t, pool, `
+		SELECT count(*) FROM team_schedule_absence
+		 WHERE user_id = $1::uuid AND starts_on = $2::date AND ends_on = $3::date`,
+		schedMemberID, "2026-09-26", importNextMon); n != 1 {
+		t.Errorf("the member's leave was not cut to the weekend and the next Monday (%d)", n)
+	}
+	if n := countRows(t, pool, `SELECT count(*) FROM team_schedule_absence WHERE user_id = $1::uuid`, schedOtherID); n != 1 {
+		t.Errorf("leave on a team the caller may not write was touched (%d left)", n)
 	}
 }
 
@@ -137,18 +262,11 @@ func TestScheduleIntegration_ImportRotaIsAllOrNothing(t *testing.T) {
 	if !errors.As(err, &invalid) || !strings.HasPrefix(invalid.Msg, "assignments[1]: ") {
 		t.Fatalf("want a ValidationError naming assignments[1], got %v", err)
 	}
-
-	if n := assignmentsOn(t, pool, schedOtherID, schedTeamKey, schedMonday, schedMonday); n != 1 {
-		t.Errorf("the replace was not rolled back: %d of the seeded rows left", n)
-	}
 	if n := assignmentsOn(t, pool, schedMemberID, schedTeamKey, schedMonday, importSunday); n != 0 {
 		t.Errorf("the first entry was kept although a later one failed (%d rows)", n)
 	}
 	if n := countRows(t, pool, `SELECT count(*) FROM team_schedule_absence WHERE user_id = $1::uuid`, schedLeadID); n != 0 {
 		t.Errorf("%d absences written by a failed import", n)
-	}
-	if n := countRows(t, pool, `SELECT count(*) FROM team_schedule_assignment_activity WHERE note = $1 AND team_key = $2`, rotaImportReplaceNote, schedTeamKey); n != 0 {
-		t.Errorf("a failed import left %d activity rows for a replace it rolled back", n)
 	}
 }
 
@@ -163,65 +281,43 @@ func TestScheduleIntegration_ImportRotaDryRunWritesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dry run: %v", err)
 	}
-	if res.Cleared != 1 || res.Assignments[0].Applied != 5 || res.Absences[0].Created != 1 {
+	if res.Assignments[0].Applied != 5 || res.Absences[0].Created != 1 {
 		t.Errorf("dry run reported %+v, want what the real import would do", res)
-	}
-	if n := assignmentsOn(t, pool, schedOtherID, schedTeamKey, schedMonday, schedMonday); n != 1 {
-		t.Errorf("a dry run cleared the period (%d seeded rows left)", n)
 	}
 	if n := assignmentsOn(t, pool, schedMemberID, schedTeamKey, schedMonday, importSunday); n != 0 {
 		t.Errorf("a dry run wrote %d rows", n)
 	}
 }
 
-func TestScheduleIntegration_ImportRotaReplaceKeepsTheShiftsAMoveDerives(t *testing.T) {
+func TestScheduleIntegration_ImportRotaKeepsTheShiftsAMoveDerives(t *testing.T) {
 	repo, pool := newScheduleIntegrationRepo(t)
 	shift := shiftWithScope(t, pool, "CRE", "WEEKDAY")
 	seedImportRows(t, repo, shift)
-	// The seeded row inside the week stands in for a shift a move absence derives.
+	// The lead's row on the other team stands in for a shift a move absence derives.
 	mustExec(t, pool, `
 		UPDATE team_schedule_assignment SET source = 'MOVE'
 		 WHERE user_id = $1::uuid AND team_key = $2 AND rota_date = $3::date`,
-		schedOtherID, schedTeamKey, schedMonday)
+		schedLeadID, schedOtherTeam, schedMonday)
 
-	res, err := repo.ImportRota(context.Background(), importWeek(shift), schedLeadEmail)
-	if err != nil {
-		t.Fatalf("ImportRota: %v", err)
+	w := importWeek(shift)
+	w.Absences = nil
+	w.TeamKeys = []string{schedTeamKey, schedOtherTeam}
+	w.WritableTeams = w.TeamKeys
+	w.Assignments = []domain.ApplyScheduleRangeRequest{
+		{UserID: schedLeadID, TeamKey: schedTeamKey, ShiftCode: shift, From: schedMonday, To: schedMonday},
 	}
-	if res.Cleared != 0 {
-		t.Errorf("cleared %d, want the move's shift left alone", res.Cleared)
+	_, err := repo.ImportRota(context.Background(), w, schedLeadEmail)
+	var conflict *apierror.ConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("a clash with a move's shift: want it refused, not written over, got %v", err)
 	}
 	if n := countRows(t, pool, `
 		SELECT count(*) FROM team_schedule_assignment
 		 WHERE user_id = $1::uuid AND team_key = $2 AND rota_date = $3::date AND source = 'MOVE'`,
-		schedOtherID, schedTeamKey, schedMonday); n != 1 {
-		t.Errorf("a replace removed a shift its move still derives (%d left)", n)
+		schedLeadID, schedOtherTeam, schedMonday); n != 1 {
+		t.Errorf("an import removed a shift its move still derives (%d left)", n)
 	}
-	if n := countRows(t, pool, `
-		SELECT count(*) FROM team_schedule_assignment_activity
-		 WHERE user_id = $1::uuid AND action = 'DELETED' AND note = $2`, schedOtherID, rotaImportReplaceNote); n != 0 {
-		t.Errorf("%d DELETED activity rows for a shift the replace kept", n)
-	}
-}
-
-func TestScheduleIntegration_ImportRotaMergeKeepsWhatIsThere(t *testing.T) {
-	repo, pool := newScheduleIntegrationRepo(t)
-	shift := shiftWithScope(t, pool, "CRE", "WEEKDAY")
-	seedImportRows(t, repo, shift)
-
-	w := importWeek(shift)
-	w.Replace = false
-	res, err := repo.ImportRota(context.Background(), w, schedLeadEmail)
-	if err != nil {
-		t.Fatalf("merge: %v", err)
-	}
-	if res.Cleared != 0 {
-		t.Errorf("a merge cleared %d rows", res.Cleared)
-	}
-	if n := assignmentsOn(t, pool, schedOtherID, schedTeamKey, schedMonday, schedMonday); n != 1 {
-		t.Errorf("a merge removed somebody the file does not mention (%d left)", n)
-	}
-	if n := assignmentsOn(t, pool, schedMemberID, schedTeamKey, schedMonday, importSunday); n != 5 {
-		t.Errorf("%d merged rows, want 5", n)
+	if n := writtenOverActivity(t, pool, schedLeadID); n != 0 {
+		t.Errorf("%d DELETED activity rows for a shift the import kept", n)
 	}
 }

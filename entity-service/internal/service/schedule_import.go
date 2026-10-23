@@ -18,6 +18,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -74,12 +75,15 @@ func (s *scheduleService) ImportRota(ctx context.Context, rotaCode string, req d
 		}
 		a.HomeTeamKey = home
 	}
-	// A replace clears every team of the rota, so the caller must be able to write each of them.
-	if plan.write.Replace {
-		for _, team := range plan.write.TeamKeys {
-			if err := checks.writer(ctx, team); err != nil {
-				return out, err
-			}
+	// The file writes over clashing rows only on teams of the rota the caller may write; a clash on any other team is still refused.
+	for _, team := range plan.write.TeamKeys {
+		err := checks.writer(ctx, team)
+		var forbidden *apierror.ForbiddenError
+		switch {
+		case err == nil:
+			plan.write.WritableTeams = append(plan.write.WritableTeams, team)
+		case !errors.As(err, &forbidden):
+			return out, err
 		}
 	}
 
@@ -93,7 +97,6 @@ func (s *scheduleService) ImportRota(ctx context.Context, rotaCode string, req d
 		RotaCode:    plan.write.RotaCode,
 		From:        plan.write.From,
 		To:          plan.write.To,
-		Mode:        plan.mode,
 		DryRun:      dryRun,
 		Cleared:     res.Cleared,
 		SkippedDays: []domain.ImportRotaSkippedDays{},
@@ -154,7 +157,6 @@ func (c *importWriterChecks) overSpan(ctx context.Context, team, userID, from, t
 
 // rotaImportPlan is a file checked against the catalogue and turned into the writes it stands for.
 type rotaImportPlan struct {
-	mode  string
 	write repository.RotaImportWrite
 }
 
@@ -189,10 +191,6 @@ func planRotaImport(cat domain.ScheduleCatalogue, rotaCode string, req domain.Im
 		return plan, &apierror.ValidationError{Msg: fmt.Sprintf("family must be %s for %s", rota.Family, rota.Code)}
 	}
 
-	mode := strings.ToLower(strings.TrimSpace(req.Mode))
-	if mode != domain.RotaImportReplace && mode != domain.RotaImportMerge {
-		return plan, &apierror.ValidationError{Msg: fmt.Sprintf("mode must be %q or %q", domain.RotaImportReplace, domain.RotaImportMerge)}
-	}
 	from, to, err := parseImportSpan(req.Period.From, req.Period.To)
 	if err != nil {
 		return plan, &apierror.ValidationError{Msg: "period: " + err.Error()}
@@ -275,13 +273,11 @@ func planRotaImport(cat domain.ScheduleCatalogue, rotaCode string, req domain.Im
 		return k
 	}
 
-	plan.mode = mode
 	plan.write = repository.RotaImportWrite{
 		RotaCode: rota.Code,
 		TeamKeys: teamKeys,
 		From:     from.Format(time.DateOnly),
 		To:       to.Format(time.DateOnly),
-		Replace:  mode == domain.RotaImportReplace,
 	}
 
 	for i, a := range req.Assignments {

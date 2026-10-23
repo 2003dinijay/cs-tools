@@ -25,7 +25,6 @@ export interface RotaImportFile {
   family: string;
   rotaCode: string;
   period: { from: string; to: string };
-  mode: "replace" | "merge";
   assignments?: unknown[];
   absences?: unknown[];
 }
@@ -40,7 +39,6 @@ export interface ImportRotaResult {
   rotaCode: string;
   from: string;
   to: string;
-  mode: "replace" | "merge";
   dryRun: boolean;
   cleared: number;
   applied: number;
