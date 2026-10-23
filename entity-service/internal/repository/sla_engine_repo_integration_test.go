@@ -548,11 +548,19 @@ func TestSLAEngineIntegration_SetPausedFreezesElapsedTime(t *testing.T) {
 	// Simulate real wall-clock time passing while the clock stays paused --
 	// if SetPaused recomputed from a bare NOW() instead of the clock's own
 	// already-set paused_on, a redelivered pause event here would wrongly
-	// advance the frozen snapshot as though the clock kept running.
+	// advance the frozen snapshot as though the clock kept running. Both
+	// start_on AND paused_on move back by the same amount (a CodeRabbit
+	// catch on the first version of this test, which moved only start_on --
+	// that shifts paused_on - start_on itself, so even the CORRECT
+	// paused_on-anchored formula would show 10 more minutes elapsed, not an
+	// unchanged snapshot; moving both keeps that difference fixed, so only a
+	// bare-NOW()-based bug would show any drift here).
 	if _, err := scoped.Exec(ctx,
-		`UPDATE sla SET start_on = start_on - INTERVAL '10 minutes' WHERE work_item_id = $1::uuid`,
+		`UPDATE sla SET start_on = start_on - INTERVAL '10 minutes',
+		                paused_on = paused_on - INTERVAL '10 minutes'
+		  WHERE work_item_id = $1::uuid`,
 		slaEngineIntegrationWorkItemID); err != nil {
-		t.Fatalf("push start_on back further: %v", err)
+		t.Fatalf("push start_on/paused_on back further: %v", err)
 	}
 	if _, err := repo.SetPaused(ctx, slaEngineIntegrationWorkItemID, "WORKAROUND", true); err != nil {
 		t.Fatalf("SetPaused(true) (duplicate/idempotent): %v", err)
