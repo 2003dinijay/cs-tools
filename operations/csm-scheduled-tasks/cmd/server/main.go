@@ -761,21 +761,25 @@ func main() {
 	// Daily at 00:30 UTC rebuilds the last USAGE_ROLLUP_DAILY_LOOKBACK_DAYS days
 	// (default 2) before today; ingestion keeps today's rows current by itself.
 	// Monthly at 01:30 UTC rebuilds last month and the current one. Both are
-	// idempotent, so a repeated or missed run is safe.
+	// idempotent, so a repeated or missed run is safe. Each handler's clock is its
+	// scheduled period's start, not the wall clock: a failed run retried after
+	// midnight (or a month boundary) still rebuilds the days (or months) it was for.
 	if usageRollupEnabled {
 		usageRollupLookbackDays := int(envDays("USAGE_ROLLUP_DAILY_LOOKBACK_DAYS", 2).Hours() / 24)
+		usageRollupDailySchedule := scheduleFor(scheduleOverrides, usageRollupDailyTaskName, "30 0 * * *")
+		usageRollupMonthlySchedule := scheduleFor(scheduleOverrides, usageRollupMonthlyTaskName, "30 1 * * *")
 		tasks = append(tasks,
 			registry.Task{
 				Name:     usageRollupDailyTaskName,
-				Schedule: scheduleFor(scheduleOverrides, usageRollupDailyTaskName, "30 0 * * *"),
-				Handler:  usagerollup.DailyRollup(usageRollupClient, usageRollupLookbackDays, time.Now),
+				Schedule: usageRollupDailySchedule,
+				Handler:  usagerollup.DailyRollup(usageRollupClient, usageRollupLookbackDays, periodStart(usageRollupDailySchedule)),
 				To:       usageRollupDailyTo,
 				Cc:       usageRollupDailyCc,
 			},
 			registry.Task{
 				Name:     usageRollupMonthlyTaskName,
-				Schedule: scheduleFor(scheduleOverrides, usageRollupMonthlyTaskName, "30 1 * * *"),
-				Handler:  usagerollup.MonthlyRollup(usageRollupClient, time.Now),
+				Schedule: usageRollupMonthlySchedule,
+				Handler:  usagerollup.MonthlyRollup(usageRollupClient, periodStart(usageRollupMonthlySchedule)),
 				To:       usageRollupMonthlyTo,
 				Cc:       usageRollupMonthlyCc,
 			},
