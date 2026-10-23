@@ -94,6 +94,15 @@ type ClockMeta struct {
 	// cursor the removed poll design's own TierStore kept, just stored
 	// alongside the clock's own metadata instead of as a separate key.
 	AlertedTier int
+	// ShiftedPauseSeconds is the cumulative pause duration (seconds,
+	// matching entity-service's own domain.SLAStatus.PauseDurationSeconds)
+	// this clock's wake-index entries have already been shifted forward by,
+	// as of the last resume or reconciliation — Engine.resumeShift diffs
+	// entity-service's freshly-reported total against this baseline on
+	// every resume, so a clock paused and resumed several times is only
+	// ever shifted by each new segment, never the whole running total
+	// again. See Store.SetShiftedPauseSeconds/ShiftWake.
+	ShiftedPauseSeconds int64
 }
 
 // Store wraps every Redis operation this engine needs — first Redis
@@ -193,6 +202,7 @@ redis.call('HSET', KEYS[1],
 redis.call('HSETNX', KEYS[1], 'state', ARGV[9])
 redis.call('HSETNX', KEYS[1], 'paused', '0')
 redis.call('HSETNX', KEYS[1], 'alertedTier', '0')
+redis.call('HSETNX', KEYS[1], 'shiftedPauseSeconds', '0')
 redis.call('EXPIRE', KEYS[1], ARGV[10])
 return 1
 `)
@@ -252,6 +262,9 @@ func (s *Store) GetClock(ctx context.Context, caseID, clockType string) (meta Cl
 	if v, err := strconv.Atoi(res["alertedTier"]); err == nil {
 		meta.AlertedTier = v
 	}
+	if v, err := strconv.ParseInt(res["shiftedPauseSeconds"], 10, 64); err == nil {
+		meta.ShiftedPauseSeconds = v
+	}
 	return meta, true, nil
 }
 
@@ -266,6 +279,55 @@ func (s *Store) SetPaused(ctx context.Context, caseID, clockType string, paused 
 		return err
 	}
 	return s.rdb.Expire(ctx, key, clockTTL).Err()
+}
+
+// SetShiftedPauseSeconds records the cumulative pause duration (seconds)
+// this clock's wake-index entries have already been shifted forward by —
+// see ClockMeta.ShiftedPauseSeconds's own doc comment. Always a plain
+// overwrite (not an HSETNX): unlike the registration-time fields
+// SetClock's own script protects, this value is meant to move forward on
+// every real resume/reconciliation, not just be initialized once.
+func (s *Store) SetShiftedPauseSeconds(ctx context.Context, caseID, clockType string, seconds int64) error {
+	key := clockKey(caseID, clockType)
+	if err := s.rdb.HSet(ctx, key, "shiftedPauseSeconds", strconv.FormatInt(seconds, 10)).Err(); err != nil {
+		return err
+	}
+	return s.rdb.Expire(ctx, key, clockTTL).Err()
+}
+
+// shiftWakeScript pushes a clock's own tier members forward by deltaSeconds
+// — but only members that currently EXIST in the wake-index ZSET. A bare
+// ZINCRBY on a sorted set creates the member (at score = the increment) if
+// it's absent, which would wrongly resurrect a tier whose wake entry was
+// already removed after it was alerted on (see processDueMember); checking
+// ZSCORE first is what keeps an already-handled tier untouched.
+var shiftWakeScript = redis.NewScript(`
+local delta = tonumber(ARGV[1])
+for i = 2, #ARGV do
+	local member = ARGV[i]
+	if redis.call('ZSCORE', KEYS[1], member) then
+		redis.call('ZINCRBY', KEYS[1], delta, member)
+	end
+end
+return 1
+`)
+
+// ShiftWake pushes every still-pending wake-index entry of one
+// (caseID, clockType) clock forward by deltaSeconds — called once a
+// just-completed pause segment's true length is known (Engine.resumeShift),
+// so a tier whose original due time fell during the pause is rescheduled
+// for sometime after it resumes, rather than firing immediately (an
+// un-shifted due time already in the past) the moment the next tick runs.
+func (s *Store) ShiftWake(ctx context.Context, caseID, clockType string, deltaSeconds int64) error {
+	if deltaSeconds == 0 {
+		return nil
+	}
+	args := make([]any, 0, 1+len(tierSequence))
+	args = append(args, deltaSeconds)
+	for _, tier := range tierSequence {
+		args = append(args, wakeMember(caseID, clockType, tier))
+	}
+	return shiftWakeScript.Run(ctx, s.rdb, []string{wakeKey}, args...).Err()
 }
 
 // SetState refreshes one clock's own display State field — called from

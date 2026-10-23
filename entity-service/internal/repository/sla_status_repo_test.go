@@ -30,6 +30,8 @@ type fakeSLAStatusScanRow struct {
 	hasBreached                       bool
 	stage                             string
 	startedOn                         *time.Time
+	pausedOn                          *time.Time
+	pauseDurationSeconds              *int64
 	caseNumber, wso2CaseID, caseTitle *string
 	fixedCaseType                     string
 	product, severity, state          *string
@@ -44,16 +46,18 @@ func (f fakeSLAStatusScanRow) Scan(dest ...any) error {
 	*dest[3].(*bool) = f.hasBreached
 	*dest[4].(*string) = f.stage
 	*dest[5].(**time.Time) = f.startedOn
-	*dest[6].(**string) = f.caseNumber
-	*dest[7].(**string) = f.wso2CaseID
-	*dest[8].(**string) = f.caseTitle
-	*dest[9].(*string) = f.fixedCaseType
-	*dest[10].(**string) = f.product
-	*dest[11].(*string) = strOrEmpty(f.severity)
-	*dest[12].(**string) = f.state
-	*dest[13].(**string) = f.team
-	*dest[14].(**string) = f.onboardingStatus
-	*dest[15].(*bool) = f.isEvaluation
+	*dest[6].(**time.Time) = f.pausedOn
+	*dest[7].(**int64) = f.pauseDurationSeconds
+	*dest[8].(**string) = f.caseNumber
+	*dest[9].(**string) = f.wso2CaseID
+	*dest[10].(**string) = f.caseTitle
+	*dest[11].(*string) = f.fixedCaseType
+	*dest[12].(**string) = f.product
+	*dest[13].(*string) = strOrEmpty(f.severity)
+	*dest[14].(**string) = f.state
+	*dest[15].(**string) = f.team
+	*dest[16].(**string) = f.onboardingStatus
+	*dest[17].(*bool) = f.isEvaluation
 	return nil
 }
 
@@ -146,6 +150,42 @@ func TestScanSLAStatus(t *testing.T) {
 		}
 		if got.Priority != "" {
 			t.Errorf("Priority = %q, want empty for no severity", got.Priority)
+		}
+	})
+
+	t.Run("currently paused: PausedOn set, PauseDurationSeconds is the already-completed total", func(t *testing.T) {
+		pausedOn := now.Add(-10 * time.Minute)
+		seconds := int64(3600)
+		row := fakeSLAStatusScanRow{
+			workItemID: "case-6", target: "WORKAROUND", fixedCaseType: "CASE", stage: "PAUSED",
+			pausedOn: &pausedOn, pauseDurationSeconds: &seconds,
+		}
+		got, err := scanSLAStatus(row)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !got.IsPaused {
+			t.Error("IsPaused = false, want true for stage PAUSED")
+		}
+		if got.PausedOn == nil || !got.PausedOn.Equal(pausedOn) {
+			t.Errorf("PausedOn = %v, want %v", got.PausedOn, pausedOn)
+		}
+		if got.PauseDurationSeconds != 3600 {
+			t.Errorf("PauseDurationSeconds = %d, want 3600", got.PauseDurationSeconds)
+		}
+	})
+
+	t.Run("never paused: PausedOn nil, PauseDurationSeconds zero, not absent", func(t *testing.T) {
+		row := fakeSLAStatusScanRow{workItemID: "case-7", target: "RESPONSE", fixedCaseType: "CASE"}
+		got, err := scanSLAStatus(row)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.PausedOn != nil {
+			t.Errorf("PausedOn = %v, want nil", got.PausedOn)
+		}
+		if got.PauseDurationSeconds != 0 {
+			t.Errorf("PauseDurationSeconds = %d, want 0 for a NULL pause_duration column", got.PauseDurationSeconds)
 		}
 	})
 }

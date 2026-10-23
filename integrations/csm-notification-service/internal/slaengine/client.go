@@ -174,18 +174,25 @@ func (c *EntityClient) GetDurationPolicy(ctx context.Context) (map[string]map[st
 // RegisterClocks-equivalent state), decoded from the same wire response as
 // every other field on that type.
 type activeSLAClock struct {
-	CaseID     string     `json:"caseId"`
-	ClockType  string     `json:"clockType"`
-	IsPaused   bool       `json:"isPaused"`
-	StartedOn  *time.Time `json:"startedOn"`
-	CaseNumber string     `json:"caseNumber"`
-	WSO2CaseID string     `json:"wso2CaseId"`
-	CaseTitle  string     `json:"caseTitle"`
-	CaseType   string     `json:"caseType"`
-	Product    string     `json:"product"`
-	Team       string     `json:"team"`
-	Priority   string     `json:"priority"`
-	State      string     `json:"state"`
+	CaseID    string     `json:"caseId"`
+	ClockType string     `json:"clockType"`
+	IsPaused  bool       `json:"isPaused"`
+	StartedOn *time.Time `json:"startedOn"`
+	// PausedOn/PauseDurationSeconds back reconcileClock's own pause-aware
+	// due-date math — see that function's own doc comment. PausedOn is only
+	// meaningful alongside IsPaused=true (the currently-open pause segment's
+	// own start); PauseDurationSeconds is the clock's total ALREADY-completed
+	// pause time, same field entity-service's domain.SLAStatus carries.
+	PausedOn             *time.Time `json:"pausedOn"`
+	PauseDurationSeconds int64      `json:"pauseDurationSeconds"`
+	CaseNumber           string     `json:"caseNumber"`
+	WSO2CaseID           string     `json:"wso2CaseId"`
+	CaseTitle            string     `json:"caseTitle"`
+	CaseType             string     `json:"caseType"`
+	Product              string     `json:"product"`
+	Team                 string     `json:"team"`
+	Priority             string     `json:"priority"`
+	State                string     `json:"state"`
 }
 
 type searchActiveSLAStatusResponse struct {
@@ -247,6 +254,12 @@ type clockState struct {
 	Stage       string     `json:"stage"`
 	HasBreached bool       `json:"hasBreached"`
 	StartedOn   *time.Time `json:"startedOn"`
+	// PausedOn/PauseDurationSeconds mirror entity-service's own
+	// domain.SLAClockState fields of the same name — used by
+	// Engine.resumeShift to compute how far a just-resumed clock's
+	// not-yet-alerted wake entries need pushing forward.
+	PausedOn             *time.Time `json:"pausedOn"`
+	PauseDurationSeconds int64      `json:"pauseDurationSeconds"`
 }
 
 // GetClockState calls GET /sla-status/clock-state?workItemId=<caseID>&target=<clockType>&source=csm
