@@ -19,6 +19,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -126,6 +127,12 @@ func (s *queryHourService) computeAll(ctx context.Context) ([]computed, error) {
 			// Counted, not ignored: a renamed SKU would otherwise
 			// quietly reduce an entitlement to zero.
 			c.opp.UnmatchedLines++
+			// Counting it is not enough on its own -- nothing reads
+			// the counter. A partly matched opportunity reports an
+			// understated allowance and can show as exceeded; a fully
+			// unmatched one never reaches the report at all.
+			slog.Warn("query hours: product line matches no entitlement pack",
+				"opportunityId", c.opp.OpportunityID, "product", l.ProductName)
 			continue
 		}
 		c.opp.TotalMinutes += int(l.Quantity * float64(hours) * 60)

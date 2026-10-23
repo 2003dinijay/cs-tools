@@ -96,7 +96,7 @@ func renderQueryHourTable(caption, colour string, accounts []queryhours.Account)
 				b.WriteString(`<td ` + qhNum + `>` + qhMinutes(o.TotalMinutes) + `</td>`)
 				b.WriteString(`<td ` + qhCell + `>&mdash;</td><td ` + qhNum + `>&mdash;</td>`)
 				b.WriteString(`<td ` + qhNum + `>` + qhMinutes(o.ConsumedMinutes) + `</td>`)
-				b.WriteString(`<td ` + qhNum + ` style="padding:7px 10px; border:1px solid #dfe3e6; color:` +
+				b.WriteString(`<td align="right" style="padding:7px 10px; border:1px solid #dfe3e6; color:` +
 					qhRemainColour(o) + `;"><strong>` + qhMinutes(o.RemainingMinutes) + `</strong></td>`)
 				b.WriteString(`</tr>`)
 				continue
