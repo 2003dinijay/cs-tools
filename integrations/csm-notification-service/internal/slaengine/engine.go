@@ -65,6 +65,8 @@ type store interface {
 	SetClock(ctx context.Context, caseID, clockType string, meta ClockMeta) error
 	GetClock(ctx context.Context, caseID, clockType string) (ClockMeta, bool, error)
 	SetPaused(ctx context.Context, caseID, clockType string, paused bool) error
+	ShiftWake(ctx context.Context, caseID, clockType string, deltaSeconds, newBaselineSeconds int64) error
+	SetShiftedPauseSeconds(ctx context.Context, caseID, clockType string, seconds int64) error
 	SetState(ctx context.Context, caseID, clockType, state string) error
 	AdvanceAlertedTier(ctx context.Context, caseID, clockType string, tier int, incarnation time.Time) (applied bool, err error)
 	ClaimTier(ctx context.Context, caseID, clockType string, tier int, startedAt time.Time) (claimed bool, err error)
@@ -382,12 +384,81 @@ func (e *Engine) ApplyStateEffects(ctx context.Context, caseID, newStatus string
 	default:
 		e.setPaused(ctx, caseID, ClockWorkaround, false)
 		e.setPaused(ctx, caseID, ClockResolution, false)
+		e.resumeShift(ctx, caseID, ClockWorkaround)
+		e.resumeShift(ctx, caseID, ClockResolution)
 	}
 }
 
+// setPaused is the plain Redis flag write only — see resumeShift for the
+// wake-index rescheduling a genuine resume additionally needs. Kept this
+// narrow deliberately: Engine.reconcileClock also calls this (to apply a
+// durable row's own IsPaused flag), but it computes and bakes a correct,
+// pause-aware wake schedule itself from scratch — routing its own call
+// through resumeShift too would apply the pause offset a second time.
 func (e *Engine) setPaused(ctx context.Context, caseID, clockType string, paused bool) {
 	if err := e.store.SetPaused(ctx, caseID, clockType, paused); err != nil {
 		slog.ErrorContext(ctx, "slaengine: failed to update clock paused state", "caseId", caseID, "clockType", clockType, "paused", paused, "err", err)
+	}
+}
+
+// resumeShift is the other half of setPaused(..., false): once a clock
+// actually resumes, the wake-index entries scheduled back at RegisterClocks/
+// the last reconciliation have due times that take no account of the pause
+// that just ended, so every tier not yet alerted needs pushing forward by
+// however long this pause segment actually lasted — see this package's own
+// CLAUDE.md, "SLA breach-alerting engine", for the incident this closes (a
+// clock paused across one of its own tiers previously lost that tier's
+// alert forever).
+//
+// The pause segment's own length is read from entity-service, not tracked a
+// second time in Redis: entity-service's own CSM-native engine
+// (SLAEngineRepository.SetPaused) already accumulates the exact same
+// wall-clock pause interval into its "sla" table's pause_duration column,
+// synchronously, as part of the very same case-status-changing request that
+// published the case.status_changed event this function is reacting to — by
+// the time this Kafka consumer sees that event, entity-service's own row
+// already reflects the just-completed segment. Diffing that fresh total
+// against ClockMeta.ShiftedPauseSeconds (the cumulative amount this
+// clock's own wake schedule has already been shifted by, as of the last
+// resume or reconciliation) gives exactly the new segment's length, so a
+// clock paused and resumed several times only ever gets shifted by each
+// new increment, never the whole running total again.
+//
+// e.entity nil (every existing test's own Engine literal) or a lookup
+// failure/empty result both skip the shift entirely and log — fails safe
+// (no shift) rather than guessing: an unshifted tier at worst alerts
+// slightly early relative to actual working time, which Tick's own
+// best-effort posture already tolerates elsewhere, where an incorrect
+// shift could push a tier's due time arbitrarily far into the future.
+func (e *Engine) resumeShift(ctx context.Context, caseID, clockType string) {
+	if e.entity == nil {
+		return
+	}
+	meta, found, err := e.store.GetClock(ctx, caseID, clockType)
+	if err != nil {
+		slog.ErrorContext(ctx, "slaengine: failed to read clock before computing resume shift", "caseId", caseID, "clockType", clockType, "err", err)
+		return
+	}
+	if !found {
+		return
+	}
+	state, err := e.entity.GetClockState(ctx, caseID, clockType)
+	if err != nil {
+		slog.WarnContext(ctx, "slaengine: failed to fetch pause duration from entity-service, wake schedule not shifted for this resume", "caseId", caseID, "clockType", clockType, "err", err)
+		return
+	}
+	if !state.Found {
+		return
+	}
+	delta := state.PauseDurationSeconds - meta.ShiftedPauseSeconds
+	if delta <= 0 {
+		return
+	}
+	// One atomic call: shifting the wake entries and recording the new
+	// baseline must not be allowed to happen only one at a time — see
+	// Store.ShiftWake's own doc comment for the double-shift this prevents.
+	if err := e.store.ShiftWake(ctx, caseID, clockType, delta, state.PauseDurationSeconds); err != nil {
+		slog.ErrorContext(ctx, "slaengine: failed to shift wake entries after resume", "caseId", caseID, "clockType", clockType, "deltaSeconds", delta, "err", err)
 	}
 }
 
@@ -454,17 +525,33 @@ func (e *Engine) Tick(ctx context.Context, now time.Time) error {
 }
 
 // processDueMember handles one due wake-index member. A member is removed
-// from the index exactly once, regardless of outcome — alerted, already
-// handled (paused, or completed early by CompleteResponseClock/
-// ApplyStateEffects), or malformed — since a member whose due time has
-// passed stays "due" forever once reached; leaving it in place would have
+// from the index once it's been actually handled — alerted, or already
+// covered by AlertedTier — or once it's malformed, since a member whose due
+// time has passed stays "due" forever once reached and would otherwise have
 // Tick re-examine it on every future poll indefinitely.
 //
-// KNOWN GAP, carried forward from every earlier design this replaces: a
-// paused clock's own due member is dropped outright, not rescheduled for
-// after resume — a clock that comes due while paused permanently loses
-// that tier's alert, even once resumed. Worth revisiting separately if it
-// turns out to matter in practice.
+// A PAUSED clock's own due member is the one case left IN the index rather
+// than removed — this replaces an earlier, carried-forward design flaw
+// where a tier due while paused was dropped outright, permanently losing
+// that tier's alert even once the clock resumed. Leaving it in place is
+// cheap (it just keeps showing up as "due" on every tick, a single
+// GetClock round trip, until resumed) and is exactly what lets
+// Engine.setPaused's own resume-time wake shift correctly push the
+// member's score forward past "now" once the pause segment's true length
+// is known — removing it here would leave nothing for that shift to act
+// on.
+//
+// AlertedTier is checked BEFORE Paused (a CodeRabbit-caught ordering bug):
+// CompleteResponseClock/CompleteWorkaroundClock/ApplyStateEffects' CLOSED
+// branch all advance AlertedTier to 100 without removing the clock's own
+// still-pending wake members — Reconcile's "don't resurrect an
+// already-handled tier" posture relies on this same check cleaning them up
+// the next time they come due. A clock force-completed and THEN paused
+// (e.g. closed, then reopened and immediately put on hold) would otherwise
+// return on the Paused check first, every tick, forever — a harmless but
+// needless GetClock round trip on every poll until the hash's 90-day TTL
+// expires or the clock resumes, since checking AlertedTier reaches the same
+// RemoveWake outcome immediately and doesn't depend on pause state at all.
 func (e *Engine) processDueMember(ctx context.Context, member string) error {
 	caseID, clockType, tier, ok := parseWakeMember(member)
 	if !ok {
@@ -479,8 +566,11 @@ func (e *Engine) processDueMember(ctx context.Context, member string) error {
 	if !found {
 		return e.store.RemoveWake(ctx, member)
 	}
-	if meta.Paused || meta.AlertedTier >= tier {
+	if meta.AlertedTier >= tier {
 		return e.store.RemoveWake(ctx, member)
+	}
+	if meta.Paused {
+		return nil
 	}
 
 	claimed, err := e.store.ClaimTier(ctx, caseID, clockType, tier, meta.StartedAt)
@@ -759,6 +849,23 @@ func (e *Engine) reconcileClock(ctx context.Context, c activeSLAClock, now time.
 	}
 	actualDuration := dueAt.Sub(startedAt)
 
+	// pauseOffset is every bit of time this clock has spent paused, start to
+	// now -- both already-completed segments (c.PauseDurationSeconds,
+	// entity-service's own accumulated total) and, if the clock is still
+	// paused at this exact reconciliation pass, the open segment running
+	// since c.PausedOn. Folded into each tier's own due time below so a
+	// freshly-rebuilt Redis doesn't schedule a wake entry as if the clock
+	// had never paused at all -- the same correction resumeShift applies
+	// during ordinary operation, just computed from scratch here instead of
+	// as a diff against a prior baseline (there IS no prior baseline right
+	// after a Redis wipe).
+	pauseOffset := time.Duration(c.PauseDurationSeconds) * time.Second
+	if c.IsPaused && c.PausedOn != nil {
+		if open := now.Sub(*c.PausedOn); open > 0 {
+			pauseOffset += open
+		}
+	}
+
 	meta := ClockMeta{
 		CaseNumber: c.CaseNumber,
 		WSO2CaseID: c.WSO2CaseID,
@@ -777,7 +884,7 @@ func (e *Engine) reconcileClock(ctx context.Context, c activeSLAClock, now time.
 
 	highestPastTier := 0
 	for _, tier := range tierSequence {
-		at := tierTime(startedAt, actualDuration, tier)
+		at := tierTime(startedAt, actualDuration, tier).Add(pauseOffset)
 		if at.After(now) {
 			if err := e.store.AddWake(ctx, wakeMember(c.CaseID, c.ClockType, tier), at); err != nil {
 				slog.ErrorContext(ctx, "slaengine: reconcile: failed to schedule sla wake entry", "caseId", c.CaseID, "clockType", c.ClockType, "tier", tier, "err", err)
@@ -795,6 +902,33 @@ func (e *Engine) reconcileClock(ctx context.Context, c activeSLAClock, now time.
 		if _, err := e.store.AdvanceAlertedTier(ctx, c.CaseID, c.ClockType, highestPastTier, startedAt); err != nil {
 			slog.ErrorContext(ctx, "slaengine: reconcile: failed to pre-claim already-past tiers", "caseId", c.CaseID, "clockType", c.ClockType, "tier", highestPastTier, "err", err)
 		}
+	}
+	// The shifted-pause baseline must equal exactly what this pass already
+	// baked into the tier times above -- the whole of pauseOffset, open
+	// segment included, not just c.PauseDurationSeconds (a CodeRabbit-caught
+	// double-count: an earlier version recorded the completed total alone,
+	// reasoning that the open segment "hasn't completed yet" so it shouldn't
+	// be counted as already shifted -- but the open segment IS already baked
+	// into the due times via pauseOffset above, so excluding it from the
+	// baseline just means resumeShift's own diff double-applies it on the
+	// real resume. Concretely: if this pass observes an open segment of
+	// length o, every tier's due time is already pushed out by o. On the
+	// real resume, entity-service reports completed+L (L = this segment's
+	// true, now-finished length, L >= o); diffing against a baseline of only
+	// "completed" gives a resume delta of L, which shifts the (already
+	// o-shifted) entries by L more -- a total of o+L instead of the correct
+	// L, making every tier L-o too late. Diffing against completed+o instead
+	// gives a resume delta of L-o -- exactly the portion of the segment this
+	// reconciliation pass hadn't yet observed -- for a correct total shift of
+	// o + (L-o) = L.
+	baselineSeconds := c.PauseDurationSeconds
+	if c.IsPaused && c.PausedOn != nil {
+		if open := now.Sub(*c.PausedOn); open > 0 {
+			baselineSeconds += int64(open / time.Second)
+		}
+	}
+	if err := e.store.SetShiftedPauseSeconds(ctx, c.CaseID, c.ClockType, baselineSeconds); err != nil {
+		slog.ErrorContext(ctx, "slaengine: reconcile: failed to record the shifted-pause baseline", "caseId", c.CaseID, "clockType", c.ClockType, "err", err)
 	}
 	// Always applied, not just when true: the durable row is the source of
 	// truth for this flag during reconciliation, and Redis may currently

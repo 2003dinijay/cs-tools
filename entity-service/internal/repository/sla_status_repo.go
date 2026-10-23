@@ -96,7 +96,8 @@ func activeSLAStatusCTE(sourceArgIndex int) string {
 	WITH active_sla AS (
 		SELECT DISTINCT ON (s.work_item_id, sp.target)
 			s.work_item_id, sp.target, s.live_elapsed_percentage AS business_elapsed_percentage,
-			s.live_has_breached AS has_breached, s.live_stage AS stage, s.start_on
+			s.live_has_breached AS has_breached, s.live_stage AS stage, s.start_on,
+			s.paused_on, s.pause_duration
 		FROM sla_live s
 		JOIN sla_policy sp ON sp.id = s.sla_policy_id
 		WHERE s.is_active AND sp.target IS NOT NULL` + sourceFilter + `
@@ -163,8 +164,10 @@ func scanSLAStatus(row interface{ Scan(...any) error }) (domain.SLAStatus, error
 	var teamEmail, teamLeadName, assigneeName, assigneeEmail *string
 	var stage string
 	var isEvaluation bool
+	var pauseDurationSeconds *int64
 	err := row.Scan(
 		&s.CaseID, &target, &s.BusinessElapsedPercent, &s.HasBreached, &stage, &s.StartedOn,
+		&s.PausedOn, &pauseDurationSeconds,
 		&caseNumber, &wso2CaseID, &caseTitle, &caseType,
 		&productName, &severity, &state, &teamName, &onboardingStatus, &isEvaluation,
 		&teamEmail, &teamLeadName, &assigneeName, &assigneeEmail,
@@ -174,6 +177,9 @@ func scanSLAStatus(row interface{ Scan(...any) error }) (domain.SLAStatus, error
 	}
 	s.ClockType = strings.ToLower(target)
 	s.IsPaused = stage == "PAUSED"
+	if pauseDurationSeconds != nil {
+		s.PauseDurationSeconds = *pauseDurationSeconds
+	}
 	s.CaseNumber = stringOrEmpty(caseNumber)
 	s.WSO2CaseID = stringOrEmpty(wso2CaseID)
 	s.CaseTitle = stringOrEmpty(caseTitle)
@@ -220,6 +226,7 @@ func (r *slaStatusRepo) SearchActiveSLAStatuses(ctx context.Context, pagination 
 
 	dataQuery := activeSLAStatusCTE(dataSourceArg) + `
 		SELECT als.work_item_id::TEXT, als.target::TEXT, COALESCE(als.business_elapsed_percentage, 0), COALESCE(als.has_breached, FALSE), COALESCE(als.stage::TEXT, ''), als.start_on,
+		       als.paused_on, EXTRACT(EPOCH FROM als.pause_duration)::BIGINT,
 		       wi.number, wi.wso2_id, wi.subject, wi.type::TEXT,
 		       prod.name || COALESCE(' ' || pv.version, ''), COALESCE(c.severity::TEXT, ''),
 		       ` + caseLikeStateColumn + `,
@@ -299,7 +306,8 @@ func (r *slaStatusRepo) GetClockState(ctx context.Context, workItemID, target, s
 	}
 
 	query := `
-		SELECT s.is_active, s.live_stage::TEXT, s.live_has_breached, s.start_on
+		SELECT s.is_active, s.live_stage::TEXT, s.live_has_breached, s.start_on,
+		       s.paused_on, EXTRACT(EPOCH FROM s.pause_duration)::BIGINT
 		FROM sla_live s
 		JOIN sla_policy sp ON sp.id = s.sla_policy_id
 		WHERE s.work_item_id = $1::uuid AND sp.target::TEXT = $2` + sourceFilterSQL + `
@@ -315,12 +323,19 @@ func (r *slaStatusRepo) GetClockState(ctx context.Context, workItemID, target, s
 	ctx = WithCallerIdentity(ctx, SearchScope{Unrestricted: true})
 
 	var state domain.SLAClockState
-	err := r.db.QueryRow(ctx, query, args...).Scan(&state.IsActive, &state.Stage, &state.HasBreached, &state.StartedOn)
+	var pauseDurationSeconds *int64
+	err := r.db.QueryRow(ctx, query, args...).Scan(
+		&state.IsActive, &state.Stage, &state.HasBreached, &state.StartedOn,
+		&state.PausedOn, &pauseDurationSeconds,
+	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.SLAClockState{}, nil
 	}
 	if err != nil {
 		return domain.SLAClockState{}, fmt.Errorf("get sla clock state: %w", err)
+	}
+	if pauseDurationSeconds != nil {
+		state.PauseDurationSeconds = *pauseDurationSeconds
 	}
 	state.Found = true
 	return state, nil

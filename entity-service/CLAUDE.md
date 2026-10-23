@@ -2285,6 +2285,35 @@ regardless of severity.
   completion actually was. The webapp's `CaseSlaTable` already handles a
   percentage above 100 correctly (clamps the progress-bar fill, shows the
   real number as text), confirmed before uncapping this.
+- **`SetPaused` now accumulates real pause duration, not just a
+  currently-paused flag.** `sla.pause_duration`/`business_pause_duration`
+  (migration 0048) existed from the start for ServiceNow-synced rows but
+  were never written for a `source='CSM'` row — `SetPaused` only ever reset
+  `paused_on` to "now" on pause and cleared it to `NULL` on resume, with no
+  running total anywhere. Fixed: `paused_on` is now only set on the FIRST
+  pause of a run (`COALESCE(paused_on, NOW())` — a duplicate/idempotent
+  pause call, e.g. a redelivered `case.status_changed`, no longer resets it
+  and silently shrinks the apparent pause), and a resume adds the just-ended
+  segment (`NOW() - paused_on`) onto `pause_duration` before clearing
+  `paused_on` — one UPDATE, correct for repeat pauses, repeat resumes, and
+  several pause/resume cycles on the same clock. `business_pause_duration`
+  is deliberately left untouched (still NULL for every `source='CSM'` row):
+  this engine has no business-hours calendar, so there's nothing correct to
+  compute for it (see `RecomputeActive`'s own "flat wall-clock" doc comment
+  below). `sla_live` (migration 0204) now subtracts `pause_duration` from
+  its live elapsed-percentage/business-duration/remaining-duration/
+  has-breached calculations for an `IN_PROGRESS`/`BREACHED` row (migration
+  0245) — a currently-running clock's "live" numbers finally reflect actual
+  working time, not wall-clock time since `start_on` regardless of how long
+  it sat paused. `domain.SLAStatus`/`SLAClockState` both gained
+  `PausedOn`/`PauseDurationSeconds` (whole seconds, same convention as
+  `SLADurationPolicyItem.DurationSeconds`) so a caller can read this
+  directly from `GET /sla-status`/`GET /sla-status/clock-state` instead of
+  re-deriving it — `integrations/csm-notification-service`'s own Redis-based
+  SLA tracker uses exactly this to reschedule a clock's not-yet-alerted
+  tiers forward on resume, and to rebuild an accurate due-date schedule from
+  this durable record if its own Redis is ever wiped (see that repo's own
+  CLAUDE.md, "SLA breach-alerting engine" → "resumeShift"/"Reconcile").
 - **A case closing now finalizes all three clock types, not just
   resolution.** `ApplyCaseStateEffects`'s `CaseStateClosed` branch used to
   only resume+complete `resolution` and merely pause `workaround` forever
