@@ -234,38 +234,115 @@ func (r TeamScheduleResolver) SaaSSRETeam(ctx context.Context, group string) (bo
 const teamTypeSREIaaS = "sre-iaas"
 
 // resolveSRE answers one SRE rung.
+//
+// L1 and L2 reach the ONE holder of their tier. L3 does too, but when nobody
+// at all holds L1, L2 or L3 for the incident, the L3 rung calls the team lead
+// instead -- or, for an incident with no SRE team of its own, the lead of
+// every team on the rota that pages it (both SaaS teams by default) -- so an
+// unstaffed rota still reaches somebody. The opt-in L4 rung (the lead) is then
+// skipped: the lead has already been called.
 func (r TeamScheduleResolver) resolveSRE(ctx context.Context, level Level, rc RoutingContext) ([]Recipient, error) {
 	own := r.ownSRETeam(rc)
 
-	if tier, ok := sreTier[level]; ok {
-		pick, found, err := r.onCallTier(ctx, rc.At, own, tier, rc.Rota)
+	switch level {
+	case Level0, Level1:
+		pick, found, err := r.onCallTier(ctx, rc.At, own, sreTier[level], rc.Rota)
 		if err != nil || !found {
 			return nil, err
 		}
 		return []Recipient{pick.Recipient}, nil
-	}
-	if level != Level3 {
-		return nil, nil
-	}
-
-	// L4 is the lead of the team answering the incident: its own, or -- for
-	// an incident that has none -- the team of whoever took L1.
-	team := own
-	if team == "" {
-		pick, found, err := r.onCallTier(ctx, rc.At, "", "L1", rc.Rota)
-		if err != nil || !found {
+	case Level2:
+		picks, err := r.tierPicks(ctx, rc.At, own, rc.Rota, "L1", "L2", "L3")
+		if err != nil {
 			return nil, err
 		}
-		team = pick.team
+		if pick, ok := picks["L3"]; ok {
+			return []Recipient{pick.Recipient}, nil
+		}
+		if len(picks) > 0 {
+			// Somebody holds L1 or L2: a missing L3 is just an empty rung.
+			return nil, nil
+		}
+		return r.leadsForUnstaffedRota(ctx, own, rc.Rota)
+	case Level3:
+		// L4 is the lead of the team answering the incident: its own, or -- for
+		// an incident that has none -- the team of the first tier somebody
+		// holds, L1, then L2, then L3.
+		picks, err := r.tierPicks(ctx, rc.At, own, rc.Rota, "L1", "L2", "L3")
+		if err != nil || len(picks) == 0 {
+			// Nobody on L1-L3: the leads were called on the L3 rung.
+			return nil, err
+		}
+		team := own
+		if team == "" {
+			for _, tier := range []string{"L1", "L2", "L3"} {
+				if pick, ok := picks[tier]; ok && pick.team != "" {
+					team = pick.team
+					break
+				}
+			}
+		}
+		if team == "" {
+			return nil, nil
+		}
+		leads, err := r.leadsOf(ctx, []string{team})
+		if err != nil || len(leads) == 0 {
+			return nil, err
+		}
+		return leads[:1], nil
 	}
-	if team == "" {
-		return nil, nil
+	return nil, nil
+}
+
+// leadsForUnstaffedRota is who the L3 rung calls when nobody holds L1, L2 or
+// L3: the incident's own team lead, or -- for an incident with no SRE team of
+// its own -- one lead from every team on the rota that pages it (sre.teams.abts
+// when the catalogue names no rotas).
+func (r TeamScheduleResolver) leadsForUnstaffedRota(ctx context.Context, own, rota string) ([]Recipient, error) {
+	if own != "" {
+		leads, err := r.leadsOf(ctx, []string{own})
+		if err != nil || len(leads) == 0 {
+			return nil, err
+		}
+		return leads[:1], nil
 	}
-	leads, err := r.leadsOf(ctx, []string{team})
-	if err != nil || len(leads) == 0 {
+	cat, err := r.entity.ScheduleCatalogue(ctx)
+	if err != nil {
 		return nil, err
 	}
-	return leads[:1], nil
+	var teams []string
+	if cat.hasRotas() {
+		if rota == "" {
+			rota = r.rotaFor(cat, "")
+		}
+		for _, t := range cat.Teams {
+			if rota != "" && strings.EqualFold(deref(t.RotaCode), rota) && t.Key != "" {
+				teams = append(teams, strings.ToLower(t.Key))
+			}
+		}
+	} else {
+		teams = append(teams, r.sreTeamKeys...)
+	}
+	if len(teams) == 0 {
+		return nil, nil
+	}
+	members, err := r.entity.TeamMembers(ctx, teams, []string{roleLead}, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	sort.SliceStable(members, func(i, j int) bool { return members[i].Email < members[j].Email })
+	var out []Recipient
+	seen := map[string]bool{}
+	for _, m := range members {
+		team := strings.ToLower(m.TeamKey)
+		if seen[team] {
+			continue
+		}
+		seen[team] = true
+		out = append(out, recipientsOf([]teamMember{m})...)
+	}
+	sortRecipients(out)
+	return out, nil
 }
 
 // tierHolder is one candidate for an SRE rung.
@@ -294,12 +371,34 @@ func preferAvailable(holders []tierHolder) []tierHolder {
 	return holders
 }
 
+// sharedCrewZone is the SaaS night window: TZ3 (21:00-06:00 IST, weekends
+// included) is one crew for both SaaS teams, so its holders answer either
+// team's incident. Every other window is the team's own.
+const sharedCrewZone = "TZ3"
+
 // onCallTier picks the ONE person holding tier on an SRE window at that
-// instant.
+// instant. See tierPicks.
+func (r TeamScheduleResolver) onCallTier(ctx context.Context, at time.Time, ownTeam, tier, rota string) (tierHolder, bool, error) {
+	picks, err := r.tierPicks(ctx, at, ownTeam, rota, tier)
+	if err != nil {
+		return tierHolder{}, false, err
+	}
+	pick, ok := picks[tier]
+	return pick, ok, nil
+}
+
+// tierPicks picks the ONE person holding each of tiers on an SRE window at
+// that instant, from one read of the rota. A tier nobody holds is absent.
 //
-// In order: the incident's own team, if it has anybody on that tier (a team's
-// own engineer is never skipped for another team's); then the zone whose L1
-// block is live, which is the zone that owns the incident right now and is
+// An incident with an SRE team of its own reaches only that team's people,
+// plus the shared night crew (sharedCrewZone): when the team has nobody on a
+// tier by day, the rung is empty rather than another team's holder -- the
+// ladder climbs to the team's next tier, and the L3 rung calls the team lead
+// when L1-L3 are all empty. An incident with no SRE team of its own reaches
+// whoever holds the tier on its rota.
+//
+// Then, in order: someone not on leave over someone on leave; the zone whose
+// L1 block is live, which is the zone that owns the incident right now and is
 // what makes the 12:00-15:00 overlap call one person rather than two; then the
 // configured SRE team order; then email, so a retry reaches the same person.
 //
@@ -307,10 +406,10 @@ func preferAvailable(holders []tierHolder) []tierHolder {
 // own chain, and a SaaS incident must never reach an IaaS engineer or the
 // other way round. rota is the one the engine stamped; empty asks rotaFor.
 // With no rotas in the catalogue at all every SRE window counts, as before.
-func (r TeamScheduleResolver) onCallTier(ctx context.Context, at time.Time, ownTeam, tier, rota string) (tierHolder, bool, error) {
+func (r TeamScheduleResolver) tierPicks(ctx context.Context, at time.Time, ownTeam, rota string, tiers ...string) (map[string]tierHolder, error) {
 	cat, err := r.entity.ScheduleCatalogue(ctx)
 	if err != nil {
-		return tierHolder{}, false, err
+		return nil, err
 	}
 	if rota == "" {
 		rota = r.rotaFor(cat, ownTeam)
@@ -329,10 +428,10 @@ func (r TeamScheduleResolver) onCallTier(ctx context.Context, at time.Time, ownT
 	}
 	onDuty, err := r.entity.OnDutyAt(ctx, at, r.callOnLeave)
 	if err != nil {
-		return tierHolder{}, false, err
+		return nil, err
 	}
 
-	var holders []tierHolder
+	byTier := map[string][]tierHolder{}
 	l1Zone := ""
 	for _, a := range onDuty {
 		w, ok := sre[a.ShiftCode]
@@ -350,31 +449,17 @@ func (r TeamScheduleResolver) onCallTier(ctx context.Context, at time.Time, ownT
 		if strings.EqualFold(held, "L1") && (l1Zone == "" || zone < l1Zone) {
 			l1Zone = zone
 		}
-		if !strings.EqualFold(held, tier) {
+		team := r.keyOf(a.TeamKey)
+		if ownTeam != "" && team != ownTeam && !strings.EqualFold(zone, sharedCrewZone) {
 			continue
 		}
-		holders = append(holders, tierHolder{
+		key := strings.ToUpper(held)
+		byTier[key] = append(byTier[key], tierHolder{
 			Recipient: Recipient{Email: a.Engineer.Email, Name: a.Engineer.Name, UserID: a.Engineer.UserID, ShiftCode: a.ShiftCode},
-			team:      r.keyOf(a.TeamKey),
+			team:      team,
 			zone:      zone,
 			onLeave:   a.OnLeave,
 		})
-	}
-	holders = preferAvailable(holders)
-	if len(holders) == 0 {
-		return tierHolder{}, false, nil
-	}
-
-	if ownTeam != "" {
-		var mine []tierHolder
-		for _, h := range holders {
-			if h.team == ownTeam {
-				mine = append(mine, h)
-			}
-		}
-		if len(mine) > 0 {
-			holders = mine
-		}
 	}
 
 	order := func(team string) int {
@@ -385,17 +470,25 @@ func (r TeamScheduleResolver) onCallTier(ctx context.Context, at time.Time, ownT
 		}
 		return len(r.sreTeamKeys)
 	}
-	sort.SliceStable(holders, func(i, j int) bool {
-		a, b := holders[i], holders[j]
-		if (a.zone == l1Zone) != (b.zone == l1Zone) {
-			return a.zone == l1Zone
+	out := map[string]tierHolder{}
+	for _, tier := range tiers {
+		holders := preferAvailable(byTier[strings.ToUpper(tier)])
+		if len(holders) == 0 {
+			continue
 		}
-		if order(a.team) != order(b.team) {
-			return order(a.team) < order(b.team)
-		}
-		return a.Email < b.Email
-	})
-	return holders[0], true, nil
+		sort.SliceStable(holders, func(i, j int) bool {
+			a, b := holders[i], holders[j]
+			if (a.zone == l1Zone) != (b.zone == l1Zone) {
+				return a.zone == l1Zone
+			}
+			if order(a.team) != order(b.team) {
+				return order(a.team) < order(b.team)
+			}
+			return a.Email < b.Email
+		})
+		out[tier] = holders[0]
+	}
+	return out, nil
 }
 
 func deref(s *string) string {
