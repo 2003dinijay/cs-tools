@@ -173,3 +173,47 @@ func TestProjectConsumption_StampFollowsTheStatusTheProjectReadsAs(t *testing.T)
 		t.Errorf("an update bringing no secrets stamped a legacy row: %v", got)
 	}
 }
+
+// Replaying a status-5 request with the same secret is not a regeneration, and a
+// completed legacy row with no date does not get today's date from a later status 5.
+func TestProjectConsumption_StampIgnoresReplaysAndLegacyCompletedRows(t *testing.T) {
+	pool := consumptionStampPool(t)
+	repo := repository.NewProjectRepository(repository.NewScoped(pool))
+	ctx := internalCtx()
+	const fresh, legacy = "7d8783f7-3b65-4b10-9140-4c6aa5e45a87", "9fa9a5b9-5d87-4d32-b362-6e8cc7067ca9"
+	if _, err := pool.Exec(context.Background(), `INSERT INTO project (id, choreo_application_status, product_consumption_primary_secret_key)
+		VALUES ($1, 'COMPLETED', 'old')`, legacy); err != nil {
+		t.Fatal(err)
+	}
+	stamp := func(id string) *time.Time {
+		t.Helper()
+		var v *time.Time
+		if err := pool.QueryRow(context.Background(), `SELECT consumption_tracking_file_generated_on FROM project WHERE id = $1`, id).Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+
+	key := "abc"
+	req := domain.ProjectConsumptionUpdateRequest{Status: 5, PrimarySecretKey: &key}
+	if err := repo.UpdateProjectConsumption(ctx, fresh, req, "pcs"); err != nil {
+		t.Fatal(err)
+	}
+	first := stamp(fresh)
+	if first == nil {
+		t.Fatal("completion was not stamped")
+	}
+	if err := repo.UpdateProjectConsumption(ctx, fresh, req, "pcs"); err != nil { // the same request again
+		t.Fatal(err)
+	}
+	if got := stamp(fresh); got == nil || !got.Equal(*first) {
+		t.Errorf("a replayed request moved the stamp: %v, want %v", got, *first)
+	}
+
+	if err := repo.UpdateProjectConsumption(ctx, legacy, domain.ProjectConsumptionUpdateRequest{Status: 5}, "pcs"); err != nil {
+		t.Fatal(err)
+	}
+	if got := stamp(legacy); got != nil {
+		t.Errorf("a legacy completed row was stamped by a status 5 bringing nothing: %v", got)
+	}
+}

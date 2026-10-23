@@ -963,6 +963,13 @@ func (r *projectRepo) GetProjectConsumptionStatus(ctx context.Context, id string
 }
 
 // UpdateProjectConsumption implements ProjectRepository.
+//
+// consumption_tracking_file_generated_on records when the licence secrets were
+// generated, which ServiceNow stamped on its status-5 update. It is set when the
+// update leaves the project reading as status 5 and either it did not read as 5
+// before (the completion itself, also a status-4 update that carries the key) or the
+// update changes a stored secret (a regeneration). A replayed request, a repeated
+// status 5 without secrets and a legacy completed row with no date leave it alone.
 func (r *projectRepo) UpdateProjectConsumption(ctx context.Context, id string, req domain.ProjectConsumptionUpdateRequest, updatedBy string) error {
 	ctx = WithSystemIdentity(ctx)
 	statusEnum := consumptionStatusToEnum(req.Status)
@@ -977,10 +984,18 @@ func (r *projectRepo) UpdateProjectConsumption(ctx context.Context, id string, r
 		    product_consumption_secondary_secret_key = COALESCE($7, product_consumption_secondary_secret_key),
 		    product_consumption_license_secrets = COALESCE($8, product_consumption_license_secrets),
 		    consumption_tracking_file_generated_on = CASE
-		        WHEN $10 AND (COALESCE($3::choreo_application_status_enum, choreo_application_status) = 'COMPLETED'
+		        -- After the update the project reads as status 5 (see consumptionEnumToStatus) ...
+		        WHEN (COALESCE($3::choreo_application_status_enum, choreo_application_status) = 'COMPLETED'
 		              OR (COALESCE($3::choreo_application_status_enum, choreo_application_status) = 'GENERATED_CREDENTIALS'
-		                  AND COALESCE($6, product_consumption_primary_secret_key, '') <> '')) THEN NOW()
-		        WHEN $11 AND consumption_tracking_file_generated_on IS NULL THEN NOW()
+		                  AND COALESCE($6, product_consumption_primary_secret_key, '') <> ''))
+		         -- ... and either it did not before, or this update changes a secret.
+		         AND (NOT (choreo_application_status IS NOT DISTINCT FROM 'COMPLETED'
+		                   OR (choreo_application_status IS NOT DISTINCT FROM 'GENERATED_CREDENTIALS'
+		                       AND COALESCE(product_consumption_primary_secret_key, '') <> ''))
+		              OR (NULLIF($6, '') IS NOT NULL AND $6 IS DISTINCT FROM product_consumption_primary_secret_key)
+		              OR (NULLIF($7, '') IS NOT NULL AND $7 IS DISTINCT FROM product_consumption_secondary_secret_key)
+		              OR (NULLIF($8, '') IS NOT NULL AND $8 IS DISTINCT FROM product_consumption_license_secrets))
+		        THEN NOW()
 		        ELSE consumption_tracking_file_generated_on END,
 		    updated_on = NOW(),
 		    updated_by = $9
@@ -994,12 +1009,6 @@ func (r *projectRepo) UpdateProjectConsumption(ctx context.Context, id string, r
 		req.SecondarySecretKey,
 		req.LicenseSecrets,
 		updatedBy,
-		// The date records when the licence secrets were generated, which ServiceNow stamped on
-		// its status-5 update. It is set when this update brings secrets and the project then
-		// reads as completed (also a status-4 update that carries the key, which reads as 5), and
-		// the first time status 5 is reached; a repeated status 5 with no secrets keeps it.
-		consumptionSecretsSupplied(req),
-		req.Status >= 5,
 	)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -1012,16 +1021,6 @@ func (r *projectRepo) UpdateProjectConsumption(ctx context.Context, id string, r
 		return &apierror.NotFoundError{Msg: "project not found"}
 	}
 	return nil
-}
-
-// consumptionSecretsSupplied reports whether an update brings any licence secret.
-func consumptionSecretsSupplied(req domain.ProjectConsumptionUpdateRequest) bool {
-	for _, v := range []*string{req.PrimarySecretKey, req.SecondarySecretKey, req.LicenseSecrets} {
-		if v != nil && *v != "" {
-			return true
-		}
-	}
-	return false
 }
 
 // consumptionStatusToEnum maps the 1-based consumption lifecycle status int onto
