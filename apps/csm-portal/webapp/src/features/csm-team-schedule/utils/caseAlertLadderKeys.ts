@@ -92,6 +92,9 @@ export interface LadderKeySpec {
   /** What 0 means, for a number where it is not "nobody". */
   zero?: string;
   placeholder?: string;
+  /** A text value's field: its label (else "New value") and input type. */
+  inputLabel?: string;
+  inputType?: "email";
 }
 
 const BOTH: CaseAlertRoomLadder[] = ["CRE", "SRE"];
@@ -451,11 +454,11 @@ export const LADDER_KEYS: LadderKeySpec[] = [
     ladders: CRE,
     group: "Case Alert email",
     label: "ABT team lists (Cc on L1 and L2)",
-    help: "Each ABT team's mailing list, Cc'd on the email to its team lead (L1) and on the email to every ABT team lead (L2). At night the Americas team's list is Cc'd too.",
+    help: "Each team's mailing list is Cc'd on the email to its team lead (L1) and on the email to every ABT team lead (L2). The Americas list is Cc'd at night.",
     editor: "teamEmails",
     max: 30,
     empty: "none (no Cc on L1 and L2)",
-    placeholder: "e.g. atlas=atlas-team@example.com",
+    placeholder: "team-list@example.com",
   },
   {
     key: "email.creTeamList",
@@ -465,7 +468,9 @@ export const LADDER_KEYS: LadderKeySpec[] = [
     help: "Cc'd on the L3 email to the Head of CRE.",
     editor: "text",
     empty: "none (no Cc on L3)",
-    placeholder: "e.g. cre-team@example.com",
+    placeholder: "cre-team@example.com",
+    inputLabel: "Mailing list",
+    inputType: "email",
   },
   {
     key: "email.csTeamList",
@@ -475,7 +480,9 @@ export const LADDER_KEYS: LadderKeySpec[] = [
     help: "Cc'd on the L4 email to the Head of CS.",
     editor: "text",
     empty: "none (no Cc on L4)",
-    placeholder: "e.g. cs-team@example.com",
+    placeholder: "cs-team@example.com",
+    inputLabel: "Mailing list",
+    inputType: "email",
   },
 
   // Chat messages
@@ -551,17 +558,102 @@ export interface LadderDraft {
   checked: boolean;
   name: string;
   email: string;
+  /** Team key to address, for the team email lists. */
+  map: Record<string, string>;
+}
+
+/** One team in the team email lists' editor. */
+export interface TeamEmailRow {
+  key: string;
+  name: string;
+  /** Said under the name: when the list is used, or that it is not. */
+  note?: string;
+  /** A team the value names that is no longer an ABT team. */
+  stale?: boolean;
+}
+
+const AMERICAS_NOTE = "Cc'd at night (21:00-06:00 IST)";
+const STALE_NOTE = "No longer an ABT team: this list is not used";
+
+function titleCase(key: string): string {
+  return key.replace(/(^|[-_.\s])(\w)/g, (_, sep: string, c: string) => `${sep === "" ? "" : " "}${c.toUpperCase()}`);
+}
+
+/** The teams whose mailing list the Case Alert email can Cc: the ladder's
+ *  ABT teams and its Americas team, as saved here or in use, named as the
+ *  Team Schedule names them. With no ABT list known, every team of the
+ *  ladder's family is offered. The alert service drops a list for any other
+ *  team, so a value naming one is shown marked (teamEmailRowsFor). */
+export function teamEmailRows(s: CaseAlertSettings, ladder: CaseAlertRoomLadder): TeamEmailRow[] {
+  const inUse = (key: string): unknown =>
+    s.values.find((v) => v.ladder === ladder && v.key === key)?.value ?? s.running?.ladders[ladder]?.[key]?.value;
+  const names = new Map(
+    (s.routeOptions?.teams ?? []).filter((t) => t.family === ladder).map((t) => [t.key.toLowerCase(), t.name] as const),
+  );
+  const abtValue = inUse("teams.abts");
+  const abts = (Array.isArray(abtValue) ? abtValue : [])
+    .filter((k): k is string => typeof k === "string" && k.trim() !== "")
+    .map((k) => k.trim().toLowerCase());
+  const americasValue = inUse("teams.americas");
+  const americas = typeof americasValue === "string" ? americasValue.trim().toLowerCase() : "";
+  const keys = abts.length > 0 ? abts : [...names.keys()].filter((k) => k !== americas);
+  const rows: TeamEmailRow[] = [];
+  const seen = new Set<string>();
+  for (const key of keys) {
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rows.push({ key, name: names.get(key) ?? titleCase(key) });
+  }
+  if (americas && !seen.has(americas)) {
+    rows.push({ key: americas, name: names.get(americas) ?? titleCase(americas), note: AMERICAS_NOTE });
+  }
+  return rows;
+}
+
+/** The rows, plus any team the value names that they don't, marked: the
+ *  alert service drops its list, and leaving it hidden would keep it saved
+ *  with nobody able to see or clear it. */
+export function teamEmailRowsFor(rows: TeamEmailRow[], value: unknown): TeamEmailRow[] {
+  if (!isRecord(value)) return rows;
+  const known = new Set(rows.map((r) => r.key));
+  const extra = Object.keys(value)
+    .map((k) => k.trim().toLowerCase())
+    .filter((k) => k !== "" && !known.has(k))
+    .map((key) => ({ key, name: titleCase(key), note: STALE_NOTE, stale: true }));
+  return [...rows, ...extra];
+}
+
+/** One bare address, as the alert service and the entity service take it. */
+export function isMailingAddress(v: string): boolean {
+  return /^[^\s@,;<>"]+@[^\s@,;<>"]+$/.test(v);
+}
+
+/** The team lists' fields that do not hold one address, by team. */
+export function teamEmailErrors(draft: LadderDraft): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, raw] of Object.entries(draft.map)) {
+    const v = raw.trim();
+    if (v !== "" && !isMailingAddress(v)) out[key] = "Enter one email address, like team-list@example.com.";
+  }
+  return out;
 }
 
 /** The editor's starting point: the saved value, else the one in use. */
 export function draftFor(spec: LadderKeySpec, value: unknown): LadderDraft {
-  const draft: LadderDraft = { text: "", checked: value === true, name: "", email: "" };
+  const draft: LadderDraft = { text: "", checked: value === true, name: "", email: "", map: {} };
   if (spec.editor === "head") {
     const h = headOf(value);
     return { ...draft, name: h?.name ?? "", email: h?.email ?? "" };
   }
   if (Array.isArray(value)) return { ...draft, text: value.map(String).join(", ") };
-  if ((spec.editor === "shiftCounts" || spec.editor === "teamMap" || spec.editor === "teamEmails") && isRecord(value)) {
+  if (spec.editor === "teamEmails") {
+    const map: Record<string, string> = {};
+    if (isRecord(value)) {
+      for (const [k, v] of Object.entries(value)) if (typeof v === "string") map[k.trim().toLowerCase()] = v;
+    }
+    return { ...draft, map };
+  }
+  if ((spec.editor === "shiftCounts" || spec.editor === "teamMap") && isRecord(value)) {
     return { ...draft, text: Object.entries(value).map(([k, v]) => `${k}=${String(v)}`).join(", ") };
   }
   if (typeof value === "string" || typeof value === "number") return { ...draft, text: String(value) };
@@ -610,11 +702,13 @@ export function parseDraft(spec: LadderKeySpec, draft: LadderDraft): ParsedDraft
       return { ok: true, value: out };
     }
     case "teamEmails": {
+      if (Object.keys(teamEmailErrors(draft)).length > 0) {
+        return { ok: false, error: `${spec.label}: fix the addresses marked below.` };
+      }
       const out: Record<string, string> = {};
-      for (const part of text.split(",").map((v) => v.trim()).filter(Boolean)) {
-        const m = /^([A-Za-z0-9_.-]+)\s*=\s*([^\s,=@]+@[^\s,=@]+)$/.exec(part);
-        if (!m) return { ok: false, error: `${spec.label}: write each as team=address, e.g. atlas=atlas-team@example.com.` };
-        out[m[1].toLowerCase()] = m[2];
+      for (const [key, raw] of Object.entries(draft.map)) {
+        const v = raw.trim();
+        if (v !== "") out[key.trim().toLowerCase()] = v;
       }
       return { ok: true, value: out };
     }
@@ -626,7 +720,13 @@ export function parseDraft(spec: LadderKeySpec, draft: LadderDraft): ParsedDraft
         : { ok: false, error: `${spec.label}: enter a name and an email.` };
     }
     default:
-      return text ? { ok: true, value: text } : { ok: false, error: `${spec.label}: enter a value.` };
+      // An email list may be emptied: empty means no Cc (spec.empty).
+      if (!text && spec.inputType === "email") return { ok: true, value: "" };
+      if (!text) return { ok: false, error: `${spec.label}: enter a value.` };
+      if (spec.inputType === "email" && !isMailingAddress(text)) {
+        return { ok: false, error: `${spec.label}: enter one email address, like ${spec.placeholder ?? "team-list@example.com"}.` };
+      }
+      return { ok: true, value: text };
   }
 }
 
@@ -804,7 +904,7 @@ export function limitHint(spec: LadderKeySpec): string | null {
     case "teamMap":
       return `key=team, separated with commas. ${empty}`;
     case "teamEmails":
-      return `team=address, separated with commas${spec.max ? `, up to ${spec.max}` : ""}. ${empty}`;
+      return "Leave a team empty for no Cc.";
     default:
       return null;
   }

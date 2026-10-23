@@ -465,20 +465,30 @@ func emailTeamListsValue(ctx context.Context, s *caseAlertSettingsService, _ str
 	if len(in) > 30 {
 		return nil, invalidf("at most 30 team lists")
 	}
-	out := make(map[string]string, len(in))
+	// Every key and address is checked before any team is looked up, so bad
+	// input is always refused as such, never as a failed lookup.
+	checked := make(map[string]string, len(in))
 	for team, addr := range in {
-		k, err := teamItem(ctx, s, familyCRE, strings.TrimSpace(team))
-		if err != nil {
-			return nil, err
+		k := strings.ToLower(strings.TrimSpace(team))
+		if !caseAlertTeamKey.MatchString(k) {
+			return nil, invalidf("%q is not a team key", team)
 		}
-		if _, dup := out[k]; dup {
+		if _, dup := checked[k]; dup {
 			return nil, invalidf("names team %s twice", k)
 		}
 		a, err := emailAddress(strings.TrimSpace(addr))
 		if err != nil {
 			return nil, err
 		}
-		out[k] = a
+		checked[k] = a
+	}
+	out := make(map[string]string, len(checked))
+	for k, a := range checked {
+		key, err := teamItem(ctx, s, familyCRE, k)
+		if err != nil {
+			return nil, err
+		}
+		out[key] = a
 	}
 	return out, nil
 }

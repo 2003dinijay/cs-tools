@@ -330,6 +330,45 @@ describe("CaseAlertLadderSettings: CRE", () => {
     expect(screen.getByRole("region", { name: "CRE changes to submit" })).toHaveTextContent("No changes to submit.");
   });
 
+  it("edits the ABT team lists one team at a time, and marks a bad address on its own row", async () => {
+    render(<CaseAlertSettings chain="CRE" />);
+    const { dialog } = openEdit("ABT team lists (Cc on L1 and L2)");
+    // One field per ABT team (the saved teams.abts), named, no key=value line.
+    const atlas = within(dialog).getByLabelText("Atlas");
+    const castor = within(dialog).getByLabelText("Castor");
+    expect(atlas).toHaveAttribute("type", "email");
+    expect(within(dialog).getByText("Leave a team empty for no Cc.", { exact: false })).toBeInTheDocument();
+    fireEvent.change(atlas, { target: { value: "atlas team" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add to changes" }));
+    expect(within(dialog).getByText("Enter one email address, like team-list@example.com.")).toBeInTheDocument();
+    expect(atlas).toHaveAttribute("aria-invalid", "true");
+    expect(castor).not.toHaveAttribute("aria-invalid");
+    fireEvent.change(atlas, { target: { value: " atlas-team@example.test " } });
+    expect(within(dialog).queryByText("Enter one email address, like team-list@example.com.")).not.toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add to changes" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    // The row shows what waits for Submit, by team.
+    const r = row("ABT team lists (Cc on L1 and L2)");
+    expect(within(r).getByText("waits for Submit")).toBeInTheDocument();
+    expect(within(r).getByText("atlas-team@example.test")).toBeInTheDocument();
+    expect(within(r).getByText("1 of 2 teams have a list")).toBeInTheDocument();
+    await submit();
+    expect(saveValues.mutateAsync).toHaveBeenCalledWith({
+      ladder: "CRE",
+      values: { "email.teamLists": { atlas: "atlas-team@example.test" } },
+    });
+  });
+
+  it("asks for one address for the CRE and CS lists", () => {
+    render(<CaseAlertSettings chain="CRE" />);
+    const { dialog } = openEdit("CRE team list (Cc on L3)");
+    const input = within(dialog).getByLabelText("Mailing list");
+    expect(input).toHaveAttribute("type", "email");
+    fireEvent.change(input, { target: { value: "a@example.test, b@example.test" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add to changes" }));
+    expect(within(dialog).getByRole("alert")).toHaveTextContent("enter one email address");
+  });
+
   it("saves a head as a name and an email, in the full layout", async () => {
     render(<CaseAlertSettings chain="CRE" layout="full" />);
     const { dialog } = openEdit("Head of CS");
