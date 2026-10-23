@@ -65,7 +65,7 @@ type store interface {
 	SetClock(ctx context.Context, caseID, clockType string, meta ClockMeta) error
 	GetClock(ctx context.Context, caseID, clockType string) (ClockMeta, bool, error)
 	SetPaused(ctx context.Context, caseID, clockType string, paused bool) error
-	ShiftWake(ctx context.Context, caseID, clockType string, deltaSeconds int64) error
+	ShiftWake(ctx context.Context, caseID, clockType string, deltaSeconds, newBaselineSeconds int64) error
 	SetShiftedPauseSeconds(ctx context.Context, caseID, clockType string, seconds int64) error
 	SetState(ctx context.Context, caseID, clockType, state string) error
 	AdvanceAlertedTier(ctx context.Context, caseID, clockType string, tier int, incarnation time.Time) (applied bool, err error)
@@ -454,12 +454,11 @@ func (e *Engine) resumeShift(ctx context.Context, caseID, clockType string) {
 	if delta <= 0 {
 		return
 	}
-	if err := e.store.ShiftWake(ctx, caseID, clockType, delta); err != nil {
+	// One atomic call: shifting the wake entries and recording the new
+	// baseline must not be allowed to happen only one at a time — see
+	// Store.ShiftWake's own doc comment for the double-shift this prevents.
+	if err := e.store.ShiftWake(ctx, caseID, clockType, delta, state.PauseDurationSeconds); err != nil {
 		slog.ErrorContext(ctx, "slaengine: failed to shift wake entries after resume", "caseId", caseID, "clockType", clockType, "deltaSeconds", delta, "err", err)
-		return
-	}
-	if err := e.store.SetShiftedPauseSeconds(ctx, caseID, clockType, state.PauseDurationSeconds); err != nil {
-		slog.ErrorContext(ctx, "slaengine: failed to record the new shifted-pause baseline", "caseId", caseID, "clockType", clockType, "err", err)
 	}
 }
 
@@ -541,6 +540,18 @@ func (e *Engine) Tick(ctx context.Context, now time.Time) error {
 // member's score forward past "now" once the pause segment's true length
 // is known — removing it here would leave nothing for that shift to act
 // on.
+//
+// AlertedTier is checked BEFORE Paused (a CodeRabbit-caught ordering bug):
+// CompleteResponseClock/CompleteWorkaroundClock/ApplyStateEffects' CLOSED
+// branch all advance AlertedTier to 100 without removing the clock's own
+// still-pending wake members — Reconcile's "don't resurrect an
+// already-handled tier" posture relies on this same check cleaning them up
+// the next time they come due. A clock force-completed and THEN paused
+// (e.g. closed, then reopened and immediately put on hold) would otherwise
+// return on the Paused check first, every tick, forever — a harmless but
+// needless GetClock round trip on every poll until the hash's 90-day TTL
+// expires or the clock resumes, since checking AlertedTier reaches the same
+// RemoveWake outcome immediately and doesn't depend on pause state at all.
 func (e *Engine) processDueMember(ctx context.Context, member string) error {
 	caseID, clockType, tier, ok := parseWakeMember(member)
 	if !ok {
@@ -555,11 +566,11 @@ func (e *Engine) processDueMember(ctx context.Context, member string) error {
 	if !found {
 		return e.store.RemoveWake(ctx, member)
 	}
-	if meta.Paused {
-		return nil
-	}
 	if meta.AlertedTier >= tier {
 		return e.store.RemoveWake(ctx, member)
+	}
+	if meta.Paused {
+		return nil
 	}
 
 	claimed, err := e.store.ClaimTier(ctx, caseID, clockType, tier, meta.StartedAt)
@@ -892,16 +903,31 @@ func (e *Engine) reconcileClock(ctx context.Context, c activeSLAClock, now time.
 			slog.ErrorContext(ctx, "slaengine: reconcile: failed to pre-claim already-past tiers", "caseId", c.CaseID, "clockType", c.ClockType, "tier", highestPastTier, "err", err)
 		}
 	}
-	// The shifted-pause baseline is set to exactly the completed-pause total
-	// (c.PauseDurationSeconds) this pass already baked into the tier times
-	// above -- NOT pauseOffset, which may also include an open, still-running
-	// pause segment (c.IsPaused). That open segment hasn't completed yet (it
-	// has no durable total of its own until the clock actually resumes), so
-	// it must never be recorded as "already shifted" -- resumeShift's own
-	// diff-against-baseline logic needs the baseline to reflect only what
-	// entity-service's pause_duration column will itself report once this
-	// pause does end, or the real resume would compute a short, wrong delta.
-	if err := e.store.SetShiftedPauseSeconds(ctx, c.CaseID, c.ClockType, c.PauseDurationSeconds); err != nil {
+	// The shifted-pause baseline must equal exactly what this pass already
+	// baked into the tier times above -- the whole of pauseOffset, open
+	// segment included, not just c.PauseDurationSeconds (a CodeRabbit-caught
+	// double-count: an earlier version recorded the completed total alone,
+	// reasoning that the open segment "hasn't completed yet" so it shouldn't
+	// be counted as already shifted -- but the open segment IS already baked
+	// into the due times via pauseOffset above, so excluding it from the
+	// baseline just means resumeShift's own diff double-applies it on the
+	// real resume. Concretely: if this pass observes an open segment of
+	// length o, every tier's due time is already pushed out by o. On the
+	// real resume, entity-service reports completed+L (L = this segment's
+	// true, now-finished length, L >= o); diffing against a baseline of only
+	// "completed" gives a resume delta of L, which shifts the (already
+	// o-shifted) entries by L more -- a total of o+L instead of the correct
+	// L, making every tier L-o too late. Diffing against completed+o instead
+	// gives a resume delta of L-o -- exactly the portion of the segment this
+	// reconciliation pass hadn't yet observed -- for a correct total shift of
+	// o + (L-o) = L.
+	baselineSeconds := c.PauseDurationSeconds
+	if c.IsPaused && c.PausedOn != nil {
+		if open := now.Sub(*c.PausedOn); open > 0 {
+			baselineSeconds += int64(open / time.Second)
+		}
+	}
+	if err := e.store.SetShiftedPauseSeconds(ctx, c.CaseID, c.ClockType, baselineSeconds); err != nil {
 		slog.ErrorContext(ctx, "slaengine: reconcile: failed to record the shifted-pause baseline", "caseId", c.CaseID, "clockType", c.ClockType, "err", err)
 	}
 	// Always applied, not just when true: the durable row is the source of

@@ -286,7 +286,11 @@ func (s *Store) SetPaused(ctx context.Context, caseID, clockType string, paused 
 // see ClockMeta.ShiftedPauseSeconds's own doc comment. Always a plain
 // overwrite (not an HSETNX): unlike the registration-time fields
 // SetClock's own script protects, this value is meant to move forward on
-// every real resume/reconciliation, not just be initialized once.
+// every real resume/reconciliation, not just be initialized once. Used by
+// Engine.reconcileClock, which has no wake-index shift of its own to make
+// atomic with this write (it bakes the pause offset directly into the AddWake
+// scores instead) — see ShiftWake for the resume path, which does need that
+// atomicity.
 func (s *Store) SetShiftedPauseSeconds(ctx context.Context, caseID, clockType string, seconds int64) error {
 	key := clockKey(caseID, clockType)
 	if err := s.rdb.HSet(ctx, key, "shiftedPauseSeconds", strconv.FormatInt(seconds, 10)).Err(); err != nil {
@@ -300,34 +304,48 @@ func (s *Store) SetShiftedPauseSeconds(ctx context.Context, caseID, clockType st
 // ZINCRBY on a sorted set creates the member (at score = the increment) if
 // it's absent, which would wrongly resurrect a tier whose wake entry was
 // already removed after it was alerted on (see processDueMember); checking
-// ZSCORE first is what keeps an already-handled tier untouched.
+// ZSCORE first is what keeps an already-handled tier untouched. The new
+// shifted-pause baseline is recorded on the same clock hash in the same
+// script (KEYS[2]/ARGV[2]) — a CodeRabbit-caught gap in an earlier version
+// did these as two separate Redis calls, which left a real failure window: a
+// crash or error between them left the wake entries already shifted but the
+// baseline still stale, so the very next resume would see the same old
+// baseline, recompute the identical delta, and shift the same entries a
+// second time — silently delaying every remaining tier by one extra pause
+// segment's length, with no later reconciliation pass to catch it (Reconcile
+// only runs once, at process startup).
 var shiftWakeScript = redis.NewScript(`
 local delta = tonumber(ARGV[1])
-for i = 2, #ARGV do
+local baseline = ARGV[2]
+local ttl = ARGV[3]
+for i = 4, #ARGV do
 	local member = ARGV[i]
 	if redis.call('ZSCORE', KEYS[1], member) then
 		redis.call('ZINCRBY', KEYS[1], delta, member)
 	end
 end
+redis.call('HSET', KEYS[2], 'shiftedPauseSeconds', baseline)
+redis.call('EXPIRE', KEYS[2], ttl)
 return 1
 `)
 
 // ShiftWake pushes every still-pending wake-index entry of one
-// (caseID, clockType) clock forward by deltaSeconds — called once a
-// just-completed pause segment's true length is known (Engine.resumeShift),
-// so a tier whose original due time fell during the pause is rescheduled
-// for sometime after it resumes, rather than firing immediately (an
-// un-shifted due time already in the past) the moment the next tick runs.
-func (s *Store) ShiftWake(ctx context.Context, caseID, clockType string, deltaSeconds int64) error {
-	if deltaSeconds == 0 {
-		return nil
-	}
-	args := make([]any, 0, 1+len(tierSequence))
-	args = append(args, deltaSeconds)
+// (caseID, clockType) clock forward by deltaSeconds, and atomically records
+// newBaselineSeconds as the clock's new ClockMeta.ShiftedPauseSeconds in the
+// same Redis operation — called once a just-completed pause segment's true
+// length is known (Engine.resumeShift), so a tier whose original due time
+// fell during the pause is rescheduled for sometime after it resumes, rather
+// than firing immediately (an un-shifted due time already in the past) the
+// moment the next tick runs. See shiftWakeScript's own doc comment for why
+// the baseline write can't be a separate call.
+func (s *Store) ShiftWake(ctx context.Context, caseID, clockType string, deltaSeconds, newBaselineSeconds int64) error {
+	key := clockKey(caseID, clockType)
+	args := make([]any, 0, 3+len(tierSequence))
+	args = append(args, deltaSeconds, strconv.FormatInt(newBaselineSeconds, 10), int64(clockTTL.Seconds()))
 	for _, tier := range tierSequence {
 		args = append(args, wakeMember(caseID, clockType, tier))
 	}
-	return shiftWakeScript.Run(ctx, s.rdb, []string{wakeKey}, args...).Err()
+	return shiftWakeScript.Run(ctx, s.rdb, []string{wakeKey, key}, args...).Err()
 }
 
 // SetState refreshes one clock's own display State field — called from

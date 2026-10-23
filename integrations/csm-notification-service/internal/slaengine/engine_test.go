@@ -100,17 +100,22 @@ func (s *fakeStore) SetPaused(_ context.Context, caseID, clockType string, pause
 
 // ShiftWake mirrors the real Store's own shiftWakeScript: only a member
 // already present in wake is moved, same "never resurrect an
-// already-alerted tier" guard the real ZSCORE check gives.
-func (s *fakeStore) ShiftWake(_ context.Context, caseID, clockType string, deltaSeconds int64) error {
-	if deltaSeconds == 0 {
-		return nil
-	}
-	for _, tier := range tierSequence {
-		member := wakeMember(caseID, clockType, tier)
-		if at, ok := s.wake[member]; ok {
-			s.wake[member] = at.Add(time.Duration(deltaSeconds) * time.Second)
+// already-alerted tier" guard the real ZSCORE check gives, and the new
+// baseline is recorded in the same call — see Store.ShiftWake's own doc
+// comment for why these two writes must happen together.
+func (s *fakeStore) ShiftWake(_ context.Context, caseID, clockType string, deltaSeconds, newBaselineSeconds int64) error {
+	if deltaSeconds != 0 {
+		for _, tier := range tierSequence {
+			member := wakeMember(caseID, clockType, tier)
+			if at, ok := s.wake[member]; ok {
+				s.wake[member] = at.Add(time.Duration(deltaSeconds) * time.Second)
+			}
 		}
 	}
+	key := caseID + "|" + clockType
+	meta := s.clocks[key]
+	meta.ShiftedPauseSeconds = newBaselineSeconds
+	s.clocks[key] = meta
 	return nil
 }
 
@@ -1194,16 +1199,18 @@ func TestReconcileClock_PauseDurationShiftsDueTimes(t *testing.T) {
 	}
 }
 
-// TestReconcileClock_OpenPauseIsFoldedIntoDueTimesButNotTheBaseline covers a
+// TestReconcileClock_OpenPauseIsFoldedIntoDueTimesAndTheBaseline covers a
 // clock that is STILL paused at the moment reconciliation runs: the
-// already-open segment (now - PausedOn) must also push the due times out
-// (so a tick right after an eventual resume doesn't immediately fire a tier
-// whose due time never accounted for the ongoing pause), but it must NOT be
-// folded into ShiftedPauseSeconds -- that segment hasn't completed yet, and
-// entity-service's own pause_duration column won't include it until it
-// does, so recording it early would make the real resume's diff come out
-// short.
-func TestReconcileClock_OpenPauseIsFoldedIntoDueTimesButNotTheBaseline(t *testing.T) {
+// already-open segment (now - PausedOn) must push the due times out (so a
+// tick right after an eventual resume doesn't immediately fire a tier whose
+// due time never accounted for the ongoing pause) AND must be folded into
+// ShiftedPauseSeconds too (a CodeRabbit-caught double-count bug: an earlier
+// version excluded the open segment from the baseline on the reasoning that
+// it "hasn't completed yet," but it's already baked into the due times
+// above regardless of whether it has completed — excluding it from the
+// baseline just means the real resume's diff re-applies the same segment a
+// second time, delaying every tier by its length).
+func TestReconcileClock_OpenPauseIsFoldedIntoDueTimesAndTheBaseline(t *testing.T) {
 	st := newFakeStore()
 	e := newTestEngine(st, &fakeChat{}, &fakePublisher{})
 
@@ -1227,9 +1234,10 @@ func TestReconcileClock_OpenPauseIsFoldedIntoDueTimesButNotTheBaseline(t *testin
 		t.Errorf("50%% tier due at %v, want %v (startedAt + 7.5m + 1h completed + 30m open pause)", gotAt, wantAt)
 	}
 
+	wantBaseline := completedPause + 1800 // the completed total plus the 30m open segment
 	meta, _, _ := st.GetClock(context.Background(), "case-1", ClockResponse)
-	if meta.ShiftedPauseSeconds != completedPause {
-		t.Errorf("ShiftedPauseSeconds = %d, want %d (only the completed total, not the still-open segment)", meta.ShiftedPauseSeconds, completedPause)
+	if meta.ShiftedPauseSeconds != wantBaseline {
+		t.Errorf("ShiftedPauseSeconds = %d, want %d (completed total + the still-open segment, matching what was baked into the due times above)", meta.ShiftedPauseSeconds, wantBaseline)
 	}
 	if !meta.Paused {
 		t.Error("Paused = false, want true")

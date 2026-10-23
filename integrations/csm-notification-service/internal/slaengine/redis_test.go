@@ -283,7 +283,11 @@ func TestStore_AdvanceAlertedTier_SkipsUpdateWhenIncarnationMismatches(t *testin
 // resurrect a tier whose wake entry Tick already removed after alerting on
 // it (see processDueMember). The script's own ZSCORE guard must prevent
 // that — this is exactly the kind of Lua-script-level behavior
-// fakeStore's plain Go simulation (engine_test.go) can't exercise.
+// fakeStore's plain Go simulation (engine_test.go) can't exercise. It also
+// pins that the new shifted-pause baseline lands in the SAME atomic
+// operation — the fix for a CodeRabbit-caught gap where a separate baseline
+// write left a window for a crash to leave the wake shift applied but the
+// baseline stale, causing a later resume to double-apply the same delta.
 func TestStore_ShiftWake_MovesOnlyMembersStillInTheIndex(t *testing.T) {
 	store, closeStore := testStore(t)
 	defer closeStore()
@@ -292,6 +296,7 @@ func TestStore_ShiftWake_MovesOnlyMembersStillInTheIndex(t *testing.T) {
 	member50 := wakeMember(caseID, ClockResponse, 50)
 	member100 := wakeMember(caseID, ClockResponse, 100)
 	defer func() { _ = store.rdb.ZRem(ctx, wakeKey, member50, member100) }()
+	defer func() { _ = store.rdb.Del(ctx, clockKey(caseID, ClockResponse)) }()
 
 	originalDue := time.Now().Add(time.Hour).Truncate(time.Second)
 	if err := store.AddWake(ctx, member50, originalDue); err != nil {
@@ -300,7 +305,7 @@ func TestStore_ShiftWake_MovesOnlyMembersStillInTheIndex(t *testing.T) {
 	// member100 is deliberately never added -- standing in for a tier
 	// already alerted on and removed from the index.
 
-	if err := store.ShiftWake(ctx, caseID, ClockResponse, 1800); err != nil {
+	if err := store.ShiftWake(ctx, caseID, ClockResponse, 1800, 5400); err != nil {
 		t.Fatalf("ShiftWake() error = %v", err)
 	}
 
@@ -315,5 +320,16 @@ func TestStore_ShiftWake_MovesOnlyMembersStillInTheIndex(t *testing.T) {
 
 	if exists, err := store.rdb.ZScore(ctx, wakeKey, member100).Result(); err == nil || exists != 0 {
 		t.Errorf("member100 was created by ShiftWake (score %v), want it to stay absent -- a tier already alerted must never be resurrected", exists)
+	}
+
+	meta, found, err := store.GetClock(ctx, caseID, ClockResponse)
+	if err != nil {
+		t.Fatalf("GetClock() error = %v", err)
+	}
+	if !found {
+		t.Fatal("GetClock() found = false, want true -- ShiftWake's HSET should have created the clock hash")
+	}
+	if meta.ShiftedPauseSeconds != 5400 {
+		t.Errorf("ShiftedPauseSeconds = %d, want 5400 -- the baseline must be written in the same atomic operation as the wake shift", meta.ShiftedPauseSeconds)
 	}
 }
