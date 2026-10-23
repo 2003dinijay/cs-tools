@@ -632,7 +632,15 @@ file's `sme.enabled`:
   uncomments it and checks each team gets its own space). Unset, every team's
   cards go to `sme.chat`, as before. Set, a listed team's cards go to its own space and
   a team not listed uses `sme.chat`, never no card (a room saved on the Alert
-  Settings tab counts as listed). `Engine.smeNotifiersFor` picks by `Routing.SMETeam`. At the start a work note says who
+  Settings tab counts as listed). `Engine.smeNotifiersFor` picks by `Routing.SMETeam`.
+- **The "Incident Escalated" card is the escalation's, not L1's** (since
+  2026-10-23): `postSMEIncidentCard` posts it to the SME team's spaces when the
+  alert is handled, with chat in `sme.channel` and sending on, whoever is on
+  call. Nobody rostered on any tier: the card still goes out ("Nobody
+  rostered") and no ladder starts. L1 empty: the card goes out at once rather
+  than with L2. The rooms it reached are saved on the ladder (`IncidentCards`)
+  before any rung is scheduled, so the first rung posts only its reply; a room
+  the card missed gets it from the first rung, as before. At the start a work note says who
   L1 is, or why nobody can be paged (`NO_RECIPIENTS`, `NO_NUMBER`,
   `NUMBER_NOT_ALLOWED`, `NO_CHANNEL`); a rung with nobody is logged ("SME rung
   cannot be called") and skipped; the usual execution summary is written when

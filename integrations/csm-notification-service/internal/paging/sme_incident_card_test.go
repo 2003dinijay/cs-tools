@@ -82,3 +82,50 @@ func TestSMECards_AssignmentPostsTheStoppedReply(t *testing.T) {
 		t.Errorf("stopped replies = %+v; want one, as a reply under the incident card", smeChat.stopped)
 	}
 }
+
+// With nobody rostered on any tier the SME space still gets the "Incident Escalated" card, saying so, and no rung.
+func TestSMECards_NobodyOnCallStillPostsTheCard(t *testing.T) {
+	smeChat, store, notes := &fakeChat{}, newMemStore(), &fakeNotes{}
+	e := smeEngine(rotaReader(true), store, notes, &fakeChat{}, smeChat, smeOn)
+
+	raise(t, e, handoff("Apollo", "bijira", "bijira", testClock))
+
+	if len(smeChat.smeIncidents) != 1 {
+		t.Fatalf("SME incident cards = %d; want one with nobody on call", len(smeChat.smeIncidents))
+	}
+	if card := smeChat.smeIncidents[0]; card.OnCall != "" || card.SMETeam != "Bijira" || card.EscalatedBy != "lead@example.com" {
+		t.Errorf("card = %+v; want Bijira, escalated by lead@example.com, nobody on call", card)
+	}
+	if len(smeChat.posted) != 0 {
+		t.Errorf("SME rungs = %d; want none with nobody on call", len(smeChat.posted))
+	}
+	if len(notesWith(notes, "NO_RECIPIENTS")) != 1 {
+		t.Errorf("work notes = %v; want NO_RECIPIENTS", notes.notes)
+	}
+}
+
+// With L1 empty the card goes out at the escalation, not five minutes later with L2, and L2 then posts only its reply.
+func TestSMECards_NoL1PostsTheCardAtOnce(t *testing.T) {
+	ctx := context.Background()
+	r := rotaReader(true)
+	r.onDuty = []onDutyAssignment{held("s-l2", "asgardeo", "SME_ASG_DAY", "L2")}
+	smeChat := &fakeChat{}
+	e := smeEngine(r, newMemStore(), &fakeNotes{}, &fakeChat{}, smeChat, smeOn)
+
+	raise(t, e, handoff("Apollo", "asgardeo", "asgardeo", testClock))
+	if len(smeChat.smeIncidents) != 1 || smeChat.smeIncidents[0].OnCall != "" {
+		t.Fatalf("at once: SME incident cards = %+v; want one with nobody on call at L1", smeChat.smeIncidents)
+	}
+	if len(smeChat.posted) != 0 {
+		t.Fatalf("at once: SME rungs = %d; want none before L2 is due", len(smeChat.posted))
+	}
+	if err := e.Tick(ctx, testClock.Add(5*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if len(smeChat.smeIncidents) != 1 {
+		t.Errorf("SME incident cards = %d after L2; want still one", len(smeChat.smeIncidents))
+	}
+	if len(smeChat.posted) != 1 || smeChat.posted[0].RecipientName != "s-l2" || !smeChat.posted[0].Reply {
+		t.Errorf("SME rungs = %+v; want L2 s-l2 as a reply", smeChat.posted)
+	}
+}
