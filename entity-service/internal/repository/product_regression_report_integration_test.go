@@ -67,12 +67,12 @@ func prrCleanup(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
 	for _, s := range []string{
-		`DELETE FROM work_item_tag WHERE id::text LIKE '6d2%' OR work_item_id::text LIKE '6d2%'`,
-		`DELETE FROM "case" WHERE id::text LIKE '6d2%'`,
-		`DELETE FROM work_item WHERE id::text LIKE '6d2%'`,
-		`DELETE FROM tag WHERE id::text LIKE '6d2%'`,
-		`DELETE FROM deployed_product WHERE id::text LIKE '6d2%'`,
-		`DELETE FROM product WHERE id::text LIKE '6d2%'`,
+		`DELETE FROM work_item_tag WHERE id::text LIKE '6d200000-0000-4000-8000-%' OR work_item_id::text LIKE '6d200000-0000-4000-8000-%'`,
+		`DELETE FROM "case" WHERE id::text LIKE '6d200000-0000-4000-8000-%'`,
+		`DELETE FROM work_item WHERE id::text LIKE '6d200000-0000-4000-8000-%'`,
+		`DELETE FROM tag WHERE id::text LIKE '6d200000-0000-4000-8000-%'`,
+		`DELETE FROM deployed_product WHERE id::text LIKE '6d200000-0000-4000-8000-%'`,
+		`DELETE FROM product WHERE id::text LIKE '6d200000-0000-4000-8000-%'`,
 	} {
 		if _, err := pool.Exec(ctx, s); err != nil {
 			t.Fatalf("cleanup %q: %v", s, err)

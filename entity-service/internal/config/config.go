@@ -813,6 +813,7 @@ func Load() *Config {
 		WorklogReportTeamTypes: splitCommaOrDefault(
 			os.Getenv("WORKLOG_REPORT_TEAM_TYPES"), []string{"cre-abt", "cre"}),
 		WorklogReportExcludedTeamKeys:            splitComma(os.Getenv("WORKLOG_REPORT_EXCLUDED_TEAM_KEYS")),
+		QueryHourInternalEmailDomain:             strings.TrimSpace(os.Getenv("QUERY_HOUR_INTERNAL_EMAIL_DOMAIN")),
 		DBUser:                                   os.Getenv("DB_USER"),
 		DBPassword:                               os.Getenv("DB_PASSWORD"),
 		DBName:                                   os.Getenv("DB_NAME"),
@@ -1095,6 +1096,14 @@ func (c *Config) Validate() error {
 		if t.val <= 0 {
 			return fmt.Errorf("%s must be greater than 0, got %s", t.name, t.val)
 		}
+	}
+	// QUERY_HOUR_INTERNAL_EMAIL_DOMAIN is matched with HasSuffix, so a
+	// value missing the "@" matches more than it looks like it does:
+	// "wso2.com" would also accept someone@notwso2.com. Reject it here
+	// rather than quietly mailing an internal report outside.
+	if c.QueryHourInternalEmailDomain != "" && !strings.HasPrefix(c.QueryHourInternalEmailDomain, "@") {
+		return fmt.Errorf("QUERY_HOUR_INTERNAL_EMAIL_DOMAIN must start with \"@\", got %q",
+			c.QueryHourInternalEmailDomain)
 	}
 	// A team id that is not a UUID can never match account.sre_team_id, so
 	// the team it was meant to automate would silently never be.
