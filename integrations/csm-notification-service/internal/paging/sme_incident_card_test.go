@@ -129,3 +129,26 @@ func TestSMECards_NoL1PostsTheCardAtOnce(t *testing.T) {
 		t.Errorf("SME rungs = %+v; want L2 s-l2 as a reply", smeChat.posted)
 	}
 }
+
+// With L1 empty, an assignment before L2 still ends the card's thread with a stopped reply, the card having told the room.
+func TestSMECards_NoL1AssignmentBeforeL2PostsTheStoppedReply(t *testing.T) {
+	ctx := context.Background()
+	r := rotaReader(true)
+	r.onDuty = []onDutyAssignment{held("s-l2", "asgardeo", "SME_ASG_DAY", "L2")}
+	smeChat := &fakeChat{}
+	e := smeEngine(r, newMemStore(), &fakeNotes{}, &fakeChat{}, smeChat, smeOn)
+
+	raise(t, e, handoff("Apollo", "asgardeo", "asgardeo", testClock))
+	handle(t, e, record(t, events.TypeIncidentAssigned, events.IncidentAssignedPayload{
+		AssigneeID: "s-l2", AssigneeName: "s-l2", AssignedOn: testClock.Add(2 * time.Minute).Format(time.RFC3339)}))
+	if err := e.Tick(ctx, testClock.Add(20*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(smeChat.posted) != 0 {
+		t.Errorf("SME rungs = %d; want none, assigned before L2", len(smeChat.posted))
+	}
+	if len(smeChat.stopped) != 1 || !smeChat.stopped[0].Reply {
+		t.Errorf("stopped replies = %+v; want one, as a reply under the incident card", smeChat.stopped)
+	}
+}

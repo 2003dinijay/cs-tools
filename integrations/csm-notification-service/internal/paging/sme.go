@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/events"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/notifications"
 )
@@ -407,7 +408,13 @@ func (e *Engine) postSMEIncidentCard(ctx context.Context, plan Plan) []string {
 			link = n.links.IncidentLink(t.IncidentID)
 		}
 		if err := n.chat.SendSMEIncidentEscalatedAlert(ctx, room, smeIncidentCard(plan, link)); err != nil {
-			slog.ErrorContext(ctx, "escalation: the SME incident card was not posted", "incidentId", t.IncidentID, "audience", room, "err", err)
+			// The status only: a Chat error response can echo the card's content.
+			status := 0
+			var upstream *apierror.Error
+			if errors.As(err, &upstream) {
+				status = upstream.StatusCode
+			}
+			slog.ErrorContext(ctx, "escalation: the SME incident card was not posted", "incidentId", t.IncidentID, "audience", room, "statusCode", status)
 			continue
 		}
 		slog.InfoContext(ctx, "escalation: SME incident card posted", "incidentId", t.IncidentID, "audience", room, "smeTeam", t.Routing.SMETeam)

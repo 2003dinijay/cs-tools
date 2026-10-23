@@ -565,7 +565,9 @@ when a severity or priority change replaces the chain -- "Severity changed to
 X: paging restarts". It lists who was paged and how many calls were
 cancelled. Posted only from the first stop (a retried stop finds `Cancelled`
 set) and only once a rung has gone out with sending on, so a room never hears
-about a chain it did not see. A hand-off to the SMEs posts nothing here; its
+about a chain it did not see; before any rung, a room the incident card
+reached (`IncidentCards`, e.g. an SME ladder whose L1 was empty) counts as
+having seen it. A hand-off to the SMEs posts nothing here; its
 own message says it. The SRE setting covers the SME ladders. Best effort.
 
 **Stops on** (an SRE incident): `incident.assigned` (an engineer set as the
