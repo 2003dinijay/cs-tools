@@ -431,7 +431,9 @@ function TeamEmailList({ rows, value, empty }: { rows: TeamEmailRow[]; value: un
   const map = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
   const set = teamEmailRowsFor(rows, map).filter((r) => typeof map[r.key] === "string" && String(map[r.key]).trim() !== "");
   if (set.length === 0) return <span className="cas-val">{empty}</span>;
-  const ofTeams = rows.length > 0 ? ` of ${rows.length}` : "";
+  // A team that is no longer offered is listed, marked, but not counted.
+  const used = set.filter((r) => !r.stale).length;
+  const ofTeams = rows.length > 0 ? ` of ${rows.length} teams` : used === 1 ? " team" : " teams";
   return (
     <div className="cas-val">
       <ul className="cas-team-list">
@@ -443,8 +445,8 @@ function TeamEmailList({ rows, value, empty }: { rows: TeamEmailRow[]; value: un
         ))}
       </ul>
       <div className="cas-sub">
-        {set.length}
-        {ofTeams} {rows.length === 1 && set.length === 1 ? "team has" : "teams have"} a list
+        {used}
+        {ofTeams} {used === 1 ? "has" : "have"} a list
       </div>
     </div>
   );

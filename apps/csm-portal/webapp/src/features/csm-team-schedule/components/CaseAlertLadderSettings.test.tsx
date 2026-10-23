@@ -351,12 +351,35 @@ describe("CaseAlertLadderSettings: CRE", () => {
     const r = row("ABT team lists (Cc on L1 and L2)");
     expect(within(r).getByText("waits for Submit")).toBeInTheDocument();
     expect(within(r).getByText("atlas-team@example.test")).toBeInTheDocument();
-    expect(within(r).getByText("1 of 2 teams have a list")).toBeInTheDocument();
+    expect(within(r).getByText("1 of 2 teams has a list")).toBeInTheDocument();
     await submit();
     expect(saveValues.mutateAsync).toHaveBeenCalledWith({
       ladder: "CRE",
       values: { "email.teamLists": { atlas: "atlas-team@example.test" } },
     });
+  });
+
+  it("lists a saved team list of a team that is no longer an ABT, marked, and leaves it out of the count", () => {
+    const base = make();
+    settings.data = {
+      ...base,
+      values: [
+        ...base.values,
+        {
+          id: "77777777-7777-4777-8777-777777777777",
+          ladder: "CRE",
+          key: "email.teamLists",
+          value: { atlas: "atlas@example.test", castor: "castor@example.test", rigel: "rigel@example.test" },
+          updatedBy: "a@b",
+          updatedOn: AT,
+        },
+      ],
+    };
+    render(<CaseAlertSettings chain="CRE" />);
+    const r = row("ABT team lists (Cc on L1 and L2)");
+    expect(within(r).getByText("rigel@example.test")).toBeInTheDocument();
+    expect(within(r).getByText("(not used)", { exact: false })).toBeInTheDocument();
+    expect(within(r).getByText("2 of 2 teams have a list")).toBeInTheDocument();
   });
 
   it("asks for one address for the CRE and CS lists", () => {

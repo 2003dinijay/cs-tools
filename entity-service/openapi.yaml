@@ -25938,8 +25938,10 @@ components:
             email.csTeamList (whether set, never the addresses), rules.custom
             (the file replaces the built-in rule table) and timing (severity
             S0-S4 to the minutes each step L0-L4 is called, from the code).
-            enabled, channel and the three safety values above can now also be
-            saved as values (ladders); the rest stay file-only.
+            These are the values as running, whatever their source: enabled,
+            channel, the three safety values above and the four CRE email
+            settings can also be saved as values (ladders), which then report
+            them with their source; the rest stay file-only.
           additionalProperties:
             type: object
             additionalProperties: true
