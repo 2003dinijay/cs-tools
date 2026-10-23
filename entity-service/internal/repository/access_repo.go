@@ -103,8 +103,10 @@ func (r *accessRepo) RegisteredProjectIDs(ctx context.Context, email string) ([]
 		return nil, r.errNoPool()
 	}
 	rows, err := r.db.Query(ctx,
-		`SELECT DISTINCT project_id::TEXT FROM project_contact
-		 WHERE LOWER(email) = LOWER($1) AND state::TEXT = $2
+		`SELECT DISTINCT pc.project_id::TEXT FROM project_contact pc
+		 JOIN project p ON p.id = pc.project_id AND p.is_active IS DISTINCT FROM FALSE
+		 LEFT JOIN account a ON a.id = p.account_id
+		 WHERE LOWER(pc.email) = LOWER($1) AND pc.state::TEXT = $2 AND a.deleted_on IS NULL
 		 ORDER BY 1`, email, registeredContactState)
 	if err != nil {
 		return nil, fmt.Errorf("access: registered projects: %w", err)
