@@ -34,7 +34,7 @@ import (
 // Who may do what:
 //   - a CSM admin grants and removes rota admin, and any team's marker;
 //   - a rota admin grants and removes markers for the teams of their own
-//     family, and nothing else;
+//     family, and adds and removes those teams' members, and nothing else;
 //   - everybody else sees an empty tab and may change nothing.
 //
 // A CSM admin is a CSM Portal admin: a caller whose token's "roles" claim holds
@@ -46,6 +46,11 @@ type RotaAccessService interface {
 	RevokeRotaAdmin(ctx context.Context, family, userID string) error
 	GrantRotaMarker(ctx context.Context, teamKey, userID string) error
 	RevokeRotaMarker(ctx context.Context, teamKey, userID string) error
+	// AddTeamMember and RemoveTeamMember change who is on a team: the same
+	// people who may name the team's markers may, for the teams of their
+	// own family.
+	AddTeamMember(ctx context.Context, teamKey, userID string) error
+	RemoveTeamMember(ctx context.Context, teamKey, userID string) error
 }
 
 type rotaAccessService struct {
@@ -128,12 +133,17 @@ func (s *rotaAccessService) Get(ctx context.Context) (domain.RotaAccess, error) 
 		return domain.RotaAccess{}, err
 	}
 	out := domain.RotaAccess{
-		CanManage:  domain.RotaAccessRights{RotaAdmins: c.csmAdmin, MarkerFamilies: c.markerFamilies},
+		CanManage: domain.RotaAccessRights{
+			RotaAdmins:     c.csmAdmin,
+			MarkerFamilies: c.markerFamilies,
+			MemberFamilies: c.markerFamilies,
+		},
 		RotaAdmins: []domain.RotaAdminGrant{},
 		Markers:    []domain.RotaMarkerGrant{},
 	}
 	if out.CanManage.MarkerFamilies == nil {
 		out.CanManage.MarkerFamilies = []string{}
+		out.CanManage.MemberFamilies = []string{}
 	}
 	if !c.csmAdmin && len(c.markerFamilies) == 0 {
 		return out, nil
@@ -211,6 +221,13 @@ func (s *rotaAccessService) RevokeRotaAdmin(ctx context.Context, family, userID 
 // requireMarkerManager is the gate for one team's markers: a CSM admin, or a
 // rota admin for that team's family. It returns the caller.
 func (s *rotaAccessService) requireMarkerManager(ctx context.Context, teamKey string) (rotaAccessCaller, error) {
+	return s.requireFamilyManager(ctx, teamKey, "a rota manager for %s is granted by a CSM admin or the %s rota admin")
+}
+
+// requireFamilyManager is the gate for changing one team: a CSM admin, or a
+// rota admin for that team's family. refusal is the 403's message, with the
+// team key and the family to fill in. It returns the caller.
+func (s *rotaAccessService) requireFamilyManager(ctx context.Context, teamKey, refusal string) (rotaAccessCaller, error) {
 	c, err := s.whoIsAsking(ctx)
 	if err != nil {
 		return c, err
@@ -223,9 +240,7 @@ func (s *rotaAccessService) requireMarkerManager(ctx context.Context, teamKey st
 		return c, &apierror.NotFoundError{Msg: fmt.Sprintf("%s is not a team on the schedule", teamKey)}
 	}
 	if !c.csmAdmin && !containsFold(c.markerFamilies, family) {
-		return c, &apierror.ForbiddenError{
-			Msg: fmt.Sprintf("a rota manager for %s is granted by a CSM admin or the %s rota admin", teamKey, family),
-		}
+		return c, &apierror.ForbiddenError{Msg: fmt.Sprintf(refusal, teamKey, family)}
 	}
 	return c, nil
 }
@@ -272,6 +287,85 @@ func (s *rotaAccessService) RevokeRotaMarker(ctx context.Context, teamKey, userI
 	}
 	_, err = s.repo.RevokeRotaMarker(ctx, userID, teamKey, c.email)
 	return err
+}
+
+// AddTeamMember implements RotaAccessService. Only active internal staff
+// join a team on the schedule, always as an engineer: making someone a lead
+// changes who the Case Alerts ladders call, so it stays a CSM admin's job.
+// Adding someone already on the team changes nothing.
+func (s *rotaAccessService) AddTeamMember(ctx context.Context, teamKey, userID string) error {
+	if strings.TrimSpace(teamKey) == "" {
+		return &apierror.ValidationError{Msg: "teamKey is required"}
+	}
+	if err := requireGrantUserID(userID); err != nil {
+		return err
+	}
+	c, err := s.requireFamilyManager(ctx, teamKey, teamMemberRefusal)
+	if err != nil {
+		return err
+	}
+	ok, err := s.repo.UserIsInternal(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return &apierror.ValidationError{Msg: "only active internal staff can be added to a team, and that person is not one"}
+	}
+	_, err = s.repo.AddTeamMember(ctx, userID, teamKey, c.email)
+	return err
+}
+
+// RemoveTeamMember implements RotaAccessService. Removing someone who is not
+// on the team changes nothing. It is refused, with nothing written, while the
+// person still has turns on the team that have not ended, while they hold a
+// Case Alerts responder tier there, or -- for a rota admin -- while they are
+// one of the team's leads: each of those changes who is on duty or called.
+func (s *rotaAccessService) RemoveTeamMember(ctx context.Context, teamKey, userID string) error {
+	if strings.TrimSpace(teamKey) == "" {
+		return &apierror.ValidationError{Msg: "teamKey is required"}
+	}
+	if err := requireGrantUserID(userID); err != nil {
+		return err
+	}
+	c, err := s.requireFamilyManager(ctx, teamKey, teamMemberRefusal)
+	if err != nil {
+		return err
+	}
+	res, err := s.repo.RemoveTeamMember(ctx, userID, teamKey, c.email, c.csmAdmin)
+	if err != nil {
+		return err
+	}
+	return teamMemberRemovalRefusal(teamKey, res)
+}
+
+// teamMemberRefusal is the 403 for changing the members of a team the caller
+// does not manage.
+const teamMemberRefusal = "the members of %s are changed by a CSM admin or the %s rota admin"
+
+// teamMemberRemovalRefusal turns what kept a person on a team into the
+// caller's refusal, or nil when they were removed or were not on it. The
+// checks are in the order the caller can act on them.
+func teamMemberRemovalRefusal(teamKey string, res domain.TeamMemberRemoval) error {
+	if res.Removed || !res.Member {
+		return nil
+	}
+	if res.UpcomingTurns > 0 {
+		turns := "turns"
+		if res.UpcomingTurns == 1 {
+			turns = "turn"
+		}
+		return &apierror.ConflictError{Msg: fmt.Sprintf(
+			"this person still has %d upcoming %s on %s: remove or reassign them on the roster first",
+			res.UpcomingTurns, turns, teamKey)}
+	}
+	if res.AlertTier != "" {
+		return &apierror.ConflictError{Msg: fmt.Sprintf(
+			"this person is the %s responder of %s on Case Alerts: give that tier to someone else first",
+			res.AlertTier, teamKey)}
+	}
+	return &apierror.ForbiddenError{Msg: fmt.Sprintf(
+		"this person is a %s of %s, which decides who Case Alerts calls: only a CSM admin can remove them",
+		strings.ReplaceAll(res.Role, "_", " "), teamKey)}
 }
 
 // requireGrantUserID is validateUserID without its allowance for an empty id,

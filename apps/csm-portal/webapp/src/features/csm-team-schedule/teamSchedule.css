@@ -2606,6 +2606,43 @@
 .csm-ts .ra-tbl .ra-leads { color: var(--ink-2); font-size: 12.5px; }
 .csm-ts .ra-cell { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px 16px; }
 .csm-ts .ra-cell .ra-list { min-width: 180px; }
+/* Team members: the group's teams down the side, the chosen one's members
+   as a grid beside them. */
+.csm-ts .ra-mem { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--surface); }
+.csm-ts .ra-mem-teams { display: flex; flex-direction: column; padding: 6px; gap: 2px; background: var(--surface-2); border-right: 1px solid var(--line); max-height: 520px; overflow: auto; }
+.csm-ts .ra-mem-teams button { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 10px; border: 0; border-radius: 7px; background: transparent; text-align: left; font-size: 13px; color: var(--ink-2); }
+.csm-ts .ra-mem-teams button:hover { background: var(--surface-3); }
+.csm-ts .ra-mem-teams button.on { background: var(--accent-soft); color: var(--accent-ink); font-weight: 600; }
+.csm-ts .ra-mem-tname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.csm-ts .ra-mem-tcount { font-size: 11.5px; color: var(--muted); min-width: 20px; text-align: right; }
+.csm-ts .ra-mem-teams button.on .ra-mem-tcount { color: var(--accent-ink); }
+.csm-ts .ra-mem-panel { padding: 12px 14px 14px; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+.csm-ts .ra-mem-head { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.csm-ts .ra-mem-title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.csm-ts .ra-mem-title b { font-size: 14px; font-weight: 600; }
+.csm-ts .ra-mem-sub { font-size: 12px; color: var(--muted); }
+.csm-ts .ra-mem-add { margin-left: auto; width: 280px; max-width: 100%; }
+.csm-ts .ra-mem-filter { max-width: 280px; }
+.csm-ts .ra-mem-grid { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 6px; }
+.csm-ts .ra-mem-grid li { display: flex; align-items: center; gap: 6px; min-width: 0; min-height: 44px; padding: 5px 6px 5px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.csm-ts .ra-mem-grid li.is-lead { background: var(--accent-soft-2); border-color: var(--accent-soft); }
+.csm-ts .ra-mem-grid .ra-name { font-size: 13px; }
+.csm-ts .ra-mem-grid li.ask { border-color: color-mix(in srgb, var(--crit) 40%, var(--line)); background: color-mix(in srgb, var(--crit) 6%, var(--surface)); flex-wrap: wrap; }
+.csm-ts .ra-mem-who { display: flex; flex-direction: column; min-width: 0; flex: 1; line-height: 1.25; }
+.csm-ts .ra-mem-who .ra-mail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.csm-ts .ra-mem-grid .cp-x { border: 0; background: transparent; color: var(--muted); font-size: 16px; line-height: 1; width: 26px; height: 26px; border-radius: 6px; cursor: pointer; flex: none; }
+.csm-ts .ra-mem-grid .cp-x:hover, .csm-ts .ra-mem-grid .cp-x:focus-visible { color: var(--crit); background: color-mix(in srgb, var(--crit) 8%, var(--surface)); }
+.csm-ts .ra-mem-grid .cp-x:disabled { opacity: 0.4; cursor: default; }
+.csm-ts .ra-mem-q { flex: 1 1 100%; font-size: 12.5px; color: var(--ink); }
+.csm-ts .ra-mem-acts { display: flex; gap: 6px; }
+.csm-ts .ra-mem-yes { color: var(--crit); border-color: color-mix(in srgb, var(--crit) 45%, var(--line-2)); }
+.csm-ts .ra-mem-empty { font-size: 12.5px; color: var(--muted); padding: 14px 0; }
+@media (max-width: 760px) {
+  .csm-ts .ra-mem { grid-template-columns: minmax(0, 1fr); }
+  .csm-ts .ra-mem-teams { flex-direction: row; flex-wrap: wrap; border-right: 0; border-bottom: 1px solid var(--line); max-height: none; }
+  .csm-ts .ra-mem-teams button { width: auto; }
+  .csm-ts .ra-mem-add { margin-left: 0; width: 100%; }
+}
 @media (max-width: 760px) {
   .csm-ts .ra-tbl .ra-leads { display: none; }
   .csm-ts .ra-tbl thead th:nth-child(2) { display: none; }

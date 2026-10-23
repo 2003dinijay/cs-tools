@@ -9322,6 +9322,125 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /team-schedule/teams/{teamKey}/members/{userId}:
+    put:
+      summary: Add somebody to a team on the schedule.
+      description: >
+        Puts an active internal staff member on the team as an engineer. A CSM
+        admin may add to any team, a rota admin to the teams of their own family
+        only (CRE, SRE or SME). Making someone a lead is not done here. Adding
+        someone already on the team changes nothing. Audited.
+      operationId: addTeamMember
+      parameters:
+        - name: teamKey
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The team's registry key.
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The person ("user" id).
+      responses:
+        "204":
+          description: Done, or already on the team.
+        "400":
+          description: Bad request — the user id is not a UUID, or the person is not active internal staff.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Neither a CSM admin nor the rota admin for the team's family.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: The team is not on the schedule, or the schedule routes are not registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      summary: Take somebody off a team on the schedule.
+      description: >
+        Same permission as adding. Removes the person's membership and their rota
+        manager grant for the team. Refused, with nothing changed, while the person
+        has turns on the team that have not ended (409), holds a Case Alerts
+        responder tier there (409), or -- for a rota admin -- is one of the team's
+        leads (403; a CSM admin may remove a lead). Removing someone not on the
+        team changes nothing. Past turns are kept. Audited.
+      operationId: removeTeamMember
+      parameters:
+        - name: teamKey
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The team's registry key.
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The person ("user" id).
+      responses:
+        "204":
+          description: Done, or the person was not on the team.
+        "400":
+          description: Bad request — the user id is not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Neither a CSM admin nor the rota admin for the team's family, or a rota admin removing one of the team's leads.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: The team is not on the schedule, or the schedule routes are not registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: The person still has upcoming turns on the team, or holds its Case Alerts responder tier; the message says which.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /team-schedule/rota-access/markers/{teamKey}/{userId}:
     put:
       summary: Make somebody a team's rota manager.
@@ -25697,6 +25816,15 @@ components:
         markerFamilies:
           type: array
           description: The families whose teams' rota managers the caller may change.
+          items:
+            type: string
+            enum: [CRE, SRE, SME]
+        memberFamilies:
+          type: array
+          description: >
+            The families whose teams' members the caller may add and remove
+            (PUT/DELETE /team-schedule/teams/{teamKey}/members/{userId}). Today
+            the same as markerFamilies.
           items:
             type: string
             enum: [CRE, SRE, SME]
