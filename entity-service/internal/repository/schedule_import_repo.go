@@ -28,18 +28,17 @@ import (
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 )
 
-// rotaImportWriteOverNote is the note on the activity row of a row a rota import wrote over.
-const rotaImportWriteOverNote = "Written over by a rota import"
+// rotaImportReplaceNote is the note on the activity row of an assignment, or time away, a replace cleared.
+const rotaImportReplaceNote = "Cleared by a rota import (replace)"
 
 // RotaImportWrite is a rota import file, resolved and authorised, ready to write.
 type RotaImportWrite struct {
 	RotaCode string
-	// TeamKeys are the rota's teams, From..To the period the file covers.
+	// TeamKeys and From..To bound what a replace clears: every assignment of these teams on these days.
 	TeamKeys []string
 	From     string
 	To       string
-	// WritableTeams are the rota's teams the caller may write: the file writes over clashing rows on these only, and a clash on any other team is refused.
-	WritableTeams []string
+	Replace  bool
 	// DryRun runs every write and rolls the transaction back, so the answer is exactly what a real import would do.
 	DryRun      bool
 	Assignments []domain.ApplyScheduleRangeRequest
@@ -48,15 +47,14 @@ type RotaImportWrite struct {
 
 // RotaImportResult is what each entry did, in the file's order.
 type RotaImportResult struct {
-	Cleared     int
-	Assignments []domain.ApplyScheduleRangeResponse
-	Absences    []domain.ApplyScheduleAbsenceResponse
+	Cleared int
+	// LeaveWrittenOver is the earlier time away a replace removed, shortened or split under the file's assignments.
+	LeaveWrittenOver int
+	Assignments      []domain.ApplyScheduleRangeResponse
+	Absences         []domain.ApplyScheduleAbsenceResponse
 }
 
 // ImportRota implements ScheduleRepository: the whole file in one transaction, all or nothing.
-// The file writes over the roster where it speaks: before an assignment goes in, whatever would refuse it on a writable team is removed, and so is the person's time away on the days it is worked.
-// Assignments the file itself wrote (created in this transaction) are never written over, so two entries that collide are refused rather than one silently replacing the other.
-// The file's own absences go in after every assignment, so nothing written over is ever the file's.
 func (r *scheduleRepository) ImportRota(ctx context.Context, w RotaImportWrite, actorEmail string) (RotaImportResult, error) {
 	var out RotaImportResult
 	tx, err := r.db.Begin(ctx)
@@ -73,21 +71,44 @@ func (r *scheduleRepository) ImportRota(ctx context.Context, w RotaImportWrite, 
 		return out, err
 	}
 
-	writable := lowerKeys(w.WritableTeams)
-	for i, req := range w.Assignments {
-		cleared, removed, trimmed, err := writeOverForAssignment(ctx, tx, req, writable, actorEmail)
+	if w.Replace {
+		// A move's shifts (source MOVE) follow its absence, which a replace keeps, so they stay too.
+		// Each cleared row leaves a DELETED activity row, as the roster's own delete does, written from the row as it was.
+		tag, err := tx.Exec(ctx, `
+			WITH cleared AS (
+			  DELETE FROM team_schedule_assignment
+			   WHERE team_key = ANY($1::text[])
+			     AND rota_date BETWEEN $2::date AND $3::date
+			     AND source <> 'MOVE'
+			  RETURNING id, user_id, team_key, rota_date, shift_id)
+			INSERT INTO team_schedule_assignment_activity
+			  (id, created_on, created_by, assignment_id, user_id, team_key, rota_date,
+			   shift_code, action, actor_email, note)
+			SELECT gen_random_uuid(), now(), $4, c.id, c.user_id, c.team_key, c.rota_date,
+			       s.code, 'DELETED', $4, $5
+			  FROM cleared c
+			  JOIN team_schedule_shift s ON s.id = c.shift_id`,
+			w.TeamKeys, w.From, w.To, actorEmail, rotaImportReplaceNote)
 		if err != nil {
-			return RotaImportResult{}, apierror.Prefixed(fmt.Sprintf("assignments[%d]", i), err)
+			return out, fmt.Errorf("clear rota for import: %w", err)
+		}
+		out.Cleared = int(tag.RowsAffected())
+	}
+
+	scopes := map[string]string{}
+	for i, req := range w.Assignments {
+		if w.Replace {
+			n, err := cutLeaveUnderAssignment(ctx, tx, req, w.TeamKeys, scopes, actorEmail)
+			if err != nil {
+				return RotaImportResult{}, apierror.Prefixed(fmt.Sprintf("assignments[%d]", i), err)
+			}
+			out.LeaveWrittenOver += n
 		}
 		res, err := applyRangeTx(ctx, tx, req, actorEmail)
 		if err != nil {
 			return RotaImportResult{}, apierror.Prefixed(fmt.Sprintf("assignments[%d]", i), err)
 		}
-		out.Cleared += cleared
 		out.Assignments = append(out.Assignments, res)
-		if removed+trimmed > 0 {
-			out.Absences = append(out.Absences, domain.ApplyScheduleAbsenceResponse{Removed: removed, Trimmed: trimmed})
-		}
 	}
 	for i, req := range w.Absences {
 		res, err := applyAbsenceTx(ctx, tx, req, actorEmail)
@@ -106,50 +127,43 @@ func (r *scheduleRepository) ImportRota(ctx context.Context, w RotaImportWrite, 
 	return out, nil
 }
 
-// writeOverForAssignment clears, on each day the entry's window is worked, what the picker would refuse it over: the person's overlapping turn or regular hours on another writable team, and another person's hold on the tier slot it takes.
-// It then takes the person's time away off those days, except a move, which is where they work rather than time off.
-func writeOverForAssignment(ctx context.Context, tx pgx.Tx, req domain.ApplyScheduleRangeRequest,
-	writable []string, actorEmail string) (cleared, removed, trimmed int, err error) {
+// cutLeaveUnderAssignment takes the days an entry's window is worked out of the person's time away filed on the rota's teams, a run of consecutive days at a time.
+// A move (the Night cover) is never cut: it is where they work, not time off. The file's own absences go in after every assignment, so none of them is cut.
+func cutLeaveUnderAssignment(ctx context.Context, tx pgx.Tx, req domain.ApplyScheduleRangeRequest,
+	teams []string, scopes map[string]string, actorEmail string) (int, error) {
 	from, ferr := time.Parse(time.DateOnly, req.From)
 	to, terr := time.Parse(time.DateOnly, req.To)
 	if ferr != nil || terr != nil || req.ShiftCode == "" {
 		// applyRangeTx refuses it in its own words.
-		return 0, 0, 0, nil
+		return 0, nil
+	}
+	scope, ok := scopes[req.ShiftCode]
+	if !ok {
+		err := tx.QueryRow(ctx, `SELECT day_scope::text FROM team_schedule_shift WHERE code = $1`, req.ShiftCode).Scan(&scope)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, nil
+		}
+		if err != nil {
+			return 0, fmt.Errorf("read the window's day scope: %w", err)
+		}
+		scopes[req.ShiftCode] = scope
 	}
 
-	var scope, family string
-	var isEscalation, shared bool
-	var zoneID, fixedTier *string
-	err = tx.QueryRow(ctx, `
-		SELECT day_scope::text, family::text, is_escalation, shared_across_teams, zone_id::text, tier::text
-		  FROM team_schedule_shift WHERE code = $1`, req.ShiftCode).
-		Scan(&scope, &family, &isEscalation, &shared, &zoneID, &fixedTier)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, 0, 0, nil
-	}
-	if err != nil {
-		return 0, 0, 0, fmt.Errorf("read the window to write over: %w", err)
-	}
-	tier := req.Tier
-	if tier == nil {
-		tier = fixedTier
-	}
-	holdsTier := family == "SRE" && isEscalation && zoneID != nil && tier != nil
-
+	cut := 0
 	var runFrom *time.Time
-	cutRun := func(end time.Time) error {
+	flush := func(end time.Time) error {
 		if runFrom == nil {
 			return nil
 		}
-		rm, tr, err := cutAbsencesTx(ctx, tx, req.UserID, req.TeamKey, *runFrom, end, actorEmail, ptrTo(rotaImportWriteOverNote), writable)
-		removed, trimmed, runFrom = removed+rm, trimmed+tr, nil
+		removed, trimmed, err := cutAbsencesTx(ctx, tx, req.UserID, req.TeamKey, *runFrom, end, actorEmail, ptrTo(rotaImportReplaceNote), teams)
+		cut, runFrom = cut+removed+trimmed, nil
 		return err
 	}
 	for d := from; !d.After(to); d = d.AddDate(0, 0, 1) {
 		weekend := d.Weekday() == time.Saturday || d.Weekday() == time.Sunday
 		if (scope == "WEEKDAY" && weekend) || (scope == "WEEKEND" && !weekend) {
-			if err := cutRun(d.AddDate(0, 0, -1)); err != nil {
-				return cleared, removed, trimmed, err
+			if err := flush(d.AddDate(0, 0, -1)); err != nil {
+				return cut, err
 			}
 			continue
 		}
@@ -157,73 +171,8 @@ func writeOverForAssignment(ctx context.Context, tx pgx.Tx, req domain.ApplySche
 			day := d
 			runFrom = &day
 		}
-		iso := d.Format(time.DateOnly)
-
-		// The person's own clashing rows on another team; the picker clears their rows on this team itself.
-		rows, err := tx.Query(ctx, `SELECT `+assignmentColumns+assignmentFrom+`
-			  JOIN team_schedule_shift n ON n.code = $3
-			 WHERE a.user_id = $1::uuid
-			   AND lower(a.team_key) <> lower($4)
-			   AND lower(a.team_key) = ANY($5::text[])
-			   AND a.source <> 'MOVE'
-			   AND a.created_on < now()
-			   AND a.is_rotation = n.is_rotation
-			   AND tstzrange(a.starts_at, a.ends_at, '[)') && tstzrange(
-			         ($2::date::timestamp + make_interval(mins => n.start_minute)) AT TIME ZONE n.authoring_time_zone,
-			         ($2::date::timestamp + make_interval(mins => n.end_minute))   AT TIME ZONE n.authoring_time_zone,
-			         '[)')`,
-			req.UserID, iso, req.ShiftCode, req.TeamKey, writable)
-		if err != nil {
-			return cleared, removed, trimmed, fmt.Errorf("read clashing assignments: %w", err)
-		}
-		over, err := scanAssignments(rows)
-		rows.Close()
-		if err != nil {
-			return cleared, removed, trimmed, err
-		}
-
-		if holdsTier {
-			// The same lock tierHolderConflict takes, so a lead setting this slot meanwhile waits for the import.
-			if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0::bigint))`,
-				"team-schedule-tier-slot:"+*zoneID+":"+*tier+":"+iso); err != nil {
-				return cleared, removed, trimmed, fmt.Errorf("lock the tier slot on %s: %w", iso, err)
-			}
-			rows, err := tx.Query(ctx, `SELECT `+assignmentColumns+assignmentFrom+`
-				 WHERE a.zone_id = $1::uuid
-				   AND COALESCE(a.tier, s.tier) = $2::team_schedule_tier_enum
-				   AND a.rota_date = $3::date
-				   AND a.user_id <> $4::uuid
-				   AND ($6 OR lower(a.team_key) = lower($5))
-				   AND lower(a.team_key) = ANY($7::text[])
-				   AND a.source <> 'MOVE'
-				   AND a.created_on < now()`,
-				*zoneID, *tier, iso, req.UserID, req.TeamKey, shared, writable)
-			if err != nil {
-				return cleared, removed, trimmed, fmt.Errorf("read the tier holder: %w", err)
-			}
-			holders, err := scanAssignments(rows)
-			rows.Close()
-			if err != nil {
-				return cleared, removed, trimmed, err
-			}
-			over = append(over, holders...)
-		}
-
-		if len(over) > 0 {
-			ids := make([]string, 0, len(over))
-			for _, old := range over {
-				if err := recordActivity(ctx, tx, old, "DELETED", actorEmail, nil, nil, nil, ptrTo(rotaImportWriteOverNote)); err != nil {
-					return cleared, removed, trimmed, err
-				}
-				ids = append(ids, old.ID)
-			}
-			if _, err := tx.Exec(ctx, `DELETE FROM team_schedule_assignment WHERE id = ANY($1::uuid[])`, ids); err != nil {
-				return cleared, removed, trimmed, fmt.Errorf("write over assignments: %w", err)
-			}
-			cleared += len(ids)
-		}
 	}
-	return cleared, removed, trimmed, cutRun(to)
+	return cut, flush(to)
 }
 
 // ptrTo is a pointer to v.

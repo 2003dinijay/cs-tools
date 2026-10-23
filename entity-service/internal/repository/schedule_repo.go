@@ -1876,7 +1876,7 @@ func applyAbsenceTx(ctx context.Context, tx pgx.Tx, req domain.ApplyScheduleAbse
 }
 
 // cutAbsencesTx takes the days from..to out of every absence of the person that overlaps them: one inside is removed, one over an end is shortened, one over both is split.
-// With writeOver set (a rota import writing over), only absences filed on those teams are cut, and never a move.
+// With writeOver set (a rota import's replace), only absences filed on those teams are cut, and never a move.
 func cutAbsencesTx(ctx context.Context, tx pgx.Tx, userID, teamKey string, from, to time.Time,
 	actorEmail string, note *string, writeOver []string) (removed, trimmed int, err error) {
 	const iso = "2006-01-02"

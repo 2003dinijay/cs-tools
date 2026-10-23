@@ -597,11 +597,12 @@ lands whole or not at all.
 In the CSM portal, the roster of an SRE rota offers **Import rota** (next to
 Generate month) to anyone who may edit one of its teams: choose the file, Preview
 (a dry run), then Import. The dialog checks the file is for the rota on screen and
-offers a template as a download, built from the catalogue for that rota: next month,
-every window of the rota's zones (each tier separately where the window leaves it
-open) and every kind of time away offered on its family, each entry one placeholder
-person on a day of its own, so it lists exactly the codes the database it was
-downloaded from accepts (custom tags included).
+offers a template as a download, built from the catalogue for that rota: next month
+in `merge`, every window of the rota's zones (each tier separately where the window
+leaves it open) on the rota's own teams (never a team a move sends people to), no two
+entries on one tier of a zone on a day, and every kind of time away offered on its
+family. The emails are placeholders to replace with team members'. It lists exactly
+the codes the database it came from accepts, custom tags included.
 
 The standard structure, schema version 1:
 
@@ -611,6 +612,7 @@ The standard structure, schema version 1:
   "family": "SRE",
   "rotaCode": "SRE_SAAS",
   "period": { "from": "2026-11-01", "to": "2026-11-30" },
+  "mode": "replace",
   "assignments": [
     { "email": "user1@example.com", "teamKey": "apollo",  "shiftCode": "SRE_TZ1_L1", "from": "2026-11-02", "to": "2026-11-06" },
     { "email": "user2@example.com", "teamKey": "apollo",  "shiftCode": "SRE_TZ1", "tier": "L2", "from": "2026-11-02", "to": "2026-11-06" },
@@ -633,7 +635,7 @@ The standard structure, schema version 1:
 | `schemaVersion` | `1` |
 | `family`, `rotaCode` | `SRE` and a rota of that family (`SRE_SAAS`, `SRE_IAAS`); `rotaCode` must equal the path's `{code}` |
 | `period` | `YYYY-MM-DD`, both ends inclusive, at most a year |
-| `mode` | no longer used; ignored if present, so a file written for `replace` or `merge` still loads |
+| `mode` | `replace`: first remove every assignment of the rota's teams dated inside the period, except the shifts a move derives (`source` MOVE, e.g. the SaaS Night cover), and cut the time away of each person in the file on the days their entries are worked (`leaveWrittenOver`); a move is never cut. `merge`: keep them; each entry replaces only what the picker would |
 | `email` | resolved against the team schedule's members (case-insensitive); unknown, or shared by two users, is refused |
 | `teamKey` | a team on that rota (`apollo`, `artemis`, `saas-night-cover`; `iaas`) |
 | `shiftCode` | a window of one of the rota's zones; `SRE_WE_TZ2` is retired and refused |
@@ -644,34 +646,11 @@ The standard structure, schema version 1:
 
 **Who may.** Internal staff with a user token. Every entry needs a writer of its
 team (`requireRotaWriterOverSpan`, the picker's own rule, Night cover moves
-included). Which of the rota's teams the caller may write also bounds what the file
-writes over (below): an Apollo lead's file writes over Apollo rows only, an SRE rota
-admin's over any team of the rota. The rule is asked once per team and
+included), and a `replace` also needs a writer of every team of the rota, since it
+clears them all: an Apollo lead can merge Apollo's rows, only an SRE rota admin (or
+a lead of both teams) can replace the SaaS rota. The rule is asked once per team and
 once per person and team, not once per entry. It is checked before the transaction,
 as the picker checks it before its own: a lead changed in between is not seen.
-
-**The file writes over the roster where it speaks.** There is no replace or merge:
-before each assignment goes in, on every day its window is worked, the import removes
-what would otherwise make the picker refuse it, on the rota's teams the caller may
-write (`WritableTeams`):
-
-| Existing row | Written over when |
-|---|---|
-| the person's turn or regular hours on another team of the rota | it overlaps the new window in time, turn against turn or regular hours against regular hours (the two no-overlap constraints); the picker already clears the person's own team |
-| another person's hold on the same SRE tier | same zone, tier and rota day, on the same team, or on any team for a window shared across teams (SaaS TZ3) |
-| the person's time away | it overlaps a worked day: removed, shortened or split as the picker would; never a move (the Night cover), which is where they work rather than time off |
-
-A clash on a team the caller may not write, or with a shift a move derives (`source`
-MOVE), is not written over and refuses the file as before. Rows the file does not
-mention stay: it is not a replace of the period. Rows the file itself wrote are never
-written over (they carry this transaction's `created_on`), so two entries that give
-one tier to two people, or one person two turns at once on different teams, are
-refused at the second rather than one silently taking the other's place. The file's
-own absences go in after every assignment, and do not take turns off the days they
-cover (as marking leave on the roster does not). Each row written over leaves a
-`DELETED` activity row noted "Written over by a rota import", as a delete on the
-roster does; `cleared` in the response counts the assignments, and the absence
-counts include the time away the file's assignments cut.
 
 **Refusals.** The file's own problems are checked first and listed together (up to
 25), each named by its entry: `the rota file has problems: assignments[0]: nobody on
@@ -694,7 +673,18 @@ default): a cancelled request rolls the transaction back and releases it. A file
 at most 1000 entries and 1 MiB (both entity-service and the CSM portal backend cap
 the body). Imported rows are ordinary picker rows (source as `ApplyRange` writes
 them, activity and audit recorded), so a later "Generate month" treats them as set by
-hand.
+hand. Each assignment a replace clears leaves a `DELETED` activity row, noted
+"Cleared by a rota import (replace)", as a delete on the roster does.
+
+**Time away under a replace.** After clearing the period, a replace takes the days
+an assignment's window is worked out of that person's earlier time away filed on the
+rota's teams (removed, shortened or split as the picker would, one call per run of
+consecutive worked days), so a person the file puts on the rota is not also on leave.
+A move (the Night cover) is never cut; it is where they work, not time off. The file's
+own absences go in after every assignment, so none of them is cut, and they do not
+take turns off the days they cover (as marking leave on the roster does not). Each cut
+leaves a `TRIMMED` or `DELETED` absence activity row with the same note. A merge cuts
+nothing.
 
 **Codes the roster legend shows** (SaaS; the catalogue of the database decides, so
 download the template from the environment you import into):
@@ -726,7 +716,7 @@ download the template from the environment you import into):
 
 ## Change log
 
-- **Rota import writes over (no migration).** `mode` is gone (ignored if sent): the file writes over clashing rows on the rota's teams the caller may write (the person's overlapping rows on another team, an earlier holder of the tier, their time away on the days worked), and keeps everything it does not mention. The template is built from the catalogue for the rota on screen. `cutAbsencesTx` is the absence-cutting core `ApplyAbsence` and the import share.
+- **Rota import: replace cuts leave, template from the catalogue (no migration).** A `replace` also cuts the time away of each person in the file on the days their entries are worked (never a move); the response counts it as `leaveWrittenOver`. `merge` is unchanged. The downloadable template is built from the catalogue for the rota on screen. `cutAbsencesTx` is the absence-cutting core `ApplyAbsence` and the import share.
 - **Rota import (no migration).** `POST /team-schedule/rotas/{code}/import` writes a whole SRE rota for a period from one JSON file (schema version 1, people by email), all or nothing, `?dryRun=true` to preview; see "Rota import (SRE)". `ApplyRange` / `ApplyAbsence` were split into a transaction-taking core and a begin/commit wrapper so the import reuses their rules unchanged.
 - **0238 Case Alerts: SME ladder values.** `paging_ladder_value` takes ladder
   `SME`. Additive and re-runnable; no row changes.

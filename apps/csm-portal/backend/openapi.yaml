@@ -14886,11 +14886,11 @@ paths:
       summary: Import a whole rota for a period from one JSON file.
       description: >
         Proxied to entity-service's POST /team-schedule/rotas/{code}/import. The file
-        (schemaVersion 1: family, rotaCode, period, assignments, absences, people named
-        by email; a mode field is ignored) is forwarded untouched and written all or
-        nothing, over whatever it clashes with on the teams the caller may write;
-        dryRun=true reports what it would do without writing. Only SRE rotas.
-        Entity-service decides who may import (a writer of every entry's team). Refusals carry entity-service's reason, which
+        (schemaVersion 1: family, rotaCode, period, mode replace|merge, assignments,
+        absences, people named by email) is forwarded untouched and written all or
+        nothing; dryRun=true reports what it would do without writing. Only SRE rotas.
+        Entity-service decides who may import (a writer of every entry's team, and for a
+        replace of every team of the rota). Refusals carry entity-service's reason, which
         names the entry at fault.
       operationId: importTeamScheduleRota
       parameters:
@@ -14939,7 +14939,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
         "403":
-          description: An entry the caller may not change.
+          description: An entry, or a team a replace clears, the caller may not change.
           content:
             application/json:
               schema:
@@ -15742,7 +15742,7 @@ components:
     ImportRotaRequest:
       type: object
       description: The rota import file, schema version 1.
-      required: [schemaVersion, family, rotaCode, period]
+      required: [schemaVersion, family, rotaCode, period, mode]
       properties:
         schemaVersion:
           type: integer
@@ -15761,8 +15761,7 @@ components:
             to: {type: string, format: date}
         mode:
           type: string
-          deprecated: true
-          description: Ignored; an import always writes over. Accepted so files written for replace or merge still load.
+          enum: [replace, merge]
         assignments:
           type: array
           items:
@@ -15798,8 +15797,10 @@ components:
         rotaCode: {type: string}
         from: {type: string, format: date}
         to: {type: string, format: date}
+        mode: {type: string, enum: [replace, merge]}
         dryRun: {type: boolean}
-        cleared: {type: integer, description: "Existing assignments the file wrote over beyond its own slots: the person's clashing rows on other teams of the rota and the earlier holder of a tier the file names."}
+        cleared: {type: integer, description: Assignments a replace removed first.}
+        leaveWrittenOver: {type: integer, description: Earlier time away a replace removed, shortened or split under the file's assignments.}
         applied: {type: integer, description: Assignment days written.}
         skipped: {type: integer, description: Assignment days the window is not worked on.}
         skippedDays:

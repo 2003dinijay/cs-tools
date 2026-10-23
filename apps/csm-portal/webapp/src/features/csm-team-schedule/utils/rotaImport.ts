@@ -25,6 +25,8 @@ export const ROTA_IMPORT_TEMPLATE = {
   family: "SRE",
   rotaCode: "SRE_SAAS",
   period: { from: "2026-11-01", to: "2026-11-30" },
+  // Merge, the mode that removes nothing: the template is what people edit and send back.
+  mode: "merge",
   assignments: [
     { email: "user1@example.com", teamKey: "apollo", shiftCode: "SRE_TZ1_L1", from: "2026-11-02", to: "2026-11-06" },
     { email: "user2@example.com", teamKey: "apollo", shiftCode: "SRE_TZ1", tier: "L2", from: "2026-11-02", to: "2026-11-06" },
@@ -44,14 +46,21 @@ function isoDay(d: Date): string {
 
 /**
  * A template for one rota built from the catalogue: every window of the rota's zones (each tier where the window leaves it open)
- * and every kind of time away offered on its family, so whatever the roster can hold the file can say.
- * Each entry is one person on its own day of next month, so the template imports as it stands.
+ * and every kind of time away offered on its family, so it lists every code the roster can hold, in merge mode.
+ * The emails are placeholders to replace with team members'. Assignments go on the rota's own teams, never a team a move sends people to,
+ * and no two take one tier of a zone on the same day, so once the emails are real the entries do not refuse one another.
  */
 export function buildRotaImportTemplate(rotaCode: string, catalogue: ScheduleCatalogue | undefined, today = new Date()): object {
   const rota = catalogue?.rotas?.find((r) => r.code === rotaCode);
   if (!catalogue || !rota) return ROTA_IMPORT_TEMPLATE;
-  const teams = catalogue.teams.filter((t) => t.rotaCode === rotaCode).map((t) => t.key);
+  const rotaTeams = catalogue.teams.filter((t) => t.rotaCode === rotaCode).map((t) => t.key);
   const zones = new Set(catalogue.zones.filter((z) => z.rotaCode === rotaCode).map((z) => z.code));
+  const kinds = catalogue.absenceKinds
+    .filter((k) => !k.retired && (!k.family || k.family === rota.family))
+    .sort((a, b) => a.sortOrder - b.sortOrder);
+  const moveTargets = new Set(kinds.map((k) => k.movesToTeamKey).filter((k): k is string => Boolean(k)));
+  const homeTeams = rotaTeams.filter((t) => !moveTargets.has(t));
+  const teams = homeTeams.length > 0 ? homeTeams : rotaTeams;
   if (teams.length === 0) return ROTA_IMPORT_TEMPLATE;
 
   const first = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() + 1, 1));
@@ -59,14 +68,21 @@ export function buildRotaImportTemplate(rotaCode: string, catalogue: ScheduleCat
   const days: Date[] = [];
   for (let d = new Date(first); d <= last; d = new Date(d.getTime() + 86_400_000)) days.push(d);
   const isWeekend = (d: Date): boolean => d.getUTCDay() === 0 || d.getUTCDay() === 6;
+  const fits = (scope: "WEEKDAY" | "WEEKEND" | "ANY", d: Date): boolean =>
+    scope === "ANY" || (scope === "WEEKEND") === isWeekend(d);
 
+  // Days already taken per tier slot (zone and tier), so two entries never hold one slot on one day.
+  const taken = new Map<string, Set<string>>();
   let cursor = 0;
-  const nextDay = (scope: "WEEKDAY" | "WEEKEND" | "ANY"): string => {
+  const dayFor = (scope: "WEEKDAY" | "WEEKEND" | "ANY", slot?: string): string => {
+    const used = slot ? (taken.get(slot) ?? new Set<string>()) : new Set<string>();
     for (let i = 0; i < days.length; i++) {
       const d = days[(cursor + i) % days.length];
-      if (scope === "ANY" || (scope === "WEEKEND") === isWeekend(d)) {
+      const iso = isoDay(d);
+      if (fits(scope, d) && !used.has(iso)) {
         cursor = (cursor + i + 1) % days.length;
-        return isoDay(d);
+        if (slot) taken.set(slot, used.add(iso));
+        return iso;
       }
     }
     return isoDay(first);
@@ -77,15 +93,16 @@ export function buildRotaImportTemplate(rotaCode: string, catalogue: ScheduleCat
     .sort((a, b) => a.sortOrder - b.sortOrder);
   const assignments: object[] = [];
   for (const s of shifts) {
-    const tiers = s.isEscalation && !s.tier ? TIERS : [undefined];
+    const tiers = s.isEscalation && !s.tier ? TIERS : [s.tier];
     for (const tier of tiers) {
-      const day = nextDay(s.dayScope);
+      const slot = s.isEscalation && tier ? `${s.zoneCode}:${tier}` : undefined;
+      const day = dayFor(s.dayScope, slot);
       const n = assignments.length + 1;
       assignments.push({
         email: `person${n}@example.com`,
         teamKey: teams[(n - 1) % teams.length],
         shiftCode: s.code,
-        ...(tier ? { tier } : {}),
+        ...(tier && !s.tier ? { tier } : {}),
         from: day,
         to: day,
         ...(n === 1 ? { note: "optional" } : {}),
@@ -93,15 +110,11 @@ export function buildRotaImportTemplate(rotaCode: string, catalogue: ScheduleCat
     }
   }
 
-  const kinds = catalogue.absenceKinds
-    .filter((k) => !k.retired && (!k.family || k.family === rota.family))
-    .sort((a, b) => a.sortOrder - b.sortOrder);
-  const home = teams.find((t) => !kinds.some((k) => k.movesToTeamKey === t)) ?? teams[0];
   const absences = kinds.map((k, i) => {
-    const day = nextDay("ANY");
+    const day = dayFor("ANY");
     return {
       email: `away${i + 1}@example.com`,
-      teamKey: home,
+      teamKey: teams[0],
       kindCode: k.code,
       ...(k.bucket === "ALLOCATION" ? { allocatedTo: "Example Customer" } : {}),
       from: day,
@@ -114,6 +127,7 @@ export function buildRotaImportTemplate(rotaCode: string, catalogue: ScheduleCat
     family: rota.family,
     rotaCode,
     period: { from: isoDay(first), to: isoDay(last) },
+    mode: "merge",
     assignments,
     absences,
   };
@@ -142,6 +156,7 @@ export function parseRotaImportFile(text: string, rotaCode: string): ParsedRotaI
   if (typeof period !== "object" || period === null || typeof period.from !== "string" || typeof period.to !== "string") {
     return { error: "period must have from and to dates (YYYY-MM-DD)." };
   }
+  if (f.mode !== "replace" && f.mode !== "merge") return { error: 'mode must be "replace" or "merge".' };
   for (const key of ["assignments", "absences"] as const) {
     if (f[key] !== undefined && !Array.isArray(f[key])) return { error: `${key} must be a list.` };
   }

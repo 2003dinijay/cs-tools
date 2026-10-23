@@ -71,8 +71,9 @@ function absenceNote(r: ImportRotaResult): string {
 }
 
 function summary(r: ImportRotaResult): string {
-  const replaced = r.cleared > 0 ? `, ${plural(r.cleared, "earlier assignment")} written over` : "";
-  return `${plural(r.applied, "day")} on the rota from ${r.from} to ${r.to}${replaced}, ${absenceNote(r)}.`;
+  const replaced = r.cleared > 0 ? `, ${plural(r.cleared, "earlier assignment")} replaced` : "";
+  const leave = (r.leaveWrittenOver ?? 0) > 0 ? `, ${plural(r.leaveWrittenOver ?? 0, "earlier leave span")} cut` : "";
+  return `${plural(r.applied, "day")} on the rota from ${r.from} to ${r.to}${replaced}${leave}, ${absenceNote(r)}.`;
 }
 
 export interface ImportRotaDialogProps {
@@ -197,10 +198,18 @@ export default function ImportRotaDialog({ open, onClose, rotaCode, catalogue }:
               {file.rotaCode}, {file.period.from} to {file.period.to}:{" "}
               {plural(file.assignments?.length ?? 0, "assignment")} and {plural(file.absences?.length ?? 0, "absence")}.
             </Typography>
-            <Alert severity="info" sx={{ mt: 1 }}>
-              The file writes over the roster where it speaks: its turns replace whatever the same people held then,
-              including a tier someone else held and their time away on those days. Rows it does not mention stay.
-            </Alert>
+            {file.mode === "replace" ? (
+              <Alert severity="warning" sx={{ mt: 1 }}>
+                Replace removes every assignment of the rota&rsquo;s teams from {file.period.from} to {file.period.to}{" "}
+                before writing the file, and the time away of each person in the file on the days they are put on the
+                rota. A move such as the Night cover, and the shifts it gives, are kept. Preview shows how many.
+              </Alert>
+            ) : (
+              <Alert severity="info" sx={{ mt: 1 }}>
+                Merge keeps what is on the roster and writes the file&rsquo;s entries over it; a clash with a row it
+                does not replace is refused.
+              </Alert>
+            )}
           </Box>
         ) : null}
 

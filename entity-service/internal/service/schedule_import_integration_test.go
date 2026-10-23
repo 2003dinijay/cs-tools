@@ -20,10 +20,12 @@ package service
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
@@ -41,7 +43,7 @@ const (
 	rotaImportUser1Email = "rota-import-user1@example.com"
 	rotaImportUser2Email = "rota-import-user2@example.com"
 
-	// A week far enough ahead that an import of the SaaS rota touches nothing real: Monday to Sunday.
+	// A week far enough ahead that a replace of the SaaS rota touches nothing real: Monday to Sunday.
 	rotaImportFrom = "2031-03-03"
 	rotaImportTo   = "2031-03-09"
 )
@@ -117,13 +119,14 @@ func newRotaImportIntegration(t *testing.T) (ScheduleService, *pgxpool.Pool) {
 }
 
 // rotaImportStandardFile is the standard structure on the fixture team.
-func rotaImportStandardFile() domain.ImportRotaRequest {
+func rotaImportStandardFile(mode string) domain.ImportRotaRequest {
 	l1, l2 := "L1", "L2"
 	return domain.ImportRotaRequest{
 		SchemaVersion: 1,
 		Family:        "SRE",
 		RotaCode:      "SRE_SAAS",
 		Period:        domain.ImportRotaPeriod{From: rotaImportFrom, To: rotaImportTo},
+		Mode:          mode,
 		Assignments: []domain.ImportRotaAssignment{
 			{Email: rotaImportUser1Email, TeamKey: rotaImportTeamKey, ShiftCode: "SRE_TZ1_L1", From: rotaImportFrom, To: rotaImportTo},
 			{Email: rotaImportUser2Email, TeamKey: rotaImportTeamKey, ShiftCode: "SRE_TZ1", Tier: &l2, From: rotaImportFrom, To: "2031-03-07"},
@@ -139,7 +142,7 @@ func TestScheduleImportIntegration_TheStandardFileLandsOnTheSaaSRota(t *testing.
 	svc, pool := newRotaImportIntegration(t)
 	ctx := leadCtx(rotaImportAdminEmail)
 
-	preview, err := svc.ImportRota(ctx, "SRE_SAAS", rotaImportStandardFile(), true)
+	preview, err := svc.ImportRota(ctx, "SRE_SAAS", rotaImportStandardFile("merge"), true)
 	if err != nil {
 		t.Fatalf("dry run: %v", err)
 	}
@@ -152,7 +155,7 @@ func TestScheduleImportIntegration_TheStandardFileLandsOnTheSaaSRota(t *testing.
 		t.Fatalf("the dry run wrote %d rows (%v)", before, err)
 	}
 
-	res, err := svc.ImportRota(ctx, "SRE_SAAS", rotaImportStandardFile(), false)
+	res, err := svc.ImportRota(ctx, "SRE_SAAS", rotaImportStandardFile("merge"), false)
 	if err != nil {
 		t.Fatalf("import: %v", err)
 	}
@@ -181,13 +184,18 @@ func TestScheduleImportIntegration_TheStandardFileLandsOnTheSaaSRota(t *testing.
 	}
 }
 
-func TestScheduleImportIntegration_ALeadAndTheRotaAdminBothImport(t *testing.T) {
+func TestScheduleImportIntegration_OnlyARotaAdminReplacesTheWholeRota(t *testing.T) {
 	svc, _ := newRotaImportIntegration(t)
 
-	if _, err := svc.ImportRota(leadCtx(rotaImportLeadEmail), "SRE_SAAS", rotaImportStandardFile(), true); err != nil {
-		t.Fatalf("the lead writing their own team's rows: %v", err)
+	_, err := svc.ImportRota(leadCtx(rotaImportLeadEmail), "SRE_SAAS", rotaImportStandardFile("replace"), true)
+	var forbidden *apierror.ForbiddenError
+	if !errors.As(err, &forbidden) {
+		t.Fatalf("a lead of one SaaS team replaced the whole SaaS rota: %v", err)
 	}
-	if _, err := svc.ImportRota(leadCtx(rotaImportAdminEmail), "SRE_SAAS", rotaImportStandardFile(), true); err != nil {
-		t.Fatalf("the SRE rota admin writing the SaaS rota: %v", err)
+	if _, err := svc.ImportRota(leadCtx(rotaImportLeadEmail), "SRE_SAAS", rotaImportStandardFile("merge"), true); err != nil {
+		t.Fatalf("the lead merging their own team's rows: %v", err)
+	}
+	if _, err := svc.ImportRota(leadCtx(rotaImportAdminEmail), "SRE_SAAS", rotaImportStandardFile("replace"), true); err != nil {
+		t.Fatalf("the SRE rota admin replacing the SaaS rota: %v", err)
 	}
 }
