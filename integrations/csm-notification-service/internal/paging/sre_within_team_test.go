@@ -110,6 +110,28 @@ func TestResolveSRE_TeamlessUnstaffedCallsBothSaaSLeads(t *testing.T) {
 	}
 }
 
+// An incident with no SRE team of its own whose L1 nobody holds: the opt-in
+// L4 rung still calls the lead of the team that answers, taken from L2, else
+// L3 -- not nobody.
+func TestResolveSRE_TeamlessL4FollowsTheFirstHeldTier(t *testing.T) {
+	cases := map[string][]onDutyAssignment{
+		"L2 held": {held("r-l2", "artemis", "SRE_TZ1", "L2")},
+		"L3 held": {held("r-l3", "artemis", "SRE_TZ1", "L3")},
+		"L2 before L3": {
+			held("r-l2", "artemis", "SRE_TZ1", "L2"),
+			held("a-l3", "apollo", "SRE_TZ1", "L3"),
+		},
+	}
+	for name, onDuty := range cases {
+		t.Run(name, func(t *testing.T) {
+			r := sreResolver(&stubScheduleReader{onDuty: onDuty, members: leads()})
+			if got := resolveSRE(t, r, Level3, "Atlas"); len(got) != 1 || got[0] != "r-lead@example.com" {
+				t.Errorf("L4 = %v; want the Artemis lead", got)
+			}
+		})
+	}
+}
+
 // The plan calls the lead at the L3 slot (10 minutes), nobody before.
 func TestBuildPlan_UnstaffedTeamLeadRingsAtTheL3Slot(t *testing.T) {
 	rota := &stubScheduleReader{members: []teamMember{member("apollo", "a-lead@example.com", roleLead, "")}}

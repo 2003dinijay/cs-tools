@@ -266,7 +266,8 @@ func (r TeamScheduleResolver) resolveSRE(ctx context.Context, level Level, rc Ro
 		return r.leadsForUnstaffedRota(ctx, own, rc.Rota)
 	case Level3:
 		// L4 is the lead of the team answering the incident: its own, or -- for
-		// an incident that has none -- the team of whoever took L1.
+		// an incident that has none -- the team of the first tier somebody
+		// holds, L1, then L2, then L3.
 		picks, err := r.tierPicks(ctx, rc.At, own, rc.Rota, "L1", "L2", "L3")
 		if err != nil || len(picks) == 0 {
 			// Nobody on L1-L3: the leads were called on the L3 rung.
@@ -274,11 +275,12 @@ func (r TeamScheduleResolver) resolveSRE(ctx context.Context, level Level, rc Ro
 		}
 		team := own
 		if team == "" {
-			l1, ok := picks["L1"]
-			if !ok {
-				return nil, nil
+			for _, tier := range []string{"L1", "L2", "L3"} {
+				if pick, ok := picks[tier]; ok && pick.team != "" {
+					team = pick.team
+					break
+				}
 			}
-			team = l1.team
 		}
 		if team == "" {
 			return nil, nil

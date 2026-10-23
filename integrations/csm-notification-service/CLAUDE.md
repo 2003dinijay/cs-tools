@@ -485,7 +485,8 @@ the tier; then the zone whose L1 block is live -- weekdays
 12:00-15:00 IST the TZ1 and TZ2 escalation windows are both live, and the SRE
 team confirmed only one person is called; then `sre.teams.abts` order; then
 email. The rota has no L4 tier, so L4 is the lead of the answering team -- the
-incident's own, or for a CRE P0 the team of whoever took L1 -- and it calls
+incident's own, or for an incident with no SRE team of its own (a CRE P0) the
+team of the first tier somebody holds, L1, then L2, then L3 -- and it calls
 nobody when the leads were already called on the L3 rung. An assumption.
 
 **"Default" group** (`sre.teams.defaultGroups`, opt-in): an incident whose
