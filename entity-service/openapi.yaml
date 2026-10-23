@@ -15575,7 +15575,8 @@ paths:
       description: |
         A node reports its product and version; when they match no catalogue entry it is stored with
         no product version, and what it reported is kept. This lists such nodes seen since a time,
-        grouped by what they reported, so the missing catalogue entries can be added.
+        grouped by what they reported, so the missing catalogue entries can be added. A node stays
+        listed for as long as it keeps reporting an unknown product.
       parameters:
         - name: since
           in: query
@@ -15602,6 +15603,9 @@ paths:
                 properties:
                   count:
                     type: integer
+                  truncated:
+                    type: boolean
+                    description: More nodes matched than the limit; the list is not complete.
                   nodes:
                     type: array
                     items:
@@ -15620,9 +15624,10 @@ paths:
                         reportedVersion:
                           type: string
                           nullable: true
-                        firstSeenOn:
+                        unresolvedSince:
                           type: string
                           format: date-time
+                          description: When the node's reports stopped matching the catalogue.
                         lastSeenOn:
                           type: string
                           format: date-time

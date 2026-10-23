@@ -214,6 +214,12 @@ type Config struct {
 	// constructs EventPublisherService when both this is true AND
 	// EventHubBroker is set.
 	EventPublishingEnabled bool
+	// UsageRollupEnabled makes an offline usage import rebuild the monthly usage rows of
+	// every month its rows fall in, in the same transaction (USAGE_ROLLUP_ENABLED, exactly
+	// "true"; default off). It is the switch csm-scheduled-tasks' usage rollup tasks use
+	// too, and it stays off while the previous system's aggregation jobs and csm-sync's
+	// mirroring still write monthly_usage_summary, which would otherwise have two writers.
+	UsageRollupEnabled bool
 	// CSMMigrationSalesforceMembershipIngestEnabled turns on the
 	// Project_Contact__c / Contact branch of POST /salesforce/events (the
 	// customer onboarding database write), from
@@ -786,6 +792,7 @@ func Load() *Config {
 		EventHubConnectionString:                 os.Getenv("EVENT_HUB_CONNECTION_STRING"),
 		EventHubTopic:                            os.Getenv("EVENT_HUB_TOPIC"),
 		EventPublishingEnabled:                   os.Getenv("EVENT_PUBLISHING_ENABLED") == "true",
+		UsageRollupEnabled:                       os.Getenv("USAGE_ROLLUP_ENABLED") == "true",
 		GithubIntegrationEnabled:                 os.Getenv("GITHUB_INTEGRATION_ENABLED") == "true",
 		GithubBaseURL:                            getEnvOrDefault("GITHUB_API_BASE_URL", "https://api.github.com"),
 		GithubToken:                              os.Getenv("GITHUB_TOKEN"),

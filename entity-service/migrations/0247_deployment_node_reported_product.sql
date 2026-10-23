@@ -23,6 +23,12 @@
 ALTER TABLE deployment_node ADD COLUMN IF NOT EXISTS reported_product VARCHAR(255);
 ALTER TABLE deployment_node ADD COLUMN IF NOT EXISTS reported_version VARCHAR(100);
 
+-- When the node's current report stopped matching the catalogue: set when it goes
+-- unresolved, kept while it stays so, cleared when it matches again. updated_on moves
+-- with every heartbeat and created_on is when the node first reported at all, so
+-- neither says how long a catalogue entry has been missing.
+ALTER TABLE deployment_node ADD COLUMN IF NOT EXISTS unresolved_since TIMESTAMPTZ;
+
 CREATE INDEX IF NOT EXISTS idx_deployment_node_unresolved_product
     ON deployment_node (updated_on)
     WHERE product_version_id IS NULL AND reported_product IS NOT NULL;

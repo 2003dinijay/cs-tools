@@ -47,6 +47,7 @@ type mockInstanceIngestionRepo struct {
 	rolledMonth                       int
 	unresolvedSince                   time.Time
 	unresolvedLimit                   int
+	unresolvedNodes                   []domain.UnresolvedProductNode
 	importsProject, importsDeployment string
 	importsLimit                      int
 }
@@ -90,6 +91,9 @@ func (m *mockInstanceIngestionRepo) RollupMonthlyUsage(_ context.Context, year, 
 func (m *mockInstanceIngestionRepo) ListUnresolvedProductNodes(_ context.Context, since time.Time, limit int) ([]domain.UnresolvedProductNode, error) {
 	m.calls++
 	m.unresolvedSince, m.unresolvedLimit = since, limit
+	if m.unresolvedNodes != nil {
+		return m.unresolvedNodes, nil
+	}
 	return []domain.UnresolvedProductNode{{NodeID: "n1", ReportedProduct: "wso2xx"}}, nil
 }
 
@@ -409,7 +413,8 @@ func TestInstanceIngestion_ListUnresolvedProductsDefaultsAndValidation(t *testin
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// newTestIngestionService's clock is 2026-10-16T08:00Z: the default window is the last 24 hours.
-	if !repo.unresolvedSince.Equal(time.Date(2026, 10, 15, 8, 0, 0, 0, time.UTC)) || repo.unresolvedLimit != 500 {
+	// The repository is asked for one more than the limit, to tell a cut-off list.
+	if !repo.unresolvedSince.Equal(time.Date(2026, 10, 15, 8, 0, 0, 0, time.UTC)) || repo.unresolvedLimit != 501 {
 		t.Errorf("defaults: since %v limit %d", repo.unresolvedSince, repo.unresolvedLimit)
 	}
 	if resp.Count != 1 || resp.Nodes[0].ReportedProduct != "wso2xx" {
@@ -420,7 +425,7 @@ func TestInstanceIngestion_ListUnresolvedProductsDefaultsAndValidation(t *testin
 	if _, err := newTestIngestionService(repo).ListUnresolvedProducts(ctx, "2026-10-01T00:00:00Z", "20"); err != nil {
 		t.Fatal(err)
 	}
-	if !repo.unresolvedSince.Equal(time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)) || repo.unresolvedLimit != 20 {
+	if !repo.unresolvedSince.Equal(time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)) || repo.unresolvedLimit != 21 {
 		t.Errorf("explicit: since %v limit %d", repo.unresolvedSince, repo.unresolvedLimit)
 	}
 
@@ -501,5 +506,27 @@ func TestInstanceIngestion_BatchNodeProductAndVersionAreLengthChecked(t *testing
 		if repo.calls != 0 {
 			t.Errorf("an over-long %s reached the repository", tc.contains)
 		}
+	}
+}
+
+func TestInstanceIngestion_ListUnresolvedProductsSaysWhenTheListIsCut(t *testing.T) {
+	ctx := context.Background()
+	three := []domain.UnresolvedProductNode{{NodeID: "a"}, {NodeID: "b"}, {NodeID: "c"}}
+
+	repo := &mockInstanceIngestionRepo{unresolvedNodes: three}
+	resp, err := newTestIngestionService(repo).ListUnresolvedProducts(ctx, "", "2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Truncated || resp.Count != 2 || len(resp.Nodes) != 2 {
+		t.Errorf("limit 2 of 3: %+v", resp)
+	}
+
+	repo = &mockInstanceIngestionRepo{unresolvedNodes: three}
+	if resp, err = newTestIngestionService(repo).ListUnresolvedProducts(ctx, "", "3"); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Truncated || resp.Count != 3 {
+		t.Errorf("limit 3 of 3: %+v", resp)
 	}
 }

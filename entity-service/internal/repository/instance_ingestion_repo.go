@@ -67,12 +67,28 @@ type InstanceIngestionRepository interface {
 }
 
 type instanceIngestionRepo struct {
-	db *Scoped
+	db                    *Scoped
+	monthlyRollupOnImport bool
+}
+
+// InstanceIngestionOption configures NewInstanceIngestionRepository.
+type InstanceIngestionOption func(*instanceIngestionRepo)
+
+// WithMonthlyRollupOnImport makes ImportDailyUsagesBatch rebuild the monthly rows of
+// every month its rows fall in, in the import's own transaction. An offline report
+// arrives late by nature, often for a month the scheduled monthly rollup no longer
+// rebuilds, so without this its days would never reach monthly_usage_summary.
+func WithMonthlyRollupOnImport(enabled bool) InstanceIngestionOption {
+	return func(r *instanceIngestionRepo) { r.monthlyRollupOnImport = enabled }
 }
 
 // NewInstanceIngestionRepository constructs an InstanceIngestionRepository backed by *Scoped.
-func NewInstanceIngestionRepository(db *Scoped) InstanceIngestionRepository {
-	return &instanceIngestionRepo{db: db}
+func NewInstanceIngestionRepository(db *Scoped, opts ...InstanceIngestionOption) InstanceIngestionRepository {
+	r := &instanceIngestionRepo{db: db}
+	for _, o := range opts {
+		o(r)
+	}
+	return r
 }
 
 // deploymentNodeLockKey is the advisory-lock key every ingestion write takes
@@ -167,6 +183,11 @@ func lockAndUpsertNodeTx(ctx context.Context, tx pgx.Tx, nodeID string, meta dom
 			    product_version_id = CASE WHEN $5 THEN $4::uuid ELSE product_version_id END,
 			    reported_product   = CASE WHEN $5 THEN $7 ELSE reported_product END,
 			    reported_version   = CASE WHEN $5 THEN $8 ELSE reported_version END,
+			    unresolved_since   = CASE
+			        WHEN NOT $5 THEN unresolved_since
+			        WHEN $4::uuid IS NOT NULL THEN NULL
+			        WHEN product_version_id IS NULL THEN COALESCE(unresolved_since, NOW())
+			        ELSE NOW() END,
 			    updated_on = NOW(),
 			    updated_by = $6
 			WHERE id = $1::uuid`
@@ -181,11 +202,11 @@ func lockAndUpsertNodeTx(ctx context.Context, tx pgx.Tx, nodeID string, meta dom
 		INSERT INTO deployment_node (
 			id, created_on, updated_on, created_by, updated_by,
 			node_id, project_key, deployment_number, product_version_id,
-			reported_product, reported_version
+			reported_product, reported_version, unresolved_since
 		) VALUES (
 			gen_random_uuid(), NOW(), NOW(), $5, $5,
 			$1, $2, NULLIF($3, ''), $4::uuid,
-			$6, $7
+			$6, $7, CASE WHEN $8 THEN NOW() END
 		)
 		RETURNING id::text`
 	var reportedProduct, reportedVersion *string
@@ -194,7 +215,7 @@ func lockAndUpsertNodeTx(ctx context.Context, tx pgx.Tx, nodeID string, meta dom
 	}
 	var insertedID string
 	if err := tx.QueryRow(ctx, insertSQL, nodeID, meta.ProjectKey, meta.DeploymentNumber, versionID, domain.InstanceIngestionActor,
-		reportedProduct, reportedVersion).Scan(&insertedID); err != nil {
+		reportedProduct, reportedVersion, moveVersion && versionID == nil).Scan(&insertedID); err != nil {
 		return "", fmt.Errorf("insert deployment node: %w", err)
 	}
 	return insertedID, nil
@@ -364,14 +385,21 @@ func (r *instanceIngestionRepo) InsertUsageStats(ctx context.Context, req domain
 			return err
 		}
 
+		// A report the tracker retries (same node, type and counted_on) is stored once:
+		// counters are summed into the day, so a second copy would double-count. The
+		// node lock held above serialises every writer of this node, so the check
+		// cannot race; hourly_usage_summary has no unique key to lean on (synced rows
+		// may already hold duplicates, which the sums skip, see dailyUsageValueTx).
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO hourly_usage_summary (
 				id, created_on, updated_on, created_by, updated_by,
 				deployment_node_id, count_type, count, counted_on
-			) VALUES (
-				gen_random_uuid(), NOW(), NOW(), $5, $5,
-				$1::uuid, $2, $3, $4
-			)`, nodeUUID, req.CountType, req.Count, countedOn, domain.InstanceIngestionActor); err != nil {
+			)
+			SELECT gen_random_uuid(), NOW(), NOW(), $5::text, $5::text, $1::uuid, $2::text, $3::integer, $4::timestamptz
+			WHERE NOT EXISTS (
+				SELECT 1 FROM hourly_usage_summary
+				WHERE deployment_node_id = $1::uuid AND count_type = $2::text AND counted_on = $4::timestamptz)`,
+			nodeUUID, req.CountType, req.Count, countedOn, domain.InstanceIngestionActor); err != nil {
 			return fmt.Errorf("insert hourly usage: %w", err)
 		}
 
@@ -415,9 +443,12 @@ func dailyUsageValueTx(ctx context.Context, tx pgx.Tx, nodeUUID, countType strin
 		ORDER BY counted_on DESC, created_on DESC
 		LIMIT 1`
 	if isCounterCountType(countType) {
+		// One row per counted_on: a duplicate of the same report is counted once.
 		query = `
-			SELECT LEAST(COALESCE(SUM(count), 0), 2147483647)::int FROM hourly_usage_summary
-			WHERE deployment_node_id = $1::uuid AND count_type = $2 AND counted_on >= $3 AND counted_on < $4`
+			SELECT LEAST(COALESCE(SUM(count), 0), 2147483647)::int FROM (
+				SELECT DISTINCT ON (counted_on) count FROM hourly_usage_summary
+				WHERE deployment_node_id = $1::uuid AND count_type = $2 AND counted_on >= $3 AND counted_on < $4
+				ORDER BY counted_on, created_on DESC, id) per_report`
 	}
 	var value int
 	if err := tx.QueryRow(ctx, query, nodeUUID, countType, start, end).Scan(&value); err != nil {
@@ -506,6 +537,12 @@ func (r *instanceIngestionRepo) ImportDailyUsagesBatch(ctx context.Context, req 
 			imported++
 		}
 
+		if r.monthlyRollupOnImport {
+			if err := rollupImportedMonthsTx(ctx, tx, req.Usages); err != nil {
+				return 0, err
+			}
+		}
+
 		// The import's history row, in the same transaction: a failed import leaves none.
 		var exportedAt *time.Time
 		if v := strings.TrimSpace(req.ExportedAt); v != "" {
@@ -524,6 +561,37 @@ func (r *instanceIngestionRepo) ImportDailyUsagesBatch(ctx context.Context, req 
 		}
 		return imported, nil
 	})
+}
+
+// rollupImportedMonthsTx rebuilds the monthly rows of every month the imported usages
+// fall in, oldest first, so the import's days reach monthly_usage_summary however late
+// the report arrived. The monthly function takes a lock per month; taking months in a
+// fixed order keeps two imports from taking a pair of them in opposite orders.
+func rollupImportedMonthsTx(ctx context.Context, tx pgx.Tx, usages []domain.DailyUsageBatchItem) error {
+	months := map[[2]int]struct{}{}
+	for _, e := range usages {
+		d, err := time.Parse("2006-01-02", strings.TrimSpace(e.Date))
+		if err != nil {
+			return &apierror.ValidationError{Msg: fmt.Sprintf("usage date %q is not a date (YYYY-MM-DD)", e.Date)}
+		}
+		months[[2]int{d.Year(), int(d.Month())}] = struct{}{}
+	}
+	ordered := make([][2]int, 0, len(months))
+	for m := range months {
+		ordered = append(ordered, m)
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i][0] != ordered[j][0] {
+			return ordered[i][0] < ordered[j][0]
+		}
+		return ordered[i][1] < ordered[j][1]
+	})
+	for _, m := range ordered {
+		if _, err := tx.Exec(ctx, `SELECT rollup_monthly_usage($1, $2)`, m[0], m[1]); err != nil {
+			return fmt.Errorf("roll up imported month %d-%02d: %w", m[0], m[1], err)
+		}
+	}
+	return nil
 }
 
 // GetProjectSecretKey returns the project's product-consumption HMAC primary
@@ -594,15 +662,48 @@ func (r *instanceIngestionRepo) GetDeploymentConsumptionSecret(ctx context.Conte
 	}, nil
 }
 
-// RollupDailyUsage runs the rollup_daily_usage SQL function (migration 0245) for a day.
+// dailyRollupChunkSize is how many nodes one rollup transaction takes. Each node is
+// one advisory lock held to the end of the transaction, and those share the lock
+// table, so a day with many nodes is rolled up a chunk at a time.
+const dailyRollupChunkSize = 100
+
+// RollupDailyUsage runs the rollup_daily_usage SQL function (migration 0245) for a
+// day, a chunk of nodes per transaction, in byte order. The function is idempotent
+// per node, so a run that fails part-way is completed by running it again.
 func (r *instanceIngestionRepo) RollupDailyUsage(ctx context.Context, day string) (int, error) {
-	return InTxReturning(ctx, r.db, func(tx pgx.Tx) (int, error) {
-		var written int
-		if err := tx.QueryRow(ctx, `SELECT rollup_daily_usage($1::date)`, day).Scan(&written); err != nil {
-			return 0, fmt.Errorf("roll up daily usage: %w", err)
+	nodeIDs, err := InTxReturning(ctx, r.db, func(tx pgx.Tx) ([]string, error) {
+		rows, err := tx.Query(ctx, `
+			SELECT DISTINCT dn.node_id COLLATE "C"
+			FROM hourly_usage_summary h
+			JOIN deployment_node dn ON dn.id = h.deployment_node_id
+			WHERE h.counted_on >= ($1::date)::timestamp AT TIME ZONE 'UTC'
+			  AND h.counted_on < ($1::date + 1)::timestamp AT TIME ZONE 'UTC'
+			ORDER BY 1`, day)
+		if err != nil {
+			return nil, err
 		}
-		return written, nil
+		return pgx.CollectRows(rows, pgx.RowTo[string])
 	})
+	if err != nil {
+		return 0, fmt.Errorf("list nodes to roll up: %w", err)
+	}
+
+	written := 0
+	for start := 0; start < len(nodeIDs); start += dailyRollupChunkSize {
+		chunk := nodeIDs[start:min(start+dailyRollupChunkSize, len(nodeIDs))]
+		n, err := InTxReturning(ctx, r.db, func(tx pgx.Tx) (int, error) {
+			var n int
+			if err := tx.QueryRow(ctx, `SELECT rollup_daily_usage($1::date, $2::text[])`, day, chunk).Scan(&n); err != nil {
+				return 0, err
+			}
+			return n, nil
+		})
+		if err != nil {
+			return written, fmt.Errorf("roll up daily usage: %w", err)
+		}
+		written += n
+	}
+	return written, nil
 }
 
 // RollupMonthlyUsage runs the rollup_monthly_usage SQL function (migration 0245) for a month.
@@ -618,10 +719,12 @@ func (r *instanceIngestionRepo) RollupMonthlyUsage(ctx context.Context, year, mo
 
 // ListUnresolvedProductNodes implements InstanceIngestionRepository. Grouped by what was
 // reported, so the catalogue entries to add read as a list, most recently seen first
-// within each.
+// within each. A node unresolved since before unresolved_since existed reads as
+// unresolved since its last report.
 func (r *instanceIngestionRepo) ListUnresolvedProductNodes(ctx context.Context, since time.Time, limit int) ([]domain.UnresolvedProductNode, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT node_id, project_key, deployment_number, reported_product, reported_version, created_on, updated_on
+		SELECT node_id, project_key, deployment_number, reported_product, reported_version,
+		       COALESCE(unresolved_since, updated_on), updated_on
 		FROM deployment_node
 		WHERE product_version_id IS NULL
 		  AND reported_product IS NOT NULL
@@ -636,7 +739,7 @@ func (r *instanceIngestionRepo) ListUnresolvedProductNodes(ctx context.Context, 
 	nodes := []domain.UnresolvedProductNode{}
 	for rows.Next() {
 		var n domain.UnresolvedProductNode
-		if err := rows.Scan(&n.NodeID, &n.ProjectKey, &n.DeploymentNumber, &n.ReportedProduct, &n.ReportedVersion, &n.FirstSeenOn, &n.LastSeenOn); err != nil {
+		if err := rows.Scan(&n.NodeID, &n.ProjectKey, &n.DeploymentNumber, &n.ReportedProduct, &n.ReportedVersion, &n.UnresolvedSince, &n.LastSeenOn); err != nil {
 			return nil, fmt.Errorf("scan unresolved product node: %w", err)
 		}
 		nodes = append(nodes, n)

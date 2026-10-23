@@ -8160,16 +8160,34 @@ signatures with `GET /projects/{key}/secret-key` (`instance_ingestion_*.go`).
 
 - **Rollups run in the database** (`0245_usage_rollup_functions.sql`): `POST
   /instances/usage-rollups/daily` (`{"date"}`) and `/monthly` (`{"year","month"}`) call
-  `rollup_daily_usage(date)` and `rollup_monthly_usage(year, month)`, set-based SQL that
+  `rollup_daily_usage(date[, node_ids])` and `rollup_monthly_usage(year, month)`, set-based SQL that
   moves no usage row through the service. Daily rebuilds that UTC day's `API_CALL` rows from
   the hourly rows; monthly rebuilds the month from the daily rows. A **counter**
   (`usage_count_type_is_counter`: `TRANSACTION_COUNT`, `M2M_TOKEN`, `AGENT_*`) is summed, any other
   type takes its latest reading. Monthly counts a node-type-day once (the live row over a
   `FILE_UPLOAD` one) and includes nodes that only have uploaded days (air-gapped). Both are
   idempotent and only touch the period given. The daily function takes the same per-node
-  advisory locks as ingestion, in id order; the monthly one serialises runs of the same month
-  (`monthly_usage_summary` has no unique key). Keep `usage_count_type_is_counter` in step with the
-  Go counter rule. `pg_cron` is available on the server but not installed (it needs a
+  advisory locks as ingestion, in byte order (`COLLATE "C"`, the order Go's `sort.Strings` gives
+  the batch import, whatever the database collation), and the service runs it 100 nodes per
+  transaction so a busy day never holds thousands of advisory locks at once; the monthly one
+  serialises runs of the same month (`monthly_usage_summary` has no unique key). Keep
+  `usage_count_type_is_counter` in step with the Go counter rule.
+- **A retried report is stored once.** `hourly_usage_summary` has no unique key, and counters are
+  summed, so `InsertUsageStats` skips a row whose node, count type and `counted_on` are already
+  there (under the node lock, so it cannot race). Both sums (the live recompute and
+  `rollup_daily_usage`) also count one row per `counted_on`, for duplicates already in the table.
+  No unique index: synced rows may already hold duplicates, which would fail it.
+- **Late uploads reach the monthly table** when `USAGE_ROLLUP_ENABLED=true` (default off, the
+  switch csm-scheduled-tasks uses too): the batch import then rebuilds every month its rows fall
+  in, oldest first, in its own transaction. Off, nothing writes `monthly_usage_summary` here, so it
+  keeps one writer while the previous system's aggregation jobs and csm-sync still fill it.
+- **Backfill, once, when the rollups are switched on.** Days ingested before the hourly-derived
+  daily value hold the last report rather than the day's sum, and the scheduled daily task only
+  rebuilds the last 2 days. Call `POST /instances/usage-rollups/daily` for each day since product
+  consumption tracking started writing here (or run csm-scheduled-tasks once with
+  `USAGE_ROLLUP_DAILY_LOOKBACK_DAYS` covering them), then `/monthly` for each of those months, and
+  `/monthly` for any month an earlier upload covered. Every call is idempotent, and a day with no
+  hourly rows (one the previous system filled) is left as it is. `pg_cron` is available on the server but not installed (it needs a
   platform admin); a scheduler can call these functions, today `csm-scheduled-tasks` via these
   endpoints.
 - **Unresolved products are kept and listed** (migration 0247). A node's reported product and
@@ -8180,6 +8198,11 @@ signatures with `GET /projects/{key}/secret-key` (`instance_ingestion_*.go`).
   (`since`, default 24 h ago; `limit`, default 500, max 5000) lists such nodes, grouped by what they
   reported. This replaces ServiceNow's email to a fixed address on every miss; the daily digest is
   a csm-scheduled-tasks job. Product and version are now length-checked (255 / 100).
+  `deployment_node.unresolved_since` records when the node's reports stopped matching (kept across
+  heartbeats, cleared when it matches, set afresh if it goes unresolved again) and is returned as
+  `unresolvedSince`; `updated_on` moves with every heartbeat and `created_on` is the node's first
+  report, so neither says that. The response says `truncated: true` when more nodes matched than
+  the limit.
 - **Every report import is recorded** (migration 0248, `usage_report_import`): the batch import
   writes one history row in its own transaction (uploader, project, deployment, the report's
   `exportVersion`/`exportedAt`/`exportValid`, node and row counts), so a failed import leaves none.

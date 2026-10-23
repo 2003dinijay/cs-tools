@@ -1714,7 +1714,8 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 
 	var instanceIngestionHandler *handler.InstanceIngestionHandler
 	if db != nil {
-		instanceIngestionRepo := repository.NewInstanceIngestionRepository(repository.NewScoped(db))
+		instanceIngestionRepo := repository.NewInstanceIngestionRepository(repository.NewScoped(db),
+			repository.WithMonthlyRollupOnImport(cfg.UsageRollupEnabled))
 		instanceIngestionSvc := service.NewInstanceIngestionService(instanceIngestionRepo)
 		instanceIngestionHandler = handler.NewInstanceIngestionHandler(instanceIngestionSvc)
 	}

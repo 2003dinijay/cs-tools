@@ -378,11 +378,16 @@ func (s *instanceIngestionService) ListUnresolvedProducts(ctx context.Context, s
 		}
 		n = parsed
 	}
-	nodes, err := s.repo.ListUnresolvedProductNodes(ctx, sinceTime, n)
+	// One more than asked for tells a complete list from a cut-off one.
+	nodes, err := s.repo.ListUnresolvedProductNodes(ctx, sinceTime, n+1)
 	if err != nil {
 		return domain.UnresolvedProductsResponse{}, err
 	}
-	return domain.UnresolvedProductsResponse{Nodes: nodes, Count: len(nodes)}, nil
+	truncated := len(nodes) > n
+	if truncated {
+		nodes = nodes[:n]
+	}
+	return domain.UnresolvedProductsResponse{Nodes: nodes, Count: len(nodes), Truncated: truncated}, nil
 }
 
 // ListUsageReportImports lists imported offline reports for a project key and/or a

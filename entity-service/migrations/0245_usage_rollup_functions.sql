@@ -18,7 +18,8 @@
 -- travels through the service: hourly_usage_summary -> daily_usage_summary, and
 -- daily_usage_summary -> monthly_usage_summary. Both are idempotent: running one
 -- again for the same period changes nothing unless its source rows changed.
--- Safe to run again (CREATE OR REPLACE).
+-- Safe to run again (CREATE OR REPLACE; the one-argument rollup_daily_usage of an earlier
+-- draft is dropped first).
 
 -- A counter is a per-period delta a product publishes as the amount since its
 -- previous publish, so it adds up over a day and a month. Every other count type is
@@ -38,9 +39,17 @@ $$;
 -- rows are a different source and are never touched.
 --
 -- It takes the same per-node advisory lock ingestion takes before it reads or writes
--- a node, in a fixed order, so a report being ingested while this runs is either
--- included here or recomputed by the ingestion afterwards.
-CREATE OR REPLACE FUNCTION rollup_daily_usage(p_day date)
+-- a node, in byte order (COLLATE "C", the order Go's sort.Strings gives the batch
+-- import, whatever the database collation), so a report being ingested while this runs
+-- is either included here or recomputed by the ingestion afterwards, and no two
+-- transactions take the same pair of node locks in opposite orders.
+--
+-- p_node_ids limits the run to those node ids (deployment_node.node_id); NULL means
+-- every node with hourly rows that day. The service passes chunks of nodes, one
+-- transaction each, so a busy day never holds thousands of advisory locks at once
+-- (they share the lock table) or blocks every node's ingestion for the whole run.
+DROP FUNCTION IF EXISTS rollup_daily_usage(date);
+CREATE OR REPLACE FUNCTION rollup_daily_usage(p_day date, p_node_ids text[] DEFAULT NULL)
 RETURNS integer
 LANGUAGE plpgsql
 AS $$
@@ -51,18 +60,25 @@ DECLARE
 BEGIN
     PERFORM pg_advisory_xact_lock(hashtextextended('deployment-node:' || n.node_id, 0::bigint))
     FROM (
-        SELECT DISTINCT dn.node_id
+        SELECT DISTINCT dn.node_id COLLATE "C" AS node_id
         FROM hourly_usage_summary h
         JOIN deployment_node dn ON dn.id = h.deployment_node_id
         WHERE h.counted_on >= v_start AND h.counted_on < v_end
-        ORDER BY dn.node_id
+          AND (p_node_ids IS NULL OR dn.node_id = ANY (p_node_ids))
+        ORDER BY 1
     ) n;
 
     WITH day_rows AS (
-        SELECT h.deployment_node_id AS node_uuid, h.count_type, h.count, h.counted_on, h.created_on
+        -- One row per node, type and counted_on: a report stored twice (a retry from
+        -- before ingestion skipped them, or synced data) counts once.
+        SELECT DISTINCT ON (h.deployment_node_id, h.count_type, h.counted_on)
+               h.deployment_node_id AS node_uuid, h.count_type, h.count, h.counted_on, h.created_on
         FROM hourly_usage_summary h
         WHERE h.deployment_node_id IS NOT NULL
           AND h.counted_on >= v_start AND h.counted_on < v_end
+          AND (p_node_ids IS NULL OR h.deployment_node_id IN (
+                SELECT dn.id FROM deployment_node dn WHERE dn.node_id = ANY (p_node_ids)))
+        ORDER BY h.deployment_node_id, h.count_type, h.counted_on, h.created_on DESC, h.id
     ), computed AS (
         SELECT node_uuid, count_type, LEAST(SUM(count), 2147483647)::integer AS value
         FROM day_rows

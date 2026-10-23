@@ -280,7 +280,7 @@ func TestInstanceIngestionIntegration_ConcurrentFirstHeartbeatsMakeOneNode(t *te
 			errs <- repo.InsertUsageStats(ctx, domain.InstanceUsageIngestRequest{
 				NodeID: "node-race", CountType: "TPS", Count: i,
 				InstanceNodeMeta: domain.InstanceNodeMeta{ProjectKey: "CUPRSUBDEV", DeploymentNumber: "DEP7"},
-			}, countedOn)
+			}, countedOn.Add(time.Duration(i)*time.Minute)) // distinct reports; one instant twice is a retry, stored once
 		}(i)
 	}
 	wg.Wait()
@@ -314,8 +314,9 @@ func TestInstanceIngestionIntegration_UsageStatsRollUp(t *testing.T) {
 	// 23:30 UTC on the 15th is the 16th in the session's zone: the day must be the 15th.
 	countedOn := time.Date(2026, 10, 15, 23, 30, 0, 0, time.UTC)
 	meta := domain.InstanceNodeMeta{ProjectKey: "CUPRSUBDEV", DeploymentNumber: "DEP000001", Product: "wso2am", Version: "4.2.0"}
-	for _, c := range []int{100, 250} {
-		if err := repo.InsertUsageStats(ctx, domain.InstanceUsageIngestRequest{NodeID: "node-u", CountType: "TRANSACTION_COUNT", Count: c, InstanceNodeMeta: meta}, countedOn); err != nil {
+	for i, c := range []int{100, 250} {
+		// Two reports a minute apart (the same instant twice would be one report, retried).
+		if err := repo.InsertUsageStats(ctx, domain.InstanceUsageIngestRequest{NodeID: "node-u", CountType: "TRANSACTION_COUNT", Count: c, InstanceNodeMeta: meta}, countedOn.Add(time.Duration(i)*time.Minute)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -355,11 +356,11 @@ func TestInstanceIngestionIntegration_UsageStatsRollUp(t *testing.T) {
 	}
 
 	var hourly int
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM hourly_usage_summary WHERE counted_on = $1`, countedOn).Scan(&hourly); err != nil {
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM hourly_usage_summary WHERE counted_on >= $1`, countedOn).Scan(&hourly); err != nil {
 		t.Fatal(err)
 	}
 	if hourly != 3 {
-		t.Fatalf("hourly rows at the counted instant = %d, want 3", hourly)
+		t.Fatalf("hourly rows from the counted instant on = %d, want 3", hourly)
 	}
 }
 
@@ -1082,5 +1083,161 @@ func TestUsageRollup_MonthlyRunsForOneMonthAreSerialised(t *testing.T) {
 	}
 	if got := monthlyValues(t, pool, 2026, 10); strings.Join(got, "|") != "node-serial TRANSACTION_COUNT=100" {
 		t.Errorf("monthly rows: %v", got)
+	}
+}
+
+// A report the usage tracker retries is stored once, so a counter is not counted twice,
+// and duplicates already in the table (from before, or synced) are counted once by both
+// the live recompute and the daily rollup.
+func TestInstanceIngestionIntegration_RetriedReportsAreCountedOnce(t *testing.T) {
+	pool := instanceIngestionTestPool(t)
+	repo := repository.NewInstanceIngestionRepository(repository.NewScoped(pool))
+	ctx := internalCtx()
+	meta := domain.InstanceNodeMeta{ProjectKey: "CUPRSUBDEV", DeploymentNumber: "DEP000001", Product: "wso2am", Version: "4.2.0"}
+	at := func(hour int) time.Time { return time.Date(2026, 10, 15, hour, 0, 0, 0, time.UTC) }
+	send := func(count int, when time.Time) {
+		t.Helper()
+		req := domain.InstanceUsageIngestRequest{NodeID: "node-retry", CountType: "TRANSACTION_COUNT", Count: count, InstanceNodeMeta: meta}
+		if err := repo.InsertUsageStats(ctx, req, when); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	send(100, at(8))
+	send(100, at(8)) // the same report again, after a timeout
+	send(50, at(9))
+	var hourly int
+	if err := pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM hourly_usage_summary h JOIN deployment_node dn ON dn.id = h.deployment_node_id
+		WHERE dn.node_id = 'node-retry'`).Scan(&hourly); err != nil {
+		t.Fatal(err)
+	}
+	if hourly != 2 {
+		t.Errorf("hourly rows = %d, want 2 (the retry is not stored)", hourly)
+	}
+	if got := dailyValues(t, pool, "node-retry"); strings.Join(got, "|") != "TRANSACTION_COUNT 2026-10-15 API_CALL=150" {
+		t.Errorf("daily after a retry: %v", got)
+	}
+
+	// A duplicate already in the table is counted once, live and by the rollup.
+	var nodeUUID string
+	if err := pool.QueryRow(context.Background(), `SELECT id::text FROM deployment_node WHERE node_id = 'node-retry'`).Scan(&nodeUUID); err != nil {
+		t.Fatal(err)
+	}
+	hourlyRow(t, pool, nodeUUID, "TRANSACTION_COUNT", 50, at(9))
+	send(10, at(10))
+	if got := dailyValues(t, pool, "node-retry"); strings.Join(got, "|") != "TRANSACTION_COUNT 2026-10-15 API_CALL=160" {
+		t.Errorf("daily with a stored duplicate: %v", got)
+	}
+	if _, err := repo.RollupDailyUsage(ctx, "2026-10-15"); err != nil {
+		t.Fatal(err)
+	}
+	if got := dailyValues(t, pool, "node-retry"); strings.Join(got, "|") != "TRANSACTION_COUNT 2026-10-15 API_CALL=160" {
+		t.Errorf("daily after the rollup: %v", got)
+	}
+}
+
+// With the rollup switched on, an uploaded report rebuilds the months its rows fall in,
+// however old; with it off (the default) it leaves monthly_usage_summary alone.
+func TestInstanceIngestionIntegration_ImportRebuildsTheMonthsItTouches(t *testing.T) {
+	pool := instanceIngestionTestPool(t)
+	ctx := internalCtx()
+	meta := domain.InstanceNodeMeta{ProjectKey: "CUPRSUBDEV", DeploymentNumber: "DEP000001", Product: "wso2am", Version: "4.2.0"}
+	batch := func(node string) domain.DailyUsageBatchRequest {
+		return domain.DailyUsageBatchRequest{NodeID: node, InstanceNodeMeta: meta, Usages: []domain.DailyUsageBatchItem{
+			{Date: "2026-03-30", Type: "TRANSACTION_COUNT", Value: 40},
+			{Date: "2026-03-31", Type: "TRANSACTION_COUNT", Value: 60},
+			{Date: "2026-04-01", Type: "TOTAL_USERS", Value: 7},
+		}}
+	}
+
+	off := repository.NewInstanceIngestionRepository(repository.NewScoped(pool))
+	if _, err := off.ImportDailyUsagesBatch(ctx, batch("node-off")); err != nil {
+		t.Fatal(err)
+	}
+	if got := monthlyValues(t, pool, 2026, 3); len(got) != 0 {
+		t.Errorf("rollup off still wrote March: %v", got)
+	}
+
+	on := repository.NewInstanceIngestionRepository(repository.NewScoped(pool), repository.WithMonthlyRollupOnImport(true))
+	if _, err := on.ImportDailyUsagesBatch(ctx, batch("node-on")); err != nil {
+		t.Fatal(err)
+	}
+	// Each run rebuilds the whole month, so node-off's March is now in as well.
+	if got := monthlyValues(t, pool, 2026, 3); strings.Join(got, "|") != "node-off TRANSACTION_COUNT=100|node-on TRANSACTION_COUNT=100" {
+		t.Errorf("March: %v", got)
+	}
+	if got := monthlyValues(t, pool, 2026, 4); strings.Join(got, "|") != "node-off TOTAL_USERS=7|node-on TOTAL_USERS=7" {
+		t.Errorf("April: %v", got)
+	}
+}
+
+// The daily rollup runs a chunk of nodes per transaction; a day with more nodes than one
+// chunk is still rolled up whole.
+func TestUsageRollup_DailyRunsInChunksAndCoversEveryNode(t *testing.T) {
+	pool := instanceIngestionTestPool(t)
+	repo := repository.NewInstanceIngestionRepository(repository.NewScoped(pool))
+	ctx := internalCtx()
+	const nodes = 230 // more than two chunks of 100
+	for i := 0; i < nodes; i++ {
+		// Mixed case: the rollup locks in byte order, as the batch import does.
+		id := rollupNode(t, repo, fmt.Sprintf("Node-%03d", i))
+		if i%2 == 0 {
+			id = rollupNode(t, repo, fmt.Sprintf("node-%03d", i))
+		}
+		hourlyRow(t, pool, id, "TRANSACTION_COUNT", 1, time.Date(2026, 10, 15, 8, 0, 0, 0, time.UTC))
+	}
+	written, err := repo.RollupDailyUsage(ctx, "2026-10-15")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if written != nodes {
+		t.Errorf("rows written = %d, want %d", written, nodes)
+	}
+}
+
+// unresolved_since records when a node's reports stopped matching the catalogue: kept
+// across heartbeats, cleared once it matches, set afresh if it goes unresolved again.
+func TestInstanceIngestionIntegration_UnresolvedSinceTracksTheMiss(t *testing.T) {
+	pool := instanceIngestionTestPool(t)
+	repo := repository.NewInstanceIngestionRepository(repository.NewScoped(pool))
+	ctx := internalCtx()
+	report := func(product, version string) {
+		t.Helper()
+		meta := domain.InstanceNodeMeta{ProjectKey: "CUPRSUBDEV", DeploymentNumber: "DEP000001", Product: product, Version: version}
+		if _, err := repo.UpsertDeploymentNode(ctx, "node-since", meta); err != nil {
+			t.Fatal(err)
+		}
+	}
+	since := func() *time.Time {
+		t.Helper()
+		var v *time.Time
+		if err := pool.QueryRow(context.Background(), `SELECT unresolved_since FROM deployment_node WHERE node_id = 'node-since'`).Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+
+	report("wso2zz", "1.0.0")
+	first := since()
+	if first == nil {
+		t.Fatal("a node that went unresolved has no unresolved_since")
+	}
+	report("wso2zz", "1.0.0") // a later heartbeat
+	if got := since(); got == nil || !got.Equal(*first) {
+		t.Errorf("a heartbeat moved unresolved_since: %v, want %v", got, *first)
+	}
+	nodes, err := repo.ListUnresolvedProductNodes(ctx, time.Now().Add(-time.Hour), 10)
+	if err != nil || len(nodes) != 1 || !nodes[0].UnresolvedSince.Equal(*first) {
+		t.Fatalf("listed %+v, err %v", nodes, err)
+	}
+
+	report("wso2am", "4.2.0")
+	if got := since(); got != nil {
+		t.Errorf("a resolved node keeps unresolved_since %v", got)
+	}
+	report("wso2zz", "1.0.0")
+	if got := since(); got == nil || !got.After(*first) {
+		t.Errorf("going unresolved again: %v, first %v", got, *first)
 	}
 }

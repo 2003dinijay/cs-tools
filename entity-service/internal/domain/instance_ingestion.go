@@ -137,19 +137,22 @@ type DeploymentConsumptionSecretResponse struct {
 // UnresolvedProductNode is a node whose reported product and version did not match the
 // product catalogue, so it has no product version.
 type UnresolvedProductNode struct {
-	NodeID           string    `json:"nodeId"`
-	ProjectKey       *string   `json:"projectKey"`
-	DeploymentNumber *string   `json:"deploymentNumber"`
-	ReportedProduct  string    `json:"reportedProduct"`
-	ReportedVersion  *string   `json:"reportedVersion"`
-	FirstSeenOn      time.Time `json:"firstSeenOn"`
-	LastSeenOn       time.Time `json:"lastSeenOn"`
+	NodeID           string  `json:"nodeId"`
+	ProjectKey       *string `json:"projectKey"`
+	DeploymentNumber *string `json:"deploymentNumber"`
+	ReportedProduct  string  `json:"reportedProduct"`
+	ReportedVersion  *string `json:"reportedVersion"`
+	// UnresolvedSince is when the node's reports stopped matching the catalogue.
+	UnresolvedSince time.Time `json:"unresolvedSince"`
+	LastSeenOn      time.Time `json:"lastSeenOn"`
 }
 
-// UnresolvedProductsResponse lists nodes with an unresolved product.
+// UnresolvedProductsResponse lists nodes with an unresolved product. Truncated is true
+// when more nodes matched than the limit allowed, so the list is not complete.
 type UnresolvedProductsResponse struct {
-	Nodes []UnresolvedProductNode `json:"nodes"`
-	Count int                     `json:"count"`
+	Nodes     []UnresolvedProductNode `json:"nodes"`
+	Count     int                     `json:"count"`
+	Truncated bool                    `json:"truncated"`
 }
 
 // UsageRollupDailyRequest names the UTC day whose daily usage rows are recomputed from
