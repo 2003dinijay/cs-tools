@@ -74,6 +74,15 @@ func NewClient(cfg Config) (*Client, error) {
 	httpClient := cc.Client(tokenCtx)
 	// A recompute walks every opportunity in service and every project
 	// linked to each, so it is allowed noticeably longer than a read.
+	//
+	// THIS BUDGET IS A CEILING, NOT A GUARANTEE. entity-service cancels
+	// each request at its own REQUEST_TIMEOUT and stops writing at
+	// SERVER_WRITE_TIMEOUT, both of which default to 60s -- so a
+	// recompute that runs longer than a minute is cut off server-side
+	// and this client never gets near five minutes. Raise both on the
+	// entity-service deployment if recomputes start timing out; do not
+	// lower this value in response, which would only hide where the
+	// limit really is.
 	httpClient.Timeout = 5 * time.Minute
 	httpsec.RejectInsecureRedirects(httpClient)
 
