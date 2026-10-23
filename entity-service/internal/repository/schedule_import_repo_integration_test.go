@@ -321,3 +321,30 @@ func TestScheduleIntegration_ImportRotaKeepsTheShiftsAMoveDerives(t *testing.T) 
 		t.Errorf("%d DELETED activity rows for a shift the import kept", n)
 	}
 }
+
+func TestScheduleIntegration_ImportRotaKeepsATierAMoveHolds(t *testing.T) {
+	repo, pool := newScheduleIntegrationRepo(t)
+	ctx := context.Background()
+	if _, err := repo.ApplyRange(ctx, domain.ApplyScheduleRangeRequest{
+		UserID: schedOtherID, TeamKey: schedTeamKey, ShiftCode: "SRE_TZ1_L1", From: schedMonday, To: schedMonday,
+	}, schedLeadEmail); err != nil {
+		t.Fatalf("seed the L1 holder: %v", err)
+	}
+	// The holder's row stands in for a tiered shift a move derives.
+	mustExec(t, pool, `UPDATE team_schedule_assignment SET source = 'MOVE' WHERE user_id = $1::uuid AND team_key = $2`,
+		schedOtherID, schedTeamKey)
+
+	w := importWeek("SRE_TZ1_L1")
+	w.Absences = nil
+	w.Assignments = []domain.ApplyScheduleRangeRequest{
+		{UserID: schedMemberID, TeamKey: schedTeamKey, ShiftCode: "SRE_TZ1_L1", From: schedMonday, To: schedMonday},
+	}
+	_, err := repo.ImportRota(ctx, w, schedLeadEmail)
+	var conflict *apierror.ConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("a tier a move holds: want it refused, not written over, got %v", err)
+	}
+	if n := assignmentsOn(t, pool, schedOtherID, schedTeamKey, schedMonday, schedMonday); n != 1 {
+		t.Errorf("an import removed a tiered shift its move derives (%d left)", n)
+	}
+}

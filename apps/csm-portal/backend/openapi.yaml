@@ -14939,7 +14939,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
         "403":
-          description: An entry, or a team a replace clears, the caller may not change.
+          description: An entry the caller may not change.
           content:
             application/json:
               schema:
@@ -15742,7 +15742,7 @@ components:
     ImportRotaRequest:
       type: object
       description: The rota import file, schema version 1.
-      required: [schemaVersion, family, rotaCode, period, mode]
+      required: [schemaVersion, family, rotaCode, period]
       properties:
         schemaVersion:
           type: integer
@@ -15761,7 +15761,8 @@ components:
             to: {type: string, format: date}
         mode:
           type: string
-          enum: [replace, merge]
+          deprecated: true
+          description: Ignored; an import always writes over. Accepted so files written for replace or merge still load.
         assignments:
           type: array
           items:
@@ -15797,9 +15798,8 @@ components:
         rotaCode: {type: string}
         from: {type: string, format: date}
         to: {type: string, format: date}
-        mode: {type: string, enum: [replace, merge]}
         dryRun: {type: boolean}
-        cleared: {type: integer, description: Assignments a replace removed first.}
+        cleared: {type: integer, description: "Existing assignments the file wrote over beyond its own slots: the person's clashing rows on other teams of the rota and the earlier holder of a tier the file names."}
         applied: {type: integer, description: Assignment days written.}
         skipped: {type: integer, description: Assignment days the window is not worked on.}
         skippedDays:

@@ -195,6 +195,7 @@ func writeOverForAssignment(ctx context.Context, tx pgx.Tx, req domain.ApplySche
 				   AND a.user_id <> $4::uuid
 				   AND ($6 OR lower(a.team_key) = lower($5))
 				   AND lower(a.team_key) = ANY($7::text[])
+				   AND a.source <> 'MOVE'
 				   AND a.created_on < now()`,
 				*zoneID, *tier, iso, req.UserID, req.TeamKey, shared, writable)
 			if err != nil {
