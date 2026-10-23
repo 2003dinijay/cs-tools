@@ -427,6 +427,39 @@ func (r *slaEngineRepo) CompleteClock(ctx context.Context, workItemID, target st
 // "flat wall-clock, no business hours" crudeness), so there is nothing
 // correct to compute for it; it stays NULL for every source='CSM' row, same
 // as before this fix.
+//
+// business_elapsed_percentage/business_duration/remaining_business_duration
+// are now frozen at their REAL value the instant a clock pauses -- a real,
+// reported gap with the identical shape CompleteClock's own doc comment
+// already describes fixing for completion: this UPDATE used to leave all
+// three completely untouched on pause, same as it always had, so a paused
+// clock's displayed elapsed/remaining fell back to whatever was stored at
+// registration (effectively 0%/the full duration) rather than the true
+// elapsed time up to the moment it was paused -- confirmed live, a case
+// moved to Awaiting Info minutes after its workaround/resolution clocks
+// started showed "0 Minutes elapsed" / the full target duration still
+// "remaining" for both, even though real working time had passed.
+// sla_live only computes these three live for an IN_PROGRESS/BREACHED row
+// (see that view's own doc comment); for PAUSED it just passes the stored
+// columns through unchanged, so whatever this UPDATE writes here is exactly
+// what the case detail's SLA tab, GET /sla-status and task_sla_repo.go's
+// own reads will show for as long as the clock stays paused.
+//
+// The freeze point is COALESCE(s.paused_on, NOW()), not a bare NOW() --
+// deliberately the SAME expression paused_on itself is computed from just
+// above. A genuinely new pause (paused_on currently NULL) freezes at NOW(),
+// same instant paused_on is set to. A duplicate/idempotent pause call on an
+// already-PAUSED clock (e.g. a redelivered case.status_changed event,
+// arbitrarily later in wall-clock time) must re-derive the IDENTICAL frozen
+// values, not silently advance them as if the clock kept accumulating
+// elapsed time while paused -- using the row's own already-set paused_on
+// (now non-NULL, so COALESCE no longer falls back to NOW()) gives exactly
+// that: the same frozen snapshot every time, however many times pause is
+// redelivered. The elapsed math itself mirrors sla_live's own live_*
+// formula, just evaluated at the pause instant instead of at read time:
+// (freeze point) - start_on - the pause total ALREADY completed before this
+// pause began (s.pause_duration, left unmodified by the pause branch above)
+// -- never the segment this pause is itself only just starting.
 func (r *slaEngineRepo) SetPaused(ctx context.Context, workItemID, target string, paused bool) (bool, error) {
 	const query = `
 		UPDATE sla s
@@ -435,6 +468,22 @@ func (r *slaEngineRepo) SetPaused(ctx context.Context, workItemID, target string
 		                           ELSE COALESCE(s.pause_duration, INTERVAL '0') + COALESCE(NOW() - s.paused_on, INTERVAL '0')
 		                      END,
 		    paused_on = CASE WHEN $3 THEN COALESCE(s.paused_on, NOW()) ELSE NULL END,
+		    business_elapsed_percentage = CASE WHEN $3 THEN GREATEST(0,
+		            EXTRACT(EPOCH FROM (COALESCE(s.paused_on, NOW()) - s.start_on - COALESCE(s.pause_duration, INTERVAL '0')))
+		            / NULLIF(EXTRACT(EPOCH FROM s.duration), 0) * 100
+		        )
+		        ELSE s.business_elapsed_percentage
+		    END,
+		    business_duration = CASE WHEN $3 THEN GREATEST(
+		            COALESCE(s.paused_on, NOW()) - s.start_on - COALESCE(s.pause_duration, INTERVAL '0'), INTERVAL '0'
+		        )
+		        ELSE s.business_duration
+		    END,
+		    remaining_business_duration = CASE WHEN $3 THEN GREATEST(
+		            s.duration - (COALESCE(s.paused_on, NOW()) - s.start_on - COALESCE(s.pause_duration, INTERVAL '0')), INTERVAL '0'
+		        )
+		        ELSE s.remaining_business_duration
+		    END,
 		    updated_on = NOW(), updated_by = $4
 		FROM sla_policy sp
 		WHERE s.sla_policy_id = sp.id

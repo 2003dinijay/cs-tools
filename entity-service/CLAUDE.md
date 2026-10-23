@@ -2314,6 +2314,30 @@ regardless of severity.
   tiers forward on resume, and to rebuild an accurate due-date schedule from
   this durable record if its own Redis is ever wiped (see that repo's own
   CLAUDE.md, "SLA breach-alerting engine" → "resumeShift"/"Reconcile").
+- **`SetPaused` now also freezes `business_elapsed_percentage`/
+  `business_duration`/`remaining_business_duration` at the instant a clock
+  pauses — the identical gap `CompleteClock`'s own doc comment already
+  describes fixing for completion, just never carried over to pausing.**
+  `sla_live` only computes these three live for an `IN_PROGRESS`/`BREACHED`
+  row; for `PAUSED` it passes the stored columns through unchanged (see that
+  view's own doc comment) — so as long as `SetPaused` left them untouched, a
+  paused clock's case-detail SLA tab/`GET /sla-status` reading fell back to
+  whatever was stored at `RegisterClock` time (effectively 0% elapsed, the
+  full target duration still "remaining"), not the clock's true elapsed time
+  up to the pause. Confirmed live: a workaround/resolution clock paused
+  minutes after a case was created showed "0 Minutes" elapsed and the full
+  policy duration still "left," even though real working time had passed.
+  The freeze point is `COALESCE(paused_on, NOW())` — the same expression
+  `paused_on` itself is set from, not a bare `NOW()` — so a duplicate/
+  idempotent pause call (a redelivered `case.status_changed`) re-derives the
+  identical frozen snapshot instead of silently advancing it as if the clock
+  kept accumulating elapsed time while paused; the elapsed math itself
+  subtracts the pause total already completed before this pause began
+  (`pause_duration`, left unmodified by the pause branch), mirroring
+  `sla_live`'s own live formula just evaluated at the pause instant instead
+  of at read time. Resuming leaves these three columns alone — once the
+  clock goes back to `IN_PROGRESS`, `sla_live` resumes computing them live
+  on every read regardless of whatever stale snapshot is still stored.
 - **A case closing now finalizes all three clock types, not just
   resolution.** `ApplyCaseStateEffects`'s `CaseStateClosed` branch used to
   only resume+complete `resolution` and merely pause `workaround` forever
