@@ -153,6 +153,30 @@ export function allocationsByPersonAndDay(
   return out;
 }
 
+/** The quiet line both views show when the allocations could not be read. */
+export const ENGAGEMENTS_FAILED_NOTE = "Customer engagements could not be loaded, so they are not shown.";
+
+/**
+ * One day's allocations as the lines of a tooltip, one per allocation: the
+ * label, then the same details the week bar's tooltip carries. The month
+ * roster's marker has no room for a label, so the label leads each line.
+ */
+export function dayMarkerLines(list: readonly EngagementAllocation[]): string[] {
+  return list.map((a) => `${allocationLabel(a)}: ${allocationTitle(a)}`);
+}
+
+/** The marker's tooltip: every allocation covering the day, one per line. */
+export function dayMarkerTitle(list: readonly EngagementAllocation[]): string {
+  return dayMarkerLines(list).join("\n");
+}
+
+/** The marker's accessible name: says how many, then lists them. Separate
+ *  from the tooltip because a screen reader has no use for line breaks. */
+export function dayMarkerAriaLabel(list: readonly EngagementAllocation[]): string {
+  const head = list.length === 1 ? "Customer engagement" : `${list.length} customer engagements`;
+  return `${head}. ${dayMarkerLines(list).join(". ")}`;
+}
+
 /** What a customer engagement bar is: one line, for any view that draws them. */
 export const ENGAGEMENT_LEGEND_ITEM: LegendItem = {
   key: "engagement",
@@ -161,4 +185,15 @@ export const ENGAGEMENT_LEGEND_ITEM: LegendItem = {
   token: "",
   label: "Customer engagement: one bar a day, account and engagement id (read-only)",
   swatch: "engagement",
+};
+
+/** What the month roster's day marker is: a strip under the day, with no room
+ *  for text, so the legend says where the details are. */
+export const ENGAGEMENT_MARK_LEGEND_ITEM: LegendItem = {
+  key: "engagement-mark",
+  group: "Engagements",
+  code: "",
+  token: "",
+  label: "Customer engagement: a strip under the day, hover for the details (read-only)",
+  swatch: "engagement-mark",
 };

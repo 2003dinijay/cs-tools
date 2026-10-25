@@ -21,6 +21,7 @@ import RosterLegend, { type LegendItem } from "./RosterLegend";
 import RotaPicker, { type RotaOption } from "./RotaPicker";
 import type {
   CellAbsence,
+  EngagementAllocation,
   ScheduleAbsence,
   ScheduleAbsenceKind,
   ScheduleAssignment,
@@ -30,6 +31,13 @@ import type {
   RotaFamily,
 } from "../types";
 import { addDays, initialsOf, isRotationShift, kindsOfferedOn, mondayOf, movesOfferedOn, toIsoDate, zoneColumnOf, zoneLabelOn, type RosterSpan } from "../utils/rota";
+import {
+  ENGAGEMENTS_FAILED_NOTE,
+  ENGAGEMENT_MARK_LEGEND_ITEM,
+  allocationsByPersonAndDay,
+  dayMarkerAriaLabel,
+  dayMarkerTitle,
+} from "../utils/engagementAllocations";
 import { ordinaryDayCode, REGULAR_HOURS_CODE } from "../utils/standingDay";
 import { useTeamColour, useTeamName } from "../utils/teamColourContext";
 
@@ -53,6 +61,12 @@ interface MonthRosterProps {
    *  choice to offer. */
   span?: RosterSpan;
   onSpanChange?: (span: RosterSpan) => void;
+  /** Confirmed customer engagement allocations over the days shown, drawn
+   *  read-only as a strip under each day an engineer is on one. */
+  engagementAllocations?: EngagementAllocation[];
+  /** The allocations could not be read: the roster is drawn without them,
+   *  with a quiet note saying so. */
+  engagementsFailed?: boolean;
   assignments: ScheduleAssignment[];
   absences: ScheduleAbsence[];
   shifts: Map<string, ScheduleShift>;
@@ -216,6 +230,8 @@ export default function MonthRoster({
   to: rangeTo,
   span,
   onSpanChange,
+  engagementAllocations,
+  engagementsFailed = false,
   assignments,
   absences,
   shifts,
@@ -275,6 +291,11 @@ export default function MonthRoster({
     const count = Math.round((last.getTime() - first.getTime()) / 86_400_000) + 1;
     return Array.from({ length: count }, (_, i) => new Date(first.getFullYear(), first.getMonth(), first.getDate() + i));
   }, [month, monthCount, fromIso, toIso]);
+  /** Customer engagements, engineer then day, over the days on the grid. */
+  const engByPerson = useMemo(
+    () => allocationsByPersonAndDay(engagementAllocations ?? [], days.map(toIsoDate)),
+    [engagementAllocations, days],
+  );
   /** The 1st of each month after the first: where the grid draws a month rule
    *  and names the month, so ninety columns still read as three months. */
   const opensMonth = (d: Date): boolean => d.getDate() === 1 && d.getTime() !== days[0].getTime();
@@ -848,8 +869,11 @@ export default function MonthRoster({
       const sh = shifts.get(kind.showsAsShiftCode);
       if (sh && sh.family === family) put({ key: `s|${sh.shortCode}|${sh.colourToken}|`, group: "Hours", code: sh.shortCode, token: sh.colourToken, label: sh.label });
     }
+    // Only when a marker is on a row in view: the legend explains what is
+    // drawn, and the marker is not a code a lead can mark.
+    if (rows.some((r) => (engByPerson.get(r.userId)?.size ?? 0) > 0)) put(ENGAGEMENT_MARK_LEGEND_ITEM);
     return [...out.values()];
-  }, [rows, days, kindByCode, defaultFor, absenceKinds, family, shifts]);
+  }, [rows, days, kindByCode, defaultFor, absenceKinds, family, shifts, engByPerson]);
 
   /** Turn a click on any roster cell into the slot the page should open the
    *  picker on. Shared by the plain grid and by SRE's zone-split one, which
@@ -903,6 +927,22 @@ export default function MonthRoster({
     ) : (
       <span className={`chip sm ${c.token}${c.isDefault ? " dflt" : ""}${c.onCall ? " oc" : ""}${extra}`}>{c.code}</span>
     );
+  /** The strip under a day on which the engineer is on a customer
+   *  engagement, or nothing. Absolutely placed in the cell (see the css), so
+   *  it moves nothing. A day split by zone draws it in every sub-column, so
+   *  the strip runs the width of the day, but only the first is named: the
+   *  rest are hidden from assistive technology, so the day is announced once.
+   *  The title is on all of them so the tooltip shows wherever the pointer
+   *  is along the strip. */
+  const engMark = (userId: string, iso: string, named = true): JSX.Element | null => {
+    const list = engByPerson.get(userId)?.get(iso);
+    if (!list || list.length === 0) return null;
+    return named ? (
+      <span className="engmk" role="img" aria-label={dayMarkerAriaLabel(list)} title={dayMarkerTitle(list)} />
+    ) : (
+      <span className="engmk" aria-hidden="true" title={dayMarkerTitle(list)} />
+    );
+  };
   /** Said on a day that is leave but still holds a turn. */
   const clashNote = (turns: Cell[] | undefined): string =>
     turns && turns.length > 0
@@ -1141,6 +1181,7 @@ export default function MonthRoster({
                 ) : (
                   <span className="none">·</span>
                 )}
+                {engMark(row.userId, iso)}
               </td>
             );
           }
@@ -1173,6 +1214,7 @@ export default function MonthRoster({
                 {...(editable ? keyable(`${row.userId}|${row.teamKey}|${iso}`, firstStop()) : {})}
               >
                 {clash ? clashPair(whole, clash) : chipOf(whole)}
+                {engMark(row.userId, iso)}
               </td>
             );
           }
@@ -1226,6 +1268,7 @@ export default function MonthRoster({
                 ) : (
                   <span className="zempty" />
                 )}
+                {engMark(row.userId, iso, i === 0)}
               </td>
             );
           });
@@ -1336,6 +1379,11 @@ export default function MonthRoster({
       </div>
 
       <RosterLegend items={legendItems} />
+      {engagementsFailed ? (
+        <div className="engnote" role="status">
+          {ENGAGEMENTS_FAILED_NOTE}
+        </div>
+      ) : null}
 
       {/* The card's one scroller. Both axes live here, which is what lets the
           date row and the engineer column stay pinned to the grid they label

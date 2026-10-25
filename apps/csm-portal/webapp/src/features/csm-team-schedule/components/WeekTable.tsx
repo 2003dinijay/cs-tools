@@ -37,6 +37,7 @@ import {
   standingWindowKey,
   toIsoDate, rotaZoneName, zoneAbbreviation } from "../utils/rota";
 import {
+  ENGAGEMENTS_FAILED_NOTE,
   ENGAGEMENT_LEGEND_ITEM,
   allocationLabel,
   allocationTitle,
@@ -460,7 +461,7 @@ export default function WeekTable({
       {head}
       {engagementsFailed ? (
         <div className="engnote" role="status">
-          Customer engagements could not be loaded, so they are not shown.
+          {ENGAGEMENTS_FAILED_NOTE}
         </div>
       ) : null}
       <div className="twwrap weekwrap">

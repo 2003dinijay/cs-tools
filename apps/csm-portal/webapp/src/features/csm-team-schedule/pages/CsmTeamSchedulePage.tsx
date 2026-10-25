@@ -1390,13 +1390,21 @@ export default function CsmTeamSchedulePage(): JSX.Element {
     () => distinctUserIds([...engagementPeople.keys()].map((userId) => ({ userId }))),
     [engagementPeople],
   );
-  // Week view only, over the week on screen. A failure or an empty answer
-  // leaves the schedule exactly as it was; the week table says so quietly.
+  // Week and roster views, over the days on screen: the week, or the roster's
+  // own window (the exact days its grid draws, padding days included). A
+  // window the hook has to cut (three and six months run past 70 days) is cut
+  // there. Each piece is cached under its ids and dates, so a week and a
+  // roster window that coincide share their read. A failure or an empty answer
+  // leaves the schedule exactly as it was; the view says so quietly.
+  const engagementWindow =
+    view === "roster"
+      ? { from: toIsoDate(rosterStart), to: toIsoDate(rosterEnd) }
+      : { from: toIsoDate(weekStart), to: toIsoDate(addDays(weekStart, 6)) };
   const engagements = useEngagementAllocations(
     engagementUserIds,
-    toIsoDate(weekStart),
-    toIsoDate(addDays(weekStart, 6)),
-    view === "week" && engagementUserIds.length > 0,
+    engagementWindow.from,
+    engagementWindow.to,
+    (view === "week" || view === "roster") && engagementUserIds.length > 0,
   );
 
   if (catalogue.isError) {
@@ -1758,6 +1766,8 @@ export default function CsmTeamSchedulePage(): JSX.Element {
               to={rosterEnd}
               span={rosterSpan}
               onSpanChange={setRosterSpan}
+              engagementAllocations={engagements.allocations}
+              engagementsFailed={engagements.isError}
               assignments={rows}
               absences={absences.data?.absences ?? []}
               shifts={shifts}

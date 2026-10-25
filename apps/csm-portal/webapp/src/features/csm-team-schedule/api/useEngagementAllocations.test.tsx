@@ -117,4 +117,34 @@ describe("useEngagementAllocations", () => {
     renderHook(() => useEngagementAllocations(ids(1), "2026-09-21", "2026-09-27", false), { wrapper: wrapper() });
     expect(api.post).not.toHaveBeenCalled();
   });
+
+  it("reads a roster-sized window of 90 days in two pieces, and a one-month window in one", async () => {
+    api.post.mockResolvedValue({ allocations: [], count: 0 });
+    renderHook(() => useEngagementAllocations(ids(1), "2026-09-01", "2026-09-30"), { wrapper: wrapper() });
+    await waitFor(() => expect(api.post).toHaveBeenCalledTimes(1));
+    expect(api.post.mock.calls[0][1]).toEqual({ userIds: ids(1), from: "2026-09-01", to: "2026-09-30" });
+    api.post.mockClear();
+    renderHook(() => useEngagementAllocations(ids(1), "2026-08-07", "2026-11-04"), { wrapper: wrapper() });
+    await waitFor(() => expect(api.post).toHaveBeenCalledTimes(2));
+    const windows = api.post.mock.calls.map((c) => [c[1].from, c[1].to]).sort();
+    expect(windows).toEqual([
+      ["2026-08-07", "2026-10-15"],
+      ["2026-10-16", "2026-11-04"],
+    ]);
+  });
+
+  it("does not read again when the view changes to a window it already holds", async () => {
+    api.post.mockResolvedValue({ allocations: [row("a1", ids(1)[0])], count: 1 });
+    const w = wrapper();
+    const { result, rerender } = renderHook(
+      (p: { from: string; to: string }) => useEngagementAllocations(ids(1), p.from, p.to),
+      { wrapper: w, initialProps: { from: "2026-09-21", to: "2026-09-27" } },
+    );
+    await waitFor(() => expect(result.current.allocations).toHaveLength(1));
+    rerender({ from: "2026-09-01", to: "2026-09-30" });
+    await waitFor(() => expect(api.post).toHaveBeenCalledTimes(2));
+    rerender({ from: "2026-09-21", to: "2026-09-27" });
+    expect(result.current.allocations).toHaveLength(1);
+    expect(api.post).toHaveBeenCalledTimes(2);
+  });
 });

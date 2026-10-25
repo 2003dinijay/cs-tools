@@ -3354,3 +3354,38 @@
   color: var(--muted);
   border-bottom: 1px solid var(--line);
 }
+
+/* The month roster's marker: a day cell is 26 to 44px wide, so an engagement
+   is a strip along the foot of the cell, not a bar. It is absolutely placed
+   in the cell's padding, so the row keeps its height and the chip, the
+   on-call dashes and the leave mark are not moved. The hit area is taller
+   than the strip so the tooltip can be reached; only the strip is drawn, in
+   the bar's edge colour: 4.3:1 or better against the cell in light (4.27
+   on the reader's row tint, 4.38 on a weekend) and 6.1:1 or better in dark. */
+.csm-ts .roster td.c .engmk {
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  bottom: 0;
+  height: 7px;
+  cursor: default;
+}
+.csm-ts .roster td.c .engmk::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 1px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--eng-edge);
+}
+/* The legend's swatch: the same strip, on its own. */
+.csm-ts .engmksw {
+  display: inline-block;
+  width: 26px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--eng-edge);
+  align-self: center;
+}

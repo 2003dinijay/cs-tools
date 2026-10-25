@@ -30,8 +30,8 @@ export interface LegendItem {
   label: string;
   /** Drawn dashed, as an on-call window is on the grid. */
   onCall?: boolean;
-  /** Draw the engagement bar's swatch instead of a code chip. */
-  swatch?: "engagement";
+  /** Draw the engagement bar's (or the month marker's) swatch instead of a code chip. */
+  swatch?: "engagement" | "engagement-mark";
 }
 
 const ORDER: LegendGroup[] = ["Rota", "Hours", "Leave", "Allocations", "Engagements"];
@@ -92,6 +92,8 @@ export default function RosterLegend({ items }: { items: LegendItem[] }): JSX.El
                 <li key={it.key}>
                   {it.swatch === "engagement" ? (
                     <span className="engsw" aria-hidden="true" />
+                  ) : it.swatch === "engagement-mark" ? (
+                    <span className="engmksw" aria-hidden="true" />
                   ) : (
                     <span className={`chip sm ${it.token}${it.onCall ? " oc" : ""}`}>{it.code}</span>
                   )}
