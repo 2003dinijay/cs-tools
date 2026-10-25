@@ -3361,8 +3361,12 @@
    on-call dashes and the leave mark are not moved. The hit area is taller
    than the strip so the tooltip can be reached; only the strip is drawn, in
    the bar's edge colour: 4.3:1 or better against the cell in light (4.27
-   on the reader's row tint, 4.38 on a weekend) and 6.1:1 or better in dark. */
-.csm-ts .roster td.c .engmk {
+   on the reader's row tint, 4.38 on a weekend) and 6.1:1 or better in dark.
+   Keyed on the marker, not on td.c: a read-only, unsplit day cell has no .c. */
+.csm-ts .roster td:has(> .engmk) {
+  position: relative;
+}
+.csm-ts .roster td:has(> .engmk) .engmk {
   position: absolute;
   left: 2px;
   right: 2px;
@@ -3370,7 +3374,7 @@
   height: 7px;
   cursor: default;
 }
-.csm-ts .roster td.c .engmk::after {
+.csm-ts .roster td:has(> .engmk) .engmk::after {
   content: "";
   position: absolute;
   left: 0;
