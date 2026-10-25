@@ -34,11 +34,13 @@ import (
 // the request reached the repository unchanged — and returns fixed rows, since
 // what the repository does with them is SQL's business, not the service's.
 type fakeScheduleRepo struct {
-	gotAssignmentReq  domain.SearchScheduleAssignmentsRequest
-	gotAbsenceReq     domain.SearchScheduleAbsencesRequest
-	gotOnDutyAt       time.Time
-	gotIncludeOnLeave bool
-	called            bool
+	gotAssignmentReq           domain.SearchScheduleAssignmentsRequest
+	gotAbsenceReq              domain.SearchScheduleAbsencesRequest
+	gotOnDutyAt                time.Time
+	gotEngagementAllocationReq domain.SearchScheduleEngagementAllocationsRequest
+	engagementAllocations      []domain.ScheduleEngagementAllocation
+	gotIncludeOnLeave          bool
+	called                     bool
 
 	assignments []domain.ScheduleAssignment
 	absences    []domain.ScheduleAbsence
@@ -233,6 +235,12 @@ func (f *fakeScheduleRepo) SearchAbsences(_ context.Context, req domain.SearchSc
 	return f.absences, f.err
 }
 
+func (f *fakeScheduleRepo) SearchEngagementAllocations(_ context.Context, req domain.SearchScheduleEngagementAllocationsRequest) ([]domain.ScheduleEngagementAllocation, error) {
+	f.called = true
+	f.gotEngagementAllocationReq = req
+	return f.engagementAllocations, f.err
+}
+
 func (f *fakeScheduleRepo) OnDutyAt(_ context.Context, at time.Time, includeOnLeave bool) ([]domain.ScheduleAssignment, error) {
 	f.called = true
 	f.gotOnDutyAt = at
@@ -423,6 +431,11 @@ func TestScheduleReadsRequireInternalCaller(t *testing.T) {
 		"absences": func(s ScheduleService) error {
 			_, err := s.SearchAbsences(context.Background(),
 				domain.SearchScheduleAbsencesRequest{From: window.From, To: window.To})
+			return err
+		},
+		"engagement-allocations": func(s ScheduleService) error {
+			_, err := s.SearchEngagementAllocations(context.Background(), domain.SearchScheduleEngagementAllocationsRequest{
+				UserIDs: []string{"00000000-0000-0000-0000-000000000001"}, From: window.From, To: window.To})
 			return err
 		},
 		"on-duty": func(s ScheduleService) error {
@@ -1166,5 +1179,73 @@ func TestTheHomeLeadRemovesAMoveFiledUnderTheOtherTeam(t *testing.T) {
 	}
 	if repo.deletedID != "" {
 		t.Fatal("the repository was written to")
+	}
+}
+
+func TestSearchEngagementAllocationsValidatesTheRequest(t *testing.T) {
+	t.Parallel()
+
+	const id = "00000000-0000-0000-0000-000000000001"
+	cases := map[string]domain.SearchScheduleEngagementAllocationsRequest{
+		"no users":       {From: "2026-09-21", To: "2026-09-27"},
+		"empty user id":  {UserIDs: []string{""}, From: "2026-09-21", To: "2026-09-27"},
+		"user not uuid":  {UserIDs: []string{"jane.doe@example.com"}, From: "2026-09-21", To: "2026-09-27"},
+		"no window":      {UserIDs: []string{id}},
+		"inverted":       {UserIDs: []string{id}, From: "2026-09-27", To: "2026-09-21"},
+		"bad date":       {UserIDs: []string{id}, From: "21/09/2026", To: "2026-09-27"},
+		"window too big": {UserIDs: []string{id}, From: "2026-01-01", To: "2026-12-31"},
+		"too many users": {UserIDs: make([]string, maxEngagementAllocationUsers+1), From: "2026-09-21", To: "2026-09-27"},
+	}
+	for name, req := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			repo := &fakeScheduleRepo{}
+			_, err := NewScheduleService(repo, alwaysUnrestrictedAccess{}).SearchEngagementAllocations(context.Background(), req)
+			var validation *apierror.ValidationError
+			if !errors.As(err, &validation) {
+				t.Fatalf("want a ValidationError, got %v", err)
+			}
+			if repo.called {
+				t.Fatal("repository was called for a request that failed validation")
+			}
+		})
+	}
+}
+
+func TestSearchEngagementAllocationsPassesTheRequestThroughAndCounts(t *testing.T) {
+	t.Parallel()
+
+	name := "Example Corp"
+	repo := &fakeScheduleRepo{engagementAllocations: []domain.ScheduleEngagementAllocation{
+		{ID: "a", UserID: "u", EngagementID: "e", AccountName: &name, StartDate: "2026-09-21", EndDate: "2026-09-25"},
+		{ID: "b", UserID: "u", EngagementID: "e", StartDate: "2026-09-26", EndDate: "2026-09-27"},
+	}}
+	req := domain.SearchScheduleEngagementAllocationsRequest{
+		UserIDs: []string{"00000000-0000-0000-0000-000000000001"}, From: "2026-09-21", To: "2026-09-27"}
+
+	resp, err := NewScheduleService(repo, alwaysUnrestrictedAccess{}).SearchEngagementAllocations(context.Background(), req)
+	if err != nil {
+		t.Fatalf("SearchEngagementAllocations: %v", err)
+	}
+	if !reflect.DeepEqual(repo.gotEngagementAllocationReq, req) {
+		t.Fatalf("repository got %+v, want %+v", repo.gotEngagementAllocationReq, req)
+	}
+	if resp.Count != 2 || len(resp.Allocations) != 2 {
+		t.Fatalf("got count %d with %d rows, want 2", resp.Count, len(resp.Allocations))
+	}
+}
+
+func TestSearchEngagementAllocationsEmptyIsAnEmptyList(t *testing.T) {
+	t.Parallel()
+
+	repo := &fakeScheduleRepo{}
+	resp, err := NewScheduleService(repo, alwaysUnrestrictedAccess{}).SearchEngagementAllocations(context.Background(),
+		domain.SearchScheduleEngagementAllocationsRequest{
+			UserIDs: []string{"00000000-0000-0000-0000-000000000001"}, From: "2026-09-21", To: "2026-09-27"})
+	if err != nil {
+		t.Fatalf("SearchEngagementAllocations: %v", err)
+	}
+	if resp.Count != 0 || resp.Allocations == nil {
+		t.Fatalf("got count %d, allocations nil=%v; want 0 and a non-nil empty list", resp.Count, resp.Allocations == nil)
 	}
 }
