@@ -16,10 +16,11 @@
  * under the License.
  */
 
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import WeekTable from "./WeekTable";
+import type { EngagementAllocation } from "../types";
 import {
   ANNUAL_LEAVE,
   EVENING,
@@ -161,5 +162,118 @@ describe("WeekTable: no tier on a zone's escalation window", () => {
       [...container.querySelectorAll("tbody tr")].find((tr) => tr.querySelector("th.lab small")?.textContent === label);
     expect(rowOf("TZ3 regular hours")).toHaveTextContent("Isuri");
     expect(container.textContent).not.toContain("tier not set");
+  });
+});
+
+describe("WeekTable: customer engagements", () => {
+  const JANE = "00000000-0000-0000-0000-000000000001";
+  const PEOPLE = new Map([[JANE, { name: "Jane Doe", teamKey: "alpha" }]]);
+  const onRota = [assignment({ name: "Jane Doe", userId: JANE, rotaDate: "2026-09-21", shiftCode: REGULAR.code })];
+  const alloc = (over: Partial<EngagementAllocation> = {}): EngagementAllocation => ({
+    id: "a1",
+    userId: JANE,
+    engagementId: "00000000-0000-0000-0000-0000000000e1",
+    startDate: "2026-09-22",
+    endDate: "2026-09-24",
+    accountName: "Example Corp",
+    engagementDisplayId: "ENG-1001",
+    engagementType: "CONSULTANCY",
+    modeOfDelivery: "ONSITE",
+    allocationId: "ALLOC-7",
+    utilization: 50,
+    ...over,
+  });
+  const engRows = (c: HTMLElement) => [...c.querySelectorAll("tr.engrow")] as HTMLElement[];
+  const bars = (el: ParentNode) => [...el.querySelectorAll(".engbar")] as HTMLElement[];
+
+  it("draws one bar a day for each day the allocation covers, on the engineer's own row", () => {
+    const { container } = renderWeek({
+      assignments: onRota,
+      engagementAllocations: [alloc()],
+      engagementPeople: PEOPLE,
+    });
+    const rows = engRows(container);
+    expect(rows).toHaveLength(1);
+    expect(within(rows[0]).getByText("Jane Doe")).toBeInTheDocument();
+    // Tuesday to Thursday: three of the seven day cells hold a bar.
+    const cells = [...rows[0].querySelectorAll("td")];
+    expect(cells.map((td) => bars(td).length)).toEqual([0, 1, 1, 1, 0, 0, 0]);
+  });
+
+  it("labels the bar with the account and engagement id and explains it in the tooltip", () => {
+    const { container } = renderWeek({
+      assignments: onRota,
+      engagementAllocations: [alloc()],
+      engagementPeople: PEOPLE,
+    });
+    const bar = bars(container)[0];
+    expect(bar).toHaveTextContent("Example Corp - ENG-1001");
+    expect(bar).toHaveAttribute("title", "Consultancy ● Onsite ● ALLOC-7 ● 50% ● 2026-09-22 - 2026-09-24");
+  });
+
+  it("falls back to Engagement when the server sent no names", () => {
+    const { container } = renderWeek({
+      assignments: onRota,
+      engagementAllocations: [
+        alloc({ accountName: undefined, engagementDisplayId: undefined, engagementType: undefined, modeOfDelivery: undefined, allocationId: undefined, utilization: undefined }),
+      ],
+      engagementPeople: PEOPLE,
+    });
+    const bar = bars(container)[0];
+    expect(bar).toHaveTextContent("Engagement");
+    expect(bar).toHaveAttribute("title", "2026-09-22 - 2026-09-24");
+  });
+
+  it("stacks every allocation on the same day without adding rows", () => {
+    const { container } = renderWeek({
+      assignments: onRota,
+      engagementAllocations: [
+        alloc({ id: "a1", accountName: "Alpha Ltd" }),
+        alloc({ id: "a2", accountName: "Beta Ltd", startDate: "2026-09-22", endDate: "2026-09-22" }),
+      ],
+      engagementPeople: PEOPLE,
+    });
+    expect(engRows(container)).toHaveLength(1);
+    const tuesday = engRows(container)[0].querySelectorAll("td")[1];
+    expect(bars(tuesday).map((b) => b.textContent)).toEqual(["Alpha Ltd - ENG-1001", "Beta Ltd - ENG-1001"]);
+    expect(tuesday.querySelectorAll(".engstack")).toHaveLength(1);
+  });
+
+  it("is read-only: a bar is not a link, button or form control", () => {
+    const { container } = renderWeek({
+      assignments: onRota,
+      engagementAllocations: [alloc()],
+      engagementPeople: PEOPLE,
+    });
+    const row = engRows(container)[0];
+    expect(row.querySelector("a, button, input, select, textarea, [tabindex]")).toBeNull();
+  });
+
+  it("explains the bar in the legend, and only when there is one", () => {
+    const withBar = renderWeek({ assignments: onRota, engagementAllocations: [alloc()], engagementPeople: PEOPLE });
+    expect(withBar.container.querySelector("details.rlegend .engsw")).not.toBeNull();
+    withBar.unmount();
+    const without = renderWeek({ assignments: onRota });
+    expect(without.container.querySelector("details.rlegend")).toBeNull();
+    expect(without.container.querySelector("tr.engrow")).toBeNull();
+  });
+
+  it("leaves the week intact and says so quietly when the read failed", () => {
+    const { container } = renderWeek({ assignments: onRota, engagementsFailed: true });
+    expect(screen.getByText("Regular hours")).toBeInTheDocument();
+    expect(screen.getAllByText("Jane Doe").length).toBeGreaterThan(0);
+    expect(screen.getByRole("status")).toHaveTextContent(/engagements could not be loaded/i);
+    expect(container.querySelector("tr.engrow")).toBeNull();
+  });
+
+  it("keeps the bars it has when the read failed in part", () => {
+    const { container } = renderWeek({
+      assignments: onRota,
+      engagementAllocations: [alloc()],
+      engagementPeople: PEOPLE,
+      engagementsFailed: true,
+    });
+    expect(bars(container)).toHaveLength(3);
+    expect(screen.getByRole("status")).toBeInTheDocument();
   });
 });

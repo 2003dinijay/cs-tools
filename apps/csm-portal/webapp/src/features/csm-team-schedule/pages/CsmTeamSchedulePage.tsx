@@ -48,6 +48,8 @@ import RecentChanges from "../components/RecentChanges";
 import UndoToast, { type UndoOffer } from "../components/UndoToast";
 import { UndoIncomplete, applyRevertRuns, awayIsRevertible, rotaRevertRuns } from "../utils/undo";
 import WeekTable from "../components/WeekTable";
+import { useEngagementAllocations } from "../api/useEngagementAllocations";
+import { distinctUserIds } from "../utils/engagementAllocations";
 import CasePagingTab, { type PagingRotaTarget } from "../components/CasePagingTab";
 import { caseAlertChainsFor, caseAlertChainsReady, caseAlertsOffered } from "../utils/pagingChains";
 import RotaAccessTab from "../components/RotaAccessTab";
@@ -1368,6 +1370,35 @@ export default function CsmTeamSchedulePage(): JSX.Element {
     [catalogue.data?.teams, shownTeamKey, noRotaOfTheirs, user?.team?.teamKey, rotaScoped, scopeRota, family],
   );
 
+  /** The people the week is drawing, by user id: the engineers on the rota
+   *  read, those on leave, and every member of the teams in view -- the same
+   *  three sources the roster seats its rows from, so an engineer with no
+   *  rota entry this week is still asked after. Each carries the user id the
+   *  schedule reads already return. */
+  const engagementPeople = useMemo(() => {
+    const m = new Map<string, { name: string; teamKey?: string }>();
+    for (const a of rows) if (!m.has(a.engineer.userId)) m.set(a.engineer.userId, { name: a.engineer.name, teamKey: a.teamKey });
+    for (const ab of absences.data?.absences ?? []) {
+      if (!m.has(ab.engineer.userId)) m.set(ab.engineer.userId, { name: ab.engineer.name, teamKey: ab.teamKey });
+    }
+    for (const [key, members] of Object.entries(teamMembers)) {
+      for (const mem of members) if (!m.has(mem.userId)) m.set(mem.userId, { name: mem.name, teamKey: key });
+    }
+    return m;
+  }, [rows, absences.data?.absences, teamMembers]);
+  const engagementUserIds = useMemo(
+    () => distinctUserIds([...engagementPeople.keys()].map((userId) => ({ userId }))),
+    [engagementPeople],
+  );
+  // Week view only, over the week on screen. A failure or an empty answer
+  // leaves the schedule exactly as it was; the week table says so quietly.
+  const engagements = useEngagementAllocations(
+    engagementUserIds,
+    toIsoDate(weekStart),
+    toIsoDate(addDays(weekStart, 6)),
+    view === "week" && engagementUserIds.length > 0,
+  );
+
   if (catalogue.isError) {
     return <QueryErrorState message="Could not load the schedule catalogue." error={catalogue.error} />;
   }
@@ -1688,6 +1719,9 @@ export default function CsmTeamSchedulePage(): JSX.Element {
               shifts={shifts}
               absences={absences.data?.absences ?? []}
               absenceKinds={catalogue.data?.absenceKinds ?? []}
+              engagementAllocations={engagements.allocations}
+              engagementPeople={engagementPeople}
+              engagementsFailed={engagements.isError}
               {...scopeControls}
             />
           ) : view === "roster" ? (

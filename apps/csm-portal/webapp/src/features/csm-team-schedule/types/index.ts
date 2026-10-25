@@ -238,6 +238,43 @@ export interface ScheduleAbsencesResponse {
   count: number;
 }
 
+/** Body of the confirmed engagement allocations search. At most 500 user ids
+ *  and a window of at most 70 days, both ends inclusive. */
+export interface SearchEngagementAllocationsPayload {
+  userIds: string[];
+  from: string;
+  to: string;
+}
+
+/**
+ * One confirmed customer engagement allocation: an engineer given to an
+ * engagement for a run of days. Read-only on the schedule.
+ *
+ * The server omits what it does not have, so every descriptive field is
+ * optional; `engagementType` and `modeOfDelivery` are raw enum values and are
+ * turned into words by the reader (see utils/engagementAllocations).
+ */
+export interface EngagementAllocation {
+  id: string;
+  userId: string;
+  engagementId: string;
+  /** First and last day covered, YYYY-MM-DD, both inclusive. */
+  startDate: string;
+  endDate: string;
+  allocationId?: string;
+  engagementDisplayId?: string;
+  accountName?: string;
+  engagementType?: string;
+  modeOfDelivery?: string;
+  /** Percent of the engineer's time, e.g. 50. */
+  utilization?: number;
+}
+
+export interface EngagementAllocationsResponse {
+  allocations: EngagementAllocation[];
+  count: number;
+}
+
 /** One recorded change to a team's rota or leave, as the history keeps it. */
 export interface ScheduleActivity {
   id: string;
