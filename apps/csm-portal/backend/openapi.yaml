@@ -14273,7 +14273,7 @@ paths:
                   maxItems: 500
                   items: { type: string, format: uuid }
                 from: { type: string, format: date, description: First day of the window, inclusive. }
-                to: { type: string, format: date, description: Last day of the window, inclusive; at most 70 days after `from`. }
+                to: { type: string, format: date, description: "Last day of the window, inclusive; at most 70 days after `from`." }
       responses:
         "200":
           description: Ok.
@@ -14297,8 +14297,8 @@ paths:
                         allocationId: { type: string }
                         engagementDisplayId: { type: string }
                         accountName: { type: string }
-                        engagementType: { type: string, description: Raw enum value, for example CONSULTANCY. }
-                        modeOfDelivery: { type: string, description: Raw enum value, ONSITE or OFFSITE. }
+                        engagementType: { type: string, description: "Raw enum value, for example CONSULTANCY." }
+                        modeOfDelivery: { type: string, description: "Raw enum value, ONSITE or OFFSITE." }
                         utilization: { type: number }
                   count: { type: integer }
         "400":
