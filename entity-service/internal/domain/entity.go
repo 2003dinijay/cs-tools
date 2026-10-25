@@ -2748,6 +2748,9 @@ type Case struct {
 	CreatedOn time.Time      `json:"createdOn"`
 	UpdatedOn time.Time      `json:"updatedOn"`
 	ClosedOn  *time.Time     `json:"closedOn"`
+	// ResolvedOn is set only by the update queries, which read it back after
+	// the write; the create queries leave it nil.
+	ResolvedOn *time.Time `json:"resolvedOn,omitempty"`
 }
 
 // AssignedEngineerRef is a compact reference to an assigned support engineer.

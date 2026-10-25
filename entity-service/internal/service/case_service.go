@@ -2316,11 +2316,12 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 	return domain.UpdateCaseResponse{
 		Message: "Case updated successfully",
 		Case: domain.UpdatedCase{
-			ID:        c.ID,
-			UpdatedOn: c.UpdatedOn,
-			State:     c.State,
-			Severity:  c.Severity,
-			WorkState: c.WorkState,
+			ID:         c.ID,
+			UpdatedOn:  c.UpdatedOn,
+			State:      c.State,
+			Severity:   c.Severity,
+			WorkState:  c.WorkState,
+			ResolvedOn: c.ResolvedOn,
 		},
 	}, nil
 }
