@@ -50,7 +50,7 @@ type assignmentGroupDecision struct {
 
 // errAssignmentGroupNotAllowed is the 400 for an explicit assignmentGroupId
 // outside the support-group set.
-const errAssignmentGroupNotAllowed = "assignmentGroupId must be the active support group of a service"
+const errAssignmentGroupNotAllowed = "assignmentGroupId must be an active group incidents can be assigned to"
 
 // resolveAssignmentGroup decides an incident's assignment group on create.
 //

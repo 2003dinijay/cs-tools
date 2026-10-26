@@ -28394,7 +28394,7 @@ components:
             service or one of the deployment's configured extra assignable
             groups (the set POST /groups/search returns with
             filters.supportGroupsOnly), otherwise 400 "assignmentGroupId must
-            be the active support group of a service" (a value that is not a
+            be an active group incidents can be assigned to" (a value that is not a
             UUID is a 400 too; a blank value counts as not sent). Not sent:
             the service's support group; when the service has none, the
             support group of the default service (INCIDENT_DEFAULT_SERVICE_ID,

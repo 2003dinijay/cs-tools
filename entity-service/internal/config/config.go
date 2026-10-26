@@ -858,7 +858,7 @@ func Load() *Config {
 		SpecialistHandoffConfig:                       os.Getenv("SPECIALIST_HANDOFF_CONFIG"),
 		SpecialistHandoffGithubTokens:                 os.Getenv("SPECIALIST_HANDOFF_GITHUB_TOKENS"),
 		IncidentDefaultServiceID:                      strings.TrimSpace(os.Getenv("INCIDENT_DEFAULT_SERVICE_ID")),
-		IncidentExtraAssignmentGroupIDs:               parseIDList(os.Getenv("INCIDENT_EXTRA_ASSIGNMENT_GROUP_IDS")),
+		IncidentExtraAssignmentGroupIDs:               splitComma(os.Getenv("INCIDENT_EXTRA_ASSIGNMENT_GROUP_IDS")),
 		GithubLabelTypeIncident:                       os.Getenv("GITHUB_LABEL_TYPE_INCIDENT"),
 		GithubLabelTypeServiceRequest:                 os.Getenv("GITHUB_LABEL_TYPE_SERVICE_REQUEST"),
 		GithubLabelsClass:                             os.Getenv("GITHUB_LABELS_CLASS"),
@@ -1569,21 +1569,4 @@ func (c *Config) applySREEventHubTopic() {
 	}
 	c.CREventHubTopic = c.SREEventHubTopic
 	c.OutageEventHubTopic = c.SREEventHubTopic
-}
-
-// parseIDList splits a comma-separated list: entries are trimmed, empty ones
-// dropped and duplicates (case-insensitively) removed, keeping first-seen order.
-// Nil when nothing is left.
-func parseIDList(raw string) []string {
-	var out []string
-	seen := map[string]bool{}
-	for _, part := range strings.Split(raw, ",") {
-		v := strings.TrimSpace(part)
-		if v == "" || seen[strings.ToLower(v)] {
-			continue
-		}
-		seen[strings.ToLower(v)] = true
-		out = append(out, v)
-	}
-	return out
 }

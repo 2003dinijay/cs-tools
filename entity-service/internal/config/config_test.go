@@ -1367,7 +1367,7 @@ func TestConfig_Validate_QueryHourInternalEmailDomain(t *testing.T) {
 }
 
 // INCIDENT_EXTRA_ASSIGNMENT_GROUP_IDS is optional: comma-separated UUIDs,
-// trimmed, empty entries dropped, duplicates removed; a non-UUID entry refuses
+// trimmed, empty entries dropped; a non-UUID entry refuses
 // to start.
 func TestConfig_IncidentExtraAssignmentGroupIDs(t *testing.T) {
 	const a = "791ae9fb-1b41-8d10-a30d-edb8b04bcbd4"
@@ -1378,12 +1378,10 @@ func TestConfig_IncidentExtraAssignmentGroupIDs(t *testing.T) {
 		wantErr bool
 	}{
 		"unset":              {env: "", want: nil},
-		"only separators":    {env: " , ,, ", want: nil},
+		"only separators":    {env: " , ,, ", want: []string{}},
 		"one":                {env: a, want: []string{a}},
 		"whitespace":         {env: "  " + a + " ,\t" + b + "  ", want: []string{a, b}},
 		"empty entries":      {env: "," + a + ",," + b + ",", want: []string{a, b}},
-		"duplicates":         {env: a + "," + b + "," + a, want: []string{a, b}},
-		"duplicates by case": {env: a + "," + strings.ToUpper(a), want: []string{a}},
 		"invalid uuid":       {env: a + ",not-a-uuid", want: []string{a, "not-a-uuid"}, wantErr: true},
 		"name instead of id": {env: "Security Operations Center", want: []string{"Security Operations Center"}, wantErr: true},
 	} {

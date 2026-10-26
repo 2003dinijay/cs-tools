@@ -72,12 +72,12 @@ func TestCreateIncident_AcceptsAnAssignmentGroup(t *testing.T) {
 // whose body carries the message and the machine-readable errorCode.
 func TestCreateIncident_ARefusedGroupIs400WithItsErrorCode(t *testing.T) {
 	svc := &createGroupStubService{createErr: &apierror.ValidationError{
-		Msg: "assignmentGroupId must be the active support group of a service", Code: apierror.CodeIncidentAssignmentGroupNotAllowed}}
+		Msg: "assignmentGroupId must be an active group incidents can be assigned to", Code: apierror.CodeIncidentAssignmentGroupNotAllowed}}
 	rec := httptest.NewRecorder()
 	body := createGroupBody + `,"assignmentGroupId":"33333333-3333-4333-8333-333333333333"}`
 	NewIncidentHandler(svc).CreateIncident(rec, httptest.NewRequest(http.MethodPost, "/incidents", strings.NewReader(body)))
 
-	want := `{"code":400,"message":"assignmentGroupId must be the active support group of a service","errorCode":"incident_assignment_group_not_allowed"}`
+	want := `{"code":400,"message":"assignmentGroupId must be an active group incidents can be assigned to","errorCode":"incident_assignment_group_not_allowed"}`
 	if rec.Code != http.StatusBadRequest || strings.TrimSpace(rec.Body.String()) != want {
 		t.Errorf("status = %d, body = %s; want 400 %s", rec.Code, rec.Body.String(), want)
 	}
