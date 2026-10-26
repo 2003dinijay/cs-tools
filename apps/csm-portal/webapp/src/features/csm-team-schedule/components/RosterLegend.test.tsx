@@ -19,6 +19,7 @@
 import { act, fireEvent, render } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
 import RosterLegend, { type LegendItem } from "./RosterLegend";
+import { ENGAGEMENT_LEGEND_ITEM, ENGAGEMENT_MARK_LEGEND_ITEM } from "../utils/engagementAllocations";
 
 const ITEMS: LegendItem[] = [
   { key: "s|LK", group: "Hours", code: "LK", token: "LK", label: "Regular hours" },
@@ -88,5 +89,22 @@ describe("RosterLegend", () => {
 
     const third = render(<RosterLegend items={ITEMS} />);
     expect(legend(third.container).open).toBe(true);
+  });
+
+  it("lists a customer engagement as its own group, with the bar's swatch rather than a code chip", () => {
+    const { container } = render(<RosterLegend items={[...ITEMS, ENGAGEMENT_LEGEND_ITEM]} />);
+    const heads = [...container.querySelectorAll(".rl-h")].map((h) => h.textContent);
+    expect(heads).toEqual(["Hours", "Leave", "Engagements"]);
+    expect(container.querySelectorAll(".engsw")).toHaveLength(1);
+    expect(container.querySelectorAll(".rl-g li .chip")).toHaveLength(2);
+  });
+
+  it("lists the month marker with its own strip swatch, not the bar's or a code chip", () => {
+    const { container } = render(<RosterLegend items={[...ITEMS, ENGAGEMENT_MARK_LEGEND_ITEM]} />);
+    const heads = [...container.querySelectorAll(".rl-h")].map((h) => h.textContent);
+    expect(heads).toEqual(["Hours", "Leave", "Engagements"]);
+    expect(container.querySelectorAll(".engmksw")).toHaveLength(1);
+    expect(container.querySelectorAll(".engsw")).toHaveLength(0);
+    expect(container.querySelectorAll(".rl-g li .chip")).toHaveLength(2);
   });
 });

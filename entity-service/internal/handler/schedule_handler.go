@@ -82,6 +82,21 @@ func (h *ScheduleHandler) SearchScheduleAbsences(w http.ResponseWriter, r *http.
 	writeScheduleJSON(w, http.StatusOK, resp)
 }
 
+// SearchScheduleEngagementAllocations handles
+// POST /team-schedule/engagement-allocations/search.
+func (h *ScheduleHandler) SearchScheduleEngagementAllocations(w http.ResponseWriter, r *http.Request) {
+	var req domain.SearchScheduleEngagementAllocationsRequest
+	if !decodeRequest(w, r, &req) {
+		return
+	}
+	resp, err := h.svc.SearchEngagementAllocations(r.Context(), req)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	writeScheduleJSON(w, http.StatusOK, resp)
+}
+
 // GetScheduleOnDuty handles GET /team-schedule/on-duty[?at=RFC3339][&includeOnLeave=true]
 // -- who is responsible right now, or at the instant asked for; with
 // includeOnLeave, people away that day too, marked onLeave.

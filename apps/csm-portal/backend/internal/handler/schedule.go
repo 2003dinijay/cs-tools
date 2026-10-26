@@ -35,6 +35,7 @@ type entityScheduleClient interface {
 	GetScheduleCatalogue(ctx context.Context) ([]byte, error)
 	SearchScheduleAssignments(ctx context.Context, body []byte) ([]byte, error)
 	SearchScheduleAbsences(ctx context.Context, body []byte) ([]byte, error)
+	SearchScheduleEngagementAllocations(ctx context.Context, body []byte) ([]byte, error)
 	GetScheduleOnDuty(ctx context.Context, at string) ([]byte, error)
 
 	// Lead edit. The portal proxies these unchanged -- entity-service is where
@@ -161,6 +162,27 @@ func (h *ScheduleHandler) SearchScheduleAbsences(w http.ResponseWriter, r *http.
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity SearchScheduleAbsences failed", "userID", userID, "err", err)
 		mapUpstreamErrorGeneric(w, err, "Failed to search schedule absences.")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+// SearchScheduleEngagementAllocations handles
+// POST /team-schedule/engagement-allocations/search: the confirmed customer
+// engagement allocations of the given engineers over a date window, shown
+// read-only on the schedule. The body (userIds, from, to) is validated by
+// entity-service and forwarded unchanged; the response is returned as sent.
+func (h *ScheduleHandler) SearchScheduleEngagementAllocations(w http.ResponseWriter, r *http.Request) {
+	body, userID, ok := readScheduleBody(w, r)
+	if !ok {
+		return
+	}
+
+	result, err := h.entity.SearchScheduleEngagementAllocations(r.Context(), body)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity SearchScheduleEngagementAllocations failed", "userID", userID, "err", err)
+		mapUpstreamErrorGeneric(w, err, "Failed to search engagement allocations.")
 		return
 	}
 

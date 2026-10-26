@@ -32,6 +32,7 @@ import (
 type mockEntityScheduleClient struct {
 	catalogueFn   func(ctx context.Context) ([]byte, error)
 	assignmentsFn func(ctx context.Context, body []byte) ([]byte, error)
+	allocationsFn func(ctx context.Context, body []byte) ([]byte, error)
 	absencesFn    func(ctx context.Context, body []byte) ([]byte, error)
 	onDutyFn      func(ctx context.Context, at string) ([]byte, error)
 
@@ -185,6 +186,13 @@ func (m *mockEntityScheduleClient) SearchScheduleAbsences(ctx context.Context, b
 	return []byte(`{"absences":[],"count":0}`), nil
 }
 
+func (m *mockEntityScheduleClient) SearchScheduleEngagementAllocations(ctx context.Context, body []byte) ([]byte, error) {
+	if m.allocationsFn != nil {
+		return m.allocationsFn(ctx, body)
+	}
+	return []byte(`{"allocations":[],"count":0}`), nil
+}
+
 func (m *mockEntityScheduleClient) GetScheduleOnDuty(ctx context.Context, at string) ([]byte, error) {
 	if m.onDutyFn != nil {
 		return m.onDutyFn(ctx, at)
@@ -315,6 +323,97 @@ func TestGetScheduleOnDuty(t *testing.T) {
 		assertStatus(t, w, http.StatusOK)
 		if gotAt != "" {
 			t.Fatalf("want an empty instant so the service defaults to now, got %q", gotAt)
+		}
+	})
+}
+
+func TestSearchScheduleEngagementAllocations(t *testing.T) {
+	const path = "/team-schedule/engagement-allocations/search"
+	const payload = `{"userIds":["00000000-0000-0000-0000-000000000000"],"from":"2026-10-19","to":"2026-10-25"}`
+
+	t.Run("requires an authenticated user", func(t *testing.T) {
+		h := NewScheduleHandler(&mockEntityScheduleClient{})
+		w := httptest.NewRecorder()
+		h.SearchScheduleEngagementAllocations(w, httptest.NewRequest(http.MethodPost, path, strings.NewReader(payload)))
+		assertStatus(t, w, http.StatusUnauthorized)
+		assertErrorMessage(t, w, ErrMsgUnauthorized)
+	})
+
+	t.Run("rejects a body that is not JSON", func(t *testing.T) {
+		h := NewScheduleHandler(&mockEntityScheduleClient{})
+		w := httptest.NewRecorder()
+		h.SearchScheduleEngagementAllocations(w, withUser(httptest.NewRequest(http.MethodPost, path, strings.NewReader(`not-json`))))
+		assertStatus(t, w, http.StatusBadRequest)
+		assertErrorMessage(t, w, ErrMsgBadRequest)
+	})
+
+	t.Run("rejects a body over the size limit", func(t *testing.T) {
+		h := NewScheduleHandler(&mockEntityScheduleClient{})
+		w := httptest.NewRecorder()
+		h.SearchScheduleEngagementAllocations(w, withUser(httptest.NewRequest(http.MethodPost, path,
+			strings.NewReader(strings.Repeat("x", maxRequestBodyBytes+1)))))
+		assertStatus(t, w, http.StatusRequestEntityTooLarge)
+	})
+
+	t.Run("forwards the search unchanged and returns the response as sent", func(t *testing.T) {
+		const upstream = `{"allocations":[{"id":"00000000-0000-0000-0000-000000000001","userId":"00000000-0000-0000-0000-000000000000","engagementId":"00000000-0000-0000-0000-000000000002","startDate":"2026-10-19","endDate":"2026-10-21","accountName":"Example Corp","engagementType":"CONSULTANCY","modeOfDelivery":"ONSITE","utilization":50}],"count":1}`
+		var captured []byte
+		h := NewScheduleHandler(&mockEntityScheduleClient{
+			allocationsFn: func(_ context.Context, body []byte) ([]byte, error) {
+				captured = body
+				return []byte(upstream), nil
+			},
+		})
+		w := httptest.NewRecorder()
+		h.SearchScheduleEngagementAllocations(w, withUser(httptest.NewRequest(http.MethodPost, path, strings.NewReader(payload))))
+
+		assertStatus(t, w, http.StatusOK)
+		assertContentType(t, w, "application/json")
+		if string(captured) != payload {
+			t.Fatalf("body was altered in transit:\n got %s\nwant %s", captured, payload)
+		}
+		if w.Body.String() != upstream {
+			t.Fatalf("response was altered (enums must stay raw):\n got %s\nwant %s", w.Body.String(), upstream)
+		}
+	})
+
+	t.Run("an empty result is an empty list, not null", func(t *testing.T) {
+		h := NewScheduleHandler(&mockEntityScheduleClient{})
+		w := httptest.NewRecorder()
+		h.SearchScheduleEngagementAllocations(w, withUser(httptest.NewRequest(http.MethodPost, path, strings.NewReader(payload))))
+		assertStatus(t, w, http.StatusOK)
+		if !strings.Contains(w.Body.String(), `"allocations":[]`) || strings.Contains(w.Body.String(), "null") {
+			t.Fatalf("want an empty list, got %s", w.Body.String())
+		}
+	})
+
+	t.Run("maps upstream failures", func(t *testing.T) {
+		for _, c := range []struct {
+			name       string
+			err        error
+			wantStatus int
+		}{
+			{"400 from the window or id limits", &apierror.Error{StatusCode: http.StatusBadRequest, Body: `{"message":"window too large"}`}, http.StatusBadRequest},
+			{"403 stays forbidden", &apierror.Error{StatusCode: http.StatusForbidden, Body: `{"message":"no"}`}, http.StatusForbidden},
+			{"500 stays generic", &apierror.Error{StatusCode: http.StatusInternalServerError, Body: `{"message":"pq: relation does not exist"}`}, http.StatusInternalServerError},
+			{"transport error is not a 200", errors.New("upstream is down"), 0},
+		} {
+			t.Run(c.name, func(t *testing.T) {
+				h := NewScheduleHandler(&mockEntityScheduleClient{
+					allocationsFn: func(context.Context, []byte) ([]byte, error) { return nil, c.err },
+				})
+				w := httptest.NewRecorder()
+				h.SearchScheduleEngagementAllocations(w, withUser(httptest.NewRequest(http.MethodPost, path, strings.NewReader(payload))))
+				if w.Code == http.StatusOK {
+					t.Fatal("an upstream error must not come back as 200")
+				}
+				if c.wantStatus != 0 {
+					assertStatus(t, w, c.wantStatus)
+				}
+				if strings.Contains(w.Body.String(), "pq:") {
+					t.Fatalf("internal detail leaked: %s", w.Body.String())
+				}
+			})
 		}
 	})
 }

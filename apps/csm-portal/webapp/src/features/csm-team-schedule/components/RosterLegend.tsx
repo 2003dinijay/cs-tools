@@ -18,7 +18,7 @@
 
 import { useState, type JSX } from "react";
 
-export type LegendGroup = "Rota" | "Hours" | "Leave" | "Allocations";
+export type LegendGroup = "Rota" | "Hours" | "Leave" | "Allocations" | "Engagements";
 
 export interface LegendItem {
   /** Unique within the legend: two windows can share a short code. */
@@ -30,9 +30,11 @@ export interface LegendItem {
   label: string;
   /** Drawn dashed, as an on-call window is on the grid. */
   onCall?: boolean;
+  /** Draw the engagement bar's (or the month marker's) swatch instead of a code chip. */
+  swatch?: "engagement" | "engagement-mark";
 }
 
-const ORDER: LegendGroup[] = ["Rota", "Hours", "Leave", "Allocations"];
+const ORDER: LegendGroup[] = ["Rota", "Hours", "Leave", "Allocations", "Engagements"];
 
 /** Where the open/closed choice is kept, per browser. */
 const STORE_KEY = "csm-ts.roster-legend.open";
@@ -88,7 +90,13 @@ export default function RosterLegend({ items }: { items: LegendItem[] }): JSX.El
             <ul>
               {g.items.map((it) => (
                 <li key={it.key}>
-                  <span className={`chip sm ${it.token}${it.onCall ? " oc" : ""}`}>{it.code}</span>
+                  {it.swatch === "engagement" ? (
+                    <span className="engsw" aria-hidden="true" />
+                  ) : it.swatch === "engagement-mark" ? (
+                    <span className="engmksw" aria-hidden="true" />
+                  ) : (
+                    <span className={`chip sm ${it.token}${it.onCall ? " oc" : ""}`}>{it.code}</span>
+                  )}
                   <span className="rl-l">{it.label}</span>
                 </li>
               ))}

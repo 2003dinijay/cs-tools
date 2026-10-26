@@ -3285,3 +3285,111 @@
 .csm-ts .ladder .lane .lhand { position: absolute; left: -13px; width: 20px; min-height: 20px; z-index: 3; box-sizing: border-box; display: flex; align-items: center; justify-content: center; border-radius: 9px; background: var(--accent); color: #fff; box-shadow: 0 0 0 2px var(--surface-solid), 0 1px 3px rgba(0,0,0,.25); cursor: default; }
 .csm-ts .ladder .lane .lhand i { font-style: normal; font-size: 12px; font-weight: 800; line-height: 1; }
 .csm-ts .ladder .lax .laxhand { position: absolute; right: 0; width: 3px; border-radius: 2px; background: var(--accent); }
+
+/* ── Customer engagements ─────────────────────────────────────────────────
+   Read-only bars on an engineer's row in the week table, one a day for every
+   day an allocation covers. Drawn as a squared bar with a heavy left edge,
+   which no code chip has, in a hue none of the rota, hours or leave chips
+   use, so the shape and the colour each say "not a rota turn". The pair is
+   tokens for both themes like the leave kinds above; text on the bar is
+   8:1 or better against it in either, and the edge is over 3:1 against the
+   cell. */
+.csm-ts {
+  --eng-bg: #d3eef6; --eng-fg: #0b4a5e; --eng-edge: #0e7c99;
+}
+:root[data-color-scheme="dark"] .csm-ts {
+  --eng-bg: #16414f; --eng-fg: #c4ecf8; --eng-edge: #4cc3e3;
+}
+.csm-ts .weekwrap .tw tr.engrow > th,
+.csm-ts .weekwrap .tw tr.engrow > td {
+  background: var(--surface-2);
+}
+.csm-ts .weekwrap .tw tr.engrow.engfirst > th,
+.csm-ts .weekwrap .tw tr.engrow.engfirst > td {
+  border-top: 2px solid var(--line-2);
+}
+.csm-ts .weekwrap .tw tr.engrow > th .nm {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+/* Bars stack in the cell's own flow: a second allocation on a day adds one
+   line to the row rather than squeezing both. */
+.csm-ts .engstack {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.csm-ts .engbar {
+  min-width: 0;
+  padding: 2px 6px;
+  border-left: 4px solid var(--eng-edge);
+  border-radius: 2px;
+  background: var(--eng-bg);
+  color: var(--eng-fg);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+  cursor: default;
+}
+.csm-ts .engbar .engbar-t {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* The legend's swatch: the same bar, empty. */
+.csm-ts .engsw {
+  display: inline-block;
+  width: 34px;
+  height: 14px;
+  border-left: 4px solid var(--eng-edge);
+  border-radius: 2px;
+  background: var(--eng-bg);
+}
+.csm-ts .engnote {
+  padding: 4px 16px;
+  font-size: 12px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+}
+
+/* The month roster's marker: a day cell is 26 to 44px wide, so an engagement
+   is a strip along the foot of the cell, not a bar. It is absolutely placed
+   in the cell's padding, so the row keeps its height and the chip, the
+   on-call dashes and the leave mark are not moved. The hit area is taller
+   than the strip so the tooltip can be reached; only the strip is drawn, in
+   the bar's edge colour: 4.3:1 or better against the cell in light (4.27
+   on the reader's row tint, 4.38 on a weekend) and 6.1:1 or better in dark.
+   Keyed on the marker, not on td.c: a read-only, unsplit day cell has no .c. */
+.csm-ts .roster td:has(> .engmk) {
+  position: relative;
+}
+.csm-ts .roster td:has(> .engmk) .engmk {
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  bottom: 0;
+  height: 7px;
+  cursor: default;
+}
+.csm-ts .roster td:has(> .engmk) .engmk::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 1px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--eng-edge);
+}
+/* The legend's swatch: the same strip, on its own. */
+.csm-ts .engmksw {
+  display: inline-block;
+  width: 26px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--eng-edge);
+  align-self: center;
+}

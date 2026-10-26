@@ -17,8 +17,10 @@
  */
 
 import { useEffect, useMemo, useState, type JSX } from "react";
+import RosterLegend from "./RosterLegend";
 import RotaPicker, { type RotaOption } from "./RotaPicker";
 import type {
+  EngagementAllocation,
   ScheduleAbsence,
   ScheduleAbsenceKind,
   ScheduleAssignment,
@@ -34,6 +36,13 @@ import {
   shortDayName,
   standingWindowKey,
   toIsoDate, rotaZoneName, zoneAbbreviation } from "../utils/rota";
+import {
+  ENGAGEMENTS_FAILED_NOTE,
+  ENGAGEMENT_LEGEND_ITEM,
+  allocationLabel,
+  allocationTitle,
+  allocationsByPersonAndDay,
+} from "../utils/engagementAllocations";
 import { accentOf } from "../utils/rotaHues";
 import { useTeamColour, useTeamName } from "../utils/teamColourContext";
 
@@ -60,6 +69,14 @@ interface WeekTableProps {
   /** Absences over the week, for the leave row at the foot of the table. */
   absences?: ScheduleAbsence[];
   absenceKinds?: ScheduleAbsenceKind[];
+  /** Confirmed customer engagement allocations over the week, drawn read-only
+   *  as one bar a day on the engineer's own row under the leave row. */
+  engagementAllocations?: EngagementAllocation[];
+  /** Who the allocations' user ids are, for the row heading and its colour. */
+  engagementPeople?: ReadonlyMap<string, { name: string; teamKey?: string }>;
+  /** The allocations could not be read: the week is drawn without them, with a
+   *  quiet note saying so. */
+  engagementsFailed?: boolean;
 }
 
 /**
@@ -192,6 +209,9 @@ export default function WeekTable({
   onRotaChange,
   absences = [],
   absenceKinds = [],
+  engagementAllocations = [],
+  engagementPeople,
+  engagementsFailed = false,
 }: WeekTableProps): JSX.Element {
   const teamColourOf = useTeamColour();
   const teamNameOf = useTeamName();
@@ -356,6 +376,22 @@ export default function WeekTable({
   }, [absences, absenceKinds, days]);
   const anyLeave = [...leaveByDay.values()].some((l) => l.length > 0);
 
+  /** Customer engagements, engineer then day. Every day an allocation covers
+   *  gets its own bar, weekends included -- an engagement does not stop for
+   *  one -- and an engineer with none this week has no row. */
+  const engagementRows = useMemo(() => {
+    const iso = days.map(toIsoDate);
+    const byPerson = allocationsByPersonAndDay(engagementAllocations, iso);
+    return [...byPerson.entries()]
+      .map(([userId, byDay]) => ({
+        userId,
+        name: engagementPeople?.get(userId)?.name ?? "Engineer",
+        teamKey: engagementPeople?.get(userId)?.teamKey,
+        byDay,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name) || a.userId.localeCompare(b.userId));
+  }, [engagementAllocations, engagementPeople, days]);
+
   /** Distinct people on the rota this week, not rows: one engineer covering
    *  three rotations is one engineer. */
   const headcount = useMemo(
@@ -423,6 +459,11 @@ export default function WeekTable({
   return (
     <>
       {head}
+      {engagementsFailed ? (
+        <div className="engnote" role="status">
+          {ENGAGEMENTS_FAILED_NOTE}
+        </div>
+      ) : null}
       <div className="twwrap weekwrap">
       <table className="tw">
         <thead>
@@ -541,9 +582,57 @@ export default function WeekTable({
               })}
             </tr>
           ) : null}
+
+          {/* Who is at a customer, one row per engineer and one bar per day,
+              under the leave row. Read-only: a bar says where somebody is and
+              opens nothing. */}
+          {engagementRows.map(({ userId, name, teamKey: personTeam, byDay }, i) => (
+            <tr key={`eng:${userId}`} className={`engrow${i === 0 ? " engfirst" : ""}`}>
+              <th className="lab">
+                <span className="nm">
+                  <span className="av" style={{ background: personTeam ? teamColourOf(personTeam) : "var(--muted)" }}>
+                    {initialsOf(name)}
+                  </span>
+                  <span className="who">{name}</span>
+                </span>
+                <small>Engagements</small>
+              </th>
+              {days.map((d) => {
+                const iso = toIsoDate(d);
+                const weekend = d.getDay() === 0 || d.getDay() === 6;
+                const list = byDay.get(iso) ?? [];
+                return (
+                  <td key={iso} className={`${weekend ? "wknd" : ""} ${iso === todayIso ? "today" : ""}`}>
+                    {list.length === 0 ? (
+                      <span className="none">—</span>
+                    ) : (
+                      <div className="engstack">
+                        {list.map((a) => {
+                          const label = allocationLabel(a);
+                          const title = allocationTitle(a);
+                          return (
+                            <div
+                              key={a.id}
+                              className="engbar"
+                              role="group"
+                              aria-label={`${label}. ${title}`}
+                              title={title}
+                            >
+                              <span className="engbar-t">{label}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
         </tbody>
       </table>
       </div>
+      {engagementRows.length > 0 ? <RosterLegend items={[ENGAGEMENT_LEGEND_ITEM]} /> : null}
     </>
   );
 }

@@ -43,6 +43,7 @@ type ScheduleService interface {
 	Catalogue(ctx context.Context) (domain.ScheduleCatalogue, error)
 	SearchAssignments(ctx context.Context, req domain.SearchScheduleAssignmentsRequest) (domain.ScheduleAssignmentsResponse, error)
 	SearchAbsences(ctx context.Context, req domain.SearchScheduleAbsencesRequest) (domain.ScheduleAbsencesResponse, error)
+	SearchEngagementAllocations(ctx context.Context, req domain.SearchScheduleEngagementAllocationsRequest) (domain.ScheduleEngagementAllocationsResponse, error)
 	OnDuty(ctx context.Context, at *time.Time, includeOnLeave bool) (domain.ScheduleAssignmentsResponse, error)
 
 	// The lead edit path. Each checks that the caller leads the team the slot

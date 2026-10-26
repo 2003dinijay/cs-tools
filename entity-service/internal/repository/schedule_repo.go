@@ -36,6 +36,9 @@ type ScheduleRepository interface {
 	Catalogue(ctx context.Context) (domain.ScheduleCatalogue, error)
 	SearchAssignments(ctx context.Context, req domain.SearchScheduleAssignmentsRequest) ([]domain.ScheduleAssignment, error)
 	SearchAbsences(ctx context.Context, req domain.SearchScheduleAbsencesRequest) ([]domain.ScheduleAbsence, error)
+	// SearchEngagementAllocations is the confirmed customer-engagement
+	// allocations of the given people overlapping the window.
+	SearchEngagementAllocations(ctx context.Context, req domain.SearchScheduleEngagementAllocationsRequest) ([]domain.ScheduleEngagementAllocation, error)
 	// OnDutyAt is who is on duty at the instant, leaving out anyone on leave;
 	// with includeOnLeave they are returned too, marked OnLeave.
 	OnDutyAt(ctx context.Context, at time.Time, includeOnLeave bool) ([]domain.ScheduleAssignment, error)

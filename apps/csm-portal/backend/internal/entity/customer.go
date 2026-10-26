@@ -781,6 +781,14 @@ func (c *CustomerEntityClient) SearchScheduleAbsences(ctx context.Context, body 
 	return c.do(ctx, http.MethodPost, "/team-schedule/absences/search", body)
 }
 
+// SearchScheduleEngagementAllocations calls
+// POST /team-schedule/engagement-allocations/search on the entity service: the
+// confirmed customer engagement allocations of the given users over a date
+// window. Response is returned as raw JSON.
+func (c *CustomerEntityClient) SearchScheduleEngagementAllocations(ctx context.Context, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, "/team-schedule/engagement-allocations/search", body)
+}
+
 // GetScheduleOnDuty calls GET /team-schedule/on-duty on the entity service, passing
 // the optional `at` instant through unchanged. Response is raw JSON.
 func (c *CustomerEntityClient) GetScheduleOnDuty(ctx context.Context, at string) ([]byte, error) {
