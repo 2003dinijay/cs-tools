@@ -33230,12 +33230,11 @@ components:
           type: string
         internalId:
           type: string
-          nullable: true
           description: >-
             The record's own internal/WSO2 id (e.g. "CUPRSUB-1170" — a
             per-project prefix plus counter), from work_item.wso2_id.
-            Distinct from recordNumber (the ServiceNow-style "CS0441731"
-            number). Absent/null when the underlying work item has no
+            Distinct from recordNumber (the record's human-readable number,
+            e.g. "CS0441731"). Omitted when the underlying work item has no
             wso2_id.
         recordTitle:
           type: string
