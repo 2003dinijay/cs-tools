@@ -17,14 +17,19 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { PortalBannerList } from "@components/portal-banners/PortalBanners";
+import PortalBanners, { PortalBannerList } from "@components/portal-banners/PortalBanners";
+
+const { auth, cached } = vi.hoisted(() => ({
+  auth: { isSignedIn: true, isLoading: false },
+  cached: { data: [] as Array<{ id: string; sortOrder: number; html: string; startsAt: string | null; expiresAt: string | null }> },
+}));
 
 vi.mock("@asgardeo/react", () => ({
-  useAsgardeo: () => ({ isSignedIn: true, isLoading: false }),
+  useAsgardeo: () => auth,
 }));
 
 vi.mock("@components/portal-banners/useCsmPortalBanners", () => ({
-  useCsmPortalBanners: () => ({ data: [] }),
+  useCsmPortalBanners: () => cached,
 }));
 
 const banner = {
@@ -39,6 +44,9 @@ const store = new Map<string, string>();
 
 describe("PortalBannerList", () => {
   beforeEach(() => {
+    auth.isSignedIn = true;
+    auth.isLoading = false;
+    cached.data = [];
     store.clear();
     vi.stubGlobal("localStorage", {
       getItem: (key: string) => store.get(key) ?? null,
@@ -77,6 +85,19 @@ describe("PortalBannerList", () => {
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noopener noreferrer");
     expect(screen.getByRole("button", { name: "Close" })).toBeInTheDocument();
+  });
+
+  it("hides a cached banner while signed out or while authentication is loading", () => {
+    cached.data = [banner];
+    auth.isSignedIn = false;
+    const signedOut = render(<PortalBanners />);
+    expect(screen.queryByText("Hello engineers")).not.toBeInTheDocument();
+    signedOut.unmount();
+
+    auth.isSignedIn = true;
+    auth.isLoading = true;
+    render(<PortalBanners />);
+    expect(screen.queryByText("Hello engineers")).not.toBeInTheDocument();
   });
 
   it("hides a banner that has not started", () => {

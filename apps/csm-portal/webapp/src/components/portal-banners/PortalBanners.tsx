@@ -144,6 +144,6 @@ export function PortalBannerList({ banners }: { banners: PortalBannerView[] }): 
 export default function PortalBanners(): JSX.Element | null {
   const { isSignedIn, isLoading } = useAsgardeo();
   const query = useCsmPortalBanners(isSignedIn && !isLoading);
-  if (!query.data?.length) return null;
+  if (!isSignedIn || isLoading || !query.data?.length) return null;
   return <PortalBannerList banners={query.data} />;
 }
