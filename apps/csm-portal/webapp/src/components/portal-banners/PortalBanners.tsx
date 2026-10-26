@@ -14,10 +14,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import DOMPurify from "dompurify";
 import { useAsgardeo } from "@asgardeo/react";
 import { useEffect, useMemo, useState, type JSX, type MouseEvent } from "react";
 import { useCsmPortalBanners, type PortalBannerView } from "@components/portal-banners/useCsmPortalBanners";
+import { sanitizeAnnouncementHtml } from "@utils/sanitizeHtml";
 
 const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 
@@ -48,11 +48,18 @@ function parseTimestamp(value: string | null): number | null {
 }
 
 function sanitizeBannerHtml(html: string): string {
-  return DOMPurify.sanitize(html, { ADD_ATTR: ["target"] });
+  return sanitizeAnnouncementHtml(html);
 }
 
 // Saved HTML can carry a paragraph margin. The strip stays the same 3rem as an image banner.
 const BANNER_STRIP_CSS = `
+.portal-banner-strip{
+  height:3rem !important;
+  min-height:3rem !important;
+  max-height:3rem !important;
+  overflow:hidden !important;
+  box-sizing:border-box !important;
+}
 .portal-banner-strip [data-banner="1"]{
   height:3rem !important;
   min-height:3rem !important;
@@ -114,7 +121,7 @@ function BannerStrip({ banner }: { banner: PortalBannerView }): JSX.Element | nu
     <div
       className="portal-banner-strip"
       onClick={handleClick}
-      // biome-ignore lint/security/noDangerouslySetInnerHtml: HTML sanitized via DOMPurify above
+      // biome-ignore lint/security/noDangerouslySetInnerHtml: HTML sanitized before insertion
       dangerouslySetInnerHTML={{ __html: html }}
     />
   );

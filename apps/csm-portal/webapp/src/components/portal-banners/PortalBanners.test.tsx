@@ -62,6 +62,23 @@ describe("PortalBannerList", () => {
     expect(store.get(`portal_banner_dismissed:${banner.id}`)).toBe("dismissed");
   });
 
+  it("keeps a new-tab link and the close button", () => {
+    render(
+      <PortalBannerList
+        banners={[
+          {
+            ...banner,
+            html: `<div data-banner="1"><a href="https://example.com" target="_blank">Open</a><button type="button" data-close-banner="true">Close</button></div>`,
+          },
+        ]}
+      />,
+    );
+    const link = screen.getByRole("link", { name: "Open" });
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener noreferrer");
+    expect(screen.getByRole("button", { name: "Close" })).toBeInTheDocument();
+  });
+
   it("hides a banner that has not started", () => {
     render(
       <PortalBannerList banners={[{ ...banner, id: "later", startsAt: "2099-01-01T00:00:00.000Z" }]} />,
