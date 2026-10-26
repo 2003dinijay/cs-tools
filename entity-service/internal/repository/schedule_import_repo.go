@@ -18,13 +18,17 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 )
 
-// rotaImportReplaceNote is the note on the activity row of an assignment a replace cleared.
+// rotaImportReplaceNote is the note on the activity row of an assignment, or time away, a replace cleared.
 const rotaImportReplaceNote = "Cleared by a rota import (replace)"
 
 // RotaImportWrite is a rota import file, resolved and authorised, ready to write.
@@ -43,9 +47,18 @@ type RotaImportWrite struct {
 
 // RotaImportResult is what each entry did, in the file's order.
 type RotaImportResult struct {
-	Cleared     int
+	Cleared int
+	// LeaveCuts is each earlier absence a replace removed, shortened or split under the file's assignments, in the file's order.
+	LeaveCuts   []RotaImportLeaveCut
 	Assignments []domain.ApplyScheduleRangeResponse
 	Absences    []domain.ApplyScheduleAbsenceResponse
+}
+
+// RotaImportLeaveCut is one earlier absence a replace cut, and the assignment whose days it was.
+type RotaImportLeaveCut struct {
+	Index  int
+	UserID string
+	AbsenceCut
 }
 
 // ImportRota implements ScheduleRepository: the whole file in one transaction, all or nothing.
@@ -89,7 +102,17 @@ func (r *scheduleRepository) ImportRota(ctx context.Context, w RotaImportWrite, 
 		out.Cleared = int(tag.RowsAffected())
 	}
 
+	scopes := map[string]string{}
 	for i, req := range w.Assignments {
+		if w.Replace {
+			cuts, err := cutLeaveUnderAssignment(ctx, tx, req, w.TeamKeys, scopes, actorEmail)
+			if err != nil {
+				return RotaImportResult{}, apierror.Prefixed(fmt.Sprintf("assignments[%d]", i), err)
+			}
+			for _, c := range cuts {
+				out.LeaveCuts = append(out.LeaveCuts, RotaImportLeaveCut{Index: i, UserID: req.UserID, AbsenceCut: c})
+			}
+		}
 		res, err := applyRangeTx(ctx, tx, req, actorEmail)
 		if err != nil {
 			return RotaImportResult{}, apierror.Prefixed(fmt.Sprintf("assignments[%d]", i), err)
@@ -112,3 +135,54 @@ func (r *scheduleRepository) ImportRota(ctx context.Context, w RotaImportWrite, 
 	}
 	return out, nil
 }
+
+// cutLeaveUnderAssignment takes the days an entry's window is worked out of the person's time away filed on the rota's teams, a run of consecutive days at a time.
+// A move (the Night cover) is never cut: it is where they work, not time off. The file's own absences go in after every assignment, so none of them is cut.
+func cutLeaveUnderAssignment(ctx context.Context, tx pgx.Tx, req domain.ApplyScheduleRangeRequest,
+	teams []string, scopes map[string]string, actorEmail string) ([]AbsenceCut, error) {
+	from, ferr := time.Parse(time.DateOnly, req.From)
+	to, terr := time.Parse(time.DateOnly, req.To)
+	if ferr != nil || terr != nil || req.ShiftCode == "" {
+		// applyRangeTx refuses it in its own words.
+		return nil, nil
+	}
+	scope, ok := scopes[req.ShiftCode]
+	if !ok {
+		err := tx.QueryRow(ctx, `SELECT day_scope::text FROM team_schedule_shift WHERE code = $1`, req.ShiftCode).Scan(&scope)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read the window's day scope: %w", err)
+		}
+		scopes[req.ShiftCode] = scope
+	}
+
+	var cut []AbsenceCut
+	var runFrom *time.Time
+	flush := func(end time.Time) error {
+		if runFrom == nil {
+			return nil
+		}
+		cuts, err := cutAbsencesTx(ctx, tx, req.UserID, req.TeamKey, *runFrom, end, actorEmail, ptrTo(rotaImportReplaceNote), teams)
+		cut, runFrom = append(cut, cuts...), nil
+		return err
+	}
+	for d := from; !d.After(to); d = d.AddDate(0, 0, 1) {
+		weekend := d.Weekday() == time.Saturday || d.Weekday() == time.Sunday
+		if (scope == "WEEKDAY" && weekend) || (scope == "WEEKEND" && !weekend) {
+			if err := flush(d.AddDate(0, 0, -1)); err != nil {
+				return cut, err
+			}
+			continue
+		}
+		if runFrom == nil {
+			day := d
+			runFrom = &day
+		}
+	}
+	return cut, flush(to)
+}
+
+// ptrTo is a pointer to v.
+func ptrTo(v string) *string { return &v }

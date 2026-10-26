@@ -8447,8 +8447,9 @@ paths:
         of its team (a lead, the team's rota marker, or the family's rota admin), and a
         replace also needs a writer of every team of the rota. mode "replace" first
         removes every assignment of the rota's teams dated inside the period, except
-        the shifts a move (such as the SaaS Night cover) derives (absences, and so
-        their moves, are left alone); "merge" keeps them. With dryRun=true the import runs and is
+        the shifts a move (such as the SaaS Night cover) derives, and cuts the time away
+        of each person in the file on the days their entries are worked (never a move);
+        "merge" keeps them. With dryRun=true the import runs and is
         rolled back, so the response is exactly what it would do. A refusal names the
         entry at fault, e.g. "assignments[2]: ...". Shares "Generate month"'s lock, so
         the two never interleave on one rota.
@@ -25955,6 +25956,32 @@ components:
         mode: {type: string, enum: [replace, merge]}
         dryRun: {type: boolean}
         cleared: {type: integer, description: Assignments a replace removed first.}
+        leaveWrittenOver: {type: integer, description: "How many earlier absences a replace removed, shortened or split under the file's assignments."}
+        leaveCuts:
+          type: array
+          description: Each earlier absence a replace cut under the file's assignments, so a dry run shows whose leave goes before anything is written.
+          items:
+            type: object
+            required: [index, name, email, teamKey, kindCode, kindLabel, startsOn, cutFrom, cutTo, action]
+            properties:
+              index:
+                type: integer
+                description: The assignments[] entry whose worked days these are.
+              name: {type: string}
+              email: {type: string}
+              teamKey: {type: string}
+              kindCode: {type: string, example: ANNUAL_LEAVE}
+              kindLabel: {type: string}
+              startsOn: {type: string, format: date}
+              endsOn:
+                type: string
+                format: date
+                description: Absent for an absence with no end.
+              cutFrom: {type: string, format: date}
+              cutTo: {type: string, format: date}
+              action:
+                type: string
+                enum: [removed, shortened, split]
         applied: {type: integer, description: Assignment days written.}
         skipped: {type: integer, description: Assignment days the window is not worked on.}
         skippedDays:

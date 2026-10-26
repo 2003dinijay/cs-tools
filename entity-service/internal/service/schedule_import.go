@@ -90,13 +90,15 @@ func (s *scheduleService) ImportRota(ctx context.Context, rotaCode string, req d
 	}
 
 	out = domain.ImportRotaResponse{
-		RotaCode:    plan.write.RotaCode,
-		From:        plan.write.From,
-		To:          plan.write.To,
-		Mode:        plan.mode,
-		DryRun:      dryRun,
-		Cleared:     res.Cleared,
-		SkippedDays: []domain.ImportRotaSkippedDays{},
+		RotaCode:         plan.write.RotaCode,
+		From:             plan.write.From,
+		To:               plan.write.To,
+		Mode:             plan.mode,
+		DryRun:           dryRun,
+		Cleared:          res.Cleared,
+		LeaveWrittenOver: len(res.LeaveCuts),
+		LeaveCuts:        leaveCuts(cat, res.LeaveCuts),
+		SkippedDays:      []domain.ImportRotaSkippedDays{},
 	}
 	for i, r := range res.Assignments {
 		out.Applied += r.Applied
@@ -111,6 +113,30 @@ func (s *scheduleService) ImportRota(ctx context.Context, rotaCode string, req d
 		out.AbsencesTrimmed += r.Trimmed
 	}
 	return out, nil
+}
+
+// leaveCuts names each absence a replace cut by its person and kind, from the catalogue the file was checked against.
+func leaveCuts(cat domain.ScheduleCatalogue, cuts []repository.RotaImportLeaveCut) []domain.ImportRotaLeaveCut {
+	people := map[string]domain.ScheduleEngineer{}
+	for _, t := range cat.Teams {
+		for _, m := range t.Members {
+			people[m.UserID] = m.ScheduleEngineer
+		}
+	}
+	labels := map[string]string{}
+	for _, k := range cat.AbsenceKinds {
+		labels[k.Code] = k.Label
+	}
+	out := make([]domain.ImportRotaLeaveCut, 0, len(cuts))
+	for _, c := range cuts {
+		who := people[c.UserID]
+		out = append(out, domain.ImportRotaLeaveCut{
+			Index: c.Index, Name: who.Name, Email: who.Email, TeamKey: c.TeamKey,
+			KindCode: c.KindCode, KindLabel: labels[c.KindCode],
+			StartsOn: c.StartsOn, EndsOn: c.EndsOn, CutFrom: c.CutFrom, CutTo: c.CutTo, Action: c.Action,
+		})
+	}
+	return out
 }
 
 // importWriterChecks answers the picker's writer rule once per team and once per person and team, not once per entry.

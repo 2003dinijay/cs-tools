@@ -21,9 +21,9 @@ const RotaImportSchemaVersion = 1
 
 // The two ways an import lands on the rota already there.
 const (
-	// RotaImportReplace clears every assignment of the rota's teams in the period first.
+	// RotaImportReplace clears every assignment of the rota's teams in the period first, and the person's time away on the days an entry is worked.
 	RotaImportReplace = "replace"
-	// RotaImportMerge writes the file's rows over what is there and keeps the rest.
+	// RotaImportMerge writes the file's rows over what is there and keeps the rest; a clash the picker would refuse is refused.
 	RotaImportMerge = "merge"
 )
 
@@ -84,6 +84,27 @@ type ImportRotaResponse struct {
 	AbsencesCreated int `json:"absencesCreated"`
 	AbsencesRemoved int `json:"absencesRemoved"`
 	AbsencesTrimmed int `json:"absencesTrimmed"`
+	// LeaveWrittenOver is how many earlier absences a replace removed, shortened or split under the file's assignments; a move is never one.
+	LeaveWrittenOver int `json:"leaveWrittenOver"`
+	// LeaveCuts names each of them, so a dry run shows whose leave goes before anything is written.
+	LeaveCuts []ImportRotaLeaveCut `json:"leaveCuts"`
+}
+
+// ImportRotaLeaveCut is one earlier absence a replace cut: whose, as it was, the days taken out of it, and the assignment that took them.
+type ImportRotaLeaveCut struct {
+	// Index is the assignments[] entry whose worked days these are.
+	Index     int     `json:"index"`
+	Name      string  `json:"name"`
+	Email     string  `json:"email"`
+	TeamKey   string  `json:"teamKey"`
+	KindCode  string  `json:"kindCode"`
+	KindLabel string  `json:"kindLabel"`
+	StartsOn  string  `json:"startsOn"`
+	EndsOn    *string `json:"endsOn,omitempty"`
+	CutFrom   string  `json:"cutFrom"`
+	CutTo     string  `json:"cutTo"`
+	// Action is removed (the absence lay inside the days), shortened (one end was cut) or split (the days were in its middle).
+	Action string `json:"action"`
 }
 
 // ImportRotaSkippedDays is the days one assignment's window was not worked on.

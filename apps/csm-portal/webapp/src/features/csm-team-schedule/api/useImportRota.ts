@@ -49,6 +49,25 @@ export interface ImportRotaResult {
   absencesCreated: number;
   absencesRemoved: number;
   absencesTrimmed: number;
+  /** Earlier time away a replace cut under the file's assignments; absent from an older server. */
+  leaveWrittenOver?: number;
+  /** Each of them by person, kind and days; absent from an older server. */
+  leaveCuts?: RotaImportLeaveCut[];
+}
+
+/** One earlier absence a replace cut, as it was, and the days taken out of it. */
+export interface RotaImportLeaveCut {
+  index: number;
+  name: string;
+  email: string;
+  teamKey: string;
+  kindCode: string;
+  kindLabel: string;
+  startsOn: string;
+  endsOn?: string;
+  cutFrom: string;
+  cutTo: string;
+  action: "removed" | "shortened" | "split";
 }
 
 /** Previews (dryRun) or writes a whole rota for a period from one import file; who may is the server's decision. */

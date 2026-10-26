@@ -69,7 +69,7 @@ func importCatalogue() domain.ScheduleCatalogue {
 			{Code: "CRE_REGULAR", Family: "CRE"},
 		},
 		AbsenceKinds: []domain.ScheduleAbsenceKind{
-			{Code: "ANNUAL_LEAVE"},
+			{Code: "ANNUAL_LEAVE", Label: "Annual/Casual leave"},
 			{Code: "ALLO_EXT"},
 			{Code: "SRE_NIGHT_COVER", Family: sre, MovesToTeamKey: importStr("saas-night-cover")},
 			{Code: "MIGRATION", Family: cre},
@@ -160,8 +160,14 @@ func TestImportRota_HandsTheResolvedFileToTheRepository(t *testing.T) {
 		t.Errorf("absences[1] lost who the allocation is for: %+v", abs[1])
 	}
 
-	if res.Applied != 3 || res.AbsencesCreated != 2 || res.Mode != "replace" || res.DryRun || res.SkippedDays == nil {
+	if res.Applied != 3 || res.AbsencesCreated != 2 || res.Mode != "replace" || res.DryRun || res.SkippedDays == nil || res.LeaveWrittenOver != 3 {
 		t.Errorf("response %+v", res)
+	}
+	if len(res.LeaveCuts) != 3 {
+		t.Fatalf("leave cuts %+v, want one per assignment", res.LeaveCuts)
+	}
+	if c := res.LeaveCuts[0]; c.Index != 0 || c.Email != "user1@example.com" || c.KindLabel != "Annual/Casual leave" || c.Action != "removed" {
+		t.Errorf("leave cut %+v, want it named by person and kind", c)
 	}
 }
 
