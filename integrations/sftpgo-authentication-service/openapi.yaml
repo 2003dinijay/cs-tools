@@ -313,11 +313,11 @@ paths:
                 example: Method not allowed
         '503':
           description: |
-            The external_auth_hook is not usable: either the JWT validator is not configured
-            (AUTH_JWKS_ENDPOINT/AUTH_ISSUER missing or unreachable), or HOOK_API_KEY is not configured on this
-            deployment. Unlike `/prelogin-hook` and `/auth-hook`, this route fails closed rather than allowing
-            unauthenticated calls when HOOK_API_KEY is unset, since a successful call here mints a full SFTPGo
-            identity from an arbitrary presented JWT.
+            The external_auth_hook is not usable: the JWT validator is not configured
+            (AUTH_JWKS_ENDPOINT/AUTH_ISSUER/AUTH_AUDIENCE missing or the JWKS unreachable). The route is only
+            served when the `web-attachment` flow is enabled (ENABLED_FLOWS); otherwise it answers 404.
+            HOOK_API_KEY is required at startup, so this route never serves unauthenticated calls: a successful
+            call here mints a full SFTPGo identity from an arbitrary presented JWT.
           content:
             text/plain:
               schema:

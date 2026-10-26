@@ -40,11 +40,20 @@ func TestHandler_Authenticate(t *testing.T) {
 		expectedResult bool
 	}{
 		{
-			name:           "No key configured",
+			// HOOK_API_KEY is required at startup; a Config built without it
+			// must fail closed, not match a request that sends no key.
+			name:           "No key configured fails closed",
 			cfgKey:         "",
 			requestKey:     "",
-			expectedStatus: http.StatusOK,
-			expectedResult: true,
+			expectedStatus: http.StatusServiceUnavailable,
+			expectedResult: false,
+		},
+		{
+			name:           "No key configured, key presented fails closed",
+			cfgKey:         "",
+			requestKey:     "anything",
+			expectedStatus: http.StatusServiceUnavailable,
+			expectedResult: false,
 		},
 		{
 			name:           "Valid key provided",
@@ -167,6 +176,7 @@ func TestPreLoginHook_ExternalUser_FolderLookupStates(t *testing.T) {
 		SFTPGoBasePath:               sftpgoServer.URL,
 		DIRPath:                      "/data",
 		FolderPath:                   "/folders",
+		HookAPIKey:                   "test-hook-key",
 	}
 	cfg.AdminTokenEndPoint = cfg.SFTPGoBasePath + "/token"
 	cfg.SFTPGoFoldersEndPoint = cfg.SFTPGoBasePath + "/folders"
@@ -188,6 +198,7 @@ func TestPreLoginHook_ExternalUser_FolderLookupStates(t *testing.T) {
 			t.Fatalf("failed to marshal request: %v", err)
 		}
 		req := httptest.NewRequest(http.MethodPost, "/prelogin-hook", bytes.NewReader(body))
+		req.Header.Set(constants.HeaderAPIKey, cfg.HookAPIKey)
 		w := httptest.NewRecorder()
 		h.PreLoginHook(w, req)
 		return w
@@ -224,4 +235,51 @@ func TestPreLoginHook_ExternalUser_FolderLookupStates(t *testing.T) {
 			t.Errorf("expected the fallback folder %q to be granted, got permissions: %v", fallbackDir, res.Permissions)
 		}
 	})
+}
+
+// TestSFTPChannelHandlers_RejectMissingOrWrongAPIKey proves the pre-login and
+// keyboard-interactive routes reject a missing or wrong key now that HOOK_API_KEY
+// is required (there is no unauthenticated mode left).
+func TestSFTPChannelHandlers_RejectMissingOrWrongAPIKey(t *testing.T) {
+	h := &Handler{cfg: &config.Config{HookAPIKey: "secret-key"}, logger: log.NewAppLogger("ERROR")}
+	routes := map[string]http.HandlerFunc{
+		"/prelogin-hook": h.PreLoginHook,
+		"/auth-hook":     h.AuthHandler,
+	}
+	for path, fn := range routes {
+		for name, key := range map[string]string{"missing": "", "wrong": "wrong-key"} {
+			t.Run(path+"/"+name, func(t *testing.T) {
+				req := httptest.NewRequest(http.MethodPost, path, strings.NewReader("{}"))
+				if key != "" {
+					req.Header.Set(constants.HeaderAPIKey, key)
+				}
+				w := httptest.NewRecorder()
+				fn(w, req)
+				if w.Code != http.StatusUnauthorized {
+					t.Fatalf("expected 401, got %d: %s", w.Code, w.Body.String())
+				}
+			})
+		}
+	}
+}
+
+// TestSFTPChannelHandlers_NilDependenciesDoNotPanic proves the handlers of a
+// disabled sftp-channel flow answer 503 instead of dereferencing nil services.
+func TestSFTPChannelHandlers_NilDependenciesDoNotPanic(t *testing.T) {
+	h := &Handler{cfg: &config.Config{HookAPIKey: "secret-key"}, logger: log.NewAppLogger("ERROR")}
+	routes := map[string]http.HandlerFunc{
+		"/prelogin-hook": h.PreLoginHook,
+		"/auth-hook":     h.AuthHandler,
+	}
+	for path, fn := range routes {
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"username":"jane.doe@example.com","step":2,"request_id":"x"}`))
+			req.Header.Set(constants.HeaderAPIKey, "secret-key")
+			w := httptest.NewRecorder()
+			fn(w, req)
+			if w.Code != http.StatusServiceUnavailable {
+				t.Fatalf("expected 503, got %d: %s", w.Code, w.Body.String())
+			}
+		})
+	}
 }
