@@ -209,8 +209,9 @@ function renderOptionalCell(id: CaseOptionalColumnId, c: CsmCaseRow): JSX.Elemen
 
 // Subject gets the widest fixed track; the ids sit in their own narrow
 // column so a long subject no longer has to share one cell with them. Every
-// track except the last is capped at a fixed width (see caseListColumns.ts for
-// why `fr` tracks are avoided under the grid's max-content sizing).
+// track is capped at a fixed width (see caseListColumns.ts for why `fr` tracks
+// are avoided under the grid's max-content sizing); the grid's own
+// `justifyContent: "space-between"` spreads any spare width between columns.
 // The work-state chip (only present for WIP cases) stacks under the State chip
 // in the State column, so it doesn't need a column of its own. The leading
 // `auto` track (unlabeled in the header) holds the per-row quick-preview
@@ -220,10 +221,11 @@ const CHECKBOX_TRACK = "auto";
 const CASE_ID_TRACK = "minmax(120px, 160px)";
 const SUBJECT_TRACK = "minmax(280px, 320px)";
 const STATE_TRACK = "minmax(110px, 150px)";
-/** The one flexible track: absorbs spare width when the container is wider than
- * the columns need, so the table still fills its card. Its own cell is a short
- * relative time, so it cannot inflate the grid under max-content sizing. */
-const UPDATED_TRACK = "minmax(90px, 1fr)";
+/** A fixed track, like the others. Spare width is not given to this column (it
+ * holds a short relative time, so it used to leave a wide empty band at the
+ * right edge on a big screen); the grid's `justifyContent` spreads it across
+ * the gaps between every column instead. */
+const UPDATED_TRACK = "90px";
 
 export default function CasesList({
   cases,
@@ -365,6 +367,12 @@ export default function CasesList({
               // ever overflow its `overflowX: auto` parent above — never
               // shrink its own columns to fit.
               minWidth: "max-content",
+              // Every track is capped, so on a container wider than the
+              // columns need the spare width has to go somewhere. Spreading it
+              // between the columns (rows and header span every track, so
+              // their backgrounds still reach both edges) keeps the table
+              // filling its card without any track growing past its cap.
+              justifyContent: "space-between",
             }}
           >
             {/* Header */}
