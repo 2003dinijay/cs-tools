@@ -172,6 +172,14 @@ func caseTeamName(cv domain.CaseView) string {
 	return ""
 }
 
+// caseSRETeam is the case's account's SRE team id and name, both "" when it has none.
+func caseSRETeam(cv domain.CaseView) (id, name string) {
+	if cv.AccountDetails != nil && cv.AccountDetails.SreTeam != nil {
+		return cv.AccountDetails.SreTeam.ID, cv.AccountDetails.SreTeam.Name
+	}
+	return "", ""
+}
+
 // wso2EmailDomain is WSO2's own corporate domain — mirrors
 // apps/csm-portal/backend's own wso2EmailDomain constant (see that
 // package's user_external_account.go).
@@ -1324,6 +1332,7 @@ func publishCaseCreatedEvent(
 	product := caseProductName(cv)
 
 	description, descriptionTruncated := stripInlineBase64Images(cv.Description)
+	sreTeamID, sreTeamName := caseSRETeam(cv)
 
 	payload, err := json.Marshal(events.CaseCreatedPayload{
 		ReporterName:         reporterName,
@@ -1337,6 +1346,8 @@ func publishCaseCreatedEvent(
 		Priority:             strings.ToUpper(string(derefSeverity(cv.Severity))),
 		Product:              product,
 		Team:                 caseTeamName(cv),
+		SRETeamID:            sreTeamID,
+		SRETeamName:          sreTeamName,
 		CreatedAt:            cv.CreatedOn.Format(time.RFC3339),
 		Description:          description,
 		DescriptionTruncated: descriptionTruncated,
@@ -1925,6 +1936,7 @@ func publishSeverityChangedEvent(ctx context.Context, publisher EventPublisherSe
 		projectID = before.ProjectDetails.ID
 	}
 
+	sreTeamID, sreTeamName := caseSRETeam(before)
 	payload, err := json.Marshal(events.SeverityChangedPayload{
 		ProjectID:   projectID,
 		CaseID:      caseID,
@@ -1935,6 +1947,8 @@ func publishSeverityChangedEvent(ctx context.Context, publisher EventPublisherSe
 		NewSeverity: strings.ToUpper(newSeverity),
 		Product:     caseProductName(before),
 		Team:        caseTeamName(before),
+		SRETeamID:   sreTeamID,
+		SRETeamName: sreTeamName,
 		Recipients:  recipients,
 	})
 	if err != nil {

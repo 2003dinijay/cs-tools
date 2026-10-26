@@ -417,18 +417,19 @@ func (e *Engine) notifiersFor(plan Plan) []notifier {
 
 // chatTeams is the teamChats keys whose spaces a plan's cards and closing
 // message go to; none is the ladder's own (chat). It is the incident's own
-// team when teamChats lists it. An incident with no SRE team of its own -- a
-// default group (a service mapped to no SRE team), a customer case at S0, a
-// monitoring alert with no team -- goes to every team sre.teamlessChats
-// names (Apollo and Artemis), or to chat when that is empty.
+// team (a case's account SRE team) when teamChats lists it. An incident with no
+// SRE team of its own -- a default group (a service mapped to no SRE team), a
+// customer case at S0 whose account has none, a monitoring alert with no team
+// -- goes to every team sre.teamlessChats names (Apollo and Artemis), or to
+// chat when that is empty.
 func (e *Engine) chatTeams(plan Plan) []string {
 	if len(e.teamNotifiers) == 0 && len(e.teamRooms) == 0 {
 		return nil
 	}
-	if own := e.sreTeamKey(plan.Trigger.Team); e.hasTeamChat(own) {
+	if own := e.sreTeamKey(plan.Trigger.sreTeam()); e.hasTeamChat(own) {
 		return []string{own}
 	}
-	if e.hasOwnSRETeam(plan.Trigger.Team) {
+	if e.hasOwnSRETeam(plan.Trigger.sreTeam()) {
 		return nil
 	}
 	var out []string

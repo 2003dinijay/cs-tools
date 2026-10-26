@@ -284,6 +284,7 @@ func triggerFromCaseCreated(caseID string, p events.CaseCreatedPayload) Trigger 
 		Routing: RoutingContext{
 			Product:         p.Product,
 			AssignedCRETeam: p.Team,
+			SRETeam:         p.SRETeamName,
 			Shift:           ShiftAt(at),
 			At:              at,
 		},
@@ -306,6 +307,7 @@ func triggerFromSeverityChanged(caseID string, p events.SeverityChangedPayload, 
 		Routing: RoutingContext{
 			Product:         p.Product,
 			AssignedCRETeam: p.Team,
+			SRETeam:         p.SRETeamName,
 			Shift:           ShiftAt(now),
 			At:              now,
 		},

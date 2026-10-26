@@ -44,12 +44,12 @@ func narrowChannel(ladder, team Channel) Channel {
 
 // channelFor is how one incident's alerts go out: its own SRE team's channel,
 // within the ladder's. An incident with no SRE team of its own (a default
-// group, a customer case at S0) uses the ladder's.
+// group, a customer case at S0 whose account has none) uses the ladder's.
 func (e *Engine) channelFor(t Trigger) Channel {
 	if len(e.cfg.Ladder.TeamChannels) == 0 {
 		return e.cfg.Channel
 	}
-	if c, ok := e.cfg.Ladder.TeamChannels[e.sreTeamKey(t.Team)]; ok {
+	if c, ok := e.cfg.Ladder.TeamChannels[e.sreTeamKey(t.sreTeam())]; ok {
 		return narrowChannel(e.cfg.Channel, c)
 	}
 	return e.cfg.Channel

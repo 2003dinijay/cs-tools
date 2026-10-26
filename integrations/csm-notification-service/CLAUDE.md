@@ -519,7 +519,7 @@ Artemis and IaaS each in their own space, through `NewEngine` and the webhook
 variables: `team_chat_spaces_test.go` (SME teams too).
 
 **An incident with no SRE team of its own** (`sre.teamlessChats`, opt-in):
-a default group (a service mapped to no SRE team), a customer case at S0, a
+a default group (a service mapped to no SRE team), a customer case at S0 whose account has no known SRE team, a
 monitoring alert with no team. `teamlessChats: [apollo, artemis]` posts its
 cards and closing message to every space named (`Engine.chatTeams`); each
 entry must be a `teamChats` key (refused at load otherwise). Empty, such an
@@ -586,7 +586,7 @@ rota `SRE_IAAS`; Day/Night zones) and PaaS (none yet). The catalogue carries
 `rotaCode` on teams and zones; the engine stamps the incident's rota on the
 routing context (`RoutingContext.Rota`, from `TeamScheduleResolver.SRERota`):
 its own SRE team's rota, or `sre.teams.defaultRota` (default `SRE_SAAS`) for an
-incident with no SRE team (a case S0, a team-less monitoring alert). Only SRE
+incident with no SRE team (a case S0 whose account has none, a team-less monitoring alert). Only SRE
 windows whose zone is on that rota are read, so a SaaS incident never reaches
 an IaaS engineer or the other way round. A catalogue with no rota codes at all
 (an entity-service from before rotas) reads every SRE window, as before. The
@@ -697,6 +697,17 @@ is keyed by the case id, and `Trigger.Record` is `case`.
   comment before they are assigned is remembered and counts once they are. A
   closed case (`case.status_changed` "Closed", or a resolved/cancelled label)
   stops both.
+- **SRE team**: an S0 case's SRE ladder pages its account's SRE team
+  (`sreTeamName` on `case.created`/`case.severity_changed`, entity-service's
+  `account.sre_team_id`), carried as `RoutingContext.SRETeam`; `Trigger.Team`
+  stays the CRE team. Who is called (`ownSRETeam`, the rota), the card spaces
+  (`chatTeams`), the team's channel (`channelFor`) and the closing replies all
+  follow it. The name must resolve, through `sre.teams.aliases`, to a team in
+  `sre.teams.abts` (and to a `sre.teamChats` key for its own space); one that
+  does not, or a case with none, pages every team on `defaultRota` and posts
+  to `teamlessChats`, as before. Until 2026-10-26 every S0 case was paged that
+  way. Both fields are new and this service decodes strictly: deploy it before
+  the entity-service that sends them.
 - **Assignee**: the starting events carry none, so the current assignee is kept
   in Redis from `case.assigned` (`incident:escalation:case:assignee:<caseId>`,
   shared by both ladders).

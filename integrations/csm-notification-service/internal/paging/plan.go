@@ -74,6 +74,14 @@ const (
 // isCase reports whether the ladder pages about a customer case.
 func (t Trigger) isCase() bool { return t.Record == RecordCase }
 
+// sreTeam is the team whose SRE spaces and channel the trigger uses: a case's account SRE team, else Team.
+func (t Trigger) sreTeam() string {
+	if strings.TrimSpace(t.Routing.SRETeam) != "" {
+		return t.Routing.SRETeam
+	}
+	return t.Team
+}
+
 // sreIncident reports whether an SRE ladder pages about an incident, whose space gets an "Incident Reported" card with every ladder message as a reply under it.
 func (t Trigger) sreIncident() bool { return t.Routing.Ladder == LadderSRE && !t.isCase() }
 
