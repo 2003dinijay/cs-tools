@@ -73,9 +73,14 @@ const migrationRowColumns = 9
 // rather than rendering a header over nothing.
 func renderMigrationRows(rows []migrationreport.Row, caseLinkBase string, loc *time.Location) string {
 	if len(rows) == 0 {
-		return fmt.Sprintf(`<tr><td colspan="%d" style="padding:16px 10px; text-align:center; color:#8a8f98;">No migrations in this table.</td></tr>`, migrationRowColumns)
+		return fmt.Sprintf(`<tr><td colspan="%d" style="padding:12px 8px; text-align:center; color:#8a8f98;">No migrations in this table.</td></tr>`, migrationRowColumns)
 	}
-	const cell = `<td style="padding:8px 10px; border-bottom:1px solid #e8eaed; vertical-align:top;">%s</td>`
+	// Tight padding and an explicit line-height: nine columns over a
+	// couple of hundred rows, so every extra pixel per row is a screen of
+	// scrolling. The two timestamp columns are held on one line each --
+	// they wrapped before, which turned most rows into two.
+	const cell = `<td style="padding:4px 8px; line-height:16px; border-bottom:1px solid #e8eaed; vertical-align:top;">%s</td>`
+	const nowrapCell = `<td style="padding:4px 8px; line-height:16px; border-bottom:1px solid #e8eaed; vertical-align:top; white-space:nowrap;">%s</td>`
 	const stamp = "2006-01-02 15:04:05"
 	var b strings.Builder
 	for _, row := range rows {
@@ -86,10 +91,10 @@ func renderMigrationRows(rows []migrationreport.Row, caseLinkBase string, loc *t
 		owners := strings.Join(nonEmpty(row.AccountManager, row.TechnicalOwner), " / ")
 		b.WriteString("<tr>")
 		fmt.Fprintf(&b, cell, escapeHTML(row.Number))
-		fmt.Fprintf(&b, cell, migrationCaseLink(caseLinkBase, row))
-		fmt.Fprintf(&b, cell, escapeHTML(row.CreatedOn.In(loc).Format(stamp)))
-		fmt.Fprintf(&b, cell, orDash(escapeHTML(lastComment)))
-		fmt.Fprintf(&b, cell, orDash(escapeHTML(row.AssignedTo)))
+		fmt.Fprintf(&b, nowrapCell, migrationCaseLink(caseLinkBase, row))
+		fmt.Fprintf(&b, nowrapCell, escapeHTML(row.CreatedOn.In(loc).Format(stamp)))
+		fmt.Fprintf(&b, nowrapCell, orDash(escapeHTML(lastComment)))
+		fmt.Fprintf(&b, nowrapCell, orDash(escapeHTML(row.AssignedTo)))
 		fmt.Fprintf(&b, cell, orDash(escapeHTML(row.Product)))
 		fmt.Fprintf(&b, cell, orDash(escapeHTML(row.CsTeam)))
 		fmt.Fprintf(&b, cell, orDash(escapeHTML(row.SalesRegion)))
