@@ -6293,6 +6293,12 @@ components:
           format: uuid
         caseId:
           type: string
+        internalId:
+          type: string
+          description: >-
+            The record's own internal/WSO2 id (e.g. "CUPRSUB-1170"), distinct
+            from caseId (the ServiceNow-style "CS0441731" number). Omitted
+            when the underlying record has none.
         caseTitle:
           type: string
         severity:

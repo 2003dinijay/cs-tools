@@ -9635,6 +9635,12 @@ type PendingVerification struct {
 	ID             string                             `json:"id"`
 	WorkItemID     string                             `json:"workItemId"`
 	RecordNumber   string                             `json:"recordNumber"`
+	// InternalID (work_item.wso2_id) is the record's own internal/WSO2 id
+	// (e.g. "CUPRSUB-1170", a per-project prefix + counter), distinct from
+	// RecordNumber (the ServiceNow-style "CS0441731" number) -- the same
+	// pairing Case.InternalID/Number already carries. Required, non-nullable
+	// string, "" when the joined work_item row has no wso2_id.
+	InternalID     string                             `json:"internalId"`
 	RecordTitle    string                             `json:"recordTitle"`
 	Severity       *string                            `json:"severity"`
 	RecordType     string                             `json:"recordType"`
