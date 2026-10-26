@@ -18,11 +18,30 @@ package entity
 
 import (
 	"context"
-	"net/http"
+	"time"
 )
+
+// PortalBannerView is the entity-service banner a portal may render.
+// Status and the visibility flags are already applied by GET /banners.
+type PortalBannerView struct {
+	ID        string     `json:"id"`
+	SortOrder int        `json:"sortOrder"`
+	HTML      string     `json:"html"`
+	StartsAt  *time.Time `json:"startsAt"`
+	ExpiresAt *time.Time `json:"expiresAt"`
+}
+
+// PortalBannerViewList is the body of GET /banners.
+type PortalBannerViewList struct {
+	Banners []PortalBannerView `json:"banners"`
+}
 
 // ListCustomerBanners calls GET /banners. Entity-service returns only published
 // banners flagged for the customer portal.
-func (c *Client) ListCustomerBanners(ctx context.Context) ([]byte, error) {
-	return c.do(ctx, http.MethodGet, "/banners", nil)
+func (c *Client) ListCustomerBanners(ctx context.Context) (PortalBannerViewList, error) {
+	var out PortalBannerViewList
+	if err := c.getJSON(ctx, "/banners", &out); err != nil {
+		return PortalBannerViewList{}, err
+	}
+	return out, nil
 }

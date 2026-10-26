@@ -21,15 +21,16 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/wso2-open-operations/cs-tools/apps/customer-portal/backend-v2/internal/dto"
 	"github.com/wso2-open-operations/cs-tools/apps/customer-portal/backend-v2/internal/entity"
 )
 
 // entityBannerClient is the customer-portal read of portal banners.
 type entityBannerClient interface {
-	ListCustomerBanners(ctx context.Context) ([]byte, error)
+	ListCustomerBanners(ctx context.Context) (entity.PortalBannerViewList, error)
 }
 
-// BannerHandler proxies GET /banners. The entity-service route always returns
+// BannerHandler serves GET /banners. The entity-service route always returns
 // the customer audience.
 type BannerHandler struct {
 	entity entityBannerClient
@@ -42,16 +43,14 @@ func NewBannerHandler(entity entityBannerClient) *BannerHandler {
 
 // ListBanners handles GET /banners.
 func (h *BannerHandler) ListBanners(w http.ResponseWriter, r *http.Request) {
-	body, err := h.entity.ListCustomerBanners(r.Context())
+	w.Header().Set("Cache-Control", "no-store")
+	list, err := h.entity.ListCustomerBanners(r.Context())
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity ListCustomerBanners failed", "err", err)
 		mapUpstreamError(w, err, "Failed to load banners.")
 		return
 	}
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(body)
+	writeJSONValue(w, http.StatusOK, dto.MapPortalBannerViewList(list))
 }
 
 // Compile-time check that the entity client satisfies the handler.
