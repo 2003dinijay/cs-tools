@@ -10694,6 +10694,201 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /banners:
+    get:
+      summary: Banners for the customer portal.
+      description: >
+        Published banners with visible_in_customer_portal, in sort_order.
+        Draft and unpublished are never returned. The route always uses the
+        customer audience, including when an internal user opens the customer
+        portal. The shell skips rows outside startsAt/expiresAt and rows this
+        browser has dismissed. Responses are Cache-Control no-store.
+      operationId: listCustomerBanners
+      responses:
+        "200":
+          description: The banners the customer portal may show.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortalBannerViewList'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /portal-banners:
+    get:
+      summary: Banners for the CSM portal.
+      description: >
+        Published banners with visible_in_csm_portal, in sort_order. Internal
+        callers only. Responses are Cache-Control no-store.
+      operationId: listCsmBanners
+      responses:
+        "200":
+          description: The banners the CSM portal may show.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortalBannerViewList'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      summary: Add a banner.
+      description: >
+        A CSM admin (AUTH_ADMIN_ROLES). New rows are saved with the status in
+        the body. When sortOrder is already used, that banner and every banner
+        below it move down by one.
+      operationId: createPortalBanner
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SavePortalBannerRequest'
+      responses:
+        "201":
+          description: The banner.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortalBanner'
+        "400":
+          description: Invalid status, order, html, or schedule.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not a CSM admin.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /portal-banners/manage:
+    get:
+      summary: Every banner, for Settings.
+      description: >
+        Draft, published, and unpublished, in sort_order. A CSM admin
+        (AUTH_ADMIN_ROLES). Responses are Cache-Control no-store.
+      operationId: listManagedPortalBanners
+      responses:
+        "200":
+          description: The Settings list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortalBannerList'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not a CSM admin.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /portal-banners/{id}:
+    put:
+      summary: Edit a banner.
+      description: >
+        A CSM admin (AUTH_ADMIN_ROLES). Status, both portal switches, the
+        schedule, the HTML, and sortOrder can all change. An occupied
+        sortOrder shifts that banner and the ones below it down.
+      operationId: updatePortalBanner
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SavePortalBannerRequest'
+      responses:
+        "200":
+          description: The banner.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortalBanner'
+        "400":
+          description: Invalid status, order, html, schedule, or id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No valid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not a CSM admin.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: No banner with that id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /runbooks:
     get:
       summary: List the runbook catalog.
@@ -27890,6 +28085,104 @@ components:
         sentOn:
           type: string
           format: date-time
+    PortalBanner:
+      type: object
+      required: [id, status, sortOrder, visibleInCustomerPortal, visibleInCsmPortal, html, startsAt, expiresAt, createdOn, createdBy, updatedOn, updatedBy]
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [draft, published, unpublished]
+        sortOrder:
+          type: integer
+          minimum: 0
+          description: 0 is the top of the page.
+        visibleInCustomerPortal:
+          type: boolean
+        visibleInCsmPortal:
+          type: boolean
+        html:
+          type: string
+          description: The whole banner. A close button in the HTML uses data-close-banner.
+        startsAt:
+          type: string
+          format: date-time
+          nullable: true
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdOn:
+          type: string
+          format: date-time
+        createdBy:
+          type: string
+        updatedOn:
+          type: string
+          format: date-time
+        updatedBy:
+          type: string
+    PortalBannerList:
+      type: object
+      required: [banners]
+      properties:
+        banners:
+          type: array
+          items:
+            $ref: '#/components/schemas/PortalBanner'
+    PortalBannerView:
+      type: object
+      required: [id, sortOrder, html, startsAt, expiresAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        sortOrder:
+          type: integer
+        html:
+          type: string
+        startsAt:
+          type: string
+          format: date-time
+          nullable: true
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+    PortalBannerViewList:
+      type: object
+      required: [banners]
+      properties:
+        banners:
+          type: array
+          items:
+            $ref: '#/components/schemas/PortalBannerView'
+    SavePortalBannerRequest:
+      type: object
+      required: [status, sortOrder, visibleInCustomerPortal, visibleInCsmPortal, html]
+      properties:
+        status:
+          type: string
+          enum: [draft, published, unpublished]
+        sortOrder:
+          type: integer
+          minimum: 0
+        visibleInCustomerPortal:
+          type: boolean
+        visibleInCsmPortal:
+          type: boolean
+        html:
+          type: string
+        startsAt:
+          type: string
+          format: date-time
+          nullable: true
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
     ProductRegressionReport:
       type: object
       description: One monthly product regression report.

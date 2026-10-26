@@ -346,6 +346,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	var caseAlertSettingsHandler *handler.CaseAlertSettingsHandler
 	var migrationCaseReportHandler *handler.MigrationCaseReportHandler
 	var runbookHandler *handler.RunbookHandler
+	var portalBannerHandler *handler.PortalBannerHandler
 	var productRegressionReportHandler *handler.ProductRegressionReportHandler
 	// runbookRepo stays a nil interface without a pool, so no incident service gets a catalog.
 	var runbookRepo repository.RunbookRepository
@@ -1516,6 +1517,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// Runbooks: the alert-name to runbook catalog, matched against every new incident's subject.
 		runbookRepo = repository.NewRunbookRepository(db)
 		runbookHandler = handler.NewRunbookHandler(service.NewRunbookService(runbookRepo))
+		portalBannerHandler = handler.NewPortalBannerHandler(
+			service.NewPortalBannerService(repository.NewPortalBannerRepository(db), accessSvc, cfg.AuthAdminRoles),
+		)
 		// Monthly product regression reports: one business unit's regression
 		// cases whose fix ETA was shared last month, for the scheduled task
 		// that mails one report per unit.
@@ -1974,6 +1978,15 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("POST /runbooks/import", internalOnly(accessSvc, runbookHandler.ImportRunbooks))
 		mux.HandleFunc("PUT /runbooks/{id}", internalOnly(accessSvc, runbookHandler.UpdateRunbook))
 		mux.HandleFunc("DELETE /runbooks/{id}", internalOnly(accessSvc, runbookHandler.DeleteRunbook))
+	}
+	if portalBannerHandler != nil {
+		// Banners. GET /banners is the customer portal and always returns that
+		// audience. The CSM read is internal. Manage and writes check the admin role.
+		mux.HandleFunc("GET /banners", portalBannerHandler.ListCustomerBanners)
+		mux.HandleFunc("GET /portal-banners", portalBannerHandler.ListCSMBanners)
+		mux.HandleFunc("GET /portal-banners/manage", portalBannerHandler.ListAdminBanners)
+		mux.HandleFunc("POST /portal-banners", portalBannerHandler.CreateBanner)
+		mux.HandleFunc("PUT /portal-banners/{id}", portalBannerHandler.UpdateBanner)
 	}
 	if caseAlertSettingsHandler != nil {
 		// Case Alerts settings: chat rooms, group routes and the other ladder
