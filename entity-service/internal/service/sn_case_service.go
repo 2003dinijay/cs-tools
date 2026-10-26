@@ -172,6 +172,25 @@ func caseTeamName(cv domain.CaseView) string {
 	return ""
 }
 
+// accountSRETeamResolver looks up the SRE team of the account owning a project.
+type accountSRETeamResolver func(ctx context.Context, projectID string) (id, name string, err error)
+
+// caseSRETeam is the case's account SRE team: the case view's, else Postgres's, since the ServiceNow case response may omit it.
+func caseSRETeam(ctx context.Context, resolve accountSRETeamResolver, cv domain.CaseView, logContext string) (id, name string) {
+	if cv.AccountDetails != nil && cv.AccountDetails.SreTeam != nil && cv.AccountDetails.SreTeam.Name != "" {
+		return cv.AccountDetails.SreTeam.ID, cv.AccountDetails.SreTeam.Name
+	}
+	if resolve == nil || cv.ProjectDetails == nil {
+		return "", ""
+	}
+	id, name, err := resolve(ctx, cv.ProjectDetails.ID)
+	if err != nil {
+		slog.ErrorContext(ctx, logContext+": resolving account SRE team failed", "error", err)
+		return "", ""
+	}
+	return id, name
+}
+
 // wso2EmailDomain is WSO2's own corporate domain — mirrors
 // apps/csm-portal/backend's own wso2EmailDomain constant (see that
 // package's user_external_account.go).
@@ -1176,7 +1195,7 @@ func registerCaseSLAClocksEvent(ctx context.Context, slaEngine SLAEngineService,
 // reasoning — this is now a thin wrapper around it, same shape as
 // snIncidentService.publishIncidentCreated/publishIncidentCreatedEvent.
 func (s *snCaseService) publishCaseCreated(ctx context.Context, req domain.CreateCaseRequest, caseID string) {
-	publishCaseCreatedEvent(ctx, s.publisher, s.GetCaseByID, s.ProjectContactEmailsByRole, s.AccountDefaultWatcherEmails, req, caseID)
+	publishCaseCreatedEvent(ctx, s.publisher, s.GetCaseByID, s.ProjectContactEmailsByRole, s.AccountDefaultWatcherEmails, s.AccountSRETeam, req, caseID)
 }
 
 // publishCaseCreatedEvent is publishCaseCreated's actual body, factored out
@@ -1256,6 +1275,7 @@ func publishCaseCreatedEvent(
 	getCaseByID func(context.Context, string) (domain.CaseView, error),
 	resolveProjectContactEmailsByRole func(context.Context, string, string) ([]string, error),
 	resolveAccountDefaultWatcherEmails func(context.Context, string) ([]string, error),
+	resolveAccountSRETeam accountSRETeamResolver,
 	req domain.CreateCaseRequest,
 	caseID string,
 ) {
@@ -1324,6 +1344,7 @@ func publishCaseCreatedEvent(
 	product := caseProductName(cv)
 
 	description, descriptionTruncated := stripInlineBase64Images(cv.Description)
+	sreTeamID, sreTeamName := caseSRETeam(ctx, resolveAccountSRETeam, cv, "create case")
 
 	payload, err := json.Marshal(events.CaseCreatedPayload{
 		ReporterName:         reporterName,
@@ -1337,6 +1358,8 @@ func publishCaseCreatedEvent(
 		Priority:             strings.ToUpper(string(derefSeverity(cv.Severity))),
 		Product:              product,
 		Team:                 caseTeamName(cv),
+		SRETeamID:            sreTeamID,
+		SRETeamName:          sreTeamName,
 		CreatedAt:            cv.CreatedOn.Format(time.RFC3339),
 		Description:          description,
 		DescriptionTruncated: descriptionTruncated,
@@ -1893,7 +1916,7 @@ func publishStatusChangedEvent(ctx context.Context, publisher EventPublisherServ
 // wrapper around publishSeverityChangedEvent — see that function's own doc
 // comment for why.
 func (s *snCaseService) publishSeverityChanged(ctx context.Context, caseID, oldSeverity, newSeverity string, before domain.CaseView) {
-	publishSeverityChangedEvent(ctx, s.publisher, s.AccountDefaultWatcherEmails, caseID, oldSeverity, newSeverity, before)
+	publishSeverityChangedEvent(ctx, s.publisher, s.AccountDefaultWatcherEmails, s.AccountSRETeam, caseID, oldSeverity, newSeverity, before)
 }
 
 // publishSeverityChangedEvent is publishSeverityChanged's actual body,
@@ -1903,7 +1926,7 @@ func (s *snCaseService) publishSeverityChanged(ctx context.Context, caseID, oldS
 // plain severity strings (either case; upper-cased here) — the caller has
 // already confirmed they actually differ, not a caller re-PATCHing the
 // case's current severity.
-func publishSeverityChangedEvent(ctx context.Context, publisher EventPublisherService, resolveAccountDefaultWatcherEmails func(context.Context, string) ([]string, error), caseID, oldSeverity, newSeverity string, before domain.CaseView) {
+func publishSeverityChangedEvent(ctx context.Context, publisher EventPublisherService, resolveAccountDefaultWatcherEmails func(context.Context, string) ([]string, error), resolveAccountSRETeam accountSRETeamResolver, caseID, oldSeverity, newSeverity string, before domain.CaseView) {
 	if publisher == nil || newSeverity == "" {
 		return
 	}
@@ -1925,6 +1948,7 @@ func publishSeverityChangedEvent(ctx context.Context, publisher EventPublisherSe
 		projectID = before.ProjectDetails.ID
 	}
 
+	sreTeamID, sreTeamName := caseSRETeam(ctx, resolveAccountSRETeam, before, "update case")
 	payload, err := json.Marshal(events.SeverityChangedPayload{
 		ProjectID:   projectID,
 		CaseID:      caseID,
@@ -1935,6 +1959,8 @@ func publishSeverityChangedEvent(ctx context.Context, publisher EventPublisherSe
 		NewSeverity: strings.ToUpper(newSeverity),
 		Product:     caseProductName(before),
 		Team:        caseTeamName(before),
+		SRETeamID:   sreTeamID,
+		SRETeamName: sreTeamName,
 		Recipients:  recipients,
 	})
 	if err != nil {
@@ -2125,6 +2151,14 @@ func (s *snCaseService) AccountDefaultWatcherEmails(ctx context.Context, project
 		return nil, nil
 	}
 	return s.pgFallback.AccountDefaultWatcherEmails(ctx, projectID)
+}
+
+// AccountSRETeam implements CaseService; account is Postgres-only, so it delegates to pgFallback like AccountDefaultWatcherEmails.
+func (s *snCaseService) AccountSRETeam(ctx context.Context, projectID string) (string, string, error) {
+	if s.pgFallback == nil {
+		return "", "", nil
+	}
+	return s.pgFallback.AccountSRETeam(ctx, projectID)
 }
 
 // GetCaseEtaSharedOn implements CaseService. eta_shared_on is a

@@ -77,6 +77,7 @@ type stubCaseRepo struct {
 	isCaseLikeWorkItem            func(ctx context.Context, workItemID string) (bool, error)
 	setCaseWatchList              func(ctx context.Context, caseID string, userIDs []string, actorEmail string) ([]domain.WatchListUser, time.Time, error)
 	accountDefaultWatcherEmails   func(ctx context.Context, projectID string) ([]string, error)
+	accountSRETeam                func(ctx context.Context, projectID string) (string, string, error)
 	projectOnboardingInfo         func(ctx context.Context, projectID string) (string, bool, error)
 	getCaseEtaSharedOn            func(ctx context.Context, caseID string) (*time.Time, error)
 	getCaseWorkaroundProvidedOn   func(ctx context.Context, caseID string) (*time.Time, error)
@@ -302,6 +303,13 @@ func (s *stubCaseRepo) AccountDefaultWatcherEmails(ctx context.Context, projectI
 		return s.accountDefaultWatcherEmails(ctx, projectID)
 	}
 	return nil, nil
+}
+
+func (s *stubCaseRepo) AccountSRETeam(ctx context.Context, projectID string) (string, string, error) {
+	if s.accountSRETeam != nil {
+		return s.accountSRETeam(ctx, projectID)
+	}
+	return "", "", nil
 }
 
 func (s *stubCaseRepo) ProjectOnboardingInfo(ctx context.Context, projectID string) (string, bool, error) {
@@ -1950,6 +1958,7 @@ type stubMirrorCaseService struct {
 	patchCaseFieldsBundleFn       func(ctx context.Context, caseID string, req domain.UpdateCaseRequest) error
 	projectContactEmailsByRoleFn  func(ctx context.Context, projectID, role string) ([]string, error)
 	accountDefaultWatcherEmailsFn func(ctx context.Context, projectID string) ([]string, error)
+	accountSRETeamFn              func(ctx context.Context, projectID string) (string, string, error)
 	getCaseEtaSharedOnFn          func(ctx context.Context, caseID string) (*time.Time, error)
 	// searchCaseCommentsFn backs mirrorInitialSNComments' call right after
 	// createCaseSNFirst's own Postgres insert succeeds (case_service.go) --
@@ -1972,6 +1981,13 @@ func (s *stubMirrorCaseService) AccountDefaultWatcherEmails(ctx context.Context,
 		return s.accountDefaultWatcherEmailsFn(ctx, projectID)
 	}
 	return nil, nil
+}
+
+func (s *stubMirrorCaseService) AccountSRETeam(ctx context.Context, projectID string) (string, string, error) {
+	if s.accountSRETeamFn != nil {
+		return s.accountSRETeamFn(ctx, projectID)
+	}
+	return "", "", nil
 }
 
 func (s *stubMirrorCaseService) GetCaseEtaSharedOn(ctx context.Context, caseID string) (*time.Time, error) {

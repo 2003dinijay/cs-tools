@@ -147,16 +147,16 @@ func (r TeamScheduleResolver) TeamFamily(ctx context.Context, rc RoutingContext)
 // sreTier is the rota tier each SRE rung reads.
 var sreTier = map[Level]string{Level0: "L1", Level1: "L2", Level2: "L3"}
 
-// ownSRETeam is the incident's own SRE team key, or "" for one that has none.
+// ownSRETeam is the incident's own SRE team key (a case's account SRE team), or "" for one that has none.
 func (r TeamScheduleResolver) ownSRETeam(rc RoutingContext) string {
-	own := r.keyOf(rc.AssignedCRETeam)
-	if r.isDefaultGroup(rc.AssignedCRETeam) {
+	team := rc.sreTeam()
+	own := r.keyOf(team)
+	if r.isDefaultGroup(team) {
 		// A "Default" incident has no SRE team: whoever is on duty answers.
 		return ""
 	}
 	if !r.isSRETeam(own) && len(r.sreTeamKeys) > 0 {
-		// A CRE incident climbing the SRE ladder (a P0) belongs to no SRE
-		// team; every SRE team is then equally placed to answer.
+		// A CRE P0, or a case whose account SRE team is not a known one, has no SRE team, so every SRE team answers.
 		return ""
 	}
 	return own
@@ -164,7 +164,7 @@ func (r TeamScheduleResolver) ownSRETeam(rc RoutingContext) string {
 
 // rotaFor decides which SRE rota pages an incident: its own team's, or
 // sre.teams.defaultRota for an incident with no SRE team of its own (a case at
-// S0, a monitoring alert raised with no team). "" when the catalogue names no
+// S0 whose account has none, a monitoring alert raised with no team). "" when the catalogue names no
 // rotas at all: an entity-service from before rotas, where every SRE window
 // is read, as it always was.
 func (r TeamScheduleResolver) rotaFor(cat scheduleCatalogue, own string) string {

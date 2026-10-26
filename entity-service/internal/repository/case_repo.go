@@ -644,6 +644,8 @@ type CaseRepository interface {
 	// stakeholder with no email on file is silently excluded, same as
 	// watchListUserEmails does for an explicit watcher.
 	AccountDefaultWatcherEmails(ctx context.Context, projectID string) ([]string, error)
+	// AccountSRETeam returns the SRE team (account.sre_team_id) of the account owning projectID, "" for none or no such project.
+	AccountSRETeam(ctx context.Context, projectID string) (id, name string, err error)
 	// ProjectOnboardingInfo returns projectID's own onboarding_status (raw
 	// enum label, e.g. "IN_PROGRESS", "" when unset) and whether its
 	// project_type is the fixed Evaluation Subscription type -- the same two
@@ -4203,6 +4205,25 @@ func (r *caseRepo) AddCaseWatcherIfAbsent(ctx context.Context, caseID, userID st
 		return fmt.Errorf("add case watcher if absent: %w", err)
 	}
 	return nil
+}
+
+// AccountSRETeam implements CaseRepository.
+func (r *caseRepo) AccountSRETeam(ctx context.Context, projectID string) (string, string, error) {
+	var id, name string
+	err := r.db.QueryRow(ctx, `
+		SELECT COALESCE(a.sre_team_id::text, ''), COALESCE(st.name, '')
+		FROM project p
+		JOIN account a ON a.id = p.account_id
+		LEFT JOIN "group" st ON st.id = a.sre_team_id
+		WHERE p.id = $1`, projectID,
+	).Scan(&id, &name)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", nil
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("account sre team: %w", err)
+	}
+	return id, name, nil
 }
 
 // AccountDefaultWatcherEmails implements CaseRepository.
