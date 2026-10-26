@@ -745,5 +745,6 @@ describe("CasesList — spare width on a wide screen", () => {
     const style = getComputedStyle(grid!);
     expect(style.justifyContent).toBe("space-between");
     expect(style.gridTemplateColumns).not.toContain("fr");
+    expect(style.gridTemplateColumns.endsWith("minmax(90px, max-content)")).toBe(true);
   });
 });
