@@ -2404,6 +2404,13 @@ func (r *caseRepo) SearchCaseComments(ctx context.Context, req domain.SearchCase
 // Cleared back to NULL on a transition AWAY from closed, left untouched on
 // every other PATCH -- see UpdateCase's own interface doc comment for where
 // actorID itself comes from.
+// resolved_on follows the original workflow: a transition to solution_proposed
+// stamps NOW() unless the case was waiting_on_wso2 (a hand-back to the
+// customer keeps the earlier stamp) or is already solution_proposed (a
+// re-sent state is not a transition; a NULL stored state counts as neither); closed keeps an existing stamp and
+// otherwise sets one (a direct close); reopened clears it (an announcement's
+// open does, its only reopen); every other state
+// leaves it as it was. The five update queries below carry the same rule.
 // updateCaseQuery's $2/$3/$4 arrive already converted to their real enum
 // labels by UpdateCase below (state/work_state upper-cased, severity mapped
 // through caseSeverityToEnum) -- case_state_enum's "CLOSED" is what $2 = ”
@@ -2432,12 +2439,16 @@ const updateCaseQuery = `
 		                          WHEN $2 <> '' AND $2 <> 'WORK_IN_PROGRESS' THEN NULL
 		                          ELSE work_state END,
 		    closed_on         = CASE WHEN $2 = 'CLOSED' THEN NOW() WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_on END,
+		    resolved_on       = CASE WHEN $2 = 'SOLUTION_PROPOSED' AND COALESCE(state::TEXT, '') NOT IN ('WAITING_ON_WSO2', 'SOLUTION_PROPOSED') THEN NOW()
+		                          WHEN $2 = 'CLOSED' THEN COALESCE(resolved_on, NOW())
+		                          WHEN $2 = 'REOPENED' THEN NULL
+		                          ELSE resolved_on END,
 		    closed_by_user_id = CASE WHEN $2 = 'CLOSED' AND state IS DISTINCT FROM 'CLOSED'::case_state_enum THEN $8::uuid WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_by_user_id END,
 		    resolution_code   = CASE WHEN $5 <> '' THEN $5::case_resolution_code_enum ELSE resolution_code END,
 		    cause             = CASE WHEN $6 <> '' THEN $6::case_cause_enum ELSE cause END,
 		    close_notes       = COALESCE($7, close_notes)
 		WHERE id = $1
-		RETURNING id, severity, issue_type, state, work_state, closed_on
+		RETURNING id, severity, issue_type, state, work_state, closed_on, resolved_on
 	),
 	updated_work_item AS (
 		UPDATE work_item
@@ -2449,7 +2460,7 @@ const updateCaseQuery = `
 	SELECT uwi.id, uwi.number, uwi.wso2_id, uwi.created_by, uwi.project_id, uwi.deployment_id, uwi.deployed_product_id,
 	       uwi.subject, uwi.description,
 	       uc.severity::TEXT, uc.issue_type::TEXT, uc.state::TEXT, uc.work_state::TEXT,
-	       uwi.created_on, uwi.updated_on, uc.closed_on
+	       uwi.created_on, uwi.updated_on, uc.closed_on, uc.resolved_on
 	FROM updated_work_item uwi
 	JOIN updated_case uc ON uc.id = uwi.id`
 
@@ -2458,6 +2469,10 @@ const updateSecurityReportAnalysisQuery = `
 		UPDATE security_report_analysis
 		SET state             = CASE WHEN $2 <> '' THEN $2::security_report_analysis_state_enum ELSE state END,
 		    closed_on         = CASE WHEN $2 = 'CLOSED' THEN NOW() WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_on END,
+		    resolved_on       = CASE WHEN $2 = 'SOLUTION_PROPOSED' AND COALESCE(state::TEXT, '') NOT IN ('WAITING_ON_WSO2', 'SOLUTION_PROPOSED') THEN NOW()
+		                          WHEN $2 = 'CLOSED' THEN COALESCE(resolved_on, NOW())
+		                          WHEN $2 = 'REOPENED' THEN NULL
+		                          ELSE resolved_on END,
 		    closed_by_user_id = CASE WHEN $2 = 'CLOSED' AND state IS DISTINCT FROM 'CLOSED'::security_report_analysis_state_enum THEN $7::uuid WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_by_user_id END,
 		    cause             = CASE WHEN $3 <> '' THEN $3::security_report_analysis_cause_enum ELSE cause END,
 		    close_notes       = COALESCE($4, close_notes),
@@ -2467,7 +2482,7 @@ const updateSecurityReportAnalysisQuery = `
 		                          ELSE work_state END,
 		    resolution_code   = CASE WHEN $6 <> '' THEN $6::case_resolution_code_enum ELSE resolution_code END
 		WHERE id = $1
-		RETURNING id, state, work_state, closed_on
+		RETURNING id, state, work_state, closed_on, resolved_on
 	),
 	updated_work_item AS (
 		UPDATE work_item
@@ -2479,7 +2494,7 @@ const updateSecurityReportAnalysisQuery = `
 	SELECT uwi.id, uwi.number, uwi.wso2_id, uwi.created_by, uwi.project_id, uwi.deployment_id, uwi.deployed_product_id,
 	       uwi.subject, uwi.description,
 	       NULL::TEXT, NULL::TEXT, usra.state::TEXT, usra.work_state::TEXT,
-	       uwi.created_on, uwi.updated_on, usra.closed_on
+	       uwi.created_on, uwi.updated_on, usra.closed_on, usra.resolved_on
 	FROM updated_work_item uwi
 	JOIN updated_sra usra ON usra.id = uwi.id`
 
@@ -2488,6 +2503,10 @@ const updateServiceRequestQuery = `
 		UPDATE service_request
 		SET state             = CASE WHEN $2 <> '' THEN $2::service_request_state_enum ELSE state END,
 		    closed_on         = CASE WHEN $2 = 'CLOSED' THEN NOW() WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_on END,
+		    resolved_on       = CASE WHEN $2 = 'SOLUTION_PROPOSED' AND COALESCE(state::TEXT, '') NOT IN ('WAITING_ON_WSO2', 'SOLUTION_PROPOSED') THEN NOW()
+		                          WHEN $2 = 'CLOSED' THEN COALESCE(resolved_on, NOW())
+		                          WHEN $2 = 'REOPENED' THEN NULL
+		                          ELSE resolved_on END,
 		    closed_by_user_id = CASE WHEN $2 = 'CLOSED' AND state IS DISTINCT FROM 'CLOSED'::service_request_state_enum THEN $7::uuid WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_by_user_id END,
 		    cause             = CASE WHEN $3 <> '' THEN $3::service_request_cause_enum ELSE cause END,
 		    close_notes       = COALESCE($4, close_notes),
@@ -2497,7 +2516,7 @@ const updateServiceRequestQuery = `
 		                          ELSE work_state END,
 		    resolution_code   = CASE WHEN $6 <> '' THEN $6::case_resolution_code_enum ELSE resolution_code END
 		WHERE id = $1
-		RETURNING id, state, work_state, closed_on
+		RETURNING id, state, work_state, closed_on, resolved_on
 	),
 	updated_work_item AS (
 		UPDATE work_item
@@ -2509,7 +2528,7 @@ const updateServiceRequestQuery = `
 	SELECT uwi.id, uwi.number, uwi.wso2_id, uwi.created_by, uwi.project_id, uwi.deployment_id, uwi.deployed_product_id,
 	       uwi.subject, uwi.description,
 	       NULL::TEXT, NULL::TEXT, usr.state::TEXT, usr.work_state::TEXT,
-	       uwi.created_on, uwi.updated_on, usr.closed_on
+	       uwi.created_on, uwi.updated_on, usr.closed_on, usr.resolved_on
 	FROM updated_work_item uwi
 	JOIN updated_sr usr ON usr.id = uwi.id`
 
@@ -2518,6 +2537,10 @@ const updateEngagementQuery = `
 		UPDATE engagement
 		SET state             = CASE WHEN $2 <> '' THEN $2::engagement_state_enum ELSE state END,
 		    closed_on         = CASE WHEN $2 = 'CLOSED' THEN NOW() WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_on END,
+		    resolved_on       = CASE WHEN $2 = 'SOLUTION_PROPOSED' AND COALESCE(state::TEXT, '') NOT IN ('WAITING_ON_WSO2', 'SOLUTION_PROPOSED') THEN NOW()
+		                          WHEN $2 = 'CLOSED' THEN COALESCE(resolved_on, NOW())
+		                          WHEN $2 = 'REOPENED' THEN NULL
+		                          ELSE resolved_on END,
 		    closed_by_user_id = CASE WHEN $2 = 'CLOSED' AND state IS DISTINCT FROM 'CLOSED'::engagement_state_enum THEN $7::uuid WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_by_user_id END,
 		    cause             = CASE WHEN $3 <> '' THEN $3::engagement_cause_enum ELSE cause END,
 		    close_notes       = COALESCE($4, close_notes),
@@ -2527,7 +2550,7 @@ const updateEngagementQuery = `
 		                          ELSE work_state END,
 		    resolution_code   = CASE WHEN $6 <> '' THEN $6::case_resolution_code_enum ELSE resolution_code END
 		WHERE id = $1
-		RETURNING id, state, work_state, closed_on
+		RETURNING id, state, work_state, closed_on, resolved_on
 	),
 	updated_work_item AS (
 		UPDATE work_item
@@ -2539,7 +2562,7 @@ const updateEngagementQuery = `
 	SELECT uwi.id, uwi.number, uwi.wso2_id, uwi.created_by, uwi.project_id, uwi.deployment_id, uwi.deployed_product_id,
 	       uwi.subject, uwi.description,
 	       NULL::TEXT, NULL::TEXT, ueng.state::TEXT, ueng.work_state::TEXT,
-	       uwi.created_on, uwi.updated_on, ueng.closed_on
+	       uwi.created_on, uwi.updated_on, ueng.closed_on, ueng.resolved_on
 	FROM updated_work_item uwi
 	JOIN updated_eng ueng ON ueng.id = uwi.id`
 
@@ -2548,11 +2571,14 @@ const updateAnnouncementQuery = `
 		UPDATE announcement
 		SET state             = CASE WHEN $2 <> '' THEN $2::announcement_state_enum ELSE state END,
 		    closed_on         = CASE WHEN $2 = 'CLOSE' THEN NOW() WHEN $2 <> '' AND $2 <> 'CLOSE' THEN NULL ELSE closed_on END,
+		    resolved_on       = CASE WHEN $2 = 'CLOSE' THEN COALESCE(resolved_on, NOW())
+		                          WHEN $2 = 'OPEN' THEN NULL
+		                          ELSE resolved_on END,
 		    closed_by_user_id = CASE WHEN $2 = 'CLOSE' AND state IS DISTINCT FROM 'CLOSE'::announcement_state_enum THEN $5::uuid WHEN $2 <> '' AND $2 <> 'CLOSE' THEN NULL ELSE closed_by_user_id END,
 		    cause             = CASE WHEN $3 <> '' THEN $3::announcement_cause_enum ELSE cause END,
 		    close_notes       = COALESCE($4, close_notes)
 		WHERE id = $1
-		RETURNING id, state, closed_on
+		RETURNING id, state, closed_on, resolved_on
 	),
 	updated_work_item AS (
 		UPDATE work_item
@@ -2566,7 +2592,7 @@ const updateAnnouncementQuery = `
 	       NULL::TEXT, NULL::TEXT,
 	       CASE WHEN uann.state::TEXT = 'CLOSE' THEN 'CLOSED' ELSE uann.state::TEXT END,
 	       NULL::TEXT,
-	       uwi.created_on, uwi.updated_on, uann.closed_on
+	       uwi.created_on, uwi.updated_on, uann.closed_on, uann.resolved_on
 	FROM updated_work_item uwi
 	JOIN updated_ann uann ON uann.id = uwi.id`
 
@@ -2620,8 +2646,20 @@ func caseLikeExtensionUpdate(workItemType string, req domain.UpdateCaseRequest, 
 	return "", nil, "", false
 }
 
-// scanUpdatedCase is shared by both branches of UpdateCase below.
+// scanUpdatedCase is shared by both branches of UpdateCase below. It decodes
+// the 16-column shape the create queries return; the update queries return one
+// more column (resolved_on) and go through scanUpdatedCaseWithResolvedOn.
 func scanUpdatedCase(row pgx.Row) (domain.Case, error) {
+	return scanCaseRow(row, false)
+}
+
+// scanUpdatedCaseWithResolvedOn is scanUpdatedCase for the update queries,
+// whose final column is the row's resolved_on after the write.
+func scanUpdatedCaseWithResolvedOn(row pgx.Row) (domain.Case, error) {
+	return scanCaseRow(row, true)
+}
+
+func scanCaseRow(row pgx.Row, withResolvedOn bool) (domain.Case, error) {
 	var c domain.Case
 	var internalID *string
 	// deploymentID/deployedProductID: normally NOT NULL by the time a case
@@ -2640,12 +2678,16 @@ func scanUpdatedCase(row pgx.Row) (domain.Case, error) {
 	// "cannot scan NULL into *string" after the write had already happened.
 	var projectID, description *string
 	var severity, issueType, state, workStateRaw *string
-	if err := row.Scan(
+	dest := []any{
 		&c.ID, &c.Number, &internalID, &c.CreatedBy,
 		&projectID, &deploymentID, &deployedProductID,
 		&c.Subject, &description, &severity, &issueType, &state, &workStateRaw,
 		&c.CreatedOn, &c.UpdatedOn, &c.ClosedOn,
-	); err != nil {
+	}
+	if withResolvedOn {
+		dest = append(dest, &c.ResolvedOn)
+	}
+	if err := row.Scan(dest...); err != nil {
 		return domain.Case{}, err
 	}
 	c.InternalID = stringOrEmpty(internalID)
@@ -2795,7 +2837,7 @@ func (r *caseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest,
 		// race on — skip the transaction/lock overhead entirely.
 		if req.Severity == nil {
 			c, prevState, err := r.updateLockingPreviousState(ctx, req, func(q rowQuerier) (domain.Case, error) {
-				return scanUpdatedCase(q.QueryRow(ctx, updateCaseQuery, req.ID, state, severity, workState, resolutionCode, cause, req.CloseNotes, actorID))
+				return scanUpdatedCaseWithResolvedOn(q.QueryRow(ctx, updateCaseQuery, req.ID, state, severity, workState, resolutionCode, cause, req.CloseNotes, actorID))
 			})
 			if errors.Is(err, pgx.ErrNoRows) {
 				return domain.Case{}, nil, nil, &apierror.NotFoundError{Msg: "case not found"}
@@ -2816,7 +2858,7 @@ func (r *caseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest,
 				return err
 			}
 			var txErr error
-			c, txErr = scanUpdatedCase(tx.QueryRow(ctx, updateCaseQuery, req.ID, state, severity, workState, resolutionCode, cause, req.CloseNotes, actorID))
+			c, txErr = scanUpdatedCaseWithResolvedOn(tx.QueryRow(ctx, updateCaseQuery, req.ID, state, severity, workState, resolutionCode, cause, req.CloseNotes, actorID))
 			if txErr != nil {
 				return txErr
 			}
@@ -2862,7 +2904,7 @@ func (r *caseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest,
 			return c, prevSev, nil, err
 		}
 		c, prevState, err := r.updateLockingPreviousState(ctx, req, func(q rowQuerier) (domain.Case, error) {
-			return scanUpdatedCase(q.QueryRow(ctx, query, args...))
+			return scanUpdatedCaseWithResolvedOn(q.QueryRow(ctx, query, args...))
 		})
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.Case{}, nil, nil, &apierror.NotFoundError{Msg: "case not found"}
@@ -5223,7 +5265,7 @@ func (r *caseRepo) updateCaseEnforcingOneOngoing(ctx context.Context, req domain
 		}
 
 		var scanErr error
-		c, scanErr = scanUpdatedCase(tx.QueryRow(ctx, query, args...))
+		c, scanErr = scanUpdatedCaseWithResolvedOn(tx.QueryRow(ctx, query, args...))
 		if scanErr != nil {
 			return fmt.Errorf("update case: %s: %w", label, scanErr)
 		}

@@ -20850,8 +20850,11 @@ components:
           the case's created, last-updated, closed, or resolved timestamp
           respectively. gte is inclusive "on or after"; lte is inclusive "on
           or before". A lte bound earlier than its own gte bound is rejected
-          with a validation error. resolvedOn has no equivalent in the
-          relational data source and is rejected there.
+          with a validation error. On the relational data source, resolvedOn
+          bounds only the case record's own resolved timestamp; engagements,
+          service requests, security report analyses and announcements do not
+          match it. Cases that never reached a resolved or closed state never
+          match.
         - **product** (in): product family names (e.g. "API Manager",
           "Identity Server", "Asgardeo"). Matches every version of each named
           product. Only applied by the ServiceNow data source.
