@@ -147,7 +147,7 @@ func scanPendingVerification(row pgx.Row) (domain.PendingVerification, error) {
 	); err != nil {
 		return domain.PendingVerification{}, err
 	}
-	pv.InternalID = stringOrEmpty(internalID)
+	pv.InternalID = internalID
 	pv.Severity = pendingVerificationSeverityFromEnum(severity)
 	if previousStatus != nil {
 		s := domain.PendingVerificationPreviousStatus(*previousStatus)

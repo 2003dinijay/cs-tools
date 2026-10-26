@@ -9632,15 +9632,18 @@ const (
 // is case-like) at read time, so this list can never show a stale title or
 // severity if the underlying record is later edited.
 type PendingVerification struct {
-	ID             string                             `json:"id"`
-	WorkItemID     string                             `json:"workItemId"`
-	RecordNumber   string                             `json:"recordNumber"`
+	ID           string `json:"id"`
+	WorkItemID   string `json:"workItemId"`
+	RecordNumber string `json:"recordNumber"`
 	// InternalID (work_item.wso2_id) is the record's own internal/WSO2 id
 	// (e.g. "CUPRSUB-1170", a per-project prefix + counter), distinct from
 	// RecordNumber (the ServiceNow-style "CS0441731" number) -- the same
-	// pairing Case.InternalID/Number already carries. Required, non-nullable
-	// string, "" when the joined work_item row has no wso2_id.
-	InternalID     string                             `json:"internalId"`
+	// pairing Case.InternalID/Number already carries. Unlike Case.InternalID
+	// (which stays a required, non-nullable string for cross-repo contract
+	// reasons -- see that field's own doc comment), this is a brand-new wire
+	// type with no existing contract to preserve, so it stays nil/omitted
+	// rather than "" when the joined work_item row has no wso2_id.
+	InternalID     *string                            `json:"internalId,omitempty"`
 	RecordTitle    string                             `json:"recordTitle"`
 	Severity       *string                            `json:"severity"`
 	RecordType     string                             `json:"recordType"`

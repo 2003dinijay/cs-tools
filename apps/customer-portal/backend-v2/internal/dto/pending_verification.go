@@ -123,7 +123,7 @@ type PendingVerificationView struct {
 	ID             string     `json:"id"`
 	WorkItemID     string     `json:"workItemId"`
 	CaseID         string     `json:"caseId"`
-	InternalID     string     `json:"internalId,omitempty"`
+	InternalID     *string    `json:"internalId,omitempty"`
 	CaseTitle      string     `json:"caseTitle"`
 	Severity       *string    `json:"severity,omitempty"`
 	RecordType     string     `json:"recordType"`
