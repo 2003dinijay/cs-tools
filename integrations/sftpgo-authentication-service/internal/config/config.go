@@ -451,6 +451,14 @@ func validateEnvVars(cfg *Config) error {
 		}
 	}
 
+	// AUTH_AUDIENCE is parsed into a list, so it is checked here rather than in
+	// the table. Without it the JWT validator refuses to build (an empty
+	// audience list would accept any audience), so in strict web-attachment
+	// mode it is required; with ENABLED_FLOWS unset it stays optional.
+	if cfg.FlowsExplicit && cfg.WebAttachmentEnabled && len(cfg.AuthAudiences) == 0 {
+		missingCriticalVars = append(missingCriticalVars, "AUTH_AUDIENCE (required by the "+FlowWebAttachment+" flow)")
+	}
+
 	if len(missingCriticalVars) > 0 {
 		return fmt.Errorf("missing critical environment variables: %s", strings.Join(missingCriticalVars, ", "))
 	}

@@ -17,6 +17,7 @@
 package main
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -25,6 +26,7 @@ import (
 	"github.com/wso2-open-operations/cs-tools/integrations/sftpgo-authentication-service/internal/constants"
 	"github.com/wso2-open-operations/cs-tools/integrations/sftpgo-authentication-service/internal/handler"
 	applog "github.com/wso2-open-operations/cs-tools/integrations/sftpgo-authentication-service/internal/log"
+	"github.com/wso2-open-operations/cs-tools/integrations/sftpgo-authentication-service/internal/service"
 )
 
 // TestBuildMux_RegistersOnlyEnabledFlows proves a disabled flow's paths answer
@@ -61,5 +63,30 @@ func TestBuildMux_RegistersOnlyEnabledFlows(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestInitJWTAuth proves a validator construction error is fatal only when
+// ENABLED_FLOWS is explicit, and warn-and-continue (nil validator, no error)
+// when it is unset.
+func TestInitJWTAuth(t *testing.T) {
+	failing := func(*config.Config, *applog.AppLogger) (*service.JWTAuthService, error) {
+		return nil, errors.New("boom")
+	}
+	working := func(*config.Config, *applog.AppLogger) (*service.JWTAuthService, error) {
+		return &service.JWTAuthService{}, nil
+	}
+	logger := applog.NewAppLogger("ERROR")
+
+	if _, err := initJWTAuth(&config.Config{FlowsExplicit: true, WebAttachmentEnabled: true}, logger, failing); err == nil {
+		t.Error("explicit ENABLED_FLOWS: expected the construction error to be returned")
+	}
+	svc, err := initJWTAuth(&config.Config{WebAttachmentEnabled: true}, logger, failing)
+	if err != nil || svc != nil {
+		t.Errorf("unset ENABLED_FLOWS: expected nil validator and nil error, got %v, %v", svc, err)
+	}
+	svc, err = initJWTAuth(&config.Config{FlowsExplicit: true, WebAttachmentEnabled: true}, logger, working)
+	if err != nil || svc == nil {
+		t.Errorf("expected the validator on success, got %v, %v", svc, err)
 	}
 }

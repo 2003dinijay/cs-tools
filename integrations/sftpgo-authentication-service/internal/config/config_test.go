@@ -187,7 +187,9 @@ var (
 		"AUTH_ISSUER":          "https://idp.example.com/oauth2/token",
 		"ATTACHMENTS_DIR_PATH": "/tmp/attachments",
 	}
-	sftpVars = map[string]string{
+	// webAudience is required in strict web-attachment mode only.
+	webAudience = map[string]string{"AUTH_AUDIENCE": "aud-1"}
+	sftpVars    = map[string]string{
 		"BASIC_AUTHENTICATOR_ID": "QmFzaWNBdXRoZW50aWNhdG9yOkxPQ0FM",
 		"INTERNAL_CLIENT_ID":     "test_client_id",
 		"INTERNAL_CLIENT_SECRET": "test_client_secret",
@@ -293,7 +295,7 @@ func TestLoad_EnabledFlows_UnsetStillRequiresSFTPVars(t *testing.T) {
 
 func TestLoad_EnabledFlows_WebOnlyNeedsOnlyItsVars(t *testing.T) {
 	clearFlowEnv(t)
-	setVars(t, alwaysVars, webVars) // no DB, IdP, admin or subscription variables
+	setVars(t, alwaysVars, webVars, webAudience) // no DB, IdP, admin or subscription variables
 	t.Setenv("ENABLED_FLOWS", "web-attachment")
 
 	cfg, err := Load()
@@ -309,7 +311,7 @@ func TestLoad_EnabledFlows_WebOnlyRequiresEachWebVar(t *testing.T) {
 	for name := range webVars {
 		t.Run(name, func(t *testing.T) {
 			clearFlowEnv(t)
-			setVars(t, alwaysVars, webVars)
+			setVars(t, alwaysVars, webVars, webAudience)
 			t.Setenv("ENABLED_FLOWS", "web-attachment")
 			unset(t, name)
 
@@ -375,7 +377,7 @@ func TestLoad_EnabledFlows_SFTPOnlyRequiresEachSFTPVar(t *testing.T) {
 
 func TestLoad_EnabledFlows_BothExplicit(t *testing.T) {
 	clearFlowEnv(t)
-	setVars(t, alwaysVars, webVars, sftpVars)
+	setVars(t, alwaysVars, webVars, sftpVars, webAudience)
 	t.Setenv("ENABLED_FLOWS", "web-attachment,sftp-channel")
 
 	cfg, err := Load()
@@ -389,7 +391,7 @@ func TestLoad_EnabledFlows_BothExplicit(t *testing.T) {
 
 func TestLoad_EnabledFlows_WhitespaceAndDuplicates(t *testing.T) {
 	clearFlowEnv(t)
-	setVars(t, alwaysVars, webVars)
+	setVars(t, alwaysVars, webVars, webAudience)
 	t.Setenv("ENABLED_FLOWS", " web-attachment , ,web-attachment,")
 
 	cfg, err := Load()
@@ -413,7 +415,7 @@ func TestLoad_EnabledFlows_RejectsBadValues(t *testing.T) {
 	for name, value := range cases {
 		t.Run(name, func(t *testing.T) {
 			clearFlowEnv(t)
-			setVars(t, alwaysVars, webVars, sftpVars)
+			setVars(t, alwaysVars, webVars, sftpVars, webAudience)
 			t.Setenv("ENABLED_FLOWS", value)
 
 			_, err := Load()
@@ -430,7 +432,7 @@ func TestLoad_EnabledFlows_RejectsBadValues(t *testing.T) {
 
 func TestLoad_EnabledFlows_UnknownNameIsNamedInError(t *testing.T) {
 	clearFlowEnv(t)
-	setVars(t, alwaysVars, webVars, sftpVars)
+	setVars(t, alwaysVars, webVars, sftpVars, webAudience)
 	t.Setenv("ENABLED_FLOWS", "web-attachment, bogus")
 
 	_, err := Load()
@@ -451,7 +453,7 @@ func TestLoad_AlwaysRequiredVarsFailEveryConfiguration(t *testing.T) {
 		for varName := range alwaysVars {
 			t.Run(cfgName+"/"+varName, func(t *testing.T) {
 				clearFlowEnv(t)
-				setVars(t, alwaysVars, webVars, sftpVars)
+				setVars(t, alwaysVars, webVars, sftpVars, webAudience)
 				if flows != "" {
 					t.Setenv("ENABLED_FLOWS", flows)
 				}
@@ -471,7 +473,7 @@ func TestLoad_AlwaysRequiredVarsFailEveryConfiguration(t *testing.T) {
 
 func TestLoad_EnabledFlows_WebOnlyEnforcesHTTPSJWKS(t *testing.T) {
 	clearFlowEnv(t)
-	setVars(t, alwaysVars, webVars)
+	setVars(t, alwaysVars, webVars, webAudience)
 	t.Setenv("ENABLED_FLOWS", "web-attachment")
 	t.Setenv("AUTH_JWKS_ENDPOINT", "http://idp.example.com/jwks")
 
@@ -488,5 +490,46 @@ func TestLoad_EnabledFlows_SFTPOnlyEnforcesHTTPSAdminAPI(t *testing.T) {
 
 	if _, err := Load(); err == nil {
 		t.Fatal("expected error for non-HTTPS SFTPGO_API_BASE, got nil")
+	}
+}
+
+func TestLoad_EnabledFlows_ExplicitWebRequiresAudience(t *testing.T) {
+	for _, flows := range []string{"web-attachment", "web-attachment,sftp-channel"} {
+		t.Run(flows, func(t *testing.T) {
+			clearFlowEnv(t)
+			setVars(t, alwaysVars, webVars, sftpVars)
+			t.Setenv("ENABLED_FLOWS", flows)
+
+			_, err := Load()
+			if err == nil || !strings.Contains(err.Error(), "AUTH_AUDIENCE (required by the web-attachment flow)") {
+				t.Fatalf("expected error naming AUTH_AUDIENCE, got %v", err)
+			}
+
+			t.Setenv("AUTH_AUDIENCE", " , ")
+			if _, err := Load(); err == nil {
+				t.Fatal("expected error for an AUTH_AUDIENCE with no value, got nil")
+			}
+		})
+	}
+}
+
+func TestLoad_EnabledFlows_SFTPOnlyDoesNotRequireAudience(t *testing.T) {
+	clearFlowEnv(t)
+	setVars(t, alwaysVars, sftpVars)
+	t.Setenv("ENABLED_FLOWS", "sftp-channel")
+
+	if _, err := Load(); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+}
+
+// Backward compatibility: with ENABLED_FLOWS unset, AUTH_AUDIENCE stays optional
+// even when the JWKS and issuer are set.
+func TestLoad_EnabledFlows_UnsetKeepsAudienceOptional(t *testing.T) {
+	clearFlowEnv(t)
+	setVars(t, alwaysVars, webVars, sftpVars)
+
+	if _, err := Load(); err != nil {
+		t.Fatalf("expected no error without AUTH_AUDIENCE when ENABLED_FLOWS is unset, got %v", err)
 	}
 }

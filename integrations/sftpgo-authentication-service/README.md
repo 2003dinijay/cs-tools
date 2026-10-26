@@ -98,7 +98,9 @@ the service starts without a reachable database.
 | `AUTH_JWKS_ENDPOINT` (https), `AUTH_ISSUER`, `ATTACHMENTS_DIR_PATH` | `web-attachment` (see the compatibility rule below) |
 | `BASIC_AUTHENTICATOR_ID`, `INTERNAL_CLIENT_ID`, `INTERNAL_CLIENT_SECRET`, `OAUTH_CALLBACK_URL`, `INTERNAL_IDP_BASE_PATH`, `SCIM_SCOPE`, `CHECK_ROLE`, `SFTPGO_API_BASE` (https), `ADMIN_USER`, `ADMIN_KEY`, `FOLDER_PATH`, `SUBSCRIPTION_API`, `PROJECT_API`, `DB_CONN_STRING` | `sftp-channel` |
 
-`AUTH_AUDIENCE` (comma-separated), `AUTH_TOKEN_VALIDATOR_ENABLED`, the `EXTERNAL_*`
+`AUTH_AUDIENCE` (comma-separated, OR-matched) is required when `ENABLED_FLOWS` is set and
+includes `web-attachment` (the JWT validator refuses to start without an accepted
+audience), and optional when `ENABLED_FLOWS` is unset. `AUTH_TOKEN_VALIDATOR_ENABLED`, the `EXTERNAL_*`
 variables and the tuning variables with defaults (`PORT`, `LOG_LEVEL`, timeouts,
 `EMAIL_REGEX_PATTERN`, `INTERNAL_USER_SUFFIX`) stay optional. A missing required
 variable stops the service at startup with `missing critical environment variables:`
@@ -113,8 +115,12 @@ as before the variable existed, except that `HOOK_API_KEY` is now required: the
 `sftp-channel` variables stay required, and the `web-attachment` variables
 (`AUTH_JWKS_ENDPOINT`, `AUTH_ISSUER`, `ATTACHMENTS_DIR_PATH`) stay optional. If the JWKS
 is not configured, the service starts with a warning and `/external-auth-hook` answers
-`503`. The strict per-flow check for the `web-attachment` variables applies only when
-`ENABLED_FLOWS` is explicitly set and includes `web-attachment`.
+`503`. The strict per-flow check for the `web-attachment` variables (including `AUTH_AUDIENCE`)
+applies only when `ENABLED_FLOWS` is explicitly set and includes `web-attachment`. In
+that strict mode the service also exits at startup if the JWT validator cannot be
+built, instead of starting with `/external-auth-hook` answering `503`. An unreachable
+JWKS host is not caught at startup (the key set is fetched in the background and the
+failure is only logged); it surfaces as failed validations at request time.
 
 Example, `web-attachment` only (no database, identity provider or SFTPGo admin API):
 ```bash
@@ -124,7 +130,7 @@ DIR_PATH="/path/on/sftpgo/server"
 ATTACHMENTS_DIR_PATH="/path/on/sftpgo/server/attachments"
 AUTH_JWKS_ENDPOINT="https://your-idp/oauth2/jwks"
 AUTH_ISSUER="https://your-idp/oauth2/token"
-AUTH_AUDIENCE="aud-1"
+AUTH_AUDIENCE="aud-1"   # required in this configuration
 ```
 
 Example, both flows (`ENABLED_FLOWS` may also be left unset): every variable in
@@ -201,7 +207,7 @@ hooks keep working unchanged; only `/external-auth-hook` is disabled (fails clos
 ```bash
 AUTH_JWKS_ENDPOINT="https://your-idp/oauth2/jwks"
 AUTH_ISSUER="https://your-idp/oauth2/token"
-AUTH_AUDIENCE="aud-1,aud-2"           # Optional, comma-separated, OR-matched
+AUTH_AUDIENCE="aud-1,aud-2"           # Comma-separated, OR-matched; required when ENABLED_FLOWS includes web-attachment
 AUTH_TOKEN_VALIDATOR_ENABLED="true"   # Optional, default true; "false" skips signature verification (local dev only)
 ```
 

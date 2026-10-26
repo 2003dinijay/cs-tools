@@ -46,6 +46,27 @@ func buildMux(cfg *config.Config, h *handler.Handler) *http.ServeMux {
 	return mux
 }
 
+// initJWTAuth builds the JWT validator for the web-attachment flow via newJWT.
+// When ENABLED_FLOWS explicitly names the flow, a construction error is
+// returned so the caller can refuse to start. When ENABLED_FLOWS is unset the
+// error is only logged and a nil validator is returned, leaving
+// /external-auth-hook answering 503 (the behavior before ENABLED_FLOWS existed).
+func initJWTAuth(
+	cfg *config.Config,
+	logger *applog.AppLogger,
+	newJWT func(*config.Config, *applog.AppLogger) (*service.JWTAuthService, error),
+) (*service.JWTAuthService, error) {
+	svc, err := newJWT(cfg, logger)
+	if err == nil {
+		return svc, nil
+	}
+	if cfg.FlowsExplicit {
+		return nil, err
+	}
+	logger.Warn("External-auth hook (web attachment access path) is disabled: %v", err)
+	return nil, nil
+}
+
 // The entry point for the SFTPGo Authentication Service.
 func main() {
 	// 1. Load configuration from environment variables
@@ -81,14 +102,14 @@ func main() {
 	}
 
 	// The JWT validator backs /external-auth-hook (web attachment access path).
-	// A missing/unreachable JWKS here does not stop the service from starting:
-	// it leaves /external-auth-hook disabled (it fails closed with 503 per
-	// request until configured).
+	// With ENABLED_FLOWS unset, a validator that cannot be built does not stop
+	// the service: /external-auth-hook fails closed with 503 per request. With
+	// ENABLED_FLOWS set, it is fatal. An unreachable JWKS host is not an error
+	// returned here: the key set refreshes in the background.
 	if cfg.WebAttachmentEnabled {
-		jwtAuthService, err = service.NewJWTAuthService(cfg, logger)
+		jwtAuthService, err = initJWTAuth(cfg, logger, service.NewJWTAuthService)
 		if err != nil {
-			logger.Warn("External-auth hook (web attachment access path) is disabled: %v", err)
-			jwtAuthService = nil
+			logger.Fatal("Failed to initialize the JWT validator for the web-attachment flow: %v", err)
 		}
 	}
 
