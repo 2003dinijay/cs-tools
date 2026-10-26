@@ -84,6 +84,7 @@ The "Add Comment" CTA in all four templates changed from a solid-background butt
 **Incident Chat cards (`googlechat_incident.go`, `INCIDENT_CHAT_SPACES`).** The Chat post on `incident.created` was once removed as redundant with paging, but the paging ladder posts to Chat only when its channel is `chat`/`both` and only for incidents a routing rule claims, so a successfully created incident usually reached no space at all (alert-core's FALLBACK card was the only one, and only when CSM failed). The cards now reproduce ServiceNow's: `incident.created` posts `"<GROUP> | <Priority> Priority Incident Reported"` (subtitle `#<number> | <service> | <environment>`, short description, a "View Incident" button, a collapsible "Incident Details" with category, `P1 - Critical`-style priority and state), and `incident.assigned` posts `"Incident Acknowledged."` ("Incident acknowledged by <assignee>. Incident updated by <updatedBy>.") into the same thread (`incident-<incidentId>`). `incident.acknowledged` (leaving NEW) posts nothing: ServiceNow's card is about the assignee. **Routing is the incident's assignment group** (`team` on both payloads), looked up in `INCIDENT_CHAT_SPACES`, a JSON object `{"<assignment group>": "<webhook URL>"}` matched case-insensitively and registered under the `incident/` audience namespace (`notifications.IncidentAudience`) so it can never collide with a `GOOGLE_CHAT_SPACES` team. Onboarding a team is one more entry there. A group with no entry, or an incident with none, posts nothing (logged at info, never retried, no Incident Monitor fallback). **`INCIDENT_CHAT_FANOUT`** (optional, `Dispatcher.WithIncidentChatFanout`): `{"<group>": ["<group>", ...]}` sends a group's `incident.created` card and `incident.assigned` reply to the listed groups' `INCIDENT_CHAT_SPACES` spaces instead of its own -- a default group (a service mapped to no SRE team) to both Apollo and Artemis. Group names only; startup warns about a listed group with no space. The call is still placed once. `sendToEachIncidentSpace` returns an error only when no space took the card: the record is retried whole, so a space that failed while another took it is logged, not retried (a retry would post twice where it landed). Tests: `incident_chat_fanout_test.go`. `incident.assigned` is Chat-only and uses `sendChatOnly` (the single-claim helper the `sr.*` handlers use). entity-service fills `category`/`state`/`service`/`environment` on `incident.created` and `number`/`team`/`updatedBy` on `incident.assigned`; this service decodes strictly, so **deploy it before the entity-service that sends them**.
 
 **The Alert Settings mapping decides an incident's room, ahead of `INCIDENT_CHAT_SPACES`** (`paging/incident_routes.go`, `notifications/googlechat_incident.go`, `applyIncidentRoutes` in `cmd/server/main.go`). Once the SRE ladder's config is loaded, `BuildIncidentRoutes` turns it into incident audiences: each SRE team key with a room (`sre.teamChats`, saved rooms included), each `sre.teams.aliases` group whose team has a room (the Alert Settings redirects), each `defaultGroups` entry as a fan-out to the `teamlessChats` rooms, and the shared `sre.chat` room as `IncidentFallbackAudience`. `GoogleChatClient.SetIncidentRouteSpaces` registers them (they win over an `INCIDENT_CHAT_SPACES` entry for the same group; only `incident/` keys are taken) and `IncidentRoutes.Set` the fan-out. `notifications.IncidentAudiences` is the one resolver the dispatcher's card and the paging engine's replies share: `INCIDENT_CHAT_FANOUT` first, then the routed fan-out, else the group itself; when none of those has a space, the shared SRE room. So a group nobody has mapped still gets its card (in the shared SRE room; the CRE ladder never uses that fallback), and every rung reply threads under the card wherever it went. Nothing is set before the paging config loads (consumers start first, so cards in that window route as before), or without Redis. Logs carry counts, never URLs. Tests: `paging/incident_routes_test.go`, `notifications/incident_routes_test.go`, `dispatch/incident_routes_test.go`, `paging/incident_space_test.go`. **Behaviour change**: an incident whose group has no space used to post no card; it now posts in the shared SRE room when one is configured.
+**A group's own room wins.** A saved SRE assignment-group room (entity-service 0244, `CaseAlertRoom.GroupName`) becomes `sre.groupChats[<lower-cased group>]` (`LadderConfig.GroupChats`, `yaml:"-"`, its URL in `CASE_ALERTS_ROOM_SRE_GROUP_<group id>`). `BuildIncidentRoutes` registers it as that group's incident audience over the team and alias spaces, and a default group with its own room is left out of the teamless fan-out, so the card and every rung reply go to the group's space. Calls are untouched: the route still decides who is called. The applied report's `groups.SRE.groupRooms` lists them. Tests: `paging/group_chat_rooms_test.go`.
 **`case.*` Chat cards — `POST /cases` only, never `POST /incidents`.** `SendCaseCreatedAlert`/`SendCaseAcknowledgedAlert`/`SendSeverityChangedAlert` (redesigned together, many times over, in direct response to live screenshots from a real deployment — see each function's own doc comment for the exact, current shape) share several conventions but differ in structure. Shared: no buttons at all — every navigation target is a real, visible `<a href>` inside a plain-text widget, never a `ButtonList` (on the case-created, security-report-analysis and severity-changed cards it is the case reference itself; `SendCaseAcknowledgedAlert` and `SendFrustrationAlert` still end on a "View case" link), since opening the case is navigation, not a genuine one-click action from Chat today. No leading icon or emoji on any body line either — Chat's native `decoratedText` icon has a fixed, non-configurable gap from its text, and an inline emoji glyph was tried and dropped too — both cost width a narrow (mobile) screen needs for the text itself, without adding information. `dispatch.severityLabelAndColor(severity)` maps the raw uppercase severity string entity-service sends (e.g. `"CRITICAL"`) to the label/color pair every card uses — `S0`-catastrophic/`S1`-critical/`S2`-high/`S3`-medium, `S4`-low is this service's own extrapolation to keep the map total, falling back to the raw value in neutral gray for anything unrecognized. `HIGH`'s color (`#F97316`, a distinctly orange hue) was corrected from an earlier red-leaning orange (`#EA580C`) that read too close to `CRITICAL`'s red in a real card — a live-testing catch, not a made-up value. `caseAlertLine` (in `googlechat.go`) HTML-escapes each dynamic value before formatting it into a widget's surrounding markup — the same reasoning as `internal/notifications`' own `escapeHTML` for email templates: Chat's card text interprets a limited HTML subset, so an unescaped value containing `<`/`&` could break out of its tag. `teamPart(team)` renders team **bold, in one color for every team** (`teamTextColor`, the muted gray `#5F6368` team names have always had here) and returns `""`, not a styled empty string, when team is blank, so callers just skip appending it (no blank line), rather than joining it onto another line. Two color schemes were built and dropped on request: a per-ABT palette (Sirius blue, Atlas green, Castor teal, ...), as more upkeep than it was worth since every new team would need a color, and then a single green, in favor of the established gray. The team line stands out by being bold and first, not by hue.
 
 **The `case.*` cards have no header, so the team can be the first line.** A Chat card header is always drawn above every widget, and its fields are plain text (no color, no bold, fixed size) — so with a header the team could never lead the card or carry its color. A version that put team in the header subtitle was tried and reverted for the same reason; a later one kept the header and put team first in the body, directly under the ticket, in muted gray, which read as an afterthought next to the ticket. The cards are now headerless, matching ServiceNow's own alert, and laid out as two blocks with a divider between them (`caseCardWidgets(top, ref)` → `[top text, divider, case reference]` in one section). **Top:** team (`teamPart`, omitted when empty), then severity (or the severity-change transition, or SRA's fixed label), then product (bold, omitted when empty). **Bottom:** the case reference `"<caseNumber> · <wso2CaseID>"` (`caseRefWidget`; `chatHeaderCaseRef`, falling back to caseNumber alone), with no "new" marker (a `🆕` on the created cards' reference was tried and removed on request), with the reference as the **link to the case** (`<a href>`, plain link text, not also bold — nesting `<a>` in `<b>` is not documented Chat markup; there is no separate "View case" line on these cards any more, by request; a missing link falls back to the bold reference), and beneath it the case subject — a `decoratedText` widget (`chatDecoratedText`) whose `text` is the linked reference and whose `bottomLabel` is the subject. That is deliberate: card text markup (`b`, `i`, `u`, `s`, `font color`, `a`, `br`, `code`, lists) has no font size, and a label is the one place Chat draws smaller, muted text, so the description reads a little smaller than the rest. A label is a plain string, so the subject goes through verbatim, not HTML-escaped (escaping would print a literal `&amp;`), with no bold or color; Chat's reference says `bottomLabel` always wraps, and `wrapText` is set on the main text too. How a webhook-posted label actually renders is not documented — check it on dev. The divider (cardsV2's `divider` widget, `chatCardWidget.Divider`, which must marshal as `{}`) is the line the header used to draw; it is dropped when either block is empty rather than left dangling, so an empty text widget is never sent. `cardParts` in `googlechat_test.go` asserts that shape for every team-showing card. The ticket loses the header's larger monospace styling and becomes a bold body line; that is the price of putting team first. `SendCaseAcknowledgedAlert` was already headerless and still never shows team.
@@ -355,8 +356,13 @@ ticker, with Redis as its only durable state — the same `REDIS_URL`/
   ladder value the process runs with and whether it came from the file or the
   tab -- in shadow the file's, so the tab can copy them. Heads go with a name
   and email, never a phone. It also carries `fileOnly`: what only the file
-  sets (on/off, channel, safety caps, phones.source), shown read-only on the
-  tab; allowed numbers are counted, never listed. `SmallFilePlusSavedIsTheFullFile` pins that
+  sets (on/off, channel, safety caps, phones.source, `ackChat`), shown read-only on the
+  tab; allowed numbers are counted, never listed. CRE's also carries the rung emails
+  (`email.enabled`, `email.teamLists` counted, `email.creTeamList`/`email.csTeamList`
+  as set or not, never an address; the tab hides that row now that the four are
+  tab values, which `running` reports with their addresses, like a head's), `rules.custom` and `timing` (`creChainTiming`:
+  severity to the minutes each step L0-L4 is called, from `DefaultPolicy`, so the
+  tab cannot drift from the code), so every CRE setting shows on the tab. `SmallFilePlusSavedIsTheFullFile` pins that
   `paging-alert.minimal.yaml` plus everything copied from the full file pages
   exactly as the full file.
   **Team channels** (`team_channel.go`): a saved SRE team row may carry a
@@ -468,12 +474,25 @@ instant: a ladder reported at 13:25 opens L2 at 13:30, inside TZ2, and asked
 at 13:25 it called TZ1's L2 after they had gone home, or nobody when TZ1 had
 no holder for the tier. `BuildPlan` sets `RoutingContext.At` to the rung's
 opening time for the SRE ladder only; the CRE ladder keeps the report instant,
-its rungs being fixed by the shift the incident arrived in. Picked in this order: the
-incident's own SRE team; then the zone whose L1 block is live -- weekdays
+its rungs being fixed by the shift the incident arrived in. **An SRE team's
+incident reaches only its own team** (`tierPicks`): by day another team's
+holder never answers, so an Apollo L1 on leave or off the rota leaves the L1
+rung empty and the ladder goes on to Apollo's L2 (it used to borrow Artemis's
+L1). The exception is the shared night crew, `sharedCrewZone` (TZ3, 21:00-06:00
+IST, weekends included), whose holders answer either SaaS team. **When nobody
+holds L1, L2 or L3, the L3 rung calls the team lead** (one of them), at the L3
+slot; an incident with no SRE team of its own (a default group, a CRE P0 with
+no SRE team) calls one lead of every team on its rota instead (both SaaS
+teams). A missing tier with somebody on another one is just an empty rung. An
+incident with no SRE team of its own still takes whoever holds the tier.
+Picked in this order: on-leave holders only when nobody else in the team holds
+the tier; then the zone whose L1 block is live -- weekdays
 12:00-15:00 IST the TZ1 and TZ2 escalation windows are both live, and the SRE
 team confirmed only one person is called; then `sre.teams.abts` order; then
 email. The rota has no L4 tier, so L4 is the lead of the answering team -- the
-incident's own, or for a CRE P0 the team of whoever took L1. An assumption.
+incident's own, or for an incident with no SRE team of its own (a CRE P0) the
+team of the first tier somebody holds, L1, then L2, then L3 -- and it calls
+nobody when the leads were already called on the L3 rung. An assumption.
 
 **"Default" group** (`sre.teams.defaultGroups`, opt-in): an incident whose
 assignment group is listed (the alert flow's "Default") is an SRE incident
@@ -504,7 +523,7 @@ Artemis and IaaS each in their own space, through `NewEngine` and the webhook
 variables: `team_chat_spaces_test.go` (SME teams too).
 
 **An incident with no SRE team of its own** (`sre.teamlessChats`, opt-in):
-a default group (a service mapped to no SRE team), a customer case at S0, a
+a default group (a service mapped to no SRE team), a customer case at S0 whose account has no known SRE team, a
 monitoring alert with no team. `teamlessChats: [apollo, artemis]` posts its
 cards and closing message to every space named (`Engine.chatTeams`); each
 entry must be a `teamChats` key (refused at load otherwise). Empty, such an
@@ -550,7 +569,9 @@ when a severity or priority change replaces the chain -- "Severity changed to
 X: paging restarts". It lists who was paged and how many calls were
 cancelled. Posted only from the first stop (a retried stop finds `Cancelled`
 set) and only once a rung has gone out with sending on, so a room never hears
-about a chain it did not see. A hand-off to the SMEs posts nothing here; its
+about a chain it did not see; before any rung, a room the incident card
+reached (`IncidentCards`, e.g. an SME ladder whose L1 was empty) counts as
+having seen it. A hand-off to the SMEs posts nothing here; its
 own message says it. The SRE setting covers the SME ladders. Best effort.
 
 **Stops on** (an SRE incident): `incident.assigned` (an engineer set as the
@@ -569,7 +590,7 @@ rota `SRE_IAAS`; Day/Night zones) and PaaS (none yet). The catalogue carries
 `rotaCode` on teams and zones; the engine stamps the incident's rota on the
 routing context (`RoutingContext.Rota`, from `TeamScheduleResolver.SRERota`):
 its own SRE team's rota, or `sre.teams.defaultRota` (default `SRE_SAAS`) for an
-incident with no SRE team (a case S0, a team-less monitoring alert). Only SRE
+incident with no SRE team (a case S0 whose account has none, a team-less monitoring alert). Only SRE
 windows whose zone is on that rota are read, so a SaaS incident never reaches
 an IaaS engineer or the other way round. A catalogue with no rota codes at all
 (an entity-service from before rotas) reads every SRE window, as before. The
@@ -617,7 +638,16 @@ file's `sme.enabled`:
   uncomments it and checks each team gets its own space). Unset, every team's
   cards go to `sme.chat`, as before. Set, a listed team's cards go to its own space and
   a team not listed uses `sme.chat`, never no card (a room saved on the Alert
-  Settings tab counts as listed). `Engine.smeNotifiersFor` picks by `Routing.SMETeam`. At the start a work note says who
+  Settings tab counts as listed). `Engine.smeNotifiersFor` picks by `Routing.SMETeam`.
+- **The "Incident Escalated" card is the escalation's, not L1's** (since
+  2026-10-23): `postSMEIncidentCard` posts it to the SME team's spaces when the
+  alert is handled, with chat in `sme.channel` and sending on, whoever is on
+  call. Nobody rostered on any tier: the card still goes out ("Nobody
+  rostered") and no ladder starts. L1 empty: the card goes out at once rather
+  than with L2, and names the first rostered tier and when it is called
+  ("Nobody rostered before L2", then the L2 and the time). The rooms it reached are saved on the ladder (`IncidentCards`)
+  before any rung is scheduled, so the first rung posts only its reply; a room
+  the card missed gets it from the first rung, as before. At the start a work note says who
   L1 is, or why nobody can be paged (`NO_RECIPIENTS`, `NO_NUMBER`,
   `NUMBER_NOT_ALLOWED`, `NO_CHANNEL`); a rung with nobody is logged ("SME rung
   cannot be called") and skipped; the usual execution summary is written when
@@ -671,6 +701,17 @@ is keyed by the case id, and `Trigger.Record` is `case`.
   comment before they are assigned is remembered and counts once they are. A
   closed case (`case.status_changed` "Closed", or a resolved/cancelled label)
   stops both.
+- **SRE team**: an S0 case's SRE ladder pages its account's SRE team
+  (`sreTeamName` on `case.created`/`case.severity_changed`, entity-service's
+  `account.sre_team_id`), carried as `RoutingContext.SRETeam`; `Trigger.Team`
+  stays the CRE team. Who is called (`ownSRETeam`, the rota), the card spaces
+  (`chatTeams`), the team's channel (`channelFor`) and the closing replies all
+  follow it. The name must resolve, through `sre.teams.aliases`, to a team in
+  `sre.teams.abts` (and to a `sre.teamChats` key for its own space); one that
+  does not, or a case with none, pages every team on `defaultRota` and posts
+  to `teamlessChats`, as before. Until 2026-10-26 every S0 case was paged that
+  way. Both fields are new and this service decodes strictly: deploy it before
+  the entity-service that sends them.
 - **Assignee**: the starting events carry none, so the current assignee is kept
   in Redis from `case.assigned` (`incident:escalation:case:assignee:<caseId>`,
   shared by both ladders).
@@ -859,11 +900,17 @@ state and response SLA remaining time is <t>" ("...was breached <t> ago" once
 past it), counted from the chain's start against the `response` clock of the
 SLA duration policy the SLA engine fetches at startup (`RungEmailSending.SLADurations`),
 else WSO2's published defaults (S0 15m, S1 1h, S2 4h, S3 6h, S4 24h, as migration
-0192 seeds them). `cre.email` lives in the file -- both `paging-alert.yaml` and
-`paging-alert.minimal.yaml` -- never on the Alert Settings tab: it is a switch
-and a few addresses, and `MergeCaseAlertSettings` keeps it as the file has it
-(`TestRungEmail_ConfigSurvivesSavedSettings`). Leave its lists out rather than
-empty in the shipped files, so the two load alike.
+0192 seeds them). `cre.email` is set on the Alert Settings tab like any other
+CRE value, so no new setting goes into the mounted file: `email.enabled`,
+`email.teamLists` (team key -> address), `email.creTeamList`,
+`email.csTeamList` (`caseAlertKeys`, `caseAlertValueSpecs` in entity-service).
+A saved key replaces the file's, an unsaved one keeps it
+(`TestRungEmail_SavedSettingsReplaceTheFile`); the three list keys log
+"changed", never an address. A list for a team that is neither in
+`teams.abts` nor `teams.americas` is dropped with a change line before
+`Config.validate` (`dropUnknownEmailTeamLists`), so one stale list cannot
+refuse the whole merge. A file that still has the block keeps working. Leave
+its lists out rather than empty in the shipped files, so the two load alike.
 
 **Not built**: the two
 erroneous-scenario emails (section 12.0), LEVEL_0 availability filtering

@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/notifications"
@@ -38,8 +39,8 @@ func (e *Engine) postStopped(ctx context.Context, st LadderState, reason cancelR
 	case reason == cancelEscalatedToSME:
 		// The hand-off posts its own message (smeHandoffChat).
 		return
-	case !e.cfg.CallSendingEnabled || st.PlacedCount() == 0:
-		// No rung card went out, so the room never saw this chain.
+	case !e.cfg.CallSendingEnabled || (st.PlacedCount() == 0 && len(st.Plan.IncidentCards) == 0):
+		// No rung card or incident card went out, so the room never saw this chain.
 		return
 	}
 	rooms := e.cardRooms(st.Plan)
@@ -65,7 +66,11 @@ func (e *Engine) postStopped(ctx context.Context, st LadderState, reason cancelR
 		if !r.chat.HasAudienceSpace(room) {
 			continue
 		}
-		msg.Audience, msg.Reply = room, r.reply || e.sreReplies(t)
+		if st.PlacedCount() == 0 && !slices.Contains(st.Plan.IncidentCards, room) {
+			// Before any rung, only a room the incident card reached saw this chain.
+			continue
+		}
+		msg.Audience, msg.Reply = room, r.reply || e.threadReplies(t)
 		// The link the room's rung cards carry.
 		var links incidentLinker = e.links
 		if r.links != nil {
@@ -75,7 +80,7 @@ func (e *Engine) postStopped(ctx context.Context, st LadderState, reason cancelR
 		if t.isCase() {
 			msg.PortalURL = links.CaseLink(t.IncidentID)
 		}
-		if !r.reply && reason == cancelAssigned && e.sreReplies(t) {
+		if !r.reply && reason == cancelAssigned && t.sreIncident() && e.threadReplies(t) {
 			// An assigned SRE incident ends its thread with the "Incident Acknowledged." card, naming only the assignee.
 			ack := notifications.IncidentAssignedAlert{IncidentID: t.IncidentID, Number: t.Number, AssigneeName: st.AssigneeName}
 			if err := r.chat.SendIncidentAssignedAlert(ctx, room, ack); err != nil {
@@ -105,9 +110,11 @@ func (e *Engine) stoppedWording(ctx context.Context, st LadderState, reason canc
 			field = "Severity"
 		}
 		to := strings.ToUpper(strings.TrimSpace(next.Priority))
+		// No rung is named: the new plan is not built yet, and its first rung
+		// is L0 on a CRE ladder whose rule has one, L1 otherwise.
 		return notifications.EscalationStopped{
 			Outcome:   fmt.Sprintf("%s changed to %s", field, to),
-			Detail:    fmt.Sprintf("%s changed from %s to %s. A new chain for %s starts from L1.", field, strings.ToUpper(strings.TrimSpace(t.Priority)), to, to),
+			Detail:    fmt.Sprintf("%s changed from %s to %s. A new chain for %s starts from the first rung.", field, strings.ToUpper(strings.TrimSpace(t.Priority)), to, to),
 			Restarted: true,
 		}
 	}
@@ -206,7 +213,7 @@ func pagedList(st LadderState) []string {
 		if c.Recipient.Name == "" {
 			continue
 		}
-		label := c.Level.Label() + " " + c.Recipient.Name
+		label := c.Level.LabelIn(st.Plan.Trigger.Routing.Ladder) + " " + c.Recipient.Name
 		if !seen[label] {
 			seen[label] = true
 			out = append(out, label)

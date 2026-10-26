@@ -2788,6 +2788,9 @@ type Case struct {
 	CreatedOn time.Time      `json:"createdOn"`
 	UpdatedOn time.Time      `json:"updatedOn"`
 	ClosedOn  *time.Time     `json:"closedOn"`
+	// ResolvedOn is set only by the update queries, which read it back after
+	// the write; the create queries leave it nil.
+	ResolvedOn *time.Time `json:"resolvedOn,omitempty"`
 }
 
 // AssignedEngineerRef is a compact reference to an assigned support engineer.
@@ -3633,8 +3636,8 @@ type UpdateCaseRequest struct {
 	// Required by ServiceNow when AddPublicComment is true (ServiceNow data source only).
 	Product *string `json:"product"`
 	// PublicTicket is the public-facing ticket/issue reference (e.g. a public GitHub
-	// issue) echoed into the public comment. Required by ServiceNow when
-	// AddPublicComment is true (ServiceNow data source only).
+	// issue) echoed into the public comment. Optional when AddPublicComment is true:
+	// a missing or blank value is sent as "N/A" (ServiceNow data source only).
 	PublicTicket *string `json:"publicTicket"`
 	// Acknowledge, when true, claims the case for the calling engineer: it records
 	// them as the acknowledger if nobody has acknowledged it yet, and otherwise

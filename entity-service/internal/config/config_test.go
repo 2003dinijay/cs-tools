@@ -18,6 +18,8 @@ package config
 
 import (
 	"net/url"
+	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -29,6 +31,7 @@ func baseValidConfig() Config {
 	return Config{
 		DataSource:           DataSourcePostgres,
 		SLADataSource:        SLADataSourcePostgres,
+		UsageReadMode:        UsageReadModePostgres,
 		AttachmentDataSource: AttachmentDataSourcePostgres,
 		DBUser:               "user",
 		DBPassword:           "password",
@@ -391,6 +394,7 @@ func baseValidServiceNowConfig() Config {
 	return Config{
 		DataSource:                               DataSourceServiceNow,
 		SLADataSource:                            SLADataSourcePostgres,
+		UsageReadMode:                            UsageReadModePostgres,
 		AttachmentDataSource:                     AttachmentDataSourcePostgres,
 		ServiceNowIntegrationServiceBaseURL:      "https://example.com",
 		ServiceNowIntegrationServiceTokenURL:     "https://example.com/token",
@@ -1271,6 +1275,73 @@ func TestConfig_GithubServiceNowFirst(t *testing.T) {
 	}
 }
 
+func TestConfig_Validate_UsageReadMode(t *testing.T) {
+	for _, m := range []UsageReadMode{UsageReadModePostgres, UsageReadModeLegacy} {
+		c := baseValidConfig()
+		c.UsageReadMode = m
+		if err := c.Validate(); err != nil {
+			t.Errorf("Validate() with PRODUCT_CONSUMPTION_DATA_READ_MODE=%q: %v", m, err)
+		}
+	}
+	for _, bad := range []UsageReadMode{"bogus", "Legacy", ""} {
+		c := baseValidConfig()
+		c.UsageReadMode = bad
+		err := c.Validate()
+		if err == nil || !strings.Contains(err.Error(), "PRODUCT_CONSUMPTION_DATA_READ_MODE") {
+			t.Errorf("Validate() with PRODUCT_CONSUMPTION_DATA_READ_MODE=%q = %v, want a PRODUCT_CONSUMPTION_DATA_READ_MODE error", bad, err)
+		}
+	}
+}
+
+func TestLoad_UsageReadMode(t *testing.T) {
+	cases := []struct {
+		name  string
+		set   bool
+		value string
+		want  UsageReadMode
+	}{
+		{"unset defaults to postgres", false, "", UsageReadModePostgres},
+		{"empty defaults to postgres", true, "", UsageReadModePostgres},
+		{"postgres", true, "postgres", UsageReadModePostgres},
+		{"legacy", true, "legacy", UsageReadModeLegacy},
+		{"invalid is carried through for Validate to reject", true, "bogus", UsageReadMode("bogus")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("PRODUCT_CONSUMPTION_DATA_READ_MODE", "")
+			if tc.set {
+				t.Setenv("PRODUCT_CONSUMPTION_DATA_READ_MODE", tc.value)
+			} else {
+				os.Unsetenv("PRODUCT_CONSUMPTION_DATA_READ_MODE")
+			}
+			if got := Load().UsageReadMode; got != tc.want {
+				t.Errorf("UsageReadMode = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestConfig_UsageReadRoute(t *testing.T) {
+	cases := []struct {
+		ds   DataSource
+		mode UsageReadMode
+		want UsageReadRoute
+	}{
+		{DataSourcePostgres, UsageReadModePostgres, UsageReadRoutePostgres},
+		{DataSourcePostgres, UsageReadModeLegacy, UsageReadRoutePostgres},
+		{DataSourceServiceNow, UsageReadModePostgres, UsageReadRouteServiceNowOnly},
+		{DataSourceServiceNow, UsageReadModeLegacy, UsageReadRouteServiceNowOnly},
+		{DataSourcePostgresServiceNowDualWrite, UsageReadModePostgres, UsageReadRoutePostgres},
+		{DataSourcePostgresServiceNowDualWrite, UsageReadModeLegacy, UsageReadRoutePreviousPathFallback},
+	}
+	for _, tc := range cases {
+		c := Config{DataSource: tc.ds, UsageReadMode: tc.mode}
+		if got := c.UsageReadRoute(); got != tc.want {
+			t.Errorf("DataSource=%s mode=%s: route = %d, want %d", tc.ds, tc.mode, got, tc.want)
+		}
+	}
+}
+
 // TestConfig_Validate_QueryHourInternalEmailDomain covers the one thing a
 // reader of this setting is likely to get wrong. The service matches it with
 // strings.HasSuffix, so "wso2.com" without the leading "@" also accepts
@@ -1298,6 +1369,40 @@ func TestConfig_Validate_QueryHourInternalEmailDomain(t *testing.T) {
 			}
 			if !tt.wantErr && err != nil {
 				t.Fatalf("QueryHourInternalEmailDomain=%q: unexpected error: %v", tt.domain, err)
+			}
+		})
+	}
+}
+
+// INCIDENT_EXTRA_ASSIGNMENT_GROUP_IDS is optional: comma-separated UUIDs,
+// trimmed, empty entries dropped; a non-UUID entry refuses
+// to start.
+func TestConfig_IncidentExtraAssignmentGroupIDs(t *testing.T) {
+	const a = "791ae9fb-1b41-8d10-a30d-edb8b04bcbd4"
+	const b = "5ddddddd-dddd-4ddd-8ddd-dddddddddddd"
+	for name, tc := range map[string]struct {
+		env     string
+		want    []string
+		wantErr bool
+	}{
+		"unset":              {env: "", want: nil},
+		"only separators":    {env: " , ,, ", want: []string{}},
+		"one":                {env: a, want: []string{a}},
+		"whitespace":         {env: "  " + a + " ,\t" + b + "  ", want: []string{a, b}},
+		"empty entries":      {env: "," + a + ",," + b + ",", want: []string{a, b}},
+		"invalid uuid":       {env: a + ",not-a-uuid", want: []string{a, "not-a-uuid"}, wantErr: true},
+		"name instead of id": {env: "Security Operations Center", want: []string{"Security Operations Center"}, wantErr: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("INCIDENT_EXTRA_ASSIGNMENT_GROUP_IDS", tc.env)
+			c := Load()
+			if !reflect.DeepEqual(c.IncidentExtraAssignmentGroupIDs, tc.want) {
+				t.Errorf("Load() = %#v, want %#v", c.IncidentExtraAssignmentGroupIDs, tc.want)
+			}
+			base := baseValidConfig()
+			base.IncidentExtraAssignmentGroupIDs = c.IncidentExtraAssignmentGroupIDs
+			if err := base.Validate(); (err != nil) != tc.wantErr {
+				t.Errorf("Validate() err = %v, want error %v", err, tc.wantErr)
 			}
 		})
 	}

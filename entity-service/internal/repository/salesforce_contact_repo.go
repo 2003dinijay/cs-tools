@@ -165,6 +165,22 @@ func upsertContactTx(ctx context.Context, tx querier, in domain.SalesforceContac
 	return res, nil
 }
 
+// deactivateContactMemberships marks a deleted contact's memberships DEACTIVATED:
+// Salesforce cascade-deletes them without firing their own DELETED events.
+func deactivateContactMemberships(ctx context.Context, q querier, contactSfID, actor string) (int64, error) {
+	tag, err := q.Exec(ctx, `
+		UPDATE project_contact pc
+		SET state = 'DEACTIVATED'::project_contact_state_enum, updated_on = NOW(), updated_by = $2
+		FROM account_contact ac
+		WHERE ac.id = pc.account_contact_id AND ac.sf_id = $1
+		  AND pc.state IS DISTINCT FROM 'DEACTIVATED'::project_contact_state_enum`,
+		contactSfID, actor)
+	if err != nil {
+		return 0, fmt.Errorf("deactivate contact: memberships: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
 // deactivateMovedAccountContacts deactivates the contact's account_contact
 // rows on accounts other than its current one — the contact has moved away
 // from them in Salesforce — except where the contact still holds a live
@@ -211,6 +227,9 @@ func (r *salesforceContactRepo) DeactivateBySfID(ctx context.Context, contactSfI
 		contactSfID, actor)
 	if err != nil {
 		return false, nil, fmt.Errorf("deactivate contact: account_contact: %w", err)
+	}
+	if _, err := deactivateContactMemberships(ctx, tx, contactSfID, actor); err != nil {
+		return false, nil, err
 	}
 	rows, err := tx.Query(ctx, `
 		UPDATE "user" SET is_active = FALSE, updated_on = NOW(), updated_by = $2 WHERE sf_id = $1

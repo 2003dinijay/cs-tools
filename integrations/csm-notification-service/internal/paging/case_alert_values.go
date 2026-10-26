@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"os"
 	"slices"
 	"sort"
 	"strings"
@@ -50,7 +51,8 @@ type caseAlertKey struct {
 	ladders []string
 	set     func(l *LadderConfig, raw json.RawMessage) error
 	get     func(l LadderConfig) (any, bool)
-	// private values are logged as changed, never with the value (heads).
+	// private values are logged as changed, never with the value (heads,
+	// the rung email lists).
 	private bool
 }
 
@@ -122,8 +124,32 @@ var caseAlertKeys = map[string]caseAlertKey{
 			return maps.Clone(l.Teams.RotaMembersToCall), true
 		},
 	},
-	"heads.cre":         headKey(func(l *LadderConfig) *Person { return &l.Heads.CRE }),
-	"heads.cs":          headKey(func(l *LadderConfig) *Person { return &l.Heads.CS }),
+	"heads.cre": headKey(func(l *LadderConfig) *Person { return &l.Heads.CRE }),
+	"heads.cs":  headKey(func(l *LadderConfig) *Person { return &l.Heads.CS }),
+	// The Case Alert Notification email (rung_email.go): its switch, the
+	// ABT/Americas team lists Cc'd on L1/L2, and the CRE and CS team lists
+	// Cc'd on L3/L4.
+	"email.enabled":     boolKey(caseAlertCRE, func(l *LadderConfig) *bool { return &l.Email.Enabled }),
+	"email.creTeamList": privateKey(stringKey(caseAlertCRE, func(l *LadderConfig) *string { return &l.Email.CRETeamList })),
+	"email.csTeamList":  privateKey(stringKey(caseAlertCRE, func(l *LadderConfig) *string { return &l.Email.CSTeamList })),
+	"email.teamLists": {
+		ladders: caseAlertCRE,
+		private: true,
+		set: func(l *LadderConfig, raw json.RawMessage) error {
+			var v map[string]string
+			if err := strictJSON(raw, &v); err != nil {
+				return err
+			}
+			l.Email.TeamLists = v
+			return nil
+		},
+		get: func(l LadderConfig) (any, bool) {
+			if l.Email.TeamLists == nil {
+				return nil, false
+			}
+			return maps.Clone(l.Email.TeamLists), true
+		},
+	},
 	"alertDuty.tiers":   listKey(caseAlertCRE, func(l *LadderConfig) *[]string { return &l.AlertDuty.Tiers }),
 	"alertDuty.perTeam": intKey(caseAlertCRE, func(l *LadderConfig) *int { return &l.AlertDuty.PerTeam }),
 	"acknowledgement.requireBoth": {
@@ -390,6 +416,41 @@ type caseAlertHead struct {
 	Email string `json:"email"`
 }
 
+// dropUnknownEmailTeamLists drops the rung email lists of teams that are
+// neither an ABT nor the Americas team, the one check on cre.email that
+// spans keys. A list saved on the tab for such a team, or a saved
+// teams.abts that leaves out a team the file has a list for, would
+// otherwise refuse the whole merge and put every saved setting out of use.
+// The list is replaced, never written into, so the file's map is untouched.
+func dropUnknownEmailTeamLists(l *LadderConfig, changes *[]string) {
+	if len(l.Teams.ABTs) == 0 || len(l.Email.TeamLists) == 0 {
+		return
+	}
+	var dropped []string
+	for k := range l.Email.TeamLists {
+		key := teamKeyFor(k)
+		if key != "" && !contains(l.Teams.ABTs, key) && key != teamKeyFor(l.Teams.Americas) {
+			dropped = append(dropped, k)
+		}
+	}
+	if len(dropped) == 0 {
+		return
+	}
+	slices.Sort(dropped)
+	kept := maps.Clone(l.Email.TeamLists)
+	for _, k := range dropped {
+		delete(kept, k)
+		*changes = append(*changes, fmt.Sprintf("cre.email.teamLists: dropped %s (neither in teams.abts nor teams.americas)", k))
+	}
+	l.Email.TeamLists = kept
+}
+
+// privateKey logs k's changes without the value (an email address).
+func privateKey(k caseAlertKey) caseAlertKey {
+	k.private = true
+	return k
+}
+
 func headKey(field func(*LadderConfig) *Person) caseAlertKey {
 	return caseAlertKey{
 		ladders: caseAlertCRE,
@@ -534,11 +595,14 @@ func compactJSON(v any) string {
 
 func sameJSON(a, b any) bool { return compactJSON(a) == compactJSON(b) }
 
-// fileOnlyCaseAlertValues is what only the file can set, shown read-only on
-// the tab so nobody has to open the file to see what a ladder may do: whether
-// it runs, its channel, its caps, where numbers come from. The allowed
-// numbers are counted, never listed.
-func fileOnlyCaseAlertValues(cfg Config, l LadderConfig) map[string]any {
+// fileOnlyCaseAlertValues is what only the file (or the code) sets, shown
+// read-only on the tab so nobody has to open the file to see what a ladder may
+// do: whether it runs, its channel, its caps, where numbers come from, and
+// whether it replies when it stops. For CRE also the rung emails, whether the
+// rule table is the built-in one, and when each step is called. The allowed
+// numbers are counted, never listed; the rung emails' lists are counted or
+// flagged, never their addresses.
+func fileOnlyCaseAlertValues(cfg Config, ladder string, l LadderConfig) map[string]any {
 	out := map[string]any{
 		"enabled":                           cfg.Enabled && l.Enabled,
 		"channel":                           string(l.Channel),
@@ -547,9 +611,38 @@ func fileOnlyCaseAlertValues(cfg Config, l LadderConfig) map[string]any {
 		"safety.callWithoutVerifiedLeads":   l.Safety.CallWithoutVerifiedLeads,
 		"safety.callHeadsWithoutLowerTiers": l.Safety.CallHeadsWithoutLowerTiers,
 		"phones.source":                     l.PhoneSource(),
+		"ackChat":                           l.AckChatOn(),
 	}
 	if lvl, capped := l.CapLevel(); capped {
 		out["safety.maxLevel"] = int(lvl)
+	}
+	if ladder == "CRE" {
+		out["email.enabled"] = l.Email.Enabled
+		out["email.teamLists"] = len(l.Email.TeamLists)
+		out["email.creTeamList"] = strings.TrimSpace(l.Email.CRETeamList) != ""
+		out["email.csTeamList"] = strings.TrimSpace(l.Email.CSTeamList) != ""
+		out["rules.custom"] = len(l.Rules) > 0
+		out["timing"] = creChainTiming(DefaultPolicy)
+	}
+	return out
+}
+
+// creChainTiming is when each step of the CRE chain is called, by severity:
+// minutes after the case is created, one list per step L0 to L4. It comes from
+// the policy the CRE engine runs on, so the tab cannot drift from the code.
+// Every CRE rule has an L0 step, so L0 is always included.
+func creChainTiming(policies map[string]PriorityPolicy) map[string][][]int {
+	out := map[string][][]int{}
+	for i, sev := range []string{"S0", "S1", "S2", "S3", "S4"} {
+		p, ok := policies[fmt.Sprintf("P%d", i)]
+		if !ok {
+			continue
+		}
+		steps := make([][]int, int(Level4)+1)
+		for _, a := range Schedule(p, true) {
+			steps[a.Level] = append(steps[a.Level], int(a.After/time.Minute))
+		}
+		out[sev] = steps
 	}
 	return out
 }
@@ -562,7 +655,7 @@ func fileOnlyCaseAlertValues(cfg Config, l LadderConfig) map[string]any {
 func RunningCaseAlertValues(cfg Config, saved map[string]map[string]bool) map[string]any {
 	fileOnly := map[string]any{}
 	for _, ladder := range caseAlertBoth {
-		fileOnly[ladder] = fileOnlyCaseAlertValues(cfg, *ladderFor(&cfg, ladder))
+		fileOnly[ladder] = fileOnlyCaseAlertValues(cfg, ladder, *ladderFor(&cfg, ladder))
 	}
 	fileOnly["SME"] = map[string]any{
 		"enabled":               cfg.Enabled && cfg.SME.Enabled,
@@ -617,6 +710,23 @@ type GroupRouting struct {
 	Aliases       map[string]string `json:"aliases"`
 	DefaultGroups []string          `json:"defaultGroups"`
 	TeamlessRooms []string          `json:"teamlessRooms"`
+	// GroupRooms are the groups with a chat room of their own
+	// (sre.groupChats), lower-cased. SRE only.
+	GroupRooms []string `json:"groupRooms,omitempty"`
+	// SharedRoom is whether the ladder has its shared room (sre.chat), where
+	// a group that maps to no room gets its card: its variable is set, or it
+	// names an audience. SRE only; absent from an older report.
+	SharedRoom *bool `json:"sharedRoom,omitempty"`
+}
+
+// chatConfigured reports whether a chat section can be posted to: its
+// variable holds a URL, or (with no variable) it names an audience, whose
+// GOOGLE_CHAT_SPACES entry is not checked here.
+func chatConfigured(c Chat) bool {
+	if name := strings.TrimSpace(c.WebhookURLEnv); name != "" {
+		return strings.TrimSpace(os.Getenv(name)) != ""
+	}
+	return strings.TrimSpace(c.Audience) != ""
 }
 
 // CaseAlertGroupRouting reports GroupRouting for the CRE and SRE ladders.
@@ -643,6 +753,14 @@ func CaseAlertGroupRouting(cfg Config) map[string]GroupRouting {
 				}
 			}
 			sort.Strings(g.DefaultGroups)
+			for group := range l.GroupChats {
+				if k := teamKeyFor(group); k != "" {
+					g.GroupRooms = append(g.GroupRooms, k)
+				}
+			}
+			sort.Strings(g.GroupRooms)
+			shared := chatConfigured(l.Chat)
+			g.SharedRoom = &shared
 		}
 		out[ladder] = g
 	}

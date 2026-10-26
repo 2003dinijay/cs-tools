@@ -949,7 +949,8 @@ func (m *stubAttachmentSearchMirror) SearchCaseAttachments(ctx context.Context, 
 }
 
 // TestCaseService_SearchCaseAttachments_DeploymentDualWrite covers the
-// deployment stopgap: delegated to the mirror only when one is configured.
+// stopgap for deployment, incident, change_request and conversation: delegated
+// to the mirror only when one is configured.
 func TestCaseService_SearchCaseAttachments_DeploymentDualWrite(t *testing.T) {
 	mirrorErr := errors.New("mirror unavailable")
 	mirrorResp := domain.SearchAttachmentsResponse{
@@ -970,7 +971,13 @@ func TestCaseService_SearchCaseAttachments_DeploymentDualWrite(t *testing.T) {
 		{name: "dual-write deployment delegates to mirror", refType: domain.ReferenceTypeDeployment, withMirror: true, wantMirror: 1, wantMirrorR: true},
 		{name: "dual-write deployment returns mirror error", refType: domain.ReferenceTypeDeployment, withMirror: true, mirrorErr: mirrorErr, wantMirror: 1, wantErr: mirrorErr},
 		{name: "plain postgres deployment is a validation error", refType: domain.ReferenceTypeDeployment, withMirror: false, wantValid: true},
-		{name: "dual-write incident stays on postgres", refType: domain.ReferenceTypeIncident, withMirror: true, wantRepo: true},
+		{name: "dual-write incident delegates to mirror", refType: domain.ReferenceTypeIncident, withMirror: true, wantMirror: 1, wantMirrorR: true},
+		{name: "dual-write change_request delegates to mirror", refType: domain.ReferenceTypeChangeRequest, withMirror: true, wantMirror: 1, wantMirrorR: true},
+		{name: "dual-write conversation delegates to mirror", refType: domain.ReferenceTypeConversation, withMirror: true, wantMirror: 1, wantMirrorR: true},
+		{name: "dual-write incident returns mirror error", refType: domain.ReferenceTypeIncident, withMirror: true, mirrorErr: mirrorErr, wantMirror: 1, wantErr: mirrorErr},
+		{name: "plain postgres incident reads work_item_attachment", refType: domain.ReferenceTypeIncident, withMirror: false, wantRepo: true},
+		{name: "plain postgres change_request reads work_item_attachment", refType: domain.ReferenceTypeChangeRequest, withMirror: false, wantRepo: true},
+		{name: "plain postgres conversation reads work_item_attachment", refType: domain.ReferenceTypeConversation, withMirror: false, wantRepo: true},
 		{name: "dual-write bogus type is a validation error", refType: "bogus", withMirror: true, wantValid: true},
 	}
 	for _, tc := range tests {
@@ -988,7 +995,7 @@ func TestCaseService_SearchCaseAttachments_DeploymentDualWrite(t *testing.T) {
 			}
 			mirror := &stubAttachmentSearchMirror{
 				search: func(_ context.Context, req domain.SearchAttachmentsRequest) (domain.SearchAttachmentsResponse, error) {
-					if req.ReferenceID != testWorkItemID || req.ReferenceType != domain.ReferenceTypeDeployment {
+					if req.ReferenceID != testWorkItemID || req.ReferenceType != tc.refType {
 						t.Fatalf("mirror got %q/%q", req.ReferenceID, req.ReferenceType)
 					}
 					if tc.mirrorErr != nil {

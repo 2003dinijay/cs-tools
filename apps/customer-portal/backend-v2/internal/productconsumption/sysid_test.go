@@ -84,6 +84,7 @@ func TestLicenceCallsSendBareSysIDs(t *testing.T) {
 		TokenURL:            tokenSrv.URL,
 		ClientID:            "id",
 		ClientSecret:        "secret",
+		LicenseMode:         LicenseModeService,
 	})
 	if _, err := c.ProcessLicenseDownload(context.Background(), LicenseDownloadRequest{
 		Email: "someone@wso2.com", ProjectID: dashedProject, DeploymentID: dashedDeploy,

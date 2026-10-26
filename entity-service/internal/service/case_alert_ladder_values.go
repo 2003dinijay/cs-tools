@@ -109,6 +109,14 @@ var caseAlertValueSpecs = map[string]caseAlertValueSpec{
 	"alertDuty.perTeam":               {creOnly, intValue(0, 10)},
 	"acknowledgement.requireBoth":     {creOnly, boolValue},
 
+	// The Case Alert Notification email: its switch, each ABT's (and the
+	// Americas') team list Cc'd on L1/L2, and the CRE and CS team lists
+	// Cc'd on L3/L4. Lists are mailing addresses, not users.
+	"email.enabled":     {creOnly, boolValue},
+	"email.teamLists":   {creOnly, emailTeamListsValue},
+	"email.creTeamList": {creOnly, mailingListValue},
+	"email.csTeamList":  {creOnly, mailingListValue},
+
 	"teams.defaultRota":  {sreOnly, defaultRotaValue},
 	"timing.initialWait": {sreSME, durationValue(0, 30*time.Minute, "0s or 2m")},
 	"timing.interval":    {sreSME, durationValue(time.Minute, 30*time.Minute, "5m")},
@@ -427,6 +435,62 @@ func defaultRotaValue(ctx context.Context, s *caseAlertSettingsService, _ string
 		return nil, invalidf("%q is not an active SRE rota", v)
 	}
 	return code, nil
+}
+
+// emailAddress is one bare email address, as the rung email's lists are
+// written: no display name, no second address.
+func emailAddress(v string) (string, error) {
+	if a, err := mail.ParseAddress(v); err != nil || a.Address != v || len(v) > 255 {
+		return "", invalidf("%q is not a single email address", v)
+	}
+	return v, nil
+}
+
+// mailingListValue is one team mailing list address; empty clears it.
+func mailingListValue(_ context.Context, _ *caseAlertSettingsService, _ string, raw json.RawMessage) (any, error) {
+	v, err := stringValue(raw)
+	if err != nil || v == "" {
+		return v, err
+	}
+	return emailAddress(v)
+}
+
+// emailTeamListsValue is cre.email.teamLists: a CRE team key (an ABT or the
+// Americas team) to that team's mailing list address.
+func emailTeamListsValue(ctx context.Context, s *caseAlertSettingsService, _ string, raw json.RawMessage) (any, error) {
+	var in map[string]string
+	if err := json.Unmarshal(raw, &in); err != nil || in == nil {
+		return nil, invalidf("send an object of CRE team key to mailing list address, like {\"atlas\": \"atlas-team@example.com\"}")
+	}
+	if len(in) > 30 {
+		return nil, invalidf("at most 30 team lists")
+	}
+	// Every key and address is checked before any team is looked up, so bad
+	// input is always refused as such, never as a failed lookup.
+	checked := make(map[string]string, len(in))
+	for team, addr := range in {
+		k := strings.ToLower(strings.TrimSpace(team))
+		if !caseAlertTeamKey.MatchString(k) {
+			return nil, invalidf("%q is not a team key", team)
+		}
+		if _, dup := checked[k]; dup {
+			return nil, invalidf("names team %s twice", k)
+		}
+		a, err := emailAddress(strings.TrimSpace(addr))
+		if err != nil {
+			return nil, err
+		}
+		checked[k] = a
+	}
+	out := make(map[string]string, len(checked))
+	for k, a := range checked {
+		key, err := teamItem(ctx, s, familyCRE, k)
+		if err != nil {
+			return nil, err
+		}
+		out[key] = a
+	}
+	return out, nil
 }
 
 // caseAlertHead is a head as saved: who, not how to reach them. Their number

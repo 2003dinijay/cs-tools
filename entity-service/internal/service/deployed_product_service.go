@@ -43,6 +43,12 @@ type deployedProductService struct {
 	// write onto snMirror via snWriteback instead.
 	snWriteback *SNWritebackDispatcher
 	snMirror    DeployedProductService
+	// legacyUsageReads is set only by WithLegacyUsageReads (PRODUCT_CONSUMPTION_DATA_READ_MODE=
+	// legacy under dual-write). When true, SearchDeployedProductMetrics and
+	// SearchDeployedProductUsageCounts are served by snMirror -- the previous
+	// read path -- instead of Postgres. snMirror is also what the write
+	// paths use, so this needs its own flag rather than a nil check.
+	legacyUsageReads bool
 }
 
 // NewDeployedProductService constructs a DeployedProductService backed by the given repository.
@@ -56,6 +62,21 @@ func NewDeployedProductService(repo repository.DeployedProductRepository) Deploy
 // CreateDeployedProduct/UpdateDeployedProduct does with them.
 func NewDeployedProductServiceWithSNWriteback(repo repository.DeployedProductRepository, dispatcher *SNWritebackDispatcher, mirror DeployedProductService) DeployedProductService {
 	return &deployedProductService{repo: repo, snWriteback: dispatcher, snMirror: mirror}
+}
+
+// WithLegacyUsageReads returns svc with its two usage/metrics reads
+// (SearchDeployedProductMetrics, SearchDeployedProductUsageCounts) routed to
+// the mirror service, restoring the previous dual-write read path. Only
+// meaningful for a service built by NewDeployedProductServiceWithSNWriteback;
+// any other service is returned unchanged. Selected by
+// config.UsageReadRoutePreviousPathFallback.
+func WithLegacyUsageReads(svc DeployedProductService) DeployedProductService {
+	if dp, ok := svc.(*deployedProductService); ok && dp.snMirror != nil {
+		cp := *dp
+		cp.legacyUsageReads = true
+		return &cp
+	}
+	return svc
 }
 
 // deployedProductSNCreator is implemented by *snDeployedProductService
@@ -350,7 +371,8 @@ func (s *deployedProductService) resolveActorEmail(ctx context.Context) (string,
 // comment on resolveDeployedProductNodes for how a deployed product's
 // instances are resolved.
 //
-// Deliberately always Postgres, regardless of DATA_SOURCE -- by the same
+// Postgres by default, regardless of DATA_SOURCE (PRODUCT_CONSUMPTION_DATA_READ_MODE=legacy under
+// dual-write restores the previous read path, see WithLegacyUsageReads) -- by the same
 // explicit product decision as instanceService's own identical fix (see
 // routes.go's instanceService wiring): usage/metrics data must be served
 // from Postgres directly, never mirrored from elsewhere. This used to fall
@@ -363,6 +385,11 @@ func (s *deployedProductService) resolveActorEmail(ctx context.Context) (string,
 // linked, Postgres has real data and should be read, not papered over with a
 // permanent fallback.
 func (s *deployedProductService) SearchDeployedProductMetrics(ctx context.Context, id string, req domain.DeployedProductMetricsRequest) (domain.DeployedProductMetricsResponse, error) {
+	// PRODUCT_CONSUMPTION_DATA_READ_MODE=legacy under dual-write: the previous read path.
+	if s.legacyUsageReads {
+		return s.snMirror.SearchDeployedProductMetrics(ctx, id, req)
+	}
+
 	if err := validateUUIDs("id", []string{id}); err != nil {
 		return domain.DeployedProductMetricsResponse{}, err
 	}
@@ -380,6 +407,11 @@ func (s *deployedProductService) SearchDeployedProductMetrics(ctx context.Contex
 // resolution and validation as SearchDeployedProductMetrics -- and the same
 // always-Postgres reasoning (see that method's own doc comment).
 func (s *deployedProductService) SearchDeployedProductUsageCounts(ctx context.Context, id string, req domain.DeployedProductUsageCountsRequest) (domain.DeployedProductUsageCountsResponse, error) {
+	// PRODUCT_CONSUMPTION_DATA_READ_MODE=legacy under dual-write: the previous read path.
+	if s.legacyUsageReads {
+		return s.snMirror.SearchDeployedProductUsageCounts(ctx, id, req)
+	}
+
 	if err := validateUUIDs("id", []string{id}); err != nil {
 		return domain.DeployedProductUsageCountsResponse{}, err
 	}

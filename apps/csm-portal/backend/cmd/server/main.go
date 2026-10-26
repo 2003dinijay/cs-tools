@@ -657,6 +657,10 @@ func main() {
 	route("DELETE /team-schedule/rota-access/admins/{family}/{userId}", handler.PermAdmin, rotaAccessHandler.DeleteRotaAdmin)
 	route("PUT /team-schedule/rota-access/markers/{teamKey}/{userId}", handler.PermWrite, rotaAccessHandler.PutRotaMarker)
 	route("DELETE /team-schedule/rota-access/markers/{teamKey}/{userId}", handler.PermWrite, rotaAccessHandler.DeleteRotaMarker)
+	// Who is on a team: a CSM admin, or the rota admin of the team's family
+	// (no portal admin), so PermWrite and entity-service decides.
+	route("PUT /team-schedule/teams/{teamKey}/members/{userId}", handler.PermWrite, rotaAccessHandler.PutTeamMember)
+	route("DELETE /team-schedule/teams/{teamKey}/members/{userId}", handler.PermWrite, rotaAccessHandler.DeleteTeamMember)
 	// Rota Reminders card on the Rota access tab: a family's rota reminder
 	// settings. Changed by a CSM admin or the family's rota admin, who is no
 	// portal admin, so PermWrite and entity-service decides.

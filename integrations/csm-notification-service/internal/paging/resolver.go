@@ -18,6 +18,7 @@ package paging
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -112,6 +113,8 @@ type RoutingContext struct {
 	// AssignedCRETeam is the CS team on the incident; empty when unassigned,
 	// which rules R3 and R4 route on (and section 12.0 also flags).
 	AssignedCRETeam string
+	// SRETeam is a customer case's account SRE team, which its SRE ladder pages; empty on an incident, whose SRE team is AssignedCRETeam.
+	SRETeam string `json:",omitempty"`
 	// RuleID is which row of the escalation table this incident routed by,
 	// stamped by BuildPlan once the resolver has matched it. Reported on every
 	// call, both endings and the work note, so a reader can check what the
@@ -146,6 +149,14 @@ type RoutingContext struct {
 	// holds a rung (after anyone available on the same tier); false leaves
 	// them out. Stamped by the engine from the file.
 	CallOnLeave bool `json:",omitempty"`
+}
+
+// sreTeam is the team the SRE ladder pages for: a case's account SRE team, else the assignment group.
+func (rc RoutingContext) sreTeam() string {
+	if strings.TrimSpace(rc.SRETeam) != "" {
+		return rc.SRETeam
+	}
+	return rc.AssignedCRETeam
 }
 
 // HasNotificationLevel reports whether LEVEL_0 exists for this incident.

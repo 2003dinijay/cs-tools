@@ -29,6 +29,7 @@ import (
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/salesentity"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/scim"
 )
 
 // maxAccountPhoneChars is account.phone's width (VARCHAR(64) since
@@ -122,7 +123,46 @@ type SalesforceIngestSupport struct {
 	// Projects is the read side of EnsureProject, flag-independent like
 	// Accounts (salesforce_project_ingest.go).
 	Projects ProjectLookup
+	// Owners is lookupOwner's fallback for an account person reference
+	// (owner, technical owner, CSM, secondary technical owner, renewal
+	// manager) that does not match an existing CSM user by email. Its zero
+	// value is disabled (OwnerProvisioning.enabled), so leaving it unset
+	// keeps today's behaviour: write NULL and warn.
+	Owners OwnerProvisioning
 }
+
+// PersonFinder looks up a WSO2 staff member's given/family name by email in
+// the internal-org SCIM directory. A nil *scim.Person with a nil error means
+// no match -- the caller treats that the same as any other lookup miss, not
+// an error.
+type PersonFinder interface {
+	SearchPerson(ctx context.Context, email string) (*scim.Person, error)
+}
+
+// OwnerProvisioning lets lookupOwner create a CSM user for an account person
+// reference that has no match by email yet, instead of leaving it NULL: it
+// searches the internal-org SCIM directory for the person's name (SCIM) and,
+// if found, creates them (Users). Either field left nil disables it.
+type OwnerProvisioning struct {
+	SCIM  PersonFinder
+	Users repository.UserRepository
+}
+
+func (o OwnerProvisioning) enabled() bool {
+	return o.SCIM != nil && o.Users != nil
+}
+
+// ownerAutoProvisionSuffix is appended to the last name of every user
+// created through OwnerProvisioning, so an auto-provisioned row reads
+// visibly differently in the UI from one the ServiceNow sys_user sync
+// loaded.
+const ownerAutoProvisionSuffix = " Ⓦ"
+
+// ownerAutoProvisionRole is the one role granted to a user OwnerProvisioning
+// creates. These are WSO2 staff reached through the internal-org SCIM
+// directory, so "internal" is correct immediately rather than waiting on a
+// later ServiceNow sync to grant it.
+const ownerAutoProvisionRole domain.UserRole = "internal"
 
 type salesforceEventService struct {
 	repo       repository.AccountRepository
@@ -417,11 +457,97 @@ func (s *salesforceEventService) lookupOwner(ctx context.Context, sfID, role, em
 	if err != nil {
 		return nil, err
 	}
-	if id == nil {
+	if id != nil {
+		return id, nil
+	}
+	if !s.support.Owners.enabled() {
 		slog.WarnContext(ctx, "salesforce: account person reference does not match a CSM user, writing NULL",
+			"accountSfId", sfID, "role", role, "email", email)
+		return nil, nil
+	}
+	id, err = s.provisionOwner(ctx, sfID, role, email)
+	if err != nil {
+		// A provisioning hiccup (SCIM outage, create failure) must not fail
+		// the whole account event: fall back to today's behaviour instead.
+		slog.ErrorContext(ctx, "salesforce: failed to auto-provision a CSM user for an account person reference, writing NULL",
+			"accountSfId", sfID, "role", role, "email", email, "err", err)
+		return nil, nil
+	}
+	if id == nil {
+		slog.WarnContext(ctx, "salesforce: account person reference not found in the internal directory either, writing NULL",
 			"accountSfId", sfID, "role", role, "email", email)
 	}
 	return id, nil
+}
+
+// provisionOwner looks email up in the WSO2 internal-org SCIM directory and,
+// when found, creates it as a CSM user so the account person reference does
+// not have to stay NULL. Returns (nil, nil) when SCIM has no match either --
+// the caller treats that like any other lookup miss, not an error.
+func (s *salesforceEventService) provisionOwner(ctx context.Context, sfID, role, email string) (*string, error) {
+	// userService.CreateUser (the JWT-gated HTTP path this bypasses, see the
+	// doc comment above) enforces both of these before ever writing a row;
+	// calling the repository directly skips that gate entirely unless it is
+	// re-applied here. Both are data-quality/policy checks, not provisioning
+	// failures, so either one quietly declines to provision (same as SCIM
+	// having no match) rather than erroring the whole account event.
+	if err := validateEmail(email); err != nil {
+		slog.WarnContext(ctx, "salesforce: account person reference is not a valid email, skipping auto-provision",
+			"accountSfId", sfID, "role", role, "email", email)
+		return nil, nil
+	}
+	// ownerAutoProvisionRole is always "internal", which recompute_user_type
+	// (migration 0011) resolves to user_type = INTERNAL -- the same rule
+	// requestsInternalUserType gates in userService.CreateUser. Refusing a
+	// non-@wso2.com email here, not just there, stops this path from ever
+	// granting internal-type access to whoever SCIM happens to return for
+	// an address that isn't actually a WSO2 one.
+	if !strings.HasSuffix(strings.ToLower(email), wso2EmailDomain) {
+		slog.WarnContext(ctx, "salesforce: account person reference is not a wso2.com email, skipping auto-provision",
+			"accountSfId", sfID, "role", role, "email", email)
+		return nil, nil
+	}
+
+	person, err := s.support.Owners.SCIM.SearchPerson(ctx, email)
+	if err != nil {
+		return nil, fmt.Errorf("search internal directory: %w", err)
+	}
+	if person == nil {
+		return nil, nil
+	}
+
+	firstName := strings.TrimSpace(person.GivenName)
+	lastName := strings.TrimSpace(person.FamilyName)
+	if firstName == "" && lastName == "" {
+		// SCIM found a directory entry with neither name field set -- not
+		// enough to provision a usable CSM user from, so this is treated like
+		// any other lookup miss rather than creating a nameless row.
+		slog.WarnContext(ctx, "salesforce: SCIM match has no given or family name, skipping auto-provision",
+			"accountSfId", sfID, "role", role, "email", email)
+		return nil, nil
+	}
+
+	created, err := s.support.Owners.Users.CreateUser(ctx, domain.CreateUserRequest{
+		FirstName: firstName,
+		LastName:  lastName + ownerAutoProvisionSuffix,
+		Email:     email,
+		Roles:     []domain.UserRole{ownerAutoProvisionRole},
+	}, domain.SalesforceSyncActor)
+	if err != nil {
+		var conflict *apierror.ConflictError
+		if errors.As(err, &conflict) {
+			// Lost a race with a concurrent create for the same email (e.g.
+			// two owner roles on the same event resolving to the same
+			// person): the row exists now, so look it up instead of failing.
+			return s.repo.LookupUserIDByEmail(ctx, email)
+		}
+		return nil, fmt.Errorf("create user: %w", err)
+	}
+
+	slog.InfoContext(ctx, "salesforce: auto-provisioned a CSM user for an account person reference",
+		"accountSfId", sfID, "role", role, "email", email, "userId", created.ID)
+	id := created.ID
+	return &id, nil
 }
 
 func ownerEmail(u *salesentity.CustomerUser) *string {

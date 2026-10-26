@@ -54,9 +54,16 @@ interface EditAccountTeamsDialogProps {
  * two near-identical hooks. `POST /teams/search` is a small, curated
  * catalogue (see `useSearchTeams`'s own docstring), so a full page covers
  * every match; the family filter narrows it to teams actually usable in
- * that slot. `account.creTeamId`/`sreTeamId` reference the team registry id
- * directly (unlike case filters, which match on `creGroupId`/`sreGroupId`),
- * so any team of the right family is eligible regardless of group-id.
+ * that slot.
+ *
+ * `account.creTeamId`/`sreTeamId` (`PATCH /accounts/{id}`) are real UUID
+ * foreign keys into the `"group"` table (entity-service's `account_service.go`
+ * validates them as UUIDs, `account.cre_team_id`/`sre_team_id REFERENCES
+ * "group"(id)`) — they are `BeTeam.creGroupId`/`sreGroupId`, never `BeTeam.id`
+ * (the team-registry key, e.g. "alpha" — see that field's own doc comment).
+ * A team with no group configured for the relevant family is filtered out
+ * here rather than offered and then failing the PATCH with an "invalid UUID"
+ * error once selected.
  */
 function useTeamsSearch(
   query: string,
@@ -73,8 +80,11 @@ function useTeamsSearch(
 
   const teams = useMemo(() => {
     const all = data?.teams ?? [];
-    if (extra === "cre-abt" || extra === "sre-abt") {
-      return all.filter((t) => t.family === extra);
+    if (extra === "cre-abt") {
+      return all.filter((t) => t.family === extra && !!t.creGroupId);
+    }
+    if (extra === "sre-abt") {
+      return all.filter((t) => t.family === extra && !!t.sreGroupId);
     }
     return all;
   }, [data, extra]);
@@ -134,7 +144,7 @@ export default function EditAccountTeamsDialog({
             disabled={isSaving}
             useSearch={useTeamsSearch}
             searchExtra="cre-abt"
-            getId={(t) => t.id}
+            getId={(t) => t.creGroupId ?? ""}
             getLabel={(t) => t.name}
             knownLabel={currentCreTeam?.name}
           />
@@ -148,7 +158,7 @@ export default function EditAccountTeamsDialog({
             disabled={isSaving}
             useSearch={useTeamsSearch}
             searchExtra="sre-abt"
-            getId={(t) => t.id}
+            getId={(t) => t.sreGroupId ?? ""}
             getLabel={(t) => t.name}
             knownLabel={currentSreTeam?.name}
           />

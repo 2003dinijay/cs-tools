@@ -41,8 +41,8 @@ const { DesktopDatePicker: DatePicker, LocalizationProvider } = DatePickers;
 
 /**
  * True only for an absolute http(s) URL that points at a GitHub issue or pull
- * request (`github.com/<owner>/<repo>/issues|pull/<number>`) — digiops-cs#3449
- * asked specifically for GitHub-URL validation on this field, not a plain
+ * request (`github.com/<owner>/<repo>/issues|pull/<number>`) — this field
+ * specifically needs GitHub-URL validation, not a plain
  * "looks like a URL" check (see `@utils/isHttpUrl` for that narrower, purely
  * security-motivated one used elsewhere).
  */
@@ -118,8 +118,8 @@ function FixEtaDatePicker({
   errorText,
 }: FixEtaDatePickerProps): JSX.Element {
   const parsed = parseDateOnly(value);
-  // A past estimate is now a hard block, not just a warning (digiops-cs#3449:
-  // "ETA fields can set past days" was reported as a bug) -- fix-ETA dates are
+  // A past estimate is now a hard block, not just a warning (a
+  // past ETA was reported as a bug) -- fix-ETA dates are
   // forward-looking commitments, so a date already in the past can never be a
   // genuine estimate being made today.
   const isPast = isPastDateOnly(parsed);
@@ -195,15 +195,17 @@ export default function SetFixEtaDialog({
   // comment via a stale fallback.
   const selectedProduct = products?.find((p) => p.id === productId);
   const hasProduct = !!selectedProduct?.name;
-  const hasPublicTicket = publicTicket.trim().length > 0;
   const trimmedPublicTicket = publicTicket.trim();
+  // The ticket is optional (some products, e.g. SaaS, have no public issue
+  // URL), but when one is provided it must still be a valid issue/PR URL.
+  const hasPublicTicket = trimmedPublicTicket.length > 0;
   const isPublicTicketValidUrl =
     !hasPublicTicket || isGithubIssueUrl(trimmedPublicTicket);
 
   // Past-date and ordering checks run regardless of whether sharing is on --
   // an internal-only estimate with a date already in the past, or with the
   // three out of best <= most likely <= worst case order, is just as wrong
-  // when nobody is sharing it with the customer (digiops-cs#3449).
+  // when nobody is sharing it with the customer.
   const bestParsed = parseDateOnly(bestCaseFixEta);
   const mostLikelyParsed = parseDateOnly(mostLikelyFixEta);
   const worstParsed = parseDateOnly(worstCaseFixEta);
@@ -236,7 +238,8 @@ export default function SetFixEtaDialog({
   // here rather than only discovered from the resulting error toast. The
   // rest mirrors the backend's own validation for the share fields
   // themselves: a public comment must summarize at least one estimate, and
-  // needs a product + ticket reference to be meaningful to the customer.
+  // needs a product. The public ticket is optional, but if given it must be a
+  // valid GitHub issue or pull request URL.
   const shareValidationError = shareWithCustomer
     ? !canShareWithCustomer
       ? publicCommentDisabledReason
@@ -244,11 +247,9 @@ export default function SetFixEtaDialog({
         ? "Pick at least one fix ETA to share with the customer."
         : !hasProduct
           ? "Product is required to share with the customer."
-          : !hasPublicTicket
-            ? "Public ticket is required to share with the customer."
-            : !isPublicTicketValidUrl
-              ? "Public ticket must be a GitHub issue or pull request URL."
-              : undefined
+          : !isPublicTicketValidUrl
+            ? "Public ticket must be a GitHub issue or pull request URL."
+            : undefined
     : !hasPublicTicket || isPublicTicketValidUrl
       ? undefined
       : "Public ticket must be a GitHub issue or pull request URL.";
@@ -276,7 +277,8 @@ export default function SetFixEtaDialog({
       ...(shareWithCustomer && {
         addPublicComment: true,
         product: selectedProduct?.name ?? "",
-        publicTicket: trimmedPublicTicket,
+        // Omitted (not sent as "") when blank.
+        ...(hasPublicTicket && { publicTicket: trimmedPublicTicket }),
       }),
     });
   };
@@ -364,11 +366,10 @@ export default function SetFixEtaDialog({
                 </Select>
               </FormControl>
               <TextField
-                label="Public ticket"
-                placeholder="e.g. a public GitHub issue URL"
+                label="Public ticket (optional)"
+                placeholder="e.g. a public GitHub issue URL, if one exists"
                 size="small"
                 fullWidth
-                required
                 value={publicTicket}
                 onChange={(e) => setPublicTicket(e.target.value)}
                 disabled={isSaving}

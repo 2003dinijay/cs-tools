@@ -209,6 +209,8 @@ type chatSender interface {
 	SendEscalationStopped(ctx context.Context, s notifications.EscalationStopped) error
 	// SendIncidentCreatedAlert posts the "Incident Reported" card an SRE incident's rung replies sit under.
 	SendIncidentCreatedAlert(ctx context.Context, audience string, a notifications.IncidentCreatedAlert) error
+	// SendSMEIncidentEscalatedAlert posts the "Incident Escalated" card an SME incident's rung replies sit under.
+	SendSMEIncidentEscalatedAlert(ctx context.Context, audience string, a notifications.SMEIncidentEscalatedAlert) error
 	// SendIncidentAssignedAlert posts the "Incident Acknowledged." reply that ends an assigned SRE incident's thread.
 	SendIncidentAssignedAlert(ctx context.Context, audience string, a notifications.IncidentAssignedAlert) error
 	// HasAudienceSpace reports whether GOOGLE_CHAT_SPACES has a room for the
@@ -274,8 +276,8 @@ func (n chatNotifier) Deliver(ctx context.Context, plan Plan, call PlannedCall) 
 	}
 
 	t := plan.Trigger
-	// The SRE ladder's own space gets the INCIDENT_CHAT_SPACES design; an incident space (n.reply) already has its card.
-	sreThread := !n.reply && t.sreIncident()
+	// The SRE and SME ladders' own spaces get a parent incident card; an incident space (n.reply) already has its card.
+	threaded := !n.reply && t.threadedIncident()
 	nextRung, nextIn := plan.NextRungAfter(call)
 	portal, portalLabel := "", "View incident"
 	if t.isCase() {
@@ -291,7 +293,8 @@ func (n chatNotifier) Deliver(ctx context.Context, plan Plan, call PlannedCall) 
 
 	alert := notifications.EscalationAlert{
 		Audience:      room,
-		Rung:          call.Level.Label(),
+		Rung:          call.Level.LabelIn(t.Routing.Ladder),
+		FirstRung:     call.Level == Level0,
 		RungRole:      rungRole(call.Level, t.Routing),
 		Attempt:       call.Ordinal,
 		Priority:      t.Priority,
@@ -310,7 +313,7 @@ func (n chatNotifier) Deliver(ctx context.Context, plan Plan, call PlannedCall) 
 		NextIn:      nextIn,
 		// An incident's rungs reply under its "Incident Reported" card, so the space shows the escalation in that one thread.
 		ThreadKey: t.chatThreadKey(),
-		Reply:     n.reply || sreThread,
+		Reply:     n.reply || threaded,
 		Team:      t.Team,
 		// Both stamps in IST, because every shift boundary this ladder routes
 		// by is expressed in it. Rendering either in the reader's own zone
@@ -321,9 +324,15 @@ func (n chatNotifier) Deliver(ctx context.Context, plan Plan, call PlannedCall) 
 		Rotation:   rotationOf(plan),
 		OnCall:     onCallName(plan),
 	}
-	parent := sreThread && isFirstCall(plan, call) && !slices.Contains(plan.IncidentCards, room)
+	parent := threaded && isFirstCall(plan, call) && !slices.Contains(plan.IncidentCards, room)
 	if parent {
-		if err := n.chat.SendIncidentCreatedAlert(ctx, room, incidentCard(t, portal)); err != nil {
+		var err error
+		if t.smeIncident() {
+			err = n.chat.SendSMEIncidentEscalatedAlert(ctx, room, smeIncidentCard(plan, portal))
+		} else {
+			err = n.chat.SendIncidentCreatedAlert(ctx, room, incidentCard(t, portal))
+		}
+		if err != nil {
 			return Delivery{Channel: ChannelChat}, err
 		}
 	}
@@ -387,6 +396,38 @@ func incidentCard(t Trigger, link string) notifications.IncidentCreatedAlert {
 		Environment:      t.Environment,
 		Category:         t.Category,
 		State:            t.State,
+		IncidentLink:     link,
+	}
+}
+
+// smeIncidentCard is the "Incident Escalated" card the SME space's rung replies sit under.
+func smeIncidentCard(plan Plan, link string) notifications.SMEIncidentEscalatedAlert {
+	t := plan.Trigger
+	onCall, onCallRung, onCallAt := "", "", ""
+	if len(plan.Calls) > 0 {
+		first := plan.Calls[0]
+		if onCall = first.Recipient.Name; onCall == "" {
+			onCall = first.Level.RoleIn(LadderSME)
+		}
+		if first.Level != Level0 {
+			// L1 is empty: the card names the first tier that is rostered and when it is called.
+			onCallRung, onCallAt = first.Level.LabelIn(LadderSME), istStamp(first.At)
+		}
+	}
+	return notifications.SMEIncidentEscalatedAlert{
+		IncidentID:       t.IncidentID,
+		Number:           t.Number,
+		SMETeam:          smeTeamLabel(t.Routing.SMETeam),
+		Priority:         t.Priority,
+		ShortDescription: t.Title,
+		Service:          t.Service,
+		State:            t.State,
+		EscalatedBy:      t.EscalatedBy,
+		EscalatedFrom:    t.EscalatedFrom,
+		OnCall:           onCall,
+		OnCallRung:       onCallRung,
+		OnCallAt:         onCallAt,
+		EscalatedAt:      istStamp(t.At),
 		IncidentLink:     link,
 	}
 }

@@ -134,7 +134,7 @@ func TestSNCaseService_CreateCase_PublishesCaseCreated(t *testing.T) {
 		"product": {"id": "` + productSysid + `", "name": "WSO2 API Manager"},
 		"severity": {"id": 3, "label": "3 - High"},
 		"state": {"id": 1, "label": "Open"},
-		"account": {"id": "` + projectSysid + `", "name": "Account Zeta", "type": "customer", "creTeam": {"id": "` + teamSysid + `", "name": "Team Nova"}},
+		"account": {"id": "` + projectSysid + `", "name": "Account Zeta", "type": "customer", "creTeam": {"id": "` + teamSysid + `", "name": "Team Nova"}, "sreTeam": {"id": "` + sysid32('f') + `", "name": "MS/PC SRE Group"}},
 		"watchList": [
 			{"id": "` + watcherSysid + `", "userName": "jroe", "name": "John Roe", "email": "john.roe@example.com"}
 		]
@@ -206,6 +206,9 @@ func TestSNCaseService_CreateCase_PublishesCaseCreated(t *testing.T) {
 	}
 	if payload.Team != "Team Nova" {
 		t.Errorf("team = %q, want %q", payload.Team, "Team Nova")
+	}
+	if payload.SRETeamID != sysidToUUID(sysid32('f')) || payload.SRETeamName != "MS/PC SRE Group" {
+		t.Errorf("sreTeam = %q/%q, want %q/%q", payload.SRETeamID, payload.SRETeamName, sysidToUUID(sysid32('f')), "MS/PC SRE Group")
 	}
 	if payload.Description != "Login fails with a 500" {
 		t.Errorf("description = %q, want %q", payload.Description, "Login fails with a 500")

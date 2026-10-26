@@ -116,6 +116,13 @@ type LadderConfig struct {
 	// ladder's channel above (narrowChannel); a team not listed uses it as it
 	// is. SRE only.
 	TeamChannels map[string]Channel `yaml:"-"`
+	// GroupChats gives SRE assignment groups Google Chat spaces of their
+	// own, by lower-cased group name, saved on the Team Schedule's Alert
+	// Settings tab and never from this file. A group's incident card and the
+	// paging replies under it go there (BuildIncidentRoutes), ahead of the
+	// room of the team the group is routed to; who is called is unchanged.
+	// SRE only.
+	GroupChats map[string]Chat `yaml:"-"`
 	// UnansweredChat posts a closing message when the ladder has called every
 	// rung and nobody acknowledged the incident, to the team's own space
 	// (teamChats), else chat. It is posted whatever channel says, so a

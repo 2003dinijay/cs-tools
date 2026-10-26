@@ -57,6 +57,14 @@ func (f *fakeRotaAccessClient) DeleteRotaMarker(_ context.Context, team, user st
 	return f.record("delete-marker", team, user)
 }
 
+func (f *fakeRotaAccessClient) PutTeamMember(_ context.Context, team, user string) ([]byte, error) {
+	return f.record("put-member", team, user)
+}
+
+func (f *fakeRotaAccessClient) DeleteTeamMember(_ context.Context, team, user string) ([]byte, error) {
+	return f.record("delete-member", team, user)
+}
+
 const rotaAccessUser = "33333333-3333-3333-3333-333333333333"
 
 func rotaAccessRequest(method, scopeName, scope, user string) *http.Request {
@@ -80,6 +88,8 @@ func TestRotaAccess_ForwardsAGrantOrRemoval(t *testing.T) {
 		{h.DeleteRotaAdmin, http.MethodDelete, "family", "CRE", "delete-admin CRE " + rotaAccessUser},
 		{h.PutRotaMarker, http.MethodPut, "teamKey", "apollo", "put-marker apollo " + rotaAccessUser},
 		{h.DeleteRotaMarker, http.MethodDelete, "teamKey", "phoenix_abt_cre_team", "delete-marker phoenix_abt_cre_team " + rotaAccessUser},
+		{h.PutTeamMember, http.MethodPut, "teamKey", "iaas", "put-member iaas " + rotaAccessUser},
+		{h.DeleteTeamMember, http.MethodDelete, "teamKey", "cloud-agent", "delete-member cloud-agent " + rotaAccessUser},
 	} {
 		w := httptest.NewRecorder()
 		c.call(w, withUser(rotaAccessRequest(c.method, c.scopeName, c.scope, rotaAccessUser)))
@@ -133,6 +143,27 @@ func TestRotaAccess_KeepsTheRefusalReason(t *testing.T) {
 		fake := &fakeRotaAccessClient{err: &apierror.Error{StatusCode: c.status, Body: `{"code":1,"message":"` + c.msg + `"}`}}
 		w := httptest.NewRecorder()
 		NewRotaAccessHandler(fake).PutRotaMarker(w, withUser(rotaAccessRequest(http.MethodPut, "teamKey", "lyra", rotaAccessUser)))
+		if w.Code != c.status || !strings.Contains(w.Body.String(), c.want) {
+			t.Fatalf("%d: got %d %s", c.status, w.Code, w.Body.String())
+		}
+	}
+}
+
+// A refused removal reaches the tab with entity-service's own reason (409
+// for upcoming turns or a tier, 403 for a lead), and a server fault does not.
+func TestRotaAccess_TeamMemberRemovalKeepsTheRefusalReason(t *testing.T) {
+	for _, c := range []struct {
+		status int
+		msg    string
+		want   string
+	}{
+		{http.StatusConflict, "this person still has 3 upcoming turns on iaas: remove or reassign them on the roster first", "3 upcoming turns"},
+		{http.StatusForbidden, "this person is a lead of iaas, which decides who Case Alerts calls: only a CSM admin can remove them", "only a CSM admin"},
+		{http.StatusInternalServerError, "pq: relation does not exist", "Failed to remove the team member."},
+	} {
+		fake := &fakeRotaAccessClient{err: &apierror.Error{StatusCode: c.status, Body: `{"code":1,"message":"` + c.msg + `"}`}}
+		w := httptest.NewRecorder()
+		NewRotaAccessHandler(fake).DeleteTeamMember(w, withUser(rotaAccessRequest(http.MethodDelete, "teamKey", "iaas", rotaAccessUser)))
 		if w.Code != c.status || !strings.Contains(w.Body.String(), c.want) {
 			t.Fatalf("%d: got %d %s", c.status, w.Code, w.Body.String())
 		}

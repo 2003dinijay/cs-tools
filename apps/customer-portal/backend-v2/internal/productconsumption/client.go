@@ -59,6 +59,9 @@ type Config struct {
 	ClientID            string
 	ClientSecret        string
 	Scopes              []string
+	// LicenseMode selects the license provisioning flow; empty means
+	// LicenseModeService. See ParseLicenseMode.
+	LicenseMode LicenseMode
 }
 
 // Client is an HTTP client for the upstream product-consumption service(s),
@@ -70,6 +73,7 @@ type Client struct {
 	http                *http.Client
 	subscriptionBaseURL string
 	trackingBaseURL     string
+	licenseMode         LicenseMode
 }
 
 // NewClient constructs a Client that authenticates against the
@@ -101,10 +105,16 @@ func NewClient(cfg Config) *Client {
 		trackingBaseURL = cfg.SubscriptionBaseURL
 	}
 
+	licenseMode := cfg.LicenseMode
+	if licenseMode == "" {
+		licenseMode = LicenseModeService
+	}
+
 	return &Client{
 		http:                httpClient,
 		subscriptionBaseURL: strings.TrimRight(cfg.SubscriptionBaseURL, "/"),
 		trackingBaseURL:     strings.TrimRight(trackingBaseURL, "/"),
+		licenseMode:         licenseMode,
 	}
 }
 

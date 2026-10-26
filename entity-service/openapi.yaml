@@ -9547,6 +9547,125 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /team-schedule/teams/{teamKey}/members/{userId}:
+    put:
+      summary: Add somebody to a team on the schedule.
+      description: >
+        Puts an active internal staff member on the team as an engineer. A CSM
+        admin may add to any team, a rota admin to the teams of their own family
+        only (CRE, SRE or SME). Making someone a lead is not done here. Adding
+        someone already on the team changes nothing. Audited.
+      operationId: addTeamMember
+      parameters:
+        - name: teamKey
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The team's registry key.
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The person ("user" id).
+      responses:
+        "204":
+          description: Done, or already on the team.
+        "400":
+          description: Bad request — the user id is not a UUID, or the person is not active internal staff.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Neither a CSM admin nor the rota admin for the team's family.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: The team is not on the schedule, or the schedule routes are not registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      summary: Take somebody off a team on the schedule.
+      description: >
+        Same permission as adding. Removes the person's membership and their rota
+        manager grant for the team. Refused, with nothing changed, while the person
+        has turns on the team that have not ended (409), holds a Case Alerts
+        responder tier there (409), or -- for a rota admin -- is one of the team's
+        leads (403; a CSM admin may remove a lead). Removing someone not on the
+        team changes nothing. Past turns are kept. Audited.
+      operationId: removeTeamMember
+      parameters:
+        - name: teamKey
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The team's registry key.
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The person ("user" id).
+      responses:
+        "204":
+          description: Done, or the person was not on the team.
+        "400":
+          description: Bad request — the user id is not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Neither a CSM admin nor the rota admin for the team's family, or a rota admin removing one of the team's leads.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: The team is not on the schedule, or the schedule routes are not registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: The person still has upcoming turns on the team, or holds its Case Alerts responder tier; the message says which.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /team-schedule/rota-access/markers/{teamKey}/{userId}:
     put:
       summary: Make somebody a team's rota manager.
@@ -21523,8 +21642,11 @@ components:
           the case's created, last-updated, closed, or resolved timestamp
           respectively. gte is inclusive "on or after"; lte is inclusive "on
           or before". A lte bound earlier than its own gte bound is rejected
-          with a validation error. resolvedOn has no equivalent in the
-          relational data source and is rejected there.
+          with a validation error. On the relational data source, resolvedOn
+          bounds only the case record's own resolved timestamp; engagements,
+          service requests, security report analyses and announcements do not
+          match it. Cases that never reached a resolved or closed state never
+          match.
         - **product** (in): product family names (e.g. "API Manager",
           "Identity Server", "Asgardeo"). Matches every version of each named
           product. Only applied by the ServiceNow data source.
@@ -25653,7 +25775,8 @@ components:
           description: >-
             true limits the result to the groups an incident can be created in
             with an explicit assignmentGroupId: active groups that are the
-            support group of at least one service. The ids are group ids (what
+            support group of at least one service, plus any active group the
+            deployment has configured as an extra assignable group. The ids are group ids (what
             assignmentGroupId takes). On the PostgreSQL data source the search
             without this filter lists the team registry instead, whose ids are
             not group ids. On the ServiceNow data source the set is built from
@@ -26716,6 +26839,15 @@ components:
           items:
             type: string
             enum: [CRE, SRE, SME]
+        memberFamilies:
+          type: array
+          description: >
+            The families whose teams' members the caller may add and remove
+            (PUT/DELETE /team-schedule/teams/{teamKey}/members/{userId}). Today
+            the same as markerFamilies.
+          items:
+            type: string
+            enum: [CRE, SRE, SME]
     RotaAdminGrant:
       type: object
       required: [family, userId, name, email, grantedBy, grantedOn, active]
@@ -26836,6 +26968,10 @@ components:
       properties:
         id: { type: string, format: uuid, description: 'The "group" row (an assignment group mirrored from ServiceNow).' }
         name: { type: string }
+        services:
+          type: array
+          items: { type: string }
+          description: "Route options only: the names of the services it is the support group of, by name."
     CaseAlertRouteOptions:
       type: object
       required: [groups, teams, rotas]
@@ -26904,7 +27040,9 @@ components:
             teams.rotaTeams, teams.unassignedTeamLead,
             teams.unassignedTeamLeadCount, heads.cre, heads.cs (name and email
             only), alertDuty.tiers, alertDuty.perTeam,
-            acknowledgement.requireBoth. SRE: teams.defaultRota,
+            acknowledgement.requireBoth, email.enabled, email.teamLists (CRE
+            team key to one mailing list address), email.creTeamList,
+            email.csTeamList (one address each). SRE: teams.defaultRota,
             timing.initialWait (0s to 30m), timing.interval (1m to 30m),
             timing.includeL4, unansweredChat, smeHandoffChat. SME:
             timing.initialWait (0s to 30m), timing.interval (1m to 30m),
@@ -26942,10 +27080,16 @@ components:
             enabled, channel, safety.maxCallsPerLadder, safety.maxLevel (absent
             when there is no cap), safety.allowedNumbers (a count, never the
             numbers), safety.callWithoutVerifiedLeads,
-            safety.callHeadsWithoutLowerTiers, phones.source. enabled, channel
-            and the three safety values above can now also be saved as values
-            (ladders); safety.maxLevel, safety.allowedNumbers and phones.source
-            stay file-only.
+            safety.callHeadsWithoutLowerTiers, phones.source, ackChat (whether
+            a stopped chain replies in its thread). CRE also carries
+            email.enabled, email.teamLists (a count), email.creTeamList and
+            email.csTeamList (whether set, never the addresses), rules.custom
+            (the file replaces the built-in rule table) and timing (severity
+            S0-S4 to the minutes each step L0-L4 is called, from the code).
+            These are the values as running, whatever their source: enabled,
+            channel, the three safety values above and the four CRE email
+            settings can also be saved as values (ladders), which then report
+            them with their source; the rest stay file-only.
           additionalProperties:
             type: object
             additionalProperties: true
@@ -27018,7 +27162,9 @@ components:
       properties:
         id: { type: string, format: uuid }
         ladder: { type: string, enum: [CRE, SRE, SME] }
-        teamKey: { type: string, description: "The SRE or SME team whose room it is; absent for the ladder's shared room (CRE, SRE). An SME room is always a team's." }
+        teamKey: { type: string, description: "The SRE or SME team whose room it is; absent for the ladder's shared room (CRE, SRE) and a group's room. An SME room is always a team's." }
+        groupId: { type: string, format: uuid, description: "An SRE assignment group's own room (0244): the group whose incident card and paging replies go here. Absent for a ladder's or a team's room." }
+        groupName: { type: string, description: "The group's current name, with groupId." }
         label: { type: string }
         enabled: { type: boolean }
         teamless: { type: boolean, description: "Also gets the cards of an incident with no SRE team of its own." }
@@ -27050,7 +27196,8 @@ components:
       properties:
         ladder: { type: string, enum: [CRE, SRE, SME] }
         teamKey: { type: string, description: "An SRE or SME team of the Team Schedule (required for SME); omit for the ladder's shared room." }
-        label: { type: string, maxLength: 100 }
+        groupId: { type: string, format: uuid, description: "SRE only, instead of teamKey: an assignment group from routeOptions.assignmentGroups, whose incident card and paging replies go to this room (who is called does not change). No teamless flag or channel. 400 when it is not one." }
+        label: { type: string, maxLength: 100, description: "May be left out with groupId: the group's own name is used." }
         enabled: { type: boolean, default: true }
         teamless: { type: boolean, default: false, description: "SRE team rooms only." }
         channel: { type: string, enum: ["", log, chat, call, both], description: "An SRE team room only: chat, call, both or log; an empty string goes back to the ladder's. Refused on a ladder's shared room and on an SME room." }
@@ -27101,6 +27248,8 @@ components:
       properties:
         ladder: { type: string, enum: [CRE, SRE, SME] }
         teamKey: { type: string }
+        groupId: { type: string, format: uuid, description: "An SRE assignment group's room." }
+        groupName: { type: string, description: "The group's current name: what an incident's assignment group is matched against." }
         label: { type: string }
         teamless: { type: boolean }
         webhookUrl: { type: string, description: "The opened webhook URL, or empty for a team room saved only for its channel. Returned only on this service-only route." }
@@ -27741,6 +27890,426 @@ components:
         sentOn:
           type: string
           format: date-time
+    ProductRegressionReport:
+      type: object
+      description: One monthly product regression report.
+      required: [generatedAt, month, periodStart, periodEnd, tag, products, totalCases, groups]
+      properties:
+        generatedAt:
+          type: string
+          format: date-time
+        month:
+          type: string
+          description: The calendar month reported, YYYY-MM.
+        periodStart:
+          type: string
+          format: date-time
+          description: The first instant of the month, in the report's timezone.
+        periodEnd:
+          type: string
+          format: date-time
+          description: The first instant of the next month; cases are listed when their ETA was shared before it.
+        tag:
+          type: string
+          description: The tag that marks a case as a regression.
+        products:
+          type: array
+          description: The product names asked for, as given.
+          items:
+            type: string
+        totalCases:
+          type: integer
+          description: Cases across every group.
+        groups:
+          type: array
+          description: The cases by product, in product name order.
+          items:
+            $ref: '#/components/schemas/ProductRegressionReportGroup'
+    ProductRegressionReportGroup:
+      type: object
+      description: One product's regression cases.
+      required: [product, cases]
+      properties:
+        product:
+          type: string
+        cases:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProductRegressionReportRow'
+    ProductRegressionReportRow:
+      type: object
+      description: One regression case in the report.
+      required: [id, number, issueKey, subject, product, deployedProduct, etaSharedOn]
+      properties:
+        id:
+          type: string
+          format: uuid
+        number:
+          type: string
+        issueKey:
+          type: string
+          description: The case's customer-facing identifier.
+        subject:
+          type: string
+        product:
+          type: string
+          description: The WSO2 product the case is filed against.
+        deployedProduct:
+          type: string
+          description: The customer's deployment the case concerns; blank when none is named.
+        etaSharedOn:
+          type: string
+          format: date-time
+          description: When the fix ETA was shared with the customer.
+    QueryHourReport:
+      type: object
+      description: The weekly query-support consumption report.
+      required: [generatedOn, exceeded, closeToExceed, recipients]
+      properties:
+        generatedOn:
+          type: string
+          format: date-time
+        exceeded:
+          type: array
+          description: Accounts with no query-hour allowance left.
+          items:
+            $ref: '#/components/schemas/QueryHourAccount'
+        closeToExceed:
+          type: array
+          description: >-
+            Accounts under ten hours from exhausting their allowance. An
+            absolute floor of 600 minutes, unrelated to the 75/90/100
+            percent thresholds that drive the notifications.
+          items:
+            $ref: '#/components/schemas/QueryHourAccount'
+        recipients:
+          type: array
+          description: >-
+            Internal addresses of the account managers and technical
+            owners of every account in either table, deduped.
+          items:
+            type: string
+    QueryHourAccount:
+      type: object
+      required: [accountId, accountName, isExceeded, isCloseToExceed, opportunities]
+      properties:
+        accountId:
+          type: string
+          format: uuid
+        accountName:
+          type: string
+        salesforceId:
+          type: string
+        accountManagerEmail:
+          type: string
+          description: Omitted when the account records no manager.
+        technicalOwnerEmail:
+          type: string
+          description: Omitted when the account records no technical owner.
+        isExceeded:
+          type: boolean
+        isCloseToExceed:
+          type: boolean
+        opportunities:
+          type: array
+          items:
+            $ref: '#/components/schemas/QueryHourOpportunity'
+    QueryHourOpportunity:
+      type: object
+      required:
+        [opportunityId, salesforceId, name, accountId, accountName, totalMinutes,
+         consumedMinutes, remainingMinutes, usagePercent, state, isExceeded,
+         isCloseToExceed, unmatchedLines, projects]
+      properties:
+        opportunityId:
+          type: string
+          format: uuid
+        salesforceId:
+          type: string
+        name:
+          type: string
+        accountId:
+          type: string
+          format: uuid
+        accountName:
+          type: string
+        totalMinutes:
+          type: integer
+          description: The entitlement, from the opportunity's in-service product lines.
+        consumedMinutes:
+          type: integer
+          description: Approved billable time, less onboarding time.
+        remainingMinutes:
+          type: integer
+          description: Goes negative once the allowance is overdrawn, which is how "exceeded" is decided.
+        usagePercent:
+          type: number
+          format: double
+        state:
+          type: string
+          nullable: true
+          enum: [NOTIFIED_75, NOTIFIED_90, CLOSURE_NOTICE_100]
+          description: The highest threshold reached, or null below 75 percent.
+        isExceeded:
+          type: boolean
+        isCloseToExceed:
+          type: boolean
+        unmatchedLines:
+          type: integer
+          description: >-
+            Active product lines whose name matches none of the known
+            entitlement packs -- a renamed SKU, most likely. They
+            contribute zero hours; this makes that visible.
+        serviceStart:
+          type: string
+          format: date-time
+          description: Earliest start across the opportunity's active lines.
+        serviceEnd:
+          type: string
+          format: date-time
+          description: Latest end across the opportunity's active lines.
+        projects:
+          type: array
+          items:
+            $ref: '#/components/schemas/QueryHourProject'
+    QueryHourProject:
+      type: object
+      required: [projectId, projectKey, projectName, consumedMinutes, nonBillableMinutes, onboardingMinutes]
+      properties:
+        projectId:
+          type: string
+          format: uuid
+        projectKey:
+          type: string
+        projectName:
+          type: string
+        salesforceId:
+          type: string
+        consumedMinutes:
+          type: integer
+          description: Approved BILLABLE time only.
+        nonBillableMinutes:
+          type: integer
+          description: Carried for the report; not part of the sum.
+        onboardingMinutes:
+          type: integer
+          description: >-
+            Onboarding time absorbed by the project's onboarding grant
+            rather than its query hours. Zero once onboarding completes,
+            and for a renewal.
+    QueryHourTransition:
+      type: object
+      description: One project's rise through a utilisation threshold.
+      required: [projectId, projectKey, projectName, accountId, accountName, from, to, totalText, consumedText, remainingText]
+      properties:
+        projectId:
+          type: string
+          format: uuid
+        projectKey:
+          type: string
+        projectName:
+          type: string
+        accountId:
+          type: string
+          format: uuid
+        accountName:
+          type: string
+        from:
+          type: string
+          nullable: true
+          enum: [NOTIFIED_75, NOTIFIED_90, CLOSURE_NOTICE_100]
+          description: The state before this recompute; null when no threshold had been reached.
+        to:
+          type: string
+          enum: [NOTIFIED_75, NOTIFIED_90, CLOSURE_NOTICE_100]
+        totalText:
+          type: string
+          description: The entitlement as "Xh Ym".
+        consumedText:
+          type: string
+        remainingText:
+          type: string
+        accountManagerEmail:
+          type: string
+        accountManagerName:
+          type: string
+        technicalOwnerEmail:
+          type: string
+    MigrationCaseReport:
+      type: object
+      description: The weekly migration case scan.
+      required: [generatedAt, olderThanDays, createdBefore, onHold, waitingOnAccounts, inProgress, recipients]
+      properties:
+        generatedAt:
+          type: string
+          format: date-time
+        olderThanDays:
+          type: integer
+          description: The age every listed migration has reached.
+        createdBefore:
+          type: string
+          format: date-time
+          description: Every listed migration was created on or before this instant.
+        onHold:
+          type: array
+          description: Migrations the customer asked to pause.
+          items:
+            $ref: '#/components/schemas/MigrationCaseReportRow'
+        waitingOnAccounts:
+          type: array
+          description: Migrations blocked on the accounts team.
+          items:
+            $ref: '#/components/schemas/MigrationCaseReportRow'
+        inProgress:
+          type: array
+          description: The remaining long-running migrations, carrying neither tag.
+          items:
+            $ref: '#/components/schemas/MigrationCaseReportRow'
+        recipients:
+          type: array
+          description: Mail groups of the teams configured to receive the scan.
+          items:
+            type: string
+    MigrationCaseReportRow:
+      type: object
+      description: One migration engagement in the scan with the account facts shown beside it.
+      required: [id, number, issueKey, createdOn, assignedTo, product, account, csTeam, salesRegion, accountManager, technicalOwner]
+      properties:
+        id:
+          type: string
+        number:
+          type: string
+        issueKey:
+          type: string
+          description: The engagement's customer-facing identifier.
+        createdOn:
+          type: string
+          format: date-time
+        lastCustomerCommentOn:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the customer last commented on the engagement; null when they never have.
+        assignedTo:
+          type: string
+          description: Display name of the assignee, or empty.
+        product:
+          type: string
+        account:
+          type: string
+        csTeam:
+          type: string
+          description: Name of the CS team that owns the account.
+        salesRegion:
+          type: string
+        accountManager:
+          type: string
+        technicalOwner:
+          type: string
+    WorklogReport:
+      type: object
+      description: >-
+        One CS Worklogs report. Hours are rounded to two decimals;
+        member counts can be fractional, because a half-day absence
+        counts as half a present person.
+      properties:
+        cadence:
+          type: string
+          enum: [daily, weekly]
+        from:
+          type: string
+          format: date
+        to:
+          type: string
+          format: date
+        totals:
+          type: object
+          properties:
+            members: { type: integer }
+            issues: { type: integer }
+            totalHours: { type: number, format: double }
+            approvedHours: { type: number, format: double }
+            pendingHours: { type: number, format: double }
+            avgHoursPerPerson: { type: number, format: double }
+            avgApprovedHoursPerPerson: { type: number, format: double }
+            avgPendingHoursPerPerson: { type: number, format: double }
+            averagePeoplePerDay: { type: number, format: double }
+            onLeaveMembers: { type: integer }
+            nonLeaveMembers: { type: number, format: double }
+            queryIssues: { type: integer }
+            incidentIssues: { type: integer }
+        byType:
+          type: array
+          items:
+            type: object
+            properties:
+              type: { type: string }
+              label:
+                type: string
+                description: What the report calls the type. "Query" where the schema says CASE.
+              issues: { type: integer }
+              totalHours: { type: number, format: double }
+              approvedHours: { type: number, format: double }
+              pendingHours: { type: number, format: double }
+        recipients:
+          type: object
+          description: >-
+            The audience derived from the team registry. Carried for
+            comparison only -- the delivered mails are configured, not
+            derived.
+          properties:
+            to:
+              type: array
+              items: { type: string }
+            cc:
+              type: array
+              items: { type: string }
+        teams:
+          type: array
+          items:
+            type: object
+            properties:
+              teamKey: { type: string }
+              teamName: { type: string }
+              teamType: { type: string }
+              members: { type: integer }
+              membersForAverage:
+                type: number
+                format: double
+                description: >-
+                  The divisor behind the averages, which is not the
+                  member count: the weekly report uses members less one,
+                  the daily present members less leads.
+              issues: { type: integer }
+              approvedHours: { type: number, format: double }
+              pendingHours: { type: number, format: double }
+              totalHours: { type: number, format: double }
+              avgApprovedHoursPerPerson: { type: number, format: double }
+              avgTotalHoursPerPerson: { type: number, format: double }
+              developers:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    userId: { type: string }
+                    email: { type: string }
+                    name: { type: string }
+                    workedDays: { type: number, format: double }
+                    leave: { type: string }
+                    approvedIssues: { type: integer }
+                    approvedHours: { type: number, format: double }
+                    pendingIssues: { type: integer }
+                    pendingHours: { type: number, format: double }
+                    disapprovedEntries: { type: integer }
+                    avgTimePerDay: { type: number, format: double }
+                    totalHours: { type: number, format: double }
+                    issues:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          id: { type: string }
+                          key: { type: string }
     Runbook:
       type: object
       required: [id, number, name, runbookUrl, alerts, createdOn, createdBy, updatedOn, updatedBy]
@@ -28170,110 +28739,6 @@ components:
                 type: string
                 nullable: true
                 description: The link the removed runbook had.
-    WorklogReport:
-      type: object
-      description: >-
-        One CS Worklogs report. Hours are rounded to two decimals;
-        member counts can be fractional, because a half-day absence
-        counts as half a present person.
-      properties:
-        cadence:
-          type: string
-          enum: [daily, weekly]
-        from:
-          type: string
-          format: date
-        to:
-          type: string
-          format: date
-        totals:
-          type: object
-          properties:
-            members: { type: integer }
-            issues: { type: integer }
-            totalHours: { type: number, format: double }
-            approvedHours: { type: number, format: double }
-            pendingHours: { type: number, format: double }
-            avgHoursPerPerson: { type: number, format: double }
-            avgApprovedHoursPerPerson: { type: number, format: double }
-            avgPendingHoursPerPerson: { type: number, format: double }
-            averagePeoplePerDay: { type: number, format: double }
-            onLeaveMembers: { type: integer }
-            nonLeaveMembers: { type: number, format: double }
-            queryIssues: { type: integer }
-            incidentIssues: { type: integer }
-        byType:
-          type: array
-          items:
-            type: object
-            properties:
-              type: { type: string }
-              label:
-                type: string
-                description: What the report calls the type. "Query" where the schema says CASE.
-              issues: { type: integer }
-              totalHours: { type: number, format: double }
-              approvedHours: { type: number, format: double }
-              pendingHours: { type: number, format: double }
-        recipients:
-          type: object
-          description: >-
-            The audience derived from the team registry. Carried for
-            comparison only -- the delivered mails are configured, not
-            derived.
-          properties:
-            to:
-              type: array
-              items: { type: string }
-            cc:
-              type: array
-              items: { type: string }
-        teams:
-          type: array
-          items:
-            type: object
-            properties:
-              teamKey: { type: string }
-              teamName: { type: string }
-              teamType: { type: string }
-              members: { type: integer }
-              membersForAverage:
-                type: number
-                format: double
-                description: >-
-                  The divisor behind the averages, which is not the
-                  member count: the weekly report uses members less one,
-                  the daily present members less leads.
-              issues: { type: integer }
-              approvedHours: { type: number, format: double }
-              pendingHours: { type: number, format: double }
-              totalHours: { type: number, format: double }
-              avgApprovedHoursPerPerson: { type: number, format: double }
-              avgTotalHoursPerPerson: { type: number, format: double }
-              developers:
-                type: array
-                items:
-                  type: object
-                  properties:
-                    userId: { type: string }
-                    email: { type: string }
-                    name: { type: string }
-                    workedDays: { type: number, format: double }
-                    leave: { type: string }
-                    approvedIssues: { type: integer }
-                    approvedHours: { type: number, format: double }
-                    pendingIssues: { type: integer }
-                    pendingHours: { type: number, format: double }
-                    disapprovedEntries: { type: integer }
-                    avgTimePerDay: { type: number, format: double }
-                    totalHours: { type: number, format: double }
-                    issues:
-                      type: array
-                      items:
-                        type: object
-                        properties:
-                          id: { type: string }
-                          key: { type: string }
     ErrorResponse:
       type: object
       description: >-
@@ -28319,7 +28784,7 @@ components:
             request's project, its own creator, a user who may not decide an internal
             stage, or a field a customer may not set), and, on POST /incidents,
             `incident_assignment_group_not_allowed` (400: an assignmentGroupId that is
-            not an active support group of any service; nothing created), and, on POST
+            not an assignable active group; nothing created), and, on POST
             /incidents/{id}/specialist-handoffs, `incident_handoff_needs_assignee` (409:
             the incident is assigned to nobody), and, on PATCH /change-requests/{id},
             `change_request_approved_read_only` (400: a field of a change request that has
@@ -29150,9 +29615,10 @@ components:
             Optional. The group is decided once, before anything is written,
             the same way for every caller and data source. Sent: used when it
             is an active group that is the support group of at least one
-            service (the set POST /groups/search returns with
+            service or one of the deployment's configured extra assignable
+            groups (the set POST /groups/search returns with
             filters.supportGroupsOnly), otherwise 400 "assignmentGroupId must
-            be the active support group of a service" (a value that is not a
+            be an active group incidents can be assigned to" (a value that is not a
             UUID is a 400 too; a blank value counts as not sent). Not sent:
             the service's support group; when the service has none, the
             support group of the default service (INCIDENT_DEFAULT_SERVICE_ID,

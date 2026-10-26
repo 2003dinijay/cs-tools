@@ -30,7 +30,7 @@ const ROTA_ACCESS_KEY = ["team-schedule", "rota-access"] as const;
 
 /** Somebody who may change nothing: no tab. */
 export const NO_ROTA_ACCESS: RotaAccess = {
-  canManage: { rotaAdmins: false, markerFamilies: [] },
+  canManage: { rotaAdmins: false, markerFamilies: [], memberFamilies: [] },
   rotaAdmins: [],
   markers: [],
 };
@@ -54,29 +54,42 @@ export function useRotaAccess(): UseQueryResult<RotaAccess, Error> {
   });
 }
 
-/** One grant or removal: a family's rota admin, or a team's rota marker. */
+/** One grant or removal: a family's rota admin, a team's rota marker, or a
+ *  team's member (grant = add to the team, otherwise remove from it). */
 export type RotaAccessChange =
   | { kind: "admin"; family: RotaFamily; userId: string; grant: boolean }
-  | { kind: "marker"; teamKey: string; userId: string; grant: boolean };
+  | { kind: "marker"; teamKey: string; userId: string; grant: boolean }
+  | { kind: "member"; teamKey: string; userId: string; grant: boolean };
 
 function changePath(c: RotaAccessChange): string {
+  const user = encodeURIComponent(c.userId);
+  if (c.kind === "member") return `/team-schedule/teams/${encodeURIComponent(c.teamKey)}/members/${user}`;
   const scope = c.kind === "admin" ? `admins/${c.family}` : `markers/${encodeURIComponent(c.teamKey)}`;
-  return `/team-schedule/rota-access/${scope}/${encodeURIComponent(c.userId)}`;
+  return `/team-schedule/rota-access/${scope}/${user}`;
+}
+
+/** The families whose teams' members the reader may add and remove. An older
+ *  server does not send memberFamilies, and it has no member routes either,
+ *  so nothing is offered. */
+export function memberFamiliesOf(access: RotaAccess | undefined): RotaFamily[] {
+  return access?.canManage.memberFamilies ?? [];
 }
 
 /**
- * Grant or remove rota access. Afterwards the tab is read again, and so is
- * which teams the reader may edit -- a reader who changed their own access
- * should see the roster agree.
+ * Grant or remove rota access, or change a team's members. Afterwards the tab
+ * is read again, and so is which teams the reader may edit -- a reader who
+ * changed their own access should see the roster agree. A member change also
+ * reads the catalogue again: the teams' member lists come from it.
  */
 export function useChangeRotaAccess(): UseMutationResult<unknown, Error, RotaAccessChange> {
   const api = useBackendApi();
   const qc = useQueryClient();
   return useMutation<unknown, Error, RotaAccessChange>({
     mutationFn: (c) => (c.grant ? api.put<Record<string, never>, unknown>(changePath(c), {}) : api.del(changePath(c))),
-    onSettled: () => {
+    onSettled: (_data, _error, c) => {
       void qc.invalidateQueries({ queryKey: ROTA_ACCESS_KEY });
       void qc.invalidateQueries({ queryKey: ["team-schedule", "my-lead-teams"] });
+      if (c.kind === "member") void qc.invalidateQueries({ queryKey: ["team-schedule", "catalogue"] });
     },
   });
 }

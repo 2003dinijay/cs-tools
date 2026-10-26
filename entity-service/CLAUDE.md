@@ -80,6 +80,7 @@ The server loads `.env` automatically on startup (silently ignored if absent). P
 | `REDIS_ADDR` / `REDIS_PASSWORD` | no | — | Plain, non-TLS Redis for local runs. Either this or `REDIS_URL` makes `Config.HasRedis` true |
 | `USER_CACHE_TTL` | no | `10m` | Backstop lifetime of a cached user; an unparseable or non-positive value falls back to `10m` |
 | `PRODUCT_VULNERABILITY_META_CACHE_TTL` | no | `24h` | Backstop lifetime of the cached product/version options of `GET /products/vulnerabilities/meta`; deleted on a successful vulnerability sync; unparseable or non-positive falls back to `24h` |
+| `INCIDENT_EXTRA_ASSIGNMENT_GROUP_IDS` | no | — | Comma-separated `"group"` UUIDs an incident may be created in although they support no service (e.g. the security operations group). Trimmed, empty entries ignored; a non-UUID entry refuses to start. Joins the incident-assignable set (create check + `supportGroupsOnly` picker); never case-alert route options. See "Incident assignment group on create" |
 | `INCIDENT_DEFAULT_SERVICE_ID` | no | — | UUID of the service whose support group a new incident gets when no `assignmentGroupId` is sent and its own service has no support group (logged WARN each time). Unset / missing / groupless: such incidents are created unassigned (logged ERROR). A non-UUID refuses to start; checked at startup, log only. See "Incident assignment group on create" |
 | `CR_STRICT_VISIBILITY_FROM` | no | — | RFC 3339 instant **with a zone**: change requests created at or after it are visible to a customer only when designated to them; earlier ones are "legacy" and keep today's visibility. Unset/empty = no cutover, every change request is legacy (the safe default and the rollback; a WARN is logged at startup). An unparsable value refuses to start. Set once per environment at release and never move it — see "Customer visibility and the cutover" |
 | `MIGRATION_CASE_REPORT_HOLD_TAG` | no | `s_mig_hold` | Tag (ignoring case) for the weekly migration scan's "customer requested to hold" table |
@@ -848,7 +849,49 @@ ignored). Code: `internal/service/salesforce_project_ingest.go` (`WithProjectIng
 - **Update-only by default:** with `CSM_MIGRATION_SALESFORCE_PROJECT_INSERT_ENABLED` off a
   project CSM does not have is `NotFoundError` "project not found for sfId ..." plus a FAILED
   ledger row, which the delayed-retry job re-runs. On, it is inserted with
-  `gen_random_uuid()` and `is_active = TRUE`.
+  `is_active = TRUE` and an id chosen as in the next bullet.
+- **Insert id (datasource switch):** the row id is `gen_random_uuid()` in plain
+  `DATA_SOURCE=postgres` (no lookup, nothing else changes). Under
+  `DATA_SOURCE=postgres-servicenow-dual-write`, where the backing system keeps its own copy
+  of every project (fed by another subscriber), a project that has to be INSERTED takes the
+  id that system already uses, so ids converge and a later backing-system-first write that
+  addresses the project by id lands on a real record. The datasource is the only switch (no
+  env var). Mechanics:
+  - `ProjectIngest.IDResolver` (`service.ProjectIDResolver`, nil unless dual-write; `routes.go`
+    builds it and panics if dual-write has no integration client, since a nil resolver would
+    silently insert random ids). The adapter is `internal/service/sn_project_id_resolver.go`
+    (`POST /projects/search` with `filters.searchQuery = key`, id = `sysidToUUID(sys_id)`);
+    the ingest sees only the generic interface.
+  - **Pre-check, no transaction open:** before the upsert, `ProjectExists(sf_id, key)` (the
+    same two arms the write resolves by). Only when neither row exists is the resolver
+    called, so updates, replays and duplicates make no call. The id goes in
+    `SalesforceProjectUpsert.InsertID`; the write still takes the `"project-sf:"+sfId`
+    advisory lock and re-resolves, so two concurrent events for one project cannot make two
+    rows: the loser finds the winner's row and updates it (its `InsertID` is ignored).
+  - **Miss:** the backing system has no such key (or the lookup identity cannot see it):
+    `NotFoundError` "project not found in the backing system for key ... yet", FAILED ledger
+    row, so `IsMissingParentError` matches and the retry worker re-runs it (12 attempts, 5m
+    ticks by default). `RequireInsertID` makes the write refuse an insert without an id too:
+    in this mode a random id is never used. A lookup error (backing system down, malformed
+    id, ambiguity) is not a "project not found" and is not retried by the worker; it is
+    redelivered by the bus and visible as FAILED.
+  - **Exact key match:** the endpoint's `searchQuery` is a substring match on name and key,
+    so results are filtered in Go to `TrimSpace(key) ==` the Salesforce key,
+    case-sensitive (as `project.key = $2` is). A key that differs only in case is a miss
+    (logged), not a match. Up to 10 pages of 50 are scanned; more candidates is an error.
+    Two distinct ids for one key is a `ConflictError`: nothing is guessed or written.
+  - **Derived-id collision:** if a row already holds the derived id but matched neither the
+    sf_id nor the key, it is never overwritten: the write returns a `ConflictError` naming
+    both keys, inserts nothing and writes no ledger row in that transaction (the service
+    records FAILED). Not retried by the worker; it needs a person.
+  - **Lookup identity:** the ingest has no end-user token, so the call carries only the
+    service bearer and the integration service uses its own service identity, which must see
+    every project (the endpoint restricts a non-privileged caller to its own projects, so an
+    under-privileged identity looks like a permanent miss). The endpoint also only returns
+    projects with a key, a Salesforce id and a type recorded, so a project the backing system
+    has not fully populated yet is a miss until it is.
+  - **Cutover:** switching `DATA_SOURCE` away from dual-write (to plain `postgres`) removes
+    the resolver: new projects then get random ids and no backing-system call is made.
 - **Empty `Project_Key__c` (decision D5):** refused: FAILED ledger row with the reason,
   event acknowledged (no retry can fix it).
 - **DELETED:** `is_active = FALSE` on every row with the (18-character) `sf_id` plus a DELETED
@@ -7477,7 +7520,7 @@ decision, not overlooked.
 every caller and every `DATA_SOURCE`:
 
 1. `assignmentGroupId` sent: used when it is in the **support-group set**, else 400
-   `assignmentGroupId must be the active support group of a service` with `errorCode`
+   `assignmentGroupId must be an active group incidents can be assigned to` with `errorCode`
    `incident_assignment_group_not_allowed`, which the CSM portal BFF passes through
    (non-UUID: 400 without a code; blank: not sent).
 2. Not sent: the service's support group (`service.support_group_id`).
@@ -7486,17 +7529,25 @@ every caller and every `DATA_SOURCE`:
 5. A lookup failure returns its error; nothing is created.
 
 The **support-group set** is `supportGroupSetSQL` (`support_group_repo.go`): active `"group"` rows
-(`is_active` NULL counts as active) that are the support group of at least one service. The create
-check (`IncidentRepository.IsSupportGroup`) and `POST /groups/search` with
-`filters.supportGroupsOnly` (`GroupRepository.SearchSupportGroups`, which reads `"group"`, not the
-`team` registry) share it. A work note records the choice ("Assignment group set from service X's
+(`is_active` NULL counts as active) that are the support group of at least one service. The
+**incident-assignable set** is that plus active `"group"` rows whose id is in
+`INCIDENT_EXTRA_ASSIGNMENT_GROUP_IDS` (`incidentAssignableGroupSQL`, same file; groups that own no
+service, matched by id never by name). The create check (`IncidentRepository.IsSupportGroup`) and
+`POST /groups/search` with `filters.supportGroupsOnly` (`GroupRepository.SearchSupportGroups`, which
+reads `"group"`, not the `team` registry) share the incident-assignable set, so the picker never
+offers a group the create refuses. The case-alert route options (`case_alert_settings_repo.go`) keep
+reading plain `supportGroupSetSQL` and never gain the extra groups. The allowlist reaches the
+repositories through `NewIncidentRepository` / `NewGroupRepository` (variadic ids). A work note records the choice ("Assignment group set from service X's
 support group" / "Assignment group chosen by <actor>" / "Service X has no support group; assigned
 to the default team (G)"), after the caller's own `workNotes`. Dual-write decides on Postgres before
 the ServiceNow create (the mirror never looks one up), so both stores get the same group and a
 refused group never reaches ServiceNow; Postgres keeps no create work notes in that mode (an older
 gap), so the note lands in ServiceNow only. `DATA_SOURCE=servicenow` uses the same function over
 ServiceNow's services (`scanSNServices`: only a complete scan may conclude "not there"); the service
-list carries no group's active flag, so that set cannot leave out an inactive group.
+list carries no group's active flag, so that set cannot leave out an inactive group. On that data
+source the create check also accepts the allowlisted ids (no lookup, no active check possible), but
+the `supportGroupsOnly` picker does NOT yet list them: the group search cannot fetch a group's name
+by id, so listing them needs a design choice (open).
 `GET /incidents/create-defaults` (internal only) reports the default service and its group.
 
 ## Case Alerts group routes reference the assignment group (migration 0243)
@@ -7512,6 +7563,18 @@ group's current name through `group_id`, so a rename in ServiceNow keeps its rou
 covers, no team is named after and the running config does not route (an alias or a default group in
 the notifier's last report, `running.groups.SRE`; without a report only routes and team names count):
 csm-notification-service posts their incident cards to the shared SRE room. Deploy entity-service before the BFF and webapp that send `groupId` (strict decoding).
+
+**An SRE assignment group's own chat room (migration 0244).** `paging_chat_room.group_id` (FK
+`"group"`, `ON DELETE CASCADE`; a check keeps such a room SRE-only with no team, teamless flag or
+channel) gives one support group a webhook of its own; the room scope index became
+`paging_chat_room_scope_group_uq` on `(ladder, team_key, group_id)` (the old
+`paging_chat_room_scope_uq` is dropped, so deploy this build with the migration: the old build's
+`ON CONFLICT` names the old index). `SaveRoom` with `groupId` checks it against the support-group
+set (`AssignmentGroupByID`) and defaults the label to the group's name; `ListRooms` returns the
+group's current name; `Runtime` sends a group room only with its URL, as `groupId`/`groupName`. A
+group with an enabled room that has a URL is not listed in `unmappedGroups`. `routeOptions.
+assignmentGroups[].services` lists each group's services by name (one aggregate over `service`).
+Only the chat space follows the group: who is called still follows its route.
 
 **Who may see and change each family's Case Alerts settings** (`whoIsAsking`): a CSM or
 portal admin and the CS head (`cs_head` on any team): all three families; the CRE rota admin and
@@ -8072,6 +8135,18 @@ deployed product with no product reference could still resolve its nodes
 and return real usage/metrics data, even though that same record is treated
 everywhere else as having no product at all. The resolver's own lookup now
 requires `product_id IS NOT NULL` too.
+
+**`PRODUCT_CONSUMPTION_DATA_READ_MODE` (`postgres` default, or `legacy`) -- added because production is
+not yet ready for the Postgres-only read path under dual-write.** `postgres` is the
+behaviour described above. `legacy` restores the previous routing for exactly those
+seven methods and only under `DATA_SOURCE=postgres-servicenow-dual-write`: the five
+`InstanceService` methods are wired through `NewInstanceServiceWithSNFallback` and the
+two `DeployedProductService` methods delegate to the mirror (`WithLegacyUsageReads`).
+The decision is made in one place, `Config.UsageReadRoute()` (DATA_SOURCE x
+PRODUCT_CONSUMPTION_DATA_READ_MODE), and `routes.go` only switches on its result. `DATA_SOURCE=postgres`
+and `DATA_SOURCE=servicenow` ignore the flag. An invalid value fails startup in
+`Config.Validate`. The repository-level fixes below stay in the Postgres queries and
+are simply not reached under `legacy`.
 
 Two real bugs were also found and fixed in `SearchInstanceMetricsStats`
 while reconciling this against the real upstream aggregation logic it is

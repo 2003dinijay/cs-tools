@@ -417,18 +417,22 @@ func (e *Engine) notifiersFor(plan Plan) []notifier {
 
 // chatTeams is the teamChats keys whose spaces a plan's cards and closing
 // message go to; none is the ladder's own (chat). It is the incident's own
-// team when teamChats lists it. An incident with no SRE team of its own -- a
-// default group (a service mapped to no SRE team), a customer case at S0, a
-// monitoring alert with no team -- goes to every team sre.teamlessChats
-// names (Apollo and Artemis), or to chat when that is empty.
+// team (a case's account SRE team) when teamChats lists it. An incident with no
+// SRE team of its own -- a default group (a service mapped to no SRE team), a
+// customer case at S0 whose account has none, a monitoring alert with no team
+// -- goes to every team sre.teamlessChats names (Apollo and Artemis), or to
+// chat when that is empty.
 func (e *Engine) chatTeams(plan Plan) []string {
 	if len(e.teamNotifiers) == 0 && len(e.teamRooms) == 0 {
 		return nil
 	}
-	if own := e.sreTeamKey(plan.Trigger.Team); e.hasTeamChat(own) {
+	team := plan.Trigger.sreTeam()
+	// A case's account SRE team counts only when it is a known SRE team, so its cards go where its calls do.
+	caseTeam := plan.Trigger.Routing.SRETeam != ""
+	if own := e.sreTeamKey(team); e.hasTeamChat(own) && (!caseTeam || e.hasOwnSRETeam(team)) {
 		return []string{own}
 	}
-	if e.hasOwnSRETeam(plan.Trigger.Team) {
+	if e.hasOwnSRETeam(team) {
 		return nil
 	}
 	var out []string
@@ -489,7 +493,7 @@ func (e *Engine) postUnanswered(ctx context.Context, st LadderState) {
 	for i, done := range st.Placed {
 		if done && i < len(st.Plan.Calls) && st.Plan.Calls[i].Recipient.Name != "" {
 			c := st.Plan.Calls[i]
-			called = append(called, c.Level.Label()+" "+c.Recipient.Name)
+			called = append(called, c.Level.LabelIn(t.Routing.Ladder)+" "+c.Recipient.Name)
 		}
 	}
 	portal, label := e.links.IncidentLink(t.IncidentID), "View incident"
@@ -513,7 +517,7 @@ func (e *Engine) postUnanswered(ctx context.Context, st LadderState) {
 			PortalURL:   portal,
 			PortalLabel: label,
 			ThreadKey:   t.chatThreadKey(),
-			Reply:       target.reply || e.sreReplies(t),
+			Reply:       target.reply || e.threadReplies(t),
 		})
 		if err != nil {
 			slog.ErrorContext(ctx, "escalation: the closing message was not posted", "incidentId", t.IncidentID, "audience", target.room, "err", err)
@@ -565,8 +569,11 @@ func (e *Engine) unansweredRooms(plan Plan) ([]chatRoom, string) {
 	return nil, ""
 }
 
-// sreReplies reports whether an SRE incident's own space gets its messages as replies: only when its rungs post there, so the "Incident Reported" card exists.
-func (e *Engine) sreReplies(t Trigger) bool {
+// threadReplies reports whether an SRE or SME incident's own space gets its messages as replies: only when its rungs post there, so the parent incident card exists.
+func (e *Engine) threadReplies(t Trigger) bool {
+	if t.smeIncident() {
+		return e.cfg.SME.Channel.Uses(ChannelChat)
+	}
 	return t.sreIncident() && e.channelFor(t).Uses(ChannelChat)
 }
 
@@ -922,7 +929,7 @@ func (e *Engine) postNoOneOnCall(ctx context.Context, plan Plan, why string) {
 		if r.links != nil {
 			links = r.links
 		}
-		msg.Audience, msg.Reply = room, r.reply || e.sreReplies(t)
+		msg.Audience, msg.Reply = room, r.reply || e.threadReplies(t)
 		msg.PortalURL = links.IncidentLink(t.IncidentID)
 		if t.isCase() {
 			msg.PortalURL = links.CaseLink(t.IncidentID)

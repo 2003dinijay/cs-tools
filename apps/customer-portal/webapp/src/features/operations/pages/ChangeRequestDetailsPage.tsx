@@ -68,6 +68,7 @@ import {
   generateChangeRequestDetailsPdf,
   getAnsweredWindow,
   getCustomerDecisionLabels,
+  getChangeRequestCaseNumber,
   getCustomerDecisionMessages,
   getProposalNote,
   isAwaitingInternalReview,
@@ -583,8 +584,8 @@ export default function ChangeRequestDetailsPage(): JSX.Element {
                   >
                     Service Request:{" "}
                     {changeRequest.case?.internalId
-                      ? `${changeRequest.case.internalId} | ${changeRequest.case?.number || "Not Available"}`
-                      : (changeRequest.case?.number || "Not Available")}
+                      ? `${changeRequest.case.internalId} | ${getChangeRequestCaseNumber(changeRequest.case) || "Not Available"}`
+                      : (getChangeRequestCaseNumber(changeRequest.case) || "Not Available")}
                   </Button>
                 </Box>
                 {canShowApprovalActions && (

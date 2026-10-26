@@ -40,7 +40,7 @@ func newLicenseTestServers(t *testing.T, licenseBody string) *Client {
 
 	return NewClient(Config{
 		SubscriptionBaseURL: srv.URL, TokenURL: tokenSrv.URL,
-		ClientID: "id", ClientSecret: "secret",
+		ClientID: "id", ClientSecret: "secret", LicenseMode: LicenseModeService,
 	})
 }
 
