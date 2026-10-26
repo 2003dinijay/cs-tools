@@ -270,8 +270,8 @@ func TestSRECards_RepliesOnlyWhenTheLadderPostsCards(t *testing.T) {
 		{ChannelChat, Trigger{Record: RecordIncident, Routing: RoutingContext{Ladder: LadderSME}}, false},
 	} {
 		e := &Engine{cfg: EngineConfig{Channel: tc.channel}}
-		if got := e.sreReplies(tc.trigger); got != tc.want {
-			t.Errorf("channel %s, ladder %q: sreReplies = %v; want %v", tc.channel, tc.trigger.Routing.Ladder, got, tc.want)
+		if got := e.threadReplies(tc.trigger); got != tc.want {
+			t.Errorf("channel %s, ladder %q: threadReplies = %v; want %v", tc.channel, tc.trigger.Routing.Ladder, got, tc.want)
 		}
 	}
 }

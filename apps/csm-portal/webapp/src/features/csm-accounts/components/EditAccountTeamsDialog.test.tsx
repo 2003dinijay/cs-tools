@@ -88,7 +88,30 @@ describe("EditAccountTeamsDialog", () => {
     const saveBtn = screen.getByRole("button", { name: "Save" });
     expect(saveBtn).not.toBeDisabled();
     fireEvent.click(saveBtn);
-    expect(onSave).toHaveBeenCalledWith({ creTeamId: "team-cre-1" });
+    // PATCH /accounts/{id}'s creTeamId is a real UUID foreign key into
+    // "group" (entity-service validates it as one) -- BeTeam.creGroupId,
+    // never BeTeam.id (the team-registry key, e.g. "team-cre-1"). Sending
+    // the registry key here was the actual bug: entity-service rejected it
+    // with "creTeamId/sreTeamId contains invalid UUID".
+    expect(onSave).toHaveBeenCalledWith({ creTeamId: "grp-cre-1" });
+  });
+
+  it("filters out a team of the right family with no backing group id configured", async () => {
+    const creNoGroup: BeTeam = { id: "team-cre-3", name: "CRE Delta", family: "cre-abt" };
+    useSearchTeamsMock.mockReturnValue({
+      data: { teams: [CRE_TEAM, creNoGroup], total: 2, limit: 50, offset: 0 },
+      isFetching: false,
+      isError: false,
+    });
+    render(
+      <EditAccountTeamsDialog isSaving={false} onClose={vi.fn()} onSave={vi.fn()} />,
+    );
+    await openCreDropdown();
+    expect(screen.getByRole("option", { name: "CRE Alpha" })).toBeInTheDocument();
+    // Offering this one would let the user select it, only to have the
+    // PATCH fail with an "invalid UUID" error once submitted -- it has no
+    // creGroupId to send.
+    expect(screen.queryByRole("option", { name: "CRE Delta" })).not.toBeInTheDocument();
   });
 
   it("never submits a cleared team as a change (the backend can't clear yet)", () => {
@@ -137,7 +160,9 @@ describe("EditAccountTeamsDialog", () => {
     fireEvent.click(saveBtn);
     // creTeamId must be absent, not null — the cleared CRE field never
     // reaches the payload, even though the SRE change makes Save clickable.
-    expect(onSave).toHaveBeenCalledWith({ sreTeamId: "team-sre-1" });
+    // sreTeamId is the real group UUID (BeTeam.sreGroupId), not the
+    // registry key — see the CRE assertion above for why.
+    expect(onSave).toHaveBeenCalledWith({ sreTeamId: "grp-sre-1" });
   });
 
   it("shows the passed-in save error", () => {

@@ -110,8 +110,10 @@ func (h *CaseAlertSettingsHandler) PutCaseAlertRoom(w http.ResponseWriter, r *ht
 		return
 	}
 	var req struct {
-		Ladder   string  `json:"ladder"`
-		TeamKey  string  `json:"teamKey"`
+		Ladder  string `json:"ladder"`
+		TeamKey string `json:"teamKey"`
+		// GroupID is an SRE assignment group's own room: only its URL.
+		GroupID  string  `json:"groupId"`
 		Label    string  `json:"label"`
 		Enabled  *bool   `json:"enabled"`
 		Teamless *bool   `json:"teamless"`
@@ -123,6 +125,10 @@ func (h *CaseAlertSettingsHandler) PutCaseAlertRoom(w http.ResponseWriter, r *ht
 		writeError(w, http.StatusBadRequest, "Send a ladder (CRE, SRE or SME), a label, and optionally an SRE or SME team.")
 		return
 	}
+	if req.GroupID != "" && (!uuidRe.MatchString(req.GroupID) || req.TeamKey != "") {
+		writeError(w, http.StatusBadRequest, "A group's room names one assignment group by its id, and no team.")
+		return
+	}
 	// A team's own channel: "" goes back to the ladder's. The shared room
 	// always follows the ladder, so it never has one.
 	if req.Channel != nil && (!caseAlertRoomChannels[*req.Channel] || (*req.Channel != "" && req.TeamKey == "")) {
@@ -132,6 +138,9 @@ func (h *CaseAlertSettingsHandler) PutCaseAlertRoom(w http.ResponseWriter, r *ht
 	fwd := map[string]any{"ladder": req.Ladder, "label": req.Label}
 	if req.TeamKey != "" {
 		fwd["teamKey"] = req.TeamKey
+	}
+	if req.GroupID != "" {
+		fwd["groupId"] = req.GroupID
 	}
 	if req.Enabled != nil {
 		fwd["enabled"] = *req.Enabled

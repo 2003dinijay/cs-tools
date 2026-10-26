@@ -48,10 +48,15 @@ type CaseAlertSettings struct {
 // room (cre.chat, sre.chat); otherwise it is an SRE team's (sre.teamChats) or,
 // on ladder SME, an SME team's (sme.teamChats).
 type CaseAlertRoom struct {
-	Ladder   string `json:"ladder"`
-	TeamKey  string `json:"teamKey,omitempty"`
-	Label    string `json:"label"`
-	Teamless bool   `json:"teamless"`
+	Ladder  string `json:"ladder"`
+	TeamKey string `json:"teamKey,omitempty"`
+	// GroupID and GroupName are set for an SRE assignment group's own room
+	// (sre.groupChats): GroupName, the group's current name, is what an
+	// incident's group is matched against.
+	GroupID   string `json:"groupId,omitempty"`
+	GroupName string `json:"groupName,omitempty"`
+	Label     string `json:"label"`
+	Teamless  bool   `json:"teamless"`
 	// WebhookURL is empty for a team row saved only for its channel.
 	WebhookURL string `json:"webhookUrl"`
 	// Channel is how an SRE team's alerts go out (chat, call, both, log);
@@ -107,6 +112,16 @@ func caseAlertRoomEnv(ladder, team string) string {
 
 var nonEnvChar = regexp.MustCompile(`[^A-Za-z0-9_]`)
 
+// groupRoomEnvKey names a group room's variable by the group's id when it has
+// one: two group names can differ only in characters a variable cannot hold
+// ("A-B", "A B").
+func groupRoomEnvKey(id, name string) string {
+	if id = strings.TrimSpace(id); id != "" {
+		return id
+	}
+	return name
+}
+
 // MergeCaseAlertSettings lays the saved settings over cfg and returns the
 // result, the environment variables it needs (variable -> webhook URL), and
 // one line per thing it changed. cfg itself is never changed, so a caller
@@ -156,6 +171,21 @@ func MergeCaseAlertSettings(cfg Config, s CaseAlertSettings) (Config, map[string
 		if url == "" {
 			// No URL here (a row saved for its channel, or kept without
 			// its URL): the file's room stays.
+			continue
+		}
+		if group := strings.ToLower(strings.TrimSpace(r.GroupName)); group != "" {
+			if ladder != "SRE" || team != "" {
+				changes = append(changes, fmt.Sprintf("skipped a %s room for group %q: only SRE groups have rooms of their own", ladder, group))
+				continue
+			}
+			name := caseAlertRoomEnv(ladder, "GROUP_"+groupRoomEnvKey(r.GroupID, group))
+			room := Chat{Audience: strings.TrimSpace(r.Label), WebhookURLEnv: name}
+			if out.SRE.GroupChats == nil {
+				out.SRE.GroupChats = map[string]Chat{}
+			}
+			changes = append(changes, fmt.Sprintf("sre.groupChats[%s]: saved room %q", group, room.Audience))
+			out.SRE.GroupChats[group] = room
+			env[name] = url
 			continue
 		}
 		name := caseAlertRoomEnv(ladder, team)
@@ -245,6 +275,7 @@ func MergeCaseAlertSettings(cfg Config, s CaseAlertSettings) (Config, map[string
 		}
 	}
 
+	dropUnknownEmailTeamLists(&out.CRE, &changes)
 	if err := out.validate(); err != nil {
 		return cfg, nil, changes, err
 	}
@@ -283,6 +314,7 @@ func cloneLadderChats(l LadderConfig) LadderConfig {
 	if l.TeamChannels == nil {
 		l.TeamChannels = map[string]Channel{}
 	}
+	l.GroupChats = maps.Clone(l.GroupChats)
 	l.Teams.Aliases = maps.Clone(l.Teams.Aliases)
 	if l.Teams.Aliases == nil {
 		l.Teams.Aliases = map[string]string{}

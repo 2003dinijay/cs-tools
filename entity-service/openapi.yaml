@@ -9547,6 +9547,125 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /team-schedule/teams/{teamKey}/members/{userId}:
+    put:
+      summary: Add somebody to a team on the schedule.
+      description: >
+        Puts an active internal staff member on the team as an engineer. A CSM
+        admin may add to any team, a rota admin to the teams of their own family
+        only (CRE, SRE or SME). Making someone a lead is not done here. Adding
+        someone already on the team changes nothing. Audited.
+      operationId: addTeamMember
+      parameters:
+        - name: teamKey
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The team's registry key.
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The person ("user" id).
+      responses:
+        "204":
+          description: Done, or already on the team.
+        "400":
+          description: Bad request — the user id is not a UUID, or the person is not active internal staff.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Neither a CSM admin nor the rota admin for the team's family.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: The team is not on the schedule, or the schedule routes are not registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      summary: Take somebody off a team on the schedule.
+      description: >
+        Same permission as adding. Removes the person's membership and their rota
+        manager grant for the team. Refused, with nothing changed, while the person
+        has turns on the team that have not ended (409), holds a Case Alerts
+        responder tier there (409), or -- for a rota admin -- is one of the team's
+        leads (403; a CSM admin may remove a lead). Removing someone not on the
+        team changes nothing. Past turns are kept. Audited.
+      operationId: removeTeamMember
+      parameters:
+        - name: teamKey
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The team's registry key.
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The person ("user" id).
+      responses:
+        "204":
+          description: Done, or the person was not on the team.
+        "400":
+          description: Bad request — the user id is not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Neither a CSM admin nor the rota admin for the team's family, or a rota admin removing one of the team's leads.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: The team is not on the schedule, or the schedule routes are not registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: The person still has upcoming turns on the team, or holds its Case Alerts responder tier; the message says which.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /team-schedule/rota-access/markers/{teamKey}/{userId}:
     put:
       summary: Make somebody a team's rota manager.
@@ -21523,8 +21642,11 @@ components:
           the case's created, last-updated, closed, or resolved timestamp
           respectively. gte is inclusive "on or after"; lte is inclusive "on
           or before". A lte bound earlier than its own gte bound is rejected
-          with a validation error. resolvedOn has no equivalent in the
-          relational data source and is rejected there.
+          with a validation error. On the relational data source, resolvedOn
+          bounds only the case record's own resolved timestamp; engagements,
+          service requests, security report analyses and announcements do not
+          match it. Cases that never reached a resolved or closed state never
+          match.
         - **product** (in): product family names (e.g. "API Manager",
           "Identity Server", "Asgardeo"). Matches every version of each named
           product. Only applied by the ServiceNow data source.
@@ -25653,7 +25775,8 @@ components:
           description: >-
             true limits the result to the groups an incident can be created in
             with an explicit assignmentGroupId: active groups that are the
-            support group of at least one service. The ids are group ids (what
+            support group of at least one service, plus any active group the
+            deployment has configured as an extra assignable group. The ids are group ids (what
             assignmentGroupId takes). On the PostgreSQL data source the search
             without this filter lists the team registry instead, whose ids are
             not group ids. On the ServiceNow data source the set is built from
@@ -26716,6 +26839,15 @@ components:
           items:
             type: string
             enum: [CRE, SRE, SME]
+        memberFamilies:
+          type: array
+          description: >
+            The families whose teams' members the caller may add and remove
+            (PUT/DELETE /team-schedule/teams/{teamKey}/members/{userId}). Today
+            the same as markerFamilies.
+          items:
+            type: string
+            enum: [CRE, SRE, SME]
     RotaAdminGrant:
       type: object
       required: [family, userId, name, email, grantedBy, grantedOn, active]
@@ -26836,6 +26968,10 @@ components:
       properties:
         id: { type: string, format: uuid, description: 'The "group" row (an assignment group mirrored from ServiceNow).' }
         name: { type: string }
+        services:
+          type: array
+          items: { type: string }
+          description: "Route options only: the names of the services it is the support group of, by name."
     CaseAlertRouteOptions:
       type: object
       required: [groups, teams, rotas]
@@ -26904,7 +27040,9 @@ components:
             teams.rotaTeams, teams.unassignedTeamLead,
             teams.unassignedTeamLeadCount, heads.cre, heads.cs (name and email
             only), alertDuty.tiers, alertDuty.perTeam,
-            acknowledgement.requireBoth. SRE: teams.defaultRota,
+            acknowledgement.requireBoth, email.enabled, email.teamLists (CRE
+            team key to one mailing list address), email.creTeamList,
+            email.csTeamList (one address each). SRE: teams.defaultRota,
             timing.initialWait (0s to 30m), timing.interval (1m to 30m),
             timing.includeL4, unansweredChat, smeHandoffChat. SME:
             timing.initialWait (0s to 30m), timing.interval (1m to 30m),
@@ -26942,10 +27080,16 @@ components:
             enabled, channel, safety.maxCallsPerLadder, safety.maxLevel (absent
             when there is no cap), safety.allowedNumbers (a count, never the
             numbers), safety.callWithoutVerifiedLeads,
-            safety.callHeadsWithoutLowerTiers, phones.source. enabled, channel
-            and the three safety values above can now also be saved as values
-            (ladders); safety.maxLevel, safety.allowedNumbers and phones.source
-            stay file-only.
+            safety.callHeadsWithoutLowerTiers, phones.source, ackChat (whether
+            a stopped chain replies in its thread). CRE also carries
+            email.enabled, email.teamLists (a count), email.creTeamList and
+            email.csTeamList (whether set, never the addresses), rules.custom
+            (the file replaces the built-in rule table) and timing (severity
+            S0-S4 to the minutes each step L0-L4 is called, from the code).
+            These are the values as running, whatever their source: enabled,
+            channel, the three safety values above and the four CRE email
+            settings can also be saved as values (ladders), which then report
+            them with their source; the rest stay file-only.
           additionalProperties:
             type: object
             additionalProperties: true
@@ -27018,7 +27162,9 @@ components:
       properties:
         id: { type: string, format: uuid }
         ladder: { type: string, enum: [CRE, SRE, SME] }
-        teamKey: { type: string, description: "The SRE or SME team whose room it is; absent for the ladder's shared room (CRE, SRE). An SME room is always a team's." }
+        teamKey: { type: string, description: "The SRE or SME team whose room it is; absent for the ladder's shared room (CRE, SRE) and a group's room. An SME room is always a team's." }
+        groupId: { type: string, format: uuid, description: "An SRE assignment group's own room (0244): the group whose incident card and paging replies go here. Absent for a ladder's or a team's room." }
+        groupName: { type: string, description: "The group's current name, with groupId." }
         label: { type: string }
         enabled: { type: boolean }
         teamless: { type: boolean, description: "Also gets the cards of an incident with no SRE team of its own." }
@@ -27050,7 +27196,8 @@ components:
       properties:
         ladder: { type: string, enum: [CRE, SRE, SME] }
         teamKey: { type: string, description: "An SRE or SME team of the Team Schedule (required for SME); omit for the ladder's shared room." }
-        label: { type: string, maxLength: 100 }
+        groupId: { type: string, format: uuid, description: "SRE only, instead of teamKey: an assignment group from routeOptions.assignmentGroups, whose incident card and paging replies go to this room (who is called does not change). No teamless flag or channel. 400 when it is not one." }
+        label: { type: string, maxLength: 100, description: "May be left out with groupId: the group's own name is used." }
         enabled: { type: boolean, default: true }
         teamless: { type: boolean, default: false, description: "SRE team rooms only." }
         channel: { type: string, enum: ["", log, chat, call, both], description: "An SRE team room only: chat, call, both or log; an empty string goes back to the ladder's. Refused on a ladder's shared room and on an SME room." }
@@ -27101,6 +27248,8 @@ components:
       properties:
         ladder: { type: string, enum: [CRE, SRE, SME] }
         teamKey: { type: string }
+        groupId: { type: string, format: uuid, description: "An SRE assignment group's room." }
+        groupName: { type: string, description: "The group's current name: what an incident's assignment group is matched against." }
         label: { type: string }
         teamless: { type: boolean }
         webhookUrl: { type: string, description: "The opened webhook URL, or empty for a team room saved only for its channel. Returned only on this service-only route." }
@@ -27741,38 +27890,6 @@ components:
         sentOn:
           type: string
           format: date-time
-    Runbook:
-      type: object
-      required: [id, number, name, runbookUrl, alerts, createdOn, createdBy, updatedOn, updatedBy]
-      properties:
-        id:
-          type: string
-          format: uuid
-        number:
-          type: string
-          description: The runbook's own number (RB0000001), given when it is created and never changed.
-        name:
-          type: string
-          description: Unique, ignoring case and surrounding spaces.
-        runbookUrl:
-          type: string
-          nullable: true
-          description: The runbook link; null when the runbook is not written yet.
-        alerts:
-          type: array
-          description: Alert names matched against an incident's subject (contains, ignoring case), ordered by name.
-          items:
-            type: string
-        createdOn:
-          type: string
-          format: date-time
-        createdBy:
-          type: string
-        updatedOn:
-          type: string
-          format: date-time
-        updatedBy:
-          type: string
     ProductRegressionReport:
       type: object
       description: One monthly product regression report.
@@ -28089,87 +28206,6 @@ components:
           type: string
         technicalOwner:
           type: string
-    RunbookList:
-      type: object
-      required: [runbooks]
-      properties:
-        runbooks:
-          type: array
-          items:
-            $ref: '#/components/schemas/Runbook'
-    SaveRunbookRequest:
-      type: object
-      required: [name, alerts]
-      properties:
-        name:
-          type: string
-          minLength: 1
-          maxLength: 1000
-          description: Unique, ignoring case and surrounding spaces; blank is refused.
-        runbookUrl:
-          type: string
-          nullable: true
-          description: A full http(s) link; empty or null records that no runbook exists.
-        alerts:
-          type: array
-          minItems: 1
-          maxItems: 500
-          description: Blank and repeated (ignoring case) names are dropped; at least one must remain.
-          items:
-            type: string
-            maxLength: 1000
-    ImportRunbookEntry:
-      type: object
-      required: [alerts]
-      properties:
-        name:
-          type: string
-          maxLength: 1000
-          description: Optional; with none a matched runbook keeps its name and a new one is named after its first alert.
-        runbookUrl:
-          type: string
-          nullable: true
-          description: A full http(s) link; empty or null records that no runbook exists.
-        alerts:
-          type: array
-          minItems: 1
-          maxItems: 500
-          description: Blank and repeated (ignoring case) names are dropped; at least one must remain.
-          items:
-            type: string
-            maxLength: 1000
-    ImportRunbooksRequest:
-      type: object
-      required: [runbooks]
-      properties:
-        runbooks:
-          type: array
-          maxItems: 5000
-          items:
-            $ref: '#/components/schemas/ImportRunbookEntry'
-    ImportRunbooksResponse:
-      type: object
-      required: [created, updated, removed]
-      properties:
-        created:
-          type: integer
-        updated:
-          type: integer
-        removed:
-          type: array
-          description: Runbooks left without alerts because the import moved all of them elsewhere, by number.
-          items:
-            type: object
-            required: [number, name, runbookUrl]
-            properties:
-              number:
-                type: string
-              name:
-                type: string
-              runbookUrl:
-                type: string
-                nullable: true
-                description: The link the removed runbook had.
     WorklogReport:
       type: object
       description: >-
@@ -28274,6 +28310,119 @@ components:
                         properties:
                           id: { type: string }
                           key: { type: string }
+    Runbook:
+      type: object
+      required: [id, number, name, runbookUrl, alerts, createdOn, createdBy, updatedOn, updatedBy]
+      properties:
+        id:
+          type: string
+          format: uuid
+        number:
+          type: string
+          description: The runbook's own number (RB0000001), given when it is created and never changed.
+        name:
+          type: string
+          description: Unique, ignoring case and surrounding spaces.
+        runbookUrl:
+          type: string
+          nullable: true
+          description: The runbook link; null when the runbook is not written yet.
+        alerts:
+          type: array
+          description: Alert names matched against an incident's subject (contains, ignoring case), ordered by name.
+          items:
+            type: string
+        createdOn:
+          type: string
+          format: date-time
+        createdBy:
+          type: string
+        updatedOn:
+          type: string
+          format: date-time
+        updatedBy:
+          type: string
+    RunbookList:
+      type: object
+      required: [runbooks]
+      properties:
+        runbooks:
+          type: array
+          items:
+            $ref: '#/components/schemas/Runbook'
+    SaveRunbookRequest:
+      type: object
+      required: [name, alerts]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 1000
+          description: Unique, ignoring case and surrounding spaces; blank is refused.
+        runbookUrl:
+          type: string
+          nullable: true
+          description: A full http(s) link; empty or null records that no runbook exists.
+        alerts:
+          type: array
+          minItems: 1
+          maxItems: 500
+          description: Blank and repeated (ignoring case) names are dropped; at least one must remain.
+          items:
+            type: string
+            maxLength: 1000
+    ImportRunbookEntry:
+      type: object
+      required: [alerts]
+      properties:
+        name:
+          type: string
+          maxLength: 1000
+          description: Optional; with none a matched runbook keeps its name and a new one is named after its first alert.
+        runbookUrl:
+          type: string
+          nullable: true
+          description: A full http(s) link; empty or null records that no runbook exists.
+        alerts:
+          type: array
+          minItems: 1
+          maxItems: 500
+          description: Blank and repeated (ignoring case) names are dropped; at least one must remain.
+          items:
+            type: string
+            maxLength: 1000
+    ImportRunbooksRequest:
+      type: object
+      required: [runbooks]
+      properties:
+        runbooks:
+          type: array
+          maxItems: 5000
+          items:
+            $ref: '#/components/schemas/ImportRunbookEntry'
+    ImportRunbooksResponse:
+      type: object
+      required: [created, updated, removed]
+      properties:
+        created:
+          type: integer
+        updated:
+          type: integer
+        removed:
+          type: array
+          description: Runbooks left without alerts because the import moved all of them elsewhere, by number.
+          items:
+            type: object
+            required: [number, name, runbookUrl]
+            properties:
+              number:
+                type: string
+              name:
+                type: string
+              runbookUrl:
+                type: string
+                nullable: true
+                description: The link the removed runbook had.
     ErrorResponse:
       type: object
       description: >-
@@ -28319,7 +28468,7 @@ components:
             request's project, its own creator, a user who may not decide an internal
             stage, or a field a customer may not set), and, on POST /incidents,
             `incident_assignment_group_not_allowed` (400: an assignmentGroupId that is
-            not an active support group of any service; nothing created), and, on POST
+            not an assignable active group; nothing created), and, on POST
             /incidents/{id}/specialist-handoffs, `incident_handoff_needs_assignee` (409:
             the incident is assigned to nobody), and, on PATCH /change-requests/{id},
             `change_request_approved_read_only` (400: a field of a change request that has
@@ -29150,9 +29299,10 @@ components:
             Optional. The group is decided once, before anything is written,
             the same way for every caller and data source. Sent: used when it
             is an active group that is the support group of at least one
-            service (the set POST /groups/search returns with
+            service or one of the deployment's configured extra assignable
+            groups (the set POST /groups/search returns with
             filters.supportGroupsOnly), otherwise 400 "assignmentGroupId must
-            be the active support group of a service" (a value that is not a
+            be an active group incidents can be assigned to" (a value that is not a
             UUID is a 400 too; a blank value counts as not sent). Not sent:
             the service's support group; when the service has none, the
             support group of the default service (INCIDENT_DEFAULT_SERVICE_ID,

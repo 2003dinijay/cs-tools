@@ -334,6 +334,8 @@ type chatCardWidget struct {
 // reference says it always wraps. WrapText lets Text wrap instead of
 // truncating, as it would by default.
 type chatDecoratedText struct {
+	// TopLabel is a plain string drawn above Text in the same muted label style as BottomLabel.
+	TopLabel    string `json:"topLabel,omitempty"`
 	Text        string `json:"text"`
 	BottomLabel string `json:"bottomLabel,omitempty"`
 	WrapText    bool   `json:"wrapText,omitempty"`
@@ -694,6 +696,40 @@ func (c *GoogleChatClient) SendSeverityChangedAlert(ctx context.Context, audienc
 	return c.sendCardToAudience(ctx, audience, caseNumber, "", msg)
 }
 
+// frustrationBands maps a frustration score (ai-escalate-comment-detector's
+// own 0.0-1.0 scale) to a label/color pair for SendFrustrationAlert's score
+// row, highest band first (frustrationLabelAndColor stops at the first
+// min it meets or exceeds). High and Critical deliberately reuse
+// severityDisplay's exact orange/red (dispatch.go) rather than inventing a
+// new palette, so a frustration alert's color reads as the same visual
+// system as a case severity; Mild/Moderate have no case-severity color to
+// borrow (severity has no "this is fine" band), so they're new and
+// deliberately more muted than the two borrowed colors.
+var frustrationBands = []struct {
+	min          float64
+	label, color string
+}{
+	{0.90, "Critical", "#DC2626"},
+	{0.70, "High", "#F97316"},
+	{0.40, "Moderate", "#D97706"},
+	{0, "Mild", "#16A34A"},
+}
+
+// frustrationLabelAndColor resolves a frustration score to the label/color
+// frustrationBands assigns it (Critical >= 0.90, High >= 0.70, Moderate >=
+// 0.40, else Mild). A score below 0 (shouldn't happen, but this must never
+// panic on one) falls through to the last band rather than returning
+// nothing.
+func frustrationLabelAndColor(level float64) (label, color string) {
+	for _, b := range frustrationBands {
+		if level >= b.min {
+			return b.label, b.color
+		}
+	}
+	last := frustrationBands[len(frustrationBands)-1]
+	return last.label, last.color
+}
+
 // SendFrustrationAlert posts a card message for a comment
 // ai-escalate-comment-detector (internal/escalation) flagged as
 // escalation-worthy, to the Google Chat space configured for audience —
@@ -703,37 +739,74 @@ func (c *GoogleChatClient) SendSeverityChangedAlert(ctx context.Context, audienc
 // case.comment_added payload's own Team/IsEvaluationAccount/
 // ProjectOnboardingStatus fields — not the fixed-IncidentMonitor-only
 // posture SendCaseCreatedAlert's own doc comment describes for that event
-// type. Unlike the case-created/severity-changed cards above, this one keeps
-// a header (the team never leads it): case ref as the header title behind a
-// "🚨" marker, product (bold) and the frustration score on their own lines, the
-// model's own reason as plain text, then a single "View case" link.
+// type.
+//
+// Unlike every other card in this file, the frustration score — not the
+// case — is the headline, by explicit product request: the header's Title
+// is "🚨 Frustration detected" and the case reference moves into the
+// Subtitle. Chat always draws a header's Title larger/bolder than its
+// Subtitle, with no way to reorder, resize or color either field (see
+// SendCaseCreatedAlert's own doc comment on header fields not rendering
+// HTML) — swapping which string occupies which field is the only lever
+// available, and it's enough: the score needing attention reads first, which
+// case it's about reads second, the reverse of every case.*/incident.* card
+// here.
+//
+// Below the header: the score gets its own DecoratedText row (TopLabel
+// "Frustration level", a bold colored Text "<score> · <band>" from
+// frustrationLabelAndColor) rather than sharing a line with anything else —
+// the one thing on the card that needs picking out at a glance gets its own
+// line, not a shared one. No icon on that row: this file's established rule
+// (SendCaseCreatedAlert's own doc comment) is that Chat's native
+// decoratedText icon, or an inline emoji, costs a narrow screen's width with
+// no added information — this card follows the same rule rather than
+// carving out an exception.
+//
+// Then a divider, then product (bold) and the model's own reason as plain
+// text, then a "View case" button (ButtonList) — a deliberate, explicitly
+// requested exception to this file's own "navigation is a link, not a
+// button" convention for case.* cards (see SendCaseCreatedAlert's own doc
+// comment): this card gets a one-tap action the way the SR-created card's
+// own button does.
 func (c *GoogleChatClient) SendFrustrationAlert(ctx context.Context, audience, caseNumber, wso2CaseID, productName, reason string, frustrationLevel float64, caseLink string) error {
 	if caseNumber == "" {
 		return fmt.Errorf("notifications: caseNumber is required")
 	}
-	var lines []string
-	if productName != "" {
-		lines = append(lines, caseAlertLine(`<b>%s</b>`, productName))
-	}
+	label, color := frustrationLabelAndColor(frustrationLevel)
 	// caseAlertLine stringifies every arg via fmt.Sprint before escaping it
 	// (see its own doc comment) -- %.2f against the already-stringified arg
 	// would fail with a Go fmt verb mismatch (%!f(string=...)), so the float
 	// is formatted here, before caseAlertLine ever sees it, and handed in
 	// through %s like every other caseAlertLine call in this file.
-	lines = append(lines, caseAlertLine(`Frustration level: <b>%s</b>`, fmt.Sprintf("%.2f", frustrationLevel)))
+	scoreText := caseAlertLine(`<font color="%s"><b>%s</b></font> · <font color="%s"><b>%s</b></font>`,
+		color, fmt.Sprintf("%.2f", frustrationLevel), color, label)
+
+	var lines []string
+	if productName != "" {
+		lines = append(lines, caseAlertLine(`<b>%s</b>`, productName))
+	}
 	if reason != "" {
 		lines = append(lines, caseAlertLine(`%s`, reason))
 	}
-	lines = append(lines, caseAlertLine(`<a href="%s">View case</a>`, caseLink))
-	text := strings.Join(lines, "<br>")
+
+	widgets := []chatCardWidget{
+		{DecoratedText: &chatDecoratedText{TopLabel: "Frustration level", Text: scoreText, WrapText: true}},
+		{Divider: &chatDivider{}},
+	}
+	if len(lines) > 0 {
+		widgets = append(widgets, chatCardWidget{TextParagraph: &chatTextParagraph{Text: strings.Join(lines, "<br>")}})
+	}
+	widgets = append(widgets, chatCardWidget{ButtonList: &chatButtonList{Buttons: []chatButton{
+		{Text: "View case", OnClick: chatOnClick{OpenLink: chatOpenLink{URL: caseLink}}},
+	}}})
 
 	msg := chatCardMessage{
 		CardsV2: []chatCardWrapper{
 			{
 				CardID: "frustration-alert",
 				Card: chatCard{
-					Header:   &chatCardHeader{Title: "🚨 " + chatHeaderCaseRef(caseNumber, wso2CaseID), Subtitle: "Frustration detected"},
-					Sections: []chatCardSection{{Widgets: []chatCardWidget{{TextParagraph: &chatTextParagraph{Text: text}}}}},
+					Header:   &chatCardHeader{Title: "🚨 Frustration detected", Subtitle: chatHeaderCaseRef(caseNumber, wso2CaseID)},
+					Sections: []chatCardSection{{Widgets: widgets}},
 				},
 			},
 		},

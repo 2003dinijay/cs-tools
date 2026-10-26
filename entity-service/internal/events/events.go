@@ -335,9 +335,11 @@ type SeverityChangedPayload struct {
 	NewSeverity string `json:"newSeverity"`
 	// Product — see CaseCreatedPayload's own doc comment.
 	Product string `json:"product,omitempty"`
-	// Team — see CaseCreatedPayload's own doc comment.
-	Team       string   `json:"team,omitempty"`
-	Recipients []string `json:"recipients"`
+	// Team, SRETeamID and SRETeamName: see CaseCreatedPayload's own doc comment.
+	Team        string   `json:"team,omitempty"`
+	SRETeamID   string   `json:"sreTeamId,omitempty"`
+	SRETeamName string   `json:"sreTeamName,omitempty"`
+	Recipients  []string `json:"recipients"`
 }
 
 // CaseCreatedPayload is the Payload shape for TypeCaseCreated — mirrors
@@ -375,9 +377,12 @@ type CaseCreatedPayload struct {
 	// no routing role (unlike Product). Depends on ServiceNow's
 	// case-embedded account object actually carrying creTeam/sreTeam — see
 	// caseTeamName's own doc comment for the current caveat around that.
-	Team        string   `json:"team,omitempty"`
-	CreatedAt   string   `json:"createdAt"`
-	Description string   `json:"description"`
+	Team string `json:"team,omitempty"`
+	// SRETeamID/SRETeamName are the account's SRE team (account.sre_team_id); an S0 case's SRE ladder pages it.
+	SRETeamID   string `json:"sreTeamId,omitempty"`
+	SRETeamName string `json:"sreTeamName,omitempty"`
+	CreatedAt   string `json:"createdAt"`
+	Description string `json:"description"`
 	// DescriptionTruncated is true when Description had its embedded
 	// base64-encoded inline image(s) stripped out (replaced with a plain
 	// text placeholder) before this event was published -- a raw case

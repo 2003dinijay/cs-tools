@@ -15,10 +15,10 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { useMemo, useState, type JSX } from "react";
+import { useEffect, useMemo, useRef, useState, type JSX } from "react";
 import { useSearchInternalUsersByName } from "@api/useSearchUsersByName";
 import { useDebouncedValue } from "@hooks/useDebouncedValue";
-import { useChangeRotaAccess, useRotaAccess, type RotaAccessChange } from "../api/useRotaAccess";
+import { memberFamiliesOf, useChangeRotaAccess, useRotaAccess, type RotaAccessChange } from "../api/useRotaAccess";
 import type { RotaAdminGrant, RotaFamily, RotaMarkerGrant, ScheduleTeam } from "../types";
 import RotaReminderSettings from "./RotaReminderSettings";
 import ScheduleSkeleton from "./ScheduleSkeleton";
@@ -42,6 +42,11 @@ interface Props {
  *                paging chain. A CSM admin names any team's, a rota admin
  *                their own group's, and only from the team's own members.
  *
+ * And who is on each team: a CSM admin adds and removes any team's members, a
+ * rota admin their own group's. Leads are not made here, and a lead (for a
+ * rota admin) or anyone with upcoming turns or a Case Alerts tier is not
+ * removed -- the server refuses it and says why.
+ *
  * The server decides who may change what and answers with it (canManage); the
  * page only offers what it says. Every change saves the moment it is made.
  */
@@ -52,8 +57,16 @@ export default function RotaAccessTab({ teams }: Props): JSX.Element {
 
   const canAdmins = access.data?.canManage.rotaAdmins ?? false;
   const markerFamilies = access.data?.canManage.markerFamilies ?? [];
+  const memberFamilies = memberFamiliesOf(access.data);
   const [familyChoice, setFamily] = useState<RotaFamily | null>(null);
   const family = familyChoice && markerFamilies.includes(familyChoice) ? familyChoice : markerFamilies[0];
+
+  // A refusal is shown above the sections, which can be far up the page from
+  // the control that caused it (a long member list): bring it into view.
+  const errorRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (error) errorRef.current?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+  }, [error]);
 
   const apply = (c: RotaAccessChange): void => {
     setError(null);
@@ -74,7 +87,7 @@ export default function RotaAccessTab({ teams }: Props): JSX.Element {
         leave and allocations, but can&apos;t generate the month, change the tags or the alert chain.
       </p>
       {error ? (
-        <div className="ra-err" role="alert">
+        <div className="ra-err" role="alert" ref={errorRef}>
           {error}
         </div>
       ) : null}
@@ -133,6 +146,22 @@ export default function RotaAccessTab({ teams }: Props): JSX.Element {
               onChange={apply}
             />
           </div>
+        </section>
+      ) : null}
+
+      {family && memberFamilies.includes(family) ? (
+        <section className="ra-sec" aria-labelledby="ra-members-h">
+          <h3 id="ra-members-h">Team members</h3>
+          <p className="cp-note">
+            Add {family} staff to a team, or take them off it. Someone with upcoming turns or a Case Alerts tier is
+            removed only once those are moved to someone else{canAdmins ? "" : ", and a team lead only by a CSM admin"}.
+          </p>
+          <MemberTable
+            teams={teams.filter((t) => t.family === family)}
+            canRemoveLeads={canAdmins}
+            busy={change.isPending}
+            onChange={apply}
+          />
         </section>
       ) : null}
 
@@ -350,5 +379,158 @@ function MarkerTable({
         })}
       </tbody>
     </table>
+  );
+}
+
+/**
+ * One group's teams and their members, one team at a time: the teams down
+ * the side with how many each has, the chosen team's members as a grid, a
+ * search to add internal staff, and a filter for a big team. Removing asks
+ * first, on the row itself. A lead is shown but, for a rota admin, has no
+ * remove: only a CSM admin takes a lead off a team.
+ */
+function MemberTable({
+  teams,
+  canRemoveLeads,
+  busy,
+  onChange,
+}: {
+  teams: ScheduleTeam[];
+  canRemoveLeads: boolean;
+  busy: boolean;
+  onChange: (c: RotaAccessChange) => void;
+}): JSX.Element {
+  const sorted = useMemo(() => [...teams].sort((a, b) => a.sortOrder - b.sortOrder), [teams]);
+  const [chosen, setChosen] = useState<string | null>(null);
+  const [filter, setFilter] = useState("");
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const team = sorted.find((t) => t.key === chosen) ?? sorted[0];
+
+  if (!team) return <div className="offnone">No teams in this group.</div>;
+
+  const members = [...(team.members ?? [])].sort(
+    (a, b) => Number(b.isLead) - Number(a.isLead) || a.name.localeCompare(b.name),
+  );
+  const leads = members.filter((m) => m.isLead);
+  const q = filter.trim().toLowerCase();
+  const shown = q
+    ? members.filter((m) => m.name.toLowerCase().includes(q) || m.email.toLowerCase().includes(q))
+    : members;
+  const pick = (key: string): void => {
+    setChosen(key);
+    setFilter("");
+    setConfirming(null);
+  };
+
+  return (
+    <div className="ra-mem">
+      <div className="ra-mem-teams" role="tablist" aria-label="Team" aria-orientation="vertical">
+        {sorted.map((t) => (
+          <button
+            key={t.key}
+            id={`ra-mem-tab-${t.key}`}
+            type="button"
+            role="tab"
+            aria-selected={t.key === team.key}
+            aria-controls="ra-mem-panel"
+            className={t.key === team.key ? "on" : undefined}
+            onClick={() => pick(t.key)}
+          >
+            <span className="ra-mem-tname">{t.name}</span>
+            <span className="ra-mem-tcount tn">{t.members?.length ?? 0}</span>
+          </button>
+        ))}
+      </div>
+
+      <div id="ra-mem-panel" className="ra-mem-panel" role="tabpanel" aria-labelledby={`ra-mem-tab-${team.key}`}>
+        <div className="ra-mem-head">
+          <div className="ra-mem-title">
+            <b>{team.name}</b>
+            <span className="ra-mem-sub">
+              {members.length} {members.length === 1 ? "member" : "members"}
+              {leads.length > 0 ? ` · Lead ${leads.map((m) => m.name).join(", ")}` : " · No lead"}
+            </span>
+          </div>
+          <div className="ra-mem-add">
+            <PersonSearch
+              label={`Add a member to ${team.name}`}
+              exclude={members.map((m) => m.userId)}
+              busy={busy}
+              onPick={(userId) => onChange({ kind: "member", teamKey: team.key, userId, grant: true })}
+            />
+          </div>
+        </div>
+
+        {members.length > 10 ? (
+          <input
+            type="search"
+            className="ra-input ra-mem-filter"
+            placeholder={`Filter ${members.length} members`}
+            aria-label={`Filter ${team.name} members`}
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+          />
+        ) : null}
+
+        {members.length === 0 ? (
+          <div className="ra-mem-empty">No one is on {team.name} yet. Add someone above.</div>
+        ) : shown.length === 0 ? (
+          <div className="ra-mem-empty">No member matches “{filter.trim()}”.</div>
+        ) : (
+          <ul className="ra-mem-grid" aria-label={`${team.name} members`}>
+            {shown.map((m) => {
+              const who = m.name || m.email;
+              const removable = !m.isLead || canRemoveLeads;
+              const asking = confirming === m.userId;
+              return (
+                <li key={m.userId} className={asking ? "ask" : m.isLead ? "is-lead" : undefined}>
+                  {asking ? (
+                    <>
+                      <span className="ra-mem-q">Remove {who} from {team.name}?</span>
+                      <span className="ra-mem-acts">
+                        <button
+                          type="button"
+                          className="btn sm ra-mem-yes"
+                          disabled={busy}
+                          onClick={() => {
+                            setConfirming(null);
+                            onChange({ kind: "member", teamKey: team.key, userId: m.userId, grant: false });
+                          }}
+                        >
+                          Remove
+                        </button>
+                        <button type="button" className="btn sm ghost" onClick={() => setConfirming(null)}>
+                          Cancel
+                        </button>
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="ra-mem-who">
+                        <span className="ra-name">{who}</span>
+                        {m.email && m.name ? <span className="ra-mail">{m.email}</span> : null}
+                      </span>
+                      {m.isLead ? <span className="ra-tag">lead</span> : null}
+                      {removable ? (
+                        <button
+                          type="button"
+                          className="cp-x"
+                          disabled={busy}
+                          aria-label={`Remove ${who} from ${team.name}`}
+                          title={`Remove from ${team.name}`}
+                          onClick={() => setConfirming(m.userId)}
+                        >
+                          ×
+                        </button>
+                      ) : null}
+                    </>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    </div>
   );
 }

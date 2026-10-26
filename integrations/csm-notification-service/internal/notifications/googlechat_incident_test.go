@@ -189,3 +189,62 @@ func TestIncidentGroups(t *testing.T) {
 		t.Errorf("no group = %v; want none", got)
 	}
 }
+
+// The SME card mirrors the "Incident Reported" layout, and names who escalated it and the L1 on call.
+func TestBuildSMEIncidentEscalatedCard(t *testing.T) {
+	msg := buildSMEIncidentEscalatedCard(SMEIncidentEscalatedAlert{
+		IncidentID: "inc-1", Number: "INC0089973", SMETeam: "Choreo Runtime", Priority: "P1",
+		ShortDescription: "OOM on opensearch-data-cold-5", Service: "Moseif", State: "IN_PROGRESS",
+		EscalatedBy: "Kasun Perera", EscalatedFrom: "Apollo SRE Group", OnCall: "Nimal <Silva>",
+		EscalatedAt: "22 Oct 2026, 20:31 IST", IncidentLink: "https://portal/incidents/inc-1",
+	})
+	card := msg.CardsV2[0].Card
+	if card.Header.Title != "CHOREO RUNTIME | Critical Priority Incident Escalated" || card.Header.Subtitle != "#INC0089973 | Moseif" {
+		t.Errorf("header = %+v", card.Header)
+	}
+	if msg.Thread == nil || msg.Thread.ThreadKey != IncidentThreadKey("inc-1") {
+		t.Errorf("thread = %+v; want the incident's thread", msg.Thread)
+	}
+	w := card.Sections[0].Widgets
+	if w[1].DecoratedText == nil || w[1].DecoratedText.TopLabel != "Escalated by" || w[1].DecoratedText.Text != "<b>Kasun Perera</b> from Apollo SRE Group" {
+		t.Errorf("escalated by widget = %+v", w[1].DecoratedText)
+	}
+	if w[2].DecoratedText == nil || w[2].DecoratedText.TopLabel != "SME on call" || w[2].DecoratedText.Text != "<b>Nimal &lt;Silva&gt;</b>" {
+		t.Errorf("on call widget = %+v", w[2].DecoratedText)
+	}
+	if w[3].ButtonList == nil || w[3].ButtonList.Buttons[0].OnClick.OpenLink.URL != "https://portal/incidents/inc-1" {
+		t.Errorf("view incident button = %+v", w[3].ButtonList)
+	}
+	details := card.Sections[1]
+	if !details.Collapsible || !strings.Contains(details.Widgets[0].TextParagraph.Text, "<b>Escalated from:</b> Apollo SRE Group") ||
+		strings.Contains(details.Widgets[0].TextParagraph.Text, "Paging:") {
+		t.Errorf("details = %+v", details)
+	}
+}
+
+// With nobody rostered the card says so instead of naming an empty on call.
+func TestBuildSMEIncidentEscalatedCard_NobodyOnCall(t *testing.T) {
+	msg := buildSMEIncidentEscalatedCard(SMEIncidentEscalatedAlert{IncidentID: "inc-1", Number: "INC1"})
+	w := msg.CardsV2[0].Card.Sections[0].Widgets
+	if w[1].DecoratedText == nil || !strings.Contains(w[1].DecoratedText.Text, "Nobody rostered") {
+		t.Errorf("on call widget = %+v; want Nobody rostered", w[1].DecoratedText)
+	}
+	if got := msg.CardsV2[0].Card.Header.Title; got != "Priority Incident Escalated" {
+		t.Errorf("title = %q", got)
+	}
+}
+
+// With L1 empty the card names the first rostered tier and when it is called, never plain "Nobody rostered".
+func TestBuildSMEIncidentEscalatedCard_FirstRostered(t *testing.T) {
+	msg := buildSMEIncidentEscalatedCard(SMEIncidentEscalatedAlert{IncidentID: "inc-1", Number: "INC1",
+		OnCall: "Nimal Fernando", OnCallRung: "L2", OnCallAt: "2026-10-23 14:10 IST"})
+	got := msg.CardsV2[0].Card.Sections[0].Widgets[1].DecoratedText
+	if got == nil {
+		t.Fatal("no on call widget")
+	}
+	for _, want := range []string{"Nobody rostered before L2", "<b>Nimal Fernando</b> (L2)", "called at 2026-10-23 14:10 IST"} {
+		if !strings.Contains(got.Text, want) {
+			t.Errorf("on call = %q; want it to contain %q", got.Text, want)
+		}
+	}
+}

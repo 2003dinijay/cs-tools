@@ -94,7 +94,8 @@ func morningRota() *stubScheduleReader {
 			held("r-l1", "artemis", "SRE_TZ1_L1", ""),
 			held("a-l2", "apollo", "SRE_TZ1", "L2"),
 			held("r-l2", "artemis", "SRE_TZ1", "L2"),
-			held("r-l3", "artemis", "SRE_TZ1", "L3"), // apollo has no L3 today
+			held("a-l3", "apollo", "SRE_TZ1", "L3"),
+			held("r-l3", "artemis", "SRE_TZ1", "L3"),
 			held("c-l1", "atlas", "CRE_MORNING", "L1"),
 		},
 		members: []teamMember{
@@ -178,8 +179,7 @@ func TestResolveSRE_OnePersonPerRungOwnTeamFirst(t *testing.T) {
 	for level, want := range map[Level]string{
 		Level0: "a-l1@example.com",
 		Level1: "a-l2@example.com",
-		// apollo has nobody on L3: another SRE team's holder answers.
-		Level2: "r-l3@example.com",
+		Level2: "a-l3@example.com",
 		Level3: "a-lead@example.com",
 	} {
 		got := resolveSRE(t, r, level, "Apollo")

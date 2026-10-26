@@ -31,11 +31,20 @@ type LicenseDownloadRequest struct {
 	ProjectID    string
 }
 
-// ProcessLicenseDownload delegates deployment license provisioning to the
-// upstream product-consumption microservice in a single 1-shot call.
+// ProcessLicenseDownload returns the deployment license, using the flow chosen
+// by Config.LicenseMode. This is the only place the two modes are dispatched.
+func (c *Client) ProcessLicenseDownload(ctx context.Context, req LicenseDownloadRequest) (License, error) {
+	if c.licenseMode == LicenseModeLegacy {
+		return c.processLicenseDownloadLegacy(ctx, req)
+	}
+	return c.processLicenseDownloadService(ctx, req)
+}
+
+// processLicenseDownloadService delegates deployment license provisioning to
+// the upstream product-consumption microservice in a single 1-shot call.
 // The upstream microservice encapsulates WSO2 API Manager application creation,
 // tier subscription, credential generation, and offline/online HMAC signing.
-func (c *Client) ProcessLicenseDownload(ctx context.Context, req LicenseDownloadRequest) (License, error) {
+func (c *Client) processLicenseDownloadService(ctx context.Context, req LicenseDownloadRequest) (License, error) {
 	license, err := c.getDeploymentLicense(ctx, req.ProjectID, req.DeploymentID, DeploymentLicenseRequest{Email: req.Email})
 	if err != nil {
 		return License{}, fmt.Errorf("productconsumption: get deployment license: %w", err)

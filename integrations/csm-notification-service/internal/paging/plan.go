@@ -59,6 +59,9 @@ type Trigger struct {
 	Environment string `json:",omitempty"`
 	Category    string `json:",omitempty"`
 	State       string `json:",omitempty"`
+	// EscalatedBy and EscalatedFrom fill the SME space's "Incident Escalated" card: who escalated it, and the SRE team it left.
+	EscalatedBy   string `json:",omitempty"`
+	EscalatedFrom string `json:",omitempty"`
 }
 
 // What a ladder pages about. CRE paging starts from customer cases (S0-S4),
@@ -71,8 +74,22 @@ const (
 // isCase reports whether the ladder pages about a customer case.
 func (t Trigger) isCase() bool { return t.Record == RecordCase }
 
+// sreTeam is the team whose SRE spaces and channel the trigger uses: a case's account SRE team, else Team.
+func (t Trigger) sreTeam() string {
+	if strings.TrimSpace(t.Routing.SRETeam) != "" {
+		return t.Routing.SRETeam
+	}
+	return t.Team
+}
+
 // sreIncident reports whether an SRE ladder pages about an incident, whose space gets an "Incident Reported" card with every ladder message as a reply under it.
 func (t Trigger) sreIncident() bool { return t.Routing.Ladder == LadderSRE && !t.isCase() }
+
+// smeIncident reports whether an SME ladder pages about an incident, whose SME space gets an "Incident Escalated" card with every ladder message as a reply under it.
+func (t Trigger) smeIncident() bool { return t.Routing.Ladder == LadderSME && !t.isCase() }
+
+// threadedIncident reports whether the ladder's own space gets a parent incident card with its messages as replies under it.
+func (t Trigger) threadedIncident() bool { return t.sreIncident() || t.smeIncident() }
 
 // chatThreadKey puts an incident's paging messages under its "Incident Reported" card; a case has no such card.
 func (t Trigger) chatThreadKey() string {
@@ -325,7 +342,7 @@ func (p Plan) NextRungAfter(call PlannedCall) (rung, in string) {
 		if c.Level <= call.Level {
 			continue
 		}
-		return c.Level.Label(), shortDuration(c.At.Sub(call.At))
+		return c.Level.LabelIn(p.Trigger.Routing.Ladder), shortDuration(c.At.Sub(call.At))
 	}
 	return "", ""
 }

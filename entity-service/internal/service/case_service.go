@@ -751,7 +751,7 @@ func (s *caseService) CreateCase(ctx context.Context, req domain.CreateCaseReque
 	// persisted first (immediately above) for the same reason
 	// createCaseSNFirst orders it this way: publishCaseCreatedEvent's own
 	// GetCaseByID re-fetch needs them already written to resolve Recipients.
-	publishCaseCreatedEvent(ctx, s.publisher, s.GetCaseByID, s.ProjectContactEmailsByRole, s.AccountDefaultWatcherEmails, req, c.ID)
+	publishCaseCreatedEvent(ctx, s.publisher, s.GetCaseByID, s.ProjectContactEmailsByRole, s.AccountDefaultWatcherEmails, s.AccountSRETeam, req, c.ID)
 	// Plain Postgres only: under dual-write the SR is created in ServiceNow
 	// first, where its own flow still assigns, acknowledges and announces it.
 	if req.Type == "service_request" && s.srNotices != nil {
@@ -911,7 +911,7 @@ func (s *caseService) createCaseSNFirst(ctx context.Context, req domain.CreateCa
 	// publish (that fires right after the ServiceNow POST, before this
 	// Postgres insert was even attempted) — same reasoning
 	// incidentService.createIncidentSNFirst already established.
-	publishCaseCreatedEvent(ctx, s.publisher, s.GetCaseByID, s.ProjectContactEmailsByRole, s.AccountDefaultWatcherEmails, req, c.ID)
+	publishCaseCreatedEvent(ctx, s.publisher, s.GetCaseByID, s.ProjectContactEmailsByRole, s.AccountDefaultWatcherEmails, s.AccountSRETeam, req, c.ID)
 
 	// Same reasoning as the publish call above, for the exact same "not
 	// safe before this Postgres insert" reason: registerCaseSLAClocksEvent
@@ -1284,6 +1284,11 @@ func (s *caseService) ProjectContactEmailsByRole(ctx context.Context, projectID,
 // AccountDefaultWatcherEmails implements CaseService.
 func (s *caseService) AccountDefaultWatcherEmails(ctx context.Context, projectID string) ([]string, error) {
 	return s.repo.AccountDefaultWatcherEmails(ctx, projectID)
+}
+
+// AccountSRETeam implements CaseService.
+func (s *caseService) AccountSRETeam(ctx context.Context, projectID string) (string, string, error) {
+	return s.repo.AccountSRETeam(ctx, projectID)
 }
 
 // ProjectOnboardingInfo implements CaseService.
@@ -2145,7 +2150,7 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 			slog.ErrorContext(ctx, "update case: enrich case for case.severity_changed publish failed", "caseId", req.ID)
 		} else {
 			cv.WatchList = s.filterActiveWatchListUsers(ctx, cv, cv.WatchList)
-			publishSeverityChangedEvent(ctx, s.publisher, s.AccountDefaultWatcherEmails, req.ID, string(derefSeverity(oldSeverity)), string(*c.Severity), cv)
+			publishSeverityChangedEvent(ctx, s.publisher, s.AccountDefaultWatcherEmails, s.AccountSRETeam, req.ID, string(derefSeverity(oldSeverity)), string(*c.Severity), cv)
 			// Deliberately independent of s.publisher -- see
 			// reviseCaseSLAClocks' own doc comment (sn_case_service.go) for
 			// why revising SLA clocks must not depend on Event Hub being
@@ -2309,11 +2314,12 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 	return domain.UpdateCaseResponse{
 		Message: "Case updated successfully",
 		Case: domain.UpdatedCase{
-			ID:        c.ID,
-			UpdatedOn: c.UpdatedOn,
-			State:     c.State,
-			Severity:  c.Severity,
-			WorkState: c.WorkState,
+			ID:         c.ID,
+			UpdatedOn:  c.UpdatedOn,
+			State:      c.State,
+			Severity:   c.Severity,
+			WorkState:  c.WorkState,
+			ResolvedOn: c.ResolvedOn,
 		},
 	}, nil
 }
@@ -3833,7 +3839,8 @@ func (s *caseService) ConfirmCaseAttachment(ctx context.Context, id string) (dom
 // only: a work item with no attachments is a successful empty result.
 //
 // Stopgap: under DATA_SOURCE=postgres-servicenow-dual-write (s.snMirror !=
-// nil) a "deployment" search is delegated to the mirrored data source and its
+// nil) a "deployment", "incident", "change_request" or "conversation" search
+// (see isMirrorOnlyAttachmentRef) is delegated to the mirrored data source and its
 // response or error is returned as-is, until a Postgres-native deployment
 // attachment store exists. Likewise a "case" search that returns zero rows
 // from Postgres at offset 0 falls back to the mirrored data source, because
@@ -3859,10 +3866,11 @@ func (s *caseService) SearchCaseAttachments(ctx context.Context, req domain.Sear
 	if err := validateUUIDs("referenceId", []string{req.ReferenceID}); err != nil {
 		return domain.SearchAttachmentsResponse{}, err
 	}
-	if req.ReferenceType == domain.ReferenceTypeDeployment && s.snMirror != nil {
-		// No Postgres deployment attachment table yet: serve from the
-		// mirrored data source (SN) in dual-write mode. Plain Postgres mode
-		// (snMirror == nil) falls through to the validation error below.
+	if isMirrorOnlyAttachmentRef(req.ReferenceType) && s.snMirror != nil {
+		// No Postgres attachment store for these types yet (deployment,
+		// incident, change_request, conversation): serve from the mirrored
+		// data source in dual-write mode. Plain Postgres mode
+		// (snMirror == nil) falls through to the existing handling below.
 		return s.snMirror.SearchCaseAttachments(ctx, req)
 	}
 	isCase := req.ReferenceType == domain.ReferenceTypeCase

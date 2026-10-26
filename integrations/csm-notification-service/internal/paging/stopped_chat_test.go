@@ -99,6 +99,10 @@ func TestStoppedChat_SeverityChangeRestartsTheChain(t *testing.T) {
 	if !strings.Contains(s.Detail, "from HIGH to CRITICAL") {
 		t.Errorf("detail = %q; want both severities", s.Detail)
 	}
+	// A CRE chain's first rung may be L0 or L1, so the reply names neither.
+	if !strings.Contains(s.Detail, "starts from the first rung") || strings.Contains(s.Detail, "from L1") {
+		t.Errorf("detail = %q; want the restart without a fixed rung label", s.Detail)
+	}
 	if s.ThreadKey != "incident-escalation-"+testIncidentID {
 		t.Errorf("thread = %q; want the case's thread, where the new chain posts too", s.ThreadKey)
 	}

@@ -210,6 +210,105 @@ func (c *GoogleChatClient) SendIncidentCreatedAlert(ctx context.Context, audienc
 	return c.sendCardToAudience(ctx, audience, a.Number, a.IncidentID, msg)
 }
 
+// SMEIncidentEscalatedAlert is SendSMEIncidentEscalatedAlert's card content.
+type SMEIncidentEscalatedAlert struct {
+	// IncidentID keys the card's thread (IncidentThreadKey).
+	IncidentID       string
+	Number           string
+	SMETeam          string
+	Priority         string
+	ShortDescription string
+	Service          string
+	State            string
+	// EscalatedBy is who escalated it; EscalatedFrom the SRE team it left.
+	EscalatedBy   string
+	EscalatedFrom string
+	// OnCall is the SME the first rung pages.
+	OnCall string
+	// OnCallRung and OnCallAt are the tier and IST time of that first rung when it is not L1, so the card says when anyone is called.
+	OnCallRung   string
+	OnCallAt     string
+	EscalatedAt  string
+	IncidentLink string
+}
+
+// SendSMEIncidentEscalatedAlert posts the "<SME team> | <priority> Priority Incident Escalated" card an SME ladder's rung replies sit under.
+func (c *GoogleChatClient) SendSMEIncidentEscalatedAlert(ctx context.Context, audience string, a SMEIncidentEscalatedAlert) error {
+	if a.IncidentID == "" {
+		return fmt.Errorf("notifications: incidentId is required")
+	}
+	return c.sendCardToAudience(ctx, audience, a.Number, a.IncidentID, buildSMEIncidentEscalatedCard(a))
+}
+
+// buildSMEIncidentEscalatedCard lays the SME card out like the "Incident Reported" card, adding who escalated it and who is on call.
+func buildSMEIncidentEscalatedCard(a SMEIncidentEscalatedAlert) chatCardMessage {
+	priority := incidentPriorityLabels[strings.ToUpper(strings.TrimSpace(a.Priority))]
+	title := "Priority Incident Escalated"
+	if priority.word != "" {
+		title = priority.word + " " + title
+	}
+	if team := strings.TrimSpace(a.SMETeam); team != "" {
+		title = strings.ToUpper(team) + " | " + title
+	}
+	subtitle := "#" + incidentRef(a.Number, a.IncidentID)
+	if service := strings.TrimSpace(a.Service); service != "" {
+		subtitle += " | " + service
+	}
+
+	summary := []chatCardWidget{{TextParagraph: &chatTextParagraph{
+		Text: caseAlertLine(`<b>Short Description:</b><br>%s`, orEmDash(a.ShortDescription)),
+	}}}
+	if by := strings.TrimSpace(a.EscalatedBy); by != "" {
+		text := caseAlertLine("<b>%s</b>", by)
+		if from := strings.TrimSpace(a.EscalatedFrom); from != "" {
+			text += caseAlertLine(" from %s", from)
+		}
+		summary = append(summary, chatCardWidget{DecoratedText: &chatDecoratedText{TopLabel: "Escalated by", Text: text, WrapText: true}})
+	}
+	onCall := `<font color="#B3261E">Nobody rostered</font>`
+	if name := strings.TrimSpace(a.OnCall); name != "" {
+		onCall = caseAlertLine("<b>%s</b>", name)
+		if rung := strings.TrimSpace(a.OnCallRung); rung != "" {
+			// L1 is empty: name who is called first and when, so the room does not read it as nobody being paged.
+			onCall = caseAlertLine(`<font color="#B3261E">Nobody rostered before %s</font><br>`, rung) + caseAlertLine("<b>%s</b> (%s)", name, rung)
+			if at := strings.TrimSpace(a.OnCallAt); at != "" {
+				onCall += caseAlertLine(", called at %s", at)
+			}
+		}
+	}
+	summary = append(summary, chatCardWidget{DecoratedText: &chatDecoratedText{TopLabel: "SME on call", Text: onCall, WrapText: true}})
+	if a.IncidentLink != "" {
+		summary = append(summary, chatCardWidget{ButtonList: &chatButtonList{
+			Buttons: []chatButton{{Text: "View Incident", OnClick: chatOnClick{OpenLink: chatOpenLink{URL: a.IncidentLink}}}},
+		}})
+	}
+	details := []string{
+		caseAlertLine(`<b>Priority:</b> %s`, orEmDash(priority.label)),
+		caseAlertLine(`<b>State:</b> %s`, orEmDash(humanizeEnumLabel(a.State))),
+	}
+	if from := strings.TrimSpace(a.EscalatedFrom); from != "" {
+		details = append(details, caseAlertLine(`<b>Escalated from:</b> %s`, from))
+	}
+	if at := strings.TrimSpace(a.EscalatedAt); at != "" {
+		details = append(details, caseAlertLine(`<b>Escalated at:</b> %s`, at))
+	}
+
+	return chatCardMessage{
+		CardsV2: []chatCardWrapper{{CardID: "incident-sme-escalated-alert", Card: chatCard{
+			Header: &chatCardHeader{Title: title, Subtitle: subtitle},
+			Sections: []chatCardSection{
+				{Widgets: summary},
+				{
+					Header:      "Incident Details",
+					Collapsible: true,
+					Widgets:     []chatCardWidget{{TextParagraph: &chatTextParagraph{Text: strings.Join(details, "<br>")}}},
+				},
+			},
+		}}},
+		Thread: &chatThread{ThreadKey: IncidentThreadKey(a.IncidentID)},
+	}
+}
+
 // SendIncidentAssignedAlert posts ServiceNow's "Incident Acknowledged." reply under the incident's card.
 func (c *GoogleChatClient) SendIncidentAssignedAlert(ctx context.Context, audience string, a IncidentAssignedAlert) error {
 	if a.IncidentID == "" {

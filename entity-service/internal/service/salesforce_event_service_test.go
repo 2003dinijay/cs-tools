@@ -27,7 +27,18 @@ import (
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/salesentity"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/scim"
 )
+
+// fakePersonFinder is a minimal PersonFinder for provisionOwner tests.
+type fakePersonFinder struct {
+	person *scim.Person
+	err    error
+}
+
+func (f fakePersonFinder) SearchPerson(context.Context, string) (*scim.Person, error) {
+	return f.person, f.err
+}
 
 type stubSalesEntityClient struct {
 	customer salesentity.Customer
@@ -736,5 +747,68 @@ func TestHandleEvent_WriteFailureRecordsFailed(t *testing.T) {
 	want, _ := parseSalesforceLastModified(fullCustomer().LastModifiedDate)
 	if got.Status != domain.SalesforceIngestFailed || got.LastError == nil || *got.LastError != "db down" || !got.EventModifiedOn.Equal(want) {
 		t.Errorf("ledger row = %+v", got)
+	}
+}
+
+// A SCIM match with neither GivenName nor FamilyName set is not enough to
+// provision a usable CSM user from, so it is treated like any other lookup
+// miss -- (nil, nil), no CreateUser call.
+func TestProvisionOwner_SkipsWhenSCIMMatchHasNoName(t *testing.T) {
+	svc := &salesforceEventService{
+		support: SalesforceIngestSupport{
+			Owners: OwnerProvisioning{
+				SCIM: fakePersonFinder{person: &scim.Person{GivenName: "  ", FamilyName: ""}},
+				Users: stubUserRepo{
+					createUser: func(context.Context, domain.CreateUserRequest, string) (domain.User, error) {
+						t.Fatal("CreateUser should not be called when SCIM has no name")
+						return domain.User{}, nil
+					},
+				},
+			},
+		},
+	}
+
+	id, err := svc.provisionOwner(context.Background(), "001xx0000001", "owner", "jane.doe@wso2.com")
+	if err != nil {
+		t.Fatalf("provisionOwner: %v", err)
+	}
+	if id != nil {
+		t.Errorf("id = %v, want nil (skipped)", *id)
+	}
+}
+
+// A SCIM match with at least one name field set still provisions the user,
+// using the trimmed values.
+func TestProvisionOwner_TrimsNamesAndCreatesUser(t *testing.T) {
+	var gotReq domain.CreateUserRequest
+	svc := &salesforceEventService{
+		support: SalesforceIngestSupport{
+			Owners: OwnerProvisioning{
+				SCIM: fakePersonFinder{person: &scim.Person{GivenName: "  Jane  ", FamilyName: " Doe "}},
+				Users: stubUserRepo{
+					createUser: func(_ context.Context, req domain.CreateUserRequest, actor string) (domain.User, error) {
+						gotReq = req
+						if actor != domain.SalesforceSyncActor {
+							t.Errorf("actor = %q, want %q", actor, domain.SalesforceSyncActor)
+						}
+						return domain.User{ID: "11111111-1111-1111-1111-111111111111"}, nil
+					},
+				},
+			},
+		},
+	}
+
+	id, err := svc.provisionOwner(context.Background(), "001xx0000001", "owner", "jane.doe@wso2.com")
+	if err != nil {
+		t.Fatalf("provisionOwner: %v", err)
+	}
+	if id == nil || *id != "11111111-1111-1111-1111-111111111111" {
+		t.Errorf("id = %v, want the created user's id", id)
+	}
+	if gotReq.FirstName != "Jane" {
+		t.Errorf("FirstName = %q, want trimmed %q", gotReq.FirstName, "Jane")
+	}
+	if gotReq.LastName != "Doe"+ownerAutoProvisionSuffix {
+		t.Errorf("LastName = %q, want trimmed %q", gotReq.LastName, "Doe"+ownerAutoProvisionSuffix)
 	}
 }

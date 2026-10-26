@@ -42,23 +42,27 @@ export const CHAIN_LADDER: Partial<Record<PagingChainCode, CaseAlertLadder>> = {
 export type LadderKeyGroup =
   | "On/off and channel"
   | "Who gets alerts"
+  | "Call limits"
   | "When a ladder starts"
   | "How it climbs"
   | "Heads"
+  | "Case Alert email"
   | "Chat messages";
 
 export const LADDER_KEY_GROUPS: LadderKeyGroup[] = [
   "On/off and channel",
   "Who gets alerts",
+  "Call limits",
   "When a ladder starts",
   "How it climbs",
   "Heads",
+  "Case Alert email",
   "Chat messages",
 ];
 
 /** How a value is edited: a checkbox, a number, a pick from a few, a line of
- *  text, a comma-separated list, SHIFT=n pairs, key=team pairs, a time like
- *  5m, or a head's name and email. */
+ *  text, a comma-separated list, SHIFT=n pairs, key=team pairs, key=address
+ *  pairs, a time like 5m, or a head's name and email. */
 export type LadderKeyEditor =
   | "bool"
   | "int"
@@ -67,6 +71,7 @@ export type LadderKeyEditor =
   | "list"
   | "shiftCounts"
   | "teamMap"
+  | "teamEmails"
   | "duration"
   | "head";
 
@@ -87,6 +92,9 @@ export interface LadderKeySpec {
   /** What 0 means, for a number where it is not "nobody". */
   zero?: string;
   placeholder?: string;
+  /** A text value's field: its label (else "New value") and input type. */
+  inputLabel?: string;
+  inputType?: "email";
 }
 
 const BOTH: CaseAlertRoomLadder[] = ["CRE", "SRE"];
@@ -105,8 +113,9 @@ const CHANNEL_OPTIONS = [
 ];
 
 export const LADDER_KEYS: LadderKeySpec[] = [
-  // On/off and channel. The alert service's file keeps a master switch and an
-  // emergency off switch outside this page.
+  // On/off and channel: a switch and a channel, nothing else. The alert
+  // service's file keeps a master switch and an emergency off switch outside
+  // this page. The call limits that sat here are under Advanced.
   {
     key: "enabled",
     ladders: ALL,
@@ -127,7 +136,7 @@ export const LADDER_KEYS: LadderKeySpec[] = [
   {
     key: "safety.maxCallsPerLadder",
     ladders: BOTH,
-    group: "On/off and channel",
+    group: "Call limits",
     label: "Max calls per ladder",
     help: "The most calls one incident or case may place. Extra calls are dropped and noted.",
     editor: "int",
@@ -137,7 +146,7 @@ export const LADDER_KEYS: LadderKeySpec[] = [
   {
     key: "safety.callWithoutVerifiedLeads",
     ladders: BOTH,
-    group: "On/off and channel",
+    group: "Call limits",
     label: "Call before every lead has a number",
     help: "Off, no calls are placed while any ABT lead has no phone number. On, calls go out anyway.",
     editor: "bool",
@@ -145,7 +154,7 @@ export const LADDER_KEYS: LadderKeySpec[] = [
   {
     key: "safety.callHeadsWithoutLowerTiers",
     ladders: BOTH,
-    group: "On/off and channel",
+    group: "Call limits",
     label: "Call the heads when nobody below can be called",
     help: "Off, the top steps are held when nobody on the lower steps has a number. On, they are called anyway.",
     editor: "bool",
@@ -430,6 +439,52 @@ export const LADDER_KEYS: LadderKeySpec[] = [
     empty: "not named (looked up in the leadership team)",
   },
 
+  // Case Alert email: the Case Alert Notification sent at L1 to L4 of a
+  // customer case's CRE chain. The lists are mailing addresses, Cc'd only.
+  {
+    key: "email.enabled",
+    ladders: CRE,
+    group: "Case Alert email",
+    label: "Email per step",
+    help: "Send the Case Alert Notification email at L1 to L4 of a case's chain (L0 gets none), to the step's team leads or head, Cc the team lists below.",
+    editor: "bool",
+  },
+  {
+    key: "email.teamLists",
+    ladders: CRE,
+    group: "Case Alert email",
+    label: "ABT team lists (Cc on L1 and L2)",
+    help: "Each team's mailing list is Cc'd on the email to its team lead (L1) and on the email to every ABT team lead (L2). The Americas list is Cc'd at night.",
+    editor: "teamEmails",
+    max: 30,
+    empty: "none (no Cc on L1 and L2)",
+    placeholder: "team-list@example.com",
+  },
+  {
+    key: "email.creTeamList",
+    ladders: CRE,
+    group: "Case Alert email",
+    label: "CRE team list (Cc on L3)",
+    help: "Cc'd on the L3 email to the Head of CRE.",
+    editor: "text",
+    empty: "none (no Cc on L3)",
+    placeholder: "cre-team@example.com",
+    inputLabel: "Mailing list",
+    inputType: "email",
+  },
+  {
+    key: "email.csTeamList",
+    ladders: CRE,
+    group: "Case Alert email",
+    label: "CS team list (Cc on L4)",
+    help: "Cc'd on the L4 email to the Head of CS.",
+    editor: "text",
+    empty: "none (no Cc on L4)",
+    placeholder: "cs-team@example.com",
+    inputLabel: "Mailing list",
+    inputType: "email",
+  },
+
   // Chat messages
   {
     key: "unansweredChat",
@@ -503,16 +558,101 @@ export interface LadderDraft {
   checked: boolean;
   name: string;
   email: string;
+  /** Team key to address, for the team email lists. */
+  map: Record<string, string>;
+}
+
+/** One team in the team email lists' editor. */
+export interface TeamEmailRow {
+  key: string;
+  name: string;
+  /** Said under the name: when the list is used, or that it is not. */
+  note?: string;
+  /** A team the value names that is no longer an ABT team. */
+  stale?: boolean;
+}
+
+const AMERICAS_NOTE = "Cc'd at night (21:00-06:00 IST)";
+const STALE_NOTE = "No longer an ABT team: this list is not used";
+
+function titleCase(key: string): string {
+  return key.replace(/(^|[-_.\s])(\w)/g, (_, sep: string, c: string) => `${sep === "" ? "" : " "}${c.toUpperCase()}`);
+}
+
+/** The teams whose mailing list the Case Alert email can Cc: the ladder's
+ *  ABT teams and its Americas team, as saved here or in use, named as the
+ *  Team Schedule names them. With no ABT list known, every team of the
+ *  ladder's family is offered. The alert service drops a list for any other
+ *  team, so a value naming one is shown marked (teamEmailRowsFor). */
+export function teamEmailRows(s: CaseAlertSettings, ladder: CaseAlertRoomLadder): TeamEmailRow[] {
+  const inUse = (key: string): unknown =>
+    s.values.find((v) => v.ladder === ladder && v.key === key)?.value ?? s.running?.ladders[ladder]?.[key]?.value;
+  const names = new Map(
+    (s.routeOptions?.teams ?? []).filter((t) => t.family === ladder).map((t) => [t.key.toLowerCase(), t.name] as const),
+  );
+  const abtValue = inUse("teams.abts");
+  const abts = (Array.isArray(abtValue) ? abtValue : [])
+    .filter((k): k is string => typeof k === "string" && k.trim() !== "")
+    .map((k) => k.trim().toLowerCase());
+  const americasValue = inUse("teams.americas");
+  const americas = typeof americasValue === "string" ? americasValue.trim().toLowerCase() : "";
+  const keys = abts.length > 0 ? abts : [...names.keys()].filter((k) => k !== americas);
+  const rows: TeamEmailRow[] = [];
+  const seen = new Set<string>();
+  for (const key of keys) {
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rows.push({ key, name: names.get(key) ?? titleCase(key) });
+  }
+  if (americas && !seen.has(americas)) {
+    rows.push({ key: americas, name: names.get(americas) ?? titleCase(americas), note: AMERICAS_NOTE });
+  }
+  return rows;
+}
+
+/** The rows, plus any team the value names that they don't, marked: the
+ *  alert service drops its list, and leaving it hidden would keep it saved
+ *  with nobody able to see or clear it. */
+export function teamEmailRowsFor(rows: TeamEmailRow[], value: unknown): TeamEmailRow[] {
+  if (!isRecord(value)) return rows;
+  const known = new Set(rows.map((r) => r.key));
+  const extra = Object.keys(value)
+    .map((k) => k.trim().toLowerCase())
+    .filter((k) => k !== "" && !known.has(k))
+    .map((key) => ({ key, name: titleCase(key), note: STALE_NOTE, stale: true }));
+  return [...rows, ...extra];
+}
+
+/** One bare address, as the alert service and the entity service take it. */
+export function isMailingAddress(v: string): boolean {
+  return /^[^\s@,;<>"]+@[^\s@,;<>"]+$/.test(v);
+}
+
+/** The team lists' fields that do not hold one address, by team. */
+export function teamEmailErrors(draft: LadderDraft): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, raw] of Object.entries(draft.map)) {
+    const v = raw.trim();
+    if (v !== "" && !isMailingAddress(v)) out[key] = "Enter one email address, like team-list@example.com.";
+  }
+  return out;
 }
 
 /** The editor's starting point: the saved value, else the one in use. */
 export function draftFor(spec: LadderKeySpec, value: unknown): LadderDraft {
-  const draft: LadderDraft = { text: "", checked: value === true, name: "", email: "" };
+  const draft: LadderDraft = { text: "", checked: value === true, name: "", email: "", map: {} };
   if (spec.editor === "head") {
     const h = headOf(value);
     return { ...draft, name: h?.name ?? "", email: h?.email ?? "" };
   }
   if (Array.isArray(value)) return { ...draft, text: value.map(String).join(", ") };
+  if (spec.editor === "teamEmails") {
+    const map: Record<string, string> = {};
+    if (isRecord(value)) {
+      for (const [k, v] of Object.entries(value)) if (typeof v === "string") map[k.trim().toLowerCase()] = v;
+    }
+    return { ...draft, map };
+  }
   if ((spec.editor === "shiftCounts" || spec.editor === "teamMap") && isRecord(value)) {
     return { ...draft, text: Object.entries(value).map(([k, v]) => `${k}=${String(v)}`).join(", ") };
   }
@@ -561,6 +701,17 @@ export function parseDraft(spec: LadderKeySpec, draft: LadderDraft): ParsedDraft
       }
       return { ok: true, value: out };
     }
+    case "teamEmails": {
+      if (Object.keys(teamEmailErrors(draft)).length > 0) {
+        return { ok: false, error: `${spec.label}: fix the addresses marked below.` };
+      }
+      const out: Record<string, string> = {};
+      for (const [key, raw] of Object.entries(draft.map)) {
+        const v = raw.trim();
+        if (v !== "") out[key.trim().toLowerCase()] = v;
+      }
+      return { ok: true, value: out };
+    }
     case "head": {
       const name = draft.name.trim();
       const email = draft.email.trim();
@@ -569,7 +720,13 @@ export function parseDraft(spec: LadderKeySpec, draft: LadderDraft): ParsedDraft
         : { ok: false, error: `${spec.label}: enter a name and an email.` };
     }
     default:
-      return text ? { ok: true, value: text } : { ok: false, error: `${spec.label}: enter a value.` };
+      // An email list may be emptied: empty means no Cc (spec.empty).
+      if (!text && spec.inputType === "email") return { ok: true, value: "" };
+      if (!text) return { ok: false, error: `${spec.label}: enter a value.` };
+      if (spec.inputType === "email" && !isMailingAddress(text)) {
+        return { ok: false, error: `${spec.label}: enter one email address, like ${spec.placeholder ?? "team-list@example.com"}.` };
+      }
+      return { ok: true, value: text };
   }
 }
 
@@ -633,6 +790,45 @@ function yesNo(v: boolean | undefined): string {
   return v === undefined ? "—" : v ? "Yes" : "No";
 }
 
+/** The CRE rung emails in words: off, or on with how many team lists and
+ *  whether the CRE and CS lists are set. The addresses never reach the page. */
+function rungEmailWords(f: CaseAlertFileOnly): string {
+  const on = f["email.enabled"];
+  if (on === undefined) return "—";
+  if (!on) return "Off";
+  const lists = f["email.teamLists"] ?? 0;
+  const parts = [
+    `${lists} team ${lists === 1 ? "list" : "lists"}`,
+    `CRE list ${f["email.creTeamList"] ? "set" : "not set"}`,
+    `CS list ${f["email.csTeamList"] ? "set" : "not set"}`,
+  ];
+  return `On (${parts.join(", ")})`;
+}
+
+/** The CRE chain's steps, in the order the timing table lists them. */
+export const CRE_STEP_LABELS = ["L0", "L1", "L2", "L3", "L4"] as const;
+
+/** The severities the timing table lists, most urgent first. */
+export const CRE_TIMING_SEVERITIES = ["S0", "S1", "S2", "S3", "S4"] as const;
+
+/** One row of the CRE timing table: the severity, each step's call minutes
+ *  in words ("+1, +2, +3"; "—" for a step with no calls), and when the chain
+ *  ends. Severities the alert service did not report are left out. */
+export function creTimingRows(
+  timing: CaseAlertFileOnly["timing"],
+): { severity: string; steps: string[]; ends: string }[] {
+  if (!timing) return [];
+  return CRE_TIMING_SEVERITIES.filter((s) => Array.isArray(timing[s])).map((severity) => {
+    const steps = timing[severity] ?? [];
+    const words = CRE_STEP_LABELS.map((_, i) => {
+      const calls = steps[i] ?? [];
+      return calls.length === 0 ? "—" : calls.map((m) => `+${m}`).join(", ");
+    });
+    const all = steps.flat();
+    return { severity, steps: words, ends: all.length === 0 ? "—" : `+${Math.max(...all)} min` };
+  });
+}
+
 /** The settings only the file can set, as rows for people. The heads row is
  *  CRE's only: SRE has no heads. Allowed numbers are a count; the numbers
  *  never reach the page. */
@@ -679,6 +875,16 @@ export function fileOnlyRows(
   }
   const phones = f["phones.source"];
   rows.push({ key: "phones.source", label: "Phone numbers from", value: phones ? (PHONE_WORDS[phones] ?? phones) : "—" });
+  rows.push({ key: "ackChat", label: "Reply in the thread when a chain stops", value: yesNo(f.ackChat) });
+  if (ladder === "CRE") {
+    rows.push({ key: "email.enabled", label: "Email per step", value: rungEmailWords(f) });
+    const custom = f["rules.custom"];
+    rows.push({
+      key: "rules.custom",
+      label: "Who each step calls",
+      value: custom === undefined ? "—" : custom ? "The file's own rule table" : "Built-in rules (Case Paging Rules sheet)",
+    });
+  }
   return rows
     .filter((r) => !onTab.has(r.key))
     .map(({ label, value }) => ({ label, value: safe(value) }));
@@ -697,6 +903,8 @@ export function limitHint(spec: LadderKeySpec): string | null {
       return `SHIFT=number, separated with commas${spec.max ? `, each 0 to ${spec.max}` : ""}. ${empty}`;
     case "teamMap":
       return `key=team, separated with commas. ${empty}`;
+    case "teamEmails":
+      return "Leave a team empty for no Cc.";
     default:
       return null;
   }
@@ -750,4 +958,46 @@ export function savedInGroups(
 ): number {
   const keys = new Set(ladderKeysFor(ladder).filter((k) => groups.includes(k.group)).map((k) => k.key));
   return s.values.filter((v) => v.ladder === ladder && keys.has(v.key)).length;
+}
+
+/** The settings the Alert Settings tab shows for each ladder, in this order:
+ *  the switch, the channel, which priorities start a chain, the call limits,
+ *  then CRE's Case Alert email and SRE's and SME's time between steps. CRE's
+ *  heads are not shown: left
+ *  empty, the alert service finds them in the leadership team. Every other key
+ *  stays in LADDER_KEYS and keeps its value (the file's, or one saved
+ *  earlier); the tab just doesn't offer it. */
+export const SHOWN_KEYS: Record<CaseAlertRoomLadder, readonly string[]> = {
+  CRE: [
+    "enabled",
+    "channel",
+    "trigger.priorities",
+    "safety.maxCallsPerLadder",
+    "safety.callWithoutVerifiedLeads",
+    "email.enabled",
+    "email.teamLists",
+    "email.creTeamList",
+    "email.csTeamList",
+  ],
+  SRE: [
+    "enabled",
+    "channel",
+    "trigger.priorities",
+    "safety.maxCallsPerLadder",
+    "safety.callWithoutVerifiedLeads",
+    "timing.interval",
+  ],
+  SME: ["enabled", "channel", "timing.interval"],
+};
+
+/** The specs of these keys on a ladder, in the order given. */
+export function ladderKeysByName(ladder: CaseAlertRoomLadder, keys: readonly string[]): LadderKeySpec[] {
+  const specs = ladderKeysFor(ladder);
+  return keys.flatMap((k) => specs.filter((s) => s.key === k));
+}
+
+/** How many of a ladder's saved values are for keys the page doesn't show. */
+export function savedOutside(s: CaseAlertSettings, ladder: CaseAlertRoomLadder, shown: readonly string[]): number {
+  const keys = new Set(shown);
+  return s.values.filter((v) => v.ladder === ladder && !keys.has(v.key)).length;
 }

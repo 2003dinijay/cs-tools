@@ -304,6 +304,20 @@ func TestDeactivateMovedAccountContacts_KeepsAccountsWithLiveMemberships(t *test
 	}
 }
 
+func TestDeactivateContactMemberships_DeactivatesByContactSfID(t *testing.T) {
+	q := &scriptedQuerier{t: t, execTags: map[string]string{"UPDATE project_contact": "UPDATE 3"}}
+	n, err := deactivateContactMemberships(context.Background(), q, "003A", "actor")
+	if err != nil || n != 3 {
+		t.Fatalf("n = %d, err = %v", n, err)
+	}
+	sql := q.execs[0].sql
+	for _, want := range []string{"UPDATE project_contact", "ac.sf_id = $1", "ac.id = pc.account_contact_id", "DEACTIVATED"} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("membership deactivation must mention %q:\n%s", want, sql)
+		}
+	}
+}
+
 // ---- admin re-derivation on membership DELETED -----------------------------
 
 func TestRederiveAdminAfterDeactivate(t *testing.T) {

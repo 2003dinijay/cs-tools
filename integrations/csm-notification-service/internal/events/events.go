@@ -225,7 +225,10 @@ type CaseCreatedPayload struct {
 	// Team is the case's account's CRE team display name (e.g. "Castor") —
 	// displayed in Chat cards; purely a display value, no routing role
 	// (unlike Product).
-	Team        string `json:"team,omitempty"`
+	Team string `json:"team,omitempty"`
+	// SRETeamID/SRETeamName are the account's SRE team; an S0 case's SRE ladder pages it, and none means every team on the default rota.
+	SRETeamID   string `json:"sreTeamId,omitempty"`
+	SRETeamName string `json:"sreTeamName,omitempty"`
 	CreatedAt   string `json:"createdAt"`
 	Description string `json:"description"`
 	// DescriptionTruncated is true when entity-service stripped embedded
@@ -438,12 +441,15 @@ type SeverityChangedPayload struct {
 	CaseID     string `json:"caseId"`
 	CaseNumber string `json:"caseNumber,omitempty"`
 	// WSO2CaseID — see CaseCreatedPayload's own doc comment.
-	WSO2CaseID  string   `json:"wso2CaseId,omitempty"`
-	CaseTitle   string   `json:"caseTitle,omitempty"`
-	OldSeverity string   `json:"oldSeverity"`
-	NewSeverity string   `json:"newSeverity"`
-	Product     string   `json:"product,omitempty"`
-	Team        string   `json:"team,omitempty"`
+	WSO2CaseID  string `json:"wso2CaseId,omitempty"`
+	CaseTitle   string `json:"caseTitle,omitempty"`
+	OldSeverity string `json:"oldSeverity"`
+	NewSeverity string `json:"newSeverity"`
+	Product     string `json:"product,omitempty"`
+	Team        string `json:"team,omitempty"`
+	// SRETeamID/SRETeamName: see CaseCreatedPayload's own doc comment.
+	SRETeamID   string   `json:"sreTeamId,omitempty"`
+	SRETeamName string   `json:"sreTeamName,omitempty"`
 	Recipients  []string `json:"recipients"`
 	// ProjectOnboardingStatus/IsEvaluationAccount are deprecated and
 	// unused — see CaseCreatedPayload's own doc comment for why this

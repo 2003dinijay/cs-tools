@@ -14,6 +14,13 @@ responses described below. One alternate operating mode (used in a small
 number of deployments, and not covered by this document) still reads this
 same data from a different source instead.
 
+The environment variable `PRODUCT_CONSUMPTION_DATA_READ_MODE` selects the read routing under the
+dual-write data source: `postgres` (the default, as described here) or
+`legacy`, which restores the previous routing in which these reads are served
+from the other system the dual-write mode mirrors to. It exists while some
+deployments are not yet ready for the Postgres-only read path. It has no
+effect under the other data sources, and an invalid value fails startup.
+
 ## The five tables
 
 | Table | What one row represents |
