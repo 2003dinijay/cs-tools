@@ -25,7 +25,7 @@
         .footerContent a:hover { color: #ff7300 !important; }
 
         @media only screen and (max-width: 650px) {
-            .bodyContent { padding: 0 20px 30px !important; }
+            .bodyContent { padding: 0 16px 24px !important; }
         }
 
         @media (prefers-color-scheme: dark) {
@@ -37,6 +37,14 @@
             .footerContent a { color: #bbbdc1 !important; }
             .reportTable th { background-color: #33383d !important; color: #e2e2e2 !important; }
             .reportTable td { border-color: #454b52 !important; }
+            /* The summary grid and the team strip set light backgrounds
+               inline. Without these the rule above paints their text
+               #e2e2e2 and leaves the background white -- light on light,
+               unreadable. The pills are safe: their colours sit on divs,
+               which that rule does not target. */
+            .statGrid { background-color: #454b52 !important; }
+            .statGrid td { background-color: #33383d !important; }
+            .teamStrip, .teamStrip td { background-color: #3b332c !important; border-color: #5a4a39 !important; }
         }
     </style>
 </head>
@@ -47,17 +55,17 @@
         <tr>
             <td align="center" valign="top">
 
-                <table border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width:800px;">
+                <table border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width:1100px;">
                     <tr>
-                        <td align="center" bgcolor="#ff7101" style="padding:30px 0;">
-                            <table border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width:800px;">
+                        <td align="center" bgcolor="#ff7101" style="padding:22px 0;">
+                            <table border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width:1100px;">
                                 <tr>
-                                    <td align="left" style="padding:0 30px;">
+                                    <td align="left" style="padding:0 24px;">
                                         <img src="<!-- [LOGO_SRC] -->" alt="WSO2 Logo" width="120" style="display:block;" />
                                     </td>
                                 </tr>
                                 <tr>
-                                    <td align="left" style="padding:16px 30px 0; color:#ffffff; font-size:13px; font-weight:700; letter-spacing:1px; text-transform:uppercase;">
+                                    <td align="left" style="padding:12px 24px 0; color:#ffffff; font-size:13px; font-weight:700; letter-spacing:1px; text-transform:uppercase;">
                                         CS Worklogs &middot; <!-- [CADENCE_LABEL] --> Report
                                     </td>
                                 </tr>
@@ -68,55 +76,15 @@
                 <br/>
 
                 <!-- Main Content -->
-                <table bgcolor="#ffffff" border="0" cellpadding="0" cellspacing="0" class="Bodyconetntdark" width="100%" style="max-width:800px; margin:auto; box-shadow:0 2px 12px rgba(0,0,0,0.1);">
+                <table bgcolor="#ffffff" border="0" cellpadding="0" cellspacing="0" class="Bodyconetntdark" width="100%" style="max-width:1100px; margin:auto; box-shadow:0 2px 12px rgba(0,0,0,0.1);">
                     <tr>
-                        <td class="bodyContent" style="padding:40px 50px; color:#465868; font-size:16px; line-height:24px; text-align:left;">
+                        <td class="bodyContent" style="padding:28px 24px; color:#465868; font-size:16px; line-height:21px; text-align:left;">
 
-                            <h2 style="margin:0 0 6px; font-size:22px; color:#465868;">CS Worklogs &mdash; <!-- [CADENCE_LABEL] --> Report</h2>
-                            <p style="margin:0 0 26px; font-size:14px; color:#8a8f98;">
-                                <!-- [RANGE_LABEL] -->
-                            </p>
+                            <h2 style="margin:0 0 4px; font-size:21px; color:#465868;">CS Worklogs &mdash; <!-- [CADENCE_LABEL] --> Report</h2>
+                            <p style="margin:0 0 18px; font-size:14px; color:#8a8f98;"><!-- [RANGE_LABEL] --></p>
 
-                            <table border="0" cellpadding="0" cellspacing="0" width="100%" class="reportTable" style="margin:0 0 30px; border-collapse:collapse; font-size:14px;">
-                                <tbody>
-                                    <!-- [SUMMARY_ROWS] -->
-                                </tbody>
-                            </table>
-
-                            <h3 style="margin:0 0 10px; font-size:16px; color:#465868;">By team</h3>
-                            <table border="0" cellpadding="0" cellspacing="0" width="100%" class="reportTable" style="margin:0 0 30px; border-collapse:collapse; font-size:13px;">
-                                <thead>
-                                    <tr>
-                                        <th align="left" style="background-color:#f1f3f4; padding:8px 10px; border:1px solid #dfe3e6;">Team</th>
-                                        <th align="right" style="background-color:#f1f3f4; padding:8px 10px; border:1px solid #dfe3e6;">Members</th>
-                                        <th align="right" style="background-color:#f1f3f4; padding:8px 10px; border:1px solid #dfe3e6;">Issues</th>
-                                        <th align="right" style="background-color:#f1f3f4; padding:8px 10px; border:1px solid #dfe3e6;">Approved</th>
-                                        <th align="right" style="background-color:#f1f3f4; padding:8px 10px; border:1px solid #dfe3e6;">Pending</th>
-                                        <th align="right" style="background-color:#f1f3f4; padding:8px 10px; border:1px solid #dfe3e6;">Total</th>
-                                        <th align="right" style="background-color:#f1f3f4; padding:8px 10px; border:1px solid #dfe3e6;">Avg/person</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <!-- [TEAM_SUMMARY_ROWS] -->
-                                </tbody>
-                            </table>
-
-                            <h3 style="margin:0 0 10px; font-size:16px; color:#465868;">By type</h3>
-                            <table border="0" cellpadding="0" cellspacing="0" width="100%" class="reportTable" style="margin:0 0 30px; border-collapse:collapse; font-size:13px;">
-                                <thead>
-                                    <tr>
-                                        <th align="left" style="background-color:#f1f3f4; padding:8px 10px; border:1px solid #dfe3e6;">Type</th>
-                                        <th align="right" style="background-color:#f1f3f4; padding:8px 10px; border:1px solid #dfe3e6;">Issues</th>
-                                        <th align="right" style="background-color:#f1f3f4; padding:8px 10px; border:1px solid #dfe3e6;">Approved</th>
-                                        <th align="right" style="background-color:#f1f3f4; padding:8px 10px; border:1px solid #dfe3e6;">Pending</th>
-                                        <th align="right" style="background-color:#f1f3f4; padding:8px 10px; border:1px solid #dfe3e6;">Total</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <!-- [TYPE_ROWS] -->
-                                </tbody>
-                            </table>
-
+                            <!-- [SUMMARY_GRID] -->
+                            <!-- [BREAKDOWNS] -->
                             <!-- [TEAM_SECTIONS] -->
 
                             <p style="margin:40px 0 0; font-size:13px; color:#8a8f98;">
@@ -128,9 +96,9 @@
                 </table>
 
                 <!-- Footer -->
-                <table border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width:800px; background-color:#e8eaed; padding:30px 0;">
+                <table border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width:1100px; background-color:#e8eaed; padding:30px 0;">
                     <tr>
-                        <td align="center" style="padding:0 50px;">
+                        <td align="center" style="padding:0 24px;">
                             <table border="0" cellpadding="0" cellspacing="0" width="100%">
                                 <tr>
                                     <td align="left" class="footerContent" style="color:#465868; font-size:12px; line-height:16px;">
