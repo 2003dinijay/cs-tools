@@ -48,7 +48,8 @@ function isoDay(d: Date): string {
  * A template for one rota built from the catalogue: every window of the rota's zones (each tier where the window leaves it open)
  * and every kind of time away offered on its family, so it lists every code the roster can hold, in merge mode.
  * The emails are placeholders to replace with team members'. Assignments go on the rota's own teams, never a team a move sends people to,
- * and no two take one tier of a zone on the same day, so once the emails are real the entries do not refuse one another.
+ * and no two take one tier of a zone on the same day while the month has a free day for it, so once the emails are real the entries do not refuse one another.
+ * A date always fits its window's day scope.
  */
 export function buildRotaImportTemplate(rotaCode: string, catalogue: ScheduleCatalogue | undefined, today = new Date()): object {
   const rota = catalogue?.rotas?.find((r) => r.code === rotaCode);
@@ -76,13 +77,16 @@ export function buildRotaImportTemplate(rotaCode: string, catalogue: ScheduleCat
   let cursor = 0;
   const dayFor = (scope: "WEEKDAY" | "WEEKEND" | "ANY", slot?: string): string => {
     const used = slot ? (taken.get(slot) ?? new Set<string>()) : new Set<string>();
-    for (let i = 0; i < days.length; i++) {
-      const d = days[(cursor + i) % days.length];
-      const iso = isoDay(d);
-      if (fits(scope, d) && !used.has(iso)) {
-        cursor = (cursor + i + 1) % days.length;
-        if (slot) taken.set(slot, used.add(iso));
-        return iso;
+    // A day free for the slot first; once the month has none left, any day the window is worked, so the date always fits it.
+    for (const free of [true, false]) {
+      for (let i = 0; i < days.length; i++) {
+        const d = days[(cursor + i) % days.length];
+        const iso = isoDay(d);
+        if (fits(scope, d) && (!free || !used.has(iso))) {
+          cursor = (cursor + i + 1) % days.length;
+          if (slot) taken.set(slot, used.add(iso));
+          return iso;
+        }
       }
     }
     return isoDay(first);

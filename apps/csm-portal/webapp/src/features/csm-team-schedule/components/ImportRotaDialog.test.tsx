@@ -178,12 +178,30 @@ describe("ImportRotaDialog", () => {
     chooseFile(fileText({ mode: "replace" }));
     await screen.findByText(/4 assignments/);
     fireEvent.click(screen.getByRole("button", { name: "Preview" }));
-    expect(await screen.findByText(/Time away this would cut/)).toBeInTheDocument();
+    expect(await screen.findByText(/Time away this would cut: these people are on the rota on those days/)).toBeInTheDocument();
+    expect(screen.queryByText(/paged/)).not.toBeInTheDocument();
     expect(
       screen.getByText("Ann Perera (apollo): Annual/Casual leave 2026-11-02 to 2026-11-13 shortened by 2026-11-02 to 2026-11-06"),
     ).toBeInTheDocument();
     expect(screen.getByText("Ben Silva (artemis): Lieu leave 2026-11-04 removed")).toBeInTheDocument();
     expect(screen.getByText(/Nothing has been written yet/)).toBeInTheDocument();
+  });
+
+  it("lets every leave cut be reviewed before importing", async () => {
+    const cuts = Array.from({ length: 25 }, (_, i) => ({
+      index: i, name: `Person ${i}`, email: `p${i}@example.com`, teamKey: "apollo", kindCode: "ANNUAL_LEAVE",
+      kindLabel: "Annual/Casual leave", startsOn: "2026-11-02", endsOn: "2026-11-02", cutFrom: "2026-11-02",
+      cutTo: "2026-11-02", action: "removed" as const,
+    }));
+    postMock.mockResolvedValueOnce(result({ leaveWrittenOver: 25, leaveCuts: cuts }));
+    renderDialog();
+    chooseFile(fileText({ mode: "replace" }));
+    await screen.findByText(/4 assignments/);
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    await screen.findByText(/Person 0 \(apollo\)/);
+    expect(screen.queryByText(/Person 24 \(apollo\)/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Show all 25" }));
+    expect(screen.getByText(/Person 24 \(apollo\)/)).toBeInTheDocument();
   });
 
   it("shows the server's refusal, which names the entry at fault", async () => {
@@ -316,5 +334,20 @@ describe("buildRotaImportTemplate", () => {
     expect(t.assignments).toHaveLength(36);
     const held = t.assignments.map((a) => `${a.tier}@${a.from}`);
     expect(new Set(held).size).toBe(held.length);
+  });
+
+  it("keeps a weekend window on a weekend once the month's weekends are taken for its slot", () => {
+    const weekends = {
+      ...catalogue,
+      shifts: Array.from({ length: 4 }, (_, i) =>
+        shift(`SRE_WE_X${i}`, "TZ1", { isEscalation: true, isRotation: true, dayScope: "WEEKEND", sortOrder: i }),
+      ),
+    } as unknown as ScheduleCatalogue;
+    // February 2027 has eight weekend days; four windows at three tiers ask for twelve.
+    const t = buildRotaImportTemplate("SRE_SAAS", weekends, new Date(Date.UTC(2027, 0, 15))) as Template;
+    expect(t.assignments).toHaveLength(12);
+    for (const a of t.assignments) {
+      expect([0, 6]).toContain(new Date(a.from + "T00:00:00Z").getUTCDay());
+    }
   });
 });

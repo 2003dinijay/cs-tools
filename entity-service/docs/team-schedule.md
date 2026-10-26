@@ -686,9 +686,9 @@ take turns off the days they cover (as marking leave on the roster does not). Ea
 leaves a `TRIMMED` or `DELETED` absence activity row with the same note. A merge cuts
 nothing. The response lists every cut in `leaveCuts` (the `assignments[]` entry, the
 person, team, kind, the absence as it was, the days taken out and whether it was
-removed, shortened or split), and the dialog shows it under the preview, so a lead
-sees whose leave goes, and who will therefore be paged on those days, before pressing
-Import.
+removed, shortened or split), and the dialog shows all of it under the preview, so a
+lead sees whose leave goes, and who is therefore on the rota on those days, before
+pressing Import.
 
 **Codes the roster legend shows** (SaaS; the catalogue of the database decides, so
 download the template from the environment you import into):

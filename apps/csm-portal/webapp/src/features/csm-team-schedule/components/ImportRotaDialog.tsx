@@ -107,6 +107,7 @@ export default function ImportRotaDialog({ open, onClose, rotaCode, catalogue }:
   const [parsed, setParsed] = useState<ParsedRotaImport | null>(null);
   const [preview, setPreview] = useState<ImportRotaResult | null>(null);
   const [written, setWritten] = useState<ImportRotaResult | null>(null);
+  const [allCuts, setAllCuts] = useState(false);
   const importRota = useImportRota();
   // A real write cannot be called back, so the dialog stays open until it lands; a preview writes nothing.
   const writing = importRota.isPending && importRota.variables?.dryRun !== true;
@@ -116,6 +117,7 @@ export default function ImportRotaDialog({ open, onClose, rotaCode, catalogue }:
     setParsed(null);
     setPreview(null);
     setWritten(null);
+    setAllCuts(false);
     importRota.reset();
     if (inputRef.current) inputRef.current.value = "";
   };
@@ -251,16 +253,17 @@ export default function ImportRotaDialog({ open, onClose, rotaCode, catalogue }:
             {(shown.leaveCuts?.length ?? 0) > 0 ? (
               <Alert severity="warning" sx={{ mt: 1 }}>
                 <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                  Time away {written ? "cut" : "this would cut"}: these people are on the rota on those days and will be
-                  paged
+                  Time away {written ? "cut" : "this would cut"}: these people are on the rota on those days
                 </Typography>
                 <Box component="ul" sx={{ m: 0, pl: 2 }}>
-                  {(shown.leaveCuts ?? []).slice(0, SHOWN_CUTS).map((c, i) => (
+                  {(shown.leaveCuts ?? []).slice(0, allCuts ? undefined : SHOWN_CUTS).map((c, i) => (
                     <li key={`${c.index}-${i}`}>{cutLine(c)}</li>
                   ))}
                 </Box>
                 {(shown.leaveCuts?.length ?? 0) > SHOWN_CUTS ? (
-                  <Typography variant="caption">and {(shown.leaveCuts?.length ?? 0) - SHOWN_CUTS} more</Typography>
+                  <Link component="button" type="button" variant="caption" onClick={() => setAllCuts((v) => !v)}>
+                    {allCuts ? "Show fewer" : `Show all ${shown.leaveCuts?.length ?? 0}`}
+                  </Link>
                 ) : null}
               </Alert>
             ) : null}
