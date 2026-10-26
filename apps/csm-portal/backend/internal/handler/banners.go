@@ -17,6 +17,7 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -80,6 +81,10 @@ func (h *BannerHandler) CreateBanner(w http.ResponseWriter, r *http.Request) {
 
 // UpdateBanner handles PUT /portal-banners/{id}.
 func (h *BannerHandler) UpdateBanner(w http.ResponseWriter, r *http.Request) {
+	if middleware.UserInfoFromContext(r.Context()) == nil {
+		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
+		return
+	}
 	id := r.PathValue("id")
 	if !uuidRe.MatchString(id) {
 		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
@@ -109,8 +114,10 @@ func readBannerSave(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
 		writeError(w, http.StatusBadRequest, errMsgReadBody)
 		return nil, false
 	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
 	var req bannerSave
-	if err := json.Unmarshal(raw, &req); err != nil {
+	if err := dec.Decode(&req); err != nil || dec.More() {
 		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
 		return nil, false
 	}
