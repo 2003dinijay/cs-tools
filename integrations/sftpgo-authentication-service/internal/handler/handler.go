@@ -47,8 +47,9 @@ type Handler struct {
 	// subscription is the service for retrieving user folder lists.
 	subscription *service.SubscriptionService
 	// jwtAuth validates the x-jwt-assertion presented as the password on the
-	// external_auth_hook (web attachment access path). Nil when
-	// AUTH_JWKS_ENDPOINT/AUTH_ISSUER are not configured, in which case
+	// external_auth_hook (web attachment access path). Nil when the
+	// web-attachment flow is disabled or AUTH_JWKS_ENDPOINT/AUTH_ISSUER are not
+	// usable, in which case
 	// ExternalAuthHook fails closed with 503 — the pre-login and
 	// keyboard-interactive hooks do not depend on it.
 	jwtAuth *service.JWTAuthService
@@ -57,6 +58,8 @@ type Handler struct {
 // NewHandler creates a new Handler with all its dependencies. jwtAuth may be
 // nil if the external_auth_hook (web attachment access path) is not configured
 // on this deployment; the pre-login and keyboard-interactive hooks do not use it.
+// db, idp, sftpgo and subscription may be nil when the sftp-channel flow is
+// disabled; the handlers of that flow answer 503 instead of dereferencing them.
 func NewHandler(
 	cfg *config.Config,
 	logger *log.AppLogger,
@@ -82,6 +85,16 @@ func (h *Handler) auditLog(r *http.Request, username string, action string, stat
 	h.logger.Info("AUDIT: ip=%s user=%s action=%s status=%s detail=%s", r.RemoteAddr, username, action, status, detail)
 }
 
+// flowNotEnabled answers a request that reached an SFTP-channel handler whose
+// dependencies were not built (the flow is disabled via ENABLED_FLOWS). Routes
+// of a disabled flow are not registered, so this is a guard against a nil
+// dereference, not a normal path.
+func (h *Handler) flowNotEnabled(w http.ResponseWriter, r *http.Request, action string) {
+	h.logger.Error("%s invoked but the sftp-channel flow is not enabled on this deployment", action)
+	h.auditLog(r, "unknown", action, "failure", "flow not enabled")
+	http.Error(w, "Not enabled", http.StatusServiceUnavailable)
+}
+
 // PreLoginHook handles SFTPGo's pre-login hook to provision users and folders.
 // It validates the user against the IdP and configures appropriate permissions and virtual folders.
 func (h *Handler) PreLoginHook(w http.ResponseWriter, r *http.Request) {
@@ -90,6 +103,10 @@ func (h *Handler) PreLoginHook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !h.authenticate(r, w) {
+		return
+	}
+	if h.idp == nil || h.subscription == nil || h.sftpgo == nil {
+		h.flowNotEnabled(w, r, "pre-login-hook")
 		return
 	}
 	defer r.Body.Close()
@@ -280,6 +297,10 @@ func (h *Handler) AuthHandler(w http.ResponseWriter, r *http.Request) {
 	if !h.authenticate(r, w) {
 		return
 	}
+	if h.db == nil || h.idp == nil {
+		h.flowNotEnabled(w, r, "auth-hook")
+		return
+	}
 	defer r.Body.Close()
 
 	var req models.KeyIntRequest
@@ -317,17 +338,18 @@ func (h *Handler) AuthHandler(w http.ResponseWriter, r *http.Request) {
 	h.auditLog(r, req.Username, "auth-hook", status, detail)
 }
 
-// authenticate checks if the request has a valid API key.
-// It returns true if authentication is successful or not configured, false otherwise.
+// authenticate checks if the request has a valid API key. It returns true on
+// a match and false otherwise (after writing the error response).
 //
-// Fail-open when HookAPIKey is unconfigured is a deliberate design carried
-// over from PR #71 for the pre-login and keyboard-interactive hooks, so
-// dev/demo deployments that never set HOOK_API_KEY keep working. Do not
-// change that here — ExternalAuthHook uses its own stricter,
-// fail-closed check (authenticateExternalAuthHook) instead of this function.
+// HOOK_API_KEY is required at startup (config.Load rejects an empty value), so
+// an empty key here can only come from a hand-built Config. It fails closed:
+// without this check an empty key would match a request that sends no key.
 func (h *Handler) authenticate(r *http.Request, w http.ResponseWriter) bool {
 	if h.cfg.HookAPIKey == "" {
-		return true
+		h.logger.Error("Hook invoked but HOOK_API_KEY is not configured; refusing to serve this route unauthenticated")
+		h.auditLog(r, "unknown", r.URL.Path, "failure", "HOOK_API_KEY not configured")
+		http.Error(w, "Service unavailable: authentication not configured", http.StatusServiceUnavailable)
+		return false
 	}
 
 	if !apiKeyMatches(r, h.cfg.HookAPIKey) {

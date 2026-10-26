@@ -73,9 +73,72 @@ This project provides a secure, individual-account-based authentication and prov
 > **Note**: This project requires Asgardeo or WSO2 Identity Server (WSO2 IS) as the Identity Provider (IdP). It utilizes proprietary app-native authentication APIs specific to these platforms/products.
 
 
+### Enabled flows
+
+The service has two independent use cases ("flows"). `ENABLED_FLOWS` selects which
+ones a deployment runs, so it only needs the configuration of the flows it uses.
+
+| Flow | Routes | Purpose |
+|---|---|---|
+| `web-attachment` | `POST /external-auth-hook` | Verifies a gateway JWT against a JWKS and returns an SFTPGo user (web attachment access path). Does not use the database, the identity provider, the SFTPGo admin API or the subscription/project APIs. |
+| `sftp-channel` | `POST /prelogin-hook`, `POST /auth-hook` | SFTP login through the identity provider, with folder provisioning. Uses the database, the identity provider, the SFTPGo admin API and the subscription/project APIs. |
+
+`ENABLED_FLOWS` is a comma-separated, trimmed, case-sensitive list of `web-attachment`
+and `sftp-channel`. Unset or empty enables both flows. A value with an unknown name,
+or with no name at all (for example `,`), stops the service at startup with an error
+naming the bad value and the allowed ones. Duplicates are harmless.
+
+Only the routes of an enabled flow are registered (a disabled flow's paths answer
+`404`), and only an enabled flow's dependencies are built: with `web-attachment` alone
+the service starts without a reachable database.
+
+| Variable | Required when |
+|---|---|
+| `HOOK_API_KEY`, `DIR_PATH` | Always |
+| `AUTH_JWKS_ENDPOINT` (https), `AUTH_ISSUER`, `ATTACHMENTS_DIR_PATH` | `web-attachment` (see the compatibility rule below) |
+| `BASIC_AUTHENTICATOR_ID`, `INTERNAL_CLIENT_ID`, `INTERNAL_CLIENT_SECRET`, `OAUTH_CALLBACK_URL`, `INTERNAL_IDP_BASE_PATH`, `SCIM_SCOPE`, `CHECK_ROLE`, `SFTPGO_API_BASE` (https), `ADMIN_USER`, `ADMIN_KEY`, `FOLDER_PATH`, `SUBSCRIPTION_API`, `PROJECT_API`, `DB_CONN_STRING` | `sftp-channel` |
+
+`AUTH_AUDIENCE` (comma-separated, OR-matched) is required when `ENABLED_FLOWS` is set and
+includes `web-attachment` (the JWT validator refuses to start without an accepted
+audience), and optional when `ENABLED_FLOWS` is unset. `AUTH_TOKEN_VALIDATOR_ENABLED`, the `EXTERNAL_*`
+variables and the tuning variables with defaults (`PORT`, `LOG_LEVEL`, timeouts,
+`EMAIL_REGEX_PATTERN`, `INTERNAL_USER_SUFFIX`) stay optional. A missing required
+variable stops the service at startup with `missing critical environment variables:`
+followed by the names, each flow-specific name annotated with the flow that needs it.
+
+**`HOOK_API_KEY` is required in every configuration.** The service refuses to start
+without it, and every hook route rejects a request whose `API-Key` header is missing
+or wrong.
+
+**Backward-compatibility rule.** When `ENABLED_FLOWS` is not set, behavior is the same
+as before the variable existed, except that `HOOK_API_KEY` is now required: the
+`sftp-channel` variables stay required, and the `web-attachment` variables
+(`AUTH_JWKS_ENDPOINT`, `AUTH_ISSUER`, `ATTACHMENTS_DIR_PATH`) stay optional. If the JWKS
+is not configured, the service starts with a warning and `/external-auth-hook` answers
+`503`. The strict per-flow check for the `web-attachment` variables (including `AUTH_AUDIENCE`)
+applies only when `ENABLED_FLOWS` is explicitly set and includes `web-attachment`. In
+that strict mode the service also exits at startup if the JWT validator cannot be
+built, instead of starting with `/external-auth-hook` answering `503`. An unreachable
+JWKS host is not caught at startup (the key set is fetched in the background and the
+failure is only logged); it surfaces as failed validations at request time.
+
+Example, `web-attachment` only (no database, identity provider or SFTPGo admin API):
+```bash
+ENABLED_FLOWS="web-attachment"
+HOOK_API_KEY="your-key"
+DIR_PATH="/path/on/sftpgo/server"
+ATTACHMENTS_DIR_PATH="/path/on/sftpgo/server/attachments"
+AUTH_JWKS_ENDPOINT="https://your-idp/oauth2/jwks"
+AUTH_ISSUER="https://your-idp/oauth2/token"
+AUTH_AUDIENCE="aud-1"   # required in this configuration
+```
+
+Example, both flows (`ENABLED_FLOWS` may also be left unset): every variable in
+`.env.example`, with `ENABLED_FLOWS="web-attachment,sftp-channel"`.
+
 ### Environment Variables
 
-Copy `.env.example` to `.env` and configure:
+Copy `.env.example` to `.env` and configure the variables of the flows you enable:
 
 #### Internal Organization
 ```bash
@@ -104,7 +167,8 @@ BASIC_AUTHENTICATOR_ID="..."                            # Authenticator ID for B
 PORT="9090"                    # Server port
 LOG_LEVEL="INFO"              # DEBUG, INFO, WARN, ERROR (default: INFO)
 HTTP_TIMEOUT="15"             # HTTP client timeout (seconds)
-HOOK_API_KEY="your-key"       # API key for hooks (adds API-Key header requirement)
+HOOK_API_KEY="your-key"       # Required: API key every hook request must present in the API-Key header
+# ENABLED_FLOWS="web-attachment,sftp-channel"   # Optional: see "Enabled flows" below (default: both)
 # EMAIL_REGEX_PATTERN="..."   # Optional: custom email validation regex (uses built-in default if not set)
 ```
 
@@ -132,16 +196,18 @@ PROJECT_API="https://api.example.com/projects?projectKey=%s"
 ```
 
 #### External-Auth Hook Configuration (web attachment access path)
-Optional. Configures JWT validation for `/external-auth-hook`, used by a web app's
+Required by the `web-attachment` flow when `ENABLED_FLOWS` is set (see "Enabled flows").
+Configures JWT validation for `/external-auth-hook`, used by a web app's
 backend to obtain SFTPGo REST API tokens on behalf of its own already-authenticated
 callers, by forwarding its own gateway-issued bearer token as the HTTP Basic-auth
-password on SFTPGo's `GET /api/v2/user/token`. If unset, the service still starts
-and the pre-login/keyboard-interactive hooks keep working unchanged; only
-`/external-auth-hook` is disabled (fails closed with `503`) until configured.
+password on SFTPGo's `GET /api/v2/user/token`. With `ENABLED_FLOWS` unset and these
+variables missing, the service still starts and the pre-login/keyboard-interactive
+hooks keep working unchanged; only `/external-auth-hook` is disabled (fails closed with
+`503`) until configured.
 ```bash
 AUTH_JWKS_ENDPOINT="https://your-idp/oauth2/jwks"
 AUTH_ISSUER="https://your-idp/oauth2/token"
-AUTH_AUDIENCE="aud-1,aud-2"           # Optional, comma-separated, OR-matched
+AUTH_AUDIENCE="aud-1,aud-2"           # Comma-separated, OR-matched; required when ENABLED_FLOWS includes web-attachment
 AUTH_TOKEN_VALIDATOR_ENABLED="true"   # Optional, default true; "false" skips signature verification (local dev only)
 ```
 
@@ -219,7 +285,7 @@ docker run -p 9090:9090 --env-file .env sftpgo-authn-service
 
 ### POST /prelogin-hook
 Pre-login user provisioning hook called by SFTPGo.
-Requires `API-Key` header if `HOOK_API_KEY` is configured.
+Requires the `API-Key` header (`HOOK_API_KEY`). Only served when the `sftp-channel` flow is enabled.
 
 **Request:**
 ```json
@@ -247,7 +313,7 @@ Requires `API-Key` header if `HOOK_API_KEY` is configured.
 
 ### POST /auth-hook
 Keyboard-interactive authentication hook.
-Requires `API-Key` header if `HOOK_API_KEY` is configured.
+Requires the `API-Key` header (`HOOK_API_KEY`). Only served when the `sftp-channel` flow is enabled.
 
 **Request:**
 ```json
@@ -275,8 +341,8 @@ SFTPGo `external_auth_hook` for the web attachment access path (distinct from th
 every `GET /api/v2/user/token` attempt; the `password` field carries the caller's
 JWT, which is independently verified against `AUTH_JWKS_ENDPOINT`/`AUTH_ISSUER`
 (same validation rules as the CSM backend's own gateway-token check — issuer,
-audience, expiration, clock-skew leeway). Requires `API-Key` header if
-`HOOK_API_KEY` is configured.
+audience, expiration, clock-skew leeway). Requires the `API-Key` header
+(`HOOK_API_KEY`). Only served when the `web-attachment` flow is enabled.
 
 **Request** (sent by SFTPGo, not by the caller):
 ```json
@@ -334,7 +400,7 @@ The service automatically detects user type based on email domain:
 
 ## Security Considerations
 
-- **API Key Auth**: Optional `API-Key` header validation for hooks
+- **API Key Auth**: `API-Key` header validation for every hook; `HOOK_API_KEY` is required at startup
 - **Input Validation**: Usernames validated for length and invalid characters
 - **SCIM Injection Protection**: Quotes escaped in SCIM filter queries
 - **Path Traversal Prevention**: Folder names validated for illegal characters

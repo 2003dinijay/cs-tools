@@ -32,6 +32,41 @@ import (
 	applog "github.com/wso2-open-operations/cs-tools/integrations/sftpgo-authentication-service/internal/log"
 )
 
+// buildMux registers the routes of the enabled flows. A disabled flow's paths
+// are left unregistered, so they answer 404.
+func buildMux(cfg *config.Config, h *handler.Handler) *http.ServeMux {
+	mux := http.NewServeMux()
+	if cfg.SFTPChannelEnabled {
+		mux.HandleFunc("/prelogin-hook", h.PreLoginHook)
+		mux.HandleFunc("/auth-hook", h.AuthHandler)
+	}
+	if cfg.WebAttachmentEnabled {
+		mux.HandleFunc("/external-auth-hook", h.ExternalAuthHook)
+	}
+	return mux
+}
+
+// initJWTAuth builds the JWT validator for the web-attachment flow via newJWT.
+// When ENABLED_FLOWS explicitly names the flow, a construction error is
+// returned so the caller can refuse to start. When ENABLED_FLOWS is unset the
+// error is only logged and a nil validator is returned, leaving
+// /external-auth-hook answering 503 (the behavior before ENABLED_FLOWS existed).
+func initJWTAuth(
+	cfg *config.Config,
+	logger *applog.AppLogger,
+	newJWT func(*config.Config, *applog.AppLogger) (*service.JWTAuthService, error),
+) (*service.JWTAuthService, error) {
+	svc, err := newJWT(cfg, logger)
+	if err == nil {
+		return svc, nil
+	}
+	if cfg.FlowsExplicit {
+		return nil, err
+	}
+	logger.Warn("External-auth hook (web attachment access path) is disabled: %v", err)
+	return nil, nil
+}
+
 // The entry point for the SFTPGo Authentication Service.
 func main() {
 	// 1. Load configuration from environment variables
@@ -43,48 +78,48 @@ func main() {
 	// 2. Initialize the custom logger
 	logger := applog.NewAppLogger(cfg.LogLevel)
 
-	// 3. Initialize database service
-	dbService, err := service.NewDBService(cfg, logger)
-	if err != nil {
-		logger.Fatal("Failed to initialize database: %v", err)
+	logger.Info("Enabled flows: web-attachment=%t sftp-channel=%t", cfg.WebAttachmentEnabled, cfg.SFTPChannelEnabled)
+
+	// 3. Initialize the dependencies of each enabled flow. A disabled flow's
+	// dependencies are never built, so it needs none of their configuration
+	// (and, for the sftp-channel flow, no reachable database).
+	var (
+		dbService           *service.DBService
+		idpService          *service.IdPService
+		sftpgoService       *service.SFTPGoService
+		subscriptionService *service.SubscriptionService
+		jwtAuthService      *service.JWTAuthService
+	)
+
+	if cfg.SFTPChannelEnabled {
+		dbService, err = service.NewDBService(cfg, logger)
+		if err != nil {
+			logger.Fatal("Failed to initialize database: %v", err)
+		}
+		idpService = service.NewIdPService(cfg, logger)
+		sftpgoService = service.NewSFTPGoService(cfg, logger)
+		subscriptionService = service.NewSubscriptionService(cfg, logger)
 	}
 
-	// 4. Initialize external API clients/services
-	idpService := service.NewIdPService(cfg, logger)
-	sftpgoService := service.NewSFTPGoService(cfg, logger)
-	subscriptionService := service.NewSubscriptionService(cfg, logger)
-
-	// 4b. Initialize the JWT validator for the external_auth_hook (web attachment
-	// access path). This is optional: deployments that only use the pre-login and
-	// keyboard-interactive hooks (the SFTP-channel flow) don't set
-	// AUTH_JWKS_ENDPOINT/AUTH_ISSUER, so a missing/unreachable JWKS here does not
-	// stop the service from starting — it just leaves /external-auth-hook
-	// disabled (it fails closed with 503 per request until configured).
-	jwtAuthService, err := service.NewJWTAuthService(cfg, logger)
-	if err != nil {
-		logger.Warn("External-auth hook (web attachment access path) is disabled: %v", err)
-		jwtAuthService = nil
+	// The JWT validator backs /external-auth-hook (web attachment access path).
+	// With ENABLED_FLOWS unset, a validator that cannot be built does not stop
+	// the service: /external-auth-hook fails closed with 503 per request. With
+	// ENABLED_FLOWS set, it is fatal. An unreachable JWKS host is not an error
+	// returned here: the key set refreshes in the background.
+	if cfg.WebAttachmentEnabled {
+		jwtAuthService, err = initJWTAuth(cfg, logger, service.NewJWTAuthService)
+		if err != nil {
+			logger.Fatal("Failed to initialize the JWT validator for the web-attachment flow: %v", err)
+		}
 	}
 
-	// 4c. /external-auth-hook fails closed per request when HOOK_API_KEY is
-	// unset (a successful call there mints a full SFTPGo identity from an
-	// arbitrary presented JWT, so it must never run unauthenticated). Warn
-	// loudly at startup too, since this is otherwise a silent per-request 503
-	// until someone notices.
-	if jwtAuthService != nil && cfg.HookAPIKey == "" {
-		logger.Warn("HOOK_API_KEY is not set: /external-auth-hook is enabled (AUTH_JWKS_ENDPOINT/AUTH_ISSUER configured) but will refuse every request with 503 until HOOK_API_KEY is configured. Set HOOK_API_KEY to enable it.")
-	}
-
-	// 5. Initialize the HTTP handler, injecting all dependencies
+	// 4. Initialize the HTTP handler, injecting all dependencies
 	h := handler.NewHandler(cfg, logger, dbService, idpService, sftpgoService, subscriptionService, jwtAuthService)
 
-	// 6. Set up routes
-	mux := http.NewServeMux()
-	mux.HandleFunc("/prelogin-hook", h.PreLoginHook)
-	mux.HandleFunc("/auth-hook", h.AuthHandler)
-	mux.HandleFunc("/external-auth-hook", h.ExternalAuthHook)
+	// 5. Set up routes for the enabled flows
+	mux := buildMux(cfg, h)
 
-	// 7. Start the server with graceful shutdown support
+	// 6. Start the server with graceful shutdown support
 	server := &http.Server{
 		Addr:         ":" + cfg.Port,
 		Handler:      mux,

@@ -141,7 +141,29 @@ type Config struct {
 	// against AuthJWKSEndpoint. Only ever disabled for local development.
 	// Mirrors apps/csm-portal/backend's AUTH_TOKEN_VALIDATOR_ENABLED.
 	AuthTokenValidatorEnabled bool
+
+	// WebAttachmentEnabled reports whether the web-attachment flow
+	// (/external-auth-hook) is enabled. Derived from ENABLED_FLOWS.
+	WebAttachmentEnabled bool
+	// SFTPChannelEnabled reports whether the sftp-channel flow
+	// (/prelogin-hook and /auth-hook) is enabled. Derived from ENABLED_FLOWS.
+	SFTPChannelEnabled bool
+	// FlowsExplicit is true when ENABLED_FLOWS was set to a non-empty value.
+	// When false, both flows are enabled and the web-attachment variables stay
+	// optional, exactly as before ENABLED_FLOWS existed.
+	FlowsExplicit bool
 }
+
+// Flow names accepted in ENABLED_FLOWS.
+const (
+	// FlowWebAttachment is the /external-auth-hook flow (web attachment access path).
+	FlowWebAttachment = "web-attachment"
+	// FlowSFTPChannel is the /prelogin-hook and /auth-hook flow (SFTP channel login).
+	FlowSFTPChannel = "sftp-channel"
+)
+
+// allowedFlows lists every valid ENABLED_FLOWS value, in documentation order.
+var allowedFlows = []string{FlowWebAttachment, FlowSFTPChannel}
 
 // ExternalAuthClockSkew is the leeway applied to JWT expiration checks on the
 // external_auth_hook path, matching the CSM backend's middleware.Config.ClockSkew.
@@ -157,6 +179,10 @@ type EnvVar struct {
 	IsSensitive bool
 	// IsCritical indicates if the application cannot start without this variable.
 	IsCritical bool
+	// Flow restricts IsCritical to one flow (FlowWebAttachment or FlowSFTPChannel):
+	// the variable is only required when that flow is enabled. Empty means the
+	// variable is required in every configuration.
+	Flow string
 }
 
 // getEnvStr returns the value of the environment variable key, or fallback if unset or empty.
@@ -214,6 +240,44 @@ func splitComma(v string) []string {
 	return out
 }
 
+// parseEnabledFlows parses the ENABLED_FLOWS value. An empty value enables both
+// flows (explicit=false). Otherwise it is a comma-separated, trimmed,
+// case-sensitive list of flow names; an unknown name, or a list with no name at
+// all, is an error.
+func parseEnabledFlows(raw string) (web, sftp, explicit bool, err error) {
+	if raw == "" {
+		return true, true, false, nil
+	}
+	allowed := strings.Join(allowedFlows, ", ")
+	for _, name := range strings.Split(raw, ",") {
+		switch strings.TrimSpace(name) {
+		case "":
+			continue
+		case FlowWebAttachment:
+			web = true
+		case FlowSFTPChannel:
+			sftp = true
+		default:
+			return false, false, false, fmt.Errorf("invalid ENABLED_FLOWS value %q: unknown flow %q (allowed: %s)", raw, strings.TrimSpace(name), allowed)
+		}
+	}
+	if !web && !sftp {
+		return false, false, false, fmt.Errorf("invalid ENABLED_FLOWS value %q: no flow named (allowed: %s)", raw, allowed)
+	}
+	return web, sftp, true, nil
+}
+
+// flowEnabled reports whether the named flow is enabled in cfg.
+func (c *Config) flowEnabled(flow string) bool {
+	switch flow {
+	case FlowWebAttachment:
+		return c.WebAttachmentEnabled
+	case FlowSFTPChannel:
+		return c.SFTPChannelEnabled
+	}
+	return true
+}
+
 // Load reads environment variables into the Config struct and validates them.
 func Load() (*Config, error) {
 	cfg := &Config{
@@ -254,6 +318,12 @@ func Load() (*Config, error) {
 		AuthAudiences:             splitComma(os.Getenv("AUTH_AUDIENCE")),
 		AuthTokenValidatorEnabled: getEnvBool("AUTH_TOKEN_VALIDATOR_ENABLED", true),
 	}
+
+	web, sftp, explicit, err := parseEnabledFlows(os.Getenv("ENABLED_FLOWS"))
+	if err != nil {
+		return nil, err
+	}
+	cfg.WebAttachmentEnabled, cfg.SFTPChannelEnabled, cfg.FlowsExplicit = web, sftp, explicit
 
 	// Compute endpoints
 	cfg.AdminTokenEndPoint = cfg.SFTPGoBasePath + "/token"
@@ -305,59 +375,88 @@ func requireHTTPS(name, value string) error {
 	return nil
 }
 
+// criticalFor reports whether v must be set for cfg's enabled flows.
+func criticalFor(cfg *Config, v EnvVar) bool {
+	if !v.IsCritical {
+		return false
+	}
+	if v.Flow == "" {
+		return true
+	}
+	// Backward compatibility: with ENABLED_FLOWS unset, the web-attachment
+	// variables stay optional (a missing JWKS disables /external-auth-hook at
+	// startup instead of failing it).
+	if v.Flow == FlowWebAttachment && !cfg.FlowsExplicit {
+		return false
+	}
+	return cfg.flowEnabled(v.Flow)
+}
+
 // validateEnvVars checks if all critical environment variables are set.
 func validateEnvVars(cfg *Config) error {
+	// Flow-scoped rows are critical only when their flow is enabled (see
+	// criticalFor). The web-attachment rows are additionally critical only when
+	// ENABLED_FLOWS is set explicitly, so a deployment that never sets
+	// ENABLED_FLOWS behaves exactly as it did before the variable existed.
 	envVars := []EnvVar{
 		// Service Configuration
-		{"PORT", &cfg.Port, false, false},
-		{"LOG_LEVEL", &cfg.LogLevel, false, false},
-		{"EMAIL_REGEX_PATTERN", &cfg.EmailRegexPattern, false, false},
-		{"HOOK_API_KEY", &cfg.HookAPIKey, true, false},
-		{"BASIC_AUTHENTICATOR_ID", &cfg.BasicAuthenticatorID, false, true},
+		{"PORT", &cfg.Port, false, false, ""},
+		{"LOG_LEVEL", &cfg.LogLevel, false, false, ""},
+		{"EMAIL_REGEX_PATTERN", &cfg.EmailRegexPattern, false, false, ""},
+		{"HOOK_API_KEY", &cfg.HookAPIKey, true, true, ""},
+		{"BASIC_AUTHENTICATOR_ID", &cfg.BasicAuthenticatorID, false, true, FlowSFTPChannel},
 
 		// IdP Configuration (Internal Users)
-		{"INTERNAL_CLIENT_ID", &cfg.InternalClientID, false, true},
-		{"INTERNAL_CLIENT_SECRET", &cfg.InternalClientSecret, true, true},
-		{"OAUTH_CALLBACK_URL", &cfg.OAuthCallbackURL, false, true},
-		{"INTERNAL_IDP_BASE_PATH", &cfg.InternalIdPBasePath, false, true},
-		{"SCIM_SCOPE", &cfg.SCIMScope, false, true},
-		{"INTERNAL_USER_SUFFIX", &cfg.InternalUserSuffix, false, false},
+		{"INTERNAL_CLIENT_ID", &cfg.InternalClientID, false, true, FlowSFTPChannel},
+		{"INTERNAL_CLIENT_SECRET", &cfg.InternalClientSecret, true, true, FlowSFTPChannel},
+		{"OAUTH_CALLBACK_URL", &cfg.OAuthCallbackURL, false, true, FlowSFTPChannel},
+		{"INTERNAL_IDP_BASE_PATH", &cfg.InternalIdPBasePath, false, true, FlowSFTPChannel},
+		{"SCIM_SCOPE", &cfg.SCIMScope, false, true, FlowSFTPChannel},
+		{"INTERNAL_USER_SUFFIX", &cfg.InternalUserSuffix, false, false, ""},
 
 		// IdP Configuration (External Users)
-		{"EXTERNAL_CLIENT_ID", &cfg.ExternalClientID, false, false},
-		{"EXTERNAL_CLIENT_SECRET", &cfg.ExternalClientSecret, true, false},
-		{"EXTERNAL_IDP_BASE_PATH", &cfg.ExternalIdPBasePath, false, false},
+		{"EXTERNAL_CLIENT_ID", &cfg.ExternalClientID, false, false, ""},
+		{"EXTERNAL_CLIENT_SECRET", &cfg.ExternalClientSecret, true, false, ""},
+		{"EXTERNAL_IDP_BASE_PATH", &cfg.ExternalIdPBasePath, false, false, ""},
 
 		// SFTPGo Configuration
-		{"SFTPGO_API_BASE", &cfg.SFTPGoBasePath, false, true},
-		{"ADMIN_USER", &cfg.AdminUser, false, true},
-		{"ADMIN_KEY", &cfg.AdminKey, true, true},
-		{"FOLDER_PATH", &cfg.FolderPath, false, true},
-		{"DIR_PATH", &cfg.DIRPath, false, true},
-		{"ATTACHMENTS_DIR_PATH", &cfg.AttachmentsPath, false, false},
-		{"CHECK_ROLE", &cfg.CheckRole, false, true},
+		{"SFTPGO_API_BASE", &cfg.SFTPGoBasePath, false, true, FlowSFTPChannel},
+		{"ADMIN_USER", &cfg.AdminUser, false, true, FlowSFTPChannel},
+		{"ADMIN_KEY", &cfg.AdminKey, true, true, FlowSFTPChannel},
+		{"FOLDER_PATH", &cfg.FolderPath, false, true, FlowSFTPChannel},
+		{"DIR_PATH", &cfg.DIRPath, false, true, ""},
+		{"ATTACHMENTS_DIR_PATH", &cfg.AttachmentsPath, false, true, FlowWebAttachment},
+		{"CHECK_ROLE", &cfg.CheckRole, false, true, FlowSFTPChannel},
 
 		// External APIs
-		{"SUBSCRIPTION_API", &cfg.SubscriptionAPI, false, true},
-		{"PROJECT_API", &cfg.ProjectAPI, false, true},
+		{"SUBSCRIPTION_API", &cfg.SubscriptionAPI, false, true, FlowSFTPChannel},
+		{"PROJECT_API", &cfg.ProjectAPI, false, true, FlowSFTPChannel},
 
 		// Database Configuration
-		{"DB_CONN_STRING", &cfg.DBConnString, true, true},
+		{"DB_CONN_STRING", &cfg.DBConnString, true, true, FlowSFTPChannel},
 
 		// JWT validation for the external_auth_hook (web attachment access path).
-		// Not critical: deployments that only use the pre-login/keyboard-interactive
-		// hooks (PR #71) do not need these set, and the service must keep starting
-		// without them. The /external-auth-hook route itself fails closed at request
-		// time if left unconfigured.
-		{"AUTH_JWKS_ENDPOINT", &cfg.AuthJWKSEndpoint, false, false},
-		{"AUTH_ISSUER", &cfg.AuthIssuer, false, false},
+		{"AUTH_JWKS_ENDPOINT", &cfg.AuthJWKSEndpoint, false, true, FlowWebAttachment},
+		{"AUTH_ISSUER", &cfg.AuthIssuer, false, true, FlowWebAttachment},
 	}
 
 	var missingCriticalVars []string
 	for _, v := range envVars {
-		if v.IsCritical && *v.Value == "" {
-			missingCriticalVars = append(missingCriticalVars, v.Name)
+		if criticalFor(cfg, v) && *v.Value == "" {
+			name := v.Name
+			if v.Flow != "" {
+				name += " (required by the " + v.Flow + " flow)"
+			}
+			missingCriticalVars = append(missingCriticalVars, name)
 		}
+	}
+
+	// AUTH_AUDIENCE is parsed into a list, so it is checked here rather than in
+	// the table. Without it the JWT validator refuses to build (an empty
+	// audience list would accept any audience), so in strict web-attachment
+	// mode it is required; with ENABLED_FLOWS unset it stays optional.
+	if cfg.FlowsExplicit && cfg.WebAttachmentEnabled && len(cfg.AuthAudiences) == 0 {
+		missingCriticalVars = append(missingCriticalVars, "AUTH_AUDIENCE (required by the "+FlowWebAttachment+" flow)")
 	}
 
 	if len(missingCriticalVars) > 0 {
@@ -368,13 +467,15 @@ func validateEnvVars(cfg *Config) error {
 	// and the default HTTP client follows redirects (see
 	// httpclient.RefuseInsecureRedirect for the corresponding per-request
 	// guard). Requiring HTTPS here closes the config-time half of that gap.
-	if err := requireHTTPS("SFTPGO_API_BASE", cfg.SFTPGoBasePath); err != nil {
-		return err
+	// Only the sftp-channel flow talks to the SFTPGo admin API.
+	if cfg.SFTPChannelEnabled {
+		if err := requireHTTPS("SFTPGO_API_BASE", cfg.SFTPGoBasePath); err != nil {
+			return err
+		}
 	}
 	// AUTH_JWKS_ENDPOINT establishes cryptographic trust for the
-	// external-auth-hook path; it is optional (deployments that only use the
-	// pre-login/keyboard-interactive hooks don't set it), but when it is set
-	// it must be HTTPS.
+	// external-auth-hook path; it is only required when ENABLED_FLOWS names the
+	// web-attachment flow, but whenever it is set it must be HTTPS.
 	if err := requireHTTPS("AUTH_JWKS_ENDPOINT", cfg.AuthJWKSEndpoint); err != nil {
 		return err
 	}

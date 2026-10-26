@@ -17,6 +17,8 @@
 package config
 
 import (
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -46,6 +48,7 @@ func setAllCriticalEnvVars(t *testing.T) {
 	// Not a secret: base64("BasicAuthenticator:LOCAL"), the standard username/password
 	// authenticator identifier in the WSO2 identity platform.
 	t.Setenv("BASIC_AUTHENTICATOR_ID", "QmFzaWNBdXRoZW50aWNhdG9yOkxPQ0FM")
+	t.Setenv("HOOK_API_KEY", "test_hook_key")
 }
 
 func TestLoad_Success(t *testing.T) {
@@ -172,3 +175,361 @@ func TestLoad_RejectsOpaqueHTTPSURL(t *testing.T) {
 // failure, a misconfigured external-auth-hook must disable that hook and keep
 // the pre-login/keyboard-interactive hooks running, not crash the whole
 // service. See internal/service/jwtauth_test.go for that coverage.
+
+// Variable sets per flow, mirroring the README's per-flow table.
+var (
+	alwaysVars = map[string]string{
+		"HOOK_API_KEY": "test_hook_key",
+		"DIR_PATH":     "/tmp/data",
+	}
+	webVars = map[string]string{
+		"AUTH_JWKS_ENDPOINT":   "https://idp.example.com/jwks",
+		"AUTH_ISSUER":          "https://idp.example.com/oauth2/token",
+		"ATTACHMENTS_DIR_PATH": "/tmp/attachments",
+	}
+	// webAudience is required in strict web-attachment mode only.
+	webAudience = map[string]string{"AUTH_AUDIENCE": "aud-1"}
+	sftpVars    = map[string]string{
+		"BASIC_AUTHENTICATOR_ID": "QmFzaWNBdXRoZW50aWNhdG9yOkxPQ0FM",
+		"INTERNAL_CLIENT_ID":     "test_client_id",
+		"INTERNAL_CLIENT_SECRET": "test_client_secret",
+		"OAUTH_CALLBACK_URL":     "http://localhost/callback",
+		"INTERNAL_IDP_BASE_PATH": "http://idp.example.com",
+		"SCIM_SCOPE":             "scope",
+		"CHECK_ROLE":             "internal",
+		"SFTPGO_API_BASE":        "https://sftpgo.example.com",
+		"ADMIN_USER":             "admin",
+		"ADMIN_KEY":              "secret",
+		"FOLDER_PATH":            "/tmp/sftpgo",
+		"SUBSCRIPTION_API":       "http://sub.example.com",
+		"PROJECT_API":            "http://proj.example.com",
+		"DB_CONN_STRING":         "db_conn",
+	}
+)
+
+// clearFlowEnv unsets every variable the flow tests may set, so a test starts
+// from an empty environment regardless of the host.
+func clearFlowEnv(t *testing.T) {
+	t.Helper()
+	for _, m := range []map[string]string{alwaysVars, webVars, sftpVars} {
+		for k := range m {
+			t.Setenv(k, "")
+			os.Unsetenv(k)
+		}
+	}
+	t.Setenv("ENABLED_FLOWS", "")
+	os.Unsetenv("ENABLED_FLOWS")
+	t.Setenv("AUTH_AUDIENCE", "")
+	os.Unsetenv("AUTH_AUDIENCE")
+}
+
+func setVars(t *testing.T, sets ...map[string]string) {
+	t.Helper()
+	for _, m := range sets {
+		for k, v := range m {
+			t.Setenv(k, v)
+		}
+	}
+}
+
+func unset(t *testing.T, name string) {
+	t.Helper()
+	t.Setenv(name, "")
+	os.Unsetenv(name)
+}
+
+func TestLoad_EnabledFlows_UnsetEnablesBoth(t *testing.T) {
+	clearFlowEnv(t)
+	setVars(t, alwaysVars, sftpVars)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if !cfg.WebAttachmentEnabled || !cfg.SFTPChannelEnabled || cfg.FlowsExplicit {
+		t.Errorf("expected both flows enabled and not explicit, got web=%t sftp=%t explicit=%t",
+			cfg.WebAttachmentEnabled, cfg.SFTPChannelEnabled, cfg.FlowsExplicit)
+	}
+}
+
+func TestLoad_EnabledFlows_EmptyStringEnablesBoth(t *testing.T) {
+	clearFlowEnv(t)
+	setVars(t, alwaysVars, sftpVars)
+	t.Setenv("ENABLED_FLOWS", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if !cfg.WebAttachmentEnabled || !cfg.SFTPChannelEnabled || cfg.FlowsExplicit {
+		t.Errorf("expected both flows enabled and not explicit, got web=%t sftp=%t explicit=%t",
+			cfg.WebAttachmentEnabled, cfg.SFTPChannelEnabled, cfg.FlowsExplicit)
+	}
+}
+
+// Backward compatibility: with ENABLED_FLOWS unset, the web-attachment
+// variables stay optional.
+func TestLoad_EnabledFlows_UnsetKeepsWebVarsOptional(t *testing.T) {
+	clearFlowEnv(t)
+	setVars(t, alwaysVars, sftpVars) // no JWKS, issuer or attachments dir
+
+	if _, err := Load(); err != nil {
+		t.Fatalf("expected Load to succeed without the web-attachment variables when ENABLED_FLOWS is unset, got %v", err)
+	}
+}
+
+// Backward compatibility: with ENABLED_FLOWS unset, the sftp-channel variables
+// stay required.
+func TestLoad_EnabledFlows_UnsetStillRequiresSFTPVars(t *testing.T) {
+	clearFlowEnv(t)
+	setVars(t, alwaysVars)
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for missing sftp-channel variables, got nil")
+	}
+	if !strings.Contains(err.Error(), "DB_CONN_STRING") {
+		t.Errorf("expected error to name DB_CONN_STRING, got %v", err)
+	}
+}
+
+func TestLoad_EnabledFlows_WebOnlyNeedsOnlyItsVars(t *testing.T) {
+	clearFlowEnv(t)
+	setVars(t, alwaysVars, webVars, webAudience) // no DB, IdP, admin or subscription variables
+	t.Setenv("ENABLED_FLOWS", "web-attachment")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if !cfg.WebAttachmentEnabled || cfg.SFTPChannelEnabled || !cfg.FlowsExplicit {
+		t.Errorf("unexpected flags: web=%t sftp=%t explicit=%t", cfg.WebAttachmentEnabled, cfg.SFTPChannelEnabled, cfg.FlowsExplicit)
+	}
+}
+
+func TestLoad_EnabledFlows_WebOnlyRequiresEachWebVar(t *testing.T) {
+	for name := range webVars {
+		t.Run(name, func(t *testing.T) {
+			clearFlowEnv(t)
+			setVars(t, alwaysVars, webVars, webAudience)
+			t.Setenv("ENABLED_FLOWS", "web-attachment")
+			unset(t, name)
+
+			_, err := Load()
+			if err == nil {
+				t.Fatalf("expected error when %s is missing, got nil", name)
+			}
+			if !strings.Contains(err.Error(), "missing critical environment variables") ||
+				!strings.Contains(err.Error(), name) || !strings.Contains(err.Error(), "web-attachment") {
+				t.Errorf("expected error naming %s and the web-attachment flow, got %v", name, err)
+			}
+		})
+	}
+}
+
+// Strict case: naming the web-attachment flow explicitly makes its variables required.
+func TestLoad_EnabledFlows_ExplicitWebWithoutJWKSFails(t *testing.T) {
+	clearFlowEnv(t)
+	setVars(t, alwaysVars, sftpVars)
+	t.Setenv("ENABLED_FLOWS", "web-attachment,sftp-channel")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for missing AUTH_JWKS_ENDPOINT, got nil")
+	}
+	if !strings.Contains(err.Error(), "AUTH_JWKS_ENDPOINT") {
+		t.Errorf("expected error to name AUTH_JWKS_ENDPOINT, got %v", err)
+	}
+}
+
+func TestLoad_EnabledFlows_SFTPOnlyNeedsOnlyItsVars(t *testing.T) {
+	clearFlowEnv(t)
+	setVars(t, alwaysVars, sftpVars) // no JWKS, issuer or attachments dir
+	t.Setenv("ENABLED_FLOWS", "sftp-channel")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if cfg.WebAttachmentEnabled || !cfg.SFTPChannelEnabled {
+		t.Errorf("unexpected flags: web=%t sftp=%t", cfg.WebAttachmentEnabled, cfg.SFTPChannelEnabled)
+	}
+}
+
+func TestLoad_EnabledFlows_SFTPOnlyRequiresEachSFTPVar(t *testing.T) {
+	for name := range sftpVars {
+		t.Run(name, func(t *testing.T) {
+			clearFlowEnv(t)
+			setVars(t, alwaysVars, sftpVars)
+			t.Setenv("ENABLED_FLOWS", "sftp-channel")
+			unset(t, name)
+
+			_, err := Load()
+			if err == nil {
+				t.Fatalf("expected error when %s is missing, got nil", name)
+			}
+			if !strings.Contains(err.Error(), name) || !strings.Contains(err.Error(), "sftp-channel") {
+				t.Errorf("expected error naming %s and the sftp-channel flow, got %v", name, err)
+			}
+		})
+	}
+}
+
+func TestLoad_EnabledFlows_BothExplicit(t *testing.T) {
+	clearFlowEnv(t)
+	setVars(t, alwaysVars, webVars, sftpVars, webAudience)
+	t.Setenv("ENABLED_FLOWS", "web-attachment,sftp-channel")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if !cfg.WebAttachmentEnabled || !cfg.SFTPChannelEnabled || !cfg.FlowsExplicit {
+		t.Errorf("unexpected flags: web=%t sftp=%t explicit=%t", cfg.WebAttachmentEnabled, cfg.SFTPChannelEnabled, cfg.FlowsExplicit)
+	}
+}
+
+func TestLoad_EnabledFlows_WhitespaceAndDuplicates(t *testing.T) {
+	clearFlowEnv(t)
+	setVars(t, alwaysVars, webVars, webAudience)
+	t.Setenv("ENABLED_FLOWS", " web-attachment , ,web-attachment,")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if !cfg.WebAttachmentEnabled || cfg.SFTPChannelEnabled {
+		t.Errorf("unexpected flags: web=%t sftp=%t", cfg.WebAttachmentEnabled, cfg.SFTPChannelEnabled)
+	}
+}
+
+func TestLoad_EnabledFlows_RejectsBadValues(t *testing.T) {
+	cases := map[string]string{
+		"unknown name":         "bogus",
+		"unknown among valid":  "web-attachment,bogus",
+		"case sensitive":       "Web-Attachment",
+		"only separators":      ",",
+		"only whitespace":      "   ",
+		"separators and space": " , ,",
+	}
+	for name, value := range cases {
+		t.Run(name, func(t *testing.T) {
+			clearFlowEnv(t)
+			setVars(t, alwaysVars, webVars, sftpVars, webAudience)
+			t.Setenv("ENABLED_FLOWS", value)
+
+			_, err := Load()
+			if err == nil {
+				t.Fatalf("expected error for ENABLED_FLOWS=%q, got nil", value)
+			}
+			if !strings.Contains(err.Error(), "ENABLED_FLOWS") ||
+				!strings.Contains(err.Error(), "web-attachment") || !strings.Contains(err.Error(), "sftp-channel") {
+				t.Errorf("expected error naming ENABLED_FLOWS and the allowed values, got %v", err)
+			}
+		})
+	}
+}
+
+func TestLoad_EnabledFlows_UnknownNameIsNamedInError(t *testing.T) {
+	clearFlowEnv(t)
+	setVars(t, alwaysVars, webVars, sftpVars, webAudience)
+	t.Setenv("ENABLED_FLOWS", "web-attachment, bogus")
+
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), `"bogus"`) {
+		t.Fatalf("expected error naming the bad value, got %v", err)
+	}
+}
+
+// HOOK_API_KEY and DIR_PATH are required in every configuration.
+func TestLoad_AlwaysRequiredVarsFailEveryConfiguration(t *testing.T) {
+	configs := map[string]string{
+		"unset":          "",
+		"web-attachment": "web-attachment",
+		"sftp-channel":   "sftp-channel",
+		"both":           "web-attachment,sftp-channel",
+	}
+	for cfgName, flows := range configs {
+		for varName := range alwaysVars {
+			t.Run(cfgName+"/"+varName, func(t *testing.T) {
+				clearFlowEnv(t)
+				setVars(t, alwaysVars, webVars, sftpVars, webAudience)
+				if flows != "" {
+					t.Setenv("ENABLED_FLOWS", flows)
+				}
+				unset(t, varName)
+
+				_, err := Load()
+				if err == nil {
+					t.Fatalf("expected error when %s is missing, got nil", varName)
+				}
+				if !strings.Contains(err.Error(), varName) {
+					t.Errorf("expected error naming %s, got %v", varName, err)
+				}
+			})
+		}
+	}
+}
+
+func TestLoad_EnabledFlows_WebOnlyEnforcesHTTPSJWKS(t *testing.T) {
+	clearFlowEnv(t)
+	setVars(t, alwaysVars, webVars, webAudience)
+	t.Setenv("ENABLED_FLOWS", "web-attachment")
+	t.Setenv("AUTH_JWKS_ENDPOINT", "http://idp.example.com/jwks")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected error for non-HTTPS AUTH_JWKS_ENDPOINT, got nil")
+	}
+}
+
+func TestLoad_EnabledFlows_SFTPOnlyEnforcesHTTPSAdminAPI(t *testing.T) {
+	clearFlowEnv(t)
+	setVars(t, alwaysVars, sftpVars)
+	t.Setenv("ENABLED_FLOWS", "sftp-channel")
+	t.Setenv("SFTPGO_API_BASE", "http://sftpgo.example.com")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected error for non-HTTPS SFTPGO_API_BASE, got nil")
+	}
+}
+
+func TestLoad_EnabledFlows_ExplicitWebRequiresAudience(t *testing.T) {
+	for _, flows := range []string{"web-attachment", "web-attachment,sftp-channel"} {
+		t.Run(flows, func(t *testing.T) {
+			clearFlowEnv(t)
+			setVars(t, alwaysVars, webVars, sftpVars)
+			t.Setenv("ENABLED_FLOWS", flows)
+
+			_, err := Load()
+			if err == nil || !strings.Contains(err.Error(), "AUTH_AUDIENCE (required by the web-attachment flow)") {
+				t.Fatalf("expected error naming AUTH_AUDIENCE, got %v", err)
+			}
+
+			t.Setenv("AUTH_AUDIENCE", " , ")
+			if _, err := Load(); err == nil {
+				t.Fatal("expected error for an AUTH_AUDIENCE with no value, got nil")
+			}
+		})
+	}
+}
+
+func TestLoad_EnabledFlows_SFTPOnlyDoesNotRequireAudience(t *testing.T) {
+	clearFlowEnv(t)
+	setVars(t, alwaysVars, sftpVars)
+	t.Setenv("ENABLED_FLOWS", "sftp-channel")
+
+	if _, err := Load(); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+}
+
+// Backward compatibility: with ENABLED_FLOWS unset, AUTH_AUDIENCE stays optional
+// even when the JWKS and issuer are set.
+func TestLoad_EnabledFlows_UnsetKeepsAudienceOptional(t *testing.T) {
+	clearFlowEnv(t)
+	setVars(t, alwaysVars, webVars, sftpVars)
+
+	if _, err := Load(); err != nil {
+		t.Fatalf("expected no error without AUTH_AUDIENCE when ENABLED_FLOWS is unset, got %v", err)
+	}
+}
