@@ -744,7 +744,7 @@ export default function CsmBannersPage(): JSX.Element {
               "& .MuiOutlinedInput-root.Mui-focused .MuiOutlinedInput-notchedOutline": {
                 borderColor: theme.palette.primary.main,
               },
-              "& .MuiOutlinedInput-root.Mui-disabled": {
+              "& .MuiOutlinedInput-root.Mui-disabled .MuiInputBase-input": {
                 color: "rgba(255,255,255,0.6)",
                 WebkitTextFillColor: "rgba(255,255,255,0.6)",
               },
