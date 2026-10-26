@@ -117,7 +117,13 @@ func readBannerSave(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	var req bannerSave
-	if err := dec.Decode(&req); err != nil || dec.More() {
+	if err := dec.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return nil, false
+	}
+	// More treats a trailing ] or } as the end of the value. A second decode
+	// must find nothing left, including those delimiters.
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
 		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
 		return nil, false
 	}
