@@ -25075,7 +25075,8 @@ components:
           description: >-
             true limits the result to the groups an incident can be created in
             with an explicit assignmentGroupId: active groups that are the
-            support group of at least one service. The ids are group ids (what
+            support group of at least one service, plus any active group the
+            deployment has configured as an extra assignable group. The ids are group ids (what
             assignmentGroupId takes). On the PostgreSQL data source the search
             without this filter lists the team registry instead, whose ids are
             not group ids. On the ServiceNow data source the set is built from
@@ -27619,7 +27620,7 @@ components:
             request's project, its own creator, a user who may not decide an internal
             stage, or a field a customer may not set), and, on POST /incidents,
             `incident_assignment_group_not_allowed` (400: an assignmentGroupId that is
-            not an active support group of any service; nothing created), and, on POST
+            not an assignable active group; nothing created), and, on POST
             /incidents/{id}/specialist-handoffs, `incident_handoff_needs_assignee` (409:
             the incident is assigned to nobody). The list grows, so this is
             deliberately not a closed enum: a value not listed here is a newer server's.
@@ -28390,9 +28391,10 @@ components:
             Optional. The group is decided once, before anything is written,
             the same way for every caller and data source. Sent: used when it
             is an active group that is the support group of at least one
-            service (the set POST /groups/search returns with
+            service or one of the deployment's configured extra assignable
+            groups (the set POST /groups/search returns with
             filters.supportGroupsOnly), otherwise 400 "assignmentGroupId must
-            be the active support group of a service" (a value that is not a
+            be an active group incidents can be assigned to" (a value that is not a
             UUID is a 400 too; a blank value counts as not sent). Not sent:
             the service's support group; when the service has none, the
             support group of the default service (INCIDENT_DEFAULT_SERVICE_ID,

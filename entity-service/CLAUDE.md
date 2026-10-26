@@ -79,6 +79,7 @@ The server loads `.env` automatically on startup (silently ignored if absent). P
 | `REDIS_URL` | no | — | `rediss://:<key>@<host>:<port>` (TLS, Azure Managed Redis); wins over `REDIS_ADDR`. Turns on the user cache (see "User cache (Redis)" below). `Validate` requires a `redis`/`rediss` scheme and a host, and never echoes the URL |
 | `REDIS_ADDR` / `REDIS_PASSWORD` | no | — | Plain, non-TLS Redis for local runs. Either this or `REDIS_URL` makes `Config.HasRedis` true |
 | `USER_CACHE_TTL` | no | `10m` | Backstop lifetime of a cached user; an unparseable or non-positive value falls back to `10m` |
+| `INCIDENT_EXTRA_ASSIGNMENT_GROUP_IDS` | no | — | Comma-separated `"group"` UUIDs an incident may be created in although they support no service (e.g. the security operations group). Trimmed, empty entries ignored; a non-UUID entry refuses to start. Joins the incident-assignable set (create check + `supportGroupsOnly` picker); never case-alert route options. See "Incident assignment group on create" |
 | `INCIDENT_DEFAULT_SERVICE_ID` | no | — | UUID of the service whose support group a new incident gets when no `assignmentGroupId` is sent and its own service has no support group (logged WARN each time). Unset / missing / groupless: such incidents are created unassigned (logged ERROR). A non-UUID refuses to start; checked at startup, log only. See "Incident assignment group on create" |
 | `CR_STRICT_VISIBILITY_FROM` | no | — | RFC 3339 instant **with a zone**: change requests created at or after it are visible to a customer only when designated to them; earlier ones are "legacy" and keep today's visibility. Unset/empty = no cutover, every change request is legacy (the safe default and the rollback; a WARN is logged at startup). An unparsable value refuses to start. Set once per environment at release and never move it — see "Customer visibility and the cutover" |
 | `MIGRATION_CASE_REPORT_HOLD_TAG` | no | `s_mig_hold` | Tag (ignoring case) for the weekly migration scan's "customer requested to hold" table |
@@ -7393,7 +7394,7 @@ decision, not overlooked.
 every caller and every `DATA_SOURCE`:
 
 1. `assignmentGroupId` sent: used when it is in the **support-group set**, else 400
-   `assignmentGroupId must be the active support group of a service` with `errorCode`
+   `assignmentGroupId must be an active group incidents can be assigned to` with `errorCode`
    `incident_assignment_group_not_allowed`, which the CSM portal BFF passes through
    (non-UUID: 400 without a code; blank: not sent).
 2. Not sent: the service's support group (`service.support_group_id`).
@@ -7402,17 +7403,25 @@ every caller and every `DATA_SOURCE`:
 5. A lookup failure returns its error; nothing is created.
 
 The **support-group set** is `supportGroupSetSQL` (`support_group_repo.go`): active `"group"` rows
-(`is_active` NULL counts as active) that are the support group of at least one service. The create
-check (`IncidentRepository.IsSupportGroup`) and `POST /groups/search` with
-`filters.supportGroupsOnly` (`GroupRepository.SearchSupportGroups`, which reads `"group"`, not the
-`team` registry) share it. A work note records the choice ("Assignment group set from service X's
+(`is_active` NULL counts as active) that are the support group of at least one service. The
+**incident-assignable set** is that plus active `"group"` rows whose id is in
+`INCIDENT_EXTRA_ASSIGNMENT_GROUP_IDS` (`incidentAssignableGroupSQL`, same file; groups that own no
+service, matched by id never by name). The create check (`IncidentRepository.IsSupportGroup`) and
+`POST /groups/search` with `filters.supportGroupsOnly` (`GroupRepository.SearchSupportGroups`, which
+reads `"group"`, not the `team` registry) share the incident-assignable set, so the picker never
+offers a group the create refuses. The case-alert route options (`case_alert_settings_repo.go`) keep
+reading plain `supportGroupSetSQL` and never gain the extra groups. The allowlist reaches the
+repositories through `NewIncidentRepository` / `NewGroupRepository` (variadic ids). A work note records the choice ("Assignment group set from service X's
 support group" / "Assignment group chosen by <actor>" / "Service X has no support group; assigned
 to the default team (G)"), after the caller's own `workNotes`. Dual-write decides on Postgres before
 the ServiceNow create (the mirror never looks one up), so both stores get the same group and a
 refused group never reaches ServiceNow; Postgres keeps no create work notes in that mode (an older
 gap), so the note lands in ServiceNow only. `DATA_SOURCE=servicenow` uses the same function over
 ServiceNow's services (`scanSNServices`: only a complete scan may conclude "not there"); the service
-list carries no group's active flag, so that set cannot leave out an inactive group.
+list carries no group's active flag, so that set cannot leave out an inactive group. On that data
+source the create check also accepts the allowlisted ids (no lookup, no active check possible), but
+the `supportGroupsOnly` picker does NOT yet list them: the group search cannot fetch a group's name
+by id, so listing them needs a design choice (open).
 `GET /incidents/create-defaults` (internal only) reports the default service and its group.
 
 ## Case Alerts group routes reference the assignment group (migration 0243)

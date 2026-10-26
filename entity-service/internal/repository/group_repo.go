@@ -34,8 +34,8 @@ type GroupRepository interface {
 	// SearchGroups returns a filtered, paginated slice of teams together
 	// with the total count of matching rows before pagination.
 	SearchGroups(ctx context.Context, searchQuery string, limit, offset int) ([]domain.Group, int, error)
-	// SearchSupportGroups is SearchGroups over the incident support-group set
-	// (supportGroupSetSQL) instead of team: "group" rows, whose ids are the
+	// SearchSupportGroups is SearchGroups over the incident-assignable group set
+	// (incidentAssignableGroupSQL) instead of team: "group" rows, whose ids are the
 	// ones work_item.assignment_group_id and service.support_group_id hold.
 	// It backs POST /groups/search's supportGroupsOnly filter.
 	SearchSupportGroups(ctx context.Context, searchQuery string, limit, offset int) ([]domain.Group, int, error)
@@ -43,11 +43,16 @@ type GroupRepository interface {
 
 type groupRepo struct {
 	db *pgxpool.Pool
+	// extraGroupIDs is INCIDENT_EXTRA_ASSIGNMENT_GROUP_IDS (see
+	// incidentAssignableGroupSQL).
+	extraGroupIDs []string
 }
 
-// NewGroupRepository constructs a GroupRepository backed by the given connection pool.
-func NewGroupRepository(db *pgxpool.Pool) GroupRepository {
-	return &groupRepo{db: db}
+// NewGroupRepository constructs a GroupRepository backed by the given
+// connection pool. extraGroupIDs (optional) must match what the incident
+// repository is given, so the picker offers exactly what a create accepts.
+func NewGroupRepository(db *pgxpool.Pool, extraGroupIDs ...string) GroupRepository {
+	return &groupRepo{db: db, extraGroupIDs: extraGroupIDs}
 }
 
 // SearchGroups implements GroupRepository.
@@ -127,18 +132,19 @@ func (r *groupRepo) SearchGroups(ctx context.Context, searchQuery string, limit,
 // *** A DIFFERENT TABLE FROM SearchGroups. *** SearchGroups lists the team
 // registry (team), whose ids are not "group" ids; an incident's assignment
 // group is a "group" row. So this reads "group", limited to the same set
-// IncidentRepository.IsSupportGroup checks a create against. Every row it
+// IncidentRepository.IsSupportGroup checks a create against
+// (incidentAssignableGroupSQL, including the configured extra groups). Every row it
 // returns is active (the set excludes is_active = FALSE); a group with no
 // name is listed under its id.
 func (r *groupRepo) SearchSupportGroups(ctx context.Context, searchQuery string, limit, offset int) ([]domain.Group, int, error) {
 	where := ""
-	args := []any{}
+	args := []any{extraGroupIDsArg(r.extraGroupIDs)}
 	if searchQuery != "" {
 		escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(searchQuery)
 		args = append(args, "%"+escaped+"%")
 		where = fmt.Sprintf(" AND g.name ILIKE $%d ESCAPE '\\'", len(args))
 	}
-	set := supportGroupSetSQL + where
+	set := incidentAssignableGroupSQL(1) + where
 
 	countQuery := "SELECT COUNT(*) FROM (" + set + ") sg"
 	dataQuery := fmt.Sprintf(`

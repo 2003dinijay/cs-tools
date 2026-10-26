@@ -71,7 +71,8 @@ type IncidentRepository interface {
 	// assignment group from its service, or from the default service.
 	SupportGroupOfService(ctx context.Context, serviceID string) (ServiceSupportGroup, error)
 	// IsSupportGroup reports whether groupID is an active group that is the
-	// support group of at least one service (supportGroupSetSQL): the only
+	// support group of at least one service or is on the configured extra
+	// allowlist (incidentAssignableGroupSQL): the only
 	// groups CreateIncident accepts as an explicit assignmentGroupId.
 	IsSupportGroup(ctx context.Context, groupID string) (bool, error)
 	// SearchIncidents returns a filtered, sorted, paginated slice of
@@ -327,6 +328,9 @@ type IncidentLifecycleUpdate struct {
 
 type incidentRepo struct {
 	db *Scoped
+	// extraGroupIDs is INCIDENT_EXTRA_ASSIGNMENT_GROUP_IDS (see
+	// incidentAssignableGroupSQL).
+	extraGroupIDs []string
 }
 
 // SupportGroupOfService implements IncidentRepository.
@@ -355,16 +359,19 @@ func (r *incidentRepo) SupportGroupOfService(ctx context.Context, serviceID stri
 func (r *incidentRepo) IsSupportGroup(ctx context.Context, groupID string) (bool, error) {
 	var ok bool
 	err := r.db.QueryRow(ctx,
-		`SELECT EXISTS (`+supportGroupSetSQL+` AND g.id = $1::uuid)`, groupID).Scan(&ok)
+		`SELECT EXISTS (`+incidentAssignableGroupSQL(1)+` AND g.id = $2::uuid)`,
+		extraGroupIDsArg(r.extraGroupIDs), groupID).Scan(&ok)
 	if err != nil {
 		return false, fmt.Errorf("check support group %s: %w", groupID, err)
 	}
 	return ok, nil
 }
 
-// NewIncidentRepository constructs an IncidentRepository backed by the given connection pool.
-func NewIncidentRepository(db *Scoped) IncidentRepository {
-	return &incidentRepo{db: db}
+// NewIncidentRepository constructs an IncidentRepository backed by the given
+// connection pool. extraGroupIDs (optional) are group ids an incident may be
+// created in although they support no service (INCIDENT_EXTRA_ASSIGNMENT_GROUP_IDS).
+func NewIncidentRepository(db *Scoped, extraGroupIDs ...string) IncidentRepository {
+	return &incidentRepo{db: db, extraGroupIDs: extraGroupIDs}
 }
 
 const incidentFromJoins = `

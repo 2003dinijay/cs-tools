@@ -376,6 +376,14 @@ type Config struct {
 	// created unassigned and logged as an error. Validated as a UUID; checked
 	// at startup (best effort, logged only) to exist and have a support group.
 	IncidentDefaultServiceID string
+	// IncidentExtraAssignmentGroupIDs is INCIDENT_EXTRA_ASSIGNMENT_GROUP_IDS:
+	// group ids ("group".id, UUIDs) an incident may be created in even though
+	// they are the support group of no service. They join the set POST
+	// /incidents accepts and POST /groups/search (supportGroupsOnly) offers.
+	// Comma-separated; trimmed, empty entries dropped, duplicates removed.
+	// Each is validated as a UUID at startup. Empty: only service support
+	// groups are assignable.
+	IncidentExtraAssignmentGroupIDs []string
 	// SpecialistHandoffGithubTokens is SPECIALIST_HANDOFF_GITHUB_TOKENS, a
 	// secret: one line of JSON mapping a credential name to the GitHub token
 	// that files a specialist handoff's internal issue (ServiceNow's
@@ -812,50 +820,51 @@ func Load() *Config {
 		AvailabilityTimezone: os.Getenv("AVAILABILITY_TIMEZONE"),
 		WorklogReportTeamTypes: splitCommaOrDefault(
 			os.Getenv("WORKLOG_REPORT_TEAM_TYPES"), []string{"cre-abt", "cre"}),
-		WorklogReportExcludedTeamKeys:            splitComma(os.Getenv("WORKLOG_REPORT_EXCLUDED_TEAM_KEYS")),
-		QueryHourInternalEmailDomain:             strings.TrimSpace(os.Getenv("QUERY_HOUR_INTERNAL_EMAIL_DOMAIN")),
-		DBUser:                                   os.Getenv("DB_USER"),
-		DBPassword:                               os.Getenv("DB_PASSWORD"),
-		DBName:                                   os.Getenv("DB_NAME"),
-		DBSSLMode:                                os.Getenv("DB_SSLMODE"),
-		DBSchema:                                 os.Getenv("DB_SCHEMA"),
-		DBPoolMaxConns:                           intVal("DB_POOL_MAX_CONNS", 20, false),
-		DBPoolMinConns:                           intVal("DB_POOL_MIN_CONNS", 2, true),
-		DBPoolMaxConnLifetime:                    duration("DB_POOL_MAX_CONN_LIFETIME", 30*time.Minute),
-		DBPoolMaxConnIdleTime:                    duration("DB_POOL_MAX_CONN_IDLE_TIME", 5*time.Minute),
-		ServerPort:                               getEnvOrDefault("SERVER_PORT", "8080"),
-		HealthPort:                               getEnvOrDefault("HEALTH_PORT", "8081"),
-		DataSource:                               DataSource(getEnvOrDefault("DATA_SOURCE", string(DataSourcePostgres))),
-		SLADataSource:                            SLADataSource(getEnvOrDefault("SLA_DATA_SOURCE", string(SLADataSourcePostgres))),
-		UsageReadMode:                            UsageReadMode(getEnvOrDefault("PRODUCT_CONSUMPTION_DATA_READ_MODE", string(UsageReadModePostgres))),
-		AttachmentDataSource:                     AttachmentDataSource(getEnvOrDefault("ATTACHMENT_DATA_SOURCE", string(AttachmentDataSourcePostgres))),
-		ServiceNowIntegrationServiceBaseURL:      os.Getenv("SERVICENOW_INTEGRATION_SERVICE_BASE_URL"),
-		ServiceNowIntegrationServiceTokenURL:     os.Getenv("SERVICENOW_INTEGRATION_SERVICE_TOKEN_URL"),
-		ServiceNowIntegrationServiceClientID:     os.Getenv("SERVICENOW_INTEGRATION_SERVICE_CLIENT_ID"),
-		ServiceNowIntegrationServiceClientSecret: os.Getenv("SERVICENOW_INTEGRATION_SERVICE_CLIENT_SECRET"),
-		ServiceNowIntegrationServiceScopes:       os.Getenv("SERVICENOW_INTEGRATION_SERVICE_SCOPES"),
-		EventHubBroker:                           os.Getenv("EVENT_HUB_BROKER"),
-		EventHubConnectionString:                 os.Getenv("EVENT_HUB_CONNECTION_STRING"),
-		EventHubTopic:                            os.Getenv("EVENT_HUB_TOPIC"),
-		EventPublishingEnabled:                   os.Getenv("EVENT_PUBLISHING_ENABLED") == "true",
-		GithubIntegrationEnabled:                 os.Getenv("GITHUB_INTEGRATION_ENABLED") == "true",
-		GithubBaseURL:                            getEnvOrDefault("GITHUB_API_BASE_URL", "https://api.github.com"),
-		GithubToken:                              os.Getenv("GITHUB_TOKEN"),
-		GithubRepoTokens:                         os.Getenv("GITHUB_REPO_TOKENS"),
-		GithubIntegrationLogin:                   os.Getenv("GITHUB_INTEGRATION_LOGIN"),
-		GithubRepoConfigPath:                     strings.TrimSpace(os.Getenv("GITHUB_REPO_CONFIG_PATH")),
-		GithubSRServiceNowFirst:                  strings.EqualFold(strings.TrimSpace(os.Getenv("GITHUB_SR_SERVICENOW_FIRST")), "true"),
-		GithubOutboundInterval:                   envDuration("GITHUB_OUTBOUND_INTERVAL", 15*time.Second),
-		CSMPortalBaseURL:                         os.Getenv("CSM_PORTAL_BASE_URL"),
-		SpecialistHandoffConfig:                  os.Getenv("SPECIALIST_HANDOFF_CONFIG"),
-		SpecialistHandoffGithubTokens:            os.Getenv("SPECIALIST_HANDOFF_GITHUB_TOKENS"),
-		IncidentDefaultServiceID:                 strings.TrimSpace(os.Getenv("INCIDENT_DEFAULT_SERVICE_ID")),
-		GithubLabelTypeIncident:                  os.Getenv("GITHUB_LABEL_TYPE_INCIDENT"),
-		GithubLabelTypeServiceRequest:            os.Getenv("GITHUB_LABEL_TYPE_SERVICE_REQUEST"),
-		GithubLabelsClass:                        os.Getenv("GITHUB_LABELS_CLASS"),
-		GithubLabelStatusAssigned:                os.Getenv("GITHUB_LABEL_STATUS_ASSIGNED"),
-		CRNoticesEnabled:                         os.Getenv("CR_NOTICES_ENABLED") == "true",
-		CRStrictVisibilityFromRaw:                strings.TrimSpace(os.Getenv("CR_STRICT_VISIBILITY_FROM")),
+		WorklogReportExcludedTeamKeys:                 splitComma(os.Getenv("WORKLOG_REPORT_EXCLUDED_TEAM_KEYS")),
+		QueryHourInternalEmailDomain:                  strings.TrimSpace(os.Getenv("QUERY_HOUR_INTERNAL_EMAIL_DOMAIN")),
+		DBUser:                                        os.Getenv("DB_USER"),
+		DBPassword:                                    os.Getenv("DB_PASSWORD"),
+		DBName:                                        os.Getenv("DB_NAME"),
+		DBSSLMode:                                     os.Getenv("DB_SSLMODE"),
+		DBSchema:                                      os.Getenv("DB_SCHEMA"),
+		DBPoolMaxConns:                                intVal("DB_POOL_MAX_CONNS", 20, false),
+		DBPoolMinConns:                                intVal("DB_POOL_MIN_CONNS", 2, true),
+		DBPoolMaxConnLifetime:                         duration("DB_POOL_MAX_CONN_LIFETIME", 30*time.Minute),
+		DBPoolMaxConnIdleTime:                         duration("DB_POOL_MAX_CONN_IDLE_TIME", 5*time.Minute),
+		ServerPort:                                    getEnvOrDefault("SERVER_PORT", "8080"),
+		HealthPort:                                    getEnvOrDefault("HEALTH_PORT", "8081"),
+		DataSource:                                    DataSource(getEnvOrDefault("DATA_SOURCE", string(DataSourcePostgres))),
+		SLADataSource:                                 SLADataSource(getEnvOrDefault("SLA_DATA_SOURCE", string(SLADataSourcePostgres))),
+		UsageReadMode:                                 UsageReadMode(getEnvOrDefault("PRODUCT_CONSUMPTION_DATA_READ_MODE", string(UsageReadModePostgres))),
+		AttachmentDataSource:                          AttachmentDataSource(getEnvOrDefault("ATTACHMENT_DATA_SOURCE", string(AttachmentDataSourcePostgres))),
+		ServiceNowIntegrationServiceBaseURL:           os.Getenv("SERVICENOW_INTEGRATION_SERVICE_BASE_URL"),
+		ServiceNowIntegrationServiceTokenURL:          os.Getenv("SERVICENOW_INTEGRATION_SERVICE_TOKEN_URL"),
+		ServiceNowIntegrationServiceClientID:          os.Getenv("SERVICENOW_INTEGRATION_SERVICE_CLIENT_ID"),
+		ServiceNowIntegrationServiceClientSecret:      os.Getenv("SERVICENOW_INTEGRATION_SERVICE_CLIENT_SECRET"),
+		ServiceNowIntegrationServiceScopes:            os.Getenv("SERVICENOW_INTEGRATION_SERVICE_SCOPES"),
+		EventHubBroker:                                os.Getenv("EVENT_HUB_BROKER"),
+		EventHubConnectionString:                      os.Getenv("EVENT_HUB_CONNECTION_STRING"),
+		EventHubTopic:                                 os.Getenv("EVENT_HUB_TOPIC"),
+		EventPublishingEnabled:                        os.Getenv("EVENT_PUBLISHING_ENABLED") == "true",
+		GithubIntegrationEnabled:                      os.Getenv("GITHUB_INTEGRATION_ENABLED") == "true",
+		GithubBaseURL:                                 getEnvOrDefault("GITHUB_API_BASE_URL", "https://api.github.com"),
+		GithubToken:                                   os.Getenv("GITHUB_TOKEN"),
+		GithubRepoTokens:                              os.Getenv("GITHUB_REPO_TOKENS"),
+		GithubIntegrationLogin:                        os.Getenv("GITHUB_INTEGRATION_LOGIN"),
+		GithubRepoConfigPath:                          strings.TrimSpace(os.Getenv("GITHUB_REPO_CONFIG_PATH")),
+		GithubSRServiceNowFirst:                       strings.EqualFold(strings.TrimSpace(os.Getenv("GITHUB_SR_SERVICENOW_FIRST")), "true"),
+		GithubOutboundInterval:                        envDuration("GITHUB_OUTBOUND_INTERVAL", 15*time.Second),
+		CSMPortalBaseURL:                              os.Getenv("CSM_PORTAL_BASE_URL"),
+		SpecialistHandoffConfig:                       os.Getenv("SPECIALIST_HANDOFF_CONFIG"),
+		SpecialistHandoffGithubTokens:                 os.Getenv("SPECIALIST_HANDOFF_GITHUB_TOKENS"),
+		IncidentDefaultServiceID:                      strings.TrimSpace(os.Getenv("INCIDENT_DEFAULT_SERVICE_ID")),
+		IncidentExtraAssignmentGroupIDs:               splitComma(os.Getenv("INCIDENT_EXTRA_ASSIGNMENT_GROUP_IDS")),
+		GithubLabelTypeIncident:                       os.Getenv("GITHUB_LABEL_TYPE_INCIDENT"),
+		GithubLabelTypeServiceRequest:                 os.Getenv("GITHUB_LABEL_TYPE_SERVICE_REQUEST"),
+		GithubLabelsClass:                             os.Getenv("GITHUB_LABELS_CLASS"),
+		GithubLabelStatusAssigned:                     os.Getenv("GITHUB_LABEL_STATUS_ASSIGNED"),
+		CRNoticesEnabled:                              os.Getenv("CR_NOTICES_ENABLED") == "true",
+		CRStrictVisibilityFromRaw:                     strings.TrimSpace(os.Getenv("CR_STRICT_VISIBILITY_FROM")),
 		CSMMigrationSalesforceMembershipIngestEnabled: envFlagOn("CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED"),
 		CSMMigrationSalesforceAccountIngestEnabled:    envFlagOn("CSM_MIGRATION_SALESFORCE_ACCOUNT_INGEST_ENABLED"),
 		CSMMigrationPortalWritesEnabled:               envFlagOn("CSM_MIGRATION_PORTAL_WRITES_ENABLED"),
@@ -1291,6 +1300,11 @@ func (c *Config) Validate() error {
 	}
 	if v := c.IncidentDefaultServiceID; v != "" && !validate.IsUUID(v) {
 		return fmt.Errorf("INCIDENT_DEFAULT_SERVICE_ID %q is not a valid UUID", v)
+	}
+	for _, v := range c.IncidentExtraAssignmentGroupIDs {
+		if !validate.IsUUID(v) {
+			return fmt.Errorf("INCIDENT_EXTRA_ASSIGNMENT_GROUP_IDS entry %q is not a valid UUID", v)
+		}
 	}
 	if v := c.CustomerEngagementFirefightingTypeID; v != "" && !isSysID(v) {
 		return fmt.Errorf("CUSTOMER_ENGAGEMENT_FIREFIGHTING_TYPE_ID must be a 32-character hex sys_id")

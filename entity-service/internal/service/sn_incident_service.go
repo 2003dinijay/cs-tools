@@ -298,6 +298,13 @@ type snIncidentService struct {
 	// defaultServiceID is INCIDENT_DEFAULT_SERVICE_ID (see
 	// incidentService.defaultServiceID). Set with WithIncidentDefaultService.
 	defaultServiceID string
+	// extraGroupIDs is INCIDENT_EXTRA_ASSIGNMENT_GROUP_IDS: group ids (UUIDs)
+	// accepted as an explicit assignmentGroupId although they support no
+	// service. Set with WithIncidentExtraAssignmentGroups. Only the create
+	// check reads it here: the group picker on this data source lists
+	// ServiceNow's service support groups and does not yet add these (see
+	// snGroupService.searchSupportGroups).
+	extraGroupIDs []string
 }
 
 // NewServiceNowIncidentService constructs an IncidentService backed by the
@@ -2123,6 +2130,11 @@ func (s *snIncidentService) assignmentGroupLookups(token string) assignmentGroup
 		},
 		isSupportGroup: func(ctx context.Context, groupID string) (bool, error) {
 			want := uuidToSysid(groupID)
+			for _, extra := range s.extraGroupIDs {
+				if strings.EqualFold(uuidToSysid(extra), want) {
+					return true, nil
+				}
+			}
 			return scanSNServices(ctx, s.client, token, "checking whether group "+groupID+" supports a service",
 				func(svc snITService) bool {
 					return svc.SupportGroup != nil && strings.EqualFold(svc.SupportGroup.ID, want)
