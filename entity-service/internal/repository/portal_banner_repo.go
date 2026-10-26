@@ -145,10 +145,15 @@ func (r *portalBannerRepo) Update(ctx context.Context, actor, id string, req dom
 	return out, err
 }
 
-// placePortalBanner locks the stack, puts id at order, and renumbers every
+// placePortalBanner locks the table, puts id at order, and renumbers every
 // row 0, 1, 2, … with no gaps. An unpublished status sits after the stack.
+// FOR UPDATE locks no rows when the table is empty, so two creates could both
+// take sort order 0. The table lock makes those writes wait for each other.
 // The returned order is the place written for id.
 func placePortalBanner(ctx context.Context, tx pgx.Tx, id string, order int, status string) (int, error) {
+	if _, err := tx.Exec(ctx, `LOCK TABLE portal_banner IN SHARE ROW EXCLUSIVE MODE`); err != nil {
+		return 0, err
+	}
 	rows, err := tx.Query(ctx, `SELECT id::text, sort_order, status FROM portal_banner ORDER BY sort_order, id FOR UPDATE`)
 	if err != nil {
 		return 0, err
