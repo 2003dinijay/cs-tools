@@ -26,7 +26,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 )
 
@@ -51,9 +50,9 @@ func NewBannerHandler(entity entityBannerClient) *BannerHandler {
 
 type bannerSave struct {
 	Status                  string     `json:"status"`
-	SortOrder               int        `json:"sortOrder"`
-	VisibleInCustomerPortal bool       `json:"visibleInCustomerPortal"`
-	VisibleInCsmPortal      bool       `json:"visibleInCsmPortal"`
+	SortOrder               *int       `json:"sortOrder"`
+	VisibleInCustomerPortal *bool      `json:"visibleInCustomerPortal"`
+	VisibleInCsmPortal      *bool      `json:"visibleInCsmPortal"`
 	HTML                    string     `json:"html"`
 	StartsAt                *time.Time `json:"startsAt"`
 	ExpiresAt               *time.Time `json:"expiresAt"`
@@ -99,9 +98,15 @@ func readBannerSave(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
 		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
 		return nil, false
 	}
-	raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+	raw, err := io.ReadAll(r.Body)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, ErrMsgTooLarge)
+			return nil, false
+		}
+		writeError(w, http.StatusBadRequest, errMsgReadBody)
 		return nil, false
 	}
 	var req bannerSave
@@ -115,7 +120,11 @@ func readBannerSave(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
 		writeError(w, http.StatusBadRequest, "Status must be draft, published, or unpublished.")
 		return nil, false
 	}
-	if strings.TrimSpace(req.HTML) == "" || req.SortOrder < 0 {
+	if req.SortOrder == nil || req.VisibleInCustomerPortal == nil || req.VisibleInCsmPortal == nil {
+		writeError(w, http.StatusBadRequest, "A banner needs an order and both visibility flags.")
+		return nil, false
+	}
+	if strings.TrimSpace(req.HTML) == "" || *req.SortOrder < 0 {
 		writeError(w, http.StatusBadRequest, "A banner needs HTML and an order of 0 or more.")
 		return nil, false
 	}
@@ -125,6 +134,7 @@ func readBannerSave(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
 }
 
 func (h *BannerHandler) forward(w http.ResponseWriter, r *http.Request, op, fallback string, okStatus int, call func(context.Context) ([]byte, error)) {
+	w.Header().Set("Cache-Control", "no-store")
 	if middleware.UserInfoFromContext(r.Context()) == nil {
 		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
 		return
@@ -132,14 +142,8 @@ func (h *BannerHandler) forward(w http.ResponseWriter, r *http.Request, op, fall
 	result, err := call(r.Context())
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity "+op+" failed", "err", err)
-		var apiErr *apierror.Error
-		if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusBadRequest || apiErr.StatusCode == http.StatusNotFound || apiErr.StatusCode == http.StatusForbidden) {
-			writeError(w, apiErr.StatusCode, upstreamErrorMessageStrict(apiErr.Body, fallback))
-			return
-		}
 		mapUpstreamErrorGeneric(w, err, fallback)
 		return
 	}
-	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, okStatus, result)
 }
