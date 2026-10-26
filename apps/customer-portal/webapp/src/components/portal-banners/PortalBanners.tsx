@@ -52,6 +52,13 @@ function sanitizeBannerHtml(html: string): string {
 
 // Saved HTML can carry a paragraph margin. The strip stays the same 3rem as an image banner.
 const BANNER_STRIP_CSS = `
+.portal-banner-strip{
+  height:3rem !important;
+  min-height:3rem !important;
+  max-height:3rem !important;
+  overflow:hidden !important;
+  box-sizing:border-box !important;
+}
 .portal-banner-strip [data-banner="1"]{
   height:3rem !important;
   min-height:3rem !important;
