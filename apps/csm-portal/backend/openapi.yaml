@@ -19,7 +19,7 @@ info:
     | `create_work_note` | `POST /cases/{id}/comments` with `type=work_note` (internal note) — and nothing else | worknote-creator, cs-engineer, admin |
     | `manage_onboarding` | `PATCH /projects/{id}` when the body sets `onboardingStatus`, `onboardingOwner` or any of the four onboarding dates; any other field in that body still needs `write` | onboarding-lead, admin |
     | `write` | every other `POST`/`PATCH`/`DELETE`, including incident and change-request comments and case comments of any type other than `work_note` | cs-engineer, admin |
-    | `admin` | `POST /users` | admin only |
+    | `admin` | `POST /users`, `GET /portal-banners/manage`, `POST /portal-banners`, `PUT /portal-banners/{id}` | admin only |
     | `security_center` | `POST /products/vulnerabilities/search`, `GET /products/vulnerabilities/{id}`, `GET /products/vulnerabilities/meta`, and a `POST /cases/search`/`GET /cases/{id}` naming case type security_report_analysis | cs-engineer, admin |
 security:
   - bearerAuth: []
@@ -15845,6 +15845,219 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
 
+  /portal-banners:
+    get:
+      summary: Banners for the CSM portal.
+      description: >
+        Published banners flagged for the CSM portal, in sort order. Any signed-in
+        caller with view permission. The shell hides a banner outside its start and
+        end, and a banner this browser has dismissed. Responses are Cache-Control
+        no-store.
+      operationId: listCsmPortalBanners
+      responses:
+        "200":
+          description: The banners the CSM portal may show.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortalBannerViewList'
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: Not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "503":
+          description: The upstream service is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+    post:
+      summary: Add a banner.
+      description: >
+        A CSM admin. The row is saved with the status in the body. When sortOrder
+        is already used, that banner and every banner below it move down by one.
+        Responses are Cache-Control no-store.
+      operationId: createPortalBanner
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SavePortalBannerRequest'
+      responses:
+        "201":
+          description: The banner.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortalBanner'
+        "400":
+          description: Invalid status, order, html, or schedule.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden — only a CSM admin can change banners.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: Not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "503":
+          description: The upstream service is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
+  /portal-banners/manage:
+    get:
+      summary: Every banner, for Settings.
+      description: >
+        Draft, published, and unpublished, in sort order. A CSM admin. Responses are
+        Cache-Control no-store.
+      operationId: listManagedPortalBanners
+      responses:
+        "200":
+          description: The Settings list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortalBannerList'
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden — only a CSM admin can change banners.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: Not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "503":
+          description: The upstream service is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
+  /portal-banners/{id}:
+    put:
+      summary: Edit a banner.
+      description: >
+        A CSM admin. Status, both portal switches, the schedule, the HTML, and
+        sortOrder can all change. An occupied sortOrder shifts that banner and
+        the ones below it down. Responses are Cache-Control no-store.
+      operationId: updatePortalBanner
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SavePortalBannerRequest'
+      responses:
+        "200":
+          description: The banner.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortalBanner'
+        "400":
+          description: Invalid status, order, html, schedule, or id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden — only a CSM admin can change banners.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: No banner with that id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "503":
+          description: The upstream service is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
 components:
   securitySchemes:
     bearerAuth:
@@ -26761,6 +26974,105 @@ components:
           type: boolean
         information:
           $ref: '#/components/schemas/SplScanInformation'
+
+    PortalBanner:
+      type: object
+      required: [id, status, sortOrder, visibleInCustomerPortal, visibleInCsmPortal, html, startsAt, expiresAt, createdOn, createdBy, updatedOn, updatedBy]
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [draft, published, unpublished]
+        sortOrder:
+          type: integer
+          minimum: 0
+          description: 0 is the top of the page.
+        visibleInCustomerPortal:
+          type: boolean
+        visibleInCsmPortal:
+          type: boolean
+        html:
+          type: string
+          description: The whole banner. A close button in the HTML uses data-close-banner. data-id is the row id.
+        startsAt:
+          type: string
+          format: date-time
+          nullable: true
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdOn:
+          type: string
+          format: date-time
+        createdBy:
+          type: string
+        updatedOn:
+          type: string
+          format: date-time
+        updatedBy:
+          type: string
+    PortalBannerList:
+      type: object
+      required: [banners]
+      properties:
+        banners:
+          type: array
+          items:
+            $ref: '#/components/schemas/PortalBanner'
+    PortalBannerView:
+      type: object
+      required: [id, sortOrder, html, startsAt, expiresAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        sortOrder:
+          type: integer
+        html:
+          type: string
+        startsAt:
+          type: string
+          format: date-time
+          nullable: true
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+    PortalBannerViewList:
+      type: object
+      required: [banners]
+      properties:
+        banners:
+          type: array
+          items:
+            $ref: '#/components/schemas/PortalBannerView'
+    SavePortalBannerRequest:
+      type: object
+      required: [status, sortOrder, visibleInCustomerPortal, visibleInCsmPortal, html]
+      properties:
+        status:
+          type: string
+          enum: [draft, published, unpublished]
+        sortOrder:
+          type: integer
+          minimum: 0
+        visibleInCustomerPortal:
+          type: boolean
+        visibleInCsmPortal:
+          type: boolean
+        html:
+          type: string
+        startsAt:
+          type: string
+          format: date-time
+          nullable: true
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
 
     ScanResponse:
       type: object
