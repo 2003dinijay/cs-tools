@@ -75,6 +75,15 @@ func TestTeamChatSpaces_CaseChatTeamsFollowTheAccountsSRETeam(t *testing.T) {
 			t.Errorf("chatTeams(SRE team %q) = %v; want %v", sreTeam, got, want)
 		}
 	}
+
+	// A teamChats key that is not one of sre.teams.abts pages every team, so its cards go to every teamless space too.
+	stray := splitSREEngine(splitReader(), func(l *LadderConfig) {
+		bothSaaS(l)
+		l.TeamChats["ms/pc sre group"] = Chat{WebhookURLEnv: "SRE_CHAT_WEBHOOK_URL_MSPC", Audience: "MS/PC SRE"}
+	})
+	if got := stray.chatTeams(plan("MS/PC SRE Group")); !slices.Equal(got, []string{"apollo", "artemis"}) {
+		t.Errorf("an account SRE team with a space but not in abts: chatTeams = %v; want apollo, artemis", got)
+	}
 }
 
 // The account SRE team's own channel narrows the case's SRE ladder.

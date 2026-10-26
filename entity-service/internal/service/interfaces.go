@@ -749,6 +749,8 @@ type CaseService interface {
 	// access at all (a pure ServiceNow data source with no pgFallback
 	// configured), returns an empty slice and no error.
 	AccountDefaultWatcherEmails(ctx context.Context, projectID string) ([]string, error)
+	// AccountSRETeam returns the SRE team of the account owning projectID; "" with no error when there is none or no Postgres access.
+	AccountSRETeam(ctx context.Context, projectID string) (id, name string, err error)
 	// ProjectOnboardingInfo returns projectID's own onboarding status and
 	// evaluation-account flag -- see CaseRepository.ProjectOnboardingInfo's
 	// own doc comment. A project with no linked account, or no Postgres

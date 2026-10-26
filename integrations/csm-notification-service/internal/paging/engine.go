@@ -426,10 +426,13 @@ func (e *Engine) chatTeams(plan Plan) []string {
 	if len(e.teamNotifiers) == 0 && len(e.teamRooms) == 0 {
 		return nil
 	}
-	if own := e.sreTeamKey(plan.Trigger.sreTeam()); e.hasTeamChat(own) {
+	team := plan.Trigger.sreTeam()
+	// A case's account SRE team counts only when it is a known SRE team, so its cards go where its calls do.
+	caseTeam := plan.Trigger.Routing.SRETeam != ""
+	if own := e.sreTeamKey(team); e.hasTeamChat(own) && (!caseTeam || e.hasOwnSRETeam(team)) {
 		return []string{own}
 	}
-	if e.hasOwnSRETeam(plan.Trigger.sreTeam()) {
+	if e.hasOwnSRETeam(team) {
 		return nil
 	}
 	var out []string

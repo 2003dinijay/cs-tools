@@ -758,7 +758,7 @@ func (s *caseService) CreateCase(ctx context.Context, req domain.CreateCaseReque
 	// persisted first (immediately above) for the same reason
 	// createCaseSNFirst orders it this way: publishCaseCreatedEvent's own
 	// GetCaseByID re-fetch needs them already written to resolve Recipients.
-	publishCaseCreatedEvent(ctx, s.publisher, s.GetCaseByID, s.ProjectContactEmailsByRole, s.AccountDefaultWatcherEmails, req, c.ID)
+	publishCaseCreatedEvent(ctx, s.publisher, s.GetCaseByID, s.ProjectContactEmailsByRole, s.AccountDefaultWatcherEmails, s.AccountSRETeam, req, c.ID)
 	// Plain Postgres only: under dual-write the SR is created in ServiceNow
 	// first, where its own flow still assigns, acknowledges and announces it.
 	if req.Type == "service_request" && s.srNotices != nil {
@@ -918,7 +918,7 @@ func (s *caseService) createCaseSNFirst(ctx context.Context, req domain.CreateCa
 	// publish (that fires right after the ServiceNow POST, before this
 	// Postgres insert was even attempted) — same reasoning
 	// incidentService.createIncidentSNFirst already established.
-	publishCaseCreatedEvent(ctx, s.publisher, s.GetCaseByID, s.ProjectContactEmailsByRole, s.AccountDefaultWatcherEmails, req, c.ID)
+	publishCaseCreatedEvent(ctx, s.publisher, s.GetCaseByID, s.ProjectContactEmailsByRole, s.AccountDefaultWatcherEmails, s.AccountSRETeam, req, c.ID)
 
 	// Same reasoning as the publish call above, for the exact same "not
 	// safe before this Postgres insert" reason: registerCaseSLAClocksEvent
@@ -1291,6 +1291,11 @@ func (s *caseService) ProjectContactEmailsByRole(ctx context.Context, projectID,
 // AccountDefaultWatcherEmails implements CaseService.
 func (s *caseService) AccountDefaultWatcherEmails(ctx context.Context, projectID string) ([]string, error) {
 	return s.repo.AccountDefaultWatcherEmails(ctx, projectID)
+}
+
+// AccountSRETeam implements CaseService.
+func (s *caseService) AccountSRETeam(ctx context.Context, projectID string) (string, string, error) {
+	return s.repo.AccountSRETeam(ctx, projectID)
 }
 
 // ProjectOnboardingInfo implements CaseService.
@@ -2152,7 +2157,7 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 			slog.ErrorContext(ctx, "update case: enrich case for case.severity_changed publish failed", "caseId", req.ID)
 		} else {
 			cv.WatchList = s.filterActiveWatchListUsers(ctx, cv, cv.WatchList)
-			publishSeverityChangedEvent(ctx, s.publisher, s.AccountDefaultWatcherEmails, req.ID, string(derefSeverity(oldSeverity)), string(*c.Severity), cv)
+			publishSeverityChangedEvent(ctx, s.publisher, s.AccountDefaultWatcherEmails, s.AccountSRETeam, req.ID, string(derefSeverity(oldSeverity)), string(*c.Severity), cv)
 			// Deliberately independent of s.publisher -- see
 			// reviseCaseSLAClocks' own doc comment (sn_case_service.go) for
 			// why revising SLA clocks must not depend on Event Hub being
