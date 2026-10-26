@@ -33378,6 +33378,14 @@ components:
           format: uuid
         recordNumber:
           type: string
+        internalId:
+          type: string
+          description: >-
+            The record's own internal/WSO2 id (e.g. "CUPRSUB-1170" — a
+            per-project prefix plus counter), from work_item.wso2_id.
+            Distinct from recordNumber (the record's human-readable number,
+            e.g. "CS0441731"). Omitted when the underlying work item has no
+            wso2_id.
         recordTitle:
           type: string
         severity:
