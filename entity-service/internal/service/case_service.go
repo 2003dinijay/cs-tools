@@ -3843,7 +3843,8 @@ func (s *caseService) ConfirmCaseAttachment(ctx context.Context, id string) (dom
 // only: a work item with no attachments is a successful empty result.
 //
 // Stopgap: under DATA_SOURCE=postgres-servicenow-dual-write (s.snMirror !=
-// nil) a "deployment" search is delegated to the mirrored data source and its
+// nil) a "deployment", "incident", "change_request" or "conversation" search
+// (see isMirrorOnlyAttachmentRef) is delegated to the mirrored data source and its
 // response or error is returned as-is, until a Postgres-native deployment
 // attachment store exists. Likewise a "case" search that returns zero rows
 // from Postgres at offset 0 falls back to the mirrored data source, because
@@ -3869,10 +3870,11 @@ func (s *caseService) SearchCaseAttachments(ctx context.Context, req domain.Sear
 	if err := validateUUIDs("referenceId", []string{req.ReferenceID}); err != nil {
 		return domain.SearchAttachmentsResponse{}, err
 	}
-	if req.ReferenceType == domain.ReferenceTypeDeployment && s.snMirror != nil {
-		// No Postgres deployment attachment table yet: serve from the
-		// mirrored data source (SN) in dual-write mode. Plain Postgres mode
-		// (snMirror == nil) falls through to the validation error below.
+	if isMirrorOnlyAttachmentRef(req.ReferenceType) && s.snMirror != nil {
+		// No Postgres attachment store for these types yet (deployment,
+		// incident, change_request, conversation): serve from the mirrored
+		// data source in dual-write mode. Plain Postgres mode
+		// (snMirror == nil) falls through to the existing handling below.
 		return s.snMirror.SearchCaseAttachments(ctx, req)
 	}
 	isCase := req.ReferenceType == domain.ReferenceTypeCase

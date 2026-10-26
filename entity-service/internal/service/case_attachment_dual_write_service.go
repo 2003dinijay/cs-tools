@@ -108,6 +108,27 @@ func NewCaseAttachmentDualWriteService(base CaseService, mirror caseAttachmentSN
 	return &caseAttachmentDualWriteService{caseService: plain, snMirror: mirror, snWriteback: dispatcher}
 }
 
+// isMirrorOnlyAttachmentRef reports whether attachments of this reference type
+// have no case_attachment row to write or read in dual-write mode, and so are
+// created in and served from the mirrored data source only: "deployment" (not
+// a work item at all) plus the non-case work items "incident",
+// "change_request" and "conversation".
+//
+// Temporary stopgap: non-case work items have no Postgres attachment storage
+// that supports the new upload flow yet (work_item_attachment is a synced,
+// read-only copy). Remove the incident/change_request/conversation arms of
+// this helper once they do.
+func isMirrorOnlyAttachmentRef(rt domain.ReferenceType) bool {
+	switch rt {
+	case domain.ReferenceTypeDeployment,
+		domain.ReferenceTypeIncident,
+		domain.ReferenceTypeChangeRequest,
+		domain.ReferenceTypeConversation:
+		return true
+	}
+	return false
+}
+
 // CreateCaseAttachment implements CaseService for
 // DATA_SOURCE=postgres-servicenow-dual-write: ServiceNow-FIRST and
 // SYNCHRONOUS, exactly like caseService.createCaseSNFirst and
@@ -126,8 +147,9 @@ func NewCaseAttachmentDualWriteService(base CaseService, mirror caseAttachmentSN
 // point attempting the ServiceNow upload at all -- failing fast here avoids
 // creating a ServiceNow attachment that Postgres could never record.
 //
-// A deployment-referenced attachment skips both the actor resolution and the
-// Postgres insert entirely -- same "no Postgres deployment attachment table
+// A deployment-referenced attachment (and, as a stopgap, an incident,
+// change_request or conversation one: see isMirrorOnlyAttachmentRef) skips
+// both the actor resolution and the Postgres insert entirely -- same "no Postgres deployment attachment table
 // yet" gap SearchCaseAttachments already works around (see that method's own
 // doc comment). case_attachment.case_id has a hard FK into "case", so a
 // deployment id can never satisfy it; attempting the insert below failed
@@ -139,7 +161,7 @@ func NewCaseAttachmentDualWriteService(base CaseService, mirror caseAttachmentSN
 // nothing to resolve an actor for or write to Postgres on this path, so the
 // ServiceNow response is returned directly.
 func (s *caseAttachmentDualWriteService) CreateCaseAttachment(ctx context.Context, req domain.CreateAttachmentRequest) (domain.CreateAttachmentResponse, error) {
-	if req.ReferenceType == domain.ReferenceTypeDeployment {
+	if isMirrorOnlyAttachmentRef(req.ReferenceType) {
 		return s.snMirror.CreateCaseAttachment(ctx, req)
 	}
 
