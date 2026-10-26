@@ -199,7 +199,7 @@ function ColorField({
         aria-label={label}
         value={hex}
         onChange={(event: { target: { value: string } }) => onChange(event.target.value)}
-        sx={{
+        sx={(theme) => ({
           width: 40,
           height: 40,
           p: 0.25,
@@ -208,7 +208,8 @@ function ColorField({
           borderRadius: 1,
           bgcolor: "background.paper",
           cursor: "pointer",
-        }}
+          ...theme.applyStyles("dark", { borderColor: "rgba(255,255,255,0.45)" }),
+        })}
       />
       <TextField
         label="Hex"
@@ -263,18 +264,25 @@ function FormatChoice({
       aria-pressed={selected}
       aria-label={`Banner ${title}`}
       onClick={onClick}
-      sx={{
+      sx={(theme) => ({
         p: 1.25,
         borderRadius: 1,
         border: 2,
         borderColor: selected ? "primary.main" : "divider",
         bgcolor: selected ? "action.selected" : "background.paper",
+        // A native button does not inherit the theme text colour, so the
+        // title stays black in dark mode unless it is set here.
+        color: "text.primary",
         cursor: "pointer",
         textAlign: "left",
         "&:hover": { borderColor: "primary.main", bgcolor: "action.hover" },
-      }}
+        ...theme.applyStyles("dark", {
+          borderColor: selected ? theme.palette.primary.main : "rgba(255,255,255,0.45)",
+          bgcolor: selected ? theme.palette.action.selected : "rgba(255,255,255,0.06)",
+        }),
+      })}
     >
-      <Typography variant="body2" sx={{ fontWeight: 700 }}>
+      <Typography variant="body2" color="text.primary" sx={{ fontWeight: 700 }}>
         {title}
       </Typography>
       <Typography variant="caption" color="text.secondary">
@@ -286,24 +294,26 @@ function FormatChoice({
 
 function BannerTypePicker({
   value,
+  tones,
   onFormat,
   onTextType,
 }: {
   value: BannerType;
+  tones: SeverityColors;
   onFormat: (format: "image" | "text") => void;
   onTextType: (type: TextBannerType) => void;
 }): JSX.Element {
   const isImage = value === "image";
   return (
     <Stack spacing={1.5}>
-      <Typography variant="subtitle2">Banner</Typography>
+      <Typography variant="subtitle2" color="text.primary">Banner</Typography>
       <Box sx={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 1 }}>
         <FormatChoice title="Image" detail="A picture. Clicking it opens the link." selected={isImage} onClick={() => onFormat("image")} />
         <FormatChoice title="Text" detail="A message. Pick a type below." selected={!isImage} onClick={() => onFormat("text")} />
       </Box>
       {!isImage && (
         <Stack spacing={0.75}>
-          <Typography variant="subtitle2">Types</Typography>
+          <Typography variant="subtitle2" color="text.primary">Types</Typography>
           {TEXT_BANNER_TYPES.map((type) => {
             const selected = value === type;
             const choose = (): void => onTextType(type);
@@ -322,19 +332,24 @@ function BannerTypePicker({
                   aria-pressed={selected}
                   aria-label="Banner type Custom"
                   onClick={choose}
-                  sx={{
+                  sx={(theme) => ({
                     px: 1.5,
                     py: 1,
                     borderRadius: 1,
                     border: 2,
                     borderColor: selected ? "primary.main" : "divider",
                     bgcolor: "background.paper",
+                    color: "text.primary",
                     cursor: "pointer",
                     textAlign: "left",
                     "&:hover": { borderColor: "primary.main" },
-                  }}
+                    ...theme.applyStyles("dark", {
+                      borderColor: selected ? theme.palette.primary.main : "rgba(255,255,255,0.45)",
+                      bgcolor: "rgba(255,255,255,0.06)",
+                    }),
+                  })}
                 >
-                  <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                  <Typography variant="body2" color="text.primary" sx={{ fontWeight: 700 }}>
                     Custom
                   </Typography>
                   <Typography variant="caption" color="text.secondary">
@@ -358,6 +373,16 @@ function BannerTypePicker({
                   py: 0,
                   border: 2,
                   borderColor: selected ? "primary.main" : "divider",
+                  backgroundColor: `${tones[type].backgroundColor} !important`,
+                  backgroundImage: "none",
+                  backdropFilter: "none",
+                  WebkitBackdropFilter: "none",
+                  // The strip stays the light banner colour in both schemes, so
+                  // the name has to stay the dark tone colour. Dark mode would
+                  // otherwise paint it light on that pale background.
+                  color: `${tones[type].textColor} !important`,
+                  "& .MuiAlert-message": { color: `${tones[type].textColor} !important` },
+                  "& .MuiAlert-icon": { color: `${tones[type].iconColor} !important` },
                   boxShadow: selected ? 1 : 0,
                   "&:hover": { borderColor: "primary.main", boxShadow: 1 },
                 }}
@@ -407,7 +432,7 @@ function oxygenAlertColors(theme: Theme): SeverityColors {
     const light = cssColorToHex(String(swatch.light), cssColorToHex(String(swatch.main), "#ed6c02"));
     const main = cssColorToHex(String(swatch.main), light);
     return {
-      backgroundColor: cssColorToHex(lighten(light, 0.9), light),
+      backgroundColor: cssColorToHex(lighten(light, 0.84), light),
       textColor: cssColorToHex(darken(light, 0.6), "#000000"),
       iconColor: main,
     };
@@ -600,7 +625,7 @@ export default function CsmBannersPage(): JSX.Element {
         ))}
       </Tabs>
 
-      <Stack spacing={1.5}>
+      <Stack spacing={2}>
         {bannersQuery.isPending && <Typography color="text.secondary">Loading banners…</Typography>}
         {bannersQuery.isError && (
           <Alert severity="error">{bannersQuery.error?.message || "Could not load banners."}</Alert>
@@ -615,7 +640,18 @@ export default function CsmBannersPage(): JSX.Element {
           <Paper
             key={banner.id}
             variant="outlined"
-            sx={{ borderRadius: 2, overflow: "hidden", "&:hover": { borderColor: "primary.light" } }}
+            sx={(theme) => ({
+              borderRadius: 2,
+              overflow: "hidden",
+              border: "1px solid",
+              borderColor: "rgba(0,0,0,0.32)",
+              // palette.mode stays on the default scheme, so a mode check never
+              // sees dark. applyStyles is what actually switches with the toggle.
+              ...theme.applyStyles("dark", {
+                borderColor: "rgba(255,255,255,0.78)",
+              }),
+              "&:hover": { borderColor: "primary.light" },
+            })}
           >
             <Box
               data-testid={`banner-body-${banner.id}`}
@@ -628,6 +664,15 @@ export default function CsmBannersPage(): JSX.Element {
                   paddingTop: "0 !important",
                   paddingBottom: "0 !important",
                 },
+                "& [data-banner-type='info'], & [data-banner-type='warning'], & [data-banner-type='error'], & [data-banner-type='success']": {
+                  backgroundImage: "none",
+                  backdropFilter: "none",
+                  WebkitBackdropFilter: "none",
+                },
+                "& [data-banner-type='info']": { backgroundColor: `${palette.info.backgroundColor} !important` },
+                "& [data-banner-type='warning']": { backgroundColor: `${palette.warning.backgroundColor} !important` },
+                "& [data-banner-type='error']": { backgroundColor: `${palette.error.backgroundColor} !important` },
+                "& [data-banner-type='success']": { backgroundColor: `${palette.success.backgroundColor} !important` },
                 "& [data-banner-text] p, & [data-banner-text] div": { margin: "0 !important" },
               }}
               dangerouslySetInnerHTML={{ __html: sanitizeAnnouncementHtml(banner.html) }}
@@ -677,7 +722,59 @@ export default function CsmBannersPage(): JSX.Element {
         fullWidth
       >
         <DialogTitle>{creating ? "New banner" : "Edit banner"}</DialogTitle>
-        <DialogContent dividers>
+        <DialogContent
+          dividers
+          sx={(theme) => ({
+            color: "text.primary",
+            "& .MuiFormControlLabel-label, & .MuiInputBase-input, & .MuiSelect-select": {
+              color: "text.primary",
+            },
+            // Acrylic dark fields are a faint black fill with a near-invisible
+            // border, so the boxes disappear on the dialog.
+            ...theme.applyStyles("dark", {
+              "& .MuiOutlinedInput-root": {
+                backgroundColor: "rgba(255,255,255,0.08)",
+              },
+              "& .MuiOutlinedInput-notchedOutline": {
+                borderColor: "rgba(255,255,255,0.45)",
+              },
+              "& .MuiOutlinedInput-root:hover .MuiOutlinedInput-notchedOutline": {
+                borderColor: "rgba(255,255,255,0.72)",
+              },
+              "& .MuiOutlinedInput-root.Mui-focused .MuiOutlinedInput-notchedOutline": {
+                borderColor: theme.palette.primary.main,
+              },
+              "& .MuiOutlinedInput-root.Mui-disabled": {
+                color: "rgba(255,255,255,0.6)",
+                WebkitTextFillColor: "rgba(255,255,255,0.6)",
+              },
+              "& .MuiOutlinedInput-root.Mui-disabled .MuiOutlinedInput-notchedOutline": {
+                borderColor: "rgba(255,255,255,0.28)",
+              },
+              "& .MuiInputLabel-root": {
+                color: "rgba(255,255,255,0.86)",
+              },
+              "& .MuiInputLabel-root.Mui-focused": {
+                color: theme.palette.primary.main,
+              },
+              "& .MuiInputLabel-root.Mui-disabled": {
+                color: "rgba(255,255,255,0.55)",
+              },
+              "& .MuiFormHelperText-root": {
+                color: "rgba(255,255,255,0.72)",
+              },
+              "& .MuiInputLabel-root.Mui-error, & .MuiFormHelperText-root.Mui-error": {
+                color: theme.palette.error.main,
+              },
+              "& .MuiOutlinedInput-root.Mui-error .MuiOutlinedInput-notchedOutline": {
+                borderColor: theme.palette.error.main,
+              },
+              "& input[type='datetime-local'], & input[type='color']": {
+                colorScheme: "dark",
+              },
+            }),
+          })}
+        >
           <Box
             sx={{
               display: "grid",
@@ -688,7 +785,7 @@ export default function CsmBannersPage(): JSX.Element {
             }}
           >
             <Stack spacing={2}>
-              <BannerTypePicker value={draft.type} onFormat={applyFormat} onTextType={applyTextType} />
+              <BannerTypePicker value={draft.type} tones={palette} onFormat={applyFormat} onTextType={applyTextType} />
               {draft.type === "image" ? (
                 <>
                   <TextField
@@ -736,7 +833,7 @@ export default function CsmBannersPage(): JSX.Element {
                       </Box>
                     </Typography>
                     <Box
-                      sx={
+                      sx={(theme) =>
                         messageMissing
                           ? {
                               "& .MuiPaper-outlined": {
@@ -745,7 +842,11 @@ export default function CsmBannersPage(): JSX.Element {
                                 "&:focus-within": { borderColor: "error.main" },
                               },
                             }
-                          : undefined
+                          : {
+                              ...theme.applyStyles("dark", {
+                                "& .MuiPaper-outlined": { borderColor: "rgba(255,255,255,0.45)" },
+                              }),
+                            }
                       }
                     >
                       <Editor
@@ -859,8 +960,17 @@ export default function CsmBannersPage(): JSX.Element {
               </Box>
               {saveError && <Alert severity="error">{saveError}</Alert>}
             </Stack>
-            <Paper variant="outlined" sx={{ p: 2, position: { md: "sticky" }, top: 8 }}>
-              <Typography variant="subtitle1">Preview</Typography>
+            <Paper
+              variant="outlined"
+              sx={(theme) => ({
+                p: 2,
+                position: { md: "sticky" },
+                top: 8,
+                color: "text.primary",
+                ...theme.applyStyles("dark", { borderColor: "rgba(255,255,255,0.45)" }),
+              })}
+            >
+              <Typography variant="subtitle1" color="text.primary">Preview</Typography>
               <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
                 This is the banner people will see.
               </Typography>
@@ -884,7 +994,7 @@ export default function CsmBannersPage(): JSX.Element {
               />
               <Accordion disableGutters elevation={0} sx={{ mt: 1, "&:before": { display: "none" } }}>
                 <AccordionSummary expandIcon={<ChevronDown size={16} />}>
-                  <Typography variant="body2">Show HTML source</Typography>
+                  <Typography variant="body2" color="text.primary">Show HTML source</Typography>
                 </AccordionSummary>
                 <AccordionDetails>
                   <Box
@@ -896,6 +1006,7 @@ export default function CsmBannersPage(): JSX.Element {
                       whiteSpace: "pre-wrap",
                       wordBreak: "break-word",
                       fontSize: 12,
+                      color: "text.primary",
                       bgcolor: "action.hover",
                       borderRadius: 1,
                     }}

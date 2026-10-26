@@ -211,7 +211,7 @@ export function buildBannerHtml(content: BannerContent, id = ""): string {
     : "";
   const shell = isImage
     ? `position:relative;background-color:${backgroundColor};color:${textColor};height:3rem;overflow:hidden;`
-    : `box-sizing:border-box;position:relative;width:100%;height:3rem;overflow:hidden;display:flex;align-items:center;justify-content:center;flex-wrap:nowrap;gap:8px;padding:0 48px;background-color:${backgroundColor};color:${textColor};font:${isNotice ? "15px/1.2" : "14px/1.2"} -apple-system,BlinkMacSystemFont,Roboto,sans-serif;text-align:center;`;
+    : `box-sizing:border-box;position:relative;width:100%;height:3rem;overflow:hidden;display:flex;align-items:center;justify-content:center;flex-wrap:nowrap;gap:8px;padding:0 48px;background-color:${backgroundColor};background-image:none;color:${textColor};font:${isNotice ? "15px/1.2" : "14px/1.2"} -apple-system,BlinkMacSystemFont,Roboto,sans-serif;text-align:center;`;
 
   return (
     `<div data-banner="1"${bannerId ? ` data-id="${escapeText(bannerId)}"` : ""} data-banner-type="${type}" data-text-color="${escapeText(textColor)}" data-bg="${escapeText(backgroundColor)}" data-image="${escapeText(imageUrl)}" data-link="${escapeText(linkUrl)}" data-closeable="${closeable ? "true" : "false"}" ` +
