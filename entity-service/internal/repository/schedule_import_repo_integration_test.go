@@ -252,8 +252,13 @@ func TestScheduleIntegration_ImportRotaReplaceCutsTheLeaveUnderAnAssignment(t *t
 	if err != nil {
 		t.Fatalf("replace over leave: %v", err)
 	}
-	if res.LeaveWrittenOver != 1 {
-		t.Errorf("leave written over %d, want the member's leave cut back to the weekend", res.LeaveWrittenOver)
+	if len(res.LeaveCuts) != 1 {
+		t.Fatalf("leave cuts %+v, want the member's leave cut back to the weekend", res.LeaveCuts)
+	}
+	if c := res.LeaveCuts[0]; c.Index != 0 || c.UserID != schedMemberID || c.TeamKey != schedTeamKey || c.KindCode != "ANNUAL_LEAVE" ||
+		c.StartsOn != schedMonday || c.EndsOn == nil || *c.EndsOn != importNextMon ||
+		c.CutFrom != schedMonday || c.CutTo != "2026-09-25" || c.Action != AbsenceShortened {
+		t.Errorf("leave cut %+v, want assignments[0] shortening the member's leave from the Monday to the Friday", c)
 	}
 	if n := countRows(t, pool, `
 		SELECT count(*) FROM team_schedule_absence
@@ -292,8 +297,8 @@ func TestScheduleIntegration_ImportRotaReplaceNeverCutsAMove(t *testing.T) {
 	if err != nil {
 		t.Fatalf("replace inside a move: %v", err)
 	}
-	if res.LeaveWrittenOver != 0 {
-		t.Errorf("leave written over %d, want the move kept", res.LeaveWrittenOver)
+	if len(res.LeaveCuts) != 0 {
+		t.Errorf("leave cuts %+v, want the move kept", res.LeaveCuts)
 	}
 	if n := countRows(t, pool, `
 		SELECT count(*) FROM team_schedule_absence a JOIN team_schedule_absence_kind k ON k.id = a.kind_id
@@ -320,10 +325,36 @@ func TestScheduleIntegration_ImportRotaMergeKeepsTheLeave(t *testing.T) {
 	if err != nil {
 		t.Fatalf("merge: %v", err)
 	}
-	if res.LeaveWrittenOver != 0 {
-		t.Errorf("a merge wrote over %d leave spans", res.LeaveWrittenOver)
+	if len(res.LeaveCuts) != 0 {
+		t.Errorf("a merge cut leave: %+v", res.LeaveCuts)
 	}
 	if n := countRows(t, pool, `SELECT count(*) FROM team_schedule_absence WHERE user_id = $1::uuid`, schedMemberID); n != 1 {
 		t.Errorf("a merge removed leave (%d left)", n)
+	}
+}
+
+func TestScheduleIntegration_ImportRotaDryRunListsTheLeaveItWouldCut(t *testing.T) {
+	repo, pool := newScheduleIntegrationRepo(t)
+	ctx := context.Background()
+	shift := shiftWithScope(t, pool, "CRE", "WEEKDAY")
+	if _, err := repo.ApplyAbsence(ctx, domain.ApplyScheduleAbsenceRequest{
+		UserID: schedMemberID, TeamKey: schedTeamKey, KindCode: "ANNUAL_LEAVE", From: importWednesday, To: importThursday,
+	}, schedLeadEmail); err != nil {
+		t.Fatalf("seed leave: %v", err)
+	}
+
+	w := importWeek(shift)
+	w.Absences = nil
+	w.DryRun = true
+	res, err := repo.ImportRota(ctx, w, schedLeadEmail)
+	if err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+	if len(res.LeaveCuts) != 1 || res.LeaveCuts[0].Action != AbsenceRemoved ||
+		res.LeaveCuts[0].CutFrom != importWednesday || res.LeaveCuts[0].CutTo != importThursday {
+		t.Errorf("leave cuts %+v, want the Wednesday to Thursday leave removed", res.LeaveCuts)
+	}
+	if n := countRows(t, pool, `SELECT count(*) FROM team_schedule_absence WHERE user_id = $1::uuid`, schedMemberID); n != 1 {
+		t.Errorf("a dry run cut leave (%d left)", n)
 	}
 }

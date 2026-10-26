@@ -48,10 +48,17 @@ type RotaImportWrite struct {
 // RotaImportResult is what each entry did, in the file's order.
 type RotaImportResult struct {
 	Cleared int
-	// LeaveWrittenOver is the earlier time away a replace removed, shortened or split under the file's assignments.
-	LeaveWrittenOver int
-	Assignments      []domain.ApplyScheduleRangeResponse
-	Absences         []domain.ApplyScheduleAbsenceResponse
+	// LeaveCuts is each earlier absence a replace removed, shortened or split under the file's assignments, in the file's order.
+	LeaveCuts   []RotaImportLeaveCut
+	Assignments []domain.ApplyScheduleRangeResponse
+	Absences    []domain.ApplyScheduleAbsenceResponse
+}
+
+// RotaImportLeaveCut is one earlier absence a replace cut, and the assignment whose days it was.
+type RotaImportLeaveCut struct {
+	Index  int
+	UserID string
+	AbsenceCut
 }
 
 // ImportRota implements ScheduleRepository: the whole file in one transaction, all or nothing.
@@ -98,11 +105,13 @@ func (r *scheduleRepository) ImportRota(ctx context.Context, w RotaImportWrite, 
 	scopes := map[string]string{}
 	for i, req := range w.Assignments {
 		if w.Replace {
-			n, err := cutLeaveUnderAssignment(ctx, tx, req, w.TeamKeys, scopes, actorEmail)
+			cuts, err := cutLeaveUnderAssignment(ctx, tx, req, w.TeamKeys, scopes, actorEmail)
 			if err != nil {
 				return RotaImportResult{}, apierror.Prefixed(fmt.Sprintf("assignments[%d]", i), err)
 			}
-			out.LeaveWrittenOver += n
+			for _, c := range cuts {
+				out.LeaveCuts = append(out.LeaveCuts, RotaImportLeaveCut{Index: i, UserID: req.UserID, AbsenceCut: c})
+			}
 		}
 		res, err := applyRangeTx(ctx, tx, req, actorEmail)
 		if err != nil {
@@ -130,33 +139,33 @@ func (r *scheduleRepository) ImportRota(ctx context.Context, w RotaImportWrite, 
 // cutLeaveUnderAssignment takes the days an entry's window is worked out of the person's time away filed on the rota's teams, a run of consecutive days at a time.
 // A move (the Night cover) is never cut: it is where they work, not time off. The file's own absences go in after every assignment, so none of them is cut.
 func cutLeaveUnderAssignment(ctx context.Context, tx pgx.Tx, req domain.ApplyScheduleRangeRequest,
-	teams []string, scopes map[string]string, actorEmail string) (int, error) {
+	teams []string, scopes map[string]string, actorEmail string) ([]AbsenceCut, error) {
 	from, ferr := time.Parse(time.DateOnly, req.From)
 	to, terr := time.Parse(time.DateOnly, req.To)
 	if ferr != nil || terr != nil || req.ShiftCode == "" {
 		// applyRangeTx refuses it in its own words.
-		return 0, nil
+		return nil, nil
 	}
 	scope, ok := scopes[req.ShiftCode]
 	if !ok {
 		err := tx.QueryRow(ctx, `SELECT day_scope::text FROM team_schedule_shift WHERE code = $1`, req.ShiftCode).Scan(&scope)
 		if errors.Is(err, pgx.ErrNoRows) {
-			return 0, nil
+			return nil, nil
 		}
 		if err != nil {
-			return 0, fmt.Errorf("read the window's day scope: %w", err)
+			return nil, fmt.Errorf("read the window's day scope: %w", err)
 		}
 		scopes[req.ShiftCode] = scope
 	}
 
-	cut := 0
+	var cut []AbsenceCut
 	var runFrom *time.Time
 	flush := func(end time.Time) error {
 		if runFrom == nil {
 			return nil
 		}
-		removed, trimmed, err := cutAbsencesTx(ctx, tx, req.UserID, req.TeamKey, *runFrom, end, actorEmail, ptrTo(rotaImportReplaceNote), teams)
-		cut, runFrom = cut+removed+trimmed, nil
+		cuts, err := cutAbsencesTx(ctx, tx, req.UserID, req.TeamKey, *runFrom, end, actorEmail, ptrTo(rotaImportReplaceNote), teams)
+		cut, runFrom = append(cut, cuts...), nil
 		return err
 	}
 	for d := from; !d.After(to); d = d.AddDate(0, 0, 1) {

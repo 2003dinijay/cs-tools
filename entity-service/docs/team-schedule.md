@@ -684,7 +684,11 @@ A move (the Night cover) is never cut; it is where they work, not time off. The 
 own absences go in after every assignment, so none of them is cut, and they do not
 take turns off the days they cover (as marking leave on the roster does not). Each cut
 leaves a `TRIMMED` or `DELETED` absence activity row with the same note. A merge cuts
-nothing.
+nothing. The response lists every cut in `leaveCuts` (the `assignments[]` entry, the
+person, team, kind, the absence as it was, the days taken out and whether it was
+removed, shortened or split), and the dialog shows it under the preview, so a lead
+sees whose leave goes, and who will therefore be paged on those days, before pressing
+Import.
 
 **Codes the roster legend shows** (SaaS; the catalogue of the database decides, so
 download the template from the environment you import into):
@@ -716,7 +720,7 @@ download the template from the environment you import into):
 
 ## Change log
 
-- **Rota import: replace cuts leave, template from the catalogue (no migration).** A `replace` also cuts the time away of each person in the file on the days their entries are worked (never a move); the response counts it as `leaveWrittenOver`. `merge` is unchanged. The downloadable template is built from the catalogue for the rota on screen. `cutAbsencesTx` is the absence-cutting core `ApplyAbsence` and the import share.
+- **Rota import: replace cuts leave, template from the catalogue (no migration).** A `replace` also cuts the time away of each person in the file on the days their entries are worked (never a move); the response counts it as `leaveWrittenOver` and lists each cut in `leaveCuts`. `merge` is unchanged. The downloadable template is built from the catalogue for the rota on screen. `cutAbsencesTx` is the absence-cutting core `ApplyAbsence` and the import share.
 - **Rota import (no migration).** `POST /team-schedule/rotas/{code}/import` writes a whole SRE rota for a period from one JSON file (schema version 1, people by email), all or nothing, `?dryRun=true` to preview; see "Rota import (SRE)". `ApplyRange` / `ApplyAbsence` were split into a transaction-taking core and a begin/commit wrapper so the import reuses their rules unchanged.
 - **0238 Case Alerts: SME ladder values.** `paging_ladder_value` takes ladder
   `SME`. Additive and re-runnable; no row changes.

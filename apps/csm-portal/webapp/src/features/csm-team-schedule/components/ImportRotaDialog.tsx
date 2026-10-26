@@ -28,12 +28,15 @@ import {
   Typography,
 } from "@wso2/oxygen-ui";
 import { useRef, useState, type ChangeEvent, type JSX } from "react";
-import { useImportRota, type ImportRotaResult } from "../api/useImportRota";
+import { useImportRota, type ImportRotaResult, type RotaImportLeaveCut } from "../api/useImportRota";
 import { buildRotaImportTemplate, parseRotaImportFile, type ParsedRotaImport } from "../utils/rotaImport";
 import type { ScheduleCatalogue } from "../types";
 
 /** The largest file read; the server takes at most 1 MiB. */
 const MAX_FILE_BYTES = 1 << 20;
+
+/** How many leave cuts are listed before the rest are counted. */
+const SHOWN_CUTS = 20;
 
 /** How many assignments with skipped days are listed before the rest are counted. */
 const SHOWN_SKIPS = 6;
@@ -68,6 +71,18 @@ function absenceNote(r: ImportRotaResult): string {
   if (r.absencesRemoved > 0) parts.push(`${plural(r.absencesRemoved, "earlier absence")} covered`);
   if (r.absencesTrimmed > 0) parts.push(`${plural(r.absencesTrimmed, "earlier absence")} shortened`);
   return parts.join(", ");
+}
+
+function days(from: string, to: string): string {
+  return from === to ? from : `${from} to ${to}`;
+}
+
+function cutLine(c: RotaImportLeaveCut): string {
+  const span = c.endsOn ? days(c.startsOn, c.endsOn) : `${c.startsOn} onwards`;
+  const what = c.action === "removed" ? "removed" : c.action === "split" ? "split around" : "shortened by";
+  const kind = c.kindLabel || c.kindCode;
+  if (c.action === "removed") return `${c.name || c.email} (${c.teamKey}): ${kind} ${span} removed`;
+  return `${c.name || c.email} (${c.teamKey}): ${kind} ${span} ${what} ${days(c.cutFrom, c.cutTo)}`;
 }
 
 function summary(r: ImportRotaResult): string {
@@ -233,6 +248,22 @@ export default function ImportRotaDialog({ open, onClose, rotaCode, catalogue }:
                 </Typography>
               </>
             )}
+            {(shown.leaveCuts?.length ?? 0) > 0 ? (
+              <Alert severity="warning" sx={{ mt: 1 }}>
+                <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                  Time away {written ? "cut" : "this would cut"}: these people are on the rota on those days and will be
+                  paged
+                </Typography>
+                <Box component="ul" sx={{ m: 0, pl: 2 }}>
+                  {(shown.leaveCuts ?? []).slice(0, SHOWN_CUTS).map((c, i) => (
+                    <li key={`${c.index}-${i}`}>{cutLine(c)}</li>
+                  ))}
+                </Box>
+                {(shown.leaveCuts?.length ?? 0) > SHOWN_CUTS ? (
+                  <Typography variant="caption">and {(shown.leaveCuts?.length ?? 0) - SHOWN_CUTS} more</Typography>
+                ) : null}
+              </Alert>
+            ) : null}
             {shown.skippedDays.length > 0 ? (
               <Alert severity="info" sx={{ mt: 1 }}>
                 <Typography variant="body2" sx={{ fontWeight: 600 }}>

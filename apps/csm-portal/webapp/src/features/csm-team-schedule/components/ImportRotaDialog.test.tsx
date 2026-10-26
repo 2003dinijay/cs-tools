@@ -160,6 +160,32 @@ describe("ImportRotaDialog", () => {
     expect(await screen.findByText(/2 earlier leave spans cut/)).toBeInTheDocument();
   });
 
+  it("names whose leave a replace would cut, before anything is written", async () => {
+    postMock.mockResolvedValueOnce(
+      result({
+        leaveWrittenOver: 2,
+        leaveCuts: [
+          { index: 0, name: "Ann Perera", email: "ann@example.com", teamKey: "apollo", kindCode: "ANNUAL_LEAVE",
+            kindLabel: "Annual/Casual leave", startsOn: "2026-11-02", endsOn: "2026-11-13", cutFrom: "2026-11-02",
+            cutTo: "2026-11-06", action: "shortened" },
+          { index: 1, name: "Ben Silva", email: "ben@example.com", teamKey: "artemis", kindCode: "LIEU_LEAVE",
+            kindLabel: "Lieu leave", startsOn: "2026-11-04", endsOn: "2026-11-04", cutFrom: "2026-11-04",
+            cutTo: "2026-11-04", action: "removed" },
+        ],
+      }),
+    );
+    renderDialog();
+    chooseFile(fileText({ mode: "replace" }));
+    await screen.findByText(/4 assignments/);
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    expect(await screen.findByText(/Time away this would cut/)).toBeInTheDocument();
+    expect(
+      screen.getByText("Ann Perera (apollo): Annual/Casual leave 2026-11-02 to 2026-11-13 shortened by 2026-11-02 to 2026-11-06"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Ben Silva (artemis): Lieu leave 2026-11-04 removed")).toBeInTheDocument();
+    expect(screen.getByText(/Nothing has been written yet/)).toBeInTheDocument();
+  });
+
   it("shows the server's refusal, which names the entry at fault", async () => {
     postMock.mockRejectedValueOnce(
       new Error("the rota file has problems: assignments[0]: nobody on the team schedule has the email user1@example.com"),
