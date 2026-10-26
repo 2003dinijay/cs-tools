@@ -118,12 +118,14 @@ func TestResolvedOnIntegration_Transitions(t *testing.T) {
 		{"closed to reopened clears it", "CLOSED", "REOPENED", true, "clear"},
 		{"open to work_in_progress leaves it empty", "OPEN", "WORK_IN_PROGRESS", false, "keep"},
 		{"reopened to open leaves it empty", "REOPENED", "OPEN", false, "keep"},
+		{"null state to solution_proposed sets it", "", "SOLUTION_PROPOSED", false, "set"},
 	}
 	// Announcements only have open/closed.
 	announcementSteps := []resolvedOnStep{
 		{"open to closed sets it", "OPEN", "CLOSED", false, "set"},
 		{"closed to closed is idempotent", "CLOSED", "CLOSED", true, "keep"},
 		{"open to open leaves it empty", "OPEN", "OPEN", false, "keep"},
+		{"closed to open clears it", "CLOSED", "OPEN", true, "clear"},
 	}
 
 	for _, ty := range resolvedOnTypes {
@@ -145,11 +147,15 @@ func TestResolvedOnIntegration_Transitions(t *testing.T) {
 					o := time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Microsecond)
 					old = &o
 				}
-				if _, err := pool.Exec(ctx, `UPDATE `+ty.table+` SET state = $2::TEXT::`+stateEnum(ty.table)+`, resolved_on = $3 WHERE id = $1`, id, fromState, old); err != nil {
+				var fromArg *string
+				if fromState != "" {
+					fromArg = &fromState
+				}
+				if _, err := pool.Exec(ctx, `UPDATE `+ty.table+` SET state = $2::TEXT::`+stateEnum(ty.table)+`, resolved_on = $3 WHERE id = $1`, id, fromArg, old); err != nil {
 					t.Fatalf("precondition: %v", err)
 				}
 
-				started := time.Now().UTC().Add(-time.Second)
+				started := time.Now().UTC().Add(-time.Minute)
 				to := domain.CaseState(lower(st.to))
 				c, _, _, err := repo.UpdateCase(ctx, domain.UpdateCaseRequest{ID: id, State: &to}, nil)
 				if err != nil {

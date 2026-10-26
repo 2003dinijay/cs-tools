@@ -2407,8 +2407,9 @@ func (r *caseRepo) SearchCaseComments(ctx context.Context, req domain.SearchCase
 // resolved_on follows the original workflow: a transition to solution_proposed
 // stamps NOW() unless the case was waiting_on_wso2 (a hand-back to the
 // customer keeps the earlier stamp) or is already solution_proposed (a
-// re-sent state is not a transition); closed keeps an existing stamp and
-// otherwise sets one (a direct close); reopened clears it; every other state
+// re-sent state is not a transition; a NULL stored state counts as neither); closed keeps an existing stamp and
+// otherwise sets one (a direct close); reopened clears it (an announcement's
+// open does, its only reopen); every other state
 // leaves it as it was. The five update queries below carry the same rule.
 // updateCaseQuery's $2/$3/$4 arrive already converted to their real enum
 // labels by UpdateCase below (state/work_state upper-cased, severity mapped
@@ -2438,7 +2439,7 @@ const updateCaseQuery = `
 		                          WHEN $2 <> '' AND $2 <> 'WORK_IN_PROGRESS' THEN NULL
 		                          ELSE work_state END,
 		    closed_on         = CASE WHEN $2 = 'CLOSED' THEN NOW() WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_on END,
-		    resolved_on       = CASE WHEN $2 = 'SOLUTION_PROPOSED' AND state::TEXT NOT IN ('WAITING_ON_WSO2', 'SOLUTION_PROPOSED') THEN NOW()
+		    resolved_on       = CASE WHEN $2 = 'SOLUTION_PROPOSED' AND COALESCE(state::TEXT, '') NOT IN ('WAITING_ON_WSO2', 'SOLUTION_PROPOSED') THEN NOW()
 		                          WHEN $2 = 'CLOSED' THEN COALESCE(resolved_on, NOW())
 		                          WHEN $2 = 'REOPENED' THEN NULL
 		                          ELSE resolved_on END,
@@ -2468,7 +2469,7 @@ const updateSecurityReportAnalysisQuery = `
 		UPDATE security_report_analysis
 		SET state             = CASE WHEN $2 <> '' THEN $2::security_report_analysis_state_enum ELSE state END,
 		    closed_on         = CASE WHEN $2 = 'CLOSED' THEN NOW() WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_on END,
-		    resolved_on       = CASE WHEN $2 = 'SOLUTION_PROPOSED' AND state::TEXT NOT IN ('WAITING_ON_WSO2', 'SOLUTION_PROPOSED') THEN NOW()
+		    resolved_on       = CASE WHEN $2 = 'SOLUTION_PROPOSED' AND COALESCE(state::TEXT, '') NOT IN ('WAITING_ON_WSO2', 'SOLUTION_PROPOSED') THEN NOW()
 		                          WHEN $2 = 'CLOSED' THEN COALESCE(resolved_on, NOW())
 		                          WHEN $2 = 'REOPENED' THEN NULL
 		                          ELSE resolved_on END,
@@ -2502,7 +2503,7 @@ const updateServiceRequestQuery = `
 		UPDATE service_request
 		SET state             = CASE WHEN $2 <> '' THEN $2::service_request_state_enum ELSE state END,
 		    closed_on         = CASE WHEN $2 = 'CLOSED' THEN NOW() WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_on END,
-		    resolved_on       = CASE WHEN $2 = 'SOLUTION_PROPOSED' AND state::TEXT NOT IN ('WAITING_ON_WSO2', 'SOLUTION_PROPOSED') THEN NOW()
+		    resolved_on       = CASE WHEN $2 = 'SOLUTION_PROPOSED' AND COALESCE(state::TEXT, '') NOT IN ('WAITING_ON_WSO2', 'SOLUTION_PROPOSED') THEN NOW()
 		                          WHEN $2 = 'CLOSED' THEN COALESCE(resolved_on, NOW())
 		                          WHEN $2 = 'REOPENED' THEN NULL
 		                          ELSE resolved_on END,
@@ -2536,7 +2537,7 @@ const updateEngagementQuery = `
 		UPDATE engagement
 		SET state             = CASE WHEN $2 <> '' THEN $2::engagement_state_enum ELSE state END,
 		    closed_on         = CASE WHEN $2 = 'CLOSED' THEN NOW() WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_on END,
-		    resolved_on       = CASE WHEN $2 = 'SOLUTION_PROPOSED' AND state::TEXT NOT IN ('WAITING_ON_WSO2', 'SOLUTION_PROPOSED') THEN NOW()
+		    resolved_on       = CASE WHEN $2 = 'SOLUTION_PROPOSED' AND COALESCE(state::TEXT, '') NOT IN ('WAITING_ON_WSO2', 'SOLUTION_PROPOSED') THEN NOW()
 		                          WHEN $2 = 'CLOSED' THEN COALESCE(resolved_on, NOW())
 		                          WHEN $2 = 'REOPENED' THEN NULL
 		                          ELSE resolved_on END,
@@ -2570,7 +2571,9 @@ const updateAnnouncementQuery = `
 		UPDATE announcement
 		SET state             = CASE WHEN $2 <> '' THEN $2::announcement_state_enum ELSE state END,
 		    closed_on         = CASE WHEN $2 = 'CLOSE' THEN NOW() WHEN $2 <> '' AND $2 <> 'CLOSE' THEN NULL ELSE closed_on END,
-		    resolved_on       = CASE WHEN $2 = 'CLOSE' THEN COALESCE(resolved_on, NOW()) ELSE resolved_on END,
+		    resolved_on       = CASE WHEN $2 = 'CLOSE' THEN COALESCE(resolved_on, NOW())
+		                          WHEN $2 = 'OPEN' THEN NULL
+		                          ELSE resolved_on END,
 		    closed_by_user_id = CASE WHEN $2 = 'CLOSE' AND state IS DISTINCT FROM 'CLOSE'::announcement_state_enum THEN $5::uuid WHEN $2 <> '' AND $2 <> 'CLOSE' THEN NULL ELSE closed_by_user_id END,
 		    cause             = CASE WHEN $3 <> '' THEN $3::announcement_cause_enum ELSE cause END,
 		    close_notes       = COALESCE($4, close_notes)
