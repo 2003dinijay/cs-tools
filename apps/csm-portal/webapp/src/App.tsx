@@ -92,6 +92,8 @@ import DashboardBuilderRouteGuard from "@features/csm-admin/dashboards/pages/Das
 import CsmDashboardBuilderListPage from "@features/csm-admin/dashboards/pages/CsmDashboardBuilderListPage";
 import CsmDashboardBuilderEditorPage from "@features/csm-admin/dashboards/pages/CsmDashboardBuilderEditorPage";
 import CsmDashboardSharedConfigPage from "@features/csm-admin/dashboards/pages/CsmDashboardSharedConfigPage";
+import CsmBannersRouteGuard from "@features/csm-admin/banners/CsmBannersRouteGuard";
+import CsmBannersPage from "@features/csm-admin/banners/CsmBannersPage";
 import CsmCustomersLayout from "@features/csm-customers/pages/CsmCustomersLayout";
 import CsmAccountsPage from "@features/csm-accounts/pages/CsmAccountsPage";
 import CsmAccountDetailPage from "@features/csm-accounts/pages/CsmAccountDetailPage";
@@ -387,6 +389,9 @@ export default function App(): JSX.Element {
                       <Route path="shared" element={<CsmDashboardSharedConfigPage />} />
                       <Route path="new" element={<CsmDashboardBuilderEditorPage />} />
                       <Route path=":draftId" element={<CsmDashboardBuilderEditorPage />} />
+                    </Route>
+                    <Route path="banners" element={<CsmBannersRouteGuard />}>
+                      <Route index element={<CsmBannersPage />} />
                     </Route>
                   </Route>
 

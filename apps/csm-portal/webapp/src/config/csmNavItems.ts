@@ -422,6 +422,15 @@ export const CSM_NAV_ITEMS: CsmNavSection[] = [
         label: "Dashboards",
         href: "/admin/dashboards",
       },
+      // Settings is also open to a CS engineer. This tab is admin only, so
+      // the sidebar and Quick-nav hide it the same way the Settings tabs do.
+      {
+        id: "admin.banners",
+        label: "Banners",
+        href: "/admin/banners",
+        icon: Megaphone,
+        requires: "isAdmin",
+      },
     ],
   },
   {
