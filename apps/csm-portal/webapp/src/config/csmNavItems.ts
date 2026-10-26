@@ -422,6 +422,12 @@ export const CSM_NAV_ITEMS: CsmNavSection[] = [
         label: "Dashboards",
         href: "/admin/dashboards",
       },
+      {
+        id: "admin.banners",
+        label: "Banners",
+        href: "/admin/banners",
+        icon: Megaphone,
+      },
     ],
   },
   {
