@@ -27,6 +27,40 @@ paths:
         "200":
           description: Ok
 
+  /banners:
+    get:
+      summary: Banners for the customer portal.
+      description: >
+        Published banners flagged for the customer portal, in sort order. The
+        shell hides a banner outside its start and end, and a banner this
+        browser has dismissed. Responses are Cache-Control no-store.
+      operationId: listCustomerPortalBanners
+      responses:
+        "200":
+          description: The banners the customer portal may show.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortalBannerViewList'
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: InternalServerError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
   /users/me:
     get:
       summary: Get the logged-in user's profile.
@@ -10715,3 +10749,31 @@ components:
           type: string
         contactDetails:
           $ref: '#/components/schemas/Contact'
+
+    PortalBannerView:
+      type: object
+      required: [id, sortOrder, html, startsAt, expiresAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        sortOrder:
+          type: integer
+        html:
+          type: string
+        startsAt:
+          type: string
+          format: date-time
+          nullable: true
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+    PortalBannerViewList:
+      type: object
+      required: [banners]
+      properties:
+        banners:
+          type: array
+          items:
+            $ref: '#/components/schemas/PortalBannerView'
