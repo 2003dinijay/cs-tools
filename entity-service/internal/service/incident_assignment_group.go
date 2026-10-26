@@ -36,7 +36,8 @@ type assignmentGroupLookups struct {
 	supportGroupOf func(ctx context.Context, serviceID string) (repository.ServiceSupportGroup, error)
 	// isSupportGroup reports whether groupID is in the set an explicit
 	// assignmentGroupId must belong to: active groups that are the support
-	// group of at least one service.
+	// group of at least one service, plus the configured extra groups
+	// (INCIDENT_EXTRA_ASSIGNMENT_GROUP_IDS).
 	isSupportGroup func(ctx context.Context, groupID string) (bool, error)
 }
 
@@ -188,6 +189,18 @@ func WithIncidentDefaultService(svc IncidentService, serviceID string) IncidentS
 		s.defaultServiceID = strings.TrimSpace(serviceID)
 	case *snIncidentService:
 		s.defaultServiceID = strings.TrimSpace(serviceID)
+	}
+	return svc
+}
+
+// WithIncidentExtraAssignmentGroups sets the groups an incident may be created
+// in although they support no service (INCIDENT_EXTRA_ASSIGNMENT_GROUP_IDS).
+// Only the ServiceNow incident service needs it: the Postgres service reads
+// the allowlist through its repository (repository.NewIncidentRepository), and
+// the dual-write ServiceNow mirror never decides a group.
+func WithIncidentExtraAssignmentGroups(svc IncidentService, groupIDs []string) IncidentService {
+	if s, ok := svc.(*snIncidentService); ok {
+		s.extraGroupIDs = append([]string(nil), groupIDs...)
 	}
 	return svc
 }

@@ -291,3 +291,39 @@ func TestSNGetIncidentCreateDefaults(t *testing.T) {
 		t.Errorf("got %s, want %s", gb, wb)
 	}
 }
+
+// An allowlisted group is accepted without a single services lookup, whatever
+// case the configured id is in; a group on neither list is still refused.
+func TestSNCreateIncident_AnExtraGroupIsAcceptedWithoutALookup(t *testing.T) {
+	const extra = "791ae9fb-1b41-8d10-a30d-edb8b04bcbd4"
+	build := func(t *testing.T, body *map[string]any, lookups *int32) IncidentService {
+		t.Helper()
+		svc := NewServiceNowIncidentService(newTestSNClient(t, snCreateCapturingClient(t, filler(3), body, lookups)), nil)
+		return WithIncidentExtraAssignmentGroups(svc, []string{strings.ToUpper(extra)})
+	}
+
+	req := validCreateIncidentRequest()
+	req.AssignmentGroupID = strPtrGroup(extra)
+	var body map[string]any
+	var lookups int32
+	if _, err := build(t, &body, &lookups).CreateIncident(contextWithUserIDToken("token"), req); err != nil {
+		t.Fatalf("CreateIncident: %v", err)
+	}
+	if body["assignmentGroupId"] != uuidToSysid(extra) {
+		t.Errorf("assignmentGroupId = %v, want %s", body["assignmentGroupId"], uuidToSysid(extra))
+	}
+	if lookups != 0 {
+		t.Errorf("lookups = %d, want 0", lookups)
+	}
+
+	req.AssignmentGroupID = strPtrGroup(testOtherGroup)
+	body, lookups = nil, 0
+	_, err := build(t, &body, &lookups).CreateIncident(contextWithUserIDToken("token"), req)
+	var ve *apierror.ValidationError
+	if !errors.As(err, &ve) || ve.Code != apierror.CodeIncidentAssignmentGroupNotAllowed {
+		t.Fatalf("err = %v, want the not-allowed ValidationError", err)
+	}
+	if body != nil {
+		t.Errorf("an incident was created: %v", body)
+	}
+}

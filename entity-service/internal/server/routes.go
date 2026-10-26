@@ -1421,7 +1421,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// 000066) -- see incident_repo.go/problem_repo.go's own doc comments for
 	// what's implemented (reads) vs. still ServiceUnavailableError (writes
 	// needing work_item.number generation or undiscoverable business rules).
-	incidentRepo := repository.NewIncidentRepository(repository.NewScoped(db))
+	incidentRepo := repository.NewIncidentRepository(repository.NewScoped(db), cfg.IncidentExtraAssignmentGroupIDs...)
 	var activeIncidentSvc service.IncidentService
 	switch cfg.DataSource {
 	case config.DataSourceServiceNow:
@@ -1547,6 +1547,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// groupless default is logged, never fatal -- the create still works, it
 	// just leaves such incidents unassigned.
 	activeIncidentSvc = service.WithIncidentDefaultService(activeIncidentSvc, cfg.IncidentDefaultServiceID)
+	activeIncidentSvc = service.WithIncidentExtraAssignmentGroups(activeIncidentSvc, cfg.IncidentExtraAssignmentGroupIDs)
 	if cfg.IncidentDefaultServiceID != "" && (db != nil || cfg.DataSource == config.DataSourceServiceNow) {
 		go service.CheckIncidentDefaultService(context.Background(), activeIncidentSvc, cfg.IncidentDefaultServiceID)
 	}
@@ -1766,7 +1767,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 	serviceOfferingHandler := handler.NewServiceOfferingHandler(activeServiceOfferingSvc)
 
-	groupRepo := repository.NewGroupRepository(db)
+	groupRepo := repository.NewGroupRepository(db, cfg.IncidentExtraAssignmentGroupIDs...)
 	var activeGroupSvc service.GroupService
 	if cfg.DataSource == config.DataSourceServiceNow {
 		activeGroupSvc = service.NewServiceNowGroupService(serviceNowIntegrationServiceClient)
