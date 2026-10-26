@@ -71,7 +71,7 @@ api.banners = [
     visibleInCustomerPortal: true,
     visibleInCsmPortal: false,
     startsAt: "2020-01-01T00:00:00.000Z",
-    expiresAt: "2027-01-01T00:00:00.000Z",
+    expiresAt: "2099-01-01T00:00:00.000Z",
     html: buildBannerHtml(
       {
         ...EMPTY_BANNER_CONTENT,
@@ -170,6 +170,20 @@ describe("CsmBannersPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Banner type Warning" }));
     expect(preview.innerHTML).toContain('data-banner-type="warning"');
     expect(preview.innerHTML).not.toContain('data-banner-type="info"');
+  });
+
+  it("lets a six-digit colour be typed and expands a short hex on blur", async () => {
+    renderPage();
+    await screen.findByRole("tab", { name: "Published (1)" });
+    fireEvent.click(screen.getByRole("button", { name: "New banner" }));
+    fireEvent.click(screen.getByRole("button", { name: "Banner type Custom" }));
+    const hex = screen.getByRole("textbox", { name: "Text hex" });
+    fireEvent.change(hex, { target: { value: "#112" } });
+    expect(hex).toHaveValue("#112");
+    fireEvent.blur(hex);
+    expect(hex).toHaveValue("#111122");
+    fireEvent.change(hex, { target: { value: "#112233" } });
+    expect(hex).toHaveValue("#112233");
   });
 
   it("marks a missing message as required when save is pressed", async () => {

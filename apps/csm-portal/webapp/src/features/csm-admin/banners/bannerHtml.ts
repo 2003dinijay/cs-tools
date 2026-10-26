@@ -201,7 +201,7 @@ export function buildBannerHtml(content: BannerContent, id = ""): string {
     : "";
   const linkedImage =
     image && linkUrl
-      ? `<a href="${escapeText(linkUrl)}" target="_blank" style="display:block;height:100%">${image}</a>`
+      ? `<a href="${escapeText(linkUrl)}" target="_blank" rel="noopener noreferrer" style="display:block;height:100%">${image}</a>`
       : image;
   const iconColor = safeColor(content.iconColor, textColor);
   const icon = isNotice ? alertIcon(type as keyof typeof ALERT_ICON_PATH, iconColor) : "";

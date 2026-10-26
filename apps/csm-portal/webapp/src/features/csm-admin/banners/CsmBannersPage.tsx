@@ -62,7 +62,7 @@ import { fromApiTimestamp, scheduleError, scheduleLocksStatus, statusOnSchedule,
 import { useCreatePortalBanner, usePortalBanners, useUpdatePortalBanner, type PortalBanner } from "@features/csm-admin/banners/usePortalBanners";
 import Editor from "@components/rich-text-editor/Editor";
 import { BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
-import { isBlankHtml } from "@utils/sanitizeHtml";
+import { isBlankHtml, sanitizeAnnouncementHtml } from "@utils/sanitizeHtml";
 
 type BannerStatus = "draft" | "published" | "unpublished";
 
@@ -168,8 +168,8 @@ function ColorField({
 
   const commitHex = (next: string): void => {
     setHexText(next);
-    const parsed = cssColorToHex(next.startsWith("#") ? next : `#${next}`, "");
-    if (parsed) onChange(parsed);
+    const candidate = next.trim().startsWith("#") ? next.trim() : `#${next.trim()}`;
+    if (/^#[0-9a-f]{6}$/i.test(candidate)) onChange(cssColorToHex(candidate, ""));
   };
 
   const commitChannel = (index: 0 | 1 | 2, raw: string): void => {
@@ -215,7 +215,16 @@ function ColorField({
         size="small"
         value={hexText}
         onChange={(event) => commitHex(event.target.value)}
-        onBlur={() => setHexText(hex)}
+        onBlur={() => {
+          const candidate = hexText.trim().startsWith("#") ? hexText.trim() : `#${hexText.trim()}`;
+          const parsed = cssColorToHex(candidate, "");
+          if (parsed) {
+            onChange(parsed);
+            setHexText(parsed);
+          } else {
+            setHexText(hex);
+          }
+        }}
         slotProps={{ htmlInput: { "aria-label": `${label} hex`, spellCheck: false } }}
         sx={{ "& input": { fontFamily: "monospace" } }}
       />
@@ -621,7 +630,7 @@ export default function CsmBannersPage(): JSX.Element {
                 },
                 "& [data-banner-text] p, & [data-banner-text] div": { margin: "0 !important" },
               }}
-              dangerouslySetInnerHTML={{ __html: banner.html }}
+              dangerouslySetInnerHTML={{ __html: sanitizeAnnouncementHtml(banner.html) }}
             />
             <Box sx={{ display: "flex", alignItems: "center", gap: 1, px: 1.5, py: 1 }}>
               <IconButton size="small" aria-label="Edit" onClick={() => openEdit(banner)} sx={{ flex: "none" }}>
@@ -871,7 +880,7 @@ export default function CsmBannersPage(): JSX.Element {
                   },
                   "& [data-banner-text] p, & [data-banner-text] div": { margin: "0 !important" },
                 }}
-                dangerouslySetInnerHTML={{ __html: previewHtml }}
+                dangerouslySetInnerHTML={{ __html: sanitizeAnnouncementHtml(previewHtml) }}
               />
               <Accordion disableGutters elevation={0} sx={{ mt: 1, "&:before": { display: "none" } }}>
                 <AccordionSummary expandIcon={<ChevronDown size={16} />}>

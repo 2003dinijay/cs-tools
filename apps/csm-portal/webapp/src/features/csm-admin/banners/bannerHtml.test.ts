@@ -66,6 +66,7 @@ describe("banner HTML", () => {
     expect(html).toContain("height:3rem");
     expect(html).toContain("width:100%");
     expect(html).toContain('href="https://example.com"');
+    expect(html).toContain('rel="noopener noreferrer"');
     expect(parseBannerHtml(html).type).toBe("image");
   });
 
